@@ -1,4 +1,4 @@
-import { substratError, type ModuleId } from '@substrat-run/contracts';
+import { dataSubjectId, substratError, type DataSubjectId, type ModuleId } from '@substrat-run/contracts';
 import { backoffAt, resolveRetryPolicy, type ExecutorRetryPolicy, type ScopeStub } from './scope-host.js';
 
 /**
@@ -110,6 +110,8 @@ export const JOB_RUN_DDL = `
     -- (assertQueueSafe): ids and configuration, never bytes, class instances or
     -- functions, because this value has to survive a queue message unchanged.
     payload TEXT NOT NULL,
+    -- Declared subject for erasing external output without guessing from its text.
+    subject_id TEXT,
     -- 'running' | 'done' | 'failed'. A killed run stays 'running' and is picked up
     -- again by the next drive -- which is exactly what makes it restartable.
     status TEXT NOT NULL,
@@ -221,6 +223,8 @@ export interface JobRun extends JobRunKey {
   status: JobRunStatus;
   /** What `startJobRun` was handed. */
   payload: unknown;
+  /** Declared data subject; null on unclassified or legacy runs. */
+  subject: DataSubjectId | null;
   /** What the last COMMITTED pass handed forward; null before the first commit. */
   cursor: unknown;
   counters: Record<string, number>;
@@ -258,6 +262,8 @@ export interface StartJobRunInput {
   instance?: string;
   /** Ids and configuration. Refused at this boundary if it is anything else. */
   payload?: unknown;
+  /** Subject whose data this run handles. Erasure redacts the entire run and its steps. */
+  subject?: DataSubjectId;
 }
 
 /** The operator read's filter. Every field narrows; none is required. */
@@ -395,6 +401,8 @@ export interface JobRunRow {
   readonly job: string;
   readonly instance: string;
   readonly payload: string;
+  /** Optional only for an older scope DO answering before the subject migration. */
+  readonly subject_id?: string | null;
   readonly status: string;
   readonly cursor: string | null;
   readonly counters: string;
@@ -611,6 +619,7 @@ export function jobRunOf(row: JobRunRow): JobRun {
     instance: row.instance,
     status: row.status as JobRunStatus,
     payload,
+    subject: (row.subject_id ?? null) as DataSubjectId | null,
     cursor,
     counters,
     attempts: row.attempts,
@@ -646,6 +655,7 @@ export async function startJobRun(
   mintId: () => string,
   now: () => string,
 ): Promise<JobRunRow> {
+  const subject = input.subject === undefined ? null : dataSubjectId.parse(input.subject);
   const payload = input.payload ?? null;
   assertQueueSafe(payload, 'payload');
   const key: JobRunKey = {
@@ -660,6 +670,7 @@ export async function startJobRun(
     job: key.job,
     instance: key.instance,
     payload: JSON.stringify(payload),
+    subject_id: subject,
     status: 'running',
     cursor: null,
     counters: '{}',
@@ -674,7 +685,13 @@ export async function startJobRun(
   // when this call turns out to be a join. That is the price of doing the decision in
   // one store operation, and it is cheap: a ULID nobody kept costs nothing, whereas a
   // "look first so we do not waste an id" round trip is the race this exists to close.
-  return store.startOrJoin(key, row);
+  const started = await store.startOrJoin(key, row);
+  if ((started.subject_id ?? null) !== subject) {
+    throw substratError('conflict', 'the live job run declares a different subject; use a separate instance', {
+      reason: 'job_subject_mismatch',
+    });
+  }
+  return started;
 }
 
 /** A step that threw, carrying what the driver needs to decide the run's fate. */

@@ -3853,11 +3853,11 @@ export function defineScopeDO(
         this.sql.exec(
           `INSERT INTO _substrat_job_runs
              (id, module_id, job, instance, payload, status, cursor, counters, attempts,
-              last_error, started_at, updated_at, next_attempt_at, ended_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              last_error, started_at, updated_at, next_attempt_at, ended_at, subject_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           row.id, row.module_id, row.job, row.instance, row.payload, row.status, row.cursor,
           row.counters, row.attempts, row.last_error, row.started_at, row.updated_at,
-          row.next_attempt_at, row.ended_at,
+          row.next_attempt_at, row.ended_at, row.subject_id ?? null,
         );
       });
       return row;
@@ -3877,11 +3877,11 @@ export function defineScopeDO(
       this.sql.exec(
         `INSERT INTO _substrat_job_runs
            (id, module_id, job, instance, payload, status, cursor, counters, attempts,
-            last_error, started_at, updated_at, next_attempt_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            last_error, started_at, updated_at, next_attempt_at, ended_at, subject_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         row.id, row.module_id, row.job, row.instance, row.payload, row.status, row.cursor,
         row.counters, row.attempts, row.last_error, row.started_at, row.updated_at,
-        row.next_attempt_at, row.ended_at,
+        row.next_attempt_at, row.ended_at, row.subject_id ?? null,
       );
     }
 
@@ -4652,6 +4652,8 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_migrations ADD COLUMN duration_ms INTEGER',
         'ALTER TABLE _substrat_migrations ADD COLUMN rows_changed INTEGER',
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
+        // #1632: legacy runs retain an unknown subject; no content-based backfill.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
         // Executor retry state (#100). The defaults read as "terminal", which is
         // right for every row already there: each is a completed delivery or a
         // consumer dead-letter.

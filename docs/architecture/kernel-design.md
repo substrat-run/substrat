@@ -1481,15 +1481,15 @@ tables were — #1632):
    which is the one that embeds an event. A kind that started carrying a name directly would
    be inventing an unclassified PII store inside the spine, and the right answer there is the
    classification, not a wider erasure heuristic.
-8. **Job-run output that names a person without a classified envelope is not reached.** Limit 7's
-   shape in the job-run tables, and unlike limit 7 it is not hypothetical: a job is a walk of an
-   external system, so a step's result is that system's record — a contact, an address — and a
-   failed pass's `last_error` is that system's sentence. Nothing in such a row says whose it is,
-   and a substring match on the subject id would erase on coincidence while still missing the
-   name. The contract suite pins this rather than leaving it to be mistaken for coverage. The
-   design that would close it is a **declared subject on the run** (`startJobRun({ subject })`
-   and a `subject_id` column, a spine migration) so an erasure can find the run by key rather
-   than by content; it is open on #1632.
+8. **Job output without a declared subject or classified envelope is not reached.**
+   `startJobRun({ subject })` records a pseudonymous `subject_id`. Erasure reaches that
+   run's entire payload, cursor, step results, and error text, and stops it if it is still
+   running. Coalescing refuses a different subject for the same live run. Legacy runs have
+   no declared subject; the embedded-envelope walk still reaches their classified event
+   copies. External output without either link cannot be assigned to a person reliably,
+   so it is not erased by guessing from free text. Hosts handling one person's external
+   data should declare the subject when starting the run.
+
 
 ## 14. Design log
 

@@ -238,6 +238,22 @@ export function jobRunContractSuite(
       await fixture.cleanup();
     });
 
+    it('keeps a declared subject when coalescing and refuses a different subject', async () => {
+      const s = await newScope();
+      const subject = dataSubjectId.parse(ulid());
+      const input = { moduleId: JOBS_MODULE, job: 'walk', subject };
+      const first = await host.startJobRun(t, s, input);
+      expect(first.subject).toBe(subject);
+      const joined = await host.startJobRun(t, s, input);
+      expect(joined.id).toBe(first.id);
+      expect(joined.subject).toBe(subject);
+      await expect(host.startJobRun(t, s, { ...input, subject: dataSubjectId.parse(ulid()) }))
+        .rejects.toMatchObject({ code: 'conflict', extensions: { reason: 'job_subject_mismatch' } });
+      await expect(host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'walk' }))
+        .rejects.toMatchObject({ code: 'conflict', extensions: { reason: 'job_subject_mismatch' } });
+      expect((await host.jobRuns(t, s))[0]!.subject).toBe(subject);
+    });
+
     it('joins the run already in flight instead of starting a second', async () => {
       const s = await newScope();
       const first = await host.startJobRun(t, s, {
@@ -705,20 +721,19 @@ export function jobRunContractSuite(
     // -- subject erasure reaches the job-run tables (#1632) ----------------------
     //
     // A run's payload, its cursor and a step's memo are whatever a HOST handler handed
-    // the driver — a walk of an external system, so an external system's output. None of
-    // it carries a `subject_id`. What the erasure can read reliably is #1600's link: a
-    // copy of a classified spine envelope, at any depth. These pin both halves of that —
-    // what it reaches, and (the last test) what it deliberately does not.
+    // the driver — a walk of an external system, so an external system's output. A declared
+    // subject links the entire run; legacy runs still use #1600's classified spine
+    // envelope at any depth. These pin both paths and the undeclared-output limit.
     describe('subject erasure (#1632)', () => {
       const RUNS_DDL =
         'CREATE TABLE _substrat_job_runs (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, ' +
         'job TEXT NOT NULL, instance TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, ' +
         "cursor TEXT, counters TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, " +
         'last_error TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
-        'next_attempt_at TEXT, ended_at TEXT)';
+        'next_attempt_at TEXT, ended_at TEXT, subject_id TEXT)';
       const RUN_COLUMNS = [
         'id', 'module_id', 'job', 'instance', 'payload', 'status', 'cursor', 'counters',
-        'attempts', 'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at',
+        'attempts', 'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at', 'subject_id',
       ];
       const STEPS_DDL =
         'CREATE TABLE _substrat_job_steps (run_id TEXT NOT NULL, step TEXT NOT NULL, ' +
@@ -733,6 +748,7 @@ export function jobRunContractSuite(
         cursor?: unknown;
         status?: 'running' | 'done' | 'failed';
         lastError?: string | null;
+        subject?: string;
       };
       type Step = { runId: string; step: string; result: unknown; lastError?: string | null };
 
@@ -753,7 +769,7 @@ export function jobRunContractSuite(
                 return [
                   r.id, JOBS_MODULE, 'absent-job', r.id, JSON.stringify(r.payload), status,
                   r.cursor === undefined ? null : JSON.stringify(r.cursor), '{}', 1,
-                  r.lastError ?? null, T0, T0, null, status === 'running' ? null : T0,
+                  r.lastError ?? null, T0, T0, null, status === 'running' ? null : T0, r.subject ?? null,
                 ];
               }),
             },
@@ -785,6 +801,40 @@ export function jobRunContractSuite(
 
       const tombstoneOf = (subject: string) => ({
         [REDACTED_INTENT_MARKER]: expect.objectContaining({ reason: 'subject-erasure', subjectId: subject }),
+      });
+
+      it('erases declared-subject external output without an envelope and preserves other subjects', async () => {
+        const erased = dataSubjectId.parse(ulid());
+        const other = dataSubjectId.parse(ulid());
+        const s = await seeded([
+          { id: 'declared-running', subject: erased, payload: { source: 'contacts' }, cursor: { page: 2 }, status: 'running', lastError: 'Provider refused Anna Ek' },
+          { id: 'declared-done', subject: erased, payload: {}, status: 'done' },
+          { id: 'other-person', subject: other, payload: {}, lastError: 'Provider refused Anna Ek' },
+        ], [
+          { runId: 'declared-running', step: 'fetch', result: { name: 'Anna Ek' }, lastError: 'Anna Ek has no address' },
+          { runId: 'declared-done', step: 'fetch', result: { email: 'anna@example.com' } },
+          { runId: 'other-person', step: 'fetch', result: { name: 'Anna Ek' } },
+        ]);
+        const before = await rowsOf(s);
+        expect((await host.admin.shredSubject(staff, t, s, erased)).jobRunsRedacted).toBe(2);
+        const after = await rowsOf(s);
+        for (const id of ['declared-running', 'declared-done']) {
+          const run = after.runs.find((r) => r.id === id)!;
+          expect(JSON.parse(run.payload!)).toMatchObject(tombstoneOf(erased));
+          expect(run.subject_id).toBe(erased);
+          expect(run.status).toBe(id === 'declared-running' ? 'failed' : 'done');
+          expect(run.last_error).toBe(id === 'declared-running' ? CANCELLED_JOB_NOTE : REDACTED_JOB_NOTE);
+          for (const step of after.steps.filter((r) => r.run_id === id)) {
+            expect(JSON.parse(step.result!)).toMatchObject(tombstoneOf(erased));
+            expect(JSON.stringify(step)).not.toContain('Anna Ek');
+            expect(JSON.stringify(step)).not.toContain('anna@example.com');
+          }
+        }
+        expect(JSON.parse(after.runs.find((r) => r.id === 'declared-running')!.cursor!)).toMatchObject(tombstoneOf(erased));
+        expect(after.runs.find((r) => r.id === 'other-person')).toEqual(before.runs.find((r) => r.id === 'other-person'));
+        expect(after.steps.find((r) => r.run_id === 'other-person')).toEqual(before.steps.find((r) => r.run_id === 'other-person'));
+        expect((await host.admin.shredSubject(staff, t, s, erased)).jobRunsRedacted).toBe(0);
+        expect(await rowsOf(s)).toEqual(after);
       });
 
       it('tombstones the payload, the cursor and a step memo that copy the subject\'s event', async () => {
@@ -949,8 +999,8 @@ export function jobRunContractSuite(
         // THE DOCUMENTED LIMIT, pinned so nobody reads the tests above as covering it
         // (kernel-design.md §13.1 limit 8). The subject's id and name sit here as plain
         // text: nothing in the row says whose it is, and a substring match on the id
-        // would erase on coincidence and still miss the name. Closing this wants a
-        // declared subject on the run — the open half of #1632 — not a wider heuristic.
+        // would erase on coincidence and still miss the name. This legacy run has no
+        // declared subject, so erasure cannot infer ownership from its output.
         // If this test starts failing because the rows WERE redacted, that is the design
         // changing: update §13.1 with it, don't just flip the assertion.
         const erased = dataSubjectId.parse(ulid());

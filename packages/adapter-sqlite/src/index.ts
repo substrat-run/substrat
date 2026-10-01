@@ -5023,8 +5023,8 @@ export class SqliteScopeHost implements ScopeHost {
     const insertRun = db.prepare(
       `INSERT INTO _substrat_job_runs
          (id, module_id, job, instance, payload, status, cursor, counters, attempts,
-          last_error, started_at, updated_at, next_attempt_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          last_error, started_at, updated_at, next_attempt_at, ended_at, subject_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     // A compare-and-set on `running` (#1632): a pass that outlived an erasure must not
     // write its cursor back over the redaction. The kernel's statement, so both adapters
@@ -5041,7 +5041,7 @@ export class SqliteScopeHost implements ScopeHost {
       if (live) return live;
       insertRun.run(
         r.id, r.module_id, r.job, r.instance, r.payload, r.status, r.cursor, r.counters,
-        r.attempts, r.last_error, r.started_at, r.updated_at, r.next_attempt_at, r.ended_at,
+        r.attempts, r.last_error, r.started_at, r.updated_at, r.next_attempt_at, r.ended_at, r.subject_id ?? null,
       );
       return r;
     });
@@ -11258,6 +11258,7 @@ export class SqliteScopeHost implements ScopeHost {
     // from the kernel's (now widened) DDL when it runs — so by the time this ALTER
     // executes, the table always already has `kind` in its key, never `invocation_id`.
     this.ensureColumn(db, '_substrat_schedule_state', 'invocation_id', 'invocation_id TEXT');
+    this.ensureColumn(db, '_substrat_job_runs', 'subject_id', 'subject_id TEXT');
     // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
     // that is never pruned. No index leads with invocation_id, so without this one SQLite
     // walks the PRIMARY KEY from the oldest event until it reaches the call, and reading a

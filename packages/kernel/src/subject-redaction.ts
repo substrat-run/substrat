@@ -326,7 +326,7 @@ export const REDACTED_JOB_NOTE =
  * running anything — and walk on from nonsense. `failed` is what the run now is.
  */
 export const CANCELLED_JOB_NOTE =
-  'stopped by subject erasure (#37) — this run held a copy of an erased subject\'s event, so it cannot resume from it';
+  'stopped by subject erasure (#37) — this run held an erased subject\'s data, so it cannot resume from it';
 
 /**
  * How the job-run half talks to a scope database — one shape both adapters can satisfy
@@ -338,21 +338,11 @@ export type RedactionSql = (sql: string, params: readonly (string | number | nul
 /**
  * The job-run half of an erasure (#1632), shared by both adapters.
  *
- * **What decides membership is #1600's predicate, and nothing else.** A job run carries no
- * `subject_id`: its payload is "ids and configuration", its cursor is opaque, and a step's
- * result is whatever a HOST handler got back from an external system. The one link the
- * kernel can read reliably is the one the intent journal uses — a spine envelope embedded
- * at any depth, carrying this subject and a `piiClass` other than `none` — so a job-run
- * copy is redacted exactly when the erasure redacts the event it copies. The candidate
- * reads use `instr` over the text, as the intent read does; `intentPayloadCarriesSubject`
- * decides.
- *
- * **What it therefore does NOT reach** is external output naming the person with no
- * classified envelope around it — a step that returns a provider's contact record, a
- * `last_error` quoting a name. There is nothing in such a row that says whose it is, and a
- * substring match on the id would both erase on coincidence and miss the name itself.
- * kernel-design.md §13.1 limit 8 states it; a declared subject on the run is the open
- * design that would close it (#1632).
+ * A declared `subject_id` identifies the whole run: all payload, cursor, step output,
+ * and error text is redacted, even when it contains no classified event envelope.
+ * Legacy and unclassified runs retain #1600's embedded-envelope predicate. Free text
+ * without either link remains unreachable; matching a name or id substring is not a
+ * reliable declaration of whose data a run handles.
  *
  * Per column, for a matching run: `payload` and `cursor` become the tombstone where THEY
  * match (the payload is `NOT NULL`, the cursor may be `NULL` and stays so), `last_error`
@@ -369,6 +359,24 @@ export function redactSubjectJobRuns(sql: RedactionSql, subjectId: string, at: s
   const tombstone = redactedIntentPayload(subjectId, at);
   const runs = new Set<string>();
 
+  const hits = new Map<string, { payload: boolean; cursor: boolean }>();
+  const declared = sql(
+    'SELECT id, payload, cursor, status, last_error FROM _substrat_job_runs WHERE subject_id = ?',
+    [subjectId],
+  ) as { id: string; payload: string; cursor: string | null; status: string; last_error: string | null }[];
+  for (const r of declared) {
+    // A complete previous redaction is terminal. Stale step writes are blocked by
+    // the driver's running-state CAS, so a repeat erasure changes and counts nothing.
+    if (r.status !== 'running' && isRedactedPayloadText(r.payload) &&
+        (r.last_error === CANCELLED_JOB_NOTE || r.last_error === REDACTED_JOB_NOTE)) continue;
+    sql(`UPDATE _substrat_job_steps
+           SET result = CASE WHEN result IS NULL THEN NULL ELSE ? END,
+               last_error = CASE WHEN last_error IS NULL THEN NULL ELSE ? END
+         WHERE run_id = ?`, [tombstone, REDACTED_JOB_NOTE, r.id]);
+    hits.set(r.id, { payload: true, cursor: r.cursor !== null });
+    runs.add(r.id);
+  }
+
   const steps = sql(
     'SELECT run_id, step, result FROM _substrat_job_steps WHERE instr(result, ?) > 0',
     [needle],
@@ -384,11 +392,10 @@ export function redactSubjectJobRuns(sql: RedactionSql, subjectId: string, at: s
       WHERE instr(payload, ?) > 0 OR instr(cursor, ?) > 0`,
     [needle, needle],
   ) as { id: string; payload: string; cursor: string | null }[];
-  const hits = new Map<string, { payload: boolean; cursor: boolean }>();
   for (const r of candidates) {
     const payload = intentPayloadCarriesSubject(r.payload, subjectId);
     const cursor = r.cursor !== null && intentPayloadCarriesSubject(r.cursor, subjectId);
-    if (payload || cursor) hits.set(r.id, { payload, cursor });
+    if ((payload || cursor) && !hits.has(r.id)) hits.set(r.id, { payload, cursor });
   }
   // A run reached only through a step is still rewritten: its note and its status are
   // what stop the tombstoned memo being replayed.
@@ -409,6 +416,12 @@ export function redactSubjectJobRuns(sql: RedactionSql, subjectId: string, at: s
     runs.add(id);
   }
   return runs.size;
+}
+
+/** Recognise a previous complete payload tombstone without relying on its timestamp. */
+function isRedactedPayloadText(text: string): boolean {
+  try { return isRedactedPayload(JSON.parse(text)); }
+  catch { return false; }
 }
 
 /**
