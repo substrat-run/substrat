@@ -20,6 +20,19 @@ const rejecting = (message: string) =>
     platformSecret: 'secret',
   });
 
+it('deleteScope sends the tenant with the scope to the vertical (#1802)', async () => {
+  let body: unknown;
+  const client = new VerticalClient({
+    fetch: (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(init.body as string);
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  await client.deleteScope({ tenantId: t, scopeId: s });
+  expect(body).toEqual({ tenantId: t, scopeId: s });
+});
+
 describe('VerticalClient — transport rejections become diagnosable 502s (#391)', () => {
   it('configureInstance: a thrown fetch is a 502 naming the verb and the cause', async () => {
     const err = await rejecting('Worker threw exception')

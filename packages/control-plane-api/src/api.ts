@@ -1648,7 +1648,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // retiring (not erasing) a tenant pass `backup: true` deliberately.
         const backup = wantsBackup === true ? await backupScope(c, tenantId, scope) : null;
         const vertical = await verticalForScope(c, scope);
-        if (vertical) await vertical.deleteScope({ scopeId: scope.id });
+        if (vertical) await vertical.deleteScope({ tenantId, scopeId: scope.id });
         // Tenant teardown reaps every scope and releases every name by design — force past
         // the bound-hostname guard (which fences the interactive per-scope reap route below).
         await c.var.admin.reapScope(actor, tenantId, scope.id, {
@@ -3663,12 +3663,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * shrug. Returns true when the storage was stranded.
    */
   const deleteScopeStorageOrStrand = async (
-    vertical: { deleteScope(input: { scopeId: ScopeId }): Promise<void> } | null | undefined,
+    vertical: { deleteScope(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<void> } | null | undefined,
+    tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<boolean> => {
     if (!vertical) return false;
     try {
-      await vertical.deleteScope({ scopeId });
+      await vertical.deleteScope({ tenantId, scopeId });
       return false;
     } catch (e) {
       if (e instanceof ControlPlaneError && e.status === 501) return true;
@@ -3694,7 +3695,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // storage-before-row ordering deleteSnapshot itself keeps, so a crash
       // between the two converges on retry.
       const vertical = await verticalForScope(c, scope);
-      const storageStranded = await deleteScopeStorageOrStrand(vertical, scopeId);
+      const storageStranded = await deleteScopeStorageOrStrand(vertical, tenantId, scopeId);
       await c.var.host.deleteSnapshot(actor, tenantId, scopeId);
       return c.json({ deleted: scopeId, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
@@ -4071,7 +4072,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const vertical = await verticalForScope(c, scope);
       // By this point the backup contract has resolved (a copy landed, or the caller
       // explicitly declined one), so stranding is a bookkeeping fact, not data loss.
-      const storageStranded = await deleteScopeStorageOrStrand(vertical, scopeId);
+      const storageStranded = await deleteScopeStorageOrStrand(vertical, tenantId, scopeId);
       await c.var.admin.reapScope(actor, tenantId, scopeId, {
         ...(backup ? { backupRef: backupRefOf(backup) } : {}),
       });
@@ -6792,7 +6793,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // would name those clients again. A clean room never had one.
     await retireClientsOfReapedScope(previewAuthDeps(c), preview);
     const vertical = await verticalForScope(c, preview);
-    if (vertical) await vertical.deleteScope({ scopeId: preview.id });
+    if (vertical) await vertical.deleteScope({ tenantId: preview.tenantId, scopeId: preview.id });
     await c.var.host.deleteSnapshot(c.get('actor'), preview.tenantId, preview.id);
   };
 

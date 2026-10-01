@@ -952,7 +952,7 @@ export class VerticalClient {
    * deleteSnapshot, so a crash between the two converges on retry. The fork-only
    * refusal lives with the directory record, on the platform's side.
    */
-  async deleteScope(input: { scopeId: ScopeId }): Promise<void> {
+  async deleteScope(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<void> {
     await this.postInternal<unknown>('/internal/delete-scope', input, 'delete-scope');
   }
 

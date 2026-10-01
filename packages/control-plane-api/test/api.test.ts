@@ -1552,14 +1552,14 @@ describe('control-plane API', () => {
     await host.admin.activateScope(staff, t1, sV2);
 
     const snaps: { sourceScopeId: string; newScopeId: string }[] = [];
-    const deletes: string[] = [];
+    const deletes: { tenantId: string; scopeId: string }[] = [];
     const fakeVertical = {
       snapshotScope: async (input: { sourceScopeId: string; newScopeId: string }) => {
         snaps.push(input);
         return { tables: 7 };
       },
-      deleteScope: async (input: { scopeId: string }) => {
-        deletes.push(input.scopeId);
+      deleteScope: async (input: { tenantId: string; scopeId: string }) => {
+        deletes.push(input);
       },
     } as unknown as VerticalClient;
     const delegated = createControlPlaneApi({
@@ -1589,7 +1589,7 @@ describe('control-plane API', () => {
     expect((await djson(`/tenants/${t1}/scopes/${sV2}`, 'DELETE')).status).toBe(409);
     expect(deletes).toEqual([]);
     expect((await djson(`/tenants/${t1}/scopes/${snap.id}`, 'DELETE')).status).toBe(200);
-    expect(deletes).toEqual([snap.id]);
+    expect(deletes).toEqual([{ tenantId: t1, scopeId: snap.id }]);
     expect((await delegated.request(`/tenants/${t1}/scopes/${snap.id}`, { headers: auth })).status).toBe(404);
   });
 
