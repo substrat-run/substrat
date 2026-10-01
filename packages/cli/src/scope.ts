@@ -207,7 +207,7 @@ async function readDump(file: string): Promise<Backup> {
     }
     const namedOrigin = /^([0-9A-HJKMNP-TV-Z]{26})__([0-9A-HJKMNP-TV-Z]{26})\.sqlite$/i.exec(basename(file));
     const origin = namedOrigin
-      ? { tenantId: tenantId.parse(namedOrigin[1]), scopeId: scopeId.parse(namedOrigin[2]) }
+      ? { tenantId: tenantId.parse(namedOrigin[1]!.toUpperCase()), scopeId: scopeId.parse(namedOrigin[2]!.toUpperCase()) }
       : undefined;
     return { tables: orderTablesByForeignKeys(tables), origin };
   } finally {

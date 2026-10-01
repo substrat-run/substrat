@@ -65,6 +65,20 @@ describe('scope restore backup provenance (#1880)', () => {
     expect(log).not.toHaveBeenCalledWith(expect.stringContaining('backup origin is unknown'));
   });
 
+  it('normalizes lowercase source IDs in a SQLite backup filename', async () => {
+    // Use different IDs from the uppercase case: macOS filesystems may ignore case in names.
+    const lowerTenant = '01ARZ3NDEKTSV4RRFFQ69G5FA2';
+    const lowerScope = '01ARZ3NDEKTSV4RRFFQ69G5FA3';
+    const file = join(dir, `${lowerTenant.toLowerCase()}__${lowerScope.toLowerCase()}.sqlite`);
+    await writeSqlite(file);
+    const posts = capturePost();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await restoreScope(opts(file));
+
+    expect(posts[0]!.body).toMatchObject({ tenantId: lowerTenant, scopeId: lowerScope });
+  });
+
   it('reports the target fallback for a SQLite file without source IDs in its name', async () => {
     const file = join(dir, 'renamed-backup.sqlite');
     await writeSqlite(file);
