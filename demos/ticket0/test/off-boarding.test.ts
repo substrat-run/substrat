@@ -219,6 +219,7 @@ describe('a follow is a read on the customer’s thread, so it is not put on som
     // A reinstated colleague can be followed again, and an off-boarded one can still
     // be passed to unfollow without the directory refusing a cleanup request.
     await admin.invoke('ticket0/follow-conversation', { conversationId: first, follower: guest });
+    await setOff(d, guest, true);
     await admin.invoke('ticket0/unfollow-conversation', { conversationId: first, follower: guest });
     expect(follows()).toEqual([]);
   });

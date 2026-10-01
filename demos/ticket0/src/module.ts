@@ -3041,6 +3041,13 @@ const operations = {
           T0_PERM.conversationRead,
           conversationRef(follow.conversation_id),
         );
+        ctx.emit({
+          type: 'ticket0.conversation-unfollowed',
+          schemaVersion: 1,
+          entity: conversationRef(follow.conversation_id),
+          piiClass: 'none',
+          payload: { conversation_id: follow.conversation_id, follower: profile.principal },
+        });
       }
       ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE principal = ?', [profile.principal]);
     }
