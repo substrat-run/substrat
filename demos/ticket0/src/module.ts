@@ -4301,6 +4301,19 @@ const operations = {
       );
     }
 
+    // A follower of the loser does not automatically inherit the survivor's earlier
+    // messages. Remove the grant and its ledger row together with the merge. The ledger
+    // includes follows that predate it (migration 0019), so old grants are covered too.
+    const loserRef = conversationRef(conversation.id);
+    const followers = ctx.sql.query<{ principal: string }>(
+      'SELECT principal FROM ticket0_conversation_follows WHERE conversation_id = ? ORDER BY principal',
+      [conversation.id],
+    );
+    for (const follower of followers) {
+      await ctx.revoke(principalId.parse(follower.principal), T0_PERM.conversationRead, loserRef);
+    }
+    ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE conversation_id = ?', [conversation.id]);
+
     ctx.sql.exec('UPDATE ticket0_conversations SET merged_into = ?, updated_at = ? WHERE id = ?', [
       survivor.id,
       ctx.now(),
@@ -4315,11 +4328,23 @@ const operations = {
      * `ai_turn` left behind takes the assistant's draft card off the survivor, which
      * is where the human is now looking.
      */
-    for (const table of ['ticket0_messages', 'ticket0_ai_turns', 'ticket0_widget_sessions']) {
+    const survivorRef = conversationRef(survivor.id);
+    for (const [table, entityType] of [
+      ['ticket0_messages', 'message'],
+      ['ticket0_ai_turns', 'aiTurn'],
+      ['ticket0_widget_sessions', 'widgetSession'],
+    ] as const) {
+      const moved = ctx.sql.query<{ id: string }>(
+        `SELECT id FROM ${table} WHERE conversation_id = ?`,
+        [conversation.id],
+      );
       ctx.sql.exec(`UPDATE ${table} SET conversation_id = ? WHERE conversation_id = ?`, [
         survivor.id,
         conversation.id,
       ]);
+      for (const row of moved) {
+        ctx.relink({ entityType, entityId: row.id }, loserRef, survivorRef);
+      }
     }
     // Notifications point at whichever conversation a person should open, which is
     // now the survivor.
@@ -4343,23 +4368,8 @@ const operations = {
      * rating or silently reattribute one exchange's score to another.
      */
 
-    // The permission walk follows declared edges, so the moved rows need one to the
-    // survivor. `parents` is an allowlist the kernel accumulates, so this widens
-    // rather than rewrites — and both conversations were reachable by the caller,
-    // which is what `merge` checked on each of them.
-    const survivorRef = conversationRef(survivor.id);
-    for (const [table, entityType] of [
-      ['ticket0_messages', 'message'],
-      ['ticket0_ai_turns', 'aiTurn'],
-      ['ticket0_widget_sessions', 'widgetSession'],
-    ] as const) {
-      for (const row of ctx.sql.query<{ id: string }>(
-        `SELECT id FROM ${table} WHERE conversation_id = ?`,
-        [survivor.id],
-      )) {
-        ctx.link({ entityType, entityId: row.id }, survivorRef);
-      }
-    }
+    // relink above moves each row's permission parent as well as its SQL owner. A
+    // grant on the loser no longer reaches a moved row through a stale second edge.
     /**
      * The survivor changed too, and until #1088 nothing said so.
      *
