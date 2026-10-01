@@ -1,5 +1,12 @@
 # @substrat-run/dashboard-web
 
+## 0.16.9
+
+### Patch Changes
+
+- @substrat-run/contracts@0.132.0
+- @substrat-run/model-view@0.2.35
+
 ## 0.16.8
 
 ### Patch Changes
