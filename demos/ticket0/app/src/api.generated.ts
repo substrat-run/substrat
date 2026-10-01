@@ -361,6 +361,13 @@ export interface Ticket0Client {
   assistantMode(): Promise<{ autonomous: boolean }>;
 
   /**
+   * Conversations whose service-level target is due soon
+   *
+   * `GET /conversations/breaching-soon` — `ticket0/breaching-soon`
+   */
+  breachingSoon(input: { withinMinutes?: number }): Promise<{ withinMinutes: number; rows: ({ conversationId: string; subject: string; priority: "low" | "normal" | "urgent"; state: "new" | "open" | "snoozed"; assignee: string | null; target: "first_response" | "resolution"; dueAt: string })[]; truncated: boolean }>;
+
+  /**
    * Close a conversation for good, answered or not
    *
    * `POST /conversations/{conversationId}/close` — `ticket0/close`
@@ -1088,6 +1095,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/assistant/health", "GET", undefined, undefined),
     assistantMode: () =>
       send("/widget/assistant-mode", "GET", undefined, undefined),
+    breachingSoon: (input: Args) =>
+      send("/conversations/breaching-soon", "GET", undefined, input),
     close: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/close`, "POST", omit(input, ["conversationId"]), undefined),
     closeUsagePeriod: (input: Args) =>

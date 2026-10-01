@@ -1590,6 +1590,137 @@
         }
       }
     },
+    "/api/conversations/breaching-soon": {
+      "get": {
+        "operationId": "ticket0-breaching-soon",
+        "summary": "Conversations whose service-level target is due soon",
+        "parameters": [
+          {
+            "name": "withinMinutes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "default": 60,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1440
+            }
+          }
+        ],
+        "tags": [
+          "Inbox"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "withinMinutes": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "conversationId": {
+                            "type": "string"
+                          },
+                          "subject": {
+                            "type": "string"
+                          },
+                          "priority": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "normal",
+                              "urgent"
+                            ]
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "new",
+                              "open",
+                              "snoozed"
+                            ]
+                          },
+                          "assignee": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "target": {
+                            "type": "string",
+                            "enum": [
+                              "first_response",
+                              "resolution"
+                            ]
+                          },
+                          "dueAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "conversationId",
+                          "subject",
+                          "priority",
+                          "state",
+                          "assignee",
+                          "target",
+                          "dueAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "withinMinutes",
+                    "rows",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/conversations/{conversationId}/close": {
       "post": {
         "operationId": "ticket0-close",

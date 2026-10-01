@@ -200,6 +200,10 @@ export function Inbox({
   /** A page that did not arrive, said beside the button rather than over the list. */
   const [moreError, setMoreError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [soonWindow, setSoonWindow] = useState<15 | 60 | 240>(60);
+  const [soon, setSoon] = useState<Awaited<ReturnType<typeof api.breachingSoon>> | null>(null);
+  const [soonError, setSoonError] = useState<string | null>(null);
+  const latestSoon = useRef(0);
   const [cursor, setCursor] = useState(0);
   const [people, setPeople] = useState<Map<string, Contact>>(new Map());
   /**
@@ -349,8 +353,17 @@ export function Inbox({
       .catch(() => setVocabulary([]));
   }, []);
 
+  const loadSoon = useCallback(() => {
+    if (!caps?.inbox) return;
+    const seq = ++latestSoon.current;
+    api.breachingSoon({ withinMinutes: soonWindow })
+      .then((r) => { if (seq === latestSoon.current) { setSoon(r); setSoonError(null); } })
+      .catch((e: Error) => { if (seq === latestSoon.current) setSoonError(e.message); });
+  }, [caps?.inbox, soonWindow]);
+
   // A filter change blanks the list; a background tick must not.
   useEffect(() => load(true), [load]);
+  useEffect(() => { setSoon(null); setSoonError(null); loadSoon(); }, [loadSoon]);
   // The vocabulary rides the same tick as the list: a tag added in the rail is
   // pickable here on the next one, without a reload.
   useLiveReload(() => {
@@ -360,6 +373,7 @@ export function Inbox({
     if (loadingMore) return false;
     load();
     loadTags();
+    loadSoon();
   }, PACE.inbox);
   useEffect(() => {
     void contacts().then(setPeople);
@@ -416,13 +430,13 @@ export function Inbox({
       setAssigning(conversationId);
       api
         .assign({ conversationId, assignee })
-        .then(() => load())
+        .then(() => { load(); loadSoon(); })
         // The client already turns this vertical's problem+json into `message`, so a
         // refusal reads as the sentence the handler wrote rather than a status code.
         .catch((e: Error) => setAssignError(e.message))
         .finally(() => setAssigning(null));
     },
-    [load],
+    [load, loadSoon],
   );
 
   /**
@@ -546,6 +560,7 @@ export function Inbox({
    * on the strength of a dropped connection.
    */
   const missingProfile = staff.size > 0 && !staff.has(session.principal);
+  const shownSoon = soon?.withinMinutes === soonWindow ? soon : null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 22, width: 1360, maxWidth: '100%' }}>
@@ -569,6 +584,32 @@ export function Inbox({
           </button>
         </div>
       ) : null}
+      <div className="frame" aria-label="Service levels due soon">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 20px', background: 'var(--surface)', borderBottom: '1px solid var(--hairline)' }}>
+          <strong style={{ fontSize: 13 }}>Service levels due soon</strong>
+          <label className="t-small">Show next{' '}
+            <select value={soonWindow} onChange={(e) => setSoonWindow(Number(e.target.value) as 15 | 60 | 240)} aria-label="Service level horizon">
+              <option value={15}>15 minutes</option>
+              <option value={60}>1 hour</option>
+              <option value={240}>4 hours</option>
+            </select>
+          </label>
+        </div>
+        <div style={{ background: 'var(--surface)' }}>
+          {soonError ? <div className="t-small" role="status" style={{ padding: '12px 20px' }}>Upcoming service levels could not be read: {soonError}</div>
+            : shownSoon === null ? <div className="t-small" style={{ padding: '12px 20px' }}>Checking upcoming targets…</div>
+              : shownSoon.rows.length === 0 ? <div className="t-small" style={{ padding: '12px 20px' }}>No running targets due in this window.</div>
+                : shownSoon.rows.map((row) => (
+                  <button key={`${row.conversationId}:${row.target}`} type="button" onClick={() => go({ name: 'conversation', id: row.conversationId })}
+                    style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 150px 130px', width: '100%', gap: 12, padding: '10px 20px', border: 0, borderTop: '1px solid var(--hairline)', background: 'transparent', color: 'var(--text)', textAlign: 'left', cursor: 'pointer' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.subject}</span>
+                    <span className="t-small">{row.target === 'first_response' ? 'First response' : 'Resolution'}</span>
+                    <span className="t-small mono" style={{ textAlign: 'right' }} title={row.dueAt}>{new Date(row.dueAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                  </button>
+                ))}
+        </div>
+        {shownSoon?.truncated && <div className="t-small" style={{ padding: '8px 20px', borderTop: '1px solid var(--hairline)' }}>Showing the next {shownSoon.rows.length} targets. More are due in this window.</div>}
+      </div>
       <div className="frame">
         <div
           style={{
