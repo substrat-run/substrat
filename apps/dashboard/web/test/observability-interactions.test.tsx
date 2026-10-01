@@ -329,6 +329,11 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
   // Inside the page's trailing 24h, where the sparkline column is.
   const recent = [3, 2, 1].map((h) => ({ start: new Date(Date.now() - h * 3_600_000).toISOString(), requests: 12, errors: 1 }));
   vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [{ scopeId: 'app-a', buckets: recent }, { scopeId: 'app-b', buckets: recent }], available: true, bucketMinutes: 60 });
+  const connectorCalls = vi.spyOn(api, 'connectorCalls').mockResolvedValue({ available: true, buckets: [{
+    provider: 'mail', start: new Date(Math.floor((Date.now() - 3_600_000) / 3_600_000) * 3_600_000).toISOString(),
+    bucketMinutes: 60, calls: 5, errors: 1, ok: 4, class4xx: 0, class5xx: 1,
+    timeouts: 0, failed: 0, durationP50: 40, durationP95: 90,
+  }] });
   vi.spyOn(api, 'fleetHealth').mockResolvedValue({
     rows: [
       { scopeId: 'app-a', state: 'ok', reason: 'Swept, nothing failing.' } as AppHealthRow,
@@ -352,6 +357,7 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
     root.render(<Observability apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={onNav} />),
   );
   expect(metrics).toHaveBeenCalledWith(24);
+  expect(connectorCalls).toHaveBeenCalledWith({ hours: 24 });
   const rows = [...container.querySelectorAll<HTMLAnchorElement>('[data-pulse-card] a[role="row"]')];
   // Worst first — the failing app above the healthy one, whatever its traffic.
   expect(rows.map((r) => [...r.querySelectorAll('[role="cell"]')].map((c) => c.textContent))).toEqual([
@@ -360,6 +366,12 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
   ]);
   // Each row carries its own sparkline, drawn from its own series.
   expect(rows[0]!.querySelector('svg path')).not.toBeNull();
+  const connectorRow = [...container.querySelectorAll('[data-pulse-card] div[role="row"]')]
+    .find((r) => r.querySelector('[role="cell"]')?.textContent === 'mail');
+  expect(connectorRow?.textContent).toContain('5');
+  expect(connectorRow?.querySelector('path[stroke-dasharray]')).not.toBeNull();
+  expect(connectorRow?.querySelector('[data-pulse-axis]')?.getAttribute('aria-label'))
+    .toContain('90 ms');
   click(rows[0]!);
   expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-b' }));
 });

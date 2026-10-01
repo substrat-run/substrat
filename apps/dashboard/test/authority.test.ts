@@ -120,6 +120,13 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
   });
 
+  it('reads connector calls only through the pinned tenant path', async () => {
+    const { cp, calls } = harness(200, { buckets: [{ provider: 'mail', start: '2026-09-22T10:00:00Z', bucketMinutes: 15, calls: 2, errors: 1, durationP95: 80 }] });
+    const rows = await cp.connectorCallsSeries({ hours: 1, since: '2026-09-22T10:00:00Z', until: '2026-09-22T11:00:00Z' });
+    expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}/connections/calls?hours=1&since=2026-09-22T10%3A00%3A00Z&until=2026-09-22T11%3A00%3A00Z`);
+    expect(rows[0]).toMatchObject({ provider: 'mail', calls: 2, errors: 1, durationP95: 80 });
+  });
+
   it('the inspection reads (#605) are tenant-pinned, and only ask for live state when told to', async () => {
     const { cp, calls } = harness(200, []);
     const CN = '01JZ00000000000000000000CN';

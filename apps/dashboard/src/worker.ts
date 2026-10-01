@@ -4583,6 +4583,23 @@ app.get('/api/observability/tenant-metrics-series', async (c) => {
   );
 });
 
+/** Calls to connectors used by this tenant, on Pulse's time axis. */
+app.get('/api/observability/connector-calls', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const hours = chartHours(c.req.query('hours'));
+  const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  const buckets = await telemetry(c, node.tenantId, 'connector-calls-series', { hours, ...window }, () =>
+    cp.connectorCallsSeries({ hours, ...window }).catch((e: unknown) => {
+      if (e instanceof ControlPlaneError && e.status === 501) return null;
+      throw e;
+    }),
+  );
+  return c.json({ available: buckets !== null, buckets: buckets ?? [] });
+});
+
 /**
  * The team Observability page's chart (#1447): the same buckets, shaped into one
  * zero-filled series per app — every installation on one axis, from one read.

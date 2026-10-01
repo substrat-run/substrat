@@ -96,6 +96,10 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
             logReads.push(u);
             return Response.json([]);
           }
+          if (path === `/tenants/${tenant}/connections/calls`) {
+            logReads.push(u);
+            return Response.json({ hours: 24, buckets: [{ provider: 'mail', start: '2026-09-01T10:00:00Z', bucketMinutes: 15, calls: 2, errors: 1, ok: 1, class4xx: 0, class5xx: 1, timeouts: 0, failed: 0, durationP50: 30, durationP95: 80 }] });
+          }
           return Response.json({ error: `unexpected ${path}` }, { status: 500 });
         },
       },
@@ -158,6 +162,16 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
     expect((await app.request(`/api/observability/traffic?${bounds}&scopeId=${foreign}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
     expect(logReads).toHaveLength(count);
     expect((await app.request(`/api/observability/traffic?since=bad&until=bad`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(400);
+  });
+
+  it('uses the session tenant for connector calls on the dashboard route', async () => {
+    const bounds = new URLSearchParams({ since: '2026-09-01T10:00:00Z', until: '2026-09-01T10:45:00Z', hours: '1' });
+    const response = await app.request(`/api/observability/connector-calls?${bounds}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ available: true, buckets: [{ provider: 'mail', calls: 2, durationP95: 80 }] });
+    expect(logReads.at(-1)!.pathname).toBe(`/api/tenants/${tenant}/connections/calls`);
+    expect(logReads.at(-1)!.searchParams.get('since')).toBe('2026-09-01T10:00:00.000Z');
+    expect((await app.request('/api/observability/connector-calls', {}, env)).status).toBe(401);
   });
 
 });

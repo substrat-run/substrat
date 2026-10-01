@@ -1,4 +1,4 @@
-import type { AppHealthRow, AppMetricsView, AppRow, ReleaseMarker, TeamTrafficSeries, TrafficBucket } from './api';
+import type { AppHealthRow, AppMetricsView, AppRow, ConnectorCallsBucket, ReleaseMarker, TeamTrafficSeries, TrafficBucket } from './api';
 import { fleetRows, type FleetRow } from './fleet-rows';
 
 /**
@@ -22,13 +22,70 @@ const H = 32;
  * tick and a deploy line at the same instant land on the same pixel — the whole claim of
  * one clock. A bucket the window cuts into is clipped to it.
  */
-export function bucketSpans(buckets: TrafficBucket[], bucketMinutes: number, window: { from: string; to: string }): Array<[number, number]> {
+export function bucketSpans(buckets: Array<{ start: string }>, bucketMinutes: number, window: { from: string; to: string }): Array<[number, number]> {
   const a = Date.parse(window.from);
   const span = Date.parse(window.to) - a;
   const clip = (x: number) => Math.max(0, Math.min(1, x));
   return buckets.map((b) => {
     const s = Date.parse(b.start);
     return [clip((s - a) / span), clip((s + bucketMinutes * 60_000 - a) / span)];
+  });
+}
+
+export interface PulseConnectorBucket {
+  start: string;
+  calls: number;
+  errors: number;
+  durationP95: number | null;
+}
+
+export interface PulseConnectorRow {
+  provider: string;
+  calls: number;
+  errors: number;
+  /** Latest observed bucket's p95; a whole-window percentile cannot be summed. */
+  latestP95: number | null;
+  buckets: PulseConnectorBucket[];
+}
+
+/** Fill each provider onto Pulse's clock. A missing bucket has no latency observation. */
+export function pulseConnectorRows(
+  rows: ConnectorCallsBucket[],
+  window: { from: string; to: string },
+  bucketMinutes: number,
+): PulseConnectorRow[] {
+  const step = bucketMinutes * 60_000;
+  const from = Date.parse(window.from);
+  const to = Date.parse(window.to);
+  if (!(step > 0 && to > from)) return [];
+  const providers = new Map<string, Map<number, PulseConnectorBucket>>();
+  for (const row of rows) {
+    const at = Date.parse(row.start);
+    if (!row.provider || !Number.isFinite(at) || at + step <= from || at >= to) continue;
+    let bins = providers.get(row.provider);
+    if (!bins) { bins = new Map(); providers.set(row.provider, bins); }
+    const current = bins.get(at);
+    bins.set(at, current
+      ? { ...current, calls: current.calls + row.calls, errors: current.errors + row.errors, durationP95: null }
+      : { start: row.start, calls: row.calls, errors: row.errors, durationP95: row.durationP95 > 0 ? row.durationP95 : null });
+  }
+  const first = Math.floor(from / step) * step;
+  return [...providers.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([provider, bins]) => {
+    const buckets: PulseConnectorBucket[] = [];
+    for (let at = first; at < to; at += step) {
+      const observed = bins.get(at);
+      buckets.push(observed
+        ? { start: new Date(at).toISOString(), calls: observed.calls, errors: observed.errors, durationP95: observed.durationP95 }
+        : { start: new Date(at).toISOString(), calls: 0, errors: 0, durationP95: null });
+    }
+    const last = [...buckets].reverse().find((b) => b.durationP95 !== null);
+    return {
+      provider,
+      calls: buckets.reduce((n, b) => n + b.calls, 0),
+      errors: buckets.reduce((n, b) => n + b.errors, 0),
+      latestP95: last?.durationP95 ?? null,
+      buckets,
+    };
   });
 }
 

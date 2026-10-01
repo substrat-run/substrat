@@ -695,6 +695,27 @@ export interface TrafficBucket {
   yellow?: number;
 }
 
+/** One tenant connector's calls in one time bucket. Empty buckets are omitted by the plane. */
+export interface ConnectorCallsBucket {
+  provider: string;
+  start: string;
+  bucketMinutes: number;
+  calls: number;
+  errors: number;
+  ok: number;
+  class4xx: number;
+  class5xx: number;
+  timeouts: number;
+  failed: number;
+  durationP50: number;
+  durationP95: number;
+}
+
+export interface ConnectorCallsView {
+  available: boolean;
+  buckets: ConnectorCallsBucket[];
+}
+
 /** A deploy moment drawn on the chart (#1236) — a registry fact, not telemetry. */
 export interface ReleaseMarker {
   at: string;
@@ -1865,6 +1886,12 @@ export const api = {
     const qs = p.toString();
     return call<TeamTrafficSeries>(`/observability/traffic${qs ? `?${qs}` : ''}`);
   },
+  connectorCalls: (q: { hours?: number; since?: string; until?: string } = {}) =>
+    call<ConnectorCallsView>(`/observability/connector-calls?${new URLSearchParams({
+      ...(q.hours ? { hours: String(q.hours) } : {}),
+      ...(q.since ? { since: q.since } : {}),
+      ...(q.until ? { until: q.until } : {}),
+    })}`),
   /** `since`/`until` are the chart's time cursor — a window ending in the past, which
    *  `hours` cannot name. Sent instead of `hours`, never beside it. */
   appTenantLogs: (

@@ -1271,11 +1271,18 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    */
   async function queryConnectorCallsSeries(
     dataset: string,
-    input: { hours: number; provider?: string },
+    input: { hours: number; provider?: string; tenantId?: string; since?: string; until?: string },
   ): Promise<ConnectorCallsBucket[]> {
     const hours = Math.max(1, Math.floor(input.hours));
-    const bucketMinutes = hours <= 6 ? 15 : 60;
-    const where = [`timestamp > now() - INTERVAL '${hours}' HOUR`];
+    const window = input.since === undefined && input.until === undefined ? null : resolveObservabilityWindow(input);
+    const bucketMinutes = window ? observabilityBucketMinutes(window) : hours <= 6 ? 15 : 60;
+    const where = window
+      ? [
+          `timestamp >= toDateTime(${Math.ceil(Date.parse(window.since) / 1000)})`,
+          `timestamp < toDateTime(${Math.ceil(Date.parse(window.until) / 1000)})`,
+        ]
+      : [`timestamp > now() - INTERVAL '${hours}' HOUR`];
+    if (input.tenantId !== undefined) where.push(`index1 = ${aeLiteral(input.tenantId)}`);
     if (input.provider) where.push(`blob1 = ${aeLiteral(input.provider)}`);
     const timedWeight = `if(double1 >= 0, _sample_interval, 0)`;
     const sql = `

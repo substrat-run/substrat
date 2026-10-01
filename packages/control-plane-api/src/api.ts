@@ -1068,6 +1068,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   // Integrations (#605/#726): connections, their grants, the consent round's verify.
   { method: 'GET', re: /\/tenants\/[^/]+\/connection-grants$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections$/, pin: 'path' },
+  { method: 'GET', re: /\/tenants\/[^/]+\/connections\/calls$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/connections$/, pin: 'path' },
   { method: 'DELETE', re: /\/tenants\/[^/]+\/connections\/[^/]+$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/activity$/, pin: 'path' },
@@ -1972,6 +1973,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         provider: z.string().regex(/^[A-Za-z0-9_\-.]{1,64}$/).optional(),
       })
       .parse({ hours: c.req.query('hours'), provider: c.req.query('provider') || undefined });
+    const buckets = await options.observability.connectorCallsSeries(input);
+    return c.json({ hours: input.hours, buckets });
+  });
+
+  // The same dataset, with the tenant predicate enforced by the reader. The tenant
+  // credential can reach only this path, never the fleet-wide sibling above.
+  app.get('/tenants/:tenantId/connections/calls', async (c) => {
+    if (!options.observability?.connectorCallsSeries) {
+      return c.json({ error: 'connector-call analytics are not configured on this control plane' }, 501);
+    }
+    const input = z.object({
+      tenantId: tenantIdSchema,
+      hours: z.coerce.number().int().min(1).max(72).default(24),
+      provider: z.string().regex(/^[A-Za-z0-9_\-.]{1,64}$/).optional(),
+      since: z.string().datetime({ offset: true }).optional(),
+      until: z.string().datetime({ offset: true }).optional(),
+    }).parse({
+      tenantId: c.req.param('tenantId'),
+      hours: c.req.query('hours'),
+      provider: c.req.query('provider') || undefined,
+      since: c.req.query('since'),
+      until: c.req.query('until'),
+    });
+    try { resolveObservabilityWindow(input); } catch (e) { throw new ControlPlaneError(400, (e as Error).message); }
+    if (input.since !== undefined && !options.observability.absoluteTenantWindows) {
+      throw new ControlPlaneError(501, 'absolute tenant telemetry windows are not supported by this backend');
+    }
     const buckets = await options.observability.connectorCallsSeries(input);
     return c.json({ hours: input.hours, buckets });
   });
