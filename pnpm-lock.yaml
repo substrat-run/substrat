@@ -55,10 +55,10 @@ importers:
         specifier: ^4.19.0
         version: 4.23.15
       typescript:
-        specifier: 'catalog:'
+        specifier: ^7.0.0
         version: 7.0.2
       wrangler:
-        specifier: 'catalog:'
+        specifier: ^4.139.0
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
 
   apps/builder:

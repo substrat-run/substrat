@@ -46,7 +46,10 @@ packages:
 # One version of a shared library, in one place. `catalog:` is referenced by
 # every workspace package instead of a literal range, so bumping zod is a single
 # edit and a package that wants a DIFFERENT version has to say so in a way a
-# reviewer sees.
+# reviewer sees. The root package.json is the exception for TypeScript and
+# Wrangler: Dependabot corrupts the root lockfile importer when it updates a
+# root-level catalog dependency (#1621). Keep its literal ranges aligned with
+# the catalog entries below until the upstream fix is deployed.
 catalog:
   # The schema library whose objects cross package boundaries — see
   # docs/architecture/dependency-policy.md. A published package declares this as a
@@ -127,4 +130,3 @@ overrides:
 peerDependencyRules:
   allowedVersions:
     better-auth>better-sqlite3: '13'
-
