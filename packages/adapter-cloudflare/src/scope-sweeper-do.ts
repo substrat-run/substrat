@@ -3,6 +3,7 @@ import { scopeId as scopeIdSchema, tenantId as tenantIdSchema } from '@substrat-
 import type { ScopeId, TenantId, SweepRunsPayload } from '@substrat-run/contracts';
 import type {
   ExecutorDrainReport,
+  JobDriveReport,
   ScheduleRegistration,
   ScheduleRunReport,
   ScheduleSweepReport,
@@ -20,6 +21,7 @@ export const SCOPE_SWEEPER_NAME = 'scope-sweeper';
 
 /** Roster keys in the sweeper's own storage: `scope:<scopeId>` → tenantId. */
 const ROSTER_PREFIX = 'scope:';
+const JOB_START_PREFIX = 'job-start:';
 
 /**
  * What one scope-local pass did. `scopes` is the roster size at the start of the
@@ -33,8 +35,10 @@ export interface ScopeSweepReport {
   drainTotals: ExecutorDrainReport;
   /** The recurring-schedule outcomes summed across the roster (#383/#461). */
   schedules: ScheduleSweepReport;
+  /** Present when this deployment opted into driving resumable jobs. */
+  jobs?: Pick<JobDriveReport, 'attempted' | 'advanced' | 'completed' | 'retrying' | 'failed'>;
   /** Per-unit failures; the pass records and steps over each, never aborts. */
-  errors: { kind: 'drain' | 'schedule' | 'freshness'; id: string; error: string }[];
+  errors: { kind: 'drain' | 'schedule' | 'freshness' | 'job'; id: string; error: string }[];
 }
 
 /** One settled pass: the report, or the error that sank the whole pass. */
@@ -49,6 +53,7 @@ export type ScopeSweepOutcome = ScopeSweepReport | { error: string };
  */
 export interface ScopeSweepHost {
   drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport>;
+  runDueJobs(tenantId: TenantId, scopeId: ScopeId): Promise<JobDriveReport>;
   registeredSchedules(): ScheduleRegistration[];
   runDueSchedules(
     moduleId: ScheduleRegistration['moduleId'],
@@ -94,6 +99,12 @@ export interface ScopeSweeperDoConfig<Env> {
    * schedules only.
    */
   drainRetries?: boolean;
+  /** Drive one bounded pass of each due resumable job per scope. Default false. */
+  runJobs?: boolean;
+  /** Start or coalesce recurring jobs for a scope before driving due runs. */
+  startJobs?(host: ScopeSweepHost, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
+  /** Minimum time between successful startJobs calls per scope. */
+  jobStartIntervalMs?: number;
   /** Max scopes worked concurrently per pass. Default 8. */
   concurrency?: number;
   /** Observe each pass — logging or a health metric. Never throws into the loop. */
@@ -183,7 +194,8 @@ export function defineScopeSweeperDO<Env>(
     }
 
     async forgetScope(scopeId: ScopeId): Promise<{ scopes: number }> {
-      await this.ctx.storage.delete(`${ROSTER_PREFIX}${scopeIdSchema.parse(scopeId)}`);
+      const s = scopeIdSchema.parse(scopeId);
+      await this.ctx.storage.delete([`${ROSTER_PREFIX}${s}`, `${JOB_START_PREFIX}${s}`]);
       // The alarm is left as-is: an empty-roster pass simply does not re-arm.
       return { scopes: await this.#rosterSize() };
     }
@@ -251,6 +263,7 @@ export function defineScopeSweeperDO<Env>(
         scopes: roster.size,
         drainTotals: { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 },
         schedules: { scopes: 0, fired: 0, skipped: 0, failed: 0 },
+        ...(config.runJobs ? { jobs: { attempted: 0, advanced: 0, completed: 0, retrying: 0, failed: 0 } } : {}),
         errors: [],
       };
       const registrations = host.registeredSchedules().filter((r) => r.schedules.length > 0);
@@ -272,6 +285,35 @@ export function defineScopeSweeperDO<Env>(
               report.drainTotals.deadLettered += r.deadLettered;
             } catch (err) {
               report.errors.push({ kind: 'drain', id: scopeId, error: message(err) });
+            }
+          }
+          if (config.runJobs) {
+            if (config.startJobs) {
+              try {
+                const key = `${JOB_START_PREFIX}${scopeId}`;
+                const last = await this.ctx.storage.get<number>(key);
+                const now = Date.now();
+                if (last === undefined || now - last >= (config.jobStartIntervalMs ?? config.intervalMs)) {
+                  await config.startJobs(host, tenantId, scopeId);
+                  await this.ctx.storage.put(key, now);
+                }
+              } catch (err) {
+                report.errors.push({ kind: 'job', id: `${scopeId}:start`, error: message(err) });
+              }
+            }
+            try {
+              const r = await host.runDueJobs(tenantId, scopeId);
+              const totals = report.jobs!;
+              totals.attempted += r.attempted;
+              totals.advanced += r.advanced;
+              totals.completed += r.completed;
+              totals.retrying += r.retrying;
+              totals.failed += r.failed;
+              for (const error of r.errors) {
+                report.errors.push({ kind: 'job', id: `${scopeId}:${error.runId}`, error: error.error });
+              }
+            } catch (err) {
+              report.errors.push({ kind: 'job', id: scopeId, error: message(err) });
             }
           }
           let touched = false;

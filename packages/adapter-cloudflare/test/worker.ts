@@ -194,6 +194,9 @@ interface ScopeSweeperEnv {
  */
 export const ScopeSweeperDO = defineScopeSweeperDO<ScopeSweeperEnv>({
   intervalMs: 60_000,
+  runJobs: true,
+  startJobs: async () => {},
+  jobStartIntervalMs: 24 * 60 * 60 * 1000,
   // #1232: what production reads off the injected binding, the harness reads off
   // its wrangler var — the pass reports the version whose code actually ran.
   versionId: (env) => (env as unknown as { SUBSTRAT_VERSION_ID?: string }).SUBSTRAT_VERSION_ID ?? null,
@@ -203,6 +206,7 @@ export const ScopeSweeperDO = defineScopeSweeperDO<ScopeSweeperEnv>({
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     });
     host.registerModule(scheduleMod);
+    host.registerJob(scheduleMod.manifest.id, 'noop', () => ({ done: true }));
     // #1232: a second module expecting scheduleMod's event with a wider window —
     // the batch test asserting ONE freshness entry is the cross-module regression.
     host.registerModule(freshnessMod);

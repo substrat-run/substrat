@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { permMod } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
 import type { R2BlobStores } from '../src/r2.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -77,6 +78,7 @@ describe('attachment surface (cloudflare host)', () => {
       attachmentBuckets: () => bucket.bucket,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     });
+    host.registerModule(permMod);
     const t = tenantId.parse(ulid());
     const s = scopeId.parse(ulid());
     const editor = principalId.parse(ulid()); // perm:use + perm:read
@@ -148,6 +150,28 @@ describe('attachment surface (cloudflare host)', () => {
       }),
     ).rejects.toThrow();
     await expect(viewer.remove(rec.id)).rejects.toThrow();
+  });
+
+  it('opens bytes for a registered system module only after its read grant', async () => {
+    const { host, t, s, editor } = await world();
+    const rec = await (await host.attachments(editor, t, s)).upload({
+      entity: { entityType: 'item', entityId: 'i1' },
+      filename: 'note.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: bytes('system reads this'),
+    });
+    const moduleId = permMod.manifest.id;
+    const system = await host.getSystemAttachments(moduleId, t, s);
+    await expect(system.open(rec.id)).rejects.toThrow();
+    await host.admin.grantToSystem(staff, {
+      moduleId,
+      permission: PERM_READ,
+      node: { tenantId: t, scopeId: s },
+      grantedBy: staff,
+    });
+    expect(new TextDecoder().decode((await system.open(rec.id))!.body)).toBe('system reads this');
+    await expect(host.getSystemAttachments('@unknown/module' as typeof moduleId, t, s)).rejects.toThrow();
   });
 
   it('rolls the upload back on a refused write — no orphaned object survives', async () => {

@@ -1215,6 +1215,13 @@ interface ScopeStubRpc {
     /** #726 remedy B: admit by ownership of THIS delivery's entity, resolved here. */
     forEventId?: string,
   ): Promise<AttachmentRecord | null>;
+  /** Read-only attachment gate for a registered module's system principal. */
+  systemAttachmentAuthorize(
+    attachmentId: string,
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<AttachmentRecord | null>;
   attachmentRemove(
     attachmentId: string,
     principal: PrincipalId,
@@ -2935,6 +2942,25 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
+  }
+
+  async getSystemAttachments(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<Pick<ScopeAttachments, 'open'>> {
+    // Reuse the system invoke door's module, tenant and lifecycle gate. The DO
+    // authorizes each open against the attachment target's read permission as
+    // system:<moduleId>; the worker reads bytes only after that gate succeeds.
+    await this.getSystemScope(moduleId, tenantId, scopeId);
+    const store = await this.resolveAttachmentStore(tenantId);
+    const stub = this.scopeStub(scopeId);
+    return {
+      open: async (attachmentId) => {
+        const record = await stub.systemAttachmentAuthorize(attachmentId, moduleId, tenantId, scopeId);
+        return record ? this.openAttachmentBytes(store, scopeId, record) : null;
+      },
+    };
   }
 
   async getConnectorAttachments(

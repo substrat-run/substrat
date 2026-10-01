@@ -104,6 +104,27 @@ describe('attachment surface (pure adapter)', () => {
     expect(opened!.contentType).toBe('image/jpeg');
   });
 
+  it('opens bytes for a registered system module only after its read grant', async () => {
+    const { host, staff, t, s, editor } = await world();
+    const rec = await (await host.attachments(editor, t, s)).upload({
+      entity: { entityType: 'doc', entityId: 'd1' },
+      filename: 'note.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: bytes('system reads this'),
+    });
+    const moduleId = docMod.manifest.id;
+    const system = await host.getSystemAttachments(moduleId, t, s);
+    await expect(system.open(rec.id)).rejects.toThrow();
+    await host.admin.grantToSystem(staff, {
+      moduleId,
+      permission: DOC_READ,
+      node: { tenantId: t, scopeId: s },
+      grantedBy: staff,
+    });
+    expect(new TextDecoder().decode((await system.open(rec.id))!.body)).toBe('system reads this');
+  });
+
   it('gates reads and writes by the declared target permission', async () => {
     const { host, t, s, editor, reader, stranger } = await world();
     const rec = await (await host.attachments(editor, t, s)).upload({
