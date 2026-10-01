@@ -183,6 +183,24 @@ describe('effectiveRoleGrantQuery (#1659)', () => {
     expect((stale.prepare(q.sql).get(...q.params) as { effective: number }).effective).toBe(0);
   });
 
+  it('declared services cannot suppress lockout repair at scope or tenant level (#1896)', () => {
+    const db = fresh();
+    role(db, 'office-admin');
+    scopeTuple(db, 'office-admin');
+    tenantTuple(db, 'office-admin');
+    const humanHolder = (excluded: readonly string[]): boolean => {
+      const q = effectiveRoleGrantQuery(T, NOW, undefined, excluded);
+      return (db.prepare(q.sql).get(...q.params) as { effective: number }).effective === 1;
+    };
+    expect(humanHolder(['principal:p1', 'principal:p2'])).toBe(false);
+    expect(humanHolder(['principal:p1'])).toBe(true);
+    expect(humanHolder(['principal:p2'])).toBe(true);
+    expect(humanHolder([])).toBe(true);
+    expect(effective(db)).toBe(true); // service authority itself is unchanged
+    const q = effectiveRoleGrantQuery(T, NOW, 'principal:p1', ['principal:p1']);
+    expect((db.prepare(q.sql).get(...q.params) as { effective: number }).effective).toBe(0);
+  });
+
   it('a live tuple for a CURRENT role is effective', () => {
     const db = fresh();
     role(db, 'office-admin');

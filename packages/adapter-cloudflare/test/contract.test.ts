@@ -3560,6 +3560,35 @@ describe('#1659 — a reconcile keeps an operator’s revoke (CP-less)', () => {
     expect(await probe(owner, s)).toBe(true);
   });
 
+  it('declared services retain their roles while a human lockout is repaired (#1896)', async () => {
+    const s = scopeId.parse(ulid());
+    const service = principalId.parse(ulid());
+    const local = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      servicePrincipals: async (tenant, scope) => {
+        expect(tenant).toBe(t);
+        expect(scope).toBe(s);
+        return [service];
+      },
+    });
+    local.registerModule(scheduleMod);
+    const reconcile = () => local.provisionScopeLocal({ tenantId: t, scopeId: s, owner, roles: [OFFICE_ADMIN], ownerRoleKey: 'office-admin' });
+    await reconcile();
+    await local.assignScopeRole(s, service, 'office-admin');
+    await local.revokeScopeRole(s, owner, 'office-admin');
+    expect(await probe(owner, s)).toBe(false);
+    expect(await probe(service, s)).toBe(true);
+    await reconcile();
+    expect(await probe(owner, s)).toBe(true);
+    expect(await probe(service, s)).toBe(true);
+    const successor = principalId.parse(ulid());
+    await local.assignScopeRole(s, successor, 'office-admin');
+    await local.revokeScopeRole(s, owner, 'office-admin');
+    await reconcile();
+    expect(await probe(owner, s)).toBe(false);
+    expect(await probe(successor, s)).toBe(true);
+  });
+
   it('a revoked owner with NO other live holder is re-seated — the #332 lockout is still repaired', async () => {
     const s = ulid();
     await provision(s);

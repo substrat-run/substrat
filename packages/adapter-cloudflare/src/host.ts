@@ -1277,6 +1277,7 @@ interface ScopeStubRpc {
     connectionKeys?: { connection_id: string; provider: string; key_id: string; public_key: string }[],
     /** The recorded-off modules switched off after the seat, in the same unit (#1742). */
     switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+    serviceSubjects?: readonly string[],
   ): Promise<SwitchedOff[]>;
   /** Resolve an external identity from this scope's projected links (#406) — the CP-less auth read. */
   resolveProjectedIdentity(
@@ -1565,6 +1566,12 @@ export interface EventDrainDelegation {
 }
 
 export interface CloudflareScopeHostOptions {
+  /**
+   * Service accounts minted by this vertical, read before CP-less provisioning/reconcile
+   * (#1896). Their roles still authorize work but do not prevent human lockout repair.
+   * Keep this source complete; a failed read refuses provisioning before projection.
+   */
+  servicePrincipals?: (tenantId: TenantId, scopeId: ScopeId) => Promise<readonly PrincipalId[]>;
   scope: DurableObjectNamespace;
   /**
    * The shared directory DO. Optional: a **CP-less** vertical (docs/architecture/scope-
@@ -1903,7 +1910,10 @@ export class CloudflareScopeHost implements ScopeHost {
    * closed over a stub, the first request after each cold start succeeded, and every
    * request after that returned 1101 in production.
    */
+  private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
+
   constructor(options: CloudflareScopeHostOptions) {
+    this.servicePrincipals = options.servicePrincipals;
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
@@ -7933,6 +7943,7 @@ export class CloudflareScopeHost implements ScopeHost {
      *  ⇒ nothing is switched here, and the platform's re-assert after the call does it. */
     switchedOff?: readonly ModuleId[];
   }): Promise<{ switchedOff?: SwitchedOff[] }> {
+    const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
     const switchedOff = await stub.applyProjection(
@@ -8031,6 +8042,7 @@ export class CloudflareScopeHost implements ScopeHost {
       input.switchedOff
         ? { scopeId: input.scopeId, moduleIds: input.switchedOff, at: new Date().toISOString() }
         : undefined,
+      services?.map((id) => `principal:${id}`),
     );
     return input.switchedOff ? { switchedOff } : {};
   }

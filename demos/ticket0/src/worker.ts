@@ -255,7 +255,13 @@ function nodeFor(req: Request, env: Env): DeskNode {
  * binding to.
  */
 function hostFor(env: Env): CloudflareScopeHost {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    servicePrincipals: async (tenantId, scopeId) => {
+      const services = await servicesOf(env, { tenantId, scopeId });
+      return Object.values(services ?? {}).filter((id): id is PrincipalId => id !== undefined);
+    },
+  });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

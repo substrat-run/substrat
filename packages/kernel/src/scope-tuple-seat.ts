@@ -29,7 +29,7 @@ import { SYSTEM_SWITCH_OFF_PREDICATE } from './system-switch.js';
  * separate statements precisely so neither can inherit the other's rule.
  *
  * One exception lives beside this in the Cloudflare adapter, not in the statement: a
- * reconcile that would otherwise leave the scope with no EFFECTIVE role grant at all
+ * reconcile that would otherwise leave the scope with no EFFECTIVE human role grant
  * re-seats the owner-of-record anyway (`applyProjection`'s `lockout_reseat`), because a
  * scope nobody can act in is the #332 lockout `/internal/reconcile` exists to repair.
  * "Effective" is `effectiveRoleGrantQuery`, below.
@@ -81,29 +81,39 @@ export function seatScopeTuple(
  * `subject` narrows the same question to one holder (#1665): does THIS principal hold a role
  * the scope can expand? An owner hand-over asks it of the successor, so the scope is not
  * handed to a principal whose member role was taken back.
+ *
+ * `excludedSubjects` is the declared service-account set for a lockout repair (#1896).
+ * Those holders still authorize service work and count for the enforcement flip guard;
+ * they cannot stand in for a person who can sign in. No role-name or identity-link heuristic
+ * identifies them: the host obtains their IDs from the vertical that minted them.
  */
 export function effectiveRoleGrantQuery(
   tenantId: string,
   now: string,
   subject?: string,
+  excludedSubjects?: readonly string[],
 ): { sql: string; params: string[] } {
   const only = subject === undefined ? '' : ' AND subject = ?';
   const who = subject === undefined ? [] : [subject];
+  // Service principals still authorize work, but cannot prevent a human lockout repair.
+  const excluded = excludedSubjects === undefined ? [] : [JSON.stringify(excludedSubjects)];
+  const scopeExclude = excluded.length ? ' AND t.subject NOT IN (SELECT value FROM json_each(?))' : '';
+  const tenantExclude = excluded.length ? ' AND tt.subject NOT IN (SELECT value FROM json_each(?))' : '';
   return {
     sql: `SELECT (
         EXISTS (
           SELECT 1 FROM _substrat_tuples t
             JOIN _substrat_roles r
               ON r.tenant_id = ? AND r.revoked_at IS NULL AND t.relation = 'role:' || r.role_key
-           WHERE t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?)${only.replace('subject', 't.subject')}
+           WHERE t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > ?)${only.replace('subject', 't.subject')}${scopeExclude}
         )
         OR EXISTS (
           SELECT 1 FROM _substrat_tenant_tuples tt
             JOIN _substrat_roles r
               ON r.tenant_id = tt.tenant_id AND r.revoked_at IS NULL AND tt.relation = 'role:' || r.role_key
-           WHERE tt.tenant_id = ? AND tt.revoked_at IS NULL AND (tt.expires_at IS NULL OR tt.expires_at > ?)${only.replace('subject', 'tt.subject')}
+           WHERE tt.tenant_id = ? AND tt.revoked_at IS NULL AND (tt.expires_at IS NULL OR tt.expires_at > ?)${only.replace('subject', 'tt.subject')}${tenantExclude}
         )
       ) AS effective`,
-    params: [tenantId, now, ...who, tenantId, now, ...who],
+    params: [tenantId, now, ...who, ...excluded, tenantId, now, ...who, ...excluded],
   };
 }

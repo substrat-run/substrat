@@ -1837,7 +1837,8 @@ export function defineScopeDO(
     async seatTuples(
       tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
       switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
-    ): Promise<SwitchedOff[]> {
+      /** Declared service subjects excluded only from human lockout repair (#1896). */
+      ): Promise<SwitchedOff[]> {
       return this.queue.enqueue(() =>
         this.ctx.storage.transactionSync(() => {
           for (const t of tuples) {
@@ -5863,6 +5864,8 @@ export function defineScopeDO(
        *  seat, so no sweep can run the grants the seat just re-created. `scopeId` is the scope
        *  this projection provisions (the object of `scopeTuples`), never another. */
       switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+      /** Declared service subjects excluded only from human lockout repair (#1896). */
+      serviceSubjects?: readonly string[],
     ): Promise<SwitchedOff[]> {
       if (await this.isReaped()) return [];
       // A projection that arrives after this scope was reaped is dropped, not
@@ -5990,14 +5993,14 @@ export function defineScopeDO(
             this.sql.exec(seat.sql, ...seat.params);
           }
           // #1659's one exception: the owner-of-record's seat comes back over a revoke when
-          // NOTHING else would let anyone act here — roles projected, no effective role grant.
-          // That is the #332 lockout this path exists to repair, and it is decided by the same
-          // predicate as the flip guard below, so "locked out" means one thing in this unit.
+          // No HUMAN holder remains — declared service subjects cannot prevent lockout repair.
+          // That is the #332 lockout this path exists to repair. The flip guard below still
+          // counts service authority; only the repair excludes the declared service subjects.
           // With any other effective holder, the revoke stands: a hand-over that seats a
           // successor before unseating the owner is not undone by the next promote. A holder of
           // a role the vertical no longer defines is NOT one — it passes no check, so it must
           // not stand in for the holder this repair exists to restore.
-          if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) {
+          if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId, serviceSubjects)) {
             for (const st of scopeTuples ?? []) {
               if (!st.lockout_reseat) continue;
               this.sql.exec(
@@ -6063,8 +6066,8 @@ export function defineScopeDO(
      *  kernel's `effectiveRoleGrantQuery`, where it is tested against a real SQLite. A tuple
      *  for a role the vertical no longer defines counts for nothing, exactly as in the local
      *  checker, which expands a role only through its definition. */
-    private hasEffectiveRoleGrant(tenantId: string): boolean {
-      const q = effectiveRoleGrantQuery(tenantId, new Date().toISOString());
+    private hasEffectiveRoleGrant(tenantId: string, excludedSubjects?: readonly string[]): boolean {
+      const q = effectiveRoleGrantQuery(tenantId, new Date().toISOString(), undefined, excludedSubjects);
       const row = this.sql.exec(q.sql, ...q.params).toArray()[0] as { effective: number } | undefined;
       return row?.effective === 1;
     }
