@@ -138,6 +138,12 @@ export interface ConversationTag {
   created_at: string;
 }
 
+/** `ticket0_conversation_follows` — declared in spec/model.ts. */
+export interface ConversationFollow {
+  principal: string;
+  conversation_id: string;
+}
+
 /** `ticket0_saved_replies` — declared in spec/model.ts. */
 export interface SavedReply {
   id: string;
