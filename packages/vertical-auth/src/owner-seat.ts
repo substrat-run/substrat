@@ -48,6 +48,7 @@ export const OWNER_CLAIM_TTL_MS = 15 * 60_000;
  */
 export const OWNER_SEAT_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS identity (scope_id TEXT NOT NULL, sub TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY (scope_id, sub))`,
+  `CREATE INDEX IF NOT EXISTS identity_by_principal ON identity (scope_id, principal, sub)`,
   // The owner seat waiting to be claimed: set at provision, consumed by the claim. `claim_until`
   // bounds the plain first-sign-in path (ms epoch); NULL — a row from before the column existed —
   // reads as CLOSED, since a seat that sat unclaimed across an upgrade is exactly the case.
@@ -346,6 +347,19 @@ export function unbindSubject(sql: RegistrySql, scopeId: string, sub: string): b
   const had = [...sql.exec('SELECT 1 FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub)].length > 0;
   sql.exec('DELETE FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub);
   return had;
+}
+
+/** Remove every subject bound to one principal in this scope (#1939). The directory owns
+ * the whole lookup, so no caller's bounded scope scan can leave a second login live.
+ * Return the removed subjects so the caller can report each absent place to its issuer. */
+export function unbindPrincipal(sql: RegistrySql, scopeId: string, principal: string): string[] {
+  const subs = [...sql.exec(
+    'SELECT sub FROM identity WHERE scope_id = ? AND principal = ? ORDER BY sub',
+    scopeId,
+    principal,
+  )].map((r) => r.sub as string);
+  sql.exec('DELETE FROM identity WHERE scope_id = ? AND principal = ?', scopeId, principal);
+  return subs;
 }
 
 /**
