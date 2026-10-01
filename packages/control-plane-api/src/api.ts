@@ -4557,12 +4557,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // the new version's script before the pointer moves (#1710). The snapshot is taken
   // after a successful carry, before binding, in the script the data is leaving. A scope
   // on the serving script carries nothing, because its route does not follow the version pointer.
+  // A legacy preview pinned there is the exception: its binding must move the data to the
+  // version script and clear the pin, or the preview keeps serving production code (#1724).
   app.post('/tenants/:tenantId/scopes/:scopeId/version', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const { versionId, snapshot, acknowledge } = bindScopeVersionBody.parse(await c.req.json());
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    const repairPreviewPin = scope?.kind === 'preview' && Boolean(scope.servingRef);
     // #1756: the apps in this tenant the bind would break, asked BEFORE the carry and the
     // snapshot below, which move data. The host refuses too, whoever calls, but by then a
     // refusal would land after the bytes had moved. It refuses what the bind would refuse
@@ -4574,7 +4577,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // below refuses it as it always has.
     let carried: Awaited<ReturnType<typeof carryOntoVersion>> = null;
     const carry = async (): Promise<void> => {
-      if (scope) carried = await carryOntoVersion(c, scope, versionId);
+      if (scope) carried = await carryOntoVersion(c, scope, versionId, { dropServingRef: repairPreviewPin });
     };
     // #1674: after the bind, the scope may route to a different store (the carry's
     // destination); put the directory's recorded OFF positions back there. #1742: the carry
@@ -4586,8 +4589,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
     // The host's own refusal, should the impact have changed since it was read above (a
     // promote landing in between): relayed as the same 409, never as a 500.
-    const bind = (opts: Parameters<typeof c.var.admin.bindScopeVersion>[4]): Promise<void> =>
-      c.var.admin.bindScopeVersion(actor, tenantId, scopeId, versionId, opts).catch(relayHostRefusal);
+    const bind = async (opts: Parameters<typeof c.var.admin.bindScopeVersion>[4]): Promise<void> => {
+      await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, versionId, opts).catch(relayHostRefusal);
+      // Keep the old route until the bind succeeds. If clearing the pin fails, a retry
+      // carries again from the still-serving script before it changes the route.
+      if (repairPreviewPin) {
+        await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, null).catch(relayHostRefusal);
+      }
+    };
     if (snapshot) {
       if (!scope) {
         return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
