@@ -7,6 +7,7 @@ import {
   type AppMetricsView,
   type AppOverlays,
   type AppRow,
+  type ConnectorCallsView,
   type OverlayMarker,
   type ReleaseMarker,
   type TeamTrafficSeries,
@@ -27,10 +28,12 @@ import {
   errorBarsPath,
   metricLinePath,
   pulseAppRows,
+  pulseConnectorRows,
   pulseStamp,
   sparkPaths,
   xOf,
   type PulseAppRow,
+  type PulseConnectorRow,
 } from '../lib/pulse-rows';
 import { Page } from '../components/layout';
 import { OverlayChips } from '../components/OverlayChips';
@@ -47,8 +50,8 @@ import { AppSchedules } from './AppSchedules';
  * markers are per-app facts; the team series carries none, and drawing one app's across
  * every row would claim instants the others never had) and its Schedules and freshness.
  *
- * The design's Connectors and Business today sections are not drawn: nothing reads either
- * at the tenant grain yet (#1750), and a section of invented rows would be worse than none.
+ * Connector calls come from a separate tenant-scoped read, so a slow analytics source
+ * does not hold the app rows. Business volumes still await the time-bucketed facet read.
  */
 
 /** The ranges the plane answers — capped at 72h, so the design's 7 and 30 days are 3 days here. */
@@ -112,6 +115,8 @@ export function Pulse({
   const [chartError, setChartError] = useState(false);
   const [health, setHealth] = useState<AppHealthRow[] | null | undefined>(undefined);
   const [metrics, setMetrics] = useState<AppMetricsView | null | undefined>(undefined);
+  const [connectorCalls, setConnectorCalls] = useState<ConnectorCallsView | null>(null);
+  const [connectorError, setConnectorError] = useState(false);
   const prefs = useOverlayPrefs();
 
   useEffect(() => {
@@ -168,6 +173,26 @@ export function Pulse({
 
   useEffect(() => {
     let live = true;
+    setConnectorCalls(null);
+    setConnectorError(false);
+    if (DEV_MOCK) {
+      const sample = MOCK_TEAM_TRAFFIC.series[0]?.buckets ?? [];
+      setConnectorCalls({ available: true, buckets: sample.map((b) => ({
+        provider: 'mail', start: b.start, bucketMinutes: 60,
+        calls: Math.round(b.requests / 4), errors: b.errors, ok: Math.round(b.requests / 4) - b.errors,
+        class4xx: 0, class5xx: b.errors, timeouts: 0, failed: 0,
+        durationP50: 50, durationP95: b.durationP95 ?? 0,
+      })) });
+      return;
+    }
+    api.connectorCalls({ hours, ...requestWindow })
+      .then((v) => live && setConnectorCalls(v))
+      .catch(() => { if (live) { setConnectorError(true); setConnectorCalls({ available: false, buckets: [] }); } });
+    return () => { live = false; };
+  }, [hours, nonce, requestWindow?.since, requestWindow?.until]);
+
+  useEffect(() => {
+    let live = true;
     setHealth(undefined);
     setMetrics(undefined);
     if (DEV_MOCK) {
@@ -188,6 +213,11 @@ export function Pulse({
     const all = pulseAppRows({ apps, health: health ?? null, metrics: metrics ?? null, series, custom: cursor !== null });
     return scopeId ? all.filter((r) => r.scopeId === scopeId) : all;
   }, [apps, health, metrics, series, cursor, scopeId]);
+  const connectorBucketMinutes = connectorCalls?.buckets[0]?.bucketMinutes ?? (Date.parse(window.to) - Date.parse(window.from) <= 6 * 3_600_000 ? 15 : 60);
+  const connectorRows = useMemo(
+    () => pulseConnectorRows(connectorCalls?.available ? connectorCalls.buckets : [], window, connectorBucketMinutes),
+    [connectorCalls, window.from, window.to, connectorBucketMinutes],
+  );
   const shown = applyOverlayPrefs(prefs, markers, overlays);
   const pills = oneApp ? deployPills(shown.markers.filter((m) => m.kind === 'went-live'), window) : [];
   const pushes = oneApp ? shown.markers.filter((m) => m.kind === 'pushed') : [];
@@ -335,6 +365,12 @@ export function Pulse({
               : 'Traffic over time is not available on this plane — no sparkline is drawn rather than one that would read as silence.'}
           </Note>
         )}
+        <SectionHead cells={[oneApp ? 'Connectors · team' : 'Connectors', 'Calls', 'Failed', 'Latest p95', 'Calls · failed · p95', '']} />
+        {connectorCalls === null ? <Note>Reading connector calls…</Note> : connectorCalls.available ? (
+          connectorRows.length ? connectorRows.map((row) => (
+            <ConnectorLine key={row.provider} row={row} bucketMinutes={connectorBucketMinutes} window={window} handle={handle} />
+          )) : <Note>No connector calls in this window.</Note>
+        ) : <Note>{connectorError ? 'Connector calls are unavailable right now.' : 'Connector call analytics are not available on this plane.'}</Note>}
         {scopeId && (
           <AppSchedules
             key={`${scopeId}:${nonce}`}
@@ -487,6 +523,39 @@ function AppLine({
         {loading ? <span style={{ color: 'var(--text-placeholder)' }}>…</span> : <Badge status={v.status}>{v.label}</Badge>}
       </span>
     </a>
+  );
+}
+
+/** One provider on the same clock as every app. Counts and p95 keep separate scales. */
+function ConnectorLine({ row, bucketMinutes, window, handle }: {
+  row: PulseConnectorRow;
+  bucketMinutes: number;
+  window: { from: string; to: string };
+  handle: Handle;
+}) {
+  const spans = bucketSpans(row.buckets, bucketMinutes, window);
+  const calls = row.buckets.map((b) => b.calls);
+  const top = Math.max(1, ...calls) * 1.1;
+  const latency = row.buckets.map((b) => b.durationP95);
+  const latencyTop = Math.max(1, ...latency.filter((v): v is number => v !== null)) * 1.1;
+  const paths = sparkPaths(calls, spans, top);
+  const bars = errorBarsPath(row.buckets.map((b) => b.errors), spans, top);
+  const p95 = metricLinePath(latency, spans, latencyTop);
+  return (
+    <div role="row" style={{ display: 'grid', gridTemplateColumns: PULSE_GRID, alignItems: 'center', padding: '0 16px', height: 48, borderTop: '1px solid var(--border-subtle)' }}>
+      <span role="cell" style={{ fontSize: 13.5, fontWeight: 500 }}>{row.provider}</span>
+      <span role="cell" style={num}>{compact(row.calls)}</span>
+      <span role="cell" style={{ ...num, color: row.errors ? 'var(--status-danger-fg)' : 'var(--text-primary)' }}>{compact(row.errors)}</span>
+      <span role="cell" style={{ ...num, color: 'var(--text-secondary)' }} title="Latest bucket with a latency observation">{row.latestP95 === null ? '—' : duration(row.latestP95)}</span>
+      <span role="cell" data-pulse-axis {...handle} style={{ position: 'relative', display: 'block', height: 32, touchAction: 'none' }}>
+        <svg viewBox="0 0 480 32" preserveAspectRatio="none" aria-hidden style={{ position: 'absolute', inset: 0, width: '100%', height: 32, display: 'block' }}>
+          {paths && <path d={paths.line} fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+          {bars && <path d={bars} fill="var(--status-danger-fg)" stroke="none" />}
+          {p95 && <path d={p95} fill="none" stroke="var(--status-info-fg)" strokeWidth={1.5} strokeDasharray="3 2" vectorEffect="non-scaling-stroke"><title>Connector p95 per bucket, scaled separately from calls</title></path>}
+        </svg>
+      </span>
+      <span role="cell" style={{ textAlign: 'right', fontSize: 12 }}><a href={teamPath('/integrations')} style={{ color: 'var(--text-link)' }}>Integrations →</a></span>
+    </div>
   );
 }
 
