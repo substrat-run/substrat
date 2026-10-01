@@ -4,7 +4,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
 import * as schema from './auth-schema.js';
 import type { AuthProvider, AuthSubject } from './provider.js';
-import { cookieDomainDecision, expireBetterAuthDomainCookies } from './cookie-domain.js';
+import { cookieDomainDecision, expireBetterAuthDomainCookies, forwardIdentityCookieConfig } from './cookie-domain.js';
 import { parsePlatformBaseDomains } from '@substrat-run/contracts';
 import {
   SITE_REGISTRY_DDL,
@@ -515,15 +515,7 @@ export function doAuthProvider(
   origin: string,
   opts?: { cookieDomain?: string; platformBaseDomains?: readonly string[] },
 ): AuthProvider {
-  const forward = (request: Request): Request => {
-    if (!opts?.cookieDomain) return request;
-    const relayed = new Request(request);
-    relayed.headers.set('x-substrat-cookie-domain', opts.cookieDomain);
-    if (opts.platformBaseDomains?.length) {
-      relayed.headers.set('x-substrat-platform-base-domains', opts.platformBaseDomains.join(','));
-    }
-    return relayed;
-  };
+  const forward = (request: Request): Request => forwardIdentityCookieConfig(request, opts);
   return {
     handle: (request) => stub.fetch(forward(request)),
     async resolve(headers) {

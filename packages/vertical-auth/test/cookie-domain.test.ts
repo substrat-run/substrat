@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cookieDomainDecision, expireBetterAuthDomainCookies, resolveCookieDomain } from '../src/cookie-domain.js';
+import { cookieDomainDecision, expireBetterAuthDomainCookies, forwardIdentityCookieConfig, resolveCookieDomain } from '../src/cookie-domain.js';
 
 /**
  * The validation that stands between a delivered `cookieDomain` and a Set-Cookie header.
@@ -80,4 +80,22 @@ it('expires legacy Better Auth domain cookies while preserving the response', as
   for (const name of ['session_token', 'session_data', 'account_data', 'dont_remember']) {
     expect(cookies).toContain(`__Secure-better-auth.${name}=; Path=/; Domain=global.example.net; Max-Age=0; HttpOnly; SameSite=Lax; Secure`);
   }
+});
+
+it('does not forward caller-supplied internal cookie settings to the identity DO', () => {
+  const request = new Request('https://desk.global.example.net/api/auth/session', {
+    headers: {
+      'x-substrat-cookie-domain': 'global.example.net',
+      'x-substrat-platform-base-domains': 'example.net',
+    },
+  });
+  const withoutConfig = forwardIdentityCookieConfig(request);
+  expect(withoutConfig.headers.get('x-substrat-cookie-domain')).toBeNull();
+  expect(withoutConfig.headers.get('x-substrat-platform-base-domains')).toBeNull();
+
+  const configured = forwardIdentityCookieConfig(request, {
+    cookieDomain: 'global.substrat.run', platformBaseDomains: ['substrat.run'],
+  });
+  expect(configured.headers.get('x-substrat-cookie-domain')).toBe('global.substrat.run');
+  expect(configured.headers.get('x-substrat-platform-base-domains')).toBe('substrat.run');
 });

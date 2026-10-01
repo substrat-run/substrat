@@ -60,6 +60,23 @@ export function resolveCookieDomain(
   return cookieDomainDecision(configured, host, platformBaseDomains).domain;
 }
 
+/** Replace caller-supplied internal headers with the worker's delivered cookie settings. */
+export function forwardIdentityCookieConfig(
+  request: Request,
+  opts?: { cookieDomain?: string; platformBaseDomains?: readonly string[] },
+): Request {
+  const relayed = new Request(request);
+  relayed.headers.delete('x-substrat-cookie-domain');
+  relayed.headers.delete('x-substrat-platform-base-domains');
+  if (opts?.cookieDomain) {
+    relayed.headers.set('x-substrat-cookie-domain', opts.cookieDomain);
+    if (opts.platformBaseDomains?.length) {
+      relayed.headers.set('x-substrat-platform-base-domains', opts.platformBaseDomains.join(','));
+    }
+  }
+  return relayed;
+}
+
 /** Clear the domain-scoped Better Auth cookies issued before a platform zone was refused. */
 export function expireBetterAuthDomainCookies(response: Response, origin: string, domain: string | null): Response {
   if (!domain) return response;
