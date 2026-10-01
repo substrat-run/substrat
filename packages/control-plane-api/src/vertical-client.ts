@@ -1135,10 +1135,25 @@ export class VerticalClient {
    */
   async appliedMigrations(
     scopeId: ScopeId,
-  ): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]> {
-    return this.getInternal<{ moduleId: string; version: string; appliedAt: string | null }[]>(
+  ): Promise<{
+    moduleId: string;
+    version: string;
+    appliedAt: string | null;
+    durationMs: number | null;
+    rowsChanged: number | null;
+  }[]> {
+    const rows = await this.getInternal<{
+      moduleId: string;
+      version: string;
+      appliedAt: string | null;
+      durationMs?: number | null;
+      rowsChanged?: number | null;
+    }[]>(
       `/internal/migrations?scopeId=${encodeURIComponent(scopeId)}`,
     );
+    // A deployed vertical may predate the metrics fields. Its older endpoint is
+    // still readable, and absence means unrecorded rather than zero.
+    return rows.map((row) => ({ ...row, durationMs: row.durationMs ?? null, rowsChanged: row.rowsChanged ?? null }));
   }
 
   /**

@@ -502,6 +502,8 @@ const KERNEL_DDL = `
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
     applied_at TEXT NOT NULL,
+    duration_ms INTEGER,
+    rows_changed INTEGER,
     PRIMARY KEY (module_id, version)
   );
   -- #286: the PITR bookmark taken immediately BEFORE a migration pass runs on a
@@ -1216,10 +1218,16 @@ export function defineScopeDO(
      * readers want `(module_id, version)` only — so "when did this scope's
      * schema change" had no answer. A pre-column row reads null, a fact.
      */
-    appliedMigrations(limit = 100): { moduleId: string; version: string; appliedAt: string | null }[] {
+    appliedMigrations(limit = 100): {
+      moduleId: string;
+      version: string;
+      appliedAt: string | null;
+      durationMs: number | null;
+      rowsChanged: number | null;
+    }[] {
       return this.sql
         .exec(
-          `SELECT module_id, version, applied_at FROM _substrat_migrations
+          `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
             ORDER BY applied_at DESC, module_id, version LIMIT ?`,
           limit,
         )
@@ -1228,6 +1236,8 @@ export function defineScopeDO(
           moduleId: r.module_id as string,
           version: r.version as string,
           appliedAt: (r.applied_at as string | null) ?? null,
+          durationMs: (r.duration_ms as number | null) ?? null,
+          rowsChanged: (r.rows_changed as number | null) ?? null,
         }));
     }
 
@@ -4082,17 +4092,22 @@ export function defineScopeDO(
                 )
                 .toArray()[0];
               if (!already) {
+                const started = performance.now();
+                const before = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
                 // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
                 // spine guard's REFERENCES rule is applied here.
                 assertNoSpineReference(migration.sql, `migration ${key}`);
                 for (const stmt of splitSqlStatements(migration.sql)) {
                   this.sql.exec(stmt);
                 }
+                const after = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
                 this.sql.exec(
-                  'INSERT INTO _substrat_migrations (module_id, version, applied_at) VALUES (?, ?, ?)',
+                  'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)',
                   moduleId,
                   migration.version,
                   new Date().toISOString(),
+                  Math.max(0, Math.round(performance.now() - started)),
+                  after - before,
                 );
               }
             });
@@ -4633,6 +4648,9 @@ export function defineScopeDO(
       // have added it bare already, and then this ALTER is skipped as a duplicate (#1883).
       // `lint:spine-ddl` refuses one that is not.
       for (const alter of [
+        // #1763: rows written before these fields keep NULL, meaning unrecorded.
+        'ALTER TABLE _substrat_migrations ADD COLUMN duration_ms INTEGER',
+        'ALTER TABLE _substrat_migrations ADD COLUMN rows_changed INTEGER',
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // Executor retry state (#100). The defaults read as "terminal", which is
         // right for every row already there: each is a completed delivery or a

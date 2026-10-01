@@ -392,7 +392,7 @@ export function liveCell(r: LedgerRow, source: Ledger['source']): { text: string
   return { text: 'not live', color: 'var(--text-tertiary)' };
 }
 
-const SCHEMA_COLS = 'minmax(0, 1fr) 40px 60px 128px';
+const SCHEMA_COLS = 'minmax(0, 1fr) 60px 70px 128px';
 
 /**
  * The app's schema history (#1236): when each migration actually ran, from
@@ -404,8 +404,7 @@ const SCHEMA_COLS = 'minmax(0, 1fr) 40px 60px 128px';
  * many scopes, so a per-scope line on a fleet-wide axis would draw a claim the
  * telemetry cannot support. A null instant is a fact — the row predates the
  * platform recording one — and reads as "before we recorded", never as unknown
- * noise. Rows touched and duration have columns because the design asks what a
- * migration cost; nothing records either yet (#1763), so both read "—".
+ * noise. Older migrations have no cost stamp, so those cells read "—".
  */
 export function SchemaHistoryCard({ app }: { app: AppRow }) {
   // Availability comes from the SERVER, never inferred from emptiness here: a
@@ -467,14 +466,14 @@ export function SchemaHistoryCard({ app }: { app: AppRow }) {
                 <span style={{ ...mono, fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.version}>{m.version}</span>
                 <span style={{ ...mono, fontSize: 11.5, color: 'var(--text-tertiary)' }}>{m.moduleId}</span>
               </span>
-              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>—</span>
-              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>—</span>
+              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.rowsChanged == null ? '—' : m.rowsChanged.toLocaleString()}</span>
+              <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.durationMs == null ? '—' : `${m.durationMs} ms`}</span>
               <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
                 {m.appliedAt ? instant(m.appliedAt) : 'before we recorded'}
               </span>
             </div>
           ))}
-          <div style={note}>Rows touched and duration are not recorded yet, so both read &ldquo;—&rdquo;.</div>
+          <div style={note}>A dash means the migration ran before cost recording was available.</div>
         </>
       )}
     </div>

@@ -1235,6 +1235,9 @@ export const testMod: ModuleRegistration = {
           id   TEXT PRIMARY KEY,
           body TEXT NOT NULL DEFAULT 'n/a; see item'  -- string default holds a semicolon
         );
+        -- Exercise migration row accounting without leaving fixture data behind.
+        INSERT INTO testmod_notes (id) VALUES ('migration-probe');
+        DELETE FROM testmod_notes WHERE id = 'migration-probe';
       `,
     },
   ],

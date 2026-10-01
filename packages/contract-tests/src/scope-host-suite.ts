@@ -1750,6 +1750,10 @@ export function scopeHostContractSuite(
       const init = mine.find((m) => m.version === '0001-init')!;
       expect(init.appliedAt).not.toBeNull();
       expect(Number.isNaN(Date.parse(init.appliedAt!))).toBe(false);
+      expect(init.durationMs).toEqual(expect.any(Number));
+      expect(init.durationMs).toBeGreaterThanOrEqual(0);
+      // The fixture inserts and deletes one row. DDL and the journal stamp do not count.
+      expect(init.rowsChanged).toBe(2);
       // Newest first: a caller renders a history without re-sorting it.
       const stamped = applied.filter((m) => m.appliedAt !== null).map((m) => m.appliedAt!);
       expect([...stamped].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))).toEqual(stamped);
