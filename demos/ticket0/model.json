@@ -582,6 +582,29 @@
         "contact"
       ]
     },
+    "conversationFollow": {
+      "table": "ticket0_conversation_follows",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "conversation_id"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "principal",
+        "conversation_id"
+      ]
+    },
     "conversationTag": {
       "table": "ticket0_conversation_tags",
       "fields": {

@@ -717,6 +717,17 @@ export const ticket0Entities = defineEntities({
     primaryKey: ['conversation_id', 'tag'],
   },
 
+  /** Every entity-narrowed conversation read this desk granted to a follower (#1941).
+   * Keyed by principal first so off-boarding can enumerate and revoke all their follows. */
+  conversationFollow: {
+    table: 'ticket0_conversation_follows',
+    fields: z.object({
+      principal: z.string(),
+      conversation_id: z.string(),
+    }),
+    primaryKey: ['principal', 'conversation_id'],
+  },
+
   /** A canned answer. Every desk grows these; better to ship the table than to watch
    *  them accumulate as browser bookmarks. */
   savedReply: {
