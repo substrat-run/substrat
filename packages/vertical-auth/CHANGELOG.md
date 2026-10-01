@@ -1,5 +1,14 @@
 # @substrat-run/vertical-auth
 
+## 0.18.1
+
+### Patch Changes
+
+- 00050ce: Keep session cookies host-only on every configured platform base domain, even when a delivered cookie domain requests a parent shared by other tenants. Expire old domain cookies and invalidate sessions issued under the old policy.
+- Updated dependencies [a2f02b1]
+  - @substrat-run/kernel@0.132.1
+  - @substrat-run/contracts@0.132.1
+
 ## 0.18.0
 
 ### Minor Changes

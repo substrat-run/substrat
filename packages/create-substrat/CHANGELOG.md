@@ -1,5 +1,13 @@
 # create-substrat
 
+## 0.10.9
+
+### Patch Changes
+
+- A new project now installs the package versions released alongside this one:
+  - `@substrat-run/kernel` and the runtime packages versioned with it: `^0.132.1`
+  - `@substrat-run/boundary-lint`: `^0.6.1`
+
 ## 0.10.8
 
 ### Patch Changes
