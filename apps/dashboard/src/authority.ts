@@ -1780,7 +1780,7 @@ export class TenantNarrowedControlPlane {
    */
   async appliedMigrations(
     scopeId: ScopeId,
-  ): Promise<Array<{ moduleId: string; version: string; appliedAt: string | null }> | null> {
+  ): Promise<Array<{ moduleId: string; version: string; appliedAt: string | null; durationMs: number | null; rowsChanged: number | null }> | null> {
     try {
       return (await this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/migrations`)) ?? null;
     } catch {

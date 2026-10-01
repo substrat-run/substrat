@@ -33,6 +33,28 @@ it('deleteScope sends the tenant with the scope to the vertical (#1802)', async 
   expect(body).toEqual({ tenantId: t, scopeId: s });
 });
 
+it('normalizes pre-metrics migration replies without discarding recorded values', async () => {
+  const urls: string[] = [];
+  const replies = [
+    [{ moduleId: 'acme', version: '0001', appliedAt: '2026-01-01T00:00:00.000Z' }],
+    [{ moduleId: 'acme', version: '0002', appliedAt: '2026-02-01T00:00:00.000Z', durationMs: 42, rowsChanged: 7 }],
+  ];
+  const client = new VerticalClient({
+    fetch: (async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify(replies.shift()), { status: 200 });
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  expect(await client.appliedMigrations(s)).toEqual([
+    { moduleId: 'acme', version: '0001', appliedAt: '2026-01-01T00:00:00.000Z', durationMs: null, rowsChanged: null },
+  ]);
+  expect(await client.appliedMigrations(s)).toEqual([
+    { moduleId: 'acme', version: '0002', appliedAt: '2026-02-01T00:00:00.000Z', durationMs: 42, rowsChanged: 7 },
+  ]);
+  expect(urls.every((url) => url.includes(`/internal/migrations?scopeId=${s}`))).toBe(true);
+});
+
 describe('VerticalClient — transport rejections become diagnosable 502s (#391)', () => {
   it('configureInstance: a thrown fetch is a 502 naming the verb and the cause', async () => {
     const err = await rejecting('Worker threw exception')

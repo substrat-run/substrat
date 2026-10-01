@@ -411,6 +411,8 @@ export interface AppliedMigration {
   version: string;
   /** Null for a row written before the platform recorded the instant. */
   appliedAt: string | null;
+  durationMs: number | null;
+  rowsChanged: number | null;
 }
 
 /**

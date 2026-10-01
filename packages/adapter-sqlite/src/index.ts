@@ -868,6 +868,8 @@ const KERNEL_DDL = `
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
     applied_at TEXT NOT NULL,
+    duration_ms INTEGER,
+    rows_changed INTEGER,
     PRIMARY KEY (module_id, version)
   );
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
@@ -8070,15 +8072,23 @@ export class SqliteScopeHost implements ScopeHost {
         const db = this.scopeReadDbFor(tenantId, scopeId);
         const rows = db
           .prepare(
-            `SELECT module_id, version, applied_at FROM _substrat_migrations
+            `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
               ORDER BY applied_at DESC, module_id, version LIMIT 100`,
           )
-          .all() as Array<{ module_id: string; version: string; applied_at: string | null }>;
+          .all() as Array<{
+          module_id: string;
+          version: string;
+          applied_at: string | null;
+          duration_ms: number | null;
+          rows_changed: number | null;
+        }>;
         this.recordAccess(actor, 'scopeAppliedMigrations', { tenantId, scopeId }, null, rows.length);
         return rows.map((r) => ({
           moduleId: r.module_id,
           version: r.version,
           appliedAt: r.applied_at ?? null,
+          durationMs: r.duration_ms,
+          rowsChanged: r.rows_changed,
         }));
       },
       scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {
@@ -10976,16 +10986,25 @@ export class SqliteScopeHost implements ScopeHost {
               .prepare('SELECT 1 FROM _substrat_migrations WHERE module_id = ? AND version = ?')
               .get(moduleId, migration.version);
             if (!already) {
+              const started = performance.now();
+              const before = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
               // #1898: a migration runs on the scope's own handle, not `ctx.sql`, so the
               // spine guard's REFERENCES rule is applied here.
               assertNoSpineReference(migration.sql, `migration ${key}`);
               rt.db.exec(migration.sql);
               assertTablesWithinColumnLimit(rt.db);
+              const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
               rt.db
                 .prepare(
-                  'INSERT INTO _substrat_migrations (module_id, version, applied_at) VALUES (?, ?, ?)',
+                  'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)',
                 )
-                .run(moduleId, migration.version, this.clock());
+                .run(
+                  moduleId,
+                  migration.version,
+                  this.clock(),
+                  Math.max(0, Math.round(performance.now() - started)),
+                  after - before,
+                );
             }
             rt.db.exec('COMMIT');
           } catch (err) {
@@ -11179,6 +11198,9 @@ export class SqliteScopeHost implements ScopeHost {
     // Every column here is nullable with no DEFAULT (`attempts` is grandfathered): a restore may
     // have added it bare already, and then `ensureColumn` finds it and adds nothing (#1883).
     // `lint:spine-ddl` refuses one that is not.
+    // #1763: old journal rows keep NULL, meaning their cost was never recorded.
+    this.ensureColumn(db, '_substrat_migrations', 'duration_ms', 'duration_ms INTEGER');
+    this.ensureColumn(db, '_substrat_migrations', 'rows_changed', 'rows_changed INTEGER');
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
