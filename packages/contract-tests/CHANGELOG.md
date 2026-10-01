@@ -1,5 +1,36 @@
 # @substrat-run/contract-tests
 
+## 0.131.0
+
+### Minor Changes
+
+- 012b2c8: The admin log now records who a service acted for, and the dashboard's tenant credential reaches only the routes the dashboard uses.
+
+  - An admin-log entry carries `onBehalfOf`: the principal and tenant of the person the actor acted for, plus the impersonation stamp when a staff member was acting as them. `actor` is unchanged and still names the credential that executed. A row written with nobody behind it has `onBehalfOf: null`, which is also how every earlier row reads.
+  - `ScopeHost.attributed(onBehalfOf)` returns a view of the host whose admin rows carry that person. This covers the `admin` surface and host-level writes such as `provisionScope`. Each view is independent, so concurrent requests never see each other's person. Both adapters implement it, and the contract suite holds them to it.
+  - A tenant token can name the person it was minted for. `POST /tenant-tokens` accepts an optional `principal` and `impersonation`, and the control plane writes every admin row for that token through an attributed view. The person is attribution, not authority: what the token may reach is decided by its tenant alone.
+  - The tenant credential's allowlist names each route under `/tenants/<own>/…` instead of one catch-all per method. It no longer reaches the tenant's own status, entitlement revocation, redrain, adopt-serving, unsuspend or unarchive.
+  - A tenant credential may grant its own tenant only an entitlement that a vertical it can see declares, or that vertical's bare slug. It cannot set plan fields.
+  - `rebind-vertical` answers 404 when a confined caller names a target vertical it cannot read.
+
+- 56091f8: The member invite routes now apply the role-assignment bound (#1931). An admin can create an invite only at a role whose permissions they already hold at the scope, and revoke one only on the same terms, judged by the role the stored invite confers. A refusal is a 403 naming the missing permissions, and nothing is granted, recorded or removed. The admin gate still runs first, before the body is read, so a caller it refuses gets the same answer as before whatever they sent.
+
+  This needs three changes from a vertical that mounts `mountInviteRoutes`. Its `requireAdmin` returns the `{ principal }` it admitted. It passes `canAssign` for revoke and `assignScopeRoleBounded` for create, both wired to the host with the request's tenant and scope. A mount missing either dep, or with a gate that names no caller, refuses both routes instead of running them unbounded.
+
+  The host read, `host.canAssign(tenantId, scopeId, principal, roleKey)`, gives the answer `ctx.canAssign` gives that principal inside an operation, from the same projected role and the same comparison, so an entity-narrowed grant does not satisfy it. The new `host.assignScopeRoleBounded(tenantId, scopeId, caller, assignee, roleKey)` checks that bound and writes the scope grant in one serialized scope task. A refusal returns the missing permissions and writes no role tuple. Both adapters implement these methods, and the permission contract suite checks their answers and grant effects. The identity directory gains `getInvite`, which reads one open invite by its principal.
+
+  An invite whose role the tenant no longer defines can still be revoked. That role confers nothing, and the route lets through exactly the host's "no such role" refusal for that role; any other error still refuses. The kernel exports that refusal as `unknownRoleError` / `isUnknownRoleError`. On a host without a control plane, `host.canAssign` checks the scope was provisioned for the tenant it is asked under, and refuses as an unknown scope otherwise.
+
+  `ScopeHost.canAssign` and `ScopeHost.assignScopeRoleBounded` are new required members of the `ScopeHost` interface, so a host implemented outside these two adapters must add them.
+
+### Patch Changes
+
+- Updated dependencies [012b2c8]
+- Updated dependencies [56091f8]
+- Updated dependencies [e5c21fc]
+  - @substrat-run/contracts@0.131.0
+  - @substrat-run/kernel@0.131.0
+
 ## 0.130.1
 
 ### Patch Changes
@@ -5013,7 +5044,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
