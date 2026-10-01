@@ -71,6 +71,21 @@ describe('cf observability connectorCallsSeries (#1691)', () => {
     expect(sql).toContain(`INTERVAL '60' MINUTE`);
   });
 
+  it('pins a tenant and historic window in the query, while the fleet read stays unpinned', async () => {
+    const asked = stubSql([]);
+    const reader = createCfObservabilityReader({ accountId: 'a', apiToken: 't', connectorCallsDataset: 'cc_ds' });
+    await reader.connectorCallsSeries!({
+      tenantId: '01TENANT', hours: 1,
+      since: '2026-09-22T10:00:00Z', until: '2026-09-22T10:45:00Z',
+    });
+    expect(asked[0]).toContain("index1 = '01TENANT'");
+    expect(asked[0]).toContain(`timestamp >= toDateTime(${Date.parse('2026-09-22T10:00:00Z') / 1000})`);
+    expect(asked[0]).toContain(`timestamp < toDateTime(${Date.parse('2026-09-22T10:45:00Z') / 1000})`);
+    await reader.connectorCallsSeries!({ hours: 168 });
+    expect(asked[1]).not.toContain('index1 =');
+    expect(asked[1]).toContain("INTERVAL '168' HOUR");
+  });
+
   it('a malformed dataset name is refused naming the value, not "the router" (CodeRabbit on #1708)', async () => {
     const asked = stubSql([]);
     const reader = createCfObservabilityReader({ accountId: 'a', apiToken: 't', connectorCallsDataset: 'bad-name!' });
@@ -196,6 +211,17 @@ describe('GET /connections/calls (#1691) — staff only', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ hours: 168, buckets: [bucket] });
     expect(asked.at(-1)).toEqual({ hours: 168, provider: 'scrive' });
+  });
+
+  it('the tenant route forces its path tenant; a tenant token cannot name another', async () => {
+    const own = await app.request(`/tenants/${acme}/connections/calls?hours=6`, { headers: asTenant });
+    expect(own.status).toBe(200);
+    expect((await own.json()) as unknown).toEqual({ hours: 6, buckets: [bucket] });
+    expect(asked.at(-1)).toEqual({ tenantId: acme, hours: 6, provider: undefined, since: undefined, until: undefined });
+    const other = tenantId.parse(ulid());
+    expect((await app.request(`/tenants/${other}/connections/calls`, { headers: asTenant })).status).toBe(403);
+    expect((await app.request(`/tenants/${acme}/connections/calls?tenantId=${other}`, { headers: asTenant })).status).toBe(403);
+    expect((await app.request(`/tenants/${acme}/connections/calls`, { headers: asBuilder })).status).toBe(403);
   });
 
   it('a tenant token is refused — with or without naming its own tenant', async () => {

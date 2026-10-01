@@ -462,15 +462,15 @@ export interface ObservabilityReader {
   tenantMetricsSeries?(input: { tenantId: string; scopeIds: string[]; hours: number; since?: string; until?: string }): Promise<TenantMetricsBucket[]>;
 
   /**
-   * Connector calls per provider, bucketed over time (#1691) — a STAFF read, fleet-wide
-   * by design: it is the operator's "is this provider getting worse" question, and the
-   * route that exposes it refuses every tenant and builder credential.
+   * Connector calls per provider, bucketed over time (#1691). The staff route omits
+   * `tenantId` for a fleet read; the tenant route always supplies its path tenant, which
+   * the reader applies to the dataset index before grouping.
    *
    * Optional for the reason the tenant grain is: the backend has to have been told which
    * dataset the control plane writes, and absent must 501, never answer an empty series
    * a chart draws as "no calls". `provider` narrows; absent means every provider.
    */
-  connectorCallsSeries?(input: { hours: number; provider?: string }): Promise<ConnectorCallsBucket[]>;
+  connectorCallsSeries?(input: { hours: number; provider?: string; tenantId?: string; since?: string; until?: string }): Promise<ConnectorCallsBucket[]>;
 
   /**
    * ONE tenant's recent log events — the lines their own installations produced (§4.3).

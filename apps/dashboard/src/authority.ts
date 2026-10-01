@@ -1365,6 +1365,35 @@ export class TenantNarrowedControlPlane {
       }));
   }
 
+  /** Connector calls for the pinned tenant. The plane applies the index1 predicate. */
+  async connectorCallsSeries(input: { hours: number; since?: string; until?: string }): Promise<Array<{
+    provider: string; start: string; bucketMinutes: number; calls: number; errors: number;
+    ok: number; class4xx: number; class5xx: number; timeouts: number; failed: number;
+    durationP50: number; durationP95: number;
+  }>> {
+    const q = new URLSearchParams({ hours: String(input.hours) });
+    if (input.since !== undefined) q.set('since', input.since);
+    if (input.until !== undefined) q.set('until', input.until);
+    const response = await this.call<{ buckets: Array<Record<string, unknown>> }>(
+      `/tenants/${this.tenantId}/connections/calls?${q}`,
+    );
+    const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : 0;
+    return response.buckets.map((r) => ({
+      provider: String(r['provider'] ?? ''),
+      start: String(r['start'] ?? ''),
+      bucketMinutes: num(r['bucketMinutes']),
+      calls: num(r['calls']),
+      errors: num(r['errors']),
+      ok: num(r['ok']),
+      class4xx: num(r['class4xx']),
+      class5xx: num(r['class5xx']),
+      timeouts: num(r['timeouts']),
+      failed: num(r['failed']),
+      durationP50: num(r['durationP50']),
+      durationP95: num(r['durationP95']),
+    }));
+  }
+
   /**
    * MY requests (#1746) — the request record's histogram, facet counts and list, same grain
    * and narrowing as `tenantLogs`. `params` are passed on as they arrived: the plane parses
