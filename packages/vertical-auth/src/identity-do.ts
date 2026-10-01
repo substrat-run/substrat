@@ -4,7 +4,8 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/durable-sqlite';
 import * as schema from './auth-schema.js';
 import type { AuthProvider, AuthSubject } from './provider.js';
-import { resolveCookieDomain } from './cookie-domain.js';
+import { cookieDomainDecision, expireBetterAuthDomainCookies } from './cookie-domain.js';
+import { parsePlatformBaseDomains } from '@substrat-run/contracts';
 import {
   SITE_REGISTRY_DDL,
   recordSite as recordSiteRow,
@@ -382,13 +383,13 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /** A Better Auth instance over THIS DO's SQLite, trusting the caller's origin. */
-  private auth(origin: string, cookieDomain?: string | null) {
+  private auth(origin: string, cookieDomain?: string | null, rejectOldDomainSession = false) {
     const db = drizzle(this.ctx.storage, { schema });
     return betterAuth({
       database: drizzleAdapter(db, { provider: 'sqlite', schema }),
       emailAndPassword: { enabled: true, autoSignIn: true, minPasswordLength: 8 },
       // Per-tenant, generated + persisted in THIS DO (see the constructor) — never shared.
-      secret: this.authSecret,
+      secret: rejectOldDomainSession ? `${this.authSecret}\u0000platform-domain-v2` : this.authSecret,
       baseURL: origin,
       trustedOrigins: [origin],
       // Shared login across a scope's surfaces (crm.…, eka.… — one parent domain): the
@@ -412,11 +413,28 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    */
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const cookieDomain = resolveCookieDomain(
+    const { domain: cookieDomain, cleanupDomain } = cookieDomainDecision(
       request.headers.get('x-substrat-cookie-domain') ?? undefined,
       url.hostname,
+      parsePlatformBaseDomains(request.headers.get('x-substrat-platform-base-domains')),
     );
-    const auth = this.auth(url.origin, cookieDomain);
+    if (cleanupDomain) {
+      // Better Auth session tokens are opaque database keys, so changing its secret
+      // alone does not revoke an old cookie. Revoke once per rejected domain before
+      // processing even the first request that presents one.
+      const marker = [...this.ctx.storage.sql.exec(
+        "SELECT value FROM config WHERE key = 'rejected_cookie_domain'",
+      )][0] as { value: string } | undefined;
+      if (marker?.value !== cleanupDomain) {
+        this.ctx.storage.sql.exec('DELETE FROM session');
+        this.ctx.storage.sql.exec(
+          "INSERT OR REPLACE INTO config (key, value) VALUES ('rejected_cookie_domain', ?)", cleanupDomain,
+        );
+      }
+    }
+    const auth = this.auth(url.origin, cookieDomain, cleanupDomain !== null);
+    const withCleanup = (response: Response): Response =>
+      expireBetterAuthDomainCookies(response, url.origin, cleanupDomain);
     if (url.pathname === '/__session') {
       const session = await auth.api.getSession({ headers: request.headers });
       const subject: AuthSubject | null = session?.user
@@ -430,9 +448,9 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
             emailVerified: session.user.emailVerified,
           }
         : null;
-      return Response.json(subject);
+      return withCleanup(Response.json(subject));
     }
-    return auth.handler(request);
+    return withCleanup(await auth.handler(request));
   }
 }
 
@@ -495,18 +513,21 @@ export const _identityStubPin: [_StubCarriesClass, _ClassMethodsMissingFromStub]
 export function doAuthProvider(
   stub: Pick<IdentityStub, 'fetch'>,
   origin: string,
-  opts?: { cookieDomain?: string },
+  opts?: { cookieDomain?: string; platformBaseDomains?: readonly string[] },
 ): AuthProvider {
   const forward = (request: Request): Request => {
     if (!opts?.cookieDomain) return request;
     const relayed = new Request(request);
     relayed.headers.set('x-substrat-cookie-domain', opts.cookieDomain);
+    if (opts.platformBaseDomains?.length) {
+      relayed.headers.set('x-substrat-platform-base-domains', opts.platformBaseDomains.join(','));
+    }
     return relayed;
   };
   return {
     handle: (request) => stub.fetch(forward(request)),
     async resolve(headers) {
-      const res = await stub.fetch(new Request(`${origin}/__session`, { headers }));
+      const res = await stub.fetch(forward(new Request(`${origin}/__session`, { headers })));
       return (await res.json()) as AuthSubject | null;
     },
   };

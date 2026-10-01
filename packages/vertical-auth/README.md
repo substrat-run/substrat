@@ -67,7 +67,11 @@ keeps the window it has and never re-opens a claimed seat. Access is invite-only
 
 Also exported: `resolveCookieDomain`, which refuses to set a session cookie on a public suffix
 (guarded by [`@substrat-run/psl`](https://npmjs.com/package/@substrat-run/psl)) or anywhere
-in the shared `substrat.run` hostname space. An invalid domain uses a host-only cookie.
+in the shared platform hostname space. `instanceAuthFor` reads the trusted
+`PLATFORM_BASE_DOMAINS` worker binding; direct `oidcRpAuthProvider` and `doAuthProvider`
+callers pass the same list as `platformBaseDomains` when using `cookieDomain`. The
+default `substrat.run` zone is always refused. A rejected domain uses a host-only cookie,
+expires old domain cookies, and invalidates sessions issued under the old policy.
 
 ## Runtime
 

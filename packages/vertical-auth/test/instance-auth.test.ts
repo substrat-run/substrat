@@ -54,6 +54,21 @@ describe('instanceAuthFor', () => {
     expect(typeof provider.handle).toBe('function');
   });
 
+  it('passes configured platform zones to the cookie boundary', async () => {
+    const instance = await call({
+      [AUTH_CONFIG_KEY]: JSON.stringify({
+        mode: 'oidc', issuer: 'https://issuer.example', clientId: 'client-1',
+        cookieDomain: 'global.example.net',
+      }),
+    }, { PLATFORM_BASE_DOMAINS: 'example.net' });
+    const response = await instance.provider().handle(
+      new Request('https://desk.global.example.net/api/auth/logout'),
+    );
+    const cookies = (response.headers as Headers & { getSetCookie(): string[] }).getSetCookie();
+    expect(cookies.find((cookie) => cookie.startsWith('sb_session=') &&
+      cookie.includes('Domain=global.example.net'))).toContain('Max-Age=0');
+  });
+
   it('answers 503 for a delivered plaintext issuer, and never falls through to the default provider', async () => {
     const delivered = (issuer: string) =>
       call({ [AUTH_CONFIG_KEY]: JSON.stringify({ mode: 'oidc', issuer, clientId: 'c', clientSecret: 's' }) }, { OIDC_ISSUER: 'https://default.example' });
