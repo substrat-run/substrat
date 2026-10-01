@@ -16,7 +16,7 @@ import {
 import { mcpResourceOf } from '@substrat-run/contracts';
 import type { AuthProvider, AuthSubject } from './provider.js';
 import { oidcAuthProvider } from './oidc.js';
-import { resolveCookieDomain } from './cookie-domain.js';
+import { cookieDomainDecision } from './cookie-domain.js';
 
 /**
  * Standard OIDC as a full RELYING PARTY `AuthProvider` — the browser-login counterpart
@@ -56,13 +56,22 @@ export interface OidcRpConfig {
    * where the cookie is set (cookie-domain.ts); invalid ⇒ host-only, never broken sign-in.
    */
   cookieDomain?: string;
+  /** Trusted platform zones from PLATFORM_BASE_DOMAINS on the serving worker. */
+  platformBaseDomains?: readonly string[];
 }
 
 const envOf = (cfg: OidcRpConfig): OidcEnv => ({
   OIDC_ISSUER: cfg.issuer,
   OIDC_CLIENT_ID: cfg.clientId,
   OIDC_CLIENT_SECRET: cfg.clientSecret,
-  SESSION_SECRET: cfg.sessionSecret,
+  // A previously issued platform-domain cookie can reach another tenant before this
+  // browser returns for cleanup. Rotate the signing key for that configuration so the
+  // old credential is refused immediately; new host-only sessions use the new key.
+  SESSION_SECRET: cookieDomainDecision(
+    cfg.cookieDomain,
+    cfg.cookieDomain?.trim().replace(/^\./, '') ?? '',
+    cfg.platformBaseDomains,
+  ).cleanupDomain ? `${cfg.sessionSecret}\u0000platform-domain-v2` : cfg.sessionSecret,
 });
 
 /** Serialize one Set-Cookie value — HttpOnly, and by default Lax on path=/ (the oidc-rp mount's flags). */
@@ -165,7 +174,11 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
     // The flow cookie stays HOST-ONLY even with a cookieDomain: the code flow begins and
     // completes on one hostname (redirect_uri is this origin's callback), and a domain-wide
     // flow cookie would only let two surfaces' concurrent logins clobber each other.
-    const domain = resolveCookieDomain(cfg.cookieDomain, url.hostname);
+    const { domain, cleanupDomain } = cookieDomainDecision(cfg.cookieDomain, url.hostname, cfg.platformBaseDomains);
+    const cleanup = cleanupDomain ? [
+      cookie(SESSION_COOKIE, '', origin, 0, cleanupDomain),
+      cookie(LOGOUT_HINT_COOKIE, '', origin, 0, cleanupDomain, LOGOUT_PATH, 'Strict'),
+    ] : [];
 
     if (url.pathname === '/api/auth/login') {
       const screen = url.searchParams.get('screen_hint');
@@ -180,7 +193,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
         screenHint: screen === 'signup' || screen === 'login' ? screen : undefined,
         prompt: prompt === 'login' || prompt === 'select_account' ? prompt : undefined,
       });
-      return redirectWith(location, [cookie(FLOW_COOKIE, flow, origin, FLOW_MAXAGE)]);
+      return redirectWith(location, [cookie(FLOW_COOKIE, flow, origin, FLOW_MAXAGE), ...cleanup]);
     }
 
     if (url.pathname === '/api/auth/callback') {
@@ -194,17 +207,18 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
           // Same lifetime as the session, so the two expire together and a stale hint is
           // never the thing left over.
           ...hintCookies(idToken, origin, SESSION_MAXAGE, domain),
+          ...cleanup,
         ]);
       } catch (err) {
         // Loud in the logs, opaque to the browser — same stance as the oidc-rp mount.
         console.error('oidc.callback.failed', { reason: err instanceof Error ? err.message : String(err) });
-        return redirectWith('/?error=auth', [clearFlow]);
+        return redirectWith('/?error=auth', [clearFlow, ...cleanup]);
       }
     }
 
     if (url.pathname === LOGOUT_PATH) {
       const local = safePath(url.searchParams.get('returnTo')) ?? '/';
-      const cleared = [...sessionCookies('', origin, 0, domain), ...hintCookies('', origin, 0, domain)];
+      const cleared = [...sessionCookies('', origin, 0, domain), ...hintCookies('', origin, 0, domain), ...cleanup];
       /**
        * `?federated` ALSO ends the issuer's own session (OIDC RP-Initiated Logout 1.0).
        * Without it the issuer's cookie silently signs the same person straight back in on

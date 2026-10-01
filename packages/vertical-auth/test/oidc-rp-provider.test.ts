@@ -253,4 +253,27 @@ describe('oidcRpAuthProvider with cookieDomain', () => {
     expect(sessions[0]).not.toContain('Domain=');
     expect(cb.headers.get('location')).toBe('/');
   });
+
+  it('expires previously issued platform-domain session and logout-hint cookies', async () => {
+    const rejected = { ...cfg, cookieDomain: DOMAIN, platformBaseDomains: ['substrat.test'] };
+    const oldSession = await mintSession({
+      OIDC_ISSUER: cfg.issuer, OIDC_CLIENT_ID: cfg.clientId,
+      OIDC_CLIENT_SECRET: cfg.clientSecret, SESSION_SECRET: cfg.sessionSecret,
+    }, { id: 'old-user' });
+    expect(await oidcRpAuthProvider(rejected).resolve(new Headers({ cookie: `${SESSION_COOKIE}=${oldSession}` })))
+      .toBeNull();
+    const cb = await completeCallback(oidcRpAuthProvider(rejected));
+    const sessions = named(cb, SESSION_COOKIE);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find((c) => c.includes(`Domain=${DOMAIN}`))).toContain('Max-Age=0');
+    expect(sessions.find((c) => !c.includes('Domain='))).not.toContain('Max-Age=0');
+    const fresh = cookieValue(sessions, SESSION_COOKIE)!;
+    expect((await oidcRpAuthProvider(rejected).resolve(new Headers({ cookie: `${SESSION_COOKIE}=${fresh}` })))?.sub)
+      .toBe('user-77');
+    const logout = await oidcRpAuthProvider(rejected).handle(new Request(`${APP}/api/auth/logout`));
+    expect(named(logout, SESSION_COOKIE).find((c) => c.includes(`Domain=${DOMAIN}`)))
+      .toContain('Max-Age=0');
+    expect(setCookies(logout).find((c) => c.startsWith('sb_oidc_idt=') && c.includes(`Domain=${DOMAIN}`)))
+      .toContain('Max-Age=0');
+  });
 });

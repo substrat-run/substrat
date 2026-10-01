@@ -1,4 +1,4 @@
-import { SHARED_ISSUER_CONFIG_KEY, resolveScopedEnvSpec, z, type EnvVarSpec } from '@substrat-run/contracts';
+import { SHARED_ISSUER_CONFIG_KEY, parsePlatformBaseDomains, resolveScopedEnvSpec, z, type EnvVarSpec } from '@substrat-run/contracts';
 import { issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { oidcAuthProvider } from './oidc.js';
 import { oidcRpAuthProvider } from './oidc-rp-provider.js';
@@ -108,6 +108,9 @@ export async function instanceAuthFor(opts: {
         sessionSecret: wiring.sessionSecret,
         settings,
         sharedIssuer: wiring.config[SHARED_ISSUER_CONFIG_KEY] === 'true',
+        platformBaseDomains: parsePlatformBaseDomains(
+          typeof opts.env.PLATFORM_BASE_DOMAINS === 'string' ? opts.env.PLATFORM_BASE_DOMAINS : undefined,
+        ),
       }),
   };
 }
@@ -178,6 +181,7 @@ export function selectAuthProvider(opts: {
    * choice only — the deployment default's issuer is the operator's own.
    */
   sharedIssuer?: boolean;
+  platformBaseDomains?: readonly string[];
 }): AuthProvider {
   const { identity, settings } = opts;
   if (identity?.mode === 'oidc') {
@@ -201,6 +205,7 @@ export function selectAuthProvider(opts: {
       ...(identity.audience ? { audience: identity.audience } : {}),
       ...(identity.cookieDomain ? { cookieDomain: identity.cookieDomain } : {}),
       ...(opts.sharedIssuer ? { sharedIssuer: true } : {}),
+      platformBaseDomains: opts.platformBaseDomains,
     });
   }
   if (settings.AUTH_PROVIDER === 'oidc') {
