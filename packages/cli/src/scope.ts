@@ -1,4 +1,4 @@
-import { assertReplayableDump, assertSqlIdentifier, problemDetail } from '@substrat-run/contracts';
+import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, tenantId } from '@substrat-run/contracts';
 /**
  * `substrat scope pull <scopeId>` — bring a scope's data to the local inner loop
  * (preview-and-snapshots.md §8; the substrat analog of `vercel env pull`).
@@ -14,7 +14,7 @@ import { assertReplayableDump, assertSqlIdentifier, problemDetail } from '@subst
  * on an older node the dump lands as JSON next to where the db would have been.
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
 import { readJson } from './http.js';
 import { orderTablesByForeignKeys } from './dump-order.js';
@@ -33,6 +33,12 @@ interface PulledDump {
   capturedAt: string;
   masked: boolean;
   tables: DumpTable[];
+}
+
+interface Backup {
+  tables: DumpTable[];
+  origin?: { tenantId: string; scopeId: string };
+  capturedAt?: string;
 }
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
@@ -153,9 +159,9 @@ export async function pullScope(opts: {
 }
 
 /** Read a dump from disk: a real `.sqlite` file (node:sqlite), or a `.dump.json`. */
-async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
+async function readDump(file: string): Promise<Backup> {
   if (!file.endsWith('.sqlite')) {
-    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { tables?: DumpTable[] };
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<PulledDump>;
     if (!Array.isArray(parsed.tables)) throw new Error(`${file} is not a scope dump (no tables)`);
     // The file is whatever the builder passed to --file, and all of it — the names
     // AND the schema text — ends up in SQL on the server's loader. Refuse a crafted
@@ -164,7 +170,19 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
     assertReplayableDump(parsed.tables);
     // FK-order before we POST — the server inserts in the order it receives, and an
     // older control plane defers no FK check, so parents must arrive before children.
-    return { tables: orderTablesByForeignKeys(parsed.tables) };
+    const hasTenant = parsed.tenantId !== undefined;
+    const hasScope = parsed.scopeId !== undefined;
+    if (hasTenant !== hasScope) {
+      throw new Error(`${file} has incomplete backup provenance (tenantId and scopeId must appear together)`);
+    }
+    const origin = hasTenant
+      ? { tenantId: tenantId.parse(parsed.tenantId), scopeId: scopeId.parse(parsed.scopeId) }
+      : undefined;
+    const capturedAt = parsed.capturedAt;
+    if (capturedAt !== undefined && (typeof capturedAt !== 'string' || capturedAt.length === 0)) {
+      throw new Error(`${file} has an invalid capturedAt`);
+    }
+    return { tables: orderTablesByForeignKeys(parsed.tables), origin, capturedAt };
   }
   let DatabaseSync: (typeof import('node:sqlite'))['DatabaseSync'];
   try {
@@ -187,7 +205,11 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
       const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
       tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])) });
     }
-    return { tables: orderTablesByForeignKeys(tables) };
+    const namedOrigin = /^([0-9A-HJKMNP-TV-Z]{26})__([0-9A-HJKMNP-TV-Z]{26})\.sqlite$/i.exec(basename(file));
+    const origin = namedOrigin
+      ? { tenantId: tenantId.parse(namedOrigin[1]!.toUpperCase()), scopeId: scopeId.parse(namedOrigin[2]!.toUpperCase()) }
+      : undefined;
+    return { tables: orderTablesByForeignKeys(tables), origin };
   } finally {
     db.close();
   }
@@ -208,7 +230,8 @@ export async function restoreScope(opts: {
   scopeId: string;
   file: string;
 }): Promise<void> {
-  const { tables } = await readDump(opts.file);
+  const { tables, origin, capturedAt } = await readDump(opts.file);
+  const source = origin ?? { tenantId: opts.tenantId, scopeId: opts.scopeId };
   const rows = tables.reduce((n, t) => n + t.rows.length, 0);
   const res = await fetch(
     `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
@@ -219,9 +242,9 @@ export async function restoreScope(opts: {
       // tenantId/scopeId in the body are PROVENANCE (where the backup came from);
       // the URL says where it lands — same rule as the host primitive.
       body: JSON.stringify({
-        tenantId: opts.tenantId,
-        scopeId: opts.scopeId,
-        capturedAt: new Date().toISOString(),
+        tenantId: source.tenantId,
+        scopeId: source.scopeId,
+        capturedAt: capturedAt ?? new Date().toISOString(),
         tables,
       }),
     },
@@ -239,6 +262,9 @@ export async function restoreScope(opts: {
     throw new Error(body?.detail ? `${base} — ${body.detail}` : base);
   }
   console.log(`✓ restored ${tables.length} tables (${rows} rows) into scope ${opts.scopeId}`);
+  if (!origin) {
+    console.log('  ⚠ backup origin is unknown; using the target tenant and scope as provenance.');
+  }
   console.log('  the scope now serves the backup — its previous data was replaced.');
 }
 
