@@ -392,28 +392,22 @@ export const deliveryState = z.enum([
 export type DeliveryState = z.infer<typeof deliveryState>;
 
 /**
- * Who a delivery row belongs to (#1643): a module id, or `executor:<id>` for an executor.
- *
- * `_substrat_deliveries.consumer_module` holds both, and the contract typed it as a bare
- * `ModuleId` — which a decode cannot honour, since `executor:mailer` is not one (the colon).
- * The cast hid that; a decode against `moduleId` would have thrown on every healthy executor
- * row. So the schema names the two shapes the column holds. The inferred type is unchanged
- * (`ModuleId`), and every value the old one accepted is still accepted.
- *
- * The `executor:` branch matches the WRITER, not a tidier id. `registerExecutor` and
- * `registerConnector` accept any string (`scope-host.ts`) and both adapters persist
- * `executor:${id}`, so the kernel can itself write `executor:` with an empty id, or one with a
- * newline. A reader that refused those would throw the whole dead-letter page or effects walk on
- * a healthy delivery. It accepts whatever registration could have produced; tightening
- * registration is a contract change, and #1645 carries it.
+ * An executor delivery's persisted consumer key (#1645). Registration accepts any
+ * string ID, so the decoder must accept an empty suffix or a newline as well.
+ * This is a distinct brand: an executor key cannot stand in for a module ID.
  */
-export const deliveryConsumer = z.union([
-  moduleId,
-  z
-    .string()
-    .startsWith('executor:')
-    .brand<'ModuleId'>(),
-]);
+export const executorConsumerId = z.string().startsWith('executor:').brand<'ExecutorConsumerId'>();
+export type ExecutorConsumerId = z.infer<typeof executorConsumerId>;
+
+/** The two kinds of consumer that `_substrat_deliveries.consumer_module` holds. */
+export const deliveryConsumer = z.union([moduleId, executorConsumerId]);
+export type DeliveryConsumer = z.infer<typeof deliveryConsumer>;
+
+/** Read the registered executor ID; a module consumer has none. */
+export function parseExecutorConsumer(consumer: string): string | undefined {
+  const parsed = executorConsumerId.safeParse(consumer);
+  return parsed.success ? parsed.data.slice('executor:'.length) : undefined;
+}
 
 export const eventDelivery = z.object({
   /** The module whose consumer this row is about — or `executor:<id>`, see `deliveryConsumer`. */
