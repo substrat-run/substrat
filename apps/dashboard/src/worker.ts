@@ -4838,6 +4838,41 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
   );
 });
 
+// Read failures directly: the recent-runs panel cannot explain a failure after
+// successful runs have pushed it out of that panel's twenty-row history.
+app.get('/api/apps/:scopeId/failures', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const window = chartWindow(c.req.query('since'), c.req.query('until'), 24);
+  const since = window?.since ?? new Date(Date.now() - FLEET_HEALTH_WINDOW_MS).toISOString();
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const [runs, failures] = await Promise.all([
+    cp.readSweepRuns({ scopeId: scope, outcome: 'failed', since, until: window?.until, limit: 500 }),
+    cp.readOpsFailures({ scopeId: scope, since, until: window?.until, limit: 400 }),
+  ]);
+  const sources = [['background runs', runs], ['operation failures', failures]] as const;
+  return c.json({
+    entries: [
+      ...runs.entries.filter((r) => r.kind !== 'freshness').map((r) => ({
+        id: r.id, at: r.at, kind: 'sweep', operation: r.operation ?? r.unit.replace(`${scope}:`, ''),
+        stage: r.kind, message: r.error, code: null,
+      })),
+      ...failures.entries.map((f) => ({
+        id: f.id, at: f.at, kind: 'operation', operation: f.operation,
+        stage: f.stage, message: f.message, code: f.code,
+      })),
+    ].sort((a, b) => b.at.localeCompare(a.at)),
+    unavailableSources: sources.filter(([, r]) => r.failed).map(([name]) => name),
+    incompleteSources: sources.filter(([, r]) => !r.failed && !r.complete).map(([name]) => name),
+  });
+});
+
 /**
  * The same window's declared facts (#1447 step 3b) — migrations applied, failed schedule
  * runs, stale freshness spans, recorded failures — for the chart to draw over its bars.

@@ -487,3 +487,26 @@ describe('menu children (#1767)', () => {
     expect(container.textContent).not.toContain('Pick an app');
   });
 });
+
+
+it('opens retained failure details without relying on the recent schedule history', async () => {
+  const message = 'permission denied: widgets:dispatch';
+  const read = vi.spyOn(api, 'appFailures').mockResolvedValue({ entries: [{ id: 'failed-run', kind: 'sweep', at: windowRange.since, operation: 'widgets/queue-due', stage: 'schedule', message, code: null }], unavailableSources: [], incompleteSources: [] });
+  const schedules = vi.spyOn(api, 'appSchedules');
+  const onNav = vi.fn();
+  await act(async () => root.render(<Observability apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]} query={`app=app-a&view=failures&from=${windowRange.since}&to=${windowRange.until}`} scopeId="app-a" view="failures" cursor={{ from: windowRange.since, to: windowRange.until }} focusEventType={null} onNav={onNav} />));
+  expect(read).toHaveBeenCalledWith('app-a', windowRange);
+  expect(schedules).not.toHaveBeenCalled();
+  expect(container.querySelector('h1')?.textContent).toBe('Failures');
+  expect(container.textContent).toContain(message);
+  expect(container.textContent).toContain('widgets/queue-due');
+  click(button('Logs around this failure'));
+  expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-a', view: 'logs', from: '2026-09-01T09:55:00.000Z', to: '2026-09-01T10:05:00.000Z' }));
+});
+
+it('shows a failure read error and does not claim that no failures exist', async () => {
+  vi.spyOn(api, 'appFailures').mockRejectedValue(new Error('unavailable'));
+  await act(async () => root.render(<Observability apps={[]} query="app=app-a&view=failures" scopeId="app-a" view="failures" cursor={null} focusEventType={null} onNav={vi.fn()} />));
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('unavailable');
+  expect(container.textContent).not.toContain('No failures recorded');
+});

@@ -272,6 +272,10 @@ export function Pulse({
       dragged.current = false;
       return;
     }
+    if (r.verdict === 'failing') {
+      onNav({ app: r.scopeId, view: 'failures', hours: '24', from: undefined, to: undefined });
+      return;
+    }
     // All apps: a row narrows the page to its app. Already narrowed: it opens the app.
     if (oneApp) navigate(`/apps/${r.scopeId}/overview`);
     else onNav({ app: r.scopeId });
@@ -354,7 +358,7 @@ export function Pulse({
               stale={oneApp ? (shown.overlays?.spans ?? []) : []}
               handle={handle}
               onOpen={() => openRow(r)}
-              href={teamPath(oneApp ? `/apps/${r.scopeId}/overview` : obsPath({ app: r.scopeId }))}
+              href={teamPath(r.verdict === 'failing' ? obsPath({ app: r.scopeId, view: 'failures', hours: '24' }) : oneApp ? `/apps/${r.scopeId}/overview` : obsPath({ app: r.scopeId }))}
             />
           ))
         )}

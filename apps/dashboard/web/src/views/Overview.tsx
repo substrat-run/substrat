@@ -218,7 +218,7 @@ export function Overview({
                   onResume={() => onResume?.(r.scopeId)}
                   loadSteps={loadSteps ? () => loadSteps(r.scopeId) : undefined}
                   health={cardHealth(r, health !== null)}
-                  observeHref={obsPath({ app: r.scopeId })}
+                  observeHref={obsPath({ app: r.scopeId, ...(r.verdict === 'failing' ? { view: 'failures', hours: '24' } : {}) })}
                 />
               );
             })}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@substrat-run/ui';
+import { isPlainClick, navigate, obsPath, teamPath } from '../lib/router';
 import { api, type AppHealthRow, type AppMetricsView, type AppRow } from '../lib/api';
 import { DEV_MOCK, MOCK_APP_METRICS, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { VERDICTS, compact, duration, errorRate, fleetRows, type FleetRow, type FleetVerdict } from '../lib/fleet-rows';
@@ -147,7 +148,11 @@ function FleetTableRow({ row, last, loading, onOpen, onRetry }: { row: FleetRow;
         background: hover ? 'var(--surface-hover)' : 'transparent',
       }}
     >
-      <span role="cell"><Badge status={v.status}>{v.label}</Badge></span>
+      <span role="cell">{row.verdict === 'failing' ? <a
+        href={teamPath(obsPath({ app: row.scopeId, view: 'failures', hours: '24' }))}
+        onClick={(e) => { e.stopPropagation(); if (isPlainClick(e)) { e.preventDefault(); navigate(obsPath({ app: row.scopeId, view: 'failures', hours: '24' })); } }}
+        aria-label={`Failures for ${row.name}`}
+      ><Badge status={v.status}>{v.label}</Badge></a> : <Badge status={v.status}>{v.label}</Badge>}</span>
       <span role="cell" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         <span style={{ fontSize: 13.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name}</span>
         <span title={row.scopeId} style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
