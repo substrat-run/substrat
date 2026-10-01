@@ -3505,6 +3505,9 @@ const operations = {
 
   'ticket0/breaching-soon': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    if (slaPolicy(desk(ctx)) === null) {
+      return { withinMinutes: input.withinMinutes, rows: [], truncated: false };
+    }
     const now = ctx.now();
     const until = new Date(Date.parse(now) + input.withinMinutes * 60_000).toISOString();
     const rows = SLA_TARGETS.flatMap((target) =>

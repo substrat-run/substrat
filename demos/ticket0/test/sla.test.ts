@@ -382,7 +382,9 @@ describe('off unless the desk sets a target', () => {
     const late = await mail(desk);
     const repliedLate = await mail(desk);
     expect((await read(desk, repliedLate)).first_response_due_at).not.toBeNull();
+    expect((await soon(desk, 45)).rows).toHaveLength(2);
     await setSla(desk, null);
+    expect(await soon(desk, 45)).toEqual({ withinMinutes: 45, rows: [], truncated: false });
     advance(31);
     expect(await sweep(desk)).toBe(0);
     expect((await read(desk, late)).first_response_breached_at).toBeNull();
