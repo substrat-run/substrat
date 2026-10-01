@@ -460,4 +460,27 @@ export const ticket0Migrations: SqlMigration[] = [
          AND no_reply_notified_at IS NULL;
     `,
   },
+  {
+    // add-ticket0_conversation_follows
+    version: '0019',
+    sql: `
+      CREATE TABLE ticket0_conversation_follows (
+        principal TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        PRIMARY KEY (principal, conversation_id)
+      );
+
+      -- Existing live entity-read tuples include follows made before this ledger existed.
+      -- This is a conservative backfill: an off-boarded person loses every explicit
+      -- conversation:read grant, regardless of which old path wrote it.
+      INSERT INTO ticket0_conversation_follows (principal, conversation_id)
+      SELECT substr(subject, length('principal:') + 1),
+             substr(object, length('conversation:') + 1)
+        FROM _substrat_tuples
+       WHERE subject LIKE 'principal:%'
+         AND relation = 'granted:conversation:read'
+         AND object LIKE 'conversation:%'
+         AND revoked_at IS NULL;
+    `,
+  },
 ];

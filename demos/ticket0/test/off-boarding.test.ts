@@ -194,19 +194,34 @@ describe('a follow is a read on the customer’s thread, so it is not put on som
     expect(await canRead(d, guest, id)).toBe(true);
   });
 
-  it('unfollowing still works for somebody who has left — the way out is not closed', async () => {
+  it('withdraws every follow on off-boarding and does not restore them on reinstatement', async () => {
     const d = await kit.freshDesk({ agents: 0 });
     const guest = await kit.guest(d);
     const admin = await kit.as(d, d.admin);
-    const id = await kit.mail(d);
-    await admin.invoke('ticket0/follow-conversation', { conversationId: id, follower: guest });
-    expect(await canRead(d, guest, id)).toBe(true);
+    const first = await kit.mail(d);
+    const second = await kit.mail(d);
+    for (const conversationId of [first, second]) {
+      await admin.invoke('ticket0/follow-conversation', { conversationId, follower: guest });
+      expect(await canRead(d, guest, conversationId)).toBe(true);
+    }
+    const follows = () => kit.sql(d, (db) => db.prepare(
+      'SELECT conversation_id FROM ticket0_conversation_follows WHERE principal = ? ORDER BY conversation_id',
+    ).all(guest)) as { conversation_id: string }[];
+    expect(follows().map((row) => row.conversation_id)).toEqual([first, second].sort());
+
     await setOff(d, guest, true);
-    // Their existing follow survives being taken off the desk — the module keeps no list
-    // of follows to withdraw — and an admin can still remove it by hand.
-    expect(await canRead(d, guest, id)).toBe(true);
-    await admin.invoke('ticket0/unfollow-conversation', { conversationId: id, follower: guest });
-    expect(await canRead(d, guest, id)).toBe(false);
+    expect(follows()).toEqual([]);
+    for (const conversationId of [first, second]) expect(await canRead(d, guest, conversationId)).toBe(false);
+    await setOff(d, guest, true); // an idempotent retry keeps the access withdrawn
+    await setOff(d, guest, false);
+    for (const conversationId of [first, second]) expect(await canRead(d, guest, conversationId)).toBe(false);
+
+    // A reinstated colleague can be followed again, and an off-boarded one can still
+    // be passed to unfollow without the directory refusing a cleanup request.
+    await admin.invoke('ticket0/follow-conversation', { conversationId: first, follower: guest });
+    await setOff(d, guest, true);
+    await admin.invoke('ticket0/unfollow-conversation', { conversationId: first, follower: guest });
+    expect(follows()).toEqual([]);
   });
 });
 
