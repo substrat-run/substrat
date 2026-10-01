@@ -2088,6 +2088,43 @@ describe('control-plane API', () => {
       expect((await boundOf(same.body.scopeId)).servingRef ?? null).toBeNull();
     });
 
+    it('retries a legacy preview repair after binding succeeds but clearing the serving pin fails (#1724)', async () => {
+      const created = await push('legacy-pin-clear-retry', v1, { ttlHours: null });
+      expect(created.status).toBe(201);
+      const legacy = created.body.scopeId;
+      const previewHostname = (created.body as Created & { hostname: string }).hostname;
+      await host.admin.setScopeServingRef(staff, tH, legacy, 'carry-vert');
+      storeOf('carry-vert').set(legacy, table('serving-row'));
+
+      const clear = vi.spyOn(host.admin, 'setScopeServingRef').mockRejectedValueOnce(new Error('pin clear unavailable'));
+      try {
+        calls.length = 0;
+        const failed = await dj(`/tenants/${tH}/scopes/${legacy}/version`, 'POST', { versionId: v2 });
+        expect(failed.status).toBe(500);
+        expect(clear).toHaveBeenCalledExactlyOnceWith(staff, tH, legacy, null);
+        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
+        // Binding has advanced, but the pin still selects the serving script's store.
+        expect(await boundOf(legacy)).toMatchObject({ verticalVersionId: v2, servingRef: 'carry-vert' });
+        expect(rows(v2, legacy)).toEqual([['serving-row']]);
+        expect(await host.admin.resolveHostname(previewHostname)).toMatchObject({ scopeId: legacy, deploymentRef: 'carry-vert' });
+
+        // A write while the pin is still active must survive the same-version retry.
+        storeOf('carry-vert').set(legacy, table('serving-row', 'after-failed-clear'));
+        calls.length = 0;
+        const retried = await dj(`/tenants/${tH}/scopes/${legacy}/version`, 'POST', { versionId: v2 });
+        expect(retried.status).toBe(200);
+        expect(clear).toHaveBeenCalledTimes(2);
+        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
+        expect(rows(v2, legacy)).toEqual([['serving-row'], ['after-failed-clear']]);
+        const bound = await boundOf(legacy);
+        expect(bound.verticalVersionId).toBe(v2);
+        expect(bound.servingRef ?? null).toBeNull();
+        expect(await host.admin.resolveHostname(previewHostname)).toMatchObject({ scopeId: legacy, deploymentRef: refOf.get(v2) });
+      } finally {
+        clear.mockRestore();
+      }
+    });
+
     it('scope bind copies nothing into a version the bind will refuse', async () => {
       // A version that is not admitted may not be bound to anything but a preview, so its
       // code must not receive a copy of the scope either (its restore handler would).
