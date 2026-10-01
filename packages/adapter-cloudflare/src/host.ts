@@ -618,7 +618,7 @@ interface ControlPlaneStub {
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null): Promise<void>;
   markScopeProvisioned(scopeId: string, versionId: string | null): Promise<void>;
   setVerticalServing(
     slug: string,
@@ -5511,6 +5511,9 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
+        if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
+          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
@@ -5526,9 +5529,10 @@ export class CloudflareScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug);
+        await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId);
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,
+          ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },
