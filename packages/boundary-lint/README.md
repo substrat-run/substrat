@@ -39,7 +39,7 @@ the only thing that can tell them apart, which is why this is a linter and not a
 | **R1** star topology | an engine never imports another `@substrat-run/engine-*` |
 | **R2** no raw access | module code imports no `better-sqlite3`, no adapters, no `node:*` — data access is `ctx.sql` only |
 | **R3** no network | module code never calls `fetch()` or imports an HTTP client |
-| **R4** spine is sacred | module code never *writes* `_substrat_*` tables (reads are fine — timelines are projections) |
+| **R4** spine is sacred | module operations never *write* `_substrat_*` tables (reads are fine — timelines are projections); a generated migration may explicitly mark a permission-tuple revocation |
 | **R5** tables private | module code never references another module's tables in SQL |
 | **R6** no clock | module code never reads the wall clock (`new Date()`, `Date.now()`) — the operation's instant is `ctx.now()` |
 | **R7** no bare catch | module code never catches an engine error outside `ctx.atomic` — a `catch` around a raw engine call commits its partial writes (under-fires; see below) |
@@ -167,9 +167,22 @@ const legacy = ctx.sql.query('SELECT * FROM workorder_time_entries');
 ```
 
 R6 has the same block for code that must read the real clock, and R8 for a maintenance or
-migration read whose row never leaves the engine. There is no escape hatch for R1–R4, and
-deliberately none for R7 — there is no legitimate reason to swallow an engine error
-unprotected, so a hatch would only ever silence the rule.
+migration read whose row never leaves the engine. R4 accepts only an update that sets
+`_substrat_tuples.revoked_at` to the current non-null UTC timestamp, with no other
+assignments and a statement-local SQL comment in a generated
+`migrations.generated.ts` file. The comment names the issue whose migration diff a person
+reviews before merge:
+
+```sql
+-- boundary-lint-allow R4 migration #1858
+UPDATE _substrat_tuples
+   SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ WHERE revoked_at IS NULL;
+```
+
+The next tombstone update needs its own marker; a marker in operation code has no effect.
+Other spine writes stay forbidden. There is no escape hatch for R1–R3, and deliberately
+none for R7 — there is no legitimate reason to swallow an engine error unprotected.
 
 ## Exit codes
 

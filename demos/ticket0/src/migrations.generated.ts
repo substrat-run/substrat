@@ -483,4 +483,48 @@ export const ticket0Migrations: SqlMigration[] = [
          AND revoked_at IS NULL;
     `,
   },
+  {
+    // drop-merged-conversation-follows
+    version: '0020',
+    sql: `
+      -- Historical merges left moved rows linked to the losing conversation as well as
+      -- their current one. Keep only the edge matching the row's current SQL owner.
+      -- boundary-lint-allow R4 migration #1858
+      UPDATE _substrat_tuples AS t
+         SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE t.relation = 'parent' AND t.revoked_at IS NULL
+         AND (
+           EXISTS (SELECT 1 FROM ticket0_messages m
+                    WHERE t.subject = 'message:' || m.id
+                      AND t.object LIKE 'conversation:%'
+                      AND t.object != 'conversation:' || m.conversation_id)
+           OR EXISTS (SELECT 1 FROM ticket0_ai_turns a
+                       WHERE t.subject = 'aiTurn:' || a.id
+                         AND t.object LIKE 'conversation:%'
+                         AND t.object != 'conversation:' || a.conversation_id)
+           OR EXISTS (SELECT 1 FROM ticket0_widget_sessions w
+                       WHERE t.subject = 'widgetSession:' || w.id
+                         AND t.object LIKE 'conversation:%'
+                         AND t.object != 'conversation:' || w.conversation_id)
+         );
+
+      -- A follow on a merged loser cannot be used to read that conversation, or its
+      -- moved rows. Leave staff's scope-wide role grants and survivor follows alone.
+      -- boundary-lint-allow R4 migration #1858
+      UPDATE _substrat_tuples
+         SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE subject LIKE 'principal:%'
+         AND relation = 'granted:conversation:read'
+         AND object IN (
+           SELECT 'conversation:' || id FROM ticket0_conversations
+            WHERE merged_into IS NOT NULL
+         )
+         AND revoked_at IS NULL;
+
+      DELETE FROM ticket0_conversation_follows
+       WHERE conversation_id IN (
+         SELECT id FROM ticket0_conversations WHERE merged_into IS NOT NULL
+       );
+    `,
+  },
 ];

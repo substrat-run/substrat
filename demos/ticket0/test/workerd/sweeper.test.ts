@@ -873,6 +873,43 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     expect(agentFeed.frames.map((f) => f.entityId)).toContain(after.id);
   });
 
+  it('does not announce a moved message to the losing thread\'s follower after a merge (#1858)', async () => {
+    await member('sub-merge-agent', 'agent');
+    const follower = await member('sub-merge-follower', 'customer');
+    const loser = await arrival('merge@live.example');
+    const survivor = await arrival('merge@live.example');
+    await grant(follower, 'conversation:read', 'conversation', loser.conversation);
+    const admin = await host().getScope(deskOwner, tenant, desk);
+    const before = await admin.invoke<Page<{ id: string }>>('ticket0/list-messages', {
+      conversationId: loser.conversation,
+    });
+    const movedId = before.entries[0]!.id;
+
+    const followerFeed = await subscribe('sub-merge-follower');
+    const agentFeed = await subscribe('sub-merge-agent');
+    await admin.invoke('ticket0/merge', {
+      conversationId: loser.conversation,
+      intoConversationId: survivor.conversation,
+    });
+    const relay = await host().getScope((await services()).relay, tenant, desk);
+    await relay.invoke('ticket0/record-delivery', { messageId: movedId, emailMessageId: '<merged-delivered@mail.example>' });
+    await settle();
+
+    const delivered = (feed: { frames: LiveChange[] }) => feed.frames.filter((f) => f.type === 'ticket0.message-delivered').map((f) => f.entityId);
+    expect(followerFeed.frames.map((f) => f.entityId)).not.toContain(movedId);
+    expect(delivered(followerFeed)).not.toContain(movedId);
+    expect(delivered(agentFeed)).toContain(movedId);
+    await expect(
+      (await host().getScope(follower, tenant, desk)).invoke('ticket0/list-messages', {
+        conversationId: survivor.conversation,
+      }),
+    ).rejects.toThrow(/permission denied/i);
+    const polled = await admin.invoke<Page<{ id: string }>>('ticket0/list-messages', {
+      conversationId: survivor.conversation,
+    });
+    expect(polled.entries.map((m) => m.id)).toContain(movedId);
+  });
+
   /**
    * An assistant turn reaches a subscriber only if that subscriber can already poll it.
    * `ticket0/list-turns` is `conversation:read` on the turn's conversation, which a

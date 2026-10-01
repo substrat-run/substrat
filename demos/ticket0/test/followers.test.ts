@@ -358,4 +358,40 @@ describe('following a conversation', () => {
       raeStub.invoke('ticket0/get-conversation', { conversationId: archived }),
     ).resolves.toMatchObject({ id: archived, state: 'closed' });
   });
+
+  it('drops the losing follow on merge without handing out the surviving thread (#1858)', async () => {
+    const loser = await arrive('A thread Rae follows before it is merged');
+    const survivor = await arrive('An earlier thread Rae has never seen');
+    await admin.invoke('ticket0/follow-conversation', { conversationId: loser, follower: rae });
+    const before = await raeStub.invoke<{ entries: { id: string }[] }>('ticket0/list-messages', {
+      conversationId: loser,
+    });
+    expect(before.entries).toHaveLength(1);
+
+    await admin.invoke('ticket0/merge', { conversationId: loser, intoConversationId: survivor });
+
+    const moved = await admin.invoke<{ entries: { id: string }[] }>('ticket0/list-messages', {
+      conversationId: survivor,
+    });
+    expect(moved.entries.map((m) => m.id)).toContain(before.entries[0]!.id);
+    await expect(raeStub.invoke('ticket0/get-conversation', { conversationId: loser })).rejects.toThrow(
+      /permission denied/i,
+    );
+    await expect(raeStub.invoke('ticket0/list-messages', { conversationId: loser })).rejects.toThrow(
+      /permission denied/i,
+    );
+    await expect(raeStub.invoke('ticket0/get-conversation', { conversationId: survivor })).rejects.toThrow(
+      /permission denied/i,
+    );
+    await expect(raeStub.invoke('ticket0/list-messages', { conversationId: survivor })).rejects.toThrow(
+      /permission denied/i,
+    );
+
+    // A new, explicit decision can put Rae on the survivor and its moved messages.
+    await admin.invoke('ticket0/follow-conversation', { conversationId: survivor, follower: rae });
+    const permitted = await raeStub.invoke<{ entries: { id: string }[] }>('ticket0/list-messages', {
+      conversationId: survivor,
+    });
+    expect(permitted.entries.map((m) => m.id)).toContain(before.entries[0]!.id);
+  });
 });
