@@ -1045,9 +1045,10 @@ export const deployManifest = z.object({
    * registration order and each module's own order, with its SQL verbatim. It is what the
    * promote dialog and `substrat promote` read to show the migrations a promote would run.
    *
-   * Metadata, and in NO digest: `digests.migration` is what the promotion gate compares,
-   * and this field does not change what it is computed from. Readable only by the owner,
-   * because SQL describes a schema.
+   * The push hashes each migration's module ID, version, and SQL into
+   * `digests.migration`, alongside the Durable Object classes. The promotion gate
+   * compares that digest, including when manifest size limits omit this readable list.
+   * The SQL itself is readable only by the owner because it describes a schema.
    *
    * `[]` means the modules ship no SQL migrations. ABSENT means the version was pushed
    * before the field existed, or the set was over the caps below and the push left it out.
