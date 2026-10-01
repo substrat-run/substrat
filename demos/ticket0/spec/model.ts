@@ -717,6 +717,17 @@ export const ticket0Entities = defineEntities({
     primaryKey: ['conversation_id', 'tag'],
   },
 
+  /** Every entity-narrowed conversation read this desk granted to a follower (#1941).
+   * Keyed by principal first so off-boarding can enumerate and revoke all their follows. */
+  conversationFollow: {
+    table: 'ticket0_conversation_follows',
+    fields: z.object({
+      principal: z.string(),
+      conversation_id: z.string(),
+    }),
+    primaryKey: ['principal', 'conversation_id'],
+  },
+
   /** A canned answer. Every desk grows these; better to ship the table than to watch
    *  them accumulate as browser bookmarks. */
   savedReply: {
@@ -1969,6 +1980,28 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       total: true,
     },
     http: { method: 'GET', path: '/conversations' },
+  },
+
+  /** Running service-level targets due soon, across the desk. No schema change: the
+   * existing due indexes supply the ordered scans. */
+  'ticket0/breaching-soon': {
+    summary: 'Conversations whose service-level target is due soon',
+    permission: 'conversation:read',
+    input: z.object({ withinMinutes: z.coerce.number().int().min(1).max(1440).default(60) }),
+    output: z.object({
+      withinMinutes: z.number().int(),
+      rows: z.array(z.object({
+        conversationId: z.string(),
+        subject: z.string(),
+        priority: z.enum(['low', 'normal', 'urgent']),
+        state: z.enum(['new', 'open', 'snoozed']),
+        assignee: z.string().nullable(),
+        target: z.enum(['first_response', 'resolution']),
+        dueAt: z.string(),
+      })),
+      truncated: z.boolean(),
+    }),
+    http: { method: 'GET', path: '/conversations/breaching-soon' },
   },
 
   /**

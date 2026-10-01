@@ -586,8 +586,8 @@ const ASSIGNABLE_STAFF_SQL = `display_name != ? AND ${ON_THE_DESK_SQL}`;
  *
  * Somebody an admin has taken off the desk (`onTheDesk`, #1083) is refused too. A follow is
  * a durable `conversation:read` on a customer's thread, and putting it on an ex-colleague
- * hands them the customer's words. It is a NEW follow that is refused: what they already
- * follow is a tuple this module keeps no list of, so it cannot be enumerated to withdraw.
+ * hands them the customer's words. Off-boarding withdraws existing follows from the
+ * ledger beside their tuples; a new follow is refused while they are off the desk.
  */
 function followableStaffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
   const row = staffOrThrow(ctx, principal);
@@ -2229,6 +2229,20 @@ export function slaOverdueScan(target: SlaTarget['target']): string {
         ORDER BY ${t.due}, id LIMIT ?`;
 }
 
+/** The same indexed running set, restricted to a future horizon. Binds [now, until, limit]. */
+export function slaUpcomingScan(target: SlaTarget['target']): string {
+  const t = SLA_TARGETS.find((x) => x.target === target)!;
+  const live = t.pausesOnSnooze ? `${SLA_LIVE} AND ${SLA_PAUSED}` : SLA_LIVE;
+  return `SELECT id, subject, priority, state, assignee, ${t.due} AS dueAt
+        FROM ticket0_conversations
+        WHERE ${t.due} IS NOT NULL AND ${t.running} AND ${live}
+          AND ${t.due} >= ? AND ${t.due} <= ?
+        ORDER BY ${t.due}, id LIMIT ?`;
+}
+
+/** Bounded across both target indexes; the extra row reports that the queue was cut. */
+const SLA_SOON_LIMIT = 20;
+
 /**
  * How many overdue conversations one run records, per target. `WAKE_BATCH`'s bargain: a
  * bound on one transaction, not a cap on the feature, because the schedule comes back.
@@ -3026,6 +3040,31 @@ const operations = {
         `the assistant is not on the desk as staff: ${input.principal}`,
       );
     }
+    // Revoke first, even when this is an idempotent OFF retry. Migration 0019 backfills
+    // follows made before the ledger existed, including on a desk already off-boarded.
+    // `ctx.revoke` and the ledger delete share the operation transaction: a refusal
+    // cannot leave the profile marked off while one of its recorded grants survives.
+    if (input.offboarded) {
+      const follows = ctx.sql.query<{ conversation_id: string }>(
+        'SELECT conversation_id FROM ticket0_conversation_follows WHERE principal = ? ORDER BY conversation_id',
+        [profile.principal],
+      );
+      for (const follow of follows) {
+        await ctx.revoke(
+          principalId.parse(profile.principal),
+          T0_PERM.conversationRead,
+          conversationRef(follow.conversation_id),
+        );
+        ctx.emit({
+          type: 'ticket0.conversation-unfollowed',
+          schemaVersion: 1,
+          entity: conversationRef(follow.conversation_id),
+          piiClass: 'none',
+          payload: { conversation_id: follow.conversation_id, follower: profile.principal },
+        });
+      }
+      ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE principal = ?', [profile.principal]);
+    }
     // Idempotent both ways. Taking off somebody already off keeps the FIRST instant, so
     // the record says when they left rather than when somebody last clicked; putting back
     // somebody who is on changes nothing. Neither emits: the event is a change.
@@ -3487,6 +3526,30 @@ const operations = {
       filters,
       total: true,
     }) as CountedPage<ConversationRow>;
+  },
+
+  'ticket0/breaching-soon': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    if (slaPolicy(desk(ctx)) === null) {
+      return { withinMinutes: input.withinMinutes, rows: [], truncated: false };
+    }
+    const now = ctx.now();
+    const until = new Date(Date.parse(now) + input.withinMinutes * 60_000).toISOString();
+    const rows = SLA_TARGETS.flatMap((target) =>
+      ctx.sql.query<{
+        id: string; subject: string; priority: ConversationRow['priority'];
+        state: 'new' | 'open' | 'snoozed'; assignee: string | null; dueAt: string;
+      }>(slaUpcomingScan(target.target), [now, until, SLA_SOON_LIMIT + 1]).map((row) => ({
+        conversationId: row.id,
+        subject: row.subject,
+        priority: row.priority,
+        state: row.state,
+        assignee: row.assignee,
+        target: target.target,
+        dueAt: row.dueAt,
+      })),
+    ).sort((a, b) => a.dueAt.localeCompare(b.dueAt) || a.conversationId.localeCompare(b.conversationId));
+    return { withinMinutes: input.withinMinutes, rows: rows.slice(0, SLA_SOON_LIMIT), truncated: rows.length > SLA_SOON_LIMIT };
   },
 
   'ticket0/get-conversation': async (ctx, input) => {
@@ -4457,6 +4520,10 @@ const operations = {
     // names is provably the row that was just checked.
     const principal = principalId.parse(follower.principal);
     await ctx.grant(principal, T0_PERM.conversationRead, conversationRef(conversation.id));
+    ctx.sql.exec(
+      'INSERT OR IGNORE INTO ticket0_conversation_follows (principal, conversation_id) VALUES (?, ?)',
+      [principal, conversation.id],
+    );
     ctx.emit({
       type: 'ticket0.conversation-followed',
       schemaVersion: 1,
@@ -4502,6 +4569,10 @@ const operations = {
     const conversation = conversationOrThrow(ctx, input.conversationId);
     const principal = principalOrThrow(input.follower);
     await ctx.revoke(principal, T0_PERM.conversationRead, conversationRef(conversation.id));
+    ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE principal = ? AND conversation_id = ?', [
+      principal,
+      conversation.id,
+    ]);
     ctx.emit({
       type: 'ticket0.conversation-unfollowed',
       schemaVersion: 1,

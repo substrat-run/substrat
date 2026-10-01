@@ -1336,7 +1336,7 @@ interface ScopeStubRpc {
   ): Promise<SubjectRedactionCounts | LegacySubjectRedactionCounts | number>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
-  appliedMigrations(limit?: number): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
+  appliedMigrations(limit?: number): Promise<AppliedMigration[]>;
   /** `SqlStorage.databaseSize` of this scope (#1524). */
   databaseSize(): Promise<number>;
   entityHistory(input: {

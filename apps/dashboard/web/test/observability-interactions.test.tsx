@@ -370,6 +370,8 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
     .find((r) => r.querySelector('[role="cell"]')?.textContent === 'mail');
   expect(connectorRow?.textContent).toContain('5');
   expect(connectorRow?.querySelector('path[stroke-dasharray]')).not.toBeNull();
+  expect(connectorRow?.querySelector('[data-pulse-axis]')?.getAttribute('aria-label'))
+    .toContain('90 ms');
   click(rows[0]!);
   expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-b' }));
 });

@@ -4010,6 +4010,10 @@ export interface AppliedMigration {
   version: string;
   /** ISO instant the migration committed, or null for a row written before the column. */
   appliedAt: string | null;
+  /** Rounded wall time in milliseconds; null for a migration applied before recording. */
+  durationMs: number | null;
+  /** SQLite data rows changed by the migration, excluding its journal stamp. */
+  rowsChanged: number | null;
 }
 
 /**

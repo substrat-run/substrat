@@ -466,6 +466,7 @@ function AppLine({
       paths: sparkPaths(req, spans, top),
       bars: errorBarsPath(buckets.map((b) => b.errors), spans, top),
       latency: metricLinePath(latency, spans, latencyTop),
+      latencyValues: buckets.map((b) => `${b.start}: ${b.durationP95 === null ? 'unavailable' : duration(b.durationP95)}`),
     };
   }, [row.buckets, series, window.from, window.to]);
   return (
@@ -496,6 +497,7 @@ function AppLine({
       <span
         role="cell"
         data-pulse-axis
+        aria-label={spark?.latency ? `p95 per bucket: ${spark.latencyValues.join(', ')}` : 'No p95 bucket trend available'}
         {...handle}
         style={{ position: 'relative', display: 'block', height: 32, touchAction: 'none' }}
       >
@@ -547,7 +549,15 @@ function ConnectorLine({ row, bucketMinutes, window, handle }: {
       <span role="cell" style={num}>{compact(row.calls)}</span>
       <span role="cell" style={{ ...num, color: row.errors ? 'var(--status-danger-fg)' : 'var(--text-primary)' }}>{compact(row.errors)}</span>
       <span role="cell" style={{ ...num, color: 'var(--text-secondary)' }} title="Latest bucket with a latency observation">{row.latestP95 === null ? '—' : duration(row.latestP95)}</span>
-      <span role="cell" data-pulse-axis {...handle} style={{ position: 'relative', display: 'block', height: 32, touchAction: 'none' }}>
+      <span
+        role="cell"
+        data-pulse-axis
+        aria-label={p95
+          ? `Connector p95 per bucket: ${row.buckets.map((b) => `${b.start}: ${b.durationP95 === null ? 'unavailable' : duration(b.durationP95)}`).join(', ')}`
+          : 'No connector p95 bucket trend available'}
+        {...handle}
+        style={{ position: 'relative', display: 'block', height: 32, touchAction: 'none' }}
+      >
         <svg viewBox="0 0 480 32" preserveAspectRatio="none" aria-hidden style={{ position: 'absolute', inset: 0, width: '100%', height: 32, display: 'block' }}>
           {paths && <path d={paths.line} fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
           {bars && <path d={bars} fill="var(--status-danger-fg)" stroke="none" />}

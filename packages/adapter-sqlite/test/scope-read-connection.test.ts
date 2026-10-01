@@ -354,6 +354,8 @@ describe('admin reads see only committed state, from a read-only connection (#16
       expect(await spineReads(s)).toEqual(noSpine);
       await finish('commit');
       expect(await spineReads(s)).toEqual(allSpine);
+      expect((await host.admin.scopeAppliedMigrations(staff, t, s)).find((m) => m.moduleId === '@test/planted'))
+        .toMatchObject({ durationMs: null, rowsChanged: null });
     });
 
     it('the platform-intent drain: an intent an invoke has not committed is not listed, before or after its rollback', async () => {

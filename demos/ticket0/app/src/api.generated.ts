@@ -138,6 +138,12 @@ export interface ConversationTag {
   created_at: string;
 }
 
+/** `ticket0_conversation_follows` — declared in spec/model.ts. */
+export interface ConversationFollow {
+  principal: string;
+  conversation_id: string;
+}
+
 /** `ticket0_saved_replies` — declared in spec/model.ts. */
 export interface SavedReply {
   id: string;
@@ -353,6 +359,13 @@ export interface Ticket0Client {
    * `GET /widget/assistant-mode` — `ticket0/assistant-mode`
    */
   assistantMode(): Promise<{ autonomous: boolean }>;
+
+  /**
+   * Conversations whose service-level target is due soon
+   *
+   * `GET /conversations/breaching-soon` — `ticket0/breaching-soon`
+   */
+  breachingSoon(input: { withinMinutes?: number }): Promise<{ withinMinutes: number; rows: ({ conversationId: string; subject: string; priority: "low" | "normal" | "urgent"; state: "new" | "open" | "snoozed"; assignee: string | null; target: "first_response" | "resolution"; dueAt: string })[]; truncated: boolean }>;
 
   /**
    * Close a conversation for good, answered or not
@@ -1082,6 +1095,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/assistant/health", "GET", undefined, undefined),
     assistantMode: () =>
       send("/widget/assistant-mode", "GET", undefined, undefined),
+    breachingSoon: (input: Args) =>
+      send("/conversations/breaching-soon", "GET", undefined, input),
     close: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/close`, "POST", omit(input, ["conversationId"]), undefined),
     closeUsagePeriod: (input: Args) =>

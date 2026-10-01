@@ -352,9 +352,9 @@ export const MOCK_PREVIEWS: VerticalPreview[] = [
 
 /** Schema history (#1236): two module migrations, newest first. */
 export const MOCK_APP_MIGRATIONS: AppMigrationsView = { available: true, migrations: [
-  { moduleId: 'crm', version: '0003-add-owner-index', appliedAt: ago(2 * 86400e3) },
-  { moduleId: 'crm', version: '0002-contacts', appliedAt: ago(9 * 86400e3) },
-  { moduleId: 'crm', version: '0001-init', appliedAt: null },
+  { moduleId: 'crm', version: '0003-add-owner-index', appliedAt: ago(2 * 86400e3), durationMs: 14, rowsChanged: 0 },
+  { moduleId: 'crm', version: '0002-contacts', appliedAt: ago(9 * 86400e3), durationMs: 37, rowsChanged: 128 },
+  { moduleId: 'crm', version: '0001-init', appliedAt: null, durationMs: null, rowsChanged: null },
 ] };
 
 /** Traffic with deploys drawn on it (#1236): the push at hour 18 spikes the errors. */

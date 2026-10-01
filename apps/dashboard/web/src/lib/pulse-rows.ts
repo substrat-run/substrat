@@ -168,7 +168,7 @@ export function pulseAppRows(input: {
       errors: sum('errors'),
       p95: null,
       unread: buckets ? null : 'Traffic over this window could not be read for this app.',
-      p95Why: 'p95 is read over the 1h, 24h or 3d range, not a custom window.',
+      p95Why: 'A whole-window p95 cannot be derived from bucket percentiles; the per-bucket trend is still shown.',
     };
   });
 }
