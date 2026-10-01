@@ -31,6 +31,7 @@ import {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   PlatformCallError,
   type InvokeOptions,
+  type AppliedMigration,
   type SwitchedOff,
   type UndrainedEvents,
 } from '@substrat-run/kernel';
@@ -173,7 +174,7 @@ export interface VerticalScopeHost {
   ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrationsLocal(
     scopeId: ScopeId,
-  ): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
+  ): Promise<AppliedMigration[]>;
   /**
    * The Tier-2 drain's far end (#1334): the oldest not-yet-drained events of a scope
    * this deployment holds, and the stamp once the platform's sink confirmed them.
