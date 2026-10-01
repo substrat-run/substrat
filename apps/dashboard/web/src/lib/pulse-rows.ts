@@ -67,7 +67,7 @@ export function pulseConnectorRows(
     const current = bins.get(at);
     bins.set(at, current
       ? { ...current, calls: current.calls + row.calls, errors: current.errors + row.errors, durationP95: null }
-      : { start: row.start, calls: row.calls, errors: row.errors, durationP95: row.durationP95 });
+      : { start: row.start, calls: row.calls, errors: row.errors, durationP95: row.durationP95 > 0 ? row.durationP95 : null });
   }
   const first = Math.floor(from / step) * step;
   return [...providers.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([provider, bins]) => {

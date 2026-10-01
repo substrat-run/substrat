@@ -30,4 +30,13 @@ describe('Pulse connector rows (#1750)', () => {
     expect(rows[0]).toMatchObject({ calls: 7, errors: 1, latestP95: null });
     expect(rows[0]!.buckets[0]).toMatchObject({ calls: 7, durationP95: null });
   });
+
+  it('treats the reader zero sentinel as no latency observation', () => {
+    const rows = pulseConnectorRows([
+      bucket('2026-09-22T10:00:00Z', 2, 0, 45),
+      bucket('2026-09-22T10:15:00Z', 3, 0, 0),
+    ], window, 15);
+    expect(rows[0]).toMatchObject({ calls: 5, latestP95: 45 });
+    expect(rows[0]!.buckets.map((b) => b.durationP95)).toEqual([45, null, null, null]);
+  });
 });
