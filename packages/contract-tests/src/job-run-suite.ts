@@ -837,6 +837,25 @@ export function jobRunContractSuite(
         expect(await rowsOf(s)).toEqual(after);
       });
 
+      it('finishes an older partial redaction even with a terminal note and payload tombstone', async () => {
+        const erased = dataSubjectId.parse(ulid());
+        const tombstone = { [REDACTED_INTENT_MARKER]: { reason: 'subject-erasure', subjectId: erased, at: T0 } };
+        const s = await seeded([
+          { id: 'cursor-left', subject: erased, payload: tombstone, cursor: { name: 'Anna Ek' }, status: 'done', lastError: REDACTED_JOB_NOTE },
+          { id: 'step-left', subject: erased, payload: tombstone, cursor: tombstone, status: 'failed', lastError: CANCELLED_JOB_NOTE },
+          { id: 'other-tombstone', subject: erased, payload: { [REDACTED_INTENT_MARKER]: { reason: 'subject-erasure', subjectId: ulid(), at: T0 } }, cursor: { name: 'Anna Ek' }, status: 'failed', lastError: CANCELLED_JOB_NOTE },
+        ], [
+          { runId: 'step-left', step: 'fetch', result: { name: 'Anna Ek' }, lastError: 'Anna Ek has no address' },
+        ]);
+        expect((await host.admin.shredSubject(staff, t, s, erased)).jobRunsRedacted).toBe(3);
+        const after = await rowsOf(s);
+        expect(JSON.stringify(after)).not.toContain('Anna Ek');
+        expect(JSON.parse(after.runs.find((run) => run.id === 'cursor-left')!.cursor!)).toMatchObject(tombstoneOf(erased));
+        expect(JSON.parse(after.steps[0]!.result!)).toMatchObject(tombstoneOf(erased));
+        expect((await host.admin.shredSubject(staff, t, s, erased)).jobRunsRedacted).toBe(0);
+        expect(await rowsOf(s)).toEqual(after);
+      });
+
       it('tombstones the payload, the cursor and a step memo that copy the subject\'s event', async () => {
         const erased = dataSubjectId.parse(ulid());
         const s = await seeded(

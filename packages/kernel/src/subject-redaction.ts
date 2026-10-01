@@ -365,10 +365,17 @@ export function redactSubjectJobRuns(sql: RedactionSql, subjectId: string, at: s
     [subjectId],
   ) as { id: string; payload: string; cursor: string | null; status: string; last_error: string | null }[];
   for (const r of declared) {
-    // A complete previous redaction is terminal. Stale step writes are blocked by
-    // the driver's running-state CAS, so a repeat erasure changes and counts nothing.
-    if (r.status !== 'running' && isRedactedPayloadText(r.payload) &&
-        (r.last_error === CANCELLED_JOB_NOTE || r.last_error === REDACTED_JOB_NOTE)) continue;
+    // Older envelope-only erasure may have tombstoned just the payload. Verify every
+    // owned field before calling this complete; a terminal note is not a receipt.
+    if (r.status !== 'running' && isRedactedPayloadText(r.payload, subjectId) &&
+        (r.cursor === null || isRedactedPayloadText(r.cursor, subjectId)) &&
+        (r.last_error === CANCELLED_JOB_NOTE || r.last_error === REDACTED_JOB_NOTE)) {
+      const memos = sql('SELECT result, last_error FROM _substrat_job_steps WHERE run_id = ?', [r.id]) as
+        { result: string | null; last_error: string | null }[];
+      if (memos.every((memo) =>
+        (memo.result === null || isRedactedPayloadText(memo.result, subjectId)) &&
+        (memo.last_error === null || memo.last_error === REDACTED_JOB_NOTE))) continue;
+    }
     sql(`UPDATE _substrat_job_steps
            SET result = CASE WHEN result IS NULL THEN NULL ELSE ? END,
                last_error = CASE WHEN last_error IS NULL THEN NULL ELSE ? END
@@ -419,9 +426,12 @@ export function redactSubjectJobRuns(sql: RedactionSql, subjectId: string, at: s
 }
 
 /** Recognise a previous complete payload tombstone without relying on its timestamp. */
-function isRedactedPayloadText(text: string): boolean {
-  try { return isRedactedPayload(JSON.parse(text)); }
-  catch { return false; }
+function isRedactedPayloadText(text: string, subjectId: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    return isRedactedPayload(parsed) &&
+      (parsed[REDACTED_INTENT_MARKER] as Record<string, unknown>)['subjectId'] === subjectId;
+  } catch { return false; }
 }
 
 /**
