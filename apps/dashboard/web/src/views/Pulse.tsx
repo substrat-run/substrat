@@ -430,6 +430,7 @@ function AppLine({
       paths: sparkPaths(req, spans, top),
       bars: errorBarsPath(buckets.map((b) => b.errors), spans, top),
       latency: metricLinePath(latency, spans, latencyTop),
+      latencyValues: buckets.map((b) => `${b.start}: ${b.durationP95 === null ? 'unavailable' : duration(b.durationP95)}`),
     };
   }, [row.buckets, series, window.from, window.to]);
   return (
@@ -460,6 +461,7 @@ function AppLine({
       <span
         role="cell"
         data-pulse-axis
+        aria-label={spark?.latency ? `p95 per bucket: ${spark.latencyValues.join(', ')}` : 'No p95 bucket trend available'}
         {...handle}
         style={{ position: 'relative', display: 'block', height: 32, touchAction: 'none' }}
       >
