@@ -25,6 +25,7 @@ import {
   bucketSpans,
   deployPills,
   errorBarsPath,
+  metricLinePath,
   pulseAppRows,
   pulseStamp,
   sparkPaths,
@@ -307,7 +308,7 @@ export function Pulse({
           />
         )}
         <SectionHead
-          cells={['Apps', 'Requests', 'Errors', 'p95', bins ? `Requests · errors, ${bins} bins` : 'Requests · errors', 'Status']}
+          cells={['Apps', 'Requests', 'Errors', 'p95', bins ? `Requests · errors · p95 trend, ${bins} bins` : 'Requests · errors · p95 trend', 'Status']}
           first={!oneApp}
         />
         {apps.length === 0 ? (
@@ -421,9 +422,16 @@ function AppLine({
     if (buckets.length === 0) return null;
     const req = buckets.map((b) => b.requests);
     const top = Math.max(...req) * 1.1;
+    const latency = buckets.map((b) => b.durationP95 ?? null);
+    const latencyTop = Math.max(1, ...latency.filter((v): v is number => v !== null)) * 1.1;
     // Errors on the requests' own scale: one failed request among hundreds is a sliver,
     // not a bar as tall as the busiest hour. The path keeps a 2px floor so it is still seen.
-    return { paths: sparkPaths(req, spans, top), bars: errorBarsPath(buckets.map((b) => b.errors), spans, top) };
+    return {
+      paths: sparkPaths(req, spans, top),
+      bars: errorBarsPath(buckets.map((b) => b.errors), spans, top),
+      latency: metricLinePath(latency, spans, latencyTop),
+      latencyValues: buckets.map((b) => `${b.start}: ${b.durationP95 === null ? 'unavailable' : duration(b.durationP95)}`),
+    };
   }, [row.buckets, series, window.from, window.to]);
   return (
     <a
@@ -453,6 +461,7 @@ function AppLine({
       <span
         role="cell"
         data-pulse-axis
+        aria-label={spark?.latency ? `p95 per bucket: ${spark.latencyValues.join(', ')}` : 'No p95 bucket trend available'}
         {...handle}
         style={{ position: 'relative', display: 'block', height: 32, touchAction: 'none' }}
       >
@@ -472,6 +481,7 @@ function AppLine({
             <path d={spark.paths.area} fill="color-mix(in srgb, var(--text-secondary) 12%, transparent)" stroke="none" />
             <path d={spark.paths.line} fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
             {spark.bars && <path d={spark.bars} fill="var(--status-danger-fg)" stroke="none" />}
+            {spark.latency && <path data-p95-path d={spark.latency} fill="none" stroke="var(--status-info-fg)" strokeWidth={1.5} strokeDasharray="3 2" vectorEffect="non-scaling-stroke"><title>p95 per bucket, scaled separately from requests</title></path>}
           </svg>
         )}
       </span>

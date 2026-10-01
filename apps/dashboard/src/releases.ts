@@ -211,6 +211,8 @@ export interface TrafficBucketInput {
   bucketMinutes: number;
   requests: number;
   errors: number;
+  /** Per-bucket latency from the tenant-grain plane read. Absent on older/script-grain reads. */
+  durationP95?: number;
   /** Additive status-class split (#1693) — see `TenantMetricsBucket`. Absent on a plane
    *  that does not (yet) carry the status-class dimension. */
   class2xx?: number;
@@ -223,6 +225,8 @@ export interface TrafficBucket {
   start: string;
   requests: number;
   errors: number;
+  /** Null when this slot has no traffic, no latency reading, or conflicting source rows. */
+  durationP95: number | null;
   /**
    * The chart's green and yellow segments (#1693): `green` is 2xx + 3xx traffic, `yellow`
    * is 4xx — the red segment is `errors` above, unchanged. Both present or both absent:
@@ -324,7 +328,7 @@ function fillGrid(rows: TrafficBucketInput[], grid: BucketGrid): TrafficBucket[]
   // is only "has the split" when nothing in it is guessing.
   const hasClasses =
     rows.length > 0 && rows.every((b) => b.class2xx !== undefined && b.class3xx !== undefined && b.class4xx !== undefined);
-  const totals = new Map<number, { requests: number; errors: number; class2xx: number; class3xx: number; class4xx: number }>();
+  const totals = new Map<number, { requests: number; errors: number; class2xx: number; class3xx: number; class4xx: number; rows: number; durationP95: number | undefined }>();
   for (const b of rows) {
     const t = Date.parse(b.start);
     if (Number.isNaN(t)) continue;
@@ -332,9 +336,11 @@ function fillGrid(rows: TrafficBucketInput[], grid: BucketGrid): TrafficBucket[]
     // ours must agree, or a row lands between two columns and is lost.
     const slot = Math.floor(t / grid.widthMs) * grid.widthMs;
     if (slot < grid.start || slot > grid.end) continue;
-    const acc = totals.get(slot) ?? { requests: 0, errors: 0, class2xx: 0, class3xx: 0, class4xx: 0 };
+    const acc = totals.get(slot) ?? { requests: 0, errors: 0, class2xx: 0, class3xx: 0, class4xx: 0, rows: 0, durationP95: undefined };
     acc.requests += b.requests;
     acc.errors += b.errors;
+    acc.rows += 1;
+    acc.durationP95 = b.durationP95;
     acc.class2xx += b.class2xx ?? 0;
     acc.class3xx += b.class3xx ?? 0;
     acc.class4xx += b.class4xx ?? 0;
@@ -351,6 +357,9 @@ function fillGrid(rows: TrafficBucketInput[], grid: BucketGrid): TrafficBucket[]
       start: new Date(t).toISOString(),
       requests: acc?.requests ?? 0,
       errors: acc?.errors ?? 0,
+      // Percentiles cannot be summed. The tenant read owns one row per scope/slot;
+      // if a source violates that, withhold p95 instead of choosing one arbitrarily.
+      durationP95: acc && acc.rows === 1 && acc.requests > 0 ? acc.durationP95 ?? null : null,
       ...(classes ?? {}),
     });
   }

@@ -367,6 +367,7 @@ export const MOCK_TRAFFIC: TrafficSeries = (() => {
       start: new Date(Math.floor(t / 3600e3) * 3600e3).toISOString(),
       requests: busy ? 60 + ((i * 37) % 45) : 8 + ((i * 11) % 9),
       errors: i >= 18 && i <= 20 ? 14 + ((i * 5) % 7) : i % 7 === 0 ? 1 : 0,
+      durationP95: 80 + ((i * 17) % 130),
     };
   });
   return {
@@ -574,6 +575,7 @@ export const MOCK_APP_TRAFFIC: TrafficSeries = (() => {
       start: new Date(Math.floor((now - (23 - i) * 3600e3) / 3600e3) * 3600e3).toISOString(),
       requests: busy ? 280 + ((i * 29) % 45) : 85 + ((i * 11) % 15),
       errors: i === 18 ? 4 : i === 19 ? 2 : 0,
+      durationP95: 110 + ((i * 31) % 180),
     };
   });
   return {
@@ -623,7 +625,7 @@ export const MOCK_APP_OVERLAYS: AppOverlays = (() => {
  */
 export const MOCK_TEAM_TRAFFIC: TeamTrafficSeries = (() => {
   const start = Date.now();
-  const line = (shape: (i: number) => { requests: number; errors: number }) =>
+  const line = (shape: (i: number) => { requests: number; errors: number; durationP95: number | null }) =>
     Array.from({ length: 24 }, (_, i) => ({
       start: new Date(Math.floor((start - (23 - i) * 3600e3) / 3600e3) * 3600e3).toISOString(),
       ...shape(i),
@@ -635,11 +637,12 @@ export const MOCK_TEAM_TRAFFIC: TeamTrafficSeries = (() => {
         buckets: line((i) => ({
           requests: i > 6 && i < 21 ? 180 + ((i * 53) % 90) : 20 + ((i * 7) % 12),
           errors: i >= 18 && i <= 20 ? 9 + ((i * 3) % 5) : 0,
+          durationP95: 90 + ((i * 37) % 160) + (i >= 18 && i <= 20 ? 240 : 0),
         })),
       },
       {
         scopeId: MOCK_INSTALLED_APP_SCOPE,
-        buckets: line((i) => ({ requests: 40 + ((i * 13) % 18), errors: i % 9 === 0 ? 1 : 0 })),
+        buckets: line((i) => ({ requests: 40 + ((i * 13) % 18), errors: i % 9 === 0 ? 1 : 0, durationP95: 55 + ((i * 11) % 70) })),
       },
     ],
     bucketMinutes: 60,

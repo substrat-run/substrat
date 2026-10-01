@@ -48,6 +48,20 @@ export function sparkPaths(values: number[], spans: Array<[number, number]>, max
   return { line, area: `${line} L${x1},${H} L${x0},${H} Z` };
 }
 
+/** A second metric on the same clock, with its own scale and gaps where it was unreadable. */
+export function metricLinePath(values: Array<number | null>, spans: Array<[number, number]>, max: number): string | null {
+  const paths: string[] = [];
+  for (let start = 0; start < values.length;) {
+    if (values[start] === null) { start++; continue; }
+    let end = start + 1;
+    while (end < values.length && values[end] !== null) end++;
+    const path = sparkPaths(values.slice(start, end) as number[], spans.slice(start, end), max)?.line;
+    if (path) paths.push(path);
+    start = end;
+  }
+  return paths.length ? paths.join(' ') : null;
+}
+
 /** Error bars stacked at the bottom of the row — only where a bucket had errors. */
 export function errorBarsPath(errors: number[], spans: Array<[number, number]>, max: number): string {
   const top = max > 0 ? max : 1;
@@ -75,8 +89,8 @@ export interface PulseAppRow extends FleetRow {
  *
  * Under a custom window the numbers come from the SAME series the sparkline draws, because
  * the per-app read only answers a range preset: a row captioned "10:05–10:15" beside a
- * day's requests would be two windows on one line. p95 has no per-bucket form to sum, so
- * it reads "—" there and says why.
+ * day's requests would be two windows on one line. Bucket percentiles cannot combine
+ * into a whole-window p95, so it reads "—" there; the bucket trend remains visible.
  */
 export function pulseAppRows(input: {
   apps: AppRow[];
@@ -97,7 +111,7 @@ export function pulseAppRows(input: {
       errors: sum('errors'),
       p95: null,
       unread: buckets ? null : 'Traffic over this window could not be read for this app.',
-      p95Why: 'p95 is read over the 1h, 24h or 3d range, not a custom window.',
+      p95Why: 'A whole-window p95 cannot be derived from bucket percentiles; the per-bucket trend is still shown.',
     };
   });
 }
