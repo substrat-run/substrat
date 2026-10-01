@@ -131,7 +131,9 @@ jobs:
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli push demos/ticket0 --slug ticket0 --promote prod
+          # Use the CLI built from this checkout so its push gate sees the same layer rules
+          # as the preceding lint:boundaries gate.
+          node packages/cli/dist/cli.js push demos/ticket0 --slug ticket0 --promote prod
       - name: Update the test environment
         if: vars.SUBSTRAT_TEST_SCOPE_ID != ''
         env:
@@ -145,12 +147,12 @@ jobs:
         run: |
           set -euo pipefail
           BASE=$(node -p "require('./demos/ticket0/package.json').version")
-          npx @substrat-run/cli push demos/ticket0 --slug ticket0 --version "$BASE-test.${{ github.run_number }}" | tee push.out
+          node packages/cli/dist/cli.js push demos/ticket0 --slug ticket0 --version "$BASE-test.${{ github.run_number }}" | tee push.out
           # '|| true' so an unmatched grep does not trip pipefail before the message below —
           # "could not read the pushed version id" beats a bare exit 1 from grep.
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
           if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi
-          npx @substrat-run/cli scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
+          node packages/cli/dist/cli.js scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
 
   preview:
     # Not for a Dependabot PR (#1590): a dependency bump has no vertical change to preview, and
@@ -230,7 +232,8 @@ jobs:
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli preview create demos/ticket0 --slug ticket0 --tag pr-${{ github.event.number }} | tee preview.out
+          # Preview's push must run the same local layer rules as the gate above.
+          node packages/cli/dist/cli.js preview create demos/ticket0 --slug ticket0 --tag pr-${{ github.event.number }} | tee preview.out
           # Take the URL from the CLI success line (the ✓ marker) only — the push it runs
           # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
           grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
@@ -244,7 +247,7 @@ jobs:
           # A FRESH scope, bound once and never rebound, so this URL is frozen to this build
           # forever. Clean-room (--empty) rather than a fork: a throwaway per build should not
           # copy prod data every push. Short TTL — the sticky preview is the one that lives.
-          npx @substrat-run/cli preview create demos/ticket0 --slug ticket0 \
+          node packages/cli/dist/cli.js preview create demos/ticket0 --slug ticket0 \
             --tag pr-${{ github.event.number }}-${{ github.run_id }} --empty --ttl 24h | tee build.out
           grep -F '✓ preview' build.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > build.url || true
       - name: Comment the preview URLs
