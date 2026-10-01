@@ -74,6 +74,11 @@ visible in review rather than indistinguishable from drift.
 `packages/builder-generator` is the one such case: `zod: ^3.23.0`, because the AI
 SDK is on zod 3.
 
+The private root `package.json` mirrors the catalog ranges for TypeScript and
+Wrangler as literals. Dependabot currently writes an invalid root importer when
+updating a root-level catalog dependency (#1621); the workspace packages still
+use `catalog:`. Update those two root ranges with their catalog entries.
+
 Drift between workspace packages was the actual source of most peer noise here:
 two packages had moved to vitest 4 while everyone else was on 3, and one demo to
 `@cloudflare/workers-types` 5 while everyone else was on 4. Neither was an
