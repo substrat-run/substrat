@@ -1,5 +1,14 @@
 # @substrat-run/adapter-sqlite
 
+## 0.132.1
+
+### Patch Changes
+
+- a2f02b1: Record each newly applied scope migration's duration and number of SQLite data rows changed. Both adapters preserve null metrics for migrations that ran before recording began, and the control plane carries the new values to the dashboard's schema history.
+- Updated dependencies [a2f02b1]
+  - @substrat-run/kernel@0.132.1
+  - @substrat-run/contracts@0.132.1
+
 ## 0.132.0
 
 ### Patch Changes
@@ -5535,7 +5544,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
