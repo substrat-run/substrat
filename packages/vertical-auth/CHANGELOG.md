@@ -1,5 +1,16 @@
 # @substrat-run/vertical-auth
 
+## 0.18.0
+
+### Minor Changes
+
+- 1250ecd: The identity directory adds `unbindPrincipal(scopeId, principal)`, which removes all subject bindings for a principal in one scope and returns the removed subjects. Member removal can now avoid a capped scope-wide scan that might miss a second login. The directory indexes scope and principal for this operation; callers can use the returned subjects to report each absent place to their identity issuer.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.132.0
+- @substrat-run/kernel@0.132.0
+
 ## 0.17.0
 
 ### Minor Changes
