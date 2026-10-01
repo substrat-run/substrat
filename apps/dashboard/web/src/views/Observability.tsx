@@ -15,6 +15,7 @@ import { closeRecordInUrl, closeRequestInUrl, openRequestInUrl, recordInUrl, req
 import { RecordPanel } from './RecordPanel';
 import { Tabs } from '@substrat-run/ui';
 import { Pulse } from './Pulse';
+import { AppFailures } from './AppFailures';
 import { EventExplorer, TenantLogs } from './ObservabilityPanels';
 import { RequestsMode } from './RequestsMode';
 import { PatternsMode } from './PatternsMode';
@@ -49,6 +50,7 @@ function windowAround(at: string, padMs = CURSOR_PAD_MS): { from: string; to: st
   return { from: new Date(t - padMs).toISOString(), to: new Date(t + padMs).toISOString() };
 }
 
+/** Render the URL-selected observability view and preserve its app, time interval, and filters. */
 export function Observability({
   apps,
   query,
@@ -129,11 +131,8 @@ export function Observability({
   );
 
   /**
-   * A marker opens the sub-view that EXPLAINS it — the run row for a failed schedule, the
-   * log for a recorded failure, the Deployments tab's schema history for a migration —
-   * on the marker's own minutes rather than its app's whole window. A failed run lands on
-   * Pulse's Schedules section with the window, which hoists the schedule whose run fell
-   * inside it and names the run on its line.
+   * Failures open their recorded details around the marker's own instant, independently
+   * of the recent schedule runs. Migrations open the deployment's schema history.
    */
   const onMarker = (m: OverlayMarker): void => {
     if (!scopeId) return;
@@ -141,7 +140,7 @@ export function Observability({
       navigate(`/apps/${scopeId}/deployments`);
       return;
     }
-    onNav({ app: scopeId, view: m.kind === 'run-failed' ? 'schedules' : 'logs', ...windowAround(m.at) });
+    onNav({ app: scopeId, view: 'failures', ...windowAround(m.at) });
   };
 
   if (resolved.error) return <Page><p role="alert">{resolved.error}</p><button onClick={() => navigateQuery({ ...q, hours: '24', from: undefined, to: undefined })}>Reset time</button></Page>;
@@ -151,6 +150,19 @@ export function Observability({
       Refresh
     </Button>
   );
+
+  if (view === 'failures') {
+    return <Page>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+        <PageHead title="Failures" sub={app ? `Recorded errors for ${app.name}.` : 'Recorded errors for an app.'} />
+        <AppFilter apps={apps} value={scopeId} onChange={pickApp} />
+        {refresh}
+      </div>
+      {scopeId ? <AppFailures scopeId={scopeId} window={window} nonce={nonce} onNav={onNav} />
+        : <PickApp section="pulse" apps={apps} onPick={(app) => onNav({ app, view: 'failures' })} />}
+      {slideOver}
+    </Page>;
+  }
 
   if (section === 'pulse') {
     return (

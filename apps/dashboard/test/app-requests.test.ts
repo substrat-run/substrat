@@ -66,6 +66,7 @@ describe('the app request reads (#1746)', () => {
   let reads: URL[];
   /** Every tenant-token mint's body — who the dashboard asked the credential to act for. */
   let mints: unknown[];
+  let failureSourcesUnavailable: boolean;
   let owner: ReturnType<typeof principalId.parse>;
   let env: Record<string, unknown>;
 
@@ -76,6 +77,7 @@ describe('the app request reads (#1746)', () => {
     for (const m of MODULES) host.registerModule(m);
     reads = [];
     mints = [];
+    failureSourcesUnavailable = false;
 
     owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'requests', name: 'Requests' });
@@ -98,6 +100,15 @@ describe('the app request reads (#1746)', () => {
           if (path === '/tenant-tokens') {
             mints.push(JSON.parse(String(init?.body)));
             return Response.json({ token: 'tenant-token' });
+          }
+          if (path === '/sweep-runs' || path === '/ops-failures') {
+            reads.push(u);
+            if (failureSourcesUnavailable) return Response.json({ error: 'unavailable' }, { status: 501 });
+            const base = { tenantId: tenant, scopeId: appScope, at: '2026-09-01T10:30:00.000Z' };
+            return Response.json({ entries: path === '/sweep-runs' ? [
+              { ...base, id: 'run-1', kind: 'schedule', operation: null, unit: `${appScope}:widgets/queue-due`, outcome: 'failed', error: 'permission denied: widgets:dispatch' },
+              { ...base, id: 'fresh-1', kind: 'freshness', unit: 'widgets.updated', outcome: 'failed' },
+            ] : [{ ...base, id: 'failure-1', operation: 'widgets/send', stage: 'dispatch', code: 'PermissionDenied', message: 'Full error: ' + 'context '.repeat(100) }], cursor: null });
           }
           if (path.startsWith('/observability/tenant-request') || path === '/observability/tenant-log-patterns' || path === '/observability/tenant-logs') {
             reads.push(u);
@@ -185,4 +196,33 @@ describe('the app request reads (#1746)', () => {
     expect(res.status).toBe(200);
     expect(reads.at(-1)!.searchParams.get('template')).toBe(template);
   });
+  it('reads retained failures in the requested window, scoped to this app, with full messages', async () => {
+    const query = new URLSearchParams({ since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z', scopeId: scopeId.parse(ulid()) });
+    const res = await app.request(`/api/apps/${appScope}/failures?${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { entries: Array<{ operation: string; message: string }>; unavailableSources: string[] };
+    expect(body.entries).toHaveLength(2);
+    expect(body.entries[0]).toMatchObject({ operation: 'widgets/queue-due', message: 'permission denied: widgets:dispatch' });
+    expect(body.entries[1]!.message).toBe('Full error: ' + 'context '.repeat(100));
+    expect(body.unavailableSources).toEqual([]);
+    for (const ask of reads) {
+      expect(ask.searchParams.get('scopeId')).toBe(appScope);
+      expect(ask.searchParams.get('since')).toBe(query.get('since'));
+      expect(ask.searchParams.get('until')).toBe(query.get('until'));
+    }
+    expect(reads.find((r) => r.pathname.endsWith('/sweep-runs'))?.searchParams.get('outcome')).toBe('failed');
+  });
+
+  it('refuses another team’s app and unauthenticated failure reads before querying the plane', async () => {
+    expect((await app.request(`/api/apps/${scopeId.parse(ulid())}/failures`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
+    expect((await app.request(`/api/apps/${appScope}/failures`, {}, env)).status).toBe(401);
+    expect(reads).toHaveLength(0);
+  });
+
+  it('reports unavailable failure sources rather than claiming an empty healthy history', async () => {
+    failureSourcesUnavailable = true;
+    const res = await app.request(`/api/apps/${appScope}/failures`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    expect(await res.json()).toMatchObject({ entries: [], unavailableSources: ['background runs', 'operation failures'] });
+  });
+
 });

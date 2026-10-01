@@ -74,6 +74,19 @@ describe('FleetHealth table', () => {
     expect(onOpen).toHaveBeenCalledWith('b');
   });
 
+  it('opens failure details from the Failing badge without triggering the app row', async () => {
+    vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [health('a', 'failing')] });
+    vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
+    const onOpen = vi.fn();
+    await act(async () => root.render(<FleetHealth apps={[app('a')]} onOpen={onOpen} />));
+    const link = container.querySelector<HTMLAnchorElement>('a[aria-label="Failures for App a"]')!;
+    expect(link.href).toContain('view=failures');
+    await act(async () => link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(location.search).toContain('view=failures');
+    window.history.replaceState(null, '', '/');
+  });
+
   const names = () => [...container.querySelectorAll('[role="row"]')].slice(1).map((r) => r.querySelector('[role="cell"]:nth-child(2) span')!.textContent);
   const chip = (label: string) => [...container.querySelectorAll('button[aria-pressed]')].find((b) => b.textContent?.startsWith(label));
   const click = (el: Element) => act(async () => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));

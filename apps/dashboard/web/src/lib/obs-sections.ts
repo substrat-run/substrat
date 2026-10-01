@@ -21,7 +21,7 @@ export const OBS_SECTIONS: { key: ObsSection; label: string }[] = [
 
 /** Each child's sub-views; the first is where the child opens. */
 export const SECTION_VIEWS: Record<ObsSection, readonly string[]> = {
-  pulse: ['traffic', 'health', 'schedules'],
+  pulse: ['traffic', 'health', 'schedules', 'failures'],
   // #1744: the state machines open first, as the design has it; Flow is the switch beside them.
   processes: ['map', 'flow'],
   logs: ['logs', 'requests', 'patterns', 'events'],

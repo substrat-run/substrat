@@ -742,6 +742,22 @@ export interface OverlayMarker {
   detail: string | null;
 }
 
+/** Recorded failures retained independently of a schedule's recent successful runs. */
+export interface AppFailure {
+  id: string;
+  at: string;
+  kind: 'sweep' | 'operation';
+  operation: string;
+  stage: string | null;
+  message: string | null;
+  code: string | null;
+}
+export interface AppFailuresView {
+  entries: AppFailure[];
+  unavailableSources: string[];
+  incompleteSources: string[];
+}
+
 /** A stretch of time worth shading — today only a freshness expectation reading stale. */
 export interface OverlaySpan {
   from: string;
@@ -2026,6 +2042,9 @@ export const api = {
    * its own route: the chart must draw on the series alone, and these arriving late or
    * not at all costs the overlays and nothing else.
    */
+  appFailures: (scopeId: string, window: { since: string; until: string }) =>
+    call<AppFailuresView>(`/apps/${encodeURIComponent(scopeId)}/failures?${new URLSearchParams(window)}`),
+
   appOverlays: (scopeId: string, hours: number, window?: { since: string; until: string }) =>
     call<AppOverlays>(`/apps/${encodeURIComponent(scopeId)}/overlays?${new URLSearchParams({ hours: String(hours), ...window })}`),
 

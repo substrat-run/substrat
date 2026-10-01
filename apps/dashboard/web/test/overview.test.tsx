@@ -248,7 +248,7 @@ describe('Overview page', () => {
       select.value = 'attention';
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    expect(cards()).toEqual(['/observability?app=a']);
+    expect(cards()).toEqual(['/observability?app=a&view=failures&hours=24']);
   });
 });
 

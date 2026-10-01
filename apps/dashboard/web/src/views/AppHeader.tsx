@@ -3,7 +3,7 @@ import { Badge, Button } from '@substrat-run/ui';
 import { api, type AppHealthRow, type AppRow } from '../lib/api';
 import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { VERDICTS, appVerdict } from '../lib/fleet-rows';
-import { navigate, obsPath } from '../lib/router';
+import { navigate, obsPath, teamPath, isPlainClick } from '../lib/router';
 import { Ic } from '../lib/icons';
 import { Pill, type PillKind } from '../components/ui';
 
@@ -72,7 +72,7 @@ export function AppHeader({
             <Ic name="pencil" size={14} />
           </button>
           {judged ? (
-            <VerdictReason verdict={judged.verdict} why={judged.why}>
+            <VerdictReason verdict={judged.verdict} why={judged.why} path={judged.verdict === 'failing' ? obsPath({ app: app.app_scope_id, view: 'failures', hours: '24' }) : undefined}>
               <Badge status={VERDICTS[judged.verdict].status}>{VERDICTS[judged.verdict].label}</Badge>
             </VerdictReason>
           ) : (
@@ -105,11 +105,14 @@ export function AppHeader({
  * `aria-describedby` so a screen reader reads the reason too. `Tooltip` from the ui
  * package opens on the pointer only, and a `title` is out of reach of keyboard and touch.
  */
-function VerdictReason({ verdict, why, children }: { verdict: string; why: string; children: ReactNode }) {
+function VerdictReason({ verdict, why, children, path }: { verdict: string; why: string; children: ReactNode; path?: string }) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const Tag = path ? 'a' : 'span';
   return (
-    <span
+    <Tag
+      href={path ? teamPath(path) : undefined}
+      onClick={(e) => { if (path && isPlainClick(e)) { e.preventDefault(); navigate(path); } }}
       data-verdict={verdict}
       tabIndex={0}
       aria-describedby={id}
@@ -144,6 +147,6 @@ function VerdictReason({ verdict, why, children }: { verdict: string; why: strin
       >
         {why}
       </span>
-    </span>
+    </Tag>
   );
 }
