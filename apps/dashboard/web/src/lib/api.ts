@@ -411,6 +411,8 @@ export interface AppliedMigration {
   version: string;
   /** Null for a row written before the platform recorded the instant. */
   appliedAt: string | null;
+  durationMs: number | null;
+  rowsChanged: number | null;
 }
 
 /**
@@ -681,6 +683,8 @@ export interface TrafficBucket {
   start: string;
   requests: number;
   errors: number;
+  /** Per-bucket latency, null for an unreadable slot. Older workers are normalized by callers. */
+  durationP95: number | null;
   /**
    * The chart's green and yellow segments (#1693): `green` is 2xx + 3xx traffic, `yellow`
    * is 4xx — the red segment is `errors` above, unchanged. Both present or both absent:

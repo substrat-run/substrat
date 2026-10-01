@@ -1982,6 +1982,28 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: { method: 'GET', path: '/conversations' },
   },
 
+  /** Running service-level targets due soon, across the desk. No schema change: the
+   * existing due indexes supply the ordered scans. */
+  'ticket0/breaching-soon': {
+    summary: 'Conversations whose service-level target is due soon',
+    permission: 'conversation:read',
+    input: z.object({ withinMinutes: z.coerce.number().int().min(1).max(1440).default(60) }),
+    output: z.object({
+      withinMinutes: z.number().int(),
+      rows: z.array(z.object({
+        conversationId: z.string(),
+        subject: z.string(),
+        priority: z.enum(['low', 'normal', 'urgent']),
+        state: z.enum(['new', 'open', 'snoozed']),
+        assignee: z.string().nullable(),
+        target: z.enum(['first_response', 'resolution']),
+        dueAt: z.string(),
+      })),
+      truncated: z.boolean(),
+    }),
+    http: { method: 'GET', path: '/conversations/breaching-soon' },
+  },
+
   /**
    * Free text over what the desk holds — the subject, and every message body.
    *

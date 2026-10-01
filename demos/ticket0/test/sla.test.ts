@@ -30,7 +30,7 @@ import {
 import { manualClock, ulid, type ManualClock, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import { SLA_TARGET_MAX_MINUTES } from '../spec/model.js';
 import { ticket0Manifest } from '../src/manifest.js';
-import { ASSISTANT_NAME, slaOverdueScan } from '../src/module.js';
+import { ASSISTANT_NAME, slaOverdueScan, slaUpcomingScan } from '../src/module.js';
 import { ROLES } from '../src/provision.js';
 import { buildHost } from '../src/seed.js';
 import {
@@ -147,6 +147,13 @@ async function sweep(desk: Desk): Promise<number> {
   return ((await stub.invoke('ticket0/escalate-sla-breaches')) as { breached: number }).breached;
 }
 
+const soon = async (desk: Desk, withinMinutes = 60) =>
+  (await (await admin(desk)).invoke('ticket0/breaching-soon', { withinMinutes })) as {
+    withinMinutes: number;
+    rows: Array<{ conversationId: string; target: 'first_response' | 'resolution'; dueAt: string }>;
+    truncated: boolean;
+  };
+
 async function setSla(desk: Desk, sla: Sla | null): Promise<void> {
   await (await admin(desk)).invoke('ticket0/configure-desk', { settings: { sla } });
 }
@@ -254,6 +261,55 @@ beforeAll(() => {
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+describe('breaching soon (#1648)', () => {
+  it('returns running targets in due order and keeps the chosen horizon explicit', async () => {
+    const desk = await freshDesk({ agents: 1, sla: {
+      firstResponseMinutes: { normal: 30 }, resolutionMinutes: { normal: 60 },
+    } });
+    const id = await mail(desk);
+    expect(await soon(desk, 45)).toMatchObject({
+      withinMinutes: 45, truncated: false,
+      rows: [{ conversationId: id, target: 'first_response' }],
+    });
+    expect((await soon(desk, 90)).rows.map((r) => r.target)).toEqual(['first_response', 'resolution']);
+    expect((await (await admin(desk)).invoke('ticket0/breaching-soon', {})) as { withinMinutes: number }).toMatchObject({ withinMinutes: 60 });
+    advance(30);
+    expect((await soon(desk, 45)).rows.map((r) => r.target)).toEqual(['first_response', 'resolution']);
+    advance(1);
+    expect((await soon(desk, 45)).rows.map((r) => r.target)).toEqual(['resolution']);
+    await reply(desk, id);
+    expect((await soon(desk, 45)).rows.map((r) => r.target)).toEqual(['resolution']);
+    await (await agent(desk)).invoke('ticket0/resolve', { conversationId: id });
+    expect((await soon(desk, 45)).rows).toEqual([]);
+  });
+
+  it('excludes paused resolution while first response still runs through a snooze', async () => {
+    const desk = await freshDesk({ agents: 1, sla: {
+      firstResponseMinutes: { normal: 30 }, resolutionMinutes: { normal: 60 },
+    } });
+    const id = await mail(desk);
+    const a = await agent(desk);
+    await a.invoke('ticket0/assign', { conversationId: id, assignee: desk.agents[0] });
+    await a.invoke('ticket0/snooze', { conversationId: id, until: plus(clock.now(), 180) });
+    expect((await soon(desk, 90)).rows.map((r) => r.target)).toEqual(['first_response']);
+  });
+
+  it('requires the staff read key', async () => {
+    const desk = await freshDesk({ agents: 1, sla: FR_30 });
+    await mail(desk);
+    await expect((await as(desk, desk.widget)).invoke('ticket0/breaching-soon', {})).rejects.toThrow(/denied/i);
+  });
+
+  it('returns the earliest twenty and reports that more targets are due', async () => {
+    const desk = await freshDesk({ agents: 1, sla: { firstResponseMinutes: { normal: 120 } } });
+    for (let i = 0; i < 21; i++) await mail(desk);
+    const result = await soon(desk, 240);
+    expect(result.rows).toHaveLength(20);
+    expect(result.truncated).toBe(true);
+    expect(result.rows.map((r) => r.dueAt)).toEqual([...result.rows.map((r) => r.dueAt)].sort());
+  });
+});
+
 describe('off unless the desk sets a target', () => {
   it('a desk with no service levels stamps nothing and breaches nothing, however long it waits', async () => {
     const desk = await freshDesk({ agents: 1 });
@@ -326,7 +382,9 @@ describe('off unless the desk sets a target', () => {
     const late = await mail(desk);
     const repliedLate = await mail(desk);
     expect((await read(desk, repliedLate)).first_response_due_at).not.toBeNull();
+    expect((await soon(desk, 45)).rows).toHaveLength(2);
     await setSla(desk, null);
+    expect(await soon(desk, 45)).toEqual({ withinMinutes: 45, rows: [], truncated: false });
     advance(31);
     expect(await sweep(desk)).toBe(0);
     expect((await read(desk, late)).first_response_breached_at).toBeNull();
@@ -1152,6 +1210,13 @@ describe('the scans are indexed, because they run on every tick', () => {
         );
         expect(plan.filter((d) => /^SCAN\b/.test(d)), target).toEqual([]);
         expect(plan.filter((d) => /TEMP B-TREE/.test(d)), target).toEqual([]);
+        const upcoming = (
+          db.prepare(`EXPLAIN QUERY PLAN ${slaUpcomingScan(target)}`).all(clock.now(), plus(clock.now(), 60), 21) as { detail: string }[]
+        ).map((r) => r.detail);
+        expect(upcoming, target).toContainEqual(
+          expect.stringMatching(new RegExp(`^SEARCH ticket0_conversations USING INDEX ${index}\\b`)),
+        );
+        expect(upcoming.filter((d) => /TEMP B-TREE/.test(d)), target).toEqual([]);
       }
       // The plan alone would pass on 0012's index as well, since the scan's WHERE implies
       // the older, wider one. Migration 0014 (#1648) narrows the resolution index to the

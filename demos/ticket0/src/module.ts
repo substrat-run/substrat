@@ -2229,6 +2229,20 @@ export function slaOverdueScan(target: SlaTarget['target']): string {
         ORDER BY ${t.due}, id LIMIT ?`;
 }
 
+/** The same indexed running set, restricted to a future horizon. Binds [now, until, limit]. */
+export function slaUpcomingScan(target: SlaTarget['target']): string {
+  const t = SLA_TARGETS.find((x) => x.target === target)!;
+  const live = t.pausesOnSnooze ? `${SLA_LIVE} AND ${SLA_PAUSED}` : SLA_LIVE;
+  return `SELECT id, subject, priority, state, assignee, ${t.due} AS dueAt
+        FROM ticket0_conversations
+        WHERE ${t.due} IS NOT NULL AND ${t.running} AND ${live}
+          AND ${t.due} >= ? AND ${t.due} <= ?
+        ORDER BY ${t.due}, id LIMIT ?`;
+}
+
+/** Bounded across both target indexes; the extra row reports that the queue was cut. */
+const SLA_SOON_LIMIT = 20;
+
 /**
  * How many overdue conversations one run records, per target. `WAKE_BATCH`'s bargain: a
  * bound on one transaction, not a cap on the feature, because the schedule comes back.
@@ -3041,12 +3055,19 @@ const operations = {
           T0_PERM.conversationRead,
           conversationRef(follow.conversation_id),
         );
+        ctx.emit({
+          type: 'ticket0.conversation-unfollowed',
+          schemaVersion: 1,
+          entity: conversationRef(follow.conversation_id),
+          piiClass: 'none',
+          payload: { conversation_id: follow.conversation_id, follower: profile.principal },
+        });
       }
       ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE principal = ?', [profile.principal]);
     }
     // Idempotent both ways. Taking off somebody already off keeps the FIRST instant, so
     // the record says when they left rather than when somebody last clicked; putting back
-    // somebody who is on changes nothing. Neither emits: the event is a change.
+    // somebody who is on changes nothing. Neither emits another profile-change event.
     if (input.offboarded === !onTheDesk(profile)) return profile;
     ctx.sql.exec('UPDATE ticket0_agent_profiles SET offboarded_at = ? WHERE principal = ?', [
       input.offboarded ? ctx.now() : null,
@@ -3505,6 +3526,30 @@ const operations = {
       filters,
       total: true,
     }) as CountedPage<ConversationRow>;
+  },
+
+  'ticket0/breaching-soon': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    if (slaPolicy(desk(ctx)) === null) {
+      return { withinMinutes: input.withinMinutes, rows: [], truncated: false };
+    }
+    const now = ctx.now();
+    const until = new Date(Date.parse(now) + input.withinMinutes * 60_000).toISOString();
+    const rows = SLA_TARGETS.flatMap((target) =>
+      ctx.sql.query<{
+        id: string; subject: string; priority: ConversationRow['priority'];
+        state: 'new' | 'open' | 'snoozed'; assignee: string | null; dueAt: string;
+      }>(slaUpcomingScan(target.target), [now, until, SLA_SOON_LIMIT + 1]).map((row) => ({
+        conversationId: row.id,
+        subject: row.subject,
+        priority: row.priority,
+        state: row.state,
+        assignee: row.assignee,
+        target: target.target,
+        dueAt: row.dueAt,
+      })),
+    ).sort((a, b) => a.dueAt.localeCompare(b.dueAt) || a.conversationId.localeCompare(b.conversationId));
+    return { withinMinutes: input.withinMinutes, rows: rows.slice(0, SLA_SOON_LIMIT), truncated: rows.length > SLA_SOON_LIMIT };
   },
 
   'ticket0/get-conversation': async (ctx, input) => {

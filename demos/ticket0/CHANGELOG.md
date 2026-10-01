@@ -1,5 +1,20 @@
 # @substrat-run/demo-ticket0
 
+## 0.3.40
+
+### Patch Changes
+
+- Updated dependencies [56952c5]
+- Updated dependencies [1250ecd]
+  - @substrat-run/vertical-host@0.132.0
+  - @substrat-run/vertical-auth@0.18.0
+  - @substrat-run/adapter-cloudflare@0.132.0
+  - @substrat-run/adapter-sqlite@0.132.0
+  - @substrat-run/dev-issuer@0.2.14
+  - @substrat-run/contracts@0.132.0
+  - @substrat-run/kernel@0.132.0
+  - @substrat-run/engine-metering@0.6.16
+
 ## 0.3.39
 
 ### Patch Changes

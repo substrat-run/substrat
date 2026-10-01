@@ -46,7 +46,7 @@ export function mockAppTraffic(window?: { since: string; until: string }): Traff
       c4 += v.c4;
       c5 += v.c5;
     }
-    buckets.push({ start: new Date(start).toISOString(), requests: ok + c4 + c5, errors: c5, green: ok, yellow: c4 });
+    buckets.push({ start: new Date(start).toISOString(), requests: ok + c4 + c5, errors: c5, durationP95: null, green: ok, yellow: c4 });
   }
   const markers = [
     { at: new Date(T0 - 18 * 3_600_000).toISOString(), kind: 'went-live' as const, version: '0.0.12', versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR03' },

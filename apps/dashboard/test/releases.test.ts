@@ -391,6 +391,22 @@ describe('deriveTeamSeries (#1447) — one line per installed app', () => {
     expect(team.series[1]!.buckets.every((b) => b.requests === 0 && b.errors === 0)).toBe(true);
   });
 
+  it('carries per-bucket p95 without inventing latency for empty, old or duplicate slots', () => {
+    const team = deriveTeamSeries({
+      hours: 4,
+      now,
+      scopeIds: [A],
+      buckets: [
+        { scopeId: A, start: '2026-09-08T09:00:00.000Z', bucketMinutes: 60, requests: 4, errors: 0, durationP95: 125 },
+        { scopeId: A, start: '2026-09-08T10:00:00.000Z', bucketMinutes: 60, requests: 0, errors: 0, durationP95: 0 },
+        { scopeId: A, start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 2, errors: 0, durationP95: 90 },
+        { scopeId: A, start: '2026-09-08T11:30:00.000Z', bucketMinutes: 60, requests: 3, errors: 0, durationP95: 200 },
+        { scopeId: A, start: '2026-09-08T12:00:00.000Z', bucketMinutes: 60, requests: 1, errors: 0 },
+      ],
+    });
+    expect(team.series[0]!.buckets.map((b) => b.durationP95)).toEqual([null, 125, null, null, null]);
+  });
+
   it('snaps rows onto the grid and zero-fills the rest of the window', () => {
     const team = deriveTeamSeries({
       hours: 6,

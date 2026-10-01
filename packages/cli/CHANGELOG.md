@@ -1,5 +1,19 @@
 # @substrat-run/cli
 
+## 0.38.0
+
+### Minor Changes
+
+- f23b001: Include ordered SQL migrations, their owning modules and versions, and Durable Object classes in the migration digest sent with each push. SQL edits and derived search or list indexes now trigger the migration acknowledgement on promotion, including when the SQL list is too large to carry in the manifest. On an older kernel that cannot derive index SQL, changes to the index declarations still move the digest.
+
+  The digest format changes for every vertical. The first push with this CLI will therefore require a one-time migration acknowledgement on promotion even if its SQL has not changed.
+
+### Patch Changes
+
+- 9e68306: Scope restore now sends the backup's original tenant, scope, and capture time when available. JSON dumps retain their metadata, and SQLite backups use the IDs in their standard filenames. Restores from files without origin IDs explicitly report that they use the target as a fallback.
+  - @substrat-run/contracts@0.132.0
+  - @substrat-run/model-view@0.2.35
+
 ## 0.37.6
 
 ### Patch Changes

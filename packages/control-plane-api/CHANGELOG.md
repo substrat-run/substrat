@@ -1,5 +1,16 @@
 # @substrat-run/control-plane-api
 
+## 0.132.0
+
+### Minor Changes
+
+- 56952c5: Pass the tenant ID through the control plane's delete-scope request to `onDeleteScope`, so a vertical can remove a deleted scope from a tenant-specific registry. The vertical route still accepts older requests without a tenant ID; hooks receive `undefined` for those requests. `VerticalClient.deleteScope` callers now provide both IDs.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.132.0
+- @substrat-run/kernel@0.132.0
+
 ## 0.131.0
 
 ### Minor Changes
