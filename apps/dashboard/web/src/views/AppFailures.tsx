@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { api, type AppFailuresView } from '../lib/api';
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { card } from '../components/ui';
+import { isPlainClick, obsPath, teamPath } from '../lib/router';
 
+/** Show retained failure records and link to their log intervals without stale log filters. */
 export function AppFailures({ scopeId, window, nonce, onNav }: {
   scopeId: string;
   window: { since: string; until: string };
@@ -31,18 +33,26 @@ export function AppFailures({ scopeId, window, nonce, onNav }: {
     {missing.length > 0 && <p role="alert">Could not read {missing.join(', ')}. The failure list is incomplete.</p>}
     {incomplete.length > 0 && <p role="status">Only the newest records are shown for {incomplete.join(', ')}.</p>}
     {read?.entries.length === 0 && missing.length === 0 && incomplete.length === 0 && <p>No failures recorded in this interval.</p>}
-    {read?.entries.map((f) => <article key={`${f.kind}:${f.id}`} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 12 }}>
-      <h2 style={{ fontSize: 15, margin: '0 0 8px', overflowWrap: 'anywhere' }}>{f.operation}</h2>
-      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-        {f.kind === 'sweep' ? 'Failed background run' : 'Operation failure'}
-        {f.stage ? ` · ${f.stage}` : ''} · {exactTime(f.at)}
-      </div>
-      {f.code && <p style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{f.code}</p>}
-      <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13, color: 'var(--status-danger-fg)' }}>{f.message ?? 'No error message was recorded.'}</pre>
-      <button type="button" onClick={() => {
-        const at = Date.parse(f.at);
-        onNav({ app: scopeId, view: 'logs', from: new Date(at - 300_000).toISOString(), to: new Date(Math.min(Date.now(), at + 300_000)).toISOString() });
-      }}>Logs around this failure</button>
-    </article>)}
+    {read?.entries.map((f) => {
+      const at = Date.parse(f.at);
+      const logs: ObsQuery = {
+        app: scopeId, view: 'logs', tpl: undefined, level: undefined,
+        search: undefined, invocationId: undefined,
+        from: new Date(at - 300_000).toISOString(),
+        to: new Date(Math.min(Date.now(), at + 300_000)).toISOString(),
+      };
+      return <article key={`${f.kind}:${f.id}`} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 12 }}>
+        <h2 style={{ fontSize: 15, margin: '0 0 8px', overflowWrap: 'anywhere' }}>{f.operation}</h2>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          {f.kind === 'sweep' ? 'Failed background run' : 'Operation failure'}
+          {f.stage ? ` · ${f.stage}` : ''} · {exactTime(f.at)}
+        </div>
+        {f.code && <p style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{f.code}</p>}
+        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13, color: 'var(--status-danger-fg)' }}>{f.message ?? 'No error message was recorded.'}</pre>
+        <a href={teamPath(obsPath(logs))} onClick={(e) => {
+          if (isPlainClick(e)) { e.preventDefault(); onNav(logs); }
+        }}>Logs around this failure</a>
+      </article>;
+    })}
   </div>;
 }

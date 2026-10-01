@@ -50,6 +50,7 @@ function windowAround(at: string, padMs = CURSOR_PAD_MS): { from: string; to: st
   return { from: new Date(t - padMs).toISOString(), to: new Date(t + padMs).toISOString() };
 }
 
+/** Render the URL-selected observability view and preserve its app, time interval, and filters. */
 export function Observability({
   apps,
   query,

@@ -119,6 +119,7 @@ function VerdictChip({ verdict, n, on, onClick }: { verdict: FleetVerdict; n: nu
   );
 }
 
+/** Render an app health row with a separate failure-details link and an install retry action. */
 function FleetTableRow({ row, last, loading, onOpen, onRetry }: { row: FleetRow; last: boolean; loading: boolean; onOpen: () => void; onRetry?: () => void }) {
   const [hover, setHover] = useState(false);
   const v = VERDICTS[row.verdict];

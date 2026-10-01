@@ -73,6 +73,7 @@ function around(at: string): { from: string; to: string } {
   return { from: new Date(t - 5 * 60_000).toISOString(), to: new Date(t + 5 * 60_000).toISOString() };
 }
 
+/** Display app traffic and health with release, failure, and schedule evidence on one clock. */
 export function Pulse({
   apps,
   scopeId,
@@ -428,6 +429,7 @@ type Handle = {
 };
 
 /** One app on the clock: its numbers, its sparkline, its verdict. */
+/** Render an app’s traffic and health on the shared timeline, linking failing apps to retained errors. */
 function AppLine({
   row,
   loading,
