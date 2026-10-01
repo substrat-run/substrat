@@ -1817,6 +1817,8 @@ export class CloudflareScopeHost implements ScopeHost {
 
   private readonly scopeNs: DurableObjectNamespace;
   private readonly cp: ControlPlaneStub;
+  private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
+
   /** No control plane bound — `this.cp` is the throwing null object (Phase 3, CP-less). */
   private readonly cpLess: boolean;
   /** Project + evaluate permissions scope-locally (scope-local-permissions.md). */
@@ -1910,8 +1912,6 @@ export class CloudflareScopeHost implements ScopeHost {
    * closed over a stub, the first request after each cold start succeeded, and every
    * request after that returned 1101 in production.
    */
-  private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
-
   constructor(options: CloudflareScopeHostOptions) {
     this.servicePrincipals = options.servicePrincipals;
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;

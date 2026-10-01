@@ -1837,8 +1837,7 @@ export function defineScopeDO(
     async seatTuples(
       tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
       switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
-      /** Declared service subjects excluded only from human lockout repair (#1896). */
-      ): Promise<SwitchedOff[]> {
+    ): Promise<SwitchedOff[]> {
       return this.queue.enqueue(() =>
         this.ctx.storage.transactionSync(() => {
           for (const t of tuples) {
