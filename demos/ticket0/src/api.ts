@@ -43,6 +43,7 @@ export const API = apiCatalogFrom(SERVED, {
   'ticket0/list-contacts': { tag: 'Contacts' },
 
   'ticket0/list-conversations': { tag: 'Inbox' },
+  'ticket0/breaching-soon': { tag: 'Inbox' },
   'ticket0/get-conversation': { tag: 'Inbox' },
   'ticket0/list-messages': { tag: 'Inbox', description: 'Staff view — internal notes included.' },
   'ticket0/post-note': { tag: 'Inbox', description: 'Internal. Checks `conversation:draft`.' },
