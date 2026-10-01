@@ -41,6 +41,16 @@ describe('resolveCookieDomain', () => {
     expect(resolveCookieDomain('acme.co.uk', 'crm.acme.co.uk')).toBe('acme.co.uk');
   });
 
+  it('rejects platform hostnames that can span other tenants', () => {
+    const host = 'desk.global.substrat.run';
+    expect(resolveCookieDomain('substrat.run', host)).toBeNull();
+    expect(resolveCookieDomain('global.substrat.run', host)).toBeNull();
+    expect(resolveCookieDomain('desk.global.substrat.run', host)).toBeNull();
+    expect(resolveCookieDomain('.GLOBAL.TEST.SUBSTRAT.RUN', 'desk.global.test.substrat.run')).toBeNull();
+    expect(resolveCookieDomain('eu.substrat.run', 'desk.eu.substrat.run')).toBeNull();
+    expect(resolveCookieDomain('acme.se', 'desk.acme.se')).toBe('acme.se');
+  });
+
   it('passes through absence unchanged (host-only is the default)', () => {
     expect(resolveCookieDomain(undefined, HOST)).toBeNull();
     expect(resolveCookieDomain('', HOST)).toBeNull();

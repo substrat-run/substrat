@@ -66,7 +66,8 @@ A closed window is not a lost desk: the seat stays pending (`needsSetup` keeps s
 keeps the window it has and never re-opens a claimed seat. Access is invite-only afterwards.
 
 Also exported: `resolveCookieDomain`, which refuses to set a session cookie on a public suffix
-(guarded by [`@substrat-run/psl`](https://npmjs.com/package/@substrat-run/psl)).
+(guarded by [`@substrat-run/psl`](https://npmjs.com/package/@substrat-run/psl)) or anywhere
+in the shared `substrat.run` hostname space. An invalid domain uses a host-only cookie.
 
 ## Runtime
 

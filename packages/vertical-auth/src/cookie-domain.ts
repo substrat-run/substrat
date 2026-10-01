@@ -16,10 +16,12 @@
  * multi-level registry suffix a label-count check would miss — is rejected via the
  * vendored Public Suffix List (`@substrat-run/psl`). A cookie on a public suffix spans
  * every tenant registered under it, so it must never be honoured. The platform's own
- * apex (`substrat.run`) is an ordinary registrable domain, NOT a public suffix, so it is
- * additionally guarded upstream (the platform refuses to deliver it as a cookie-domain).
+ * hostname space is an ordinary registrable domain, not a public suffix, and is
+ * refused here too: sibling platform hostnames can belong to different tenants.
  */
 import { isPublicSuffix } from '@substrat-run/psl';
+
+const PLATFORM_DOMAIN = 'substrat.run';
 
 export function resolveCookieDomain(configured: string | undefined, host: string): string | null {
   if (!configured) return null;
@@ -27,6 +29,10 @@ export function resolveCookieDomain(configured: string | undefined, host: string
   if (!domain.includes('.')) return null; // a bare TLD is never a session boundary
   const h = host.toLowerCase();
   if (h !== domain && !h.endsWith(`.${domain}`)) return null; // browser would reject it anyway
+  // A configured parent within the platform's own hostname space can cover another
+  // tenant's app. Even an exact app hostname needs no Domain attribute: host-only is
+  // the safe default and also avoids sending its cookie to subdomains.
+  if (domain === PLATFORM_DOMAIN || domain.endsWith(`.${PLATFORM_DOMAIN}`)) return null;
   // Registrable-suffix guard (D-35): a cookie whose Domain is a public suffix — `co.uk`,
   // `pages.dev`, any multi-level registry suffix a label-count check misses — spans every
   // tenant under it. Reject it; the session degrades to host-only rather than leaking.
