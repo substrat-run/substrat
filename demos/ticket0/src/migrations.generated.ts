@@ -489,6 +489,7 @@ export const ticket0Migrations: SqlMigration[] = [
     sql: `
       -- Historical merges left moved rows linked to the losing conversation as well as
       -- their current one. Keep only the edge matching the row's current SQL owner.
+      -- boundary-lint-allow R4 migration #1858
       UPDATE _substrat_tuples AS t
          SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
        WHERE t.relation = 'parent' AND t.revoked_at IS NULL
@@ -509,6 +510,7 @@ export const ticket0Migrations: SqlMigration[] = [
 
       -- A follow on a merged loser cannot be used to read that conversation, or its
       -- moved rows. Leave staff's scope-wide role grants and survivor follows alone.
+      -- boundary-lint-allow R4 migration #1858
       UPDATE _substrat_tuples
          SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
        WHERE subject LIKE 'principal:%'
