@@ -996,7 +996,9 @@ function checkModuleFile(
     // The marker belongs to this SQL statement, not merely this file. It is only
     // meaningful in a generated migration, whose journal diff is a human checkpoint.
     const preceding = source.slice(0, spineWrite.index).trimEnd().split('\n').at(-1)?.trim();
-    const tombstone = /^update\s+_substrat_tuples(?:\s+as\s+\w+)?\s+set\s+revoked_at\s*=/i
+    // Match the whole SET clause through WHERE. A prefix match would also admit
+    // revoked_at = NULL (restoring access) or a second assignment to tuple columns.
+    const tombstone = /^update\s+_substrat_tuples(?:\s+as\s+\w+)?\s+set\s+revoked_at\s*=\s*strftime\(\s*'%Y-%m-%dT%H:%M:%fZ'\s*,\s*'now'\s*\)\s+where\b[\s\S]*?;/i
       .test(source.slice(spineWrite.index));
     if (generatedMigration && tombstone && /^-- boundary-lint-allow R4 migration #\d+$/.test(preceding ?? '')) continue;
     out.push({

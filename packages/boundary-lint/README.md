@@ -168,13 +168,16 @@ const legacy = ctx.sql.query('SELECT * FROM workorder_time_entries');
 
 R6 has the same block for code that must read the real clock, and R8 for a maintenance or
 migration read whose row never leaves the engine. R4 accepts only an update that sets
-`_substrat_tuples.revoked_at`, with a statement-local SQL comment in a generated
+`_substrat_tuples.revoked_at` to the current non-null UTC timestamp, with no other
+assignments and a statement-local SQL comment in a generated
 `migrations.generated.ts` file. The comment names the issue whose migration diff a person
 reviews before merge:
 
 ```sql
 -- boundary-lint-allow R4 migration #1858
-UPDATE _substrat_tuples SET revoked_at = ...;
+UPDATE _substrat_tuples
+   SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ WHERE revoked_at IS NULL;
 ```
 
 The next tombstone update needs its own marker; a marker in operation code has no effect.
