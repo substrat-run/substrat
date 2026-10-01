@@ -162,6 +162,28 @@ describe.runIf(built)('push carries each module’s SQL migrations (#1677)', () 
     expect(after.digests.migration).not.toBe(before.digests.migration);
   });
 
+  it('moves the migration digest when only a module ID changes', () => {
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT] }]));
+    const after = pushed(vertical([{ id: '@acme/helpdesk', migrations: [INIT] }]));
+    expect(after.migrations?.[0]?.sql).toBe(before.migrations?.[0]?.sql);
+    expect(after.migrations?.[0]?.version).toBe(before.migrations?.[0]?.version);
+    expect(after.digests.migration).not.toBe(before.digests.migration);
+  });
+
+  it('moves the migration digest when only a version changes', () => {
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT] }]));
+    const after = pushed(vertical([{ id: 'helpdesk', migrations: [{ ...INIT, version: '0002-init' }] }]));
+    expect(after.migrations?.[0]?.sql).toBe(before.migrations?.[0]?.sql);
+    expect(after.digests.migration).not.toBe(before.digests.migration);
+  });
+
+  it('moves the migration digest when migration order changes', () => {
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT, ADD] }]));
+    const after = pushed(vertical([{ id: 'helpdesk', migrations: [ADD, INIT] }]));
+    expect(after.migrations).toEqual([...before.migrations!].reverse());
+    expect(after.digests.migration).not.toBe(before.digests.migration);
+  });
+
   it('and the digest DOES move for a new Durable-Object class — the one change it covers', () => {
     const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT] }]));
     const after = pushed(vertical([{ id: 'helpdesk', migrations: [INIT] }], [...STORES, { binding: 'IDENTITY', class: 'IdentityDO' }]));
