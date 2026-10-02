@@ -4761,9 +4761,7 @@ export function scopeHostContractSuite(
       // The refusal the registry exists for. Without it "a push lands pending" is
       // a convention, and D-30's lockstep-upgrade argument is that conventions are
       // what we cannot afford here.
-      await expect(host.admin.bindScopeVersion(staff, t1, s1, versionId)).rejects.toThrow(
-        /pending, not admitted/,
-      );
+      await expectRefusal(host.admin.bindScopeVersion(staff, t1, s1, versionId), 'conflict');
 
       await host.admin.admitVersion(staff, versionId);
       await host.admin.bindScopeVersion(staff, t1, s1, versionId);
@@ -4831,7 +4829,7 @@ export function scopeHostContractSuite(
       await host.admin.bindScopeVersion(staff, t1, preview, pending);
       expect((await host.admin.getScopeRecord(staff, t1, preview))?.verticalVersionId).toBe(pending);
       // …while a normal (serving) scope keeps the refusal the registry exists for.
-      await expect(host.admin.bindScopeVersion(staff, t1, s1, pending)).rejects.toThrow(/pending, not admitted/);
+      await expectRefusal(host.admin.bindScopeVersion(staff, t1, s1, pending), 'conflict');
     });
 
     it('routes a PREVIEW to its bound version, not the vertical serving script (#527)', async () => {
@@ -4994,23 +4992,28 @@ export function scopeHostContractSuite(
       });
 
       // A slug's owner is fixed at first push: a different owner (or claiming a
-      // platform vertical) is refused, naming both owners.
-      await expect(
+      // platform vertical) is refused, naming both owners. The message is asserted beside
+      // the code only for WHICH owner it names; the code is the contract.
+      await expectRefusal(
         host.admin.registerVertical(staff, {
           slug: 'helpdesk',
           name: 'Helpdesk',
           source: 'cli',
           ownerTenant: t1,
         }),
-      ).rejects.toThrow(/owned by/);
-      await expect(
+        'conflict',
+        /owned by/,
+      );
+      await expectRefusal(
         host.admin.registerVertical(staff, {
           slug: 'callout',
           name: 'Callout',
           source: 'builtin',
           ownerTenant: t2,
         }),
-      ).rejects.toThrow(/owned by the platform/);
+        'conflict',
+        /owned by the platform/,
+      );
     });
 
     it('carries registry-driven install metadata (marketplace-publish.md §3) and refreshes it', async () => {
@@ -5376,9 +5379,7 @@ export function scopeHostContractSuite(
         deploymentRef: null,
       });
       await host.admin.rejectVersion(staff, versionId, 'permission diff widened a role');
-      await expect(host.admin.bindScopeVersion(staff, t1, s1, versionId)).rejects.toThrow(
-        /rejected, not admitted/,
-      );
+      await expectRefusal(host.admin.bindScopeVersion(staff, t1, s1, versionId), 'conflict');
       // Terminal: a rejected version is not resurrected, a new one is published.
       await expectRefusal(host.admin.admitVersion(staff, versionId), 'conflict');
       const rejected = (await host.admin.listVersions(staff, 'callout')).find(
@@ -5500,9 +5501,7 @@ export function scopeHostContractSuite(
         migrationDigest: 'g',
         deploymentRef: null,
       });
-      await expect(host.admin.promoteVersion(staff, 'callout', 'prod', pending)).rejects.toThrow(
-        /pending, not admitted/,
-      );
+      await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', pending), 'conflict');
     });
 
     // -- private verticals: self-serve prod (builder-plane.md §4-revised) ----
@@ -5659,9 +5658,7 @@ export function scopeHostContractSuite(
       // Listing is the moment OTHER tenants start trusting this code, so the version
       // they would install needs a recorded human decision — the auto-admission note
       // is exactly what marks its absence.
-      await expect(host.admin.setVerticalListed(staff, 'tenant-a/crm', true)).rejects.toThrow(
-        /auto-admitted.*staff admit/,
-      );
+      await expectRefusal(host.admin.setVerticalListed(staff, 'tenant-a/crm', true), 'conflict');
 
       // A staff admit of the already-admitted version upgrades it to a manual vouch
       // (clears the note, audited) — then listing passes.
