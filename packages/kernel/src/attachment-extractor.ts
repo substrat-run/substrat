@@ -13,8 +13,13 @@
  * input — so this file holds them to the guarantees that protect the SCOPE, whatever an
  * extractor does:
  *
- * - **The input bound is judged before a byte is fetched**, on the RECORDED size, against the
- *   smaller of the kernel's ceiling and the extractor's own `maxInputBytes`.
+ * - **Declarations are checked when the host is built** (`assertAttachmentExtractors`): a
+ *   name, `accepts` and `extract`, and a `maxInputBytes` that is a positive integer if it is
+ *   given at all. A host refuses a list it could not honour rather than misreading it later.
+ * - **The input bound is judged before a byte is fetched**, on the RECORDED size: the kernel's
+ *   ceiling FIRST and on its own, then the extractor's declared bound if it is a valid one.
+ *   Neither can widen the other — a declaration that slipped past the check (a `NaN`) is
+ *   ignored, never allowed to disable the ceiling.
  * - **A time budget.** An extractor that has not answered within `timeoutMs` is recorded
  *   `failed`. (A synchronous loop cannot be interrupted from here; the runtime's CPU limit is
  *   the backstop for that, and the extractor package's own budgets are the first line.)
@@ -57,7 +62,8 @@ export interface AttachmentExtractor {
   readonly name: string;
   /**
    * The largest file this extractor will be handed, judged on the recorded size BEFORE the
-   * bytes are fetched. The kernel's own ceiling applies as well; the smaller one wins.
+   * bytes are fetched — a positive integer. The kernel's own ceiling applies first, whatever
+   * this says.
    */
   readonly maxInputBytes?: number;
   /** Whether this extractor reads a file of this declared type (and name). */
@@ -72,9 +78,9 @@ export type ExtractionOutcome =
   | { status: 'unsupported'; detail: string }
   | { status: 'failed'; extractor: string | null; detail: string };
 
-/** The bounds the kernel holds every extractor to. */
+/** The bounds the kernel holds every extractor to — each a positive integer. */
 export interface AttachmentTextBounds {
-  /** The ceiling on a file's recorded size; an extractor may declare a lower one. */
+  /** The ceiling on a file's recorded size, applied before any extractor's own. */
   readonly maxInputBytes: number;
   /** UTF-8 bytes of text one attachment may contribute to the index. */
   readonly maxTextBytes: number;
@@ -98,16 +104,67 @@ export function mediaTypeOf(contentType: string): string {
   return (contentType.split(';')[0] ?? '').trim().toLowerCase();
 }
 
-/** Refuse a host's extractor list it could not record honestly: a nameless or repeated name. */
+/** A bound that means something: a positive integer. `NaN`, `Infinity`, `0`, `-1` and `'8'` do not. */
+export function isPositiveIntegerBound(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+/** Refuse bounds the kernel could not honour: each must be a positive integer. */
+export function assertAttachmentTextBounds(bounds: AttachmentTextBounds): void {
+  for (const key of ['maxInputBytes', 'maxTextBytes', 'timeoutMs'] as const) {
+    if (!isPositiveIntegerBound(bounds[key])) {
+      throw new Error(`attachment text bound ${key} must be a positive integer, not ${String(bounds[key])}`);
+    }
+  }
+}
+
+/**
+ * Refuse, when the host is built, an extractor list it could not honour: a missing or
+ * repeated name, an `accepts` or `extract` that is not a function, or a `maxInputBytes` that
+ * is not a positive integer. Failing here, once, is the alternative to misreading the
+ * declaration on every job.
+ */
 export function assertAttachmentExtractors(extractors: readonly AttachmentExtractor[]): void {
   const seen = new Set<string>();
   for (const e of extractors) {
-    if (typeof e.name !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(e.name)) {
-      throw new Error(`attachment extractor name '${String(e.name)}' is not a short lowercase identifier`);
+    if (typeof e?.name !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(e.name)) {
+      throw new Error(`attachment extractor name '${String(e?.name)}' is not a short lowercase identifier`);
+    }
+    if (typeof e.accepts !== 'function' || typeof e.extract !== 'function') {
+      throw new Error(`attachment extractor '${e.name}' must have accepts() and extract()`);
+    }
+    if (e.maxInputBytes !== undefined && !isPositiveIntegerBound(e.maxInputBytes)) {
+      throw new Error(
+        `attachment extractor '${e.name}' declares maxInputBytes ${String(e.maxInputBytes)}, ` +
+          'which is not a positive integer',
+      );
     }
     if (seen.has(e.name)) throw new Error(`attachment extractor '${e.name}' is registered twice`);
     seen.add(e.name);
   }
+}
+
+/**
+ * Why a file of `size` bytes may not be handed to `extractor`, or null when it may.
+ *
+ * The kernel's ceiling is judged FIRST and on its own, then the extractor's declaration —
+ * and only a valid declaration, so one that slipped past `assertAttachmentExtractors` can
+ * narrow nothing and widen nothing. Never a `Math.min` over the two: a `NaN` there makes every
+ * comparison false, which is the ceiling switched off.
+ */
+export function inputBoundRefusal(
+  size: number,
+  extractor: Pick<AttachmentExtractor, 'maxInputBytes'>,
+  bounds: Pick<AttachmentTextBounds, 'maxInputBytes'>,
+): string | null {
+  if (!(size <= bounds.maxInputBytes)) {
+    return `the file is ${size} bytes, over the ${bounds.maxInputBytes}-byte input bound`;
+  }
+  const declared = extractor.maxInputBytes;
+  if (isPositiveIntegerBound(declared) && size > declared) {
+    return `the file is ${size} bytes, over the extractor's ${declared}-byte input bound`;
+  }
+  return null;
 }
 
 /** The first extractor that reads this file, or none. An `accepts` that throws reads as a no. */

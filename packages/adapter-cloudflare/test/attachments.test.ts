@@ -401,6 +401,20 @@ describe('attachment surface (cloudflare host)', () => {
     ).rejects.toThrow(/not configured/);
   });
 
+  // #1575: a host refuses, when it is built, an extractor declaration it could not honour.
+  it('refuses at construction an extractor whose input bound is not a positive integer', () => {
+    expect(
+      () =>
+        new CloudflareScopeHost({
+          scope: env.SCOPE,
+          controlPlane: env.CONTROL_PLANE,
+          attachmentExtractors: [
+            { name: 'x', maxInputBytes: Number.NaN, accepts: () => true, extract: async () => ({ text: '' }) },
+          ],
+        }),
+    ).toThrow(/positive integer/);
+  });
+
   // #1575, K-43: a host wired with no extractors parses nothing — and says so for every upload.
   it('records every upload unsupported, with the reason, on a host given no extractors', async () => {
     const { host, t, s, editor } = await world([]);

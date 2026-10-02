@@ -20,7 +20,9 @@ import {
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
   assertAttachmentExtractors,
+  assertAttachmentTextBounds,
   chooseAttachmentExtractor,
+  inputBoundRefusal,
   runAttachmentExtractor,
   truncateUtf8,
   type AttachmentExtractor,
@@ -391,13 +393,32 @@ describe('attachmentTextJob', () => {
       0,
       { status: 'failed', extractor: 'text', detail: 'the file is 10000 bytes, over the 100-byte input bound' },
     ]);
-    // The extractor's own, lower, declaration wins over the kernel's ceiling.
+    // The extractor's own, lower, declaration narrows it further.
     const strict = { ...plainText, maxInputBytes: 5 };
     const declared = await run({}, undefined, undefined, [strict]);
     expect([declared.fetched, declared.written[0]]).toEqual([
       0,
+      { status: 'failed', extractor: 'text', detail: "the file is 17 bytes, over the extractor's 5-byte input bound" },
+    ]);
+  });
+
+  it("keeps the kernel's ceiling when an extractor's declaration is NaN — the bypass is closed", async () => {
+    // Built WITHOUT the host's check, as a list that slipped past it would be.
+    const nan = { ...plainText, maxInputBytes: Number.NaN };
+    const r = await run({}, undefined, { ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, maxInputBytes: 5 }, [nan]);
+    expect([r.fetched, r.written[0]]).toEqual([
+      0,
       { status: 'failed', extractor: 'text', detail: 'the file is 17 bytes, over the 5-byte input bound' },
     ]);
+  });
+
+  it('refuses to build a job over bounds that are not positive integers', () => {
+    expect(() =>
+      attachmentTextJob({ record: async () => null, bytes: async () => null, write: async () => true }, [], {
+        ...DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+        maxInputBytes: Number.NaN,
+      }),
+    ).toThrow(/positive integer/);
   });
 
   it('records bytes that are gone, or not the recorded ones, as failed — retrying cannot fix either', async () => {
@@ -520,6 +541,40 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
     expect(() => assertAttachmentExtractors([named('a', () => true), named('a', () => true)])).toThrow(/twice/);
     expect(() => assertAttachmentExtractors([named('Not A Name', () => true)])).toThrow(/identifier/);
     expect(() => assertAttachmentExtractors([named('text', () => true), named('docx', () => true)])).not.toThrow();
+  });
+
+  it('refuses, when the host is built, a declaration it could not honour', () => {
+    const base = { name: 'x', accepts: () => true, extract: async () => ({ text: '' }) };
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5, '8' as unknown as number]) {
+      expect(() => assertAttachmentExtractors([{ ...base, maxInputBytes: bad }]), String(bad)).toThrow(/positive integer/);
+    }
+    expect(() => assertAttachmentExtractors([{ ...base, accepts: undefined as never }])).toThrow(/accepts\(\) and extract\(\)/);
+    expect(() => assertAttachmentExtractors([{ ...base, extract: 'no' as never }])).toThrow(/accepts\(\) and extract\(\)/);
+    expect(() => assertAttachmentExtractors([{ ...base, name: 7 as never }])).toThrow(/identifier/);
+    // The twins: a valid bound, and none at all.
+    expect(() => assertAttachmentExtractors([{ ...base, maxInputBytes: 1024 }, { ...base, name: 'y' }])).not.toThrow();
+  });
+
+  it("holds the kernel's ceiling on its own — an invalid declaration that got past the check widens nothing", () => {
+    const kernel = { maxInputBytes: 5 };
+    for (const declared of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, '100' as unknown as number, undefined]) {
+      expect(inputBoundRefusal(12, { maxInputBytes: declared }, kernel), String(declared)).toBe(
+        'the file is 12 bytes, over the 5-byte input bound',
+      );
+      expect(inputBoundRefusal(4, { maxInputBytes: declared }, kernel), String(declared)).toBeNull();
+    }
+    // A valid declaration narrows; it never widens.
+    expect(inputBoundRefusal(4, { maxInputBytes: 3 }, kernel)).toBe("the file is 4 bytes, over the extractor's 3-byte input bound");
+    expect(inputBoundRefusal(12, { maxInputBytes: 100 }, kernel)).toBe('the file is 12 bytes, over the 5-byte input bound');
+  });
+
+  it('refuses bounds that are not positive integers', () => {
+    for (const key of ['maxInputBytes', 'maxTextBytes', 'timeoutMs'] as const) {
+      for (const bad of [Number.NaN, 0, -1, Number.POSITIVE_INFINITY]) {
+        expect(() => assertAttachmentTextBounds({ ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, [key]: bad })).toThrow(/positive integer/);
+      }
+    }
+    expect(() => assertAttachmentTextBounds(DEFAULT_ATTACHMENT_TEXT_BOUNDS)).not.toThrow();
   });
 
   it('truncateUtf8 never splits a character', () => {

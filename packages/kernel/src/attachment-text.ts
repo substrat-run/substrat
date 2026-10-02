@@ -91,7 +91,9 @@ import { attachmentSha256, type ScopedSql } from './scope-host.js';
 import { searchLimit, searchMatchExpression } from './search-index.js';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  assertAttachmentTextBounds,
   chooseAttachmentExtractor,
+  inputBoundRefusal,
   mediaTypeOf,
   runAttachmentExtractor,
   type AttachmentExtractor,
@@ -613,6 +615,7 @@ export function attachmentTextJob(
   extractors: readonly AttachmentExtractor[],
   bounds: AttachmentTextBounds = DEFAULT_ATTACHMENT_TEXT_BOUNDS,
 ): JobHandler {
+  assertAttachmentTextBounds(bounds);
   const outcomeFor = async (record: AttachmentRecord): Promise<ExtractionOutcome> => {
     const extractor = chooseAttachmentExtractor(extractors, record.contentType, record.filename);
     if (!extractor) {
@@ -622,10 +625,10 @@ export function attachmentTextJob(
       };
     }
     const failed = (detail: string): ExtractionOutcome => ({ status: 'failed', extractor: extractor.name, detail });
-    const inputMax = Math.min(bounds.maxInputBytes, extractor.maxInputBytes ?? Number.POSITIVE_INFINITY);
-    if (record.size > inputMax) {
-      return failed(`the file is ${record.size} bytes, over the ${inputMax}-byte input bound`);
-    }
+    // The kernel's ceiling first and on its own, then the extractor's own bound if it is a valid
+    // one: an invalid declaration (a `NaN` past the host's check) can disable neither.
+    const refusal = inputBoundRefusal(record.size, extractor, bounds);
+    if (refusal !== null) return failed(refusal);
     const body = await source.bytes(record);
     if (body === null) return failed('the bytes are missing from the blob store');
     if ((await attachmentSha256(body)) !== record.sha256) return failed('the bytes do not match the recorded sha256');

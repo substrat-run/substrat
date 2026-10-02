@@ -234,7 +234,10 @@ export type {
 export {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
   assertAttachmentExtractors,
+  assertAttachmentTextBounds,
   chooseAttachmentExtractor,
+  inputBoundRefusal,
+  isPositiveIntegerBound,
   mediaTypeOf,
   normalizeExtractedText,
   runAttachmentExtractor,
