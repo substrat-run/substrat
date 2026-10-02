@@ -20,11 +20,11 @@ import {
   addDecimal,
   assertTransition,
   LIST_PAGE_DEFAULT,
+  listLimitOf,
   mulDecimal,
   operationConcurrencyOf,
   operationInputsOf,
   pageOf,
-  pageVisible,
   permissionKey,
   permissionsUsedBy,
   principalId,
@@ -80,6 +80,7 @@ import {
   ticket0Lifecycles,
   ticket0Operations,
   inTheInbox,
+  customerMessageRow,
   SPAM_MAX_LINKS_DEFAULT,
   SPAM_MAX_LINKS_MAX,
   SPAM_REPEAT_DEFAULT,
@@ -1539,12 +1540,8 @@ function suspendConversation(
  * be holding a read grant on.
  */
 async function dropFollowers(ctx: OperationContext, conversationId: string): Promise<void> {
-  const followers = ctx.sql.query<{ principal: string }>(
-    'SELECT principal FROM ticket0_conversation_follows WHERE conversation_id = ? ORDER BY principal',
-    [conversationId],
-  );
-  for (const follower of followers) {
-    await ctx.revoke(principalId.parse(follower.principal), T0_PERM.conversationRead, conversationRef(conversationId));
+  for (const follower of followersOf(ctx, conversationId)) {
+    await ctx.revoke(principalId.parse(follower), T0_PERM.conversationRead, conversationRef(conversationId));
   }
   ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE conversation_id = ?', [conversationId]);
 }
@@ -1552,6 +1549,9 @@ async function dropFollowers(ctx: OperationContext, conversationId: string): Pro
 // ---------------------------------------------------------------------------
 // Participants (#1086) — who else is on a conversation
 // ---------------------------------------------------------------------------
+
+/** An address, as a recipient list's entries are judged. Built once: the list can be long. */
+const EMAIL = z.string().email();
 
 /** Where somebody stands on a conversation: the requester, a participant, or nowhere. */
 type Standing = 'requester' | ParticipantRow['role'];
@@ -1580,6 +1580,26 @@ function participantsOf(ctx: OperationContext, conversationId: string): Particip
   );
 }
 
+/** How many CCs and third parties a conversation carries — what `PARTICIPANTS_MAX` bounds. */
+function participantCount(ctx: OperationContext, conversationId: string): number {
+  return Number(
+    ctx.sql.query<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM ticket0_conversation_participants WHERE conversation_id = ?',
+      [conversationId],
+    )[0]?.n ?? 0,
+  );
+}
+
+/** Who follows a conversation, from #1941's ledger beside the grants. */
+function followersOf(ctx: OperationContext, conversationId: string): string[] {
+  return ctx.sql
+    .query<{ principal: string }>(
+      'SELECT principal FROM ticket0_conversation_follows WHERE conversation_id = ? ORDER BY principal',
+      [conversationId],
+    )
+    .map((f) => f.principal);
+}
+
 /**
  * Where a contact stands on a conversation — the ONE reading of it, for threading, for
  * which audience an inbound mail is written to, and for who may add people by mail.
@@ -1588,15 +1608,6 @@ function participantsOf(ctx: OperationContext, conversationId: string): Particip
 function standingOn(ctx: OperationContext, conversation: ConversationRow, contactId: string): Standing | null {
   if (conversation.contact_id === contactId) return 'requester';
   return participantOf(ctx, conversation.id, contactId)?.role ?? null;
-}
-
-/**
- * Whether an address is the desk's own (#1086). A CC on it would copy every reply back to
- * the desk as inbound mail, so it is never captured and never added — the one loop this
- * feature could otherwise open. Compared as an address, case and all, by `addressKey`.
- */
-function isDeskAddress(ctx: OperationContext, email: string): boolean {
-  return addressKey(email) === addressKey(desk(ctx).from_address);
 }
 
 /**
@@ -1609,21 +1620,37 @@ function contactForAddress(ctx: OperationContext, email: string, name?: string |
 }
 
 /**
- * Who a person may put on a conversation by address, or a refusal naming why not —
- * shared by `add-participant` and `forward-message`, so the two doors cannot disagree.
- *
- * Not the desk itself (the loop `isDeskAddress` closes), and not a sender this desk
- * blocks: their reply would be refused at the door, which makes adding them a side thread
- * that can never come back.
+ * The contact a person may put on a conversation by address, or the refusal naming why
+ * not (`recipientRefusal`) — what `add-participant` and `forward-message` both call.
  */
 function recipientOrThrow(ctx: OperationContext, email: string, name?: string | null): ContactRow {
-  if (isDeskAddress(ctx, email)) {
-    throw substratError('validation_failed', 'that is this desk’s own address — its mail would come straight back');
-  }
-  if (blockedBy(ctx, { emails: [email], contactId: contactByEmail(ctx, email)?.id ?? null })) {
-    throw substratError('validation_failed', 'this desk blocks that sender, so nothing they wrote back would arrive');
-  }
-  return contactForAddress(ctx, email, name);
+  const known = contactByEmail(ctx, email);
+  const refusal = recipientRefusal(ctx, email, known, addressKey(desk(ctx).from_address));
+  if (refusal) throw substratError('validation_failed', refusal);
+  return known ?? createContact(ctx, { email, display_name: name ?? null });
+}
+
+/**
+ * Why an address may not be put on a conversation, or null — the rule itself, which
+ * `recipientOrThrow` refuses on and a mail's recipient list (`captureRecipients`) skips
+ * on, so the three doors that add people cannot disagree about who may be.
+ *
+ *  - Not the desk itself (#1086): a CC on it would copy every reply back to the desk as
+ *    inbound mail — the one loop this feature could otherwise open. `deskKey` is the
+ *    desk's own address as `addressKey` keys it, read once by the caller.
+ *  - Not a sender this desk blocks: their reply would be refused at the door, which makes
+ *    adding them a side thread that can never come back.
+ */
+function recipientRefusal(
+  ctx: OperationContext,
+  email: string,
+  known: ContactRow | undefined,
+  deskKey: string,
+): string | null {
+  if (addressKey(email) === deskKey) return 'that is this desk’s own address — its mail would come straight back';
+  if (blockedBy(ctx, { emails: [email], contactId: known?.id ?? null }))
+    return 'this desk blocks that sender, so nothing they wrote back would arrive';
+  return null;
 }
 
 /**
@@ -1643,14 +1670,14 @@ function recipientOrThrow(ctx: OperationContext, email: string, name?: string | 
 function putParticipant(
   ctx: OperationContext,
   conversation: ConversationRow,
-  contact: ContactRow,
+  contactId: string,
   role: ParticipantRow['role'],
   addedBy: string | null,
 ): { row: ParticipantRow; added: boolean } {
-  if (contact.id === conversation.contact_id) {
+  if (contactId === conversation.contact_id) {
     throw substratError('validation_failed', 'that is the person this conversation is with — they are already on it');
   }
-  const existing = participantOf(ctx, conversation.id, contact.id);
+  const existing = participantOf(ctx, conversation.id, contactId);
   if (existing) {
     if (existing.role === role) return { row: existing, added: false };
     throw substratError(
@@ -1661,21 +1688,23 @@ function putParticipant(
       { reason: 'participant_role' },
     );
   }
-  const count = ctx.sql.query<{ n: number }>(
-    'SELECT COUNT(*) AS n FROM ticket0_conversation_participants WHERE conversation_id = ?',
-    [conversation.id],
-  )[0];
-  if (Number(count?.n ?? 0) >= PARTICIPANTS_MAX) {
+  if (participantCount(ctx, conversation.id) >= PARTICIPANTS_MAX) {
     throw substratError('conflict', `a conversation carries at most ${PARTICIPANTS_MAX} people besides the customer`, {
       reason: 'participants_full',
     });
   }
-  const id = ulid();
+  const row: ParticipantRow = {
+    id: ulid(),
+    conversation_id: conversation.id,
+    contact_id: contactId,
+    role,
+    added_by: addedBy,
+    created_at: ctx.now(),
+  };
   ctx.sql.exec(
     `INSERT INTO ticket0_conversation_participants (${PARTICIPANT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, conversation.id, contact.id, role, addedBy, ctx.now()],
+    [row.id, row.conversation_id, row.contact_id, row.role, row.added_by, row.created_at],
   );
-  const row = participantOf(ctx, conversation.id, contact.id)!;
   ctx.emit({
     type: 'ticket0.participant-added',
     schemaVersion: 1,
@@ -1714,27 +1743,28 @@ function captureRecipients(
 ): void {
   const standing = standingOn(ctx, conversation, sender.id);
   if (standing !== 'requester' && standing !== 'cc') return;
+  const deskKey = addressKey(desk(ctx).from_address);
   const seen = new Set<string>([addressKey(sender.email ?? '')]);
+  // Counted once and kept here: the list is the sender's, and a long one must not cost a
+  // query per address past the point where nobody more can be added.
+  let count = participantCount(ctx, conversation.id);
   let overCap = 0;
   for (const raw of addresses) {
-    const parsed = z.string().email().safeParse(raw.trim());
+    const parsed = EMAIL.safeParse(raw.trim());
     if (!parsed.success) continue;
     const email = parsed.data;
-    if (seen.has(addressKey(email))) continue;
-    seen.add(addressKey(email));
-    if (isDeskAddress(ctx, email)) continue;
-    const known = contactByEmail(ctx, email);
-    if (known && standingOn(ctx, conversation, known.id) !== null) continue;
-    if (blockedBy(ctx, { emails: [email], contactId: known?.id ?? null })) continue;
-    const full = ctx.sql.query<{ n: number }>(
-      'SELECT COUNT(*) AS n FROM ticket0_conversation_participants WHERE conversation_id = ?',
-      [conversation.id],
-    )[0];
-    if (Number(full?.n ?? 0) >= PARTICIPANTS_MAX) {
+    const key = addressKey(email);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (count >= PARTICIPANTS_MAX) {
       overCap++;
       continue;
     }
-    putParticipant(ctx, conversation, known ?? contactForAddress(ctx, email), 'cc', null);
+    const known = contactByEmail(ctx, email);
+    if (known && standingOn(ctx, conversation, known.id) !== null) continue;
+    if (recipientRefusal(ctx, email, known, deskKey)) continue;
+    putParticipant(ctx, conversation, (known ?? contactForAddress(ctx, email)).id, 'cc', null);
+    count++;
   }
   if (overCap > 0) {
     ctx.log.warn('{overCap} recipients of a mail on {conversationId} were not copied in: the conversation is full', {
@@ -1752,7 +1782,7 @@ function captureRecipients(
 function carryCcs(ctx: OperationContext, closed: ConversationRow, followUp: ConversationRow): void {
   for (const p of participantsOf(ctx, closed.id)) {
     if (p.role !== 'cc') continue;
-    putParticipant(ctx, followUp, contactOrThrow(ctx, p.contact_id), 'cc', p.added_by);
+    putParticipant(ctx, followUp, p.contact_id, 'cc', p.added_by);
   }
 }
 
@@ -1818,10 +1848,7 @@ async function assertReadsAsCustomer(ctx: OperationContext, conversationId: stri
  * an `external_id`. Every question asked is answered by an index.
  */
 function dropParticipants(ctx: OperationContext, conversationId: string): void {
-  const people = ctx.sql.query<{ contact_id: string }>(
-    'SELECT contact_id FROM ticket0_conversation_participants WHERE conversation_id = ?',
-    [conversationId],
-  );
+  const people = participantsOf(ctx, conversationId);
   ctx.sql.exec('DELETE FROM ticket0_conversation_participants WHERE conversation_id = ?', [conversationId]);
   if (people.length === 0) return;
   ctx.sql.exec(ORPHAN_CONTACTS_DELETE, [JSON.stringify(people.map((p) => p.contact_id))]);
@@ -3297,10 +3324,9 @@ function publicThread(
   return pageOf(
     withCitations(
       ctx,
-      // The model's `customerMessage`, at runtime: nothing about who else is on the thread.
-      rows.map(
-        ({ author_principal: _who, author_contact_id: _contact, third_party_contact_id: _third, ...rest }) => rest,
-      ),
+      // Through the model's own customer shape, which drops every column a customer never
+      // sees — the one list of them (`customerMessageRow`).
+      rows.map((row) => customerMessageRow.parse(row)),
     ),
     limit,
     (row) => row.id,
@@ -5456,10 +5482,6 @@ const operations = {
   'ticket0/list-participants': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    const followers = ctx.sql.query<{ principal: string }>(
-      'SELECT principal FROM ticket0_conversation_follows WHERE conversation_id = ? ORDER BY principal',
-      [conversation.id],
-    );
     return {
       participants: [
         {
@@ -5476,10 +5498,10 @@ const operations = {
           added_by: p.added_by,
           created_at: p.created_at,
         })),
-        ...followers.map((f) => ({
+        ...followersOf(ctx, conversation.id).map((principal) => ({
           role: 'follower' as const,
           contact_id: null,
-          principal: f.principal,
+          principal,
           added_by: null,
           created_at: null,
         })),
@@ -5497,7 +5519,7 @@ const operations = {
     const conversation = conversationOrThrow(ctx, input.conversationId);
     heldOrThrow(conversation, 'ticket0/add-participant');
     const contact = recipientOrThrow(ctx, input.email, input.name);
-    return putParticipant(ctx, conversation, contact, 'cc', String(ctx.principal)).row;
+    return putParticipant(ctx, conversation, contact.id, 'cc', String(ctx.principal)).row;
   },
 
   /**
@@ -5543,7 +5565,7 @@ const operations = {
     if (contact.id === conversation.contact_id) {
       throw substratError('validation_failed', 'that is the customer — a reply is how the desk writes to them');
     }
-    putParticipant(ctx, conversation, contact, 'third-party', String(ctx.principal));
+    putParticipant(ctx, conversation, contact.id, 'third-party', String(ctx.principal));
     const row = writeMessage(ctx, {
       conversationId: conversation.id,
       authorKind: 'agent',
@@ -6440,28 +6462,25 @@ const operations = {
     // what lands in one is public — so a supplier answering a forward after the thread
     // was closed would be read by the customer. Their mail opens a conversation of their
     // own instead, as any stranger's does: nothing is lost, and nothing crosses over.
-    const landed =
-      bound.state !== 'closed'
-        ? bound
-        : standing === 'third-party'
-          ? openConversation(ctx, contact, 'email', input.subject)
-          : followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), input.subject);
+    // Where it lands, and — the first question when one lands in the wrong place — how the
+    // mail found it. One decision, so the two cannot be read off different branches.
+    let landed = bound;
+    let binding: string;
+    if (bound.state === 'closed' && standing === 'third-party') {
+      landed = openConversation(ctx, contact, 'email', input.subject);
+      binding = 'a conversation of its own, from a third party on a closed one';
+    } else if (bound.state === 'closed') {
+      landed = followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), input.subject);
+      binding = 'a follow-up to a closed conversation';
+    } else if (standing === 'third-party') {
+      binding = 'a third party on the conversation they were forwarded';
+    } else if (input.conversationId) {
+      binding = 'the conversation it named';
+    } else {
+      binding = threaded ? 'the thread it replied to' : 'a new conversation';
+    }
     // A side thread: the third party writing into the conversation they were forwarded.
     const sideThread = standing === 'third-party' && landed.id === bound.id;
-    // How the mail found its conversation — the first question when one lands in the
-    // wrong place.
-    const binding =
-      landed.id !== bound.id
-        ? standing === 'third-party'
-          ? 'a conversation of its own, from a third party on a closed one'
-          : 'a follow-up to a closed conversation'
-        : sideThread
-          ? 'a third party on the conversation they were forwarded'
-          : input.conversationId
-            ? 'the conversation it named'
-            : threaded
-              ? 'the thread it replied to'
-              : 'a new conversation';
     // The spam filter (#1088), for a conversation this mail OPENED — a new one or a
     // follow-up. Mail into a thread the desk already holds is not re-judged, in either
     // queue. Read before the message is written, so the repeat count is of OTHER mail.
@@ -6583,18 +6602,27 @@ const operations = {
      * taken off, a forward still waiting is not sent (`toEmail` null, which the relay
      * skips). Never both: the customer's thread and a side thread do not share a mail.
      */
+    const settings = desk(ctx);
+    // Who a participant row reaches, by role: one read, joined to the address it names.
+    const addressesOf = (role: ParticipantRow['role'], contactId?: string | null) =>
+      ctx.sql
+        .query<{ email: string }>(
+          `SELECT k.email FROM ticket0_conversation_participants p
+             JOIN ticket0_contacts k ON k.id = p.contact_id
+            WHERE p.conversation_id = ? AND p.role = ? AND k.email IS NOT NULL
+              ${contactId === undefined ? '' : 'AND p.contact_id = ?'}
+            ORDER BY p.created_at, p.id`,
+          contactId === undefined ? [conversation.id, role] : [conversation.id, role, contactId],
+        )
+        .map((r) => r.email);
     let toEmail: string | null;
     let ccEmails: string[] = [];
     if (visibility === 'forward') {
-      const third = message.third_party_contact_id;
-      const on = third ? participantOf(ctx, conversation.id, third) : undefined;
-      toEmail = on?.role === 'third-party' ? (contactOrNull(ctx, on.contact_id)?.email ?? null) : null;
+      toEmail = addressesOf('third-party', message.third_party_contact_id)[0] ?? null;
     } else {
       toEmail = contactOrNull(ctx, conversation.contact_id)?.email ?? null;
-      ccEmails = participantsOf(ctx, conversation.id)
-        .filter((p) => p.role === 'cc')
-        .map((p) => contactOrNull(ctx, p.contact_id)?.email ?? null)
-        .filter((email): email is string => email !== null && !isDeskAddress(ctx, email));
+      const deskKey = addressKey(settings.from_address);
+      ccEmails = addressesOf('cc').filter((email) => addressKey(email) !== deskKey);
     }
     const author = message.author_principal
       ? ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
@@ -6609,7 +6637,7 @@ const operations = {
       toEmail,
       ccEmails,
       visibility,
-      fromAddress: desk(ctx).from_address,
+      fromAddress: settings.from_address,
       agentName: author?.display_name ?? null,
       // Gone after an erasure - which is exactly why the event carried ids only:
       // there is nothing left to send, and the send finds that out here.
@@ -6922,24 +6950,22 @@ const operations = {
    * a promise the author remembered to keep; the walk is one the kernel keeps.
    *
    * Two proofs per row since #1086, and either is enough: the walk (the caller's own
-   * conversation, through the parent edge) or a CC's (`readableAsCc`). The CC proof is read
-   * once for the whole page, and only when some row on it was not the caller's own — so a
-   * customer whose every conversation is their own pays nothing more than before.
+   * conversation, through the parent edge) or a CC's (`readableAsCc`). `pageVisible`'s one
+   * batch and filter, written out so the CC proof is asked once for the rows the walk
+   * refused rather than once per row — a customer whose every conversation is their own
+   * pays nothing more than before.
    */
   'ticket0/my-conversations': async (ctx, input) => {
-    let batch: string[] = [];
-    let asCc: Promise<Set<string>> | undefined;
-    return pageVisible(
-      (p) => {
-        const page = ctx.page<ConversationRow>('conversation', p);
-        batch = page.entries.map((c) => c.id);
-        return page;
-      },
-      input,
-      async (c) =>
-        (await ctx.check(T0_PERM.conversationReadOwn, conversationRef(c.id))).allowed ||
-        (await (asCc ??= readableAsCc(ctx, batch))).has(c.id),
-    );
+    const batch = ctx.page<ConversationRow>('conversation', {
+      limit: listLimitOf(input?.limit),
+      cursor: input?.cursor,
+    });
+    const own = new Set<string>();
+    for (const c of batch.entries) {
+      if ((await ctx.check(T0_PERM.conversationReadOwn, conversationRef(c.id))).allowed) own.add(c.id);
+    }
+    const asCc = await readableAsCc(ctx, batch.entries.filter((c) => !own.has(c.id)).map((c) => c.id));
+    return { entries: batch.entries.filter((c) => own.has(c.id) || asCc.has(c.id)), nextCursor: batch.nextCursor };
   },
 
   'ticket0/my-messages': async (ctx, input) => {

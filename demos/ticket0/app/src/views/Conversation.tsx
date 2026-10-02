@@ -386,6 +386,69 @@ function Thread({
   );
 }
 
+/**
+ * How each audience looks (#1086), in the thread and in the composer — one palette, so the
+ * amber that means "the customer will never see this" and the slate that means "one third
+ * party sees this" cannot drift apart between the two places that draw them.
+ */
+type Audience = 'public' | 'internal' | 'forward';
+const AUDIENCE: Record<
+  Audience,
+  {
+    bubble: string;
+    bubbleBorder: string;
+    text: string;
+    label: string;
+    labelColour: string;
+    surfaceBorder: string;
+    stripe: string;
+    caret: string;
+    placeholder: string;
+    button: string;
+    send: string;
+  }
+> = {
+  public: {
+    bubble: 'var(--surface)',
+    bubbleBorder: 'var(--hairline)',
+    text: 'var(--text)',
+    label: '○ PUBLIC — the customer receives this by email',
+    labelColour: 'var(--secondary-2)',
+    surfaceBorder: '1px solid var(--frame)',
+    stripe: 'none',
+    caret: 'var(--text)',
+    placeholder: 'Reply to the customer…',
+    button: 'btn btn-primary',
+    send: 'Send reply',
+  },
+  internal: {
+    bubble: 'var(--internal-bg)',
+    bubbleBorder: 'var(--internal-border-soft)',
+    text: 'var(--internal-text-3)',
+    label: '● INTERNAL — the customer will never see this',
+    labelColour: 'var(--internal-text)',
+    surfaceBorder: '1.5px solid var(--internal-border)',
+    stripe: 'inset 3px 0 0 var(--internal-stripe)',
+    caret: 'var(--internal-stripe)',
+    placeholder: 'A note for colleagues…',
+    button: 'btn btn-internal',
+    send: 'Add internal note',
+  },
+  forward: {
+    bubble: 'var(--forward-bg)',
+    bubbleBorder: 'var(--forward-border-soft)',
+    text: 'var(--forward-text-3)',
+    label: '◆ FORWARD — only this address receives it; the customer never sees it',
+    labelColour: 'var(--forward-text)',
+    surfaceBorder: '1.5px solid var(--forward-border)',
+    stripe: 'inset 3px 0 0 var(--forward-stripe)',
+    caret: 'var(--forward-stripe)',
+    placeholder: 'What to ask them — nothing else is sent…',
+    button: 'btn btn-forward',
+    send: 'Forward',
+  },
+};
+
 const AUTHOR: Record<string, string> = {
   contact: 'Customer',
   agent: 'Support',
@@ -404,19 +467,16 @@ function MessageRow({ message, people }: { message: MessageWithCitations; people
   const third = message.third_party_contact_id ? people.get(message.third_party_contact_id) : undefined;
   const thirdName = third ? nameOf(third) : 'a third party';
   // Which contact wrote it — a CC's reply is theirs, not the requester's.
+  const wrote = message.author_contact_id ? people.get(message.author_contact_id) : undefined;
   const author =
-    message.author_kind === 'contact'
-      ? forward
+    message.author_kind !== 'contact'
+      ? AUTHOR[message.author_kind] ?? '?'
+      : forward
         ? thirdName
-        : message.author_contact_id && people.get(message.author_contact_id)
-          ? nameOf(people.get(message.author_contact_id))
-          : AUTHOR.contact!
-      : AUTHOR[message.author_kind] ?? '?';
-  const tone = internal
-    ? { bg: 'var(--internal-bg)', border: 'var(--internal-border-soft)', text: 'var(--internal-text-3)' }
-    : forward
-      ? { bg: 'var(--forward-bg)', border: 'var(--forward-border-soft)', text: 'var(--forward-text-3)' }
-      : { bg: 'var(--surface)', border: 'var(--hairline)', text: 'var(--text)' };
+        : wrote
+          ? nameOf(wrote)
+          : AUTHOR.contact!;
+  const tone = AUDIENCE[message.visibility];
   return (
     <div style={{ display: 'flex', gap: 10 }}>
       <Avatar name={author} size={26} anonymous={message.author_kind === 'contact' && !forward} />
@@ -459,8 +519,8 @@ function MessageRow({ message, people }: { message: MessageWithCitations; people
         </div>
         <div
           style={{
-            background: tone.bg,
-            border: `1px solid ${tone.border}`,
+            background: tone.bubble,
+            border: `1px solid ${tone.bubbleBorder}`,
             borderRadius: 8,
             padding: '10px 13px',
             font: "400 13px/1.65 'Geist', sans-serif",
@@ -776,6 +836,7 @@ function Composer({
   const [mode, setMode] = useState<'public' | 'internal' | 'forward'>('public');
   const internal = mode === 'internal';
   const forward = mode === 'forward';
+  const look = AUDIENCE[mode];
   const [to, setTo] = useState('');
   const [text, setText] = useState('');
   const [picker, setPicker] = useState(false);
@@ -868,15 +929,11 @@ function Composer({
             font: "600 10px 'Geist Mono', monospace",
             letterSpacing: '.07em',
             textTransform: 'uppercase',
-            color: internal ? 'var(--internal-text)' : forward ? 'var(--forward-text)' : 'var(--secondary-2)',
+            color: look.labelColour,
             marginBottom: 7,
           }}
         >
-          {internal
-            ? '● INTERNAL — the customer will never see this'
-            : forward
-              ? '◆ FORWARD — only this address receives it; the customer never sees it'
-              : '○ PUBLIC — the customer receives this by email'}
+          {look.label}
         </div>
         {forward ? (
           <input
@@ -903,17 +960,9 @@ function Composer({
             position: 'relative',
             borderRadius: 6,
             // Constraint 1: the ENTIRE surface changes, not a corner of it.
-            background: internal ? 'var(--internal-bg)' : forward ? 'var(--forward-bg)' : 'var(--surface)',
-            border: internal
-              ? '1.5px solid var(--internal-border)'
-              : forward
-                ? '1.5px solid var(--forward-border)'
-                : '1px solid var(--frame)',
-            boxShadow: internal
-              ? 'inset 3px 0 0 var(--internal-stripe)'
-              : forward
-                ? 'inset 3px 0 0 var(--forward-stripe)'
-                : 'none',
+            background: look.bubble,
+            border: look.surfaceBorder,
+            boxShadow: look.stripe,
           }}
         >
           <textarea
@@ -922,9 +971,7 @@ function Composer({
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
             rows={3}
-            placeholder={
-              internal ? 'A note for colleagues…' : forward ? 'What to ask them — nothing else is sent…' : `Reply to the customer…`
-            }
+            placeholder={look.placeholder}
             style={{
               width: '100%',
               resize: 'vertical',
@@ -933,8 +980,8 @@ function Composer({
               background: 'transparent',
               padding: '10px 12px',
               font: "400 13px/1.6 'Geist', sans-serif",
-              color: internal ? 'var(--internal-text-3)' : forward ? 'var(--forward-text-3)' : 'var(--text)',
-              caretColor: internal ? 'var(--internal-stripe)' : forward ? 'var(--forward-stripe)' : 'var(--text)',
+              color: look.text,
+              caretColor: look.caret,
             }}
           />
         </div>
@@ -953,11 +1000,11 @@ function Composer({
               {forward ? 'Cancel forward' : 'Forward…'}
             </button>
             <button
-              className={internal ? 'btn btn-internal' : forward ? 'btn btn-forward' : 'btn btn-primary'}
+              className={look.button}
               disabled={busy || !text.trim() || (forward && !to.trim())}
               onClick={send}
             >
-              {internal ? 'Add internal note' : forward ? 'Forward' : 'Send reply'}
+              {look.send}
             </button>
           </div>
         </div>
@@ -1664,7 +1711,7 @@ function PeoplePanel({
             style={{ display: 'flex', alignItems: 'center', gap: 6, font: "400 12px 'Geist Mono', monospace" }}
           >
             <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{label(p)}</span>
-            {p.contact_id && role !== 'requester' ? (
+            {p.contact_id ? (
               <button
                 type="button"
                 aria-label={`Take ${label(p)} off this conversation`}

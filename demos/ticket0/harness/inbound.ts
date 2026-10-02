@@ -219,13 +219,7 @@ export function splitAddressList(header: string): string[] {
  * `ingest-message` judges what is left — who is the desk, who is already on the thread.
  */
 export function recipientsOf(listed: string[] | string | null | undefined, header: string | null): string[] {
-  const raw = Array.isArray(listed)
-    ? listed
-    : typeof listed === 'string'
-      ? splitAddressList(listed)
-      : header
-        ? splitAddressList(header)
-        : [];
+  const raw = Array.isArray(listed) ? listed : splitAddressList(listed ?? header ?? '');
   return raw.map((entry) => parseFrom(entry)?.email).filter((email): email is string => email !== undefined);
 }
 

@@ -150,8 +150,6 @@ async function myConversations(desk: Desk, who: PrincipalId): Promise<string[]> 
   );
 }
 
-const follower = (desk: Desk, who: PrincipalId) => kit.as(desk, who);
-
 async function role(desk: Desk, roleKey: string): Promise<PrincipalId> {
   const p = principalId.parse(ulid());
   await kit.host.admin.assignRole(actor, { principalId: p, roleKey, node: { tenantId: desk.tenant, scopeId: desk.scope } });
@@ -220,7 +218,7 @@ describe('who may put an address on a conversation, and who may see who is on it
     // And the address behind an id is the directory's read: an agent's, not a follower's.
     const cc = seen.find((p) => p.role === 'cc')!.contact_id!;
     expect(await agent.invoke('ticket0/get-contact', { contactId: cc })).toMatchObject({ email: 'two@customer.example' });
-    await expect(follower(d, guest).then((f) => f.invoke('ticket0/get-contact', { contactId: cc }))).rejects.toThrow(
+    await expect((await kit.as(d, guest)).invoke('ticket0/get-contact', { contactId: cc })).rejects.toThrow(
       /permission denied/i,
     );
   });
@@ -587,9 +585,9 @@ describe('the discard’s contact cleanup reads an index for every question', ()
   it('scans no table but the ids it was handed', async () => {
     const d = await kit.freshDesk({ agents: 0 });
     await mail(d, { from: 'ana@customer.example', cc: ['bo@customer.example'] });
-    const plan = kit.sql(d, (db) =>
-      (db.prepare(`EXPLAIN QUERY PLAN ${ORPHAN_CONTACTS_DELETE}`).all('["x"]') as { detail: string }[]).map((r) => r.detail),
-    );
+    const planOf = (db: Database.Database) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${ORPHAN_CONTACTS_DELETE}`).all('["x"]') as { detail: string }[]).map((r) => r.detail);
+    const plan = kit.sql(d, planOf);
     // json_each is the list handed in; every other table is a SEARCH, never a SCAN.
     expect(plan.filter((p) => /^SCAN /.test(p) && !/json_each/.test(p))).toEqual([]);
     for (const index of ['ticket0_messages_by_author_contact', 'ticket0_messages_by_third_party', 'ticket0_conversation_participants_by_contact']) {
@@ -600,7 +598,7 @@ describe('the discard’s contact cleanup reads an index for every question', ()
     const without = kit.sql(d, (db) => {
       db.exec('SAVEPOINT probe; DROP INDEX ticket0_messages_by_author_contact');
       try {
-        return (db.prepare(`EXPLAIN QUERY PLAN ${ORPHAN_CONTACTS_DELETE}`).all('["x"]') as { detail: string }[]).map((r) => r.detail);
+        return planOf(db);
       } finally {
         db.exec('ROLLBACK TO probe; RELEASE probe');
       }

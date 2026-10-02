@@ -1632,10 +1632,17 @@ const savedReplyPublic = ticket0Entities.savedReply.fields
  * thread, which a CC reading the portal has no use for and the requester did not choose to
  * share. Both reads return public messages only, so `third_party_contact_id` is always
  * null on them anyway; it is dropped so the shape says so rather than a query.
+ *
+ * `customerMessageRow` is the row half, and `publicThread` in `src/module.ts` strips each
+ * row by parsing it through this — so the list of what a customer never sees is written
+ * once, here.
  */
-const customerMessage = ticket0Entities.message.fields
-  .omit({ author_principal: true, author_contact_id: true, third_party_contact_id: true })
-  .extend({ citations: z.array(
+export const customerMessageRow = ticket0Entities.message.fields.omit({
+  author_principal: true,
+  author_contact_id: true,
+  third_party_contact_id: true,
+});
+const customerMessage = customerMessageRow.extend({ citations: z.array(
     z.object({
       id: z.string(),
       title: z.string(),
@@ -4239,7 +4246,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
        */
       ccEmails: z.array(z.string()),
       /** A reply to the customer's thread, or a forward to a third party (#1086). */
-      visibility: z.enum(['public', 'forward']),
+      visibility: messageVisibility.exclude(['internal']),
       fromAddress: z.string(),
       agentName: z.string().nullable(),
       bodyText: z.string().nullable(),
