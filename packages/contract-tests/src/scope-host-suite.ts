@@ -5898,6 +5898,26 @@ export function scopeHostContractSuite(
       expect(rejected?.admissionNote).toContain('widened a role');
     });
 
+    it('refuses to reject a version that is already admitted, and leaves it admitted', async () => {
+      // `conflict` (#113 phase 6): the version may already be bound, so admission is one-way
+      // from here. Rejecting an admitted version is the one refusal `rejectVersion` makes.
+      const versionId = ulid();
+      await host.admin.publishVersion(staff, {
+        id: versionId,
+        verticalSlug: 'callout',
+        version: '1.1.0-vouched',
+        manifestDigest: 'm3',
+        permissionDigest: 'p3',
+        migrationDigest: 'g3',
+        deploymentRef: null,
+      });
+      await host.admin.admitVersion(staff, versionId);
+      await expectRefusal(host.admin.rejectVersion(staff, versionId, 'changed my mind'), 'conflict');
+      const after = (await host.admin.listVersions(staff, 'callout')).find((v) => v.id === versionId);
+      expect(after?.admission).toBe('admitted');
+      expect(after?.admissionNote).toBeNull();
+    });
+
     it('carries the digests promotion compares', async () => {
       // "Has the permission surface changed between what is in prod and what I am
       // promoting?" is a string comparison here. Today it is a person remembering
@@ -6012,6 +6032,17 @@ export function scopeHostContractSuite(
         deploymentRef: null,
       });
       await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', pending), 'conflict');
+    });
+
+    it('refuses to promote a version through a vertical that does not own it', async () => {
+      // `conflict` (#113 phase 6). The version is real and admitted — it is the pairing that
+      // is wrong — so this is neither `not_found` (the version exists) nor a state to wait out.
+      const v = await publish('2.9.0', { perm: 'pZ', mig: 'gZ' });
+      await host.admin.registerVertical(staff, { slug: 'elsewhere', name: 'Elsewhere', source: 'builtin' });
+      await expectRefusal(host.admin.promoteVersion(staff, 'elsewhere', 'prod', v), 'conflict');
+      // Positive twin: through its own vertical the same version promotes.
+      await host.admin.promoteVersion(staff, 'callout', 'prod', v);
+      expect((await host.admin.listChannels(staff, 'callout')).find((c) => c.channel === 'prod')?.versionId).toBe(v);
     });
 
     // -- private verticals: self-serve prod (builder-plane.md §4-revised) ----

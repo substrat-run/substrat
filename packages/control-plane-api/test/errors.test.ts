@@ -34,13 +34,14 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(body.error).toMatch(/auto-admitted.*staff admit/);
   });
 
-  it('is not swallowed by a neighbouring admission pattern (order is significant)', () => {
-    // `/is already admitted/` still sits beside it in the table and describes a DIFFERENT
-    // state. Were it to match this message, the operator would be told the version is
-    // already admitted — which is true, and precisely the confusion that hid the real
-    // requirement: admitted is not the same as vouched for.
-    expect(mapError(autoAdmitRefusal).body.error).not.toMatch(/^unknown /);
-    expect(mapError(new Error('version 01J is already admitted')).status).toBe(409);
+  it('is not mistaken for the neighbouring "already admitted" refusal', () => {
+    // `rejectVersion`'s `is already admitted` describes a DIFFERENT state, and both are
+    // `conflict` now by their own declaration — so the sentence an operator reads is the
+    // throw's, never a guess from the other's wording. Admitted is not the same as vouched for.
+    const rejectRefusal = substratError('conflict', 'version 01J is already admitted — it may be bound');
+    expect(mapError(autoAdmitRefusal).body.detail).toMatch(/auto-admitted.*staff admit/);
+    expect(mapError(autoAdmitRefusal).body.detail).not.toMatch(/already admitted/);
+    expect(mapError(rejectRefusal).body.detail).toBe(rejectRefusal.message);
   });
 
   it('keeps the note itself out of the matching — the text is the contract, not the constant', () => {
@@ -194,6 +195,26 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
       // The other half: untyped, the same sentence is an unreviewed throw and gets the
       // generic 500 — what makes the deletion real. The contract suite is what proves the
       // throws are typed, since THIS case would pass whatever the adapters did.
+      expect(mapError(new Error(sentence)).status).toBe(500);
+    }
+  });
+
+  it('reads `is already admitted` and `belongs to` from the code now that their rows are gone (#113 phase 6)', () => {
+    // The last two coordinator-only registry refusals: `rejectVersion` on an admitted
+    // version, and `promoteVersion` through a vertical that does not own the version. Both
+    // are raised in `host.ts` / `adapter-sqlite`, never inside a Durable Object.
+    const sentences = [
+      `version 01ABC is already admitted — it may be bound`,
+      `version 01ABC belongs to 'helpdesk'`,
+    ];
+    for (const sentence of sentences) {
+      const typed = mapError(substratError('conflict', sentence));
+      expect(typed.status).toBe(409);
+      expect(typed.body.code).toBe('conflict');
+      expect(typed.body.detail).toBe(sentence);
+
+      // The other half: untyped, the same sentence is an unreviewed throw and gets the
+      // generic 500. The contract suite is what proves the throws are typed.
       expect(mapError(new Error(sentence)).status).toBe(500);
     }
   });

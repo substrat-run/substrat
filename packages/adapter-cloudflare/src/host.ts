@@ -5491,7 +5491,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const v = await this.cp.readVersion(versionId);
         if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         if (v.admission === 'admitted') {
-          throw new Error(`version ${versionId} is already admitted — it may be bound`);
+          throw substratError('conflict', `version ${versionId} is already admitted — it may be bound`);
         }
         if (v.admission === 'rejected') return;
         await this.cp.setAdmission(versionId, 'rejected', note);
@@ -5507,7 +5507,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const incoming = await this.cp.readVersion(versionId);
         if (!incoming) throw substratError('not_found', `unknown version ${versionId}`);
         if (incoming.vertical_slug !== verticalSlug) {
-          throw new Error(`version ${versionId} belongs to '${incoming.vertical_slug}'`);
+          throw substratError('conflict', `version ${versionId} belongs to '${incoming.vertical_slug}'`);
         }
         if (incoming.admission !== 'admitted') {
           throw substratError(

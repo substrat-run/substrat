@@ -7540,7 +7540,7 @@ export class SqliteScopeHost implements ScopeHost {
         const v = readVersion(versionId);
         if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         if (v.admission === 'admitted') {
-          throw new Error(`version ${versionId} is already admitted — it may be bound`);
+          throw substratError('conflict', `version ${versionId} is already admitted — it may be bound`);
         }
         if (v.admission === 'rejected') return; // idempotent
         this.directory
@@ -7573,7 +7573,7 @@ export class SqliteScopeHost implements ScopeHost {
         const incoming = readVersion(versionId);
         if (!incoming) throw substratError('not_found', `unknown version ${versionId}`);
         if (incoming.verticalSlug !== verticalSlug) {
-          throw new Error(`version ${versionId} belongs to '${incoming.verticalSlug}'`);
+          throw substratError('conflict', `version ${versionId} belongs to '${incoming.verticalSlug}'`);
         }
         if (incoming.admission !== 'admitted') {
           throw substratError(
