@@ -24,8 +24,8 @@
  */
 
 /**
- * Two processes: the local OIDC issuer, and the Hono API that relies on it. There is no
- * web app to scaffold yet.
+ * Three processes: the local OIDC issuer, the Hono API that relies on it, and the test
+ * dashboard. There is no web app to scaffold yet.
  *
  * The issuer is a separate PROCESS rather than a branch inside the API on purpose — that
  * is what keeps the vertical free of any dev-only auth path, and lets it be swapped for a
@@ -34,4 +34,7 @@
 export const DEV_SERVERS = [
   { name: 'issuer', run: 'issuer', portEnv: 'ISSUER_PORT', portFrom: 'src/server.ts' },
   { name: 'api', run: 'server', portEnv: 'PORT', portFrom: 'src/server.ts' },
+  // The test dashboard (#756). 5290 — clear of the demo blocks (527x/528x/529x), which a
+  // scaffold has no claim on (#983).
+  { name: 'tests', run: 'test:ui', portEnv: 'VITEST_UI_PORT', portFrom: 'vitest.ui.config.ts' },
 ];

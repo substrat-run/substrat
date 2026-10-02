@@ -113,6 +113,9 @@ function packageJson(name) {
         issuer: 'substrat-dev-issuer --personas src/personas.ts',
         server: 'tsx src/server.ts',
         test: 'vitest run',
+        // The live test dashboard in the Browser pane: the `tests` entry of
+        // .claude/launch.json. `--watch` is explicit, since vitest runs once and exits without a TTY.
+        'test:ui': 'vitest --watch --ui --open=false -c vitest.ui.config.ts',
         typecheck: 'tsc --noEmit && tsc -p tsconfig.worker.json --noEmit',
         'lint:boundaries': 'substrat-boundary-lint',
       },
@@ -140,6 +143,7 @@ function packageJson(name) {
         tsx: '^4.19.0',
         typescript: '^5.6.0',
         vitest: '^3.0.0',
+        '@vitest/ui': '^3.0.0',
       },
       // Do NOT add `zod` here — import `z` from `@substrat-run/contracts` (AGENTS.md, rule 10).
       // better-sqlite3 >=13 ships prebuilt binaries for every supported platform and

@@ -20,6 +20,16 @@
       ],
       "port": 8891,
       "autoPort": false
+    },
+    {
+      "name": "tests",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "run",
+        "test:ui"
+      ],
+      "port": 5290,
+      "autoPort": false
     }
   ]
 }
