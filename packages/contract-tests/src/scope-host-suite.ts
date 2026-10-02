@@ -6040,8 +6040,9 @@ export function scopeHostContractSuite(
       const v = await publish('2.9.0', { perm: 'pZ', mig: 'gZ' });
       await host.admin.registerVertical(staff, { slug: 'elsewhere', name: 'Elsewhere', source: 'builtin' });
       await expectRefusal(host.admin.promoteVersion(staff, 'elsewhere', 'prod', v), 'conflict');
-      // Positive twin: through its own vertical the same version promotes.
-      await host.admin.promoteVersion(staff, 'callout', 'prod', v);
+      // Positive twin: through its own vertical the same version promotes (the earlier tests
+      // moved prod, so the digest checkpoints are acknowledged — they are not under test here).
+      await host.admin.promoteVersion(staff, 'callout', 'prod', v, { permissionChange: true, migrationChange: true });
       expect((await host.admin.listChannels(staff, 'callout')).find((c) => c.channel === 'prod')?.versionId).toBe(v);
     });
 

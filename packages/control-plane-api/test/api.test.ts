@@ -4179,6 +4179,26 @@ describe('control-plane API — vertical registry', () => {
     expect((await json(`/tenants/${t1}/scopes/${sc}/version`, 'POST', { versionId: v2 })).status).toBe(409);
   });
 
+  it('answers the two ownership/admission refusals as 409 conflict with their sentence intact (#113 phase 6)', async () => {
+    // v1 is admitted. Rejecting it, and promoting it through a vertical that does not own it,
+    // are typed `conflict` by the adapter — the same problem document the pattern rows built.
+    const reject = await json(`/verticals/fsm/versions/${v1}/reject`, 'POST', { note: 'too late' });
+    expect(reject.status).toBe(409);
+    expect(await reject.json()).toMatchObject({
+      code: 'conflict',
+      detail: `version ${v1} is already admitted — it may be bound`,
+      error: `version ${v1} is already admitted — it may be bound`,
+    });
+
+    const wrong = await json('/verticals/other/channels/prod/promote', 'POST', { versionId: v1 });
+    expect(wrong.status).toBe(409);
+    expect(await wrong.json()).toMatchObject({
+      code: 'conflict',
+      detail: `version ${v1} belongs to 'fsm'`,
+      error: `version ${v1} belongs to 'fsm'`,
+    });
+  });
+
   it('fires the permission checkpoint: promotion refuses a changed digest without acknowledgement', async () => {
     await json(`/verticals/fsm/versions/${v2}/admit`, 'POST');
     // v2's permission digest differs from v1 (the current prod version) → refused.
