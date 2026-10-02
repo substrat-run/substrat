@@ -4166,7 +4166,16 @@ describe('control-plane API — vertical registry', () => {
   it('refuses a non-admitted version at both bind and promote', async () => {
     await json('/verticals/fsm/versions', 'POST', version(v2, { permissionDigest: 'perm-2' }));
     // v2 is still pending.
-    expect((await json('/verticals/fsm/channels/prod/promote', 'POST', { versionId: v2 })).status).toBe(409);
+    const promote = await json('/verticals/fsm/channels/prod/promote', 'POST', { versionId: v2 });
+    expect(promote.status).toBe(409);
+    // The refusal is typed by the adapter (#113 phase 5), not recognised by its text: the body
+    // is the same problem document the pattern row used to build — code, detail and the
+    // deprecated `error` duplicate.
+    expect(await promote.json()).toMatchObject({
+      code: 'conflict',
+      detail: `version ${v2} is pending, not admitted — it cannot be promoted`,
+      error: `version ${v2} is pending, not admitted — it cannot be promoted`,
+    });
     expect((await json(`/tenants/${t1}/scopes/${sc}/version`, 'POST', { versionId: v2 })).status).toBe(409);
   });
 

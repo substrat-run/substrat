@@ -1,4 +1,4 @@
-import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
+import type { DoNamespace, PlatformRuntime, TenantStores } from '@substrat-run/control-plane-api/browser';
 
 /**
  * Cloudflare dashboard deep links — the console's answer to "which DO is this, and which
@@ -16,20 +16,9 @@ import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
  * a plain identifier (exactly today's behaviour), never as a link that 404s.
  */
 
-/** Where the platform's compute and stores live — mirrors control-plane-api's
- *  `PlatformRuntime` (declared here so the console keeps its own vocabulary, the same
- *  precedent as `ServiceMetricsRow`). */
-export interface PlatformRuntime {
-  provider: 'cloudflare';
-  accountId: string;
-  dispatchNamespace: string;
-}
-
-/** The tenant's platform-minted stores, as the console reads them (#301, #473). */
-export interface TenantStores {
-  tenantStores: TenantStoreRecord[];
-  blobStores: BlobStoreRecord[];
-}
+// Declared once, in the control-plane client, so what the plane answers and what the
+// console reads cannot drift apart (#971).
+export type { DoNamespace, PlatformRuntime, TenantStores } from '@substrat-run/control-plane-api/browser';
 
 const DASH = 'https://dash.cloudflare.com';
 
@@ -105,14 +94,6 @@ export function doNamespaceUrl(runtime: PlatformRuntime | null, namespaceId: str
   return dashUrl(runtime, PATHS.durableObjectNamespace(namespaceId));
 }
 
-/** One Durable Object namespace as the control plane reports it. */
-export interface DoNamespace {
-  id: string;
-  className: string;
-  script: string | null;
-  name: string | null;
-  useSqlite: boolean;
-}
 
 /**
  * The name the scope's Durable Object is derived from — `SCOPE.idFromName(scopeId)` in

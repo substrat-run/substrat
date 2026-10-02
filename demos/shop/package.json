@@ -31,6 +31,12 @@
         "dir": "admin",
         "portEnv": "ADMIN_PORT",
         "portFrom": "admin/vite.config.ts"
+      },
+      {
+        "name": "tests",
+        "run": "test:ui",
+        "portEnv": "VITEST_UI_PORT",
+        "portFrom": "package.json"
       }
     ]
   },
@@ -40,6 +46,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:ui": "vitest --watch --ui --open=false -c ../../tools/vitest/ui.config.mjs --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5296}",
     "server": "tsx src/server.ts",
     "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts",
     "dev": "concurrently -n issuer,api,web,admin -c magenta,blue,green,cyan \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\" \"pnpm --dir admin dev\"",
@@ -61,6 +68,7 @@
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
+    "@vitest/ui": "catalog:",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "catalog:",

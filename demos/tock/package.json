@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "test": "vitest run",
+    "test:ui": "vitest --watch --ui --open=false -c ../../tools/vitest/ui.config.mjs --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5298}",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "server": "tsx src/server.ts",
     "demo": "pnpm run dev",
@@ -30,11 +31,12 @@
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
+    "@vitest/ui": "catalog:",
     "better-sqlite3": "^13.0.3",
+    "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
-    "vitest": "catalog:",
-    "concurrently": "^9.0.0"
+    "vitest": "catalog:"
   },
   "substrat": {
     "slug": "tock",
@@ -60,6 +62,12 @@
         "dir": "app",
         "portEnv": "WEB_PORT",
         "portFrom": "app/vite.config.ts"
+      },
+      {
+        "name": "tests",
+        "run": "test:ui",
+        "portEnv": "VITEST_UI_PORT",
+        "portFrom": "package.json"
       }
     ],
     "client": {

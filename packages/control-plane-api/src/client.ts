@@ -1,6 +1,5 @@
-import { denialQuery, problemDetail } from '@substrat-run/contracts';
+import { denialQuery } from '@substrat-run/contracts';
 import type {
-  ConnectionProbe,
   EntitlementGrant,
   EntitlementGrantInput,
   QueryScopeInput,
@@ -17,7 +16,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 
-import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER } from './auth.js';
+import { ControlPlaneError, ControlPlaneTransport } from './transport.js';
 import { identityTenantsResponse, type IdentityTenant } from './identity-tenants.js';
 
 /**
@@ -61,6 +60,10 @@ export interface ControlPlaneClientOptions {
   fetch?: typeof globalThis.fetch;
 }
 
+// The error is raised by the transport; this is the path callers (and `errors.ts`)
+// have always imported it from.
+export { ControlPlaneError };
+
 export interface ClientProvisionScopeInput {
   tenantId: TenantId;
   scopeId: ScopeId;
@@ -72,87 +75,9 @@ export interface ClientProvisionScopeInput {
   jurisdiction?: 'eu' | 'us' | 'global';
 }
 
-/** A non-2xx (or unreachable) control-plane response. `status` is 0 on a transport error. */
-export class ControlPlaneError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    /**
-     * The provider's own answer, when the plane refused a connect because the credential
-     * was rejected upstream (#605, 422). Carried so a console can show WHY — "Scrive:
-     * No valid access credentials were provided" — instead of a generic save failure.
-     */
-    readonly probe?: ConnectionProbe,
-  ) {
-    super(message);
-    this.name = 'ControlPlaneError';
-  }
-}
-
-export class ControlPlaneClient {
-  private readonly baseUrl: string;
-  private readonly actor: string;
-  private readonly serviceToken?: string;
-  private readonly fetchImpl: typeof globalThis.fetch;
-
+export class ControlPlaneClient extends ControlPlaneTransport {
   constructor(options: ControlPlaneClientOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/$/, '');
-    this.actor = options.actor;
-    this.serviceToken = options.serviceToken;
-    // Bind to globalThis: workerd throws "Illegal invocation" if `fetch` is called
-    // with a `this` other than the global scope (which `this.fetchImpl(...)` would
-    // otherwise set to this instance). An injected fetch is used as-is.
-    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
-  }
-
-  /**
-   * One request, and the one place a failure is read: a transport error or a non-2xx answer
-   * throws `ControlPlaneError`, so what comes back is always a successful `Response`. A 404
-   * is handed back as-is when the caller allows it.
-   */
-  private async send(path: string, init?: RequestInit, allow404 = false): Promise<Response> {
-    let res: Response;
-    try {
-      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        ...init,
-        headers: {
-          // One credential per request (#980): a service token identifies the caller as
-          // the plane's service actor and is checked BEFORE the dev-actor stub, so the
-          // actor header would be ignored there — and a dev-only header has no business
-          // leaving a production caller at all. Without a token, the actor header IS the
-          // (local, UNSAFE) credential.
-          ...(this.serviceToken
-            ? { [SERVICE_TOKEN_HEADER]: this.serviceToken }
-            : { [DEV_ACTOR_HEADER]: this.actor }),
-          'content-type': 'application/json',
-          ...init?.headers,
-        },
-      });
-    } catch (e) {
-      // A transport failure (control plane down) must fail closed, not silently
-      // pass — a vertical that cannot reach the authority does not get to run.
-      throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`);
-    }
-    if (res.status === 404 && allow404) return res;
-    if (!res.ok) {
-      // `problemDetail` is the one reading of a failed body (#971): the RFC 9457
-      // `detail` first, the deprecated `error` duplicate second, both against the
-      // published schema — so this works either way, and keeps working the day the
-      // duplicate is deleted. The status line is the fallback only when the body
-      // said nothing readable.
-      const body = await res.json().catch(() => null);
-      throw new ControlPlaneError(
-        res.status,
-        problemDetail(body) ?? `${res.status} ${res.statusText}`,
-      );
-    }
-    return res;
-  }
-
-  private async call<T>(path: string, init?: RequestInit, allow404 = false): Promise<T> {
-    const res = await this.send(path, init, allow404);
-    if (res.status === 404 && allow404) return undefined as T;
-    return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+    super(options);
   }
 
   // -- registration (idempotent, mirrors HostAdmin) --------------------------
