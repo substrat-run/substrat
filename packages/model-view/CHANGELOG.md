@@ -1,5 +1,13 @@
 # @substrat-run/model-view
 
+## 0.2.38
+
+### Patch Changes
+
+- 4347933: The model page validates and marks an entity's `outsideText` fields beside its `erasable` ones.
+- Updated dependencies [4347933]
+  - @substrat-run/contracts@0.134.0
+
 ## 0.2.37
 
 ### Patch Changes

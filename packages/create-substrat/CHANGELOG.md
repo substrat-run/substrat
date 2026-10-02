@@ -1,5 +1,11 @@
 # create-substrat
 
+## 0.10.11
+
+### Patch Changes
+
+- 4347933: The scaffold's playbook says that an `outsideText` field, like an `erasable` one, never rides an event payload, and when to mark one.
+
 ## 0.10.10
 
 ### Patch Changes

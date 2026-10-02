@@ -1,5 +1,25 @@
 # @substrat-run/kernel
 
+## 0.134.0
+
+### Minor Changes
+
+- 176fe60: Attachments are now searchable by their content. Each upload queues a text extraction job in the same transaction as the upload, so an extraction failure can never fail the upload. The kernel parses no file format itself (K-43). The new `@substrat-run/attachment-extractors` package holds the parsers, and a host is constructed with them (`attachmentExtractors: defaultAttachmentExtractors()`). They read plain text, Markdown, CSV and other `text/*` files, HTML, DOCX, XLSX and PPTX, with no dependency: the zip reader uses the web-standard `DecompressionStream`. PDF is not extracted yet, and nothing is OCR'd. A host given no extractor for a type records it as unsupported. Whatever an extractor returns, the kernel holds it to the output cap, a time budget and a valid shape. Every attachment records its extraction state (`pending`, `indexed`, `empty`, `unsupported` or `failed`, with the reason), which module code reads with `readAttachmentText(ctx, attachmentId)`.
+
+  `ScopeAttachments.search(term, { limit })` returns matching attachments newest first. It decides which owners the caller may read before it looks at the term, using the check `open` makes (the target's `readPermission` on the owning entity), and matches only among them. An attachment the caller cannot open neither appears nor takes a slot. Search returns no count, score or snippet. A caller without scope-level read on a type has that type's owners checked one by one, up to 2,000. Past that, the search is refused with `forbidden` and the reason `attachment_search_too_many_owners`, whatever the term.
+
+  `registerJob` now refuses a job under the kernel's own module id: the kernel runs that job itself.
+
+  Extracted text is capped at 512 KiB per attachment, and the bundled zip reader inflates at most 16 MiB per file. Removing an attachment removes its text. Scope dumps carry no extracted text: a restore or fork re-queues extraction for the attachments it brings back. The scope sweeper's `runJobs` option drives the extraction job, and no deployment has to register it.
+
+### Patch Changes
+
+- 4347933: `ctx.page` reads a `null` filter as `IS NULL`. It used to compose `= NULL`, which is never true, so filtering a nullable column for "no value" answered an empty page.
+- 1addd27: `readScopeTable` refuses a page bound SQLite would misread: a limit that is not a positive integer, and an offset that is not a non-negative integer, including `NaN` and non-finite values, are refused as `validation_failed` instead of reaching `LIMIT` / `OFFSET`. A large valid limit is still clamped to the page maximum. The kernel exports `assertRowOffset` beside `assertRowLimit`.
+- 560eec4: Subject erasure now reaches the spine's free-text columns. A recorded idempotent response that names the subject becomes a redaction tombstone, and a retry under its key is refused rather than replayed or re-run. Ops-failure messages, issue exemplars and sweep records are rewritten to a redaction note when they quote an intent the erasure redacted or name the subject's id. Another tenant's rows are never touched. Issues now record whose failure their exemplar came from (`_substrat_issues.last_owner_kind` and `last_tenant_id`, additive directory columns, backfilled where the retained failure rows prove a single origin). A tenant's exemplar is rewritten only for that tenant, the platform's own on a direct match, and one of unknown origin is left alone. A queued `sweep-runs` intent gets the same note in the entry error that named the subject. Erasing through a coordinator now refuses a scope still running an older ScopeDO that cannot do this, before the subject key is destroyed. The scheduled platform pass now also prunes ops failures, issues and sweep runs past their retention (`HostAdmin.pruneTelemetry`), oldest first and a bounded batch per table per pass, so those bounds hold on a directory that records nothing new and a large backlog drains over passes.
+- Updated dependencies [4347933]
+  - @substrat-run/contracts@0.134.0
+
 ## 0.133.0
 
 ### Patch Changes
@@ -5380,7 +5400,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

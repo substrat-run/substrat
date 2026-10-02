@@ -356,6 +356,7 @@ import {
   type ConnectorCallRecorder,
   unknownRoleError,
   assertRowLimit,
+  assertRowOffset,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -6215,6 +6216,9 @@ export class CloudflareScopeHost implements ScopeHost {
         input: ReadScopeTableInput,
       ): Promise<ScopeTablePage> => {
         await this.scopeRecordForRead(tenantId, scopeId);
+        // Checked here as well as in the ScopeDO, so the refusal keeps its code across the hop.
+        assertRowLimit('limit', input.limit);
+        assertRowOffset('offset', input.offset);
         const page = await this.scopeStub(scopeId).introspectTable(input.table, input.limit, input.offset);
         await this.recordAccess(
           actor,

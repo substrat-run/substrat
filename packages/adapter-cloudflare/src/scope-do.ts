@@ -75,6 +75,8 @@ import {
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
   redactSubjectScopeText,
+  assertRowLimit,
+  assertRowOffset,
   JOB_RUN_PATCH_SQL,
   JOB_STEP_RECORD_SQL,
   DELIVERY_ERROR_REDACTION_SQL,
@@ -4576,8 +4578,10 @@ export function defineScopeDO(
         ).map((r) => r.name),
       );
       if (!known.has(table)) throw new Error(`unknown table '${table}'`);
-      const l = Math.min(Math.max(1, limit), SCOPE_TABLE_PAGE_MAX);
-      const o = Math.max(0, offset);
+      // The ceiling clamps; a bound SQLite would misread (NaN, non-finite, fractional,
+      // negative) is refused instead of reaching LIMIT / OFFSET (#1632).
+      const l = Math.min(assertRowLimit('limit', limit), SCOPE_TABLE_PAGE_MAX);
+      const o = assertRowOffset('offset', offset);
       const cursor = this.sql.exec(`SELECT * FROM "${table}" LIMIT ? OFFSET ?`, l, o);
       const columns = cursor.columnNames;
       const rows = Array.from(cursor.raw(), (row) => (row as unknown[]).map(cellToJson));

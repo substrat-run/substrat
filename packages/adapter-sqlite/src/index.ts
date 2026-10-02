@@ -240,6 +240,7 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   assertRowLimit,
+  assertRowOffset,
   type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
@@ -8551,8 +8552,10 @@ export class SqliteScopeHost implements ScopeHost {
           ).map((r) => r.name),
         );
         if (!known.has(input.table)) throw new Error(`unknown table '${input.table}'`);
-        const limit = Math.min(Math.max(1, input.limit ?? SCOPE_TABLE_PAGE_DEFAULT), SCOPE_TABLE_PAGE_MAX);
-        const offset = Math.max(0, input.offset ?? 0);
+        // The ceiling clamps; a bound SQLite would misread (NaN, non-finite, fractional,
+        // negative) is refused instead of reaching LIMIT / OFFSET (#1632).
+        const limit = Math.min(assertRowLimit('limit', input.limit ?? SCOPE_TABLE_PAGE_DEFAULT), SCOPE_TABLE_PAGE_MAX);
+        const offset = assertRowOffset('offset', input.offset ?? 0);
         const stmt = db.prepare(`SELECT * FROM "${input.table}" LIMIT ? OFFSET ?`).raw(true);
         const rows = (stmt.all(limit, offset) as unknown[][]).map((row) => row.map(cellToJson));
         const columns = stmt.columns().map((c) => c.name);
