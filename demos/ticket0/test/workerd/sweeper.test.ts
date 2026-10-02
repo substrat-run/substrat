@@ -1527,3 +1527,135 @@ describe('ticket0 on workerd — the suspended queue and the spam filter (#1088)
     expect(timing.ms).toBeLessThan(30_000);
   }, 120_000);
 });
+
+/**
+ * #1086 on the runtime a hosted desk runs. The participant reads and writes are new SQL —
+ * a `DELETE … AS k` with correlated `NOT EXISTS`, the relay's `EXISTS` over participants, a
+ * `json_each` page of CCs — and migration 0022 rebuilds the whole message table, which on a
+ * Durable Object runs inside the first request a desk serves after the deploy. Both are run
+ * here against the real thing; the rebuild on a LARGE desk, timed.
+ */
+describe('ticket0 on workerd — participants, forwards and migration 0022 (#1086)', () => {
+  const ccDesk = scopeId.parse(ulid());
+  let mails = 0;
+
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: ccDesk, owner, entitlements })).status).toBe(201);
+    await (await host().getScope(owner, t, ccDesk)).invoke('ticket0/configure-desk', { settings: { spamFilter: { maxLinks: 0 } } });
+  });
+
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: ccDesk })).status).toBe(200);
+  });
+
+  async function mail(input: Record<string, unknown>): Promise<{ id: string; conversation_id: string; visibility: string }> {
+    const relay = await host().getScope(await relayOf(ccDesk), t, ccDesk);
+    mails += 1;
+    return relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactName: null,
+      subject: `Participants ${mails}`,
+      bodyText: 'A question.',
+      emailMessageId: `<participants-${mails}@mail.example>`,
+      ...input,
+    });
+  }
+
+  it('copies in, forwards, takes the answer as forward, and discards junk with the contacts it brought', async () => {
+    const admin = await host().getScope(owner, t, ccDesk);
+    const relay = await host().getScope(await relayOf(ccDesk), t, ccDesk);
+    const first = await mail({ contactEmail: 'ana@customer.example', cc: ['bo@customer.example', 'support@example.com'] });
+    const reply = await admin.invoke<{ id: string }>('ticket0/post-public-reply', {
+      conversationId: first.conversation_id,
+      body: 'On it.',
+    });
+    expect(await relay.invoke('ticket0/read-outbound', { messageId: reply.id })).toMatchObject({
+      toEmail: 'ana@customer.example',
+      ccEmails: ['bo@customer.example'],
+    });
+
+    const sent = await admin.invoke<{ id: string }>('ticket0/forward-message', {
+      conversationId: first.conversation_id,
+      to: 'supplier@vendor.example',
+      body: 'In stock?',
+    });
+    const pendingIds = (await relay.invoke<Page<{ messageId: string }>>('ticket0/list-pending-outbound', { limit: 50 })).entries.map(
+      (r) => r.messageId,
+    );
+    expect(pendingIds).toEqual(expect.arrayContaining([reply.id, sent.id]));
+    await relay.invoke('ticket0/record-delivery', { messageId: sent.id, emailMessageId: '<fw@desk.example>' });
+    const answer = await mail({ contactEmail: 'supplier@vendor.example', emailInReplyTo: '<fw@desk.example>' });
+    expect(answer).toMatchObject({ conversation_id: first.conversation_id, visibility: 'forward' });
+
+    const junk = await mail({
+      contactEmail: 'spammer@junk.example',
+      bodyText: 'Visit https://junk.example',
+      cc: ['victim@target.example', 'ana@customer.example'],
+    });
+    await admin.invoke('ticket0/discard', { conversationId: junk.conversation_id });
+    const left = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(ccDesk)), (_i, state) =>
+      [...state.storage.sql.exec("SELECT email FROM ticket0_contacts WHERE email IN ('victim@target.example', 'ana@customer.example')")].map(
+        (r) => r.email,
+      ),
+    );
+    expect(left).toEqual(['ana@customer.example']);
+  });
+
+  it('0022 on a large desk: every message kept and named, every index back, and the time it takes is measured', async () => {
+    const CONVERSATIONS = 20_000;
+    const lists = MODULES.find((m) => m.manifest.id === ticket0Manifest.id)!.manifest.lists ?? [];
+    const probe = env.SCOPE.get(env.SCOPE.idFromName(`migration-0022-${ulid()}`));
+    const result = await runInDurableObject(probe, async (_i, state) => {
+      const sql = state.storage.sql;
+      // The schema a desk held before this change. 0020 is a spine repair this bare probe
+      // has no spine for, and changes no ticket0 table.
+      for (const m of ticket0Migrations.filter((x) => x.version < '0022' && x.version !== '0020')) sql.exec(m.sql);
+      for (const m of listIndexMigrations(ticket0Manifest.id, lists)) sql.exec(m.sql);
+      const indexesOf = () =>
+        [...sql.exec("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ticket0_messages' ORDER BY name")].map(
+          (r) => `${String(r.name)}: ${String(r.sql)}`,
+        );
+      const before = indexesOf();
+      state.storage.transactionSync(() => {
+        sql.exec("INSERT INTO ticket0_contacts (id, created_at) VALUES ('k', '2026-01-01T00:00:00.000Z')");
+        for (let i = 0; i < CONVERSATIONS; i++) {
+          const id = `c${String(i).padStart(6, '0')}`;
+          const at = new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString();
+          sql.exec(
+            `INSERT INTO ticket0_conversations (id, contact_id, channel, subject, state, priority, created_at, updated_at)
+             VALUES (?, 'k', 'email', 'Before', 'open', 'normal', ?, ?)`,
+            id, at, at,
+          );
+          for (let j = 0; j < 4; j++) {
+            sql.exec(
+              `INSERT INTO ticket0_messages (id, conversation_id, author_kind, visibility, body_text, created_at)
+               VALUES (?, ?, ?, ?, 'A message of an ordinary length, the kind a customer writes.', ?)`,
+              `${id}-${j}`, id, j % 2 === 0 ? 'contact' : 'agent', j === 3 ? 'internal' : 'public', at,
+            );
+          }
+        }
+      });
+      const started = performance.now();
+      state.storage.transactionSync(() => {
+        sql.exec(ticket0Migrations.find((m) => m.version === '0022')!.sql);
+      });
+      const ms = performance.now() - started;
+      const after = indexesOf();
+      const counts = [
+        ...sql.exec(
+          `SELECT COUNT(*) AS n, SUM(author_contact_id = 'k') AS named, SUM(author_kind = 'contact') AS contact
+             FROM ticket0_messages`,
+        ),
+      ][0];
+      return { ms, before, after, counts };
+    });
+    expect(result.counts).toEqual({ n: CONVERSATIONS * 4, named: CONVERSATIONS * 2, contact: CONVERSATIONS * 2 });
+    // Every index the table had is back, as it was; the two new ones are the only additions.
+    expect(result.after.filter((i) => !/by_author_contact|by_third_party/.test(i))).toEqual(result.before);
+    expect(result.after).toHaveLength(result.before.length + 2);
+    // Reported for the PR rather than asserted tightly: the runtime here is a laptop's
+    // workerd. The bound is the DO's default CPU limit for one request, 30 s.
+    console.log(`#1086 migration 0022 on ${CONVERSATIONS * 4} messages: ${Math.round(result.ms)} ms`);
+    expect(result.ms).toBeLessThan(30_000);
+  }, 120_000);
+});
