@@ -150,6 +150,8 @@ async function myConversations(desk: Desk, who: PrincipalId): Promise<string[]> 
   );
 }
 
+const follower = (desk: Desk, who: PrincipalId) => kit.as(desk, who);
+
 async function role(desk: Desk, roleKey: string): Promise<PrincipalId> {
   const p = principalId.parse(ulid());
   await kit.host.admin.assignRole(actor, { principalId: p, roleKey, node: { tenantId: desk.tenant, scopeId: desk.scope } });
@@ -214,6 +216,13 @@ describe('who may put an address on a conversation, and who may see who is on it
 
     const customer = await portalFor(d, contactIdOf(d, 'one@customer.example')!);
     await expect(participants(d, followed, customer)).rejects.toThrow(/permission denied/i);
+
+    // And the address behind an id is the directory's read: an agent's, not a follower's.
+    const cc = seen.find((p) => p.role === 'cc')!.contact_id!;
+    expect(await agent.invoke('ticket0/get-contact', { contactId: cc })).toMatchObject({ email: 'two@customer.example' });
+    await expect(follower(d, guest).then((f) => f.invoke('ticket0/get-contact', { contactId: cc }))).rejects.toThrow(
+      /permission denied/i,
+    );
   });
 });
 

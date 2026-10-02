@@ -480,6 +480,13 @@ export interface Ticket0Client {
   forwardMessage(input: { conversationId: string; to: string; name?: string | null; body: string; bodyHtml?: string | null }): Promise<Message>;
 
   /**
+   * One person who has asked something, or is copied in on it
+   *
+   * `GET /contacts/{contactId}` — `ticket0/get-contact`
+   */
+  getContact(input: { contactId: string }): Promise<Contact>;
+
+  /**
    * One conversation
    *
    * `GET /conversations/{conversationId}` — `ticket0/get-conversation`
@@ -1210,6 +1217,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/followers`, "POST", omit(input, ["conversationId"]), undefined),
     forwardMessage: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/forwards`, "POST", omit(input, ["conversationId"]), undefined),
+    getContact: (input: Args) =>
+      send(`/contacts/${encodeURIComponent(String(input.contactId))}`, "GET", undefined, omit(input, ["contactId"])),
     getConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}`, "GET", undefined, omit(input, ["conversationId"])),
     getCsat: (input: Args) =>

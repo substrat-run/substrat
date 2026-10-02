@@ -4140,6 +4140,11 @@ const operations = {
     return pageOf(ctx.sql.query<ContactRow>(sql, params), limit, (row) => row.id);
   },
 
+  'ticket0/get-contact': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.contactRead));
+    return contactOrThrow(ctx, input.contactId);
+  },
+
   'ticket0/list-contacts': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.contactRead));
     return ctx.page<ContactRow>('contact', input);

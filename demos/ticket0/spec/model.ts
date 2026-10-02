@@ -2232,6 +2232,22 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: { method: 'GET', path: '/contacts/search' },
   },
 
+  /**
+   * One person, by id — what turns a contact id on a screen into an address (#1086).
+   *
+   * The directory (`list-contacts`) is a PAGE, and the people a conversation names are
+   * not on any particular one of it: a CC copied in a minute ago is the newest contact the
+   * desk has. Behind the same key as the directory, because it answers the same question
+   * about one row.
+   */
+  'ticket0/get-contact': {
+    summary: 'One person who has asked something, or is copied in on it',
+    permission: 'contact:read',
+    input: z.object({ contactId: z.string() }),
+    output: ticket0Entities.contact.fields,
+    http: { method: 'GET', path: '/contacts/{contactId}' },
+  },
+
   'ticket0/list-contacts': {
     summary: 'The people who have asked something',
     permission: 'contact:read',

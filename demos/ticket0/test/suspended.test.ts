@@ -350,7 +350,7 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
       'list-block-rules', 'add-block-rule', 'remove-block-rule', 'set-agent-profile', 'list-agents',
       'set-agent-offboarded', 'add-kb-source', 'list-kb-sources', 'ingest-kb-source', 'record-kb-articles',
       'record-kb-ingest-failure', 'mint-kb-refresh-token', 'revoke-kb-refresh-token', 'redeem-kb-refresh-token',
-      'search-kb', 'search-contacts', 'list-contacts', 'list-tags', 'list-saved-replies', 'create-saved-reply',
+      'search-kb', 'search-contacts', 'list-contacts', 'get-contact', 'list-tags', 'list-saved-replies', 'create-saved-reply',
       'get-saved-reply', 'update-saved-reply', 'delete-saved-reply', 'set-usage-rate', 'close-usage-period',
       'widget-origins', 'assistant-mode', 'widget-start', 'signup-origins', 'submit-signup', 'confirm-signup',
       'unsubscribe-signup', 'list-signups', 'signup-counts'];

@@ -24,7 +24,7 @@ import {
   type Ticket0Client,
 } from '../api.js';
 import { agentName, agents, assignableStaff } from '../agents.js';
-import { contacts, forgetContacts, isAnonymous, nameOf } from '../contacts.js';
+import { contactsWith, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
 import { PACE } from '../pace.js';
 import { latestOnly } from '../sequence.js';
@@ -114,10 +114,17 @@ export function ConversationView({
       ]);
       if (!isLatest()) return;
       setConv(c);
-      const directory = await contacts();
+      // Everyone this conversation names, resolved even when the directory's page missed
+      // them: the customer, every participant, and whoever wrote or was forwarded to.
+      const directory = await contactsWith([
+        c.contact_id,
+        ...on.participants.map((p) => p.contact_id),
+        ...m.entries.flatMap((x) => [x.author_contact_id, x.third_party_contact_id]),
+      ]);
       if (!isLatest()) return;
       setWho(directory.get(c.contact_id));
-      setPeople(directory);
+      // A copy: the directory is one shared, growing Map, and React compares by reference.
+      setPeople(new Map(directory));
       setParticipants(on.participants);
       setMessages(m.entries as MessageWithCitations[]);
       setTurns(t.entries as Turn[]);
@@ -796,7 +803,6 @@ function Composer({
         // A forward runs no macro: a macro's reply is the customer's or a note, and its
         // actions are work on the customer's thread, not a question to somebody else.
         await api.forwardMessage({ conversationId: conv.id, to: to.trim(), body });
-        forgetContacts();
       } else if (macro) {
         await api.applySavedReply({
           conversationId: conv.id,
@@ -1688,11 +1694,7 @@ function PeoplePanel({
     const email = draft.trim();
     if (!email) return;
     setDraft('');
-    void act(async () => {
-      await api.addParticipant({ conversationId: conv.id, email });
-      // The address may be a contact this desk did not have a moment ago.
-      forgetContacts();
-    });
+    void act(() => api.addParticipant({ conversationId: conv.id, email }));
   };
   return (
     <div>
