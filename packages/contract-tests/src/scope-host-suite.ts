@@ -2808,6 +2808,63 @@ export function scopeHostContractSuite(
             expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
           });
 
+          it('rewrites an issue exemplar only on retained evidence that it is this tenant\'s', async () => {
+            // An issue has no tenant column and outlives its ops-failure rows (180 days vs 90).
+            // Once those rows have expired nothing says whose an exemplar is, and the text it
+            // holds can come from anyone's request — so an erasure in one tenant must not read
+            // the absence as permission. Expiry is simulated by restoring a directory copy with
+            // the source rows taken out, which is what the 90-day prune leaves behind.
+            const erased = dataSubjectId.parse(ulid());
+            const ops = {
+              otherExpired: op('other-expired'),
+              ownExpired: op('own-expired'),
+              ownKept: op('own-kept'),
+            };
+            await fail(ops.otherExpired, `schedule threw on contact ${erased}`, t2, null);
+            await fail(ops.ownExpired, `schedule threw on contact ${erased} (Anna Ek)`);
+            await fail(ops.ownKept, `schedule threw on contact ${erased} (Anna Ek)`);
+            const copy = await host.admin.exportDirectory(staff);
+            const expired = new Set([ops.otherExpired, ops.ownExpired]);
+            await host.admin.restoreDirectory(staff, {
+              ...copy,
+              tables: copy.tables.map((t) => {
+                if (t.name !== '_substrat_ops_failures') return t;
+                const col = t.columns.indexOf('operation');
+                return { ...t, rows: t.rows.filter((r) => !expired.has(r[col] as string)) };
+              }),
+            });
+            expect(await host.admin.listOpsFailures(staff, { operation: ops.ownExpired })).toEqual([]);
+            const before = {
+              otherExpired: await issueOf(ops.otherExpired),
+              ownExpired: await issueOf(ops.ownExpired),
+              ownKept: await issueOf(ops.ownKept),
+            };
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            // Another tenant's exemplar, its evidence gone: byte-equal.
+            expect(await issueOf(ops.otherExpired)).toEqual(before.otherExpired);
+            // This tenant's, its evidence gone: skipped too — the stated residual (§13.1
+            // limit 9), the price of never guessing whose an exemplar is.
+            expect(await issueOf(ops.ownExpired)).toEqual(before.ownExpired);
+            // With its row retained, the exemplar goes with the row.
+            expect(await issueOf(ops.ownKept)).toEqual({ ...before.ownKept, lastMessage: REDACTED_FAILURE_NOTE });
+            expect((await failureOf(ops.ownKept)).message).toBe(REDACTED_FAILURE_NOTE);
+
+            // The same text retained under two tenants: this tenant's row goes, and the shared
+            // exemplar stays, because another tenant's retained row still says it.
+            const shared = op('shared');
+            const text = `schedule threw on contact ${erased}`;
+            await fail(shared, text, t2, null);
+            await fail(shared, text);
+            const sharedIssue = await issueOf(shared);
+            await host.admin.shredSubject(staff, t1, s1, erased);
+            expect(await issueOf(shared)).toEqual(sharedIssue);
+            const rows = await host.admin.listOpsFailures(staff, { operation: shared });
+            expect(rows.find((r) => r.tenantId === t1)!.message).toBe(REDACTED_FAILURE_NOTE);
+            expect(rows.find((r) => r.tenantId === t2)!.message).toBe(text);
+          });
+
           it('rewrites a queued sweep-runs entry\'s error, and keeps the rest of the intent', async () => {
             // A CP-less pass queues its schedule outcomes as one `sweep-runs` intent, and the
             // drain lands each entry's `error` in `_substrat_sweep_runs`. The intent is kept like
