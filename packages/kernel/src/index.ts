@@ -104,6 +104,7 @@ export {
   telemetryRetentionStatements,
   TELEMETRY_PRUNE_BATCH,
   assertRowLimit,
+  assertRowOffset,
   EMITTED_REPORT_CAP,
   LIVE_MODE_HEADER,
   isUpgradeRequest,

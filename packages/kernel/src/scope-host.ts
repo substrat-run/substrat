@@ -3970,6 +3970,16 @@ export function assertRowLimit(name: string, value: number): number {
   throw substratError('validation_failed', `${name} must be a positive integer, got ${String(value)}`);
 }
 
+/**
+ * A caller-supplied row offset, checked before it reaches a SQL `OFFSET` — `assertRowLimit`'s
+ * sibling. Zero is a valid offset; a negative, fractional or non-finite one is refused rather
+ * than passed to SQLite, which fails the statement on it.
+ */
+export function assertRowOffset(name: string, value: number): number {
+  if (Number.isInteger(value) && value >= 0) return value;
+  throw substratError('validation_failed', `${name} must be a non-negative integer, got ${String(value)}`);
+}
+
 /** How many rows of EACH telemetry table one `pruneTelemetry` call deletes, by default. */
 export const TELEMETRY_PRUNE_BATCH = 500;
 
