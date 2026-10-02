@@ -25,6 +25,7 @@ import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, typ
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
+  attachmentTextContractSuite,
   capabilityContractSuite,
   impersonationContractSuite,
   billedMod,
@@ -157,7 +158,7 @@ verticalResolutionContractSuite('adapter-cloudflare', peerFixture);
 // session hash inside its queue and checks each read as `{ capability }`; the coordinator
 // holds the bytes. The per-tenant bucket is an in-memory `R2Bucket` slice and the bucket
 // manager a stub, as in `attachments.test.ts`: what is under test is the gate, not R2.
-capabilityAttachmentContractSuite('adapter-cloudflare', async () => {
+const attachmentHostFixture = async () => {
   const objs = new Map<string, { body: Uint8Array; contentType?: string }>();
   const bucket = {
     put: async (key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }) => {
@@ -184,7 +185,12 @@ capabilityAttachmentContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
-});
+};
+capabilityAttachmentContractSuite('adapter-cloudflare', attachmentHostFixture);
+
+// #1575: attachment text — the extraction job driven by the coordinator against the real
+// ScopeDO, the FTS5 table and its triggers on DO SQLite, the search gate in the DO.
+attachmentTextContractSuite('adapter-cloudflare', attachmentHostFixture);
 
 // The schedule suite (#383) also runs against the default tuple checker — it must
 // resolve the projected system grant, not an allow-all. Its sweep walks every active

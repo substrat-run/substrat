@@ -8,6 +8,7 @@ import {
   facetRecencyContractSuite,
   impersonationContractSuite,
   capabilityAttachmentContractSuite,
+  attachmentTextContractSuite,
   capabilityContractSuite,
   capabilityExpiryContractSuite,
   connectorTestFetch,
@@ -184,6 +185,22 @@ capabilityContractSuite('adapter-sqlite', async () => {
 // attachment surface. The per-tenant blob store is the directory store the suite provisions.
 capabilityAttachmentContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cap-att-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1575: attachment text — extraction, the FTS5 index and the search gate on node SQLite.
+attachmentTextContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-att-text-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),

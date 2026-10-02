@@ -201,6 +201,36 @@ export function capabilityAttachmentContractSuite(
       });
     });
 
+    // #1575: content search through a capability is the same gate as its `open`.
+    describe('search: exactly the subtree', () => {
+      let inF: AttachmentRecord;
+      let inG: AttachmentRecord;
+
+      beforeAll(async () => {
+        const stub = await as(alice);
+        await stub.invoke('cap/link', { child: doc('d5'), parent: folder('F') });
+        await stub.invoke('cap/link', { child: doc('d6'), parent: folder('G') });
+        const mine = await host.attachments(alice, t1, s1);
+        const put = (entity: EntityRef, name: string) =>
+          mine.upload({ entity, filename: `${name}.txt`, contentType: 'text/plain', visibility: 'internal', body: bytes(`capybara memo ${name}`) });
+        inF = await put(doc('d5'), 'd5');
+        inG = await put(doc('d6'), 'd6');
+        for (let i = 0; i < 10 && (await host.runDueJobs(t1, s1, { limit: 100 })).attempted > 0; i += 1);
+      });
+
+      it('finds the match under the shared folder and never the one beside it — the owner sees both', async () => {
+        const minted = await share(alice, { entity: folder('F'), permissions: [CAP_READ] });
+        const surface = await filesOf(await sessionOf(minted.secret));
+        expect((await surface.search('capybara')).map((r) => r.id)).toEqual([inF.id]);
+        expect((await surface.search('capybara', { limit: 1 })).map((r) => r.id)).toEqual([inF.id]);
+        expect(await denialsOf(minted.id)).not.toContainEqual(
+          expect.objectContaining({ operation: 'attachments.search' }),
+        );
+        const owner = await host.attachments(alice, t1, s1);
+        expect((await owner.search('capybara')).map((r) => r.id)).toEqual([inG.id, inF.id]);
+      });
+    });
+
     describe('never more than the minter can read, now', () => {
       it('taking the minter’s role away refuses the next download; giving it back allows it again', async () => {
         const dan = principalId.parse(ulid());

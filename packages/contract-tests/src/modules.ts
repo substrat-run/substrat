@@ -26,6 +26,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
+  readAttachmentText,
   readHistory,
   readTimeline,
   ulid,
@@ -1554,6 +1555,10 @@ export const permMod: ModuleRegistration = {
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
     'perm/read-denials': readDenialsOp as OperationHandler<never, unknown>,
+    // #1575: an attachment's extraction state, read through `ctx.sql` the way module code
+    // reads it — so the helper's SQL runs on each adapter's own driver, the DO's included.
+    'perm/attachment-text': (async (ctx, input) =>
+      readAttachmentText(ctx, (input as { id: string }).id)) as OperationHandler<never, unknown>,
     // #1642
     'perm/swallowed-check': swallowedCheckOp as OperationHandler<never, unknown>,
     'perm/request-check': requestCheckOp as OperationHandler<never, unknown>,
