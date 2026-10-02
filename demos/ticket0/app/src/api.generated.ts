@@ -147,6 +147,15 @@ export interface ConversationFollow {
   conversation_id: string;
 }
 
+/** `ticket0_mail_deliveries` — declared in spec/model.ts. */
+export interface MailDelivery {
+  email_message_id: string;
+  conversation_id: string;
+  message_id: string | null;
+  direction: "inbound" | "outbound";
+  recorded_at: string;
+}
+
 /** `ticket0_saved_replies` — declared in spec/model.ts. */
 export interface SavedReply {
   id: string;

@@ -967,6 +967,51 @@
         "url"
       ]
     },
+    "mailDelivery": {
+      "table": "ticket0_mail_deliveries",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "email_message_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "inbound",
+              "outbound"
+            ]
+          },
+          "recorded_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email_message_id",
+          "conversation_id",
+          "message_id",
+          "direction",
+          "recorded_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "email_message_id"
+      ]
+    },
     "message": {
       "table": "ticket0_messages",
       "fields": {
