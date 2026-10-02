@@ -614,6 +614,11 @@ export const ticket0Migrations: SqlMigration[] = [
       CREATE INDEX ticket0_conversation_participants_by_contact
         ON ticket0_conversation_participants (contact_id);
 
+      -- A contact by MAILBOX: lower(email), the same comparison addressKey() makes in code. Every
+      -- lookup of a person by address — the inbound sender, a CC, a forward's third party, the
+      -- blocklist's contact kind — asks it, and until now each was a scan of the table.
+      CREATE INDEX ticket0_contacts_by_address ON ticket0_contacts (lower(email));
+
       -- ticket0_messages gains a third visibility, 'forward' (the desk and one third party), and
       -- SQLite cannot widen a CHECK in place, so the table is rebuilt the long way round: create
       -- it under a new name with the new CHECK, copy, drop, rename onto the name. No foreign key

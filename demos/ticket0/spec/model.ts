@@ -3331,7 +3331,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     permission: { key: 'conversation:forward', entity: 'conversation', idFrom: 'conversationId' },
     input: z.object({
       conversationId: z.string(),
-      email: z.string().email(),
+      // Trimmed first: a pasted address with a space either side is still that mailbox.
+      email: z.string().trim().email(),
       name: z.string().min(1).nullable().optional(),
     }),
     output: ticket0Entities.conversationParticipant.fields,
@@ -3403,7 +3404,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     permission: { key: 'conversation:forward', entity: 'conversation', idFrom: 'conversationId' },
     input: z.object({
       conversationId: z.string(),
-      to: z.string().email(),
+      to: z.string().trim().email(),
       name: z.string().min(1).nullable().optional(),
       body: z.string().min(1),
       bodyHtml: z.string().nullable().optional(),

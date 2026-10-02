@@ -484,6 +484,106 @@ describe('forward — a side thread the customer never reads', () => {
   });
 });
 
+describe('one mailbox is one person, however it is spelled (#1086, Codex round 1)', () => {
+  it('the customer under another case or with spaces is never a CC or a third party', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const admin = await kit.as(d, d.admin);
+    const conversationId = (await mail(d, { from: 'ana@customer.example', cc: ['bo@customer.example'] })).conversation_id;
+    const forward = (to: string) => admin.invoke('ticket0/forward-message', { conversationId, to, body: 'Q?' });
+
+    await expect(forward('Ana@Customer.example')).rejects.toThrow(/a reply is how/);
+    await expect(forward('  ANA@customer.example ')).rejects.toThrow(/a reply is how/);
+    await expect(admin.invoke('ticket0/add-participant', { conversationId, email: 'ANA@customer.example' })).rejects.toThrow(
+      /already on it/,
+    );
+    // A CC under another spelling is the same CC: answered with their row, nothing written.
+    const again = (await admin.invoke('ticket0/add-participant', { conversationId, email: ' Bo@Customer.example ' })) as {
+      contact_id: string;
+    };
+    expect(again.contact_id).toBe(contactIdOf(d, 'bo@customer.example'));
+    expect(kit.events(d, 'ticket0.participant-added', conversationId)).toHaveLength(1);
+    await expect(forward('BO@customer.example')).rejects.toThrow(/reply the customer can read/);
+
+    // Nor does a mail copy either of them in again — from the customer, or from the CC
+    // naming the customer — and the reply goes to each once.
+    await mail(d, { from: 'ana@customer.example', into: conversationId, cc: ['ANA@customer.example', 'Bo@customer.example'] });
+    await mail(d, { from: 'bo@customer.example', into: conversationId, cc: ['Ana@customer.example'] });
+    expect(await ccs(d, conversationId)).toEqual(['bo@customer.example']);
+    const reply = (await admin.invoke('ticket0/post-public-reply', { conversationId, body: 'Hi.' })) as Message;
+    expect(await readOutbound(d, reply.id)).toMatchObject({ toEmail: 'ana@customer.example', ccEmails: ['bo@customer.example'] });
+  });
+
+  it('a reply from another spelling of the customer threads in as the customer', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const first = await mail(d, { from: 'ana@customer.example' });
+    const reply = await mail(d, { from: 'Ana@Customer.example', inReplyTo: messageIdOf(d, first.id) });
+    expect(reply.conversation_id).toBe(first.conversation_id);
+    expect(reply).toMatchObject({ visibility: 'public', author_contact_id: contactIdOf(d, 'ana@customer.example') });
+  });
+
+  it('a desk already holding two contacts for one mailbox resolves to the oldest, and still never mails the customer twice', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const admin = await kit.as(d, d.admin);
+    const first = await mail(d, { from: 'dee@customer.example' });
+    const conversationId = first.conversation_id;
+    const requester = contactIdOf(d, 'dee@customer.example')!;
+    // What an older version could write: a second, OLDER contact for the same mailbox,
+    // already copied in on the thread.
+    kit.sql(d, (db) => {
+      db.prepare(
+        "INSERT INTO ticket0_contacts (id, email, created_at) VALUES ('legacy-dee', 'DEE@customer.example', '2020-01-01T00:00:00.000Z')",
+      ).run();
+      db.prepare(
+        `INSERT INTO ticket0_conversation_participants (id, conversation_id, contact_id, role, added_by, created_at)
+         VALUES ('legacy-row', ?, 'legacy-dee', 'cc', NULL, '2020-01-01T00:00:00.000Z')`,
+      ).run(conversationId);
+    });
+
+    // The oldest is the mailbox's: a reply resolves to it, and threads as the customer.
+    const reply = await mail(d, { from: 'dee@customer.example', inReplyTo: messageIdOf(d, first.id) });
+    expect(reply).toMatchObject({ conversation_id: conversationId, author_contact_id: 'legacy-dee' });
+    // It is still the customer: no forward to it, and the customer is not their own CC.
+    await expect(
+      admin.invoke('ticket0/forward-message', { conversationId, to: 'dee@customer.example', body: 'Q?' }),
+    ).rejects.toThrow(/a reply is how/);
+    const out = (await admin.invoke('ticket0/post-public-reply', { conversationId, body: 'Hi.' })) as Message;
+    const sent = await readOutbound(d, out.id);
+    expect(sent.toEmail).toBe('dee@customer.example');
+    expect(sent.ccEmails).toEqual([]);
+    expect(requester).not.toBe('legacy-dee');
+
+    // A CC with a second, older row for their mailbox is still one CC: adding them by
+    // that mailbox answers with the row they have.
+    await admin.invoke('ticket0/add-participant', { conversationId, email: 'eli@customer.example' });
+    kit.sql(d, (db) =>
+      db.prepare(
+        "INSERT INTO ticket0_contacts (id, email, created_at) VALUES ('legacy-eli', 'ELI@customer.example', '2020-01-01T00:00:00.000Z')",
+      ).run(),
+    );
+    const eli = (await admin.invoke('ticket0/add-participant', { conversationId, email: 'eli@customer.example' })) as {
+      contact_id: string;
+    };
+    expect(eli.contact_id).toBe(contactIdOf(d, 'eli@customer.example'));
+    expect(kit.events(d, 'ticket0.participant-added', conversationId)).toHaveLength(1);
+
+    // And a forward an older version left pointing at the customer's mailbox is never sent.
+    kit.sql(d, (db) => {
+      db.prepare(
+        "INSERT INTO ticket0_contacts (id, email, created_at) VALUES ('legacy-dee-2', 'Dee@customer.example', '2020-01-02T00:00:00.000Z')",
+      ).run();
+      db.prepare(
+        `INSERT INTO ticket0_conversation_participants (id, conversation_id, contact_id, role, added_by, created_at)
+         VALUES ('legacy-third', ?, 'legacy-dee-2', 'third-party', NULL, '2020-01-02T00:00:00.000Z')`,
+      ).run(conversationId);
+      db.prepare(
+        `INSERT INTO ticket0_messages (id, conversation_id, author_kind, visibility, body_text, third_party_contact_id, created_at)
+         VALUES ('legacy-forward', ?, 'agent', 'forward', 'Q?', 'legacy-dee-2', '2020-01-02T00:00:00.000Z')`,
+      ).run(conversationId);
+    });
+    expect((await readOutbound(d, 'legacy-forward')).toEmail).toBeNull();
+  });
+});
+
 describe('the portal — a CC reads the thread, a third party never does', () => {
   it('a CC lists and reads the public thread, cannot rate it, and reads nothing once taken off', async () => {
     const d = await kit.freshDesk({ agents: 0 });
@@ -623,7 +723,7 @@ describe('migration 0022 on an existing desk', () => {
         return db
           .prepare(
             `SELECT tbl_name, name, sql FROM sqlite_master
-              WHERE type = 'index' AND tbl_name IN ('ticket0_messages', 'ticket0_conversation_participants')
+              WHERE type = 'index' AND tbl_name IN ('ticket0_messages', 'ticket0_conversation_participants', 'ticket0_contacts')
               ORDER BY tbl_name, name`,
           )
           .all();
@@ -675,6 +775,7 @@ describe('migration 0022 on an existing desk', () => {
         'ticket0_messages_by_author_contact',
         'ticket0_messages_by_third_party',
         'ticket0_conversation_participants_by_contact',
+        'ticket0_contacts_by_address',
         expect.stringMatching(/^_substrat_list_.*_message_conversation_id_created_at$/),
       ]),
     );

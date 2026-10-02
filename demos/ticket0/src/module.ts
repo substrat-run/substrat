@@ -847,17 +847,24 @@ function signupByUnsubscribeToken(
 }
 
 /**
- * An address, as this table keys it.
+ * A mailbox, as this desk keys one — the ONE normalization of an address, for every table
+ * and every comparison here: a signup, a block rule, a contact, a CC, a forward's third
+ * party, and the To and Cc of an outbound mail (#1086).
  *
- * `z.string().email()` rejects surrounding whitespace and accepts any casing, so
- * `Markus@Example.com` and `markus@example.com` reached the lookup as different
- * addresses — two rows, two confirmation emails, and a resend throttle that applied to
- * neither. Domains are case-insensitive by RFC and local parts are technically not; no
- * mail provider anybody signs up from makes that distinction, and treating one person
- * as two is the worse error by a wide margin.
+ * `z.string().email()` accepts any casing, so `Markus@Example.com` and
+ * `markus@example.com` reached the lookups as different addresses — two signup rows, two
+ * contacts, a CC that was the customer's own mailbox and a forward sent back to them.
+ * Domains are case-insensitive by RFC and local parts are technically not; no mail provider
+ * anybody writes from makes that distinction, and treating one person as two is the worse
+ * error by a wide margin.
+ *
+ * Trimmed, and lower-cased in ASCII ONLY, on purpose: that is exactly what the store's own
+ * `lower()` does, so `lower(email) = ?` against this key is the same comparison in SQL as
+ * this is in code. A Unicode lower-casing here would key `Å` differently from the row it
+ * is looking for.
  */
 function addressKey(email: string): string {
-  return email.toLowerCase();
+  return email.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
 }
 
 // ---------------------------------------------------------------------------
@@ -995,14 +1002,11 @@ function blockedBy(ctx: OperationContext, probe: BlockProbe): BlockRuleRow | und
      * And any CONTACT rule about whoever owns this address, found by the address
      * rather than by the id the caller happened to resolve.
      *
-     * Without this the contact kind is evadable by one capital letter.
-     * `contactByEmail` matches exactly — deliberately, because `threadRepliedTo`
-     * must not stitch two people's threads together on a loose comparison — so mail
-     * from `Spam@…` resolves to no contact, a second contact row is created, and a
-     * rule an agent added against the first one never fires. The blocklist is
-     * case-insensitive everywhere else, and this is what makes the third kind agree
-     * with the other two. Threading semantics are untouched: this reads contacts, it
-     * does not decide which one the message belongs to.
+     * A desk that ran an older version can hold several contacts for one mailbox —
+     * resolution used to match exactly — and a rule an agent added against any one of
+     * them must refuse mail from all of them. So the contact kind is asked by the
+     * mailbox, the same `addressKey` against the same `lower()` every other comparison
+     * here uses, not by the one contact `contactByEmail` resolves.
      */
     clauses.push(
       "(kind = 'contact' AND value IN (SELECT id FROM ticket0_contacts WHERE LOWER(email) = ?))",
@@ -1602,12 +1606,63 @@ function followersOf(ctx: OperationContext, conversationId: string): string[] {
 
 /**
  * Where a contact stands on a conversation — the ONE reading of it, for threading, for
- * which audience an inbound mail is written to, and for who may add people by mail.
- * Null is a stranger to this conversation.
+ * which audience an inbound mail is written to, for who may add people by mail, and for
+ * who may be added. Null is a stranger to this conversation.
+ *
+ * By the contact's id, AND by its mailbox (`addressKey`): an older desk can hold two
+ * contacts for one mailbox (see `contactByEmail`), and a check by id alone would let the
+ * second be copied in as the customer's own CC or forwarded the customer's own side
+ * thread. `mailboxStanding` is the address half, on its own for a caller that has an
+ * address and no contact yet.
  */
-function standingOn(ctx: OperationContext, conversation: ConversationRow, contactId: string): Standing | null {
-  if (conversation.contact_id === contactId) return 'requester';
-  return participantOf(ctx, conversation.id, contactId)?.role ?? null;
+function standingOn(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  contact: Pick<ContactRow, 'id' | 'email'>,
+): Standing | null {
+  if (conversation.contact_id === contact.id) return 'requester';
+  // The customer's mailbox outranks any row a second contact for it holds: that row is the
+  // customer too, and a forward or a copy to it is a mail to the customer.
+  const byMailbox = contact.email ? mailboxStanding(ctx, conversation, contact.email) : null;
+  if (byMailbox === 'requester') return 'requester';
+  return participantOf(ctx, conversation.id, contact.id)?.role ?? byMailbox;
+}
+
+/** Where a mailbox stands on a conversation, whichever contact row carries it. */
+function mailboxStanding(ctx: OperationContext, conversation: ConversationRow, email: string): Standing | null {
+  return (
+    ctx.sql.query<{ role: Standing }>(
+      `SELECT role FROM (
+         SELECT 'requester' AS role FROM ticket0_contacts WHERE id = ? AND lower(email) = ?
+         UNION ALL
+         SELECT p.role FROM ticket0_conversation_participants p
+           JOIN ticket0_contacts k ON k.id = p.contact_id
+          WHERE p.conversation_id = ? AND lower(k.email) = ?)
+       ORDER BY role = 'requester' DESC
+       LIMIT 1`,
+      [conversation.contact_id, addressKey(email), conversation.id, addressKey(email)],
+    )[0]?.role ?? null
+  );
+}
+
+/** The participant row a contact is on a conversation as — by id, or by its mailbox. */
+function participantFor(
+  ctx: OperationContext,
+  conversationId: string,
+  contact: Pick<ContactRow, 'id' | 'email'>,
+): ParticipantRow | undefined {
+  return (
+    participantOf(ctx, conversationId, contact.id) ??
+    (contact.email
+      ? ctx.sql.query<ParticipantRow>(
+          `SELECT p.id, p.conversation_id, p.contact_id, p.role, p.added_by, p.created_at
+             FROM ticket0_conversation_participants p JOIN ticket0_contacts k ON k.id = p.contact_id
+            WHERE p.conversation_id = ? AND lower(k.email) = ?
+            ORDER BY p.created_at, p.id LIMIT 1`,
+          [conversationId, addressKey(contact.email)],
+        )[0]
+      : undefined)
+  );
 }
 
 /**
@@ -1670,14 +1725,16 @@ function recipientRefusal(
 function putParticipant(
   ctx: OperationContext,
   conversation: ConversationRow,
-  contactId: string,
+  contact: Pick<ContactRow, 'id' | 'email'>,
   role: ParticipantRow['role'],
   addedBy: string | null,
 ): { row: ParticipantRow; added: boolean } {
-  if (contactId === conversation.contact_id) {
+  if (standingOn(ctx, conversation, contact) === 'requester') {
     throw substratError('validation_failed', 'that is the person this conversation is with — they are already on it');
   }
-  const existing = participantOf(ctx, conversation.id, contactId);
+  // By mailbox as well as by id, so a second contact row for somebody already on it is
+  // that somebody (`standingOn` says why there can be one).
+  const existing = participantFor(ctx, conversation.id, contact);
   if (existing) {
     if (existing.role === role) return { row: existing, added: false };
     throw substratError(
@@ -1696,7 +1753,7 @@ function putParticipant(
   const row: ParticipantRow = {
     id: ulid(),
     conversation_id: conversation.id,
-    contact_id: contactId,
+    contact_id: contact.id,
     role,
     added_by: addedBy,
     created_at: ctx.now(),
@@ -1741,7 +1798,7 @@ function captureRecipients(
   sender: ContactRow,
   addresses: readonly string[],
 ): void {
-  const standing = standingOn(ctx, conversation, sender.id);
+  const standing = standingOn(ctx, conversation, sender);
   if (standing !== 'requester' && standing !== 'cc') return;
   const deskKey = addressKey(desk(ctx).from_address);
   const seen = new Set<string>([addressKey(sender.email ?? '')]);
@@ -1760,10 +1817,11 @@ function captureRecipients(
       overCap++;
       continue;
     }
+    // Already on it under this mailbox, as anybody: the mail adds nobody twice.
+    if (mailboxStanding(ctx, conversation, email) !== null) continue;
     const known = contactByEmail(ctx, email);
-    if (known && standingOn(ctx, conversation, known.id) !== null) continue;
     if (recipientRefusal(ctx, email, known, deskKey)) continue;
-    putParticipant(ctx, conversation, (known ?? contactForAddress(ctx, email)).id, 'cc', null);
+    putParticipant(ctx, conversation, known ?? contactForAddress(ctx, email), 'cc', null);
     count++;
   }
   if (overCap > 0) {
@@ -1782,7 +1840,7 @@ function captureRecipients(
 function carryCcs(ctx: OperationContext, closed: ConversationRow, followUp: ConversationRow): void {
   for (const p of participantsOf(ctx, closed.id)) {
     if (p.role !== 'cc') continue;
-    putParticipant(ctx, followUp, p.contact_id, 'cc', p.added_by);
+    putParticipant(ctx, followUp, contactOrThrow(ctx, p.contact_id), 'cc', p.added_by);
   }
 }
 
@@ -2392,8 +2450,23 @@ function contactByExternalId(ctx: OperationContext, externalId: string): Contact
   ])[0];
 }
 
+/**
+ * The contact a mailbox names (#1086), by `addressKey` — so `Ana@x` and `ana@x` are one
+ * person, to threading, to the blocklist and to who is on a conversation alike.
+ *
+ * A desk that ran an older version can hold two contacts whose addresses differ only in
+ * case: resolution used to match exactly, so each spelling made its own. The rule for
+ * those is stable rather than arbitrary: the OLDEST contact is the mailbox's, and every
+ * later mail lands there. Nothing is merged or rewritten — the other rows keep their
+ * history — and every check of who is on a conversation compares addresses as well as
+ * ids (`standingOn`), so a second row cannot be used to put the customer on their own
+ * thread twice. Over `ticket0_contacts_by_address` (migration 0022).
+ */
 function contactByEmail(ctx: OperationContext, email: string): ContactRow | undefined {
-  return ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE email = ?', [email])[0];
+  return ctx.sql.query<ContactRow>(
+    'SELECT * FROM ticket0_contacts WHERE lower(email) = ? ORDER BY created_at, id LIMIT 1',
+    [addressKey(email)],
+  )[0];
 }
 
 function createContact(
@@ -2492,9 +2565,11 @@ function followUp(
  * something only the requester's own mail or a person at the desk decides, so nobody
  * puts themselves on a stranger's thread by mailing it.
  *
- * `contactByEmail` matches exactly, so a sender whose address differs in case from the
- * contact's is also a new conversation. The conservative miss, on purpose: an agent can
- * merge two conversations from one person, and nobody can un-read a misdelivered one.
+ * Who the sender is, is their MAILBOX (`addressKey`, #1086): `Ana@x` replying to a thread
+ * of `ana@x` is the same person, and so is a contact row an older version made for either
+ * spelling. It used to match exactly and open a second conversation for one capital
+ * letter; the comparison is case-insensitive now in every place that asks it, because the
+ * same address read two ways was also how a forward reached the customer's own mailbox.
  *
  * A merged-away conversation needs no case of its own — merging moves its messages, so
  * the id already resolves to the survivor.
@@ -2518,7 +2593,7 @@ function threadRepliedTo(
   )[0];
   if (!repliedTo) return undefined;
   const conversation = conversationOrThrow(ctx, repliedTo.conversation_id);
-  return standingOn(ctx, conversation, sender.id) !== null ? conversation : undefined;
+  return standingOn(ctx, conversation, sender) !== null ? conversation : undefined;
 }
 
 /**
@@ -5519,7 +5594,7 @@ const operations = {
     const conversation = conversationOrThrow(ctx, input.conversationId);
     heldOrThrow(conversation, 'ticket0/add-participant');
     const contact = recipientOrThrow(ctx, input.email, input.name);
-    return putParticipant(ctx, conversation, contact.id, 'cc', String(ctx.principal)).row;
+    return putParticipant(ctx, conversation, contact, 'cc', String(ctx.principal)).row;
   },
 
   /**
@@ -5562,10 +5637,12 @@ const operations = {
     const conversation = conversationOrThrow(ctx, input.conversationId);
     step(conversation, 'ticket0/forward-message');
     const contact = recipientOrThrow(ctx, input.to, input.name);
-    if (contact.id === conversation.contact_id) {
+    // The customer under any spelling of their mailbox (`standingOn`) — the forward would
+    // otherwise be mailed straight back to them.
+    if (standingOn(ctx, conversation, contact) === 'requester') {
       throw substratError('validation_failed', 'that is the customer — a reply is how the desk writes to them');
     }
-    putParticipant(ctx, conversation, contact.id, 'third-party', String(ctx.principal));
+    putParticipant(ctx, conversation, contact, 'third-party', String(ctx.principal));
     const row = writeMessage(ctx, {
       conversationId: conversation.id,
       authorKind: 'agent',
@@ -6442,15 +6519,15 @@ const operations = {
     // Where the sender stands on the conversation the mail found (#1086). A third party
     // writes on a side thread, and that decides both where a reply to a closed thread
     // goes (below) and who may read what they wrote.
-    const standing = standingOn(ctx, bound, contact.id);
+    const standing = standingOn(ctx, bound, contact);
     // A reply to a thread the desk has closed is a new thread, for the reason
     // `followUp` gives. The relay is told which conversation the message landed in by
     // the row it gets back, so a threading header pointing at the closed one does not
     // have to be right for the mail to arrive somewhere a person will read it.
     //
     // The follow-up belongs to the CLOSED thread's contact, not to whoever the sending
-    // address resolves to. Those can differ — `contactByEmail` matches exactly, so one
-    // capital letter is a second contact — and a follow-up that crossed contacts would
+    // address resolves to. Those can differ — a desk that ran an older version can hold two
+    // contacts for one mailbox (`contactByEmail`) — and a follow-up that crossed contacts would
     // put another person's conversation id in `follows` on a row its owner can read.
     // It is also what already happens one line up: a message the relay binds to a live
     // conversation BY ID lands in it whatever address it came from, because a message
@@ -6615,14 +6692,26 @@ const operations = {
           contactId === undefined ? [conversation.id, role] : [conversation.id, role, contactId],
         )
         .map((r) => r.email);
+    // One mailbox is one recipient (`addressKey`): the desk never mails itself, the
+    // customer is never their own CC, and nobody is copied twice under two spellings.
+    const requester = contactOrNull(ctx, conversation.contact_id)?.email ?? null;
+    const taken = new Set([addressKey(settings.from_address), ...(requester ? [addressKey(requester)] : [])]);
+    const ccs: string[] = [];
+    for (const email of addressesOf('cc')) {
+      if (taken.has(addressKey(email))) continue;
+      taken.add(addressKey(email));
+      ccs.push(email);
+    }
     let toEmail: string | null;
     let ccEmails: string[] = [];
     if (visibility === 'forward') {
-      toEmail = addressesOf('third-party', message.third_party_contact_id)[0] ?? null;
+      // Never to a mailbox on the customer's thread, however it is spelled: that would be
+      // the side thread delivered to the customer's side.
+      const third = addressesOf('third-party', message.third_party_contact_id)[0] ?? null;
+      toEmail = third !== null && !taken.has(addressKey(third)) ? third : null;
     } else {
-      toEmail = contactOrNull(ctx, conversation.contact_id)?.email ?? null;
-      const deskKey = addressKey(settings.from_address);
-      ccEmails = addressesOf('cc').filter((email) => addressKey(email) !== deskKey);
+      toEmail = requester;
+      ccEmails = ccs;
     }
     const author = message.author_principal
       ? ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
