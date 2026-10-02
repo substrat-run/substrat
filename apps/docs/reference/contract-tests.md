@@ -169,6 +169,16 @@ adapter gets it wrong:
 - it is idempotent, and re-running still reports the tombstone;
 - after a shred what was sealed no longer opens, and nothing may be re-sealed;
 - a different subject in the same scope stays fully readable;
+- the spine's other copies go too, each with an untouched twin for another subject: a
+  platform intent that carries the event, a failed delivery's error, and a job run's
+  payload, cursor and step output;
+- so does failure text that names the subject. That covers an ops-failure message, an
+  issue's exemplar, a sweep record's error and the same error still queued in a
+  `sweep-runs` intent. Another tenant's row is never touched, an issue exemplar is
+  rewritten only for the tenant (or the platform) its writer recorded, and an exemplar
+  of unknown origin is left alone;
+- the scheduled pass prunes ops failures, issues and sweep runs past their retention, a
+  bounded batch per table, so a large backlog drains over passes;
 - the erasure lands in **both** logs — the mutation trail and the evidence-destruction one.
 
 **Introspection and the SQL console** (§5.4, #219)
@@ -228,7 +238,9 @@ adapter gets it wrong:
   great deal like the original;
 - a failed request leaves no recording, so the retry runs;
 - a key belongs to the subject that sent it; a reused key with a different request is
-  refused, never served; a replay that cannot be answered is a `409`, not a second run.
+  refused, never served; a replay that cannot be answered is a `409`, not a second run;
+- a recorded response that named an erased subject is refused the same way: never
+  replayed as the tombstone, and never run again.
 
 **Timelines** (`timelineContractSuite`, #800)
 - a burst of events from one operation shares one instant (`ctx.now()` is stable for the
