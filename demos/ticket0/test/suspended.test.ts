@@ -699,6 +699,52 @@ describe('discard destroys the content — completely, only what is suspended, o
   });
 
   /**
+   * CodeRabbit on #1973: a provider's error text can quote the conversation back, and the
+   * turn it sits on stays for billing. The failure is recorded while the conversation is
+   * still in the inbox, which a held one would refuse.
+   */
+  it('keeps the assistant’s turn for billing and drops the provider’s error text', async () => {
+    const d = await filtered();
+    const QUOTE = 'refused to answer: "my card 4111 was declined"';
+    const chat = await visitor(d, 'my card 4111 was declined');
+    await (await kit.as(d, d.widget)).invoke('ticket0/record-assistant-failure', {
+      conversationId: chat.conversationId,
+      turnId: 'quoting-turn',
+      model: 'test/none',
+      error: QUOTE,
+    });
+    const a = await admin(d);
+    await a.invoke('ticket0/suspend', { conversationId: chat.conversationId });
+    await a.invoke('ticket0/discard', { conversationId: chat.conversationId });
+
+    const turns = ((await a.invoke('ticket0/list-turns', { conversationId: chat.conversationId })) as Page<{
+      id: string;
+      model: string;
+      outcome: string;
+      error: string | null;
+    }>).entries;
+    expect(turns).toEqual([expect.objectContaining({ id: 'quoting-turn', model: 'test/none', outcome: 'failed', error: null })]);
+    const health = JSON.stringify(await a.invoke('ticket0/assistant-health', {}));
+    expect(health).not.toContain('4111');
+  });
+
+  /** CodeRabbit on #1973: every discarded row is `closed`, so the open-states default emptied the queue. */
+  it('lists what was discarded in its own queue, and nowhere else', async () => {
+    const d = await filtered();
+    const held = (await visitor(d, linky(4, 'gone'))).conversationId;
+    const kept = (await visitor(d, 'How do I rotate a key?')).conversationId;
+    await (await admin(d)).invoke('ticket0/discard', { conversationId: held });
+    const counted = (await (await admin(d)).invoke('ticket0/list-conversations', {
+      queue: 'discarded',
+    })) as CountedPage<Conversation>;
+    expect(counted.entries.map((c) => c.id)).toEqual([held]);
+    expect(counted.total).toBe(1);
+    expect(await inbox(d, { queue: 'discarded', state: 'new' })).toEqual([]);
+    expect(await inbox(d, { include_closed: true })).toEqual([kept]);
+    expect(await inbox(d, { queue: 'suspended' })).toEqual([]);
+  });
+
+  /**
    * The reviewer's repro (Codex round 1, #1973): the filter ABSENT, a person suspends and
    * discards a mail, and the provider delivers the same Message-ID again. The dedupe used
    * to be the message row, which the discard had deleted, so the junk came back as a new

@@ -2860,8 +2860,11 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * every id and event that names it still resolves; the contact, because it is a person
    * record and erasure is the platform's own story — and because a sender whose only
    * history is discarded is exactly what `discarded-before` keys on; and the assistant's
-   * turns, which are what the desk was billed for. No event ever carried the text: message
-   * events carry ids only.
+   * turns, which are what the desk was billed for — with the provider's `error` text
+   * cleared, since it can quote the message back. Message events carry ids only, so none
+   * of them carried the text. The one event that can is `ticket0.assistant-failed`, whose
+   * payload names that same error; it is published unclassified, so a discard cannot
+   * reach the copy already in the trail.
    *
    * It is a CLOSE as well, and publishes `ticket0.conversation-closed` beside its own
    * event, so a consumer counting closures does not lose these.

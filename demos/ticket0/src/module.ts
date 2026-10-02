@@ -1572,6 +1572,9 @@ async function discardConversation(
   ] as const) {
     ctx.sql.exec(`DELETE FROM ${table} WHERE conversation_id = ?`, [conversation.id]);
   }
+  // The turns stay, for what they billed; the provider's error text goes, because it can
+  // quote the message back (#1973 review).
+  ctx.sql.exec('UPDATE ticket0_ai_turns SET error = NULL WHERE conversation_id = ?', [conversation.id]);
   // The mail stays RECEIVED — that is what stops a redelivery from bringing the words
   // back — and stops pointing at a message that no longer exists.
   ctx.sql.exec('UPDATE ticket0_mail_deliveries SET message_id = NULL WHERE conversation_id = ?', [
@@ -3885,7 +3888,9 @@ const operations = {
     // `closed` still means closed; `include_closed` is what widens the read back to
     // the whole desk. The count follows the same `WHERE`, so the total the screen
     // shows is the total of what it is showing.
-    if (input.state === undefined && input.include_closed !== true) {
+    // Not for the discarded queue: a discard closes, so every row in it is `closed`, and
+    // the open-states default would empty it.
+    if (input.state === undefined && input.include_closed !== true && input.queue !== 'discarded') {
       filters['state'] = OPEN_STATES;
     }
     // Which queue, always (#1088): absent is the inbox, whatever `state` or
