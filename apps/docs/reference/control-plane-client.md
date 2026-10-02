@@ -32,6 +32,30 @@ status (`0` when no response arrived) and `message` the problem document's `deta
 the status line. `fetch` is injectable, so a Worker service binding or an in-process
 `app.fetch` stands in for the network.
 
+## The builder surface
+
+`ControlPlaneBuilderClient` is the typed surface a builder's own tooling calls — the one the
+[CLI](/reference/cli) is built on: who am I (`whoami`), a vertical's versions and channels,
+`promoteChannel`, listing, hostnames, and the scope tools. Its methods return the fields a
+tool reads, typed and not parsed, and a refusal is a `ControlPlaneError` carrying the raw
+`body`, `statusText` and response `headers`, so a caller that renders its own messages keeps
+them. `walkPages` follows a list's cursor to the end.
+
+```ts
+import { ControlPlaneBuilderClient, walkPages } from '@substrat-run/control-plane-client';
+
+const plane = new ControlPlaneBuilderClient({
+  baseUrl: 'https://console.substrat.net/api',
+  actor: null,
+  headers: { authorization: `Bearer ${token}` }, // the credential map you already hold
+});
+const versions = await walkPages((page) => plane.listVersions('acme/crm', page));
+```
+
+`headers` sits beneath the transport's own credential (`serviceToken`, `actor`) and the
+request's own headers, never above them; `request()` gives back the raw `Response` for a caller
+that owns its own retry or upload; `fetch` is read from `globalThis` at call time.
+
 ## Why it is its own package
 
 The server, [`@substrat-run/control-plane-api`](/reference/control-plane-api), is AGPL-3.0:
