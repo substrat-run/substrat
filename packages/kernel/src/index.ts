@@ -38,6 +38,7 @@ export type {
   OpsFailureFilter,
   OpsFailureInput,
   IssueFilter,
+  TelemetryPruneReport,
   SweepRunFilter,
   SweepRunInput,
   ProvisionScopeInput,
@@ -100,6 +101,9 @@ export {
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
   ISSUE_RETENTION_DAYS,
+  telemetryRetentionStatements,
+  TELEMETRY_PRUNE_BATCH,
+  assertRowLimit,
   EMITTED_REPORT_CAP,
   LIVE_MODE_HEADER,
   isUpgradeRequest,
@@ -277,12 +281,21 @@ export {
   REDACTED_JOB_NOTE,
   redactedIntentPayload,
   redactSubjectJobRuns,
+  REDACTED_FAILURE_NOTE,
+  redactSubjectScopeText,
+  ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
+  issueExemplarOwner,
+  redactSubjectDirectoryText,
+  platformIntentFailureMessage,
+  intentIdOfFailureMessage,
 } from './subject-redaction.js';
 export type {
   LegacySubjectRedactionCounts,
   PlatformRequestRedactionCandidate,
   RedactionSql,
   SubjectRedactionCounts,
+  SubjectTextTarget,
+  IssueExemplarOwner,
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';

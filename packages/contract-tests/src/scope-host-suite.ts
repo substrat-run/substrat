@@ -25,15 +25,19 @@ import {
   type PlatformRequestId,
   type PrincipalId,
   type ScopeDump,
+  SWEEP_RUNS_KIND,
   type ScopeId,
   type TenantId,
   type ModelUsageLine,
 } from '@substrat-run/contracts';
 import {
   isSearchIndexTable,
+  platformIntentFailureMessage,
   REDACTED_DELIVERY_NOTE,
+  REDACTED_FAILURE_NOTE,
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
+  startPlatformSweeper,
   ulid,
   type AuditLogFilter,
   type OperationHandler,
@@ -2681,6 +2685,445 @@ export function scopeHostContractSuite(
           expect((await host.admin.shredSubject(staff, t1, s1, erased)).intentsRedacted).toBe(0);
           const twice = (await journal(kind)).find((r) => r.id === id)!;
           expect(twice).toEqual(once);
+        });
+
+        // -- the free-text copies (#1632) ---------------------------------------
+        //
+        // The directory keeps failure text about a scope: an ops failure's message, its
+        // issue's newest exemplar, a sweep record's error. The drain's failure row quotes the
+        // intent it gave up on, so a row about a tombstoned intent is a copy of redacted text;
+        // anything else is reached only when it names the subject's id.
+        describe('the directory\'s failure text, and a queued sweep record (#1632)', () => {
+          const op = (name: string) => `intent.erasure-${name}-${ulid()}`;
+          const fail = (
+            operation: string,
+            message: string,
+            tenant: TenantId | null = t1,
+            scope: ScopeId | null = s1,
+          ) =>
+            host.admin.recordOpsFailure({
+              actor: staff,
+              operation,
+              stage: 'terminal',
+              tenantId: tenant,
+              scopeId: scope,
+              message,
+            });
+          const failureOf = async (operation: string) =>
+            (await host.admin.listOpsFailures(staff, { operation }))[0]!;
+          const issueOf = async (operation: string) =>
+            (await host.admin.listIssues(staff, { operation }))[0]!;
+          const sweepOf = async (unit: string) => (await host.admin.listSweepRuns(staff, { unit }))[0]!;
+          const snapshot = async (ops: Record<string, string>, units: Record<string, string>) => {
+            const out: Record<string, unknown> = {};
+            for (const [k, o] of Object.entries(ops)) {
+              out[`failure:${k}`] = await failureOf(o);
+              out[`issue:${k}`] = await issueOf(o);
+            }
+            for (const [k, u] of Object.entries(units)) out[`sweep:${k}`] = await sweepOf(u);
+            return out;
+          };
+
+          it('redacts the subject\'s failure text, and leaves every other row as it was', async () => {
+            const kind = `connector:erasure-${ulid()}`;
+            const erased = dataSubjectId.parse(ulid());
+            const spared = dataSubjectId.parse(ulid());
+            const linked = await routeIntent(kind, erased, 'Anna Ek');
+            const unlinked = await routeIntent(kind, spared, 'Bo Lund');
+            const ops = {
+              linked: op('linked'),
+              byId: op('by-id'),
+              platform: op('platform'),
+              spared: op('spared'),
+              otherTenant: op('other-tenant'),
+              unlinked: op('unlinked'),
+              nameOnly: op('name-only'),
+            };
+            await fail(ops.linked, platformIntentFailureMessage(linked, 'failed: HTTP 409: Anna Ek needs a personal number'));
+            await fail(ops.byId, `schedule threw on contact ${erased} (Anna Ek)`);
+            await fail(ops.platform, `digest named contact ${erased}`, null, null);
+            await fail(ops.spared, `schedule threw on contact ${spared} (Bo Lund)`);
+            await fail(ops.otherTenant, `schedule threw on contact ${erased}`, t2, null);
+            await fail(ops.unlinked, platformIntentFailureMessage(unlinked, 'failed: HTTP 409: Bo Lund needs a personal number'));
+            await fail(ops.nameOnly, 'schedule threw: Anna Ek has no postal address');
+            const units = {
+              byId: `${s1}:erasure/by-id-${ulid()}`,
+              spared: `${s1}:erasure/spared-${ulid()}`,
+              otherTenant: `${s1}:erasure/other-tenant-${ulid()}`,
+            };
+            const sweep = (unit: string, error: string, tenant: TenantId = t1) =>
+              host.admin.recordSweepRun({
+                kind: 'schedule',
+                unit,
+                outcome: 'failed',
+                tenantId: tenant,
+                scopeId: tenant === t1 ? s1 : null,
+                operation: 'erasure/run',
+                error,
+              });
+            await sweep(units.byId, `contact ${erased} (Anna Ek) bounced`);
+            await sweep(units.spared, `contact ${spared} (Bo Lund) bounced`);
+            await sweep(units.otherTenant, `contact ${erased} bounced`, t2);
+            const before = await snapshot(ops, units);
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            const after = await snapshot(ops, units);
+            // Text about the subject: the drain's row about a tombstoned intent, and every row
+            // in this tenant (or the platform's own) that names the subject's id.
+            for (const k of ['linked', 'byId', 'platform']) {
+              expect(after[`failure:${k}`]).toEqual({ ...(before[`failure:${k}`] as object), message: REDACTED_FAILURE_NOTE });
+              // The platform's own exemplar is attributed as the platform's, and goes on a
+              // direct id match exactly as its ops-failure row does.
+              expect(after[`issue:${k}`]).toEqual({ ...(before[`issue:${k}`] as object), lastMessage: REDACTED_FAILURE_NOTE });
+            }
+            expect(after['sweep:byId']).toEqual({ ...(before['sweep:byId'] as object), error: REDACTED_FAILURE_NOTE });
+            // The twins: another subject's text, another tenant's row, a drain row about an
+            // intent the erasure did not touch — and the documented residual, a sentence that
+            // names the person with neither their id nor an intent link (§13.1).
+            for (const k of ['spared', 'otherTenant', 'unlinked', 'nameOnly']) {
+              expect(after[`failure:${k}`]).toEqual(before[`failure:${k}`]);
+              expect(after[`issue:${k}`]).toEqual(before[`issue:${k}`]);
+            }
+            expect(after['sweep:spared']).toEqual(before['sweep:spared']);
+            expect(after['sweep:otherTenant']).toEqual(before['sweep:otherTenant']);
+
+            // Idempotent: the note names neither the subject nor an intent.
+            await host.admin.shredSubject(staff, t1, s1, erased);
+            expect(await snapshot(ops, units)).toEqual(after);
+            await host.settlePlatformRequest(t1, s1, unlinked, { status: 'done' });
+          });
+
+          it('reaches a drain failure recorded after an earlier erasure tombstoned its intent', async () => {
+            // An erasure that crashed between its scope half and its directory half, re-run:
+            // the intent is already a tombstone, so the link has to come from every tombstone
+            // in the journal and not only the ones this pass wrote.
+            const kind = `connector:erasure-${ulid()}`;
+            const erased = dataSubjectId.parse(ulid());
+            const id = await routeIntent(kind, erased, 'Anna Ek');
+            await host.admin.shredSubject(staff, t1, s1, erased);
+            const operation = op('late');
+            await fail(operation, platformIntentFailureMessage(id, 'gave up after 5 drain attempts — last error: Anna Ek'));
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            expect((await failureOf(operation)).message).toBe(REDACTED_FAILURE_NOTE);
+            expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
+          });
+
+          /** Whose an exemplar is, as the directory stores it — not on the issue read shape. */
+          const exemplarOwnerOf = async (operation: string) => {
+            const dump = await host.admin.exportDirectory(staff);
+            const t = dump.tables.find((x) => x.name === '_substrat_issues')!;
+            const row = t.rows.find((r) => r[t.columns.indexOf('operation')] === operation)!;
+            return { kind: row[t.columns.indexOf('last_owner_kind')], tenant: row[t.columns.indexOf('last_tenant_id')] };
+          };
+
+          it('rewrites an issue exemplar only when its writer attributed it to the erasing tenant', async () => {
+            // An issue has no tenant of its own and outlives its ops-failure rows (180 days vs
+            // 90), so the writer records whose failure each exemplar copied, and erasure reads
+            // that rather than the rows. Expiry is simulated by restoring a directory copy with
+            // the source rows taken out — what the 90-day prune leaves behind.
+            const erased = dataSubjectId.parse(ulid());
+            const ops = {
+              otherExpired: op('other-expired'),
+              ownExpired: op('own-expired'),
+              legacy: op('legacy'),
+              legacyPlatform: op('legacy-platform'),
+            };
+            await fail(ops.otherExpired, `schedule threw on contact ${erased}`, t2, null);
+            await fail(ops.ownExpired, `schedule threw on contact ${erased} (Anna Ek)`);
+            await fail(ops.legacy, `schedule threw on contact ${erased} (Anna Ek)`);
+            await fail(ops.legacyPlatform, `digest named contact ${erased}`, null, null);
+            const copy = await host.admin.exportDirectory(staff);
+            const expired = new Set(Object.values(ops));
+            await host.admin.restoreDirectory(staff, {
+              ...copy,
+              tables: copy.tables.map((t) => {
+                if (t.name === '_substrat_ops_failures') {
+                  const col = t.columns.indexOf('operation');
+                  return { ...t, rows: t.rows.filter((r) => !expired.has(r[col] as string)) };
+                }
+                if (t.name === '_substrat_issues') {
+                  // Issues from before attribution that nothing could backfill: owner unknown.
+                  const op = t.columns.indexOf('operation');
+                  const owner = [t.columns.indexOf('last_tenant_id'), t.columns.indexOf('last_owner_kind')];
+                  const legacy = new Set([ops.legacy, ops.legacyPlatform]);
+                  return {
+                    ...t,
+                    rows: t.rows.map((r) => (legacy.has(r[op] as string) ? r.map((c, i) => (owner.includes(i) ? null : c)) : r)),
+                  };
+                }
+                return t;
+              }),
+            });
+            expect(await host.admin.listOpsFailures(staff, { operation: ops.ownExpired })).toEqual([]);
+            const before = {
+              otherExpired: await issueOf(ops.otherExpired),
+              ownExpired: await issueOf(ops.ownExpired),
+              legacy: await issueOf(ops.legacy),
+              legacyPlatform: await issueOf(ops.legacyPlatform),
+            };
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            // Another tenant's exemplar, its rows expired: byte-equal.
+            expect(await issueOf(ops.otherExpired)).toEqual(before.otherExpired);
+            // This tenant's, its rows expired: the attribution is enough.
+            expect(await issueOf(ops.ownExpired)).toEqual({ ...before.ownExpired, lastMessage: REDACTED_FAILURE_NOTE });
+            // Owner unknown: skipped — the legacy residual (§13.1 limit 9), never a guess, whether
+            // the text was a tenant's or the platform's.
+            expect(await issueOf(ops.legacy)).toEqual(before.legacy);
+            expect(await issueOf(ops.legacyPlatform)).toEqual(before.legacyPlatform);
+          });
+
+          it('attributes each exemplar to the failure it copied, and a newer one takes it over', async () => {
+            const erased = dataSubjectId.parse(ulid());
+            const shared = op('shared');
+            const text = `schedule threw on contact ${erased}`;
+            await fail(shared, text);
+            expect(await exemplarOwnerOf(shared)).toEqual({ kind: 'tenant', tenant: t1 });
+            // The same group, a newer exemplar from another tenant: the attribution moves with it.
+            await fail(shared, text, t2, null);
+            expect(await exemplarOwnerOf(shared)).toEqual({ kind: 'tenant', tenant: t2 });
+            const exemplar = await issueOf(shared);
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            // This tenant's own row goes; the exemplar is now another tenant's and stays.
+            const rows = await host.admin.listOpsFailures(staff, { operation: shared });
+            expect(rows.find((r) => r.tenantId === t1)!.message).toBe(REDACTED_FAILURE_NOTE);
+            expect(rows.find((r) => r.tenantId === t2)!.message).toBe(text);
+            expect(await issueOf(shared)).toEqual(exemplar);
+            // And the platform's own failure leaves the platform's exemplar — never "unknown".
+            await fail(shared, 'the platform failed', null, null);
+            expect(await exemplarOwnerOf(shared)).toEqual({ kind: 'platform', tenant: null });
+          });
+
+          it('ages telemetry out on the scheduled pass, not only when something new is written', async () => {
+            // Issues, ops failures and sweep runs prune on write, which bounds them only while
+            // something is written. Erasure skips an issue of unknown owner on the promise that
+            // it ages out within its retention, so a quiet directory must shed it on time too.
+            // Aged by restoring a directory copy with the rows' timestamps moved past retention.
+            const expired = { op: op('expired'), unit: `${s1}:erasure/expired-${ulid()}` };
+            const fresh = { op: op('fresh'), unit: `${s1}:erasure/fresh-${ulid()}` };
+            for (const x of [expired, fresh]) {
+              await fail(x.op, 'a failure');
+              await host.admin.recordSweepRun({ kind: 'schedule', unit: x.unit, outcome: 'failed', tenantId: t1, scopeId: s1, operation: 'erasure/run', error: 'x' });
+            }
+            const LONG_AGO = '2020-01-01T00:00:00.000Z';
+            const copy = await host.admin.exportDirectory(staff);
+            const age = (t: (typeof copy.tables)[number], match: string, matchCol: string, cols: string[]) => {
+              const m = t.columns.indexOf(matchCol);
+              const at = cols.map((c) => t.columns.indexOf(c));
+              return { ...t, rows: t.rows.map((r) => (r[m] === match ? r.map((c, i) => (at.includes(i) ? LONG_AGO : c)) : r)) };
+            };
+            await host.admin.restoreDirectory(staff, {
+              ...copy,
+              tables: copy.tables.map((t) =>
+                t.name === '_substrat_ops_failures' ? age(t, expired.op, 'operation', ['at'])
+                : t.name === '_substrat_issues' ? age(t, expired.op, 'operation', ['first_seen', 'last_seen'])
+                : t.name === '_substrat_sweep_runs' ? age(t, expired.unit, 'unit', ['at'])
+                : t,
+              ),
+            });
+            expect(await host.admin.listIssues(staff, { operation: expired.op })).toHaveLength(1);
+
+            const report = await runPlatformSweep(host, {
+              actor: staff,
+              fetch: connectorTestFetch,
+              sweepers: {},
+              drainRetries: false,
+            });
+
+            expect(report.errors.filter((e) => e.kind === 'telemetry')).toEqual([]);
+            expect(report.telemetry?.opsFailures).toBeGreaterThanOrEqual(1);
+            expect(report.telemetry?.issues).toBeGreaterThanOrEqual(1);
+            expect(report.telemetry?.sweepRuns).toBeGreaterThanOrEqual(1);
+            expect(await host.admin.listOpsFailures(staff, { operation: expired.op })).toEqual([]);
+            expect(await host.admin.listIssues(staff, { operation: expired.op })).toEqual([]);
+            expect(await host.admin.listSweepRuns(staff, { unit: expired.unit })).toEqual([]);
+            // The positive twin: rows inside their retention stay.
+            expect(await host.admin.listOpsFailures(staff, { operation: fresh.op })).toHaveLength(1);
+            expect(await host.admin.listIssues(staff, { operation: fresh.op })).toHaveLength(1);
+            expect(await host.admin.listSweepRuns(staff, { unit: fresh.unit })).toHaveLength(1);
+          });
+
+          it('drains a telemetry backlog larger than the batch over passes, oldest first', async () => {
+            // After a long pause or a restore the backlog can be months of rows, and one
+            // unbounded DELETE over it fails on the Durable Object every tick. Each pass
+            // deletes at most `limit` rows per table, so the backlog converges instead.
+            await host.admin.pruneTelemetry!(staff, 100_000); // whatever earlier tests left
+            const backlog = Array.from({ length: 5 }, (_, i) => ({ op: op(`backlog-${i}`), unit: `${s1}:erasure/backlog-${i}-${ulid()}` }));
+            const fresh = { op: op('kept'), unit: `${s1}:erasure/kept-${ulid()}` };
+            for (const x of [...backlog, fresh]) {
+              await fail(x.op, 'a failure');
+              await host.admin.recordSweepRun({ kind: 'schedule', unit: x.unit, outcome: 'failed', tenantId: t1, scopeId: s1, operation: 'erasure/run', error: 'x' });
+            }
+            const ops = new Set(backlog.map((b) => b.op));
+            const units = new Set(backlog.map((b) => b.unit));
+            const LONG_AGO = '2020-01-01T00:00:00.000Z';
+            const copy = await host.admin.exportDirectory(staff);
+            const age = (t: (typeof copy.tables)[number], match: Set<string>, matchCol: string, cols: string[]) => {
+              const m = t.columns.indexOf(matchCol);
+              const at = cols.map((c) => t.columns.indexOf(c));
+              return { ...t, rows: t.rows.map((r) => (match.has(r[m] as string) ? r.map((c, i) => (at.includes(i) ? LONG_AGO : c)) : r)) };
+            };
+            await host.admin.restoreDirectory(staff, {
+              ...copy,
+              tables: copy.tables.map((t) =>
+                t.name === '_substrat_ops_failures' ? age(t, ops, 'operation', ['at'])
+                : t.name === '_substrat_issues' ? age(t, ops, 'operation', ['first_seen', 'last_seen'])
+                : t.name === '_substrat_sweep_runs' ? age(t, units, 'unit', ['at'])
+                : t,
+              ),
+            });
+
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 3, issues: 3, sweepRuns: 3 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 2, issues: 2, sweepRuns: 2 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 0, issues: 0, sweepRuns: 0 });
+            for (const b of backlog) {
+              expect(await host.admin.listOpsFailures(staff, { operation: b.op })).toEqual([]);
+              expect(await host.admin.listIssues(staff, { operation: b.op })).toEqual([]);
+              expect(await host.admin.listSweepRuns(staff, { unit: b.unit })).toEqual([]);
+            }
+            // Rows inside their retention are never part of a batch.
+            expect(await host.admin.listOpsFailures(staff, { operation: fresh.op })).toHaveLength(1);
+            expect(await host.admin.listIssues(staff, { operation: fresh.op })).toHaveLength(1);
+            expect(await host.admin.listSweepRuns(staff, { unit: fresh.unit })).toHaveLength(1);
+          });
+
+          it('refuses a row bound that is not a positive integer, wherever one reaches a LIMIT', async () => {
+            // SQLite reads a negative LIMIT as no limit at all, so `-1` turned the bounded
+            // telemetry prune into an unbounded one; a fraction or a non-finite value fails
+            // inside SQLite on every later call. Each is refused with the option's name, and
+            // nothing is deleted on the way.
+            const expired = { op: op('bound'), unit: `${s1}:erasure/bound-${ulid()}` };
+            await fail(expired.op, 'a failure');
+            await host.admin.recordSweepRun({ kind: 'schedule', unit: expired.unit, outcome: 'failed', tenantId: t1, scopeId: s1, operation: 'erasure/run', error: 'x' });
+            const LONG_AGO = '2020-01-01T00:00:00.000Z';
+            const copy = await host.admin.exportDirectory(staff);
+            const age = (t: (typeof copy.tables)[number], match: string, matchCol: string, cols: string[]) => {
+              const m = t.columns.indexOf(matchCol);
+              const at = cols.map((c) => t.columns.indexOf(c));
+              return { ...t, rows: t.rows.map((r) => (r[m] === match ? r.map((c, i) => (at.includes(i) ? LONG_AGO : c)) : r)) };
+            };
+            await host.admin.restoreDirectory(staff, {
+              ...copy,
+              tables: copy.tables.map((t) =>
+                t.name === '_substrat_ops_failures' ? age(t, expired.op, 'operation', ['at'])
+                : t.name === '_substrat_issues' ? age(t, expired.op, 'operation', ['first_seen', 'last_seen'])
+                : t.name === '_substrat_sweep_runs' ? age(t, expired.unit, 'unit', ['at'])
+                : t,
+              ),
+            });
+            const sweep = { actor: staff, fetch: connectorTestFetch, sweepers: {}, drainRetries: false } as const;
+            const refused = (name: string) => (err: unknown) =>
+              errorCodeOf(err) === 'validation_failed' && new RegExp(`${name} must be a positive integer`).test((err as Error).message);
+            for (const bad of [-1, 0, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+              await expect(host.admin.pruneTelemetry!(staff, bad)).rejects.toSatisfy(refused('limit'));
+              await expect(host.admin.pruneAccessLog(staff, bad)).rejects.toSatisfy(refused('limit'));
+              await expect(runPlatformSweep(host, { ...sweep, telemetryBatch: bad })).rejects.toSatisfy(refused('telemetryBatch'));
+              await expect(runPlatformSweep(host, { ...sweep, accessLogBatch: bad })).rejects.toSatisfy(refused('accessLogBatch'));
+              expect(() => startPlatformSweeper(host, { ...sweep, telemetryBatch: bad, intervalMs: 60_000 })).toThrow(/telemetryBatch must be a positive integer/);
+              await expect(host.runDueJobs(t1, s1, { limit: bad })).rejects.toThrow(/limit must be a positive integer/);
+              await expect(host.admin.readUndrainedEvents(staff, t1, s1, bad)).rejects.toThrow(/limit must be a positive integer/);
+              await expect(host.admin.auditLog(staff, { limit: bad })).rejects.toThrow(/limit must be a positive integer/);
+            }
+            // Nothing went on the way: the expired rows are all still there.
+            expect(await host.admin.listOpsFailures(staff, { operation: expired.op })).toHaveLength(1);
+            expect(await host.admin.listIssues(staff, { operation: expired.op })).toHaveLength(1);
+            expect(await host.admin.listSweepRuns(staff, { unit: expired.unit })).toHaveLength(1);
+            // The positive twin: a valid bound drains them.
+            while (Object.values(await host.admin.pruneTelemetry!(staff, 1)).some((n) => n > 0));
+            expect(await host.admin.listOpsFailures(staff, { operation: expired.op })).toEqual([]);
+            expect(await host.admin.listIssues(staff, { operation: expired.op })).toEqual([]);
+            expect(await host.admin.listSweepRuns(staff, { unit: expired.unit })).toEqual([]);
+          });
+
+          it('rewrites a queued sweep-runs entry\'s error, and keeps the rest of the intent', async () => {
+            // A CP-less pass queues its schedule outcomes as one `sweep-runs` intent, and the
+            // drain lands each entry's `error` in `_substrat_sweep_runs`. The intent is kept like
+            // every other, so the same text is held twice. `sweep-runs` is platform-authored —
+            // module code cannot enqueue it — so the rows are planted through a restore.
+            const erased = dataSubjectId.parse(ulid());
+            const spared = dataSubjectId.parse(ulid());
+            // Guarantees the journal has a row to copy the envelope columns from.
+            const template = await routeIntent(`connector:erasure-${ulid()}`, spared, 'Bo Lund');
+            const backup = await host.admin.exportScope(staff, t1, s1);
+            const table = backup.tables.find((t) => t.name === '_substrat_platform_requests')!;
+            const idCol = table.columns.indexOf('id');
+            const base = table.rows.find((r) => r[idCol] === template)!;
+            const at = '2026-09-20T00:00:00.000Z';
+            const entry = (operation: string, error: string | null) => ({
+              kind: 'schedule',
+              operation,
+              outcome: error === null ? 'ok' : 'failed',
+              at,
+              error,
+              elapsedMs: 12,
+            });
+            const payloads = {
+              mine: {
+                version: null,
+                entries: [
+                  entry('crm/sync', `contact ${erased} (Anna Ek) bounced`),
+                  entry('crm/tidy', 'nothing to tidy'),
+                  entry('crm/ok', null),
+                ],
+              },
+              theirs: { version: 'v-1', entries: [entry('crm/sync', `contact ${spared} (Bo Lund) bounced`)] },
+            };
+            const ids = { mine: ulid(), theirs: ulid() };
+            const plant = (id: string, payload: unknown) =>
+              table.columns.map((c, i) =>
+                c === 'id' ? id
+                : c === 'kind' ? SWEEP_RUNS_KIND
+                : c === 'payload' ? JSON.stringify(payload)
+                : c === 'status' ? 'pending'
+                : c === 'attempts' ? 0
+                : c === 'settled_at' || c === 'last_error' || c === 'last_failure' || c === 'result' ? null
+                : base[i],
+              );
+            const s = scopeId.parse(ulid());
+            await host.provisionScope(staff, { tenantId: t1, scopeId: s, jurisdiction: 'eu', vertical: 'connector-vertical' });
+            await host.admin.activateScope(staff, t1, s);
+            await host.restoreScope(staff, t1, s, {
+              ...backup,
+              scopeId: s,
+              tables: backup.tables.map((t) =>
+                t === table ? { ...t, rows: [...t.rows, plant(ids.mine, payloads.mine), plant(ids.theirs, payloads.theirs)] } : t,
+              ),
+            });
+            await host.settlePlatformRequest(t1, s1, template, { status: 'done' });
+            const queued = async () => {
+              const rows = await host.listPlatformRequestHistory(t1, s, { kind: SWEEP_RUNS_KIND });
+              return { mine: rows.find((r) => r.id === ids.mine)!, theirs: rows.find((r) => r.id === ids.theirs)! };
+            };
+            const before = await queued();
+
+            await host.admin.shredSubject(staff, t1, s, erased);
+
+            const after = await queued();
+            // Only the error that named the subject; the shape, the other entries, the
+            // version and the row's own columns are as they were — still pending, so the
+            // drain lands the note instead of the text.
+            expect(after.mine).toEqual({
+              ...before.mine,
+              payload: {
+                ...payloads.mine,
+                entries: [
+                  { ...payloads.mine.entries[0], error: REDACTED_FAILURE_NOTE },
+                  payloads.mine.entries[1],
+                  payloads.mine.entries[2],
+                ],
+              },
+            });
+            expect(after.theirs).toEqual(before.theirs);
+
+            await host.admin.shredSubject(staff, t1, s, erased);
+            expect(await queued()).toEqual(after);
+          });
         });
       });
 

@@ -6,6 +6,9 @@ import {
   impersonationListQuery,
   impersonationRowValues,
   ISSUE_RETENTION_DAYS,
+  telemetryRetentionStatements,
+  assertRowLimit,
+  type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
   SWEEP_RUNS_INTENT_INDEX,
@@ -39,9 +42,13 @@ import {
   LEGACY_SCOPE_ROWS_BACKFILL,
   loadDirectoryDump,
   type ImpersonationRow,
+  redactSubjectDirectoryText,
+  ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
+  issueExemplarOwner,
+  type SubjectTextTarget,
 } from '@substrat-run/kernel';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
-import { doBuiltColumnsOf } from './sql.js';
+import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
   OnBehalfOf,
@@ -536,7 +543,7 @@ function keysetTail(
   let tail = ` ORDER BY ${key} ${order}`;
   if (page?.limit !== undefined) {
     tail += ' LIMIT ?';
-    params.push(page.limit);
+    params.push(assertRowLimit('limit', page.limit));
   }
   return tail;
 }
@@ -1001,6 +1008,12 @@ const DIRECTORY_DDL = `
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
     last_message TEXT NOT NULL,
+    -- #1632: whose ops failure last_message was copied from, written in the same
+    -- statement as the message: last_owner_kind is 'tenant' (last_tenant_id names it) or
+    -- 'platform' (the platform's own row; last_tenant_id NULL). NULL kind = unknown, an
+    -- issue from before the columns that no retained row attributes.
+    last_tenant_id TEXT,
+    last_owner_kind TEXT,
     last_vertical TEXT,
     last_version TEXT,
     resolved_version TEXT,
@@ -1291,11 +1304,14 @@ export class ControlPlaneDO extends DurableObject {
    * rethrows.
    */
   /** Attempt-and-tolerate ALTER — DO SQLite restricts PRAGMA, so no column probe. */
-  private addColumn(table: string, ddl: string): void {
+  /** True when this call added the column; false when it was already there. */
+  private addColumn(table: string, ddl: string): boolean {
     try {
       this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+      return true;
     } catch (err) {
       if (!/duplicate column name/i.test((err as Error).message)) throw err;
+      return false;
     }
   }
 
@@ -1445,6 +1461,17 @@ export class ControlPlaneDO extends DurableObject {
     // #1236: the regression's version pair, on a DO whose issues table predates it.
     this.addColumn('_substrat_issues', 'last_version TEXT');
     this.addColumn('_substrat_issues', 'resolved_version TEXT');
+    // #1632: whose exemplar `last_message` is. Backfilled once, as the columns arrive, from
+    // the retained ops-failure rows that prove it; every other row stays unknown. The columns
+    // and the backfill are ONE transaction: the backfill's gate is "this call added the
+    // column", so a column committed ahead of a backfill that then failed would read as
+    // migrated on every later start and leave the legacy rows unattributed for good.
+    this.ctx.storage.transactionSync(() => {
+      this.addColumn('_substrat_issues', 'last_tenant_id TEXT');
+      if (this.addColumn('_substrat_issues', 'last_owner_kind TEXT')) {
+        this.sql.exec(ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL);
+      }
+    });
     this.sql.exec(
       'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
     );
@@ -2289,7 +2316,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY tenant_id ${order}, role_key ${order}`;
     if (filter.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(filter.limit);
+      params.push(assertRowLimit('limit', filter.limit));
     }
     return this.sql.exec(sql, ...params).toArray() as unknown as RoleRow[];
   }
@@ -3842,6 +3869,7 @@ export class ControlPlaneDO extends DurableObject {
 
   /** ONLY drained rows. Age alone is not a licence to delete evidence (K-24). */
   pruneAccessLog(limit: number): number {
+    assertRowLimit('limit', limit);
     const doomed = (
       this.sql
         .exec(
@@ -4040,7 +4068,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(query.limit);
+      params.push(assertRowLimit('limit', query.limit));
     }
     const rows = this.sql.exec(sql, ...params).toArray() as unknown as AdminLogRow[];
     return rows.map(
@@ -4094,12 +4122,14 @@ export class ControlPlaneDO extends DurableObject {
     if (row.fingerprint !== null) {
       this.sql.exec(
         `INSERT INTO _substrat_issues
-           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_vertical, last_version, resolved_version, resolved_at)
-         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, NULL, NULL)
+           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
+         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
          ON CONFLICT (fingerprint) DO UPDATE SET
            seen_count = seen_count + 1,
            last_seen = excluded.last_seen,
            last_message = excluded.last_message,
+           last_tenant_id = excluded.last_tenant_id,
+           last_owner_kind = excluded.last_owner_kind,
            last_vertical = COALESCE(excluded.last_vertical, last_vertical),
            last_version = COALESCE(excluded.last_version, last_version),
            origin = COALESCE(excluded.origin, origin),
@@ -4112,12 +4142,22 @@ export class ControlPlaneDO extends DurableObject {
         row.at,
         row.at,
         row.message,
+        row.tenant_id,
+        issueExemplarOwner(row.tenant_id),
         row.vertical,
         row.version,
       );
       const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
       this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
     }
+  }
+
+  /**
+   * #1632: subject erasure's directory half — the failure text this directory keeps about a
+   * scope's subject. The kernel's walk, so the SQLite host runs the identical statements.
+   */
+  redactSubjectText(target: SubjectTextTarget): void {
+    redactSubjectDirectoryText(doRedactionSql(this.sql), target);
   }
 
   listOpsFailures(query: OpsFailureQuery): OpsFailureEntry[] {
@@ -4176,7 +4216,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(query.limit);
+      params.push(assertRowLimit('limit', query.limit));
     }
     const rows = this.sql.exec(sql, ...params).toArray() as unknown as OpsFailureRow[];
     return rows.map((r) => ({
@@ -4264,7 +4304,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(query.limit);
+      params.push(assertRowLimit('limit', query.limit));
     }
     const rows = this.sql.exec(sql, ...params).toArray() as unknown as SweepRunRow[];
     return rows.map((r) => ({
@@ -4288,6 +4328,17 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** The fingerprint-grouped failure classes (#1233), most recently seen first. */
+  /** #1632: the telemetry retentions, on the scheduled pass's clock — `telemetryRetentionStatements`. */
+  pruneTelemetry(limit: number): TelemetryPruneReport {
+    // A negative LIMIT is no limit at all to SQLite (#1632): refused before any statement.
+    assertRowLimit('limit', limit);
+    const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
+    for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
+      pruned[table] = this.sql.exec(sql, ...params).toArray().length;
+    }
+    return pruned;
+  }
+
   listIssues(query: IssueQuery): unknown[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
@@ -4309,7 +4360,7 @@ export class ControlPlaneDO extends DurableObject {
       'SELECT * FROM _substrat_issues' +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
       ' ORDER BY last_seen DESC, fingerprint LIMIT ?';
-    params.push(query.limit ?? 100);
+    params.push(assertRowLimit('limit', query.limit ?? 100));
     const rows = this.sql.exec(sql, ...params).toArray() as unknown as IssueRow[];
     return rows.map((r) => issueOf(r));
   }
@@ -4412,7 +4463,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(query.limit);
+      params.push(assertRowLimit('limit', query.limit));
     }
     return this.sql.exec(sql, ...params).toArray() as unknown as ModelUsageRow[];
   }

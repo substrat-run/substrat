@@ -8,6 +8,7 @@ import {
   substratError,
   type CheckSubject,
 } from '@substrat-run/contracts';
+import { isRedactedPayload } from './subject-redaction.js';
 
 /**
  * The spine half of request idempotency (#116) — what remembers a key, and what
@@ -153,9 +154,10 @@ export function idempotencyLookupQuery(
  * - **Reuse.** Same key, different request. The client's assertion that this is
  *   the request it sent before is false, and the one thing that must not happen
  *   is serving the earlier request's response to it.
- * - **Unavailable.** The original response was too large to record. Refused
- *   rather than re-executed, which is the fail-closed direction: an error the
- *   caller can act on, instead of the duplicate work the key was sent to avoid.
+ * - **Unavailable.** The original response was too large to record, or a subject
+ *   erasure has since redacted it (#1632). Refused rather than re-executed, which
+ *   is the fail-closed direction: an error the caller can act on, instead of the
+ *   duplicate work the key was sent to avoid.
  */
 export function replayFor(
   key: string,
@@ -179,10 +181,20 @@ export function replayFor(
       { reason: IDEMPOTENCY_REPLAY_UNAVAILABLE },
     );
   }
-  return {
-    result: row.result === null ? undefined : JSON.parse(row.result),
-    entityVersion: row.entity_version,
-  };
+  const result: unknown = row.result === null ? undefined : JSON.parse(row.result);
+  // A subject erasure (#1632) replaced the recorded response with its tombstone. Refused like
+  // an oversized one, for the same reason: the original did complete, so running it again is
+  // the one answer that is certainly wrong, and the tombstone is not the response it sent.
+  if (isRedactedPayload(result)) {
+    throw substratError(
+      'conflict',
+      `the original response for Idempotency-Key '${key}' was redacted by a subject erasure, ` +
+        'so this retry cannot be answered from it — the original request did complete, ' +
+        'and re-running it would duplicate the work the key exists to prevent',
+      { reason: IDEMPOTENCY_REPLAY_UNAVAILABLE },
+    );
+  }
+  return { result, entityVersion: row.entity_version };
 }
 
 /**

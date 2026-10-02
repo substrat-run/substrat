@@ -9,7 +9,9 @@ import {
   type ConnectorDispatchPayload,
 } from '@substrat-run/contracts';
 import {
+  intentIdOfFailureMessage,
   intentPayloadCarriesSubject,
+  platformIntentFailureMessage,
   platformRequestRedactionQuery,
   redactedIntentPayload,
   REDACTED_INTENT_MARKER,
@@ -139,5 +141,24 @@ describe('subject redaction — which intents an erasure selects', () => {
     // what is bound, so a subject id that did need escaping would still be found.
     expect(q.params).toEqual([subject]);
     expect(dispatchFor(subject, 'Anna Ek')).toContain(q.params[0]!);
+  });
+});
+
+describe('subject redaction — the drain failure that quotes an intent (#1632)', () => {
+  // The directory half links an ops failure to a tombstoned intent by reading the id back
+  // out of the message the drain wrote. Writer and reader are one grammar, and this is what
+  // fails if either one changes alone.
+  it('reads back the intent id from both of the drain\'s spellings', () => {
+    const id = ulid();
+    expect(intentIdOfFailureMessage(platformIntentFailureMessage(id, 'failed: HTTP 409'))).toBe(id);
+    expect(
+      intentIdOfFailureMessage(platformIntentFailureMessage(id, 'gave up after 5 drain attempts — last error: x')),
+    ).toBe(id);
+  });
+
+  it('names no intent for a message the drain did not write', () => {
+    expect(intentIdOfFailureMessage('deploy failed: platform intent')).toBeNull();
+    expect(intentIdOfFailureMessage('platform intent ')).toBeNull();
+    expect(intentIdOfFailureMessage(`schedule threw on ${ulid()}`)).toBeNull();
   });
 });
