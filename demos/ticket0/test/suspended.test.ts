@@ -308,26 +308,57 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
   });
 
   /**
-   * Every operation whose input names a conversation, classified — and the classification
-   * is checked against the model, so an operation added tomorrow fails here until somebody
-   * says which kind it is. Each WORK operation is then invoked on a held conversation and
-   * must be refused by the queue's rule, by name.
+   * EVERY operation in the model, classified — and the classification is checked against
+   * the model's whole list, so an operation added tomorrow fails here until somebody says
+   * which kind it is (Codex round 2, #1973: the first version only saw operations whose
+   * input names `conversationId`, and missed the ones that reach a conversation through a
+   * session, a message or a notification, and the sweeps that take no id at all). Each
+   * WORK operation is then invoked on a held conversation and must be refused by the
+   * queue's rule, by name; every other kind names the test that holds it.
    */
   it('refuses every operation that works a conversation, and the list is the model’s whole list', async () => {
+    // Reads of one conversation. A held conversation is the desk's to look at.
     const READS = ['get-conversation', 'list-messages', 'widget-session', 'get-csat', 'list-conversation-tags',
-      'render-saved-reply', 'list-turns', 'usage-summary', 'my-messages'];
-    // The ways out of the queue, the customer's own door, and the one write that only
-    // ever narrows access.
-    const ALLOWED = ['suspend', 'restore', 'discard', 'discard-suspended', 'ingest-message', 'unfollow-conversation'];
+      'render-saved-reply', 'list-turns', 'usage-summary', 'my-messages', 'widget-thread'];
+    // The ways out of the queue; the customer's own doors (`widget-post` and `request-human`
+    // are held to it in 'keeps a held thread held…' and 'shows the visitor their own
+    // words…'); and the writes that only ever narrow access or record a fact: an unfollow,
+    // the delivery of a mail the provider already took (refusing it would only make the
+    // relay send again), and reading a notification, which a held conversation no longer
+    // has ('suspension retires what the desk was told…').
+    const ALLOWED = ['suspend', 'restore', 'discard', 'discard-suspended', 'ingest-message', 'widget-post',
+      'request-human', 'unfollow-conversation', 'record-delivery', 'mark-notification-read'];
     // `submit-csat` is the customer's, legal only on a RESOLVED conversation, which a held
     // one never is — refused by the lifecycle before the queue, and not invoked here.
     const LIFECYCLE_ONLY = ['submit-csat'];
+    // Reads and sweeps ACROSS conversations, with no id to refuse. Each is held to the queue
+    // by its own case: the inbox reads in 'is in no inbox read…' and 'is found by search…',
+    // the sweeps and counts in 'every sweep and count leaves the suspended queue alone…',
+    // the relay's list in 'never offers the relay mail…'. `wake-snoozed` and `auto-close`
+    // meet only snoozed and resolved rows, which a held conversation cannot become; a tag
+    // read and the visitor's own list show what they show in every queue.
+    const ACROSS = ['list-conversations', 'search-conversations', 'list-suspended', 'breaching-soon',
+      'assign-round-robin', 'escalate-sla-breaches', 'auto-tag', 'auto-close', 'notify-no-reply', 'wake-snoozed',
+      'reap-abandoned', 'desk-metrics', 'assistant-health', 'list-pending-outbound', 'list-conversations-by-tag',
+      'my-conversations', 'my-notifications'];
+    // Touch no conversation at all: the desk's settings, people, knowledge, saved replies,
+    // prices, the widget's door before a conversation exists, and the waiting list.
+    const UNRELATED = ['get-desk', 'list-behaviour-runs', 'configure-desk', 'rotate-verification-secret',
+      'list-block-rules', 'add-block-rule', 'remove-block-rule', 'set-agent-profile', 'list-agents',
+      'set-agent-offboarded', 'add-kb-source', 'list-kb-sources', 'ingest-kb-source', 'record-kb-articles',
+      'record-kb-ingest-failure', 'mint-kb-refresh-token', 'revoke-kb-refresh-token', 'redeem-kb-refresh-token',
+      'search-kb', 'search-contacts', 'list-contacts', 'list-tags', 'list-saved-replies', 'create-saved-reply',
+      'get-saved-reply', 'update-saved-reply', 'delete-saved-reply', 'set-usage-rate', 'close-usage-period',
+      'widget-origins', 'assistant-mode', 'widget-start', 'signup-origins', 'submit-signup', 'confirm-signup',
+      'unsubscribe-signup', 'list-signups', 'signup-counts'];
     const d = await filtered({ agents: 1 });
     const guest = await kit.guest(d);
     const a = await admin(d);
     const held = (await visitor(d, linky(4, 'audit'))).conversationId;
+    const heldMessage = (await messages(d, held))[0]!.id;
     const other = await kit.mail(d, { body: 'another' });
     const reply = (await a.invoke('ticket0/create-saved-reply', { title: 'Canned', body: 'Hello' })) as { id: string };
+    // Who works it, and the input beside the id that reaches the held conversation.
     const WORK: Record<string, [string, Record<string, unknown>]> = {
       'post-note': ['admin', { body: 'note' }],
       'post-public-reply': ['admin', { body: 'Hi' }],
@@ -347,18 +378,26 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
         citedArticleIds: [], outcome: 'drafted',
       }],
       'record-assistant-failure': ['widget', { turnId: 'audit-fail', model: 'offline/extractive', error: 'down' }],
+      // Reached through a message: a relay holding an id from before the suspension.
+      'read-outbound': ['relay', { messageId: heldMessage }],
     };
-    const named = Object.entries(ticket0Operations)
-      .filter(([, op]) => Object.keys((op as { input?: { shape?: object } }).input?.shape ?? {}).some((k) => /^conversationIds?$/.test(k)))
-      .map(([name]) => name.replace(/^ticket0\//, ''))
-      .sort();
-    expect(named).toEqual([...READS, ...ALLOWED, ...LIFECYCLE_ONLY, ...Object.keys(WORK)].sort());
+
+    const all = Object.keys(ticket0Operations).map((name) => name.replace(/^ticket0\//, ''));
+    const classified = [...READS, ...ALLOWED, ...LIFECYCLE_ONLY, ...ACROSS, ...UNRELATED, ...Object.keys(WORK)];
+    expect(new Set(classified).size, 'an operation classified twice').toBe(classified.length);
+    expect([...classified].sort()).toEqual([...all].sort());
+    // And the cheap half of keeping the buckets honest: anything whose input can reach one
+    // conversation is never filed as touching none, or as a sweep with no id to refuse.
+    const REACHES = /^(conversationIds?|sessionId|messageId|notificationId)$/;
+    const reaching = Object.entries(ticket0Operations)
+      .filter(([, op]) => Object.keys((op as { input?: { shape?: object } }).input?.shape ?? {}).some((k) => REACHES.test(k)))
+      .map(([name]) => name.replace(/^ticket0\//, ''));
+    expect(reaching.filter((op) => UNRELATED.includes(op) || ACROSS.includes(op))).toEqual([]);
 
     for (const [op, [who, input]] of Object.entries(WORK)) {
-      const stub = who === 'widget' ? await kit.as(d, d.widget) : a;
-      await expect(stub.invoke(`ticket0/${op}`, { conversationId: held, ...input }), op).rejects.toMatchObject(
-        conflict('suspended'),
-      );
+      const stub = who === 'admin' ? a : await kit.as(d, who === 'widget' ? d.widget : d.relay);
+      const target = 'messageId' in input ? input : { conversationId: held, ...input };
+      await expect(stub.invoke(`ticket0/${op}`, target), op).rejects.toMatchObject(conflict('suspended'));
     }
     expect(await messages(d, held)).toHaveLength(1);
   });

@@ -6068,6 +6068,13 @@ const operations = {
     if (message.visibility !== 'public')
       throw substratError('permission_denied', 'internal notes are never sent to a customer');
     const conversation = conversationOrThrow(ctx, message.conversation_id);
+    // The relay reads a body to SEND it, so a held conversation is refused here as it is
+    // left out of `list-pending-outbound` (#1088): the desk never mails a sender it has not
+    // accepted. `record-delivery` stays open — it records a send that already happened.
+    heldOrThrow(conversation, 'ticket0/read-outbound');
+    // Nothing is sent into the suspended queue: `list-pending-outbound` never offers it,
+    // and a relay holding an id from before the suspension is refused here.
+    heldOrThrow(conversation, 'ticket0/read-outbound');
     const contact = ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [
       conversation.contact_id,
     ])[0];
