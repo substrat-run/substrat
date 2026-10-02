@@ -115,7 +115,7 @@ Round one is drawn from these. Anything the builder already told you is
 | money comes out | quote, invoice, receipt → the invoicing engine |
 | something is checked or signed before a step | → the protocol engine |
 | something happens on its own | reminders, recurrence, due dates → schedules |
-| data is more sensitive than names and addresses | what must be erasable, and what an event may never carry |
+| data is more sensitive than names and addresses | what must be erasable, what text arrives from outside (a customer, a remote system, a header), and what an event may never carry |
 
 Ask about a lifecycle only once you know there *is* one. A thing with no stages
 is a record, not a workflow, and asking which of its transitions cannot be

@@ -39,6 +39,13 @@ export const entities = defineEntities({
     parents: ['customer'],
     erasable: ['address'],
   },
+  inquiry: {
+    table: 'acme_inquiries',
+    fields: z.object({ id: z.string(), customer_id: z.string(), subject: z.string(), created_at: z.string() }),
+    parents: ['customer'],
+    // The sender typed it: kept on the row, never on an event.
+    outsideText: ['subject'],
+  },
 });
 
 export const PERMISSIONS = ['customer:manage', 'site:manage'] as const;
@@ -66,7 +73,12 @@ export const model = emitModel(entities);
 
 ## Rules that are compile errors, so you cannot get them wrong quietly
 
-- **`parents`, `key`, `erasable`** name fields/entities that exist.
+- **`parents`, `key`, `erasable`, `outsideText`** name fields/entities that exist.
+  `erasable` is the person's own data — what an erasure must reach. `outsideText` is
+  text someone OUTSIDE the app wrote that is not personal data: a subject line a
+  customer typed, an error a provider or a remote site returned, a fetched document, a
+  raw header. Mark a column `outsideText` whenever its value comes from a customer, a
+  remote system or an inbound header and it is not already `erasable`.
 - **`permission`** names a key in `PERMISSIONS`. An operation carries
   `permission` **or** `narrows: { reason, checks }` — never both, never neither.
 - **A `permission` says WHAT IT CHECKS AGAINST.** A bare key means the node —
@@ -94,8 +106,10 @@ export const model = emitModel(entities);
   field and the entity differ — say which field carries it.
 - **`piiClass`** is required. Anything other than `'none'` requires a
   `subjectId` naming an output field, because an erasure has to be keyable.
-- **`payload`** cannot carry a field the entity marks `erasable`. Immutable
-  events are the one place in a scope an erasure cannot reach.
+- **`payload`** cannot carry a field the entity marks `erasable` or `outsideText`.
+  Immutable events are the one place in a scope an erasure cannot reach, and no
+  cleanup of the row reaches them either. A consumer that needs the text reads the
+  row by the id the event carries.
 - **`{var}`** in an `http` path names an input field.
 
 If one of these fails, the model is wrong — fix the model. Do not reshape it to
