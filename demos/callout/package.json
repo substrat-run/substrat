@@ -92,7 +92,7 @@
     "pretypecheck": "node scripts/gen-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test": "vitest run",
-    "test:ui": "vitest --ui --open=false --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5292}",
+    "test:ui": "vitest --watch --ui --open=false --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5292}",
     "preserver": "node ../../tools/env-preflight.mjs server",
     "server": "node --env-file-if-exists=.dev.vars --import tsx src/server.ts",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"pnpm run server\" \"pnpm --dir app dev\"",

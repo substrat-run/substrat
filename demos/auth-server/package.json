@@ -44,7 +44,7 @@
     "pretypecheck": "node scripts/gen-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.workerd-test.json --noEmit",
     "test": "vitest run && vitest run -c vitest.workers.config.ts",
-    "test:ui": "vitest --ui --open=false --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5291}",
+    "test:ui": "vitest --watch --ui --open=false --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5291}",
     "server": "tsx src/server.ts",
     "dev": "concurrently -n api,app -c blue,green \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "cf:dev": "wrangler dev",
