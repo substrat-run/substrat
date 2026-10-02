@@ -124,12 +124,14 @@ export interface Message {
   conversation_id: string;
   author_kind: "contact" | "agent" | "assistant" | "system";
   author_principal: string | null;
-  visibility: "public" | "internal";
+  visibility: "public" | "internal" | "forward";
   body_text: string;
   body_html: string | null;
   email_message_id: string | null;
   email_in_reply_to: string | null;
   delivered_at: string | null;
+  author_contact_id: string | null;
+  third_party_contact_id: string | null;
   cited_article_ids: string | null;
   created_at: string;
 }
@@ -145,6 +147,16 @@ export interface ConversationTag {
 export interface ConversationFollow {
   principal: string;
   conversation_id: string;
+}
+
+/** `ticket0_conversation_participants` — declared in spec/model.ts. */
+export interface ConversationParticipant {
+  id: string;
+  conversation_id: string;
+  contact_id: string;
+  role: "cc" | "third-party";
+  added_by: string | null;
+  created_at: string;
 }
 
 /** `ticket0_mail_deliveries` — declared in spec/model.ts. */
@@ -345,6 +357,13 @@ export interface Ticket0Client {
   addKbSource(input: { kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string }>;
 
   /**
+   * Copy someone in on a conversation
+   *
+   * `POST /conversations/{conversationId}/participants` — `ticket0/add-participant`
+   */
+  addParticipant(input: { conversationId: string; email: string; name?: string | null }): Promise<ConversationParticipant>;
+
+  /**
    * Send a canned answer and run its actions, all or nothing
    *
    * `POST /conversations/{conversationId}/saved-replies/{savedReplyId}/apply` — `ticket0/apply-saved-reply`
@@ -454,6 +473,13 @@ export interface Ticket0Client {
   followConversation(input: { conversationId: string; follower: string }): Promise<{ conversation_id: string; follower: string; following: boolean }>;
 
   /**
+   * Forward a question about this conversation to a third party
+   *
+   * `POST /conversations/{conversationId}/forwards` — `ticket0/forward-message`
+   */
+  forwardMessage(input: { conversationId: string; to: string; name?: string | null; body: string; bodyHtml?: string | null }): Promise<Message>;
+
+  /**
    * One conversation
    *
    * `GET /conversations/{conversationId}` — `ticket0/get-conversation`
@@ -497,7 +523,7 @@ export interface Ticket0Client {
    *
    * `POST /relay/inbound` — `ticket0/ingest-message`
    */
-  ingestMessage(input: { conversationId: string | null; contactEmail: string; contactName?: string | null; subject: string; bodyText: string; bodyHtml?: string | null; emailMessageId: string; emailInReplyTo?: string | null; attachments?: { filename: string; contentType: string; sizeBytes: number }[] }): Promise<Message>;
+  ingestMessage(input: { conversationId: string | null; contactEmail: string; contactName?: string | null; subject: string; bodyText: string; bodyHtml?: string | null; emailMessageId: string; emailInReplyTo?: string | null; to?: string[]; cc?: string[]; attachments?: { filename: string; contentType: string; sizeBytes: number }[] }): Promise<Message>;
 
   /**
    * The staff of this desk
@@ -574,7 +600,14 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  listMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+
+  /**
+   * Who is on a conversation
+   *
+   * `GET /conversations/{conversationId}/participants` — `ticket0/list-participants`
+   */
+  listParticipants(input: { conversationId: string }): Promise<{ participants: ({ role: "requester" | "cc" | "third-party" | "follower"; contact_id: string | null; principal: string | null; added_by: string | null; created_at: string | null })[] }>;
 
   /**
    * Public replies on email conversations that have not been sent yet
@@ -665,7 +698,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  myMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  myMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
    * What you have not read yet
@@ -695,7 +728,7 @@ export interface Ticket0Client {
    *
    * `GET /relay/outbound/{messageId}` — `ticket0/read-outbound`
    */
-  readOutbound(input: { messageId: string }): Promise<{ messageId: string; conversationId: string; subject: string; toEmail: string | null; fromAddress: string; agentName: string | null; bodyText: string | null; bodyHtml: string | null; emailInReplyTo: string | null }>;
+  readOutbound(input: { messageId: string }): Promise<{ messageId: string; conversationId: string; subject: string; toEmail: string | null; ccEmails: string[]; visibility: "public" | "forward"; fromAddress: string; agentName: string | null; bodyText: string | null; bodyHtml: string | null; emailInReplyTo: string | null }>;
 
   /**
    * Record an assistant answer and its token usage
@@ -747,6 +780,13 @@ export interface Ticket0Client {
   removeBlockRule(input: { ruleId: string }): Promise<{ id: string; kind: "email" | "domain" | "contact" }>;
 
   /**
+   * Take someone off a conversation
+   *
+   * `DELETE /conversations/{conversationId}/participants/{contactId}` — `ticket0/remove-participant`
+   */
+  removeParticipant(input: { conversationId: string; contactId: string }): Promise<{ conversation_id: string; contact_id: string; removed: boolean }>;
+
+  /**
    * A canned answer with this conversation’s facts filled in
    *
    * `GET /conversations/{conversationId}/saved-replies/{savedReplyId}/render` — `ticket0/render-saved-reply`
@@ -758,7 +798,7 @@ export interface Ticket0Client {
    *
    * `POST /widget/sessions/{sessionId}/handoff` — `ticket0/request-human`
    */
-  requestHuman(input: { sessionId: string; token: string; body?: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; notified: number }>;
+  requestHuman(input: { sessionId: string; token: string; body?: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; cited_article_ids: string | null; created_at: string; notified: number }>;
 
   /**
    * Mark a conversation resolved
@@ -948,7 +988,7 @@ export interface Ticket0Client {
    *
    * `POST /widget/sessions/{sessionId}/messages` — `ticket0/widget-post`
    */
-  widgetPost(input: { sessionId: string; token: string; body: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; suspended: boolean }>;
+  widgetPost(input: { sessionId: string; token: string; body: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; cited_article_ids: string | null; created_at: string; suspended: boolean }>;
 
   /**
    * The browser session behind a widget conversation
@@ -971,7 +1011,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  widgetThread(input: { sessionId: string; token: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  widgetThread(input: { sessionId: string; token: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
    * The entity tags this client is holding, keyed `entityType:id` (#129).
@@ -1136,6 +1176,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/desk/block-rules", "POST", input, undefined),
     addKbSource: (input: Args) =>
       send("/kb/sources", "POST", input, undefined),
+    addParticipant: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/participants`, "POST", omit(input, ["conversationId"]), undefined),
     applySavedReply: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/apply`, "POST", omit(input, ["conversationId","savedReplyId"]), undefined),
     assign: (input: Args) =>
@@ -1166,6 +1208,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/conversations/suspended/discard", "POST", input, undefined),
     followConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/followers`, "POST", omit(input, ["conversationId"]), undefined),
+    forwardMessage: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/forwards`, "POST", omit(input, ["conversationId"]), undefined),
     getConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}`, "GET", undefined, omit(input, ["conversationId"])),
     getCsat: (input: Args) =>
@@ -1196,6 +1240,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       page("/kb/sources", "GET", undefined, undefined),
     listMessages: (input: Args) =>
       page(`/conversations/${encodeURIComponent(String(input.conversationId))}/messages`, "GET", undefined, omit(input, ["conversationId"])),
+    listParticipants: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/participants`, "GET", undefined, omit(input, ["conversationId"])),
     listPendingOutbound: () =>
       page("/relay/outbound", "GET", undefined, undefined),
     listSavedReplies: () =>
@@ -1240,6 +1286,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/token/redeem`, "POST", omit(input, ["sourceId"]), undefined),
     removeBlockRule: (input: Args) =>
       send(`/desk/block-rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
+    removeParticipant: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/participants/${encodeURIComponent(String(input.contactId))}`, "DELETE", undefined, omit(input, ["conversationId","contactId"])),
     renderSavedReply: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/render`, "GET", undefined, omit(input, ["conversationId","savedReplyId"])),
     requestHuman: (input: Args) =>

@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-ticket0
 
-24 keys · 2 modules · 9 roles
+25 keys · 2 modules · 9 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -16,6 +16,7 @@
 | `conversation:discard` | Discard a suspended conversation — deletes what the customer wrote, for good | `@substrat-run/demo-ticket0` |
 | `conversation:draft` | Write an internal note or record a drafted answer — never leaves the building | `@substrat-run/demo-ticket0` |
 | `conversation:escalate` | Record that a conversation missed a response or resolution target and tell the desk — the desk’s own timer only, no human role | `@substrat-run/demo-ticket0` |
+| `conversation:forward` | Put another address on a conversation — copy someone in on the customer’s thread, take them off, or forward a question to a third party | `@substrat-run/demo-ticket0` |
 | `conversation:merge` | Fold one conversation into another | `@substrat-run/demo-ticket0` |
 | `conversation:read` | See every conversation in this desk, internal notes included | `@substrat-run/demo-ticket0` |
 | `conversation:read-own` | See a conversation that is yours, public messages only | `@substrat-run/demo-ticket0` |
@@ -42,11 +43,11 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
-| `agent` | `contact:read`, `conversation:assign`, `conversation:draft`, `conversation:read`, `conversation:reply-public`, `conversation:resolve`, `kb:read`, `notification:read-own` |
+| `agent` | `contact:read`, `conversation:assign`, `conversation:draft`, `conversation:forward`, `conversation:read`, `conversation:reply-public`, `conversation:resolve`, `kb:read`, `notification:read-own` |
 | `assistant` | `conversation:draft`, `conversation:read`, `kb:read`, `metering:configure`, `metering:record` |
 | `assistant-autonomous` | `conversation:draft`, `conversation:read`, `conversation:reply-public`, `kb:read`, `metering:configure`, `metering:record` |
 | `customer` | `notification:read-own` |
-| `desk-admin` | `contact:read`, `conversation:assign`, `conversation:discard`, `conversation:draft`, `conversation:merge`, `conversation:read`, `conversation:reply-public`, `conversation:resolve`, `desk:configure`, `kb:manage`, `kb:read`, `kb:refresh`, `metering:close`, `metering:configure`, `metering:read`, `metering:record`, `notification:read-own`, `signup:read`, `usage:read` |
+| `desk-admin` | `contact:read`, `conversation:assign`, `conversation:discard`, `conversation:draft`, `conversation:forward`, `conversation:merge`, `conversation:read`, `conversation:reply-public`, `conversation:resolve`, `desk:configure`, `kb:manage`, `kb:read`, `kb:refresh`, `metering:close`, `metering:configure`, `metering:read`, `metering:record`, `notification:read-own`, `signup:read`, `usage:read` |
 | `ingest` | `kb:refresh` |
 | `relay` | `conversation:relay` |
 | `signup` | `signup:submit` |
@@ -61,6 +62,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `conversation:discard` | `desk-admin` |
 | `conversation:draft` | `agent`, `assistant`, `assistant-autonomous`, `desk-admin` |
 | `conversation:escalate` | — no role — |
+| `conversation:forward` | `agent`, `desk-admin` |
 | `conversation:merge` | `desk-admin` |
 | `conversation:read` | `agent`, `assistant`, `assistant-autonomous`, `desk-admin` |
 | `conversation:read-own` | — no role — |

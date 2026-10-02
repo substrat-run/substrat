@@ -666,6 +666,258 @@
         }
       }
     },
+    "/api/conversations/{conversationId}/participants": {
+      "post": {
+        "operationId": "ticket0-add-participant",
+        "summary": "Copy someone in on a conversation",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "conversationId": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                  },
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "conversationId",
+                  "email"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "conversation_id": {
+                      "type": "string"
+                    },
+                    "contact_id": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "cc",
+                        "third-party"
+                      ]
+                    },
+                    "added_by": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "conversation_id",
+                    "contact_id",
+                    "role",
+                    "added_by",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "get": {
+        "operationId": "ticket0-list-participants",
+        "summary": "Who is on a conversation",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "participants": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "requester",
+                              "cc",
+                              "third-party",
+                              "follower"
+                            ]
+                          },
+                          "contact_id": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "principal": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "added_by": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "created_at": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "role",
+                          "contact_id",
+                          "principal",
+                          "added_by",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "participants"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/conversations/{conversationId}/saved-replies/{savedReplyId}/apply": {
       "post": {
         "operationId": "ticket0-apply-saved-reply",
@@ -4938,6 +5190,243 @@
         }
       }
     },
+    "/api/conversations/{conversationId}/forwards": {
+      "post": {
+        "operationId": "ticket0-forward-message",
+        "summary": "Forward a question about this conversation to a third party",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "conversationId": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string",
+                    "format": "email",
+                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                  },
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "body": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "bodyHtml": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "conversationId",
+                  "to",
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "conversation_id": {
+                      "type": "string"
+                    },
+                    "author_kind": {
+                      "type": "string",
+                      "enum": [
+                        "contact",
+                        "agent",
+                        "assistant",
+                        "system"
+                      ]
+                    },
+                    "author_principal": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "visibility": {
+                      "type": "string",
+                      "enum": [
+                        "public",
+                        "internal",
+                        "forward"
+                      ]
+                    },
+                    "body_text": {
+                      "type": "string"
+                    },
+                    "body_html": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "email_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "email_in_reply_to": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "delivered_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "author_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "third_party_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "cited_article_ids": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "conversation_id",
+                    "author_kind",
+                    "author_principal",
+                    "visibility",
+                    "body_text",
+                    "body_html",
+                    "email_message_id",
+                    "email_in_reply_to",
+                    "delivered_at",
+                    "author_contact_id",
+                    "third_party_contact_id",
+                    "cited_article_ids",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/conversations/{conversationId}": {
       "get": {
         "operationId": "ticket0-get-conversation",
@@ -5629,6 +6118,18 @@
                       }
                     ]
                   },
+                  "to": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "cc": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "attachments": {
                     "type": "array",
                     "items": {
@@ -5702,7 +6203,8 @@
                       "type": "string",
                       "enum": [
                         "public",
-                        "internal"
+                        "internal",
+                        "forward"
                       ]
                     },
                     "body_text": {
@@ -5748,6 +6250,26 @@
                         }
                       ]
                     },
+                    "author_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "third_party_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -5773,6 +6295,8 @@
                     "email_message_id",
                     "email_in_reply_to",
                     "delivered_at",
+                    "author_contact_id",
+                    "third_party_contact_id",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -7359,7 +7883,8 @@
                         "type": "string",
                         "enum": [
                           "public",
-                          "internal"
+                          "internal",
+                          "forward"
                         ]
                       },
                       "body_text": {
@@ -7396,6 +7921,26 @@
                         ]
                       },
                       "delivered_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "author_contact_id": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "third_party_contact_id": {
                         "anyOf": [
                           {
                             "type": "string"
@@ -7457,6 +8002,8 @@
                       "email_message_id",
                       "email_in_reply_to",
                       "delivered_at",
+                      "author_contact_id",
+                      "third_party_contact_id",
                       "cited_article_ids",
                       "created_at",
                       "citations"
@@ -9545,7 +10092,8 @@
                         "type": "string",
                         "enum": [
                           "public",
-                          "internal"
+                          "internal",
+                          "forward"
                         ]
                       },
                       "body_text": {
@@ -9904,7 +10452,8 @@
                       "type": "string",
                       "enum": [
                         "public",
-                        "internal"
+                        "internal",
+                        "forward"
                       ]
                     },
                     "body_text": {
@@ -9950,6 +10499,26 @@
                         }
                       ]
                     },
+                    "author_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "third_party_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -9975,6 +10544,8 @@
                     "email_message_id",
                     "email_in_reply_to",
                     "delivered_at",
+                    "author_contact_id",
+                    "third_party_contact_id",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -10115,7 +10686,8 @@
                       "type": "string",
                       "enum": [
                         "public",
-                        "internal"
+                        "internal",
+                        "forward"
                       ]
                     },
                     "body_text": {
@@ -10161,6 +10733,26 @@
                         }
                       ]
                     },
+                    "author_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "third_party_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -10186,6 +10778,8 @@
                     "email_message_id",
                     "email_in_reply_to",
                     "delivered_at",
+                    "author_contact_id",
+                    "third_party_contact_id",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -10263,6 +10857,19 @@
                         }
                       ]
                     },
+                    "ccEmails": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "visibility": {
+                      "type": "string",
+                      "enum": [
+                        "public",
+                        "forward"
+                      ]
+                    },
                     "fromAddress": {
                       "type": "string"
                     },
@@ -10312,6 +10919,8 @@
                     "conversationId",
                     "subject",
                     "toEmail",
+                    "ccEmails",
+                    "visibility",
                     "fromAddress",
                     "agentName",
                     "bodyText",
@@ -10948,7 +11557,8 @@
                       "type": "string",
                       "enum": [
                         "public",
-                        "internal"
+                        "internal",
+                        "forward"
                       ]
                     },
                     "body_text": {
@@ -10994,6 +11604,26 @@
                         }
                       ]
                     },
+                    "author_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "third_party_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -11019,6 +11649,8 @@
                     "email_message_id",
                     "email_in_reply_to",
                     "delivered_at",
+                    "author_contact_id",
+                    "third_party_contact_id",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -11613,6 +12245,91 @@
         }
       }
     },
+    "/api/conversations/{conversationId}/participants/{contactId}": {
+      "delete": {
+        "operationId": "ticket0-remove-participant",
+        "summary": "Take someone off a conversation",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contactId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "conversation_id": {
+                      "type": "string"
+                    },
+                    "contact_id": {
+                      "type": "string"
+                    },
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "conversation_id",
+                    "contact_id",
+                    "removed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/conversations/{conversationId}/saved-replies/{savedReplyId}/render": {
       "get": {
         "operationId": "ticket0-render-saved-reply",
@@ -11792,7 +12509,8 @@
                       "type": "string",
                       "enum": [
                         "public",
-                        "internal"
+                        "internal",
+                        "forward"
                       ]
                     },
                     "body_text": {
@@ -11838,6 +12556,26 @@
                         }
                       ]
                     },
+                    "author_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "third_party_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -11866,6 +12604,8 @@
                     "email_message_id",
                     "email_in_reply_to",
                     "delivered_at",
+                    "author_contact_id",
+                    "third_party_contact_id",
                     "cited_article_ids",
                     "created_at",
                     "notified"
@@ -16319,7 +17059,8 @@
                       "type": "string",
                       "enum": [
                         "public",
-                        "internal"
+                        "internal",
+                        "forward"
                       ]
                     },
                     "body_text": {
@@ -16365,6 +17106,26 @@
                         }
                       ]
                     },
+                    "author_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "third_party_contact_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -16393,6 +17154,8 @@
                     "email_message_id",
                     "email_in_reply_to",
                     "delivered_at",
+                    "author_contact_id",
+                    "third_party_contact_id",
                     "cited_article_ids",
                     "created_at",
                     "suspended"
@@ -16522,7 +17285,8 @@
                         "type": "string",
                         "enum": [
                           "public",
-                          "internal"
+                          "internal",
+                          "forward"
                         ]
                       },
                       "body_text": {

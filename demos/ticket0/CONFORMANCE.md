@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-92 operations · 34 narrowed checks · 34 conformance pairs driven
+96 operations · 38 narrowed checks · 38 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,20 +37,23 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**34 pairs driven** across 34 of this package's 34 narrowed checks.
+**38 pairs driven** across 38 of this package's 38 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
+| `ticket0/add-participant` | `conversation:forward` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/apply-saved-reply` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/assign` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/close` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/discard` | `conversation:discard` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/follow-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/forward-message` | `conversation:forward` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-conversation` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-csat` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/ingest-kb-source` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/list-conversation-tags` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-messages` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/list-participants` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-turns` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/merge` | `conversation:merge` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/mint-kb-refresh-token` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
@@ -62,6 +65,7 @@ against B, and requires a permission denial specifically.
 | `ticket0/record-kb-articles` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/record-kb-ingest-failure` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/redeem-kb-refresh-token` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
+| `ticket0/remove-participant` | `conversation:forward` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/render-saved-reply` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/resolve` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/restore` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |

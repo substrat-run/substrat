@@ -243,6 +243,8 @@ describe('the provider seam, as Resend sees it', () => {
     conversationId: 'C1',
     subject: 'Re: a question',
     toEmail: 'customer@example.com',
+    ccEmails: [],
+    visibility: 'public',
     fromAddress: 'support@desk.example',
     agentName: 'Robin',
     bodyText: 'Here you go.',
@@ -293,6 +295,32 @@ describe('the provider seam, as Resend sees it', () => {
       'In-Reply-To': '<their-question@mail.example>',
       References: '<their-question@mail.example>',
     });
+  });
+
+  it('copies the CCs the desk named on a reply, and sends a mail with none without a cc field (#1086)', async () => {
+    const copied = fakeResend({ ok: true, body: { message_id: '<a@desk.example>' } });
+    await resendSender({ apiKey: 're_test', fetch: copied.fetchImpl }).send({
+      ...message,
+      ccEmails: ['colleague@example.com'],
+    });
+    expect(copied.calls[0]!.body!['cc']).toEqual(['colleague@example.com']);
+    expect(copied.calls[0]!.body!['subject']).toBe('Re: a question');
+
+    const plain = fakeResend({ ok: true, body: { message_id: '<b@desk.example>' } });
+    await resendSender({ apiKey: 're_test', fetch: plain.fetchImpl }).send(message);
+    expect(plain.calls[0]!.body!).not.toHaveProperty('cc');
+  });
+
+  it('says a forward is one in its subject (#1086)', async () => {
+    const { calls, fetchImpl } = fakeResend({ ok: true, body: { message_id: '<c@desk.example>' } });
+    await resendSender({ apiKey: 're_test', fetch: fetchImpl }).send({
+      ...message,
+      toEmail: 'supplier@vendor.example',
+      visibility: 'forward',
+    });
+    expect(calls[0]!.body!['to']).toEqual(['supplier@vendor.example']);
+    expect(calls[0]!.body!['subject']).toBe('Fwd: Re: a question');
+    expect(calls[0]!.body!).not.toHaveProperty('cc');
   });
 
   it('records the Message-ID that went out on the wire, never Resend’s own row id', async () => {

@@ -129,8 +129,9 @@ type Row = Record<string, unknown>;
  * Every row as it was, plus the columns a later migration added.
  * An upgrade preserves what was there; it does not promise a table never grows. Migration
  * 0016 (#1083) added nullable columns, so `SELECT *` after it names more keys than before,
- * Migration 0017 backfills waiting candidates on live conversations; every other new
- * column stays NULL. Compare the original keys and check the candidate separately.
+ * Migration 0017 backfills waiting candidates on live conversations, and 0022 (#1086) names
+ * the author of every contact message; every other new column stays NULL. Compare the
+ * original keys and check both backfills separately.
  */
 function preserved(after: unknown, before: unknown): { kept: unknown; addedAreNull: boolean } {
   let addedAreNull = true;
@@ -140,7 +141,12 @@ function preserved(after: unknown, before: unknown): { kept: unknown; addedAreNu
       const out: Row = {};
       for (const [key, value] of Object.entries(row)) {
         if (key in was) out[key] = value;
-        else if (key !== 'no_reply_waiting_since' && key !== 'no_reply_candidate_at' && value !== null)
+        else if (
+          key !== 'no_reply_waiting_since' &&
+          key !== 'no_reply_candidate_at' &&
+          key !== 'author_contact_id' &&
+          value !== null
+        )
           addedAreNull = false;
       }
       return out;
@@ -172,6 +178,13 @@ it('preserves every populated pre-0015 row and every production read result acro
   expect(db.prepare(`SELECT COUNT(*) AS n FROM ticket0_conversations
     WHERE no_reply_candidate_at IS NOT NULL AND no_reply_candidate_at != no_reply_waiting_since`).get())
     .toEqual({ n: 0 });
+  // 0022's author backfill: exactly the contact messages, each named as its conversation's
+  // contact — the only contact who could write in one before participants existed.
+  expect(db.prepare(`SELECT COUNT(*) AS n FROM ticket0_messages m JOIN ticket0_conversations c ON c.id = m.conversation_id
+    WHERE (m.author_kind = 'contact') != (m.author_contact_id IS NOT NULL)
+       OR (m.author_contact_id IS NOT NULL AND m.author_contact_id != c.contact_id)`).get()).toEqual({ n: 0 });
+  expect(db.prepare(`SELECT COUNT(*) AS n FROM ticket0_messages WHERE author_contact_id IS NOT NULL`).get())
+    .toEqual({ n: 15000 });
   expect(keptResults(results(), beforeResults)).toEqual(beforeResults);
   expect(db.prepare(queries.counts.sql).get(...queries.counts.args)).toEqual({ turns: 2000, failed: 100, drafted: 100 });
   expect(db.prepare(queries.waitingTotal.sql).get()).toEqual({ n: 500 });
