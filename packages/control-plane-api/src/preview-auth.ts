@@ -10,7 +10,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
-import { ControlPlaneError } from './client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import type { VerticalClient } from './vertical-client.js';
 
 /**

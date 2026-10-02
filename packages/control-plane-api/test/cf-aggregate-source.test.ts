@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCfObservabilityReader } from '../src/cf-observability.js';
 import { memoryCubeStore } from '../src/aggregate-source.js';
-import { ControlPlaneError } from '../src/client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
  * The Cloudflare side of the aggregate seam (#1877), against a stubbed telemetry API: what

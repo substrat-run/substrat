@@ -25,7 +25,7 @@ import {
   type PlatformRequestFailure,
 } from '@substrat-run/contracts';
 import { providerErrorStatus } from '@substrat-run/kernel';
-import { ControlPlaneError } from './client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
  * The permission key a refusal names, when the structured field did not survive the hop.

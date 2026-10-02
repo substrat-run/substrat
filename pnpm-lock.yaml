@@ -1937,6 +1937,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
+      '@substrat-run/control-plane-client':
+        specifier: workspace:^
+        version: link:../control-plane-client
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../kernel

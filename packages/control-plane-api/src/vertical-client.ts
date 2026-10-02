@@ -89,7 +89,7 @@ import {
 } from '@substrat-run/contracts';
 import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
-import { ControlPlaneError } from './client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
  * The query string for both internal denial reads. The filter's own fields come from
