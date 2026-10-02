@@ -612,6 +612,26 @@ describe('discard destroys the content — completely, only what is suspended, o
     expect(await messages(d, kept.conversation_id)).toHaveLength(1);
   });
 
+  it('recognises a Message-ID the desk SENT as already handled, as the dedupe always did', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const a = await admin(d);
+    const relay = await kit.as(d, d.relay);
+    const id = await kit.mail(d, { body: 'please reply' });
+    const reply = (await a.invoke('ticket0/post-public-reply', { conversationId: id, body: 'Answered.' })) as {
+      id: string;
+    };
+    await relay.invoke('ticket0/record-delivery', { messageId: reply.id, emailMessageId: '<sent-1@desk.example>' });
+    const looped = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'loop@customer.example',
+      contactName: null,
+      subject: 'Re: loop',
+      bodyText: 'the same mail, coming back in',
+      emailMessageId: '<sent-1@desk.example>',
+    })) as { id: string };
+    expect(looped.id).toBe(reply.id);
+  });
+
   it('in bulk is all or nothing: one conversation not in the queue refuses the lot', async () => {
     const d = await filtered();
     const a = await admin(d);
