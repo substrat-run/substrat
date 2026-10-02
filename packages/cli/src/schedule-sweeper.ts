@@ -88,8 +88,16 @@ interface ParsedEntry {
   foreign: ForeignRef[];
 }
 
-function parseEntry(source: string): ParsedEntry {
-  const ast = parse(source, { sourceType: 'module', plugins: ['typescript'], errorRecovery: true });
+/**
+ * `jsx` only for a `.tsx` file: in a `.ts` file `<T>value` is a type assertion, and the JSX
+ * plugin would read it as an element. A `.tsx` worker with JSX does not tokenize without it.
+ */
+function parseEntry(source: string, jsx = false): ParsedEntry {
+  const ast = parse(source, {
+    sourceType: 'module',
+    plugins: jsx ? ['typescript', 'jsx'] : ['typescript'],
+    errorRecovery: true,
+  });
   const importedLocalNames = new Set<string>();
   /** local name → where it was imported from, for `import { X } from './a'; export { X }`. */
   const importedFrom = new Map<string, { source: string; imported: string }>();
@@ -194,7 +202,7 @@ export function exportedSweeperNamesOf(entryPath: string): string[] {
     const cached = memo.get(file);
     if (cached) return cached;
     memo.set(file, []); // cycle guard: a module re-exporting itself contributes nothing more
-    const { own, foreign } = parseEntry(readFileSync(file, 'utf8'));
+    const { own, foreign } = parseEntry(readFileSync(file, 'utf8'), file.endsWith('.tsx'));
     const names = new Set(own);
     for (const ref of foreign) {
       if (!ref.source.startsWith('.')) continue;

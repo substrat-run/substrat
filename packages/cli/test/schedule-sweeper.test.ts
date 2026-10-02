@@ -92,6 +92,17 @@ describe('exportedSweeperNamesOf — follows relative re-exports, so a sweeper i
     expect(exportedSweeperNamesOf(join(dir, 'src/worker.ts'))).toEqual(['Timer']);
   });
 
+  it('a .tsx entry with JSX parses, and so does a .tsx module it re-exports', () => {
+    const JSX_SWEEPER = `${SWEEPER_MODULE}const page = <div>Hello</div>;\n`;
+    const own = tree({ 'src/worker.tsx': JSX_SWEEPER });
+    expect(exportedSweeperNamesOf(join(own, 'src/worker.tsx'))).toEqual(['SweeperDO']);
+    const reexported = tree({
+      'src/worker.ts': "export { SweeperDO } from './sweeper.js';\nconst n = <number>1;\n",
+      'src/sweeper.tsx': JSX_SWEEPER,
+    });
+    expect(exportedSweeperNamesOf(join(reexported, 'src/worker.ts'))).toEqual(['SweeperDO']);
+  });
+
   it('a re-export of a module whose sweeper is unexported gives nothing, and a cycle terminates', () => {
     const dir = tree({
       'src/worker.ts': "export * from './a';\n",
