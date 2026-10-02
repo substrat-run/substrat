@@ -685,3 +685,105 @@ describe('the widget surface never hands a held message to the assistant', () =>
   });
 });
 
+
+/**
+ * Migration 0021 on a desk that already holds conversations: the column arrives NULL —
+ * the inbox — on every row, and the schema it leaves is the schema a fresh desk gets.
+ * Compared whole (every index's name AND definition on the conversation table), so a
+ * partial index left wide, or a kernel list index the upgrade lost, is a red diff here.
+ */
+describe('migration 0021 on an existing desk', () => {
+  it('keeps every conversation in the inbox, and leaves exactly the indexes a fresh desk has', async () => {
+    const { SqliteScopeHost } = await import('@substrat-run/adapter-sqlite');
+    const { platformActorId, scopeId, tenantId } = await import('@substrat-run/contracts');
+    const { ulid } = await import('@substrat-run/kernel');
+    const { MODULES } = await import('../src/provision.js');
+    const { ticket0Manifest } = await import('../src/manifest.js');
+    const { default: Database } = await import('better-sqlite3');
+    const { join } = await import('node:path');
+
+    const actor = platformActorId.parse(ulid());
+    const desks: { tenant: ReturnType<typeof tenantId.parse>; scope: ReturnType<typeof scopeId.parse> }[] = [];
+    const provision = async (host: InstanceType<typeof SqliteScopeHost>, i: number) => {
+      const desk = { tenant: tenantId.parse(ulid()), scope: scopeId.parse(ulid()) };
+      await host.admin.createTenant(actor, { id: desk.tenant, slug: `migration-0021-${i}`, name: 'Migration' });
+      await host.admin.grantEntitlement(actor, desk.tenant, ticket0Manifest.entitlementKey as string);
+      await host.provisionScope(actor, { tenantId: desk.tenant, scopeId: desk.scope, vertical: 'ticket0' });
+      desks.push(desk);
+      return desk;
+    };
+    const file = (d: { tenant: string; scope: string }) => join(kit.dir, `${d.tenant}__${d.scope}.sqlite`);
+    const indexes = (d: { tenant: string; scope: string }) => {
+      const db = new Database(file(d), { readonly: true });
+      try {
+        return db
+          .prepare(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ticket0_conversations' ORDER BY name",
+          )
+          .all() as { name: string; sql: string | null }[];
+      } finally {
+        db.close();
+      }
+    };
+
+    // The version before: its journal, and its list declaration — `quarantine` was not a
+    // column, so it was not a filter.
+    const previous = new SqliteScopeHost({ dir: kit.dir });
+    for (const m of MODULES)
+      previous.registerModule(
+        m.manifest.id === ticket0Manifest.id
+          ? {
+              ...m,
+              manifest: {
+                ...m.manifest,
+                lists: m.manifest.lists?.map((l) =>
+                  l.filterable ? { ...l, filterable: l.filterable.filter((f) => f !== 'quarantine') } : l,
+                ),
+              },
+              migrations: (m.migrations ?? []).filter((x) => x.version <= '0020'),
+            }
+          : m,
+      );
+    const old = await provision(previous, 1);
+    await previous.close();
+    const db = new Database(file(old));
+    db.prepare("INSERT INTO ticket0_contacts (id, created_at) VALUES ('k1', '2026-01-01T00:00:00.000Z')").run();
+    for (const [id, state] of [['c1', 'new'], ['c2', 'open'], ['c3', 'closed']] as const)
+      db.prepare(
+        `INSERT INTO ticket0_conversations (id, contact_id, channel, subject, state, priority, created_at, updated_at)
+         VALUES (?, 'k1', 'email', 'Before', ?, 'normal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+      ).run(id, state);
+    db.close();
+
+    const current = new SqliteScopeHost({ dir: kit.dir });
+    for (const m of MODULES) current.registerModule(m);
+    await current.provisionScope(actor, { tenantId: old.tenant, scopeId: old.scope, vertical: 'ticket0' });
+    const fresh = await provision(current, 2);
+    await current.close();
+
+    const after = new Database(file(old), { readonly: true });
+    try {
+      expect(after.prepare('SELECT id, quarantine FROM ticket0_conversations ORDER BY id').all()).toEqual([
+        { id: 'c1', quarantine: null },
+        { id: 'c2', quarantine: null },
+        { id: 'c3', quarantine: null },
+      ]);
+    } finally {
+      after.close();
+    }
+    const upgraded = indexes(old);
+    expect(upgraded).toEqual(indexes(fresh));
+    // And the five live-work indexes carry the inbox predicate, not merely exist.
+    for (const name of [
+      'ticket0_conversations_waiting',
+      'ticket0_conversations_first_response_running',
+      'ticket0_conversations_resolution_running',
+      'ticket0_conversations_untagged',
+      'ticket0_conversations_no_reply_candidate',
+    ]) {
+      expect(upgraded.find((i) => i.name === name)?.sql, name).toMatch(/AND quarantine IS NULL$/);
+    }
+    expect(upgraded.map((i) => i.name)).toContain('ticket0_conversations_suspended');
+    expect(upgraded.some((i) => /_conversation_quarantine_/.test(i.name))).toBe(true);
+  });
+});
