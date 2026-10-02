@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  EXTRACTION_STRIDE,
   assertAttachmentExtractors,
   chooseAttachmentExtractor,
   runAttachmentExtractor,
@@ -496,5 +497,82 @@ describe("the kernel's abort: a bundled parser stops promptly on a large VALID f
     const done = new AbortController();
     done.abort();
     expect(await html.extract(input(page, 'text/html', done.signal))).toEqual({ failed: 'the extraction was aborted' });
+  });
+
+  /**
+   * ONE construct as long as the file: a single comment, tag or run of text. Nothing ends
+   * inside it, so a parser that searched it with one native `indexOf` (or one unpaced loop)
+   * would hold the thread from one end to the other, however its outer loop was paced.
+   */
+  const filler = 'x'.repeat(8 * 1024 * 1024);
+  const html = htmlExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 1 });
+  const docx = docxExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 64 * 1024 * 1024 });
+
+  /** The turns a run yields to the event loop — each one `setTimeout(…, 0)`. */
+  const yieldsDuring = async (run: () => Promise<unknown>): Promise<number> => {
+    const spy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      await run();
+      return spy.mock.calls.filter(([, ms]) => ms === 0).length;
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  it('a single huge comment, tag or text run still yields every stride: each pass over it pays its own', async () => {
+    // `passes` is how many times the content is walked: the decode, the search through the
+    // construct, and the entity pass when it is text. Each owes one yield per stride of its
+    // own — so a search that ran unpaced would leave the count a stride's worth short.
+    const unpaced = new AbortController().signal;
+    for (const [label, page, passes] of [
+      ['an unclosed comment', `<p>kept</p><!--${filler}`, 2],
+      ['a closed comment', `<p>kept</p><!--${filler}--><p>after</p>`, 2],
+      ['an unclosed tag', `<p>kept</p><div title="${filler}`, 2],
+      ['a quoted value', `<p>kept</p><div title="${filler}">after</div>`, 2],
+      ['an unclosed script', `<p>kept</p><script>${filler}`, 2],
+      ['one run of text', filler, 3],
+    ] as const) {
+      const yields = await yieldsDuring(() => html.extract(input(enc(page), 'text/html', unpaced)));
+      expect(yields, label).toBeGreaterThanOrEqual(Math.floor((passes * page.length) / EXTRACTION_STRIDE) - 2);
+    }
+    for (const [label, body, passes] of [
+      ['an unclosed tag', `<w:p><w:r><w:t>kept</w:t></w:r></w:p><w:t a="${filler}`, 2],
+      ['a closed comment', `<w:p><w:r><w:t>kept</w:t></w:r></w:p><!--${filler}-->`, 2],
+      ['one run of text', `<w:p><w:r><w:t>${filler}</w:t></w:r></w:p>`, 3],
+    ] as const) {
+      const xml = docxXml(body);
+      const file = await zip([{ name: 'word/document.xml', data: enc(xml) }]);
+      const yields = await yieldsDuring(() => docx.extract(input(file, DOCX, unpaced)));
+      expect(yields, `docx: ${label}`).toBeGreaterThanOrEqual(Math.floor((passes * xml.length) / EXTRACTION_STRIDE) - 2);
+    }
+  });
+
+  it('the entity pass, a window at a time, never cuts a reference in two', async () => {
+    // Window edges fall wherever the pacing puts them: across 1.8 MiB of references, many land
+    // inside one, and each must still decode whole.
+    const refs = '&amp;&#228;&eacute;'.repeat(100_000);
+    expect(indexedText(await ex('text/html', enc(`<p>${refs}</p>`)))).toBe('&äé'.repeat(100_000));
+  });
+
+  it('a zip entry name longer than any part this reads is ignored, never matched as one', async () => {
+    const long = `word/header${'1'.repeat(300)}.xml`;
+    const file = await docxOf('<w:p><w:r><w:t>body</w:t></w:r></w:p>', [
+      { name: long, data: enc('<w:hdr xmlns:w="w"><w:p><w:r><w:t>from a long name</w:t></w:r></w:p></w:hdr>') },
+      { name: 'word/header1.xml', data: enc('<w:hdr xmlns:w="w"><w:p><w:r><w:t>short header</w:t></w:r></w:p></w:hdr>') },
+    ]);
+    expect(indexedText(await ex(DOCX, file))).toBe('body\n\nshort header');
+  });
+
+  it('and an abort lands INSIDE that one construct, within a stride of the deadline', async () => {
+    const pages = [`<p>kept</p><!--${filler}`, `<p>kept</p><div title="${filler}`, `<p>kept</p><script>${filler}`];
+    for (const page of pages) {
+      const start = performance.now();
+      expect(await html.extract(input(enc(page), 'text/html', abortAfter(5)))).toEqual({ failed: 'the extraction was aborted' });
+      expect(performance.now() - start).toBeLessThan(5 + 150);
+    }
+    const file = await zip([{ name: 'word/document.xml', data: enc(docxXml(`<w:t a="${filler}`)) }]);
+    const start = performance.now();
+    expect(await docx.extract(input(file, DOCX, abortAfter(5)))).toEqual({ failed: 'the extraction was aborted' });
+    expect(performance.now() - start).toBeLessThan(5 + 150);
   });
 });

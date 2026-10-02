@@ -44,29 +44,35 @@
  * opener), over an input with a fixed cap, so the worst case is a property of the code rather
  * than of the file. Per format, at the default bounds:
  *
- * - **text**: one native decode of at most 4 × the kernel's output cap (2 MiB).
- * - **html**: one native decode of at most 16 × the output cap (8 MiB), one forward scan of
- *   it, one entity pass over what survives.
- * - **docx / xlsx / pptx**: the central directory (at most 20 000 entries), native inflate of
- *   at most `maxInflatedBytes` (16 MiB) in total, and one forward scan of each inflated part;
- *   parts stop being read once the text collected is twice the output cap.
+ * - **text**: a decode of at most 4 × the kernel's output cap (2 MiB).
+ * - **html**: a decode of at most 16 × the output cap (8 MiB), one forward scan of it, one
+ *   entity pass over what survives.
+ * - **docx / xlsx / pptx**: the central directory (at most 20 000 entries), inflate and decode
+ *   of at most `maxInflatedBytes` (16 MiB) in total, and one forward scan of each inflated
+ *   part; parts stop being read once the text collected is twice the output cap.
  *
- * Each extractor honours the kernel's time budget cooperatively: it checks the `signal`, and
- * yields a turn of the event loop so the kernel's timer can fire, between zip entries and
- * every 256 KiB of inflate or scan progress — an aborted extraction answers
- * `{ failed: 'the extraction was aborted' }` within one such step.
+ * Each extractor honours the kernel's time budget cooperatively (`Pace`): it checks the
+ * `signal`, and yields a turn of the event loop so the kernel's timer can fire, between zip
+ * entries and at least every `EXTRACTION_STRIDE` (the kernel's, 256 Ki) units of work. That
+ * holds for every pass over the content — decoding, inflating, the zip directory, the entity
+ * pass, and each search for a construct's end, a native `indexOf` included, which is cut to
+ * the window left before the next check. An aborted extraction answers
+ * `{ failed: 'the extraction was aborted' }` within one stride. The steps between two checks
+ * that are NOT cut to a stride are copies (joining the text collected) and the name tests
+ * over the zip directory, at most 20 000 names of at most 255 bytes each.
  */
-import type {
-  AttachmentExtractor,
-  AttachmentExtractorInput,
-  AttachmentExtractorResult,
-  ExtractionSignal,
+import {
+  EXTRACTION_STRIDE,
+  type AttachmentExtractor,
+  type AttachmentExtractorInput,
+  type AttachmentExtractorResult,
+  type ExtractionSignal,
 } from '@substrat-run/kernel';
 
-declare const TextDecoder: new (
-  label?: string,
-  options?: { fatal?: boolean; ignoreBOM?: boolean },
-) => { decode(input?: Uint8Array): string };
+interface Decoder {
+  decode(input?: Uint8Array, options?: { stream?: boolean }): string;
+}
+declare const TextDecoder: new (label?: string, options?: { fatal?: boolean; ignoreBOM?: boolean }) => Decoder;
 // Web-standard and present in Node >= 18 and workerd; declared locally because the package
 // builds without DOM typings, as the kernel declares `TextEncoder`.
 declare const DecompressionStream: new (format: 'deflate-raw') => {
@@ -140,13 +146,6 @@ class MalformedInput extends Error {}
 /** The kernel's budget ran out and aborted the signal: the extraction stops where it is. */
 class ExtractionAborted extends Error {}
 
-/**
- * How much work runs between two checks of the kernel's signal: 256 KiB of a parse's
- * progress, or of an entry's inflated output. Small enough that an abort is honoured within
- * a few milliseconds of parsing; large enough that the yields cost little.
- */
-const STRIDE = 256 * 1024;
-
 /** One turn of the event loop — a macrotask, so the kernel's timer can run before what follows. */
 const nextTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -161,17 +160,99 @@ async function checkpoint(signal: ExtractionSignal): Promise<void> {
   if (signal.aborted) throw new ExtractionAborted('the extraction was aborted');
 }
 
+/**
+ * One extraction's pacing against the kernel's budget. Work is counted in units — a character
+ * scanned or decoded, a byte inflated or decoded — and no step runs more than
+ * `EXTRACTION_STRIDE` of them past the last `checkpoint`, give or take the few characters a
+ * search must see whole (a needle's length, an entity's span). A native search goes through `find`,
+ * which cuts it to the window left before the next check, and a hand-written loop through
+ * `scan`; that is what makes "stops within one stride" true of an `indexOf` across a long run
+ * of text, a comment or an unclosed tag, and not only of the loop around it.
+ */
+class Pace {
+  private left = EXTRACTION_STRIDE;
+
+  constructor(private readonly signal: ExtractionSignal) {}
+
+  /** Units that may still run before the next check — positive once `turn` has returned. */
+  get room(): number {
+    return this.left;
+  }
+
+  charge(units: number): void {
+    this.left -= units;
+  }
+
+  /** Stop if the signal is aborted; once a stride is spent, yield a turn and check again. */
+  async turn(): Promise<void> {
+    if (this.left > 0 && !this.signal.aborted) return;
+    await checkpoint(this.signal);
+    this.left = EXTRACTION_STRIDE;
+  }
+
+  /** `s.indexOf(needle, from)`, searched one window at a time. */
+  async find(s: string, needle: string, from: number): Promise<number> {
+    for (let at = from; at < s.length; ) {
+      await this.turn();
+      const end = Math.min(s.length, at + this.left);
+      // Each window reaches a needle's length less one into the next, so a match that
+      // straddles the edge is found whole — and found in exactly one window.
+      const k = s.slice(at, end + needle.length - 1).indexOf(needle);
+      if (k >= 0) {
+        this.charge(k + needle.length);
+        return at + k;
+      }
+      this.charge(end - at);
+      at = end;
+    }
+    return -1;
+  }
+
+  /** Visit `s` from `from`; `step(c, k)` returns true to stop at `k`. The index stopped at, or -1. */
+  async scan(s: string, from: number, step: (c: number, k: number) => boolean): Promise<number> {
+    for (let k = from; k < s.length; ) {
+      await this.turn();
+      const start = k;
+      const end = Math.min(s.length, k + this.left);
+      for (; k < end; k += 1) {
+        if (step(s.charCodeAt(k), k)) {
+          this.charge(k + 1 - start);
+          return k;
+        }
+      }
+      this.charge(end - start);
+    }
+    return -1;
+  }
+
+  /** Bytes through `decoder` a window at a time; `stream` keeps a character cut by an edge whole. */
+  async decode(decoder: Decoder, bytes: Uint8Array, out: string[]): Promise<void> {
+    for (let at = 0; at < bytes.length; ) {
+      await this.turn();
+      const end = Math.min(bytes.length, at + this.left);
+      out.push(decoder.decode(bytes.subarray(at, end), { stream: true }));
+      this.charge(end - at);
+      at = end;
+    }
+  }
+}
+
 /** Decode bytes as text: a UTF-16 BOM wins, then a declared charset, then UTF-8. */
-function decodeText(bytes: Uint8Array, charset: string | null): string {
+async function decodeText(bytes: Uint8Array, charset: string | null, pace: Pace): Promise<string> {
   let label = charset ?? 'utf-8';
   if (bytes[0] === 0xff && bytes[1] === 0xfe) label = 'utf-16le';
   else if (bytes[0] === 0xfe && bytes[1] === 0xff) label = 'utf-16be';
+  let decoder: Decoder;
   try {
-    return new TextDecoder(label).decode(bytes);
+    decoder = new TextDecoder(label);
   } catch {
     // An unknown label is the client's typo, not a reason to index nothing.
-    return new TextDecoder('utf-8').decode(bytes);
+    decoder = new TextDecoder('utf-8');
   }
+  const out: string[] = [];
+  await pace.decode(decoder, bytes, out);
+  out.push(decoder.decode());
+  return out.join('');
 }
 
 // -- HTML ----------------------------------------------------------------------------
@@ -208,15 +289,42 @@ const NAMED_ENTITIES: Record<string, string> = (() => {
   return map;
 })();
 
-/** `&amp;` `&#228;` `&#xE4;` → characters. An unknown name is left as written. */
-function decodeEntities(text: string, named: Record<string, string>): string {
-  return text.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);/g, (whole, ref: string) => {
-    if (ref[0] === '#') {
-      const code = ref[1] === 'x' || ref[1] === 'X' ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
-      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+/**
+ * How far before a window's edge the entity pass looks for an `&` to end the window at, so a
+ * reference is not cut in two. Every named reference and `&#x10FFFF;` is shorter; a longer one
+ * (only leading zeros make one) that straddles an edge is left as written.
+ */
+const ENTITY_SPAN = 32;
+
+/**
+ * `&amp;` `&#228;` `&#xE4;` → characters, a window at a time. An unknown name is left as
+ * written. The pattern is linear — each `&` is tried once against the run that follows it.
+ */
+async function decodeEntities(text: string, named: Record<string, string>, pace: Pace): Promise<string> {
+  const out: string[] = [];
+  for (let at = 0; at < text.length; ) {
+    await pace.turn();
+    // At least two spans, however little room is left: a window that began at an `&` and was
+    // shorter than its reference would cut it with no `&` behind the cut to back off to.
+    let end = Math.min(text.length, at + Math.max(pace.room, 2 * ENTITY_SPAN));
+    if (end < text.length) {
+      const edge = end - ENTITY_SPAN;
+      const amp = text.slice(edge, end).lastIndexOf('&');
+      if (amp >= 0) end = edge + amp;
     }
-    return named[ref] ?? whole;
-  });
+    out.push(
+      text.slice(at, end).replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);/g, (whole, ref: string) => {
+        if (ref[0] === '#') {
+          const code = ref[1] === 'x' || ref[1] === 'X' ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
+          return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+        }
+        return named[ref] ?? whole;
+      }),
+    );
+    pace.charge(end - at);
+    at = end;
+  }
+  return out.join('');
 }
 
 /** Elements whose start or end reads as a line break when the tags are stripped. */
@@ -242,17 +350,6 @@ const isAsciiAlpha = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 &&
 const isHtmlSpace = (c: number): boolean => c === 9 || c === 10 || c === 12 || c === 13 || c === 32;
 /** What ends a tag name, for the tokenizer: whitespace, `/` or `>` — nothing else. */
 const endsTagName = (c: number): boolean => isHtmlSpace(c) || c === 47 || c === 62;
-
-/** `s.indexOf(needle, from)`: every search for a construct's end goes through here. */
-function find(s: string, needle: string, from: number): number {
-  return s.indexOf(needle, from);
-}
-
-/** Visit `s` from `from`; `step(c, k)` returns true to stop at `k`. The index stopped at, or -1. */
-function scan(s: string, from: number, step: (c: number, k: number) => boolean): number {
-  for (let k = from; k < s.length; k += 1) if (step(s.charCodeAt(k), k)) return k;
-  return -1;
-}
 
 /**
  * Whether the tag name `name` (lower case) is spelled at `at` and ENDS there — ASCII case
@@ -293,10 +390,10 @@ const QUOTED = 6;
  * states, so a `>` inside a quoted attribute value ends nothing (`<a title="x > y">`), while
  * a quote that opens no value (`<a "x>`) is just a character.
  */
-function htmlTagEnd(s: string, from: number): number {
+function htmlTagEnd(s: string, from: number, pace: Pace): Promise<number> {
   let state = TAG_NAME;
   let quote = 0;
-  return scan(s, from, (c) => {
+  return pace.scan(s, from, (c) => {
     if (state === QUOTED) {
       if (c === quote) state = BEFORE_ATTR;
       return false;
@@ -339,9 +436,9 @@ function htmlTagEnd(s: string, from: number): number {
  * it, so does `--!>`, and so do the abrupt `<!-->` and `<!--->` — which is why the search for
  * `-->` may overlap the opener's own dashes, and the one for `--!>` may not.
  */
-function commentEnd(s: string, lt: number): number {
+async function commentEnd(s: string, lt: number, pace: Pace): Promise<number> {
   for (let p = lt + 2; ; ) {
-    const k = find(s, '--', p);
+    const k = await pace.find(s, '--', p);
     if (k < 0) return -1;
     if (s.charCodeAt(k + 2) === 62) return k + 2;
     if (k >= lt + 4 && s.charCodeAt(k + 2) === 33 && s.charCodeAt(k + 3) === 62) return k + 3;
@@ -350,9 +447,9 @@ function commentEnd(s: string, lt: number): number {
 }
 
 /** Where the end tag closing a raw-text element's content starts (`</style …`), or -1. */
-function rawTextEnd(s: string, from: number, name: string): number {
+async function rawTextEnd(s: string, from: number, name: string, pace: Pace): Promise<number> {
   for (let k = from; ; ) {
-    const lt = find(s, '</', k);
+    const lt = await pace.find(s, '</', k);
     if (lt < 0 || namedAt(s, lt + 2, name)) return lt;
     k = lt + 2;
   }
@@ -366,9 +463,9 @@ const closesScript = (s: string, lt: number): boolean => s.charCodeAt(lt + 1) ==
  * `<script` there makes the next `</script` close only that, until `-->` (the "double escaped"
  * state, which a browser honours: `<script><!--<script></script>still script</script>`).
  */
-function scriptEnd(s: string, from: number): number {
+async function scriptEnd(s: string, from: number, pace: Pace): Promise<number> {
   for (let k = from; ; ) {
-    const lt = find(s, '<', k);
+    const lt = await pace.find(s, '<', k);
     if (lt < 0 || closesScript(s, lt)) return lt;
     if (!s.startsWith('<!--', lt)) {
       k = lt + 1;
@@ -379,7 +476,7 @@ function scriptEnd(s: string, from: number): number {
     let double = false;
     let dashes = 2;
     let closer = -1;
-    const back = scan(s, lt + 4, (c, j) => {
+    const back = await pace.scan(s, lt + 4, (c, j) => {
       if (c === 45) {
         dashes += 1;
         return false;
@@ -409,7 +506,8 @@ function scriptEnd(s: string, from: number): number {
  * linear and are not: on a file of `<` with no `>` after it, or of `<!--` with no `-->`, every
  * opener rescans to the end, and an 8 MiB page of them is quadratic work no time budget can
  * cut short in time. Here every index moves forward only, so the work is bounded by the
- * input — and a pass this long checks the kernel's signal as it goes.
+ * input — and every search in it is paced (`Pace`), so a pass this long checks the kernel's
+ * signal as it goes, inside one long comment or tag as much as between short ones.
  *
  * Every construct ends where the HTML tokenizer ends it: a tag at a `>` outside a quoted
  * value, a comment at `-->` / `--!>` (or the abrupt `<!-->`), a raw-text element only at a
@@ -423,7 +521,7 @@ function scriptEnd(s: string, from: number): number {
  * (raw text that IS shown) and `xmp`/`plaintext` are read as ordinary markup, so tags written
  * inside them are stripped rather than shown. SVG and MathML content is read as HTML.
  */
-async function htmlText(html: string, signal: ExtractionSignal): Promise<string> {
+async function htmlText(html: string, pace: Pace): Promise<string> {
   const out: string[] = [];
   const n = html.length;
   // Open `template` elements: their content is parsed as usual and shown nowhere.
@@ -432,13 +530,8 @@ async function htmlText(html: string, signal: ExtractionSignal): Promise<string>
     if (hidden === 0 && to > from) out.push(html.slice(from, to));
   };
   let i = 0;
-  let nextCheck = STRIDE;
   while (i < n) {
-    if (i >= nextCheck) {
-      await checkpoint(signal);
-      nextCheck = i + STRIDE;
-    }
-    const lt = find(html, '<', i);
+    const lt = await pace.find(html, '<', i);
     if (lt < 0) {
       text(i, n);
       break;
@@ -446,7 +539,7 @@ async function htmlText(html: string, signal: ExtractionSignal): Promise<string>
     text(i, lt);
     const next = html.charCodeAt(lt + 1);
     if (next === 33 && html.startsWith('--', lt + 2)) {
-      const end = commentEnd(html, lt);
+      const end = await commentEnd(html, lt, pace);
       if (end < 0) break;
       out.push(' ');
       i = end + 1;
@@ -454,7 +547,7 @@ async function htmlText(html: string, signal: ExtractionSignal): Promise<string>
     }
     if (next === 33 || next === 63 || (next === 47 && !isAsciiAlpha(html.charCodeAt(lt + 2)))) {
       // `<!DOCTYPE …>`, `<?…>`, `</ …>`: a bogus comment, to the first `>`.
-      const end = find(html, '>', lt + 2);
+      const end = await pace.find(html, '>', lt + 2);
       if (end < 0) break;
       i = end + 1;
       continue;
@@ -467,7 +560,7 @@ async function htmlText(html: string, signal: ExtractionSignal): Promise<string>
     const closing = next === 47;
     const nameAt = closing ? lt + 2 : lt + 1;
     const name = shortTagName(html, nameAt);
-    const gt = htmlTagEnd(html, nameAt);
+    const gt = await htmlTagEnd(html, nameAt, pace);
     if (gt < 0) break;
     i = gt + 1;
     if (name === 'template') {
@@ -475,8 +568,8 @@ async function htmlText(html: string, signal: ExtractionSignal): Promise<string>
       continue;
     }
     if (!closing && (name === 'script' || HTML_HIDDEN_RAW.has(name))) {
-      const close = name === 'script' ? scriptEnd(html, i) : rawTextEnd(html, i, name);
-      const end = close < 0 ? -1 : htmlTagEnd(html, close + 2);
+      const close = name === 'script' ? await scriptEnd(html, i, pace) : await rawTextEnd(html, i, name, pace);
+      const end = close < 0 ? -1 : await htmlTagEnd(html, close + 2, pace);
       if (end < 0) break;
       out.push(' ');
       i = end + 1;
@@ -486,7 +579,7 @@ async function htmlText(html: string, signal: ExtractionSignal): Promise<string>
     if (HTML_BLOCK.has(name)) out.push('\n');
     else if (HTML_CELL.has(name)) out.push(' ');
   }
-  return decodeEntities(out.join(''), NAMED_ENTITIES);
+  return decodeEntities(out.join(''), NAMED_ENTITIES, pace);
 }
 
 // -- ZIP -----------------------------------------------------------------------------
@@ -504,12 +597,18 @@ interface ZipEntry {
 const MAX_ZIP_ENTRIES = 20_000;
 
 /**
+ * The longest entry name kept. Every part this package reads has a short fixed name, so a
+ * longer one is never one of them — and capping it bounds the name tests over the directory.
+ */
+const MAX_ENTRY_NAME = 255;
+
+/**
  * The central directory, read from the End Of Central Directory record backwards.
  *
  * ZIP64 is refused rather than half-read: an OOXML file needs it only past 4 GiB, which
  * is far beyond `maxInputBytes`, so meeting one means the file is not what it says.
  */
-function zipEntries(zip: Uint8Array): ZipEntry[] {
+async function zipEntries(zip: Uint8Array, pace: Pace): Promise<ZipEntry[]> {
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   const minEocd = 22;
   if (zip.length < minEocd) throw new MalformedInput('not a zip archive');
@@ -534,6 +633,7 @@ function zipEntries(zip: Uint8Array): ZipEntry[] {
   const entries: ZipEntry[] = [];
   let p = cdOffset;
   for (let n = 0; n < count; n += 1) {
+    await pace.turn();
     if (p + 46 > zip.length || view.getUint32(p, true) !== 0x02014b50) {
       throw new MalformedInput('the zip central directory is damaged');
     }
@@ -542,14 +642,16 @@ function zipEntries(zip: Uint8Array): ZipEntry[] {
     const commentLength = view.getUint16(p + 32, true);
     if (p + 46 + nameLength > zip.length) throw new MalformedInput('the zip central directory is damaged');
     entries.push({
-      name: names.decode(zip.subarray(p + 46, p + 46 + nameLength)),
+      name: nameLength > MAX_ENTRY_NAME ? '' : names.decode(zip.subarray(p + 46, p + 46 + nameLength)),
       flags: view.getUint16(p + 8, true),
       method: view.getUint16(p + 10, true),
       compressedSize: view.getUint32(p + 20, true),
       uncompressedSize: view.getUint32(p + 24, true),
       localHeaderOffset: view.getUint32(p + 42, true),
     });
-    p += 46 + nameLength + extraLength + commentLength;
+    const span = 46 + nameLength + extraLength + commentLength;
+    pace.charge(span);
+    p += span;
   }
   return entries;
 }
@@ -560,19 +662,15 @@ interface InflateBudget {
 }
 
 /**
- * One entry's bytes, inflated under the budget.
+ * One entry's text: inflated under the budget, and decoded as UTF-8 as the inflater produces
+ * it — a window at a time, so neither step holds the thread for more than a stride.
  *
  * The write is NOT awaited before reading: a `DecompressionStream` applies backpressure,
  * so awaiting the write of a chunk larger than its queue would wait for a reader that has
  * not started. The read loop counts what the inflater actually produces and cancels the
  * stream the moment the budget is spent.
  */
-async function readEntry(
-  zip: Uint8Array,
-  entry: ZipEntry,
-  budget: InflateBudget,
-  signal: ExtractionSignal,
-): Promise<Uint8Array> {
+async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget, pace: Pace): Promise<string> {
   if (entry.flags & 0x1) throw new MalformedInput('the archive is encrypted');
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   const at = entry.localHeaderOffset;
@@ -588,19 +686,21 @@ async function readEntry(
   if (entry.uncompressedSize > budget.remaining) {
     throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
   }
+  const decoder = new TextDecoder('utf-8');
+  const text: string[] = [];
   if (entry.method === 0) {
     budget.remaining -= raw.length;
     if (budget.remaining < 0) throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
-    return raw;
+    await pace.decode(decoder, raw, text);
+    text.push(decoder.decode());
+    return text.join('');
   }
   if (entry.method !== 8) throw new MalformedInput('a zip entry uses an unsupported compression method');
   const ds = new DecompressionStream('deflate-raw');
   const writer = ds.writable.getWriter();
   const writing = writer.write(raw).then(() => writer.close()).catch(() => {});
   const reader = ds.readable.getReader();
-  const chunks: Uint8Array[] = [];
   let total = 0;
-  let nextCheck = STRIDE;
   try {
     for (;;) {
       let next: { done: boolean; value?: Uint8Array };
@@ -616,50 +716,44 @@ async function readEntry(
         await reader.cancel().catch(() => {});
         throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
       }
-      chunks.push(chunk);
-      if (signal.aborted || total >= nextCheck) {
-        nextCheck = total + STRIDE;
-        try {
-          await checkpoint(signal);
-        } catch (err) {
-          await reader.cancel().catch(() => {});
-          throw err;
-        }
+      try {
+        await pace.decode(decoder, chunk, text);
+      } catch (err) {
+        await reader.cancel().catch(() => {});
+        throw err;
       }
     }
   } finally {
     await writing;
   }
   budget.remaining -= total;
-  const out = new Uint8Array(total);
-  let o = 0;
-  for (const c of chunks) {
-    out.set(c, o);
-    o += c.length;
-  }
-  return out;
+  text.push(decoder.decode());
+  return text.join('');
 }
 
 // -- OOXML ---------------------------------------------------------------------------
 
 /** The index of the first `>` at or after `from` that is outside a quoted value, or -1. */
-function tagEnd(s: string, from: number): number {
+function xmlTagEnd(s: string, from: number, pace: Pace): Promise<number> {
   let quote = 0;
-  for (let k = from; k < s.length; k += 1) {
-    const c = s.charCodeAt(k);
+  return pace.scan(s, from, (c) => {
     if (quote !== 0) {
       if (c === quote) quote = 0;
-    } else if (c === 34 || c === 39) {
-      quote = c;
-    } else if (c === 62) {
-      return k;
+      return false;
     }
-  }
-  return -1;
+    if (c === 34 || c === 39) {
+      quote = c;
+      return false;
+    }
+    return c === 62;
+  });
 }
 
 /** Whitespace, `/` or `>` ends an XML name. */
 const endsName = (c: number): boolean => c === 32 || c === 9 || c === 10 || c === 13 || c === 47 || c === 62;
+
+/** Longer than any qualified name the OOXML scan acts on (`w:t`, `a:rPh`); a longer one is just a tag. */
+const XML_NAME_MAX = 64;
 
 /**
  * Text out of an OOXML part: the content of every element whose LOCAL name is `t`.
@@ -673,59 +767,55 @@ const endsName = (c: number): boolean => c === 32 || c === 9 || c === 10 || c ==
  * ONE linear pass, for the reason `htmlText` gives: a tokenizer regex with lazy `[\s\S]*?`
  * or an alternation over quoted values rescans to the end from every unclosed `<![CDATA[`,
  * `<!--` or quote, which a hostile part can repeat until the work is quadratic. Here every
- * index moves forward only; content after a construct that never closes is not text.
+ * index moves forward only, every search is paced (`Pace`), and content after a construct
+ * that never closes is not text.
  */
-async function ooxmlText(xml: string, signal: ExtractionSignal): Promise<string> {
+async function ooxmlText(xml: string, pace: Pace): Promise<string> {
   const out: string[] = [];
   const BREAK_AFTER = new Set(['p', 'si', 'row', 'tr']);
   const BREAK = new Set(['br', 'cr']);
   let inText = 0;
   let skip = 0;
-  const emit = (text: string) => {
-    if (inText > 0 && skip === 0) out.push(text);
-  };
+  const inside = () => inText > 0 && skip === 0;
   const n = xml.length;
   let i = 0;
-  let nextCheck = STRIDE;
   while (i < n) {
-    if (i >= nextCheck) {
-      await checkpoint(signal);
-      nextCheck = i + STRIDE;
-    }
-    const lt = xml.indexOf('<', i);
+    const lt = await pace.find(xml, '<', i);
     if (lt < 0) {
-      emit(decodeEntities(xml.slice(i), XML_ENTITIES));
+      if (inside()) out.push(await decodeEntities(xml.slice(i), XML_ENTITIES, pace));
       break;
     }
-    if (lt > i) emit(decodeEntities(xml.slice(i, lt), XML_ENTITIES));
+    if (lt > i && inside()) out.push(await decodeEntities(xml.slice(i, lt), XML_ENTITIES, pace));
     if (xml.startsWith('<![CDATA[', lt)) {
-      const end = xml.indexOf(']]>', lt + 9);
+      const end = await pace.find(xml, ']]>', lt + 9);
       if (end < 0) break;
-      emit(xml.slice(lt + 9, end));
+      if (inside()) out.push(xml.slice(lt + 9, end));
       i = end + 3;
       continue;
     }
     if (xml.startsWith('<!--', lt)) {
-      const end = xml.indexOf('-->', lt + 4);
+      const end = await pace.find(xml, '-->', lt + 4);
       if (end < 0) break;
       i = end + 3;
       continue;
     }
     if (xml.startsWith('<?', lt)) {
-      const end = xml.indexOf('?>', lt + 2);
+      const end = await pace.find(xml, '?>', lt + 2);
       if (end < 0) break;
       i = end + 2;
       continue;
     }
-    const gt = tagEnd(xml, lt + 1);
+    const gt = await xmlTagEnd(xml, lt + 1, pace);
     if (gt < 0) break;
     i = gt + 1;
     if (xml[lt + 1] === '!') continue; // a declaration
     const closing = xml[lt + 1] === '/';
     const selfClosing = xml[gt - 1] === '/';
     const nameStart = closing ? lt + 2 : lt + 1;
+    const nameLimit = Math.min(gt, nameStart + XML_NAME_MAX + 1);
     let nameEnd = nameStart;
-    while (nameEnd < gt && !endsName(xml.charCodeAt(nameEnd))) nameEnd += 1;
+    while (nameEnd < nameLimit && !endsName(xml.charCodeAt(nameEnd))) nameEnd += 1;
+    if (nameEnd - nameStart > XML_NAME_MAX) continue;
     const qname = xml.slice(nameStart, nameEnd);
     const local = qname.slice(qname.indexOf(':') + 1);
     if (local === 'rPh') {
@@ -782,12 +872,12 @@ async function ooxmlExtract(
   maxTextBytes: number,
   signal: ExtractionSignal,
 ): Promise<{ text: string; truncated: boolean }> {
-  const entries = zipEntries(zip);
+  const pace = new Pace(signal);
+  const entries = await zipEntries(zip, pace);
   if (!entries.some((e) => REQUIRED_PART[format].test(e.name))) {
     throw new MalformedInput(`the archive is not a ${format} file`);
   }
   const budget: InflateBudget = { remaining: bounds.maxInflatedBytes };
-  const decoder = new TextDecoder('utf-8');
   const pieces: string[] = [];
   // Stop reading parts once the collected text is safely past the kernel's output cap: the
   // rest could only be cut off again, and inflating it would spend the budget for nothing.
@@ -800,7 +890,7 @@ async function ooxmlExtract(
       break;
     }
     await checkpoint(signal);
-    const text = await ooxmlText(decoder.decode(await readEntry(zip, entry, budget, signal)), signal);
+    const text = await ooxmlText(await readEntryText(zip, entry, budget, pace), pace);
     pieces.push(text, '\n');
     collected += text.length;
   }
@@ -840,12 +930,12 @@ function extractWith(
 async function decodedPrefix(
   input: AttachmentExtractorInput,
   scanFactor: number,
-  toText: (decoded: string, signal: ExtractionSignal) => string | Promise<string>,
+  toText: (decoded: string, pace: Pace) => string | Promise<string>,
 ): Promise<{ text: string; truncated: boolean }> {
   const scan = input.maxTextBytes * scanFactor;
-  await checkpoint(input.signal);
-  const decoded = decodeText(input.body.subarray(0, scan), parseContentType(input.contentType).charset);
-  return { text: await toText(decoded, input.signal), truncated: input.body.length > scan };
+  const pace = new Pace(input.signal);
+  const decoded = await decodeText(input.body.subarray(0, scan), parseContentType(input.contentType).charset, pace);
+  return { text: await toText(decoded, pace), truncated: input.body.length > scan };
 }
 
 /** `text/*` other than HTML — and `.txt`, `.md`, `.csv`, `.tsv` when the type says nothing. */

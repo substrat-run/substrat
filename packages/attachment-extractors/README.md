@@ -47,8 +47,9 @@ extractor returns.
 
 Every parser is a single forward scan over a capped input, so its CPU is bounded by the code
 rather than the file. The kernel's time budget is cooperative. The parsers check the `signal`
-they are handed and yield between zip entries and every 256 KiB of progress, so an aborted
-extraction stops within one such step.
+they are handed and yield between zip entries and at least every `EXTRACTION_STRIDE` (the
+kernel's, 256 K) units of work — every search included, so a single long comment or tag is
+no exception — and an aborted extraction stops within one stride.
 
 ## License
 

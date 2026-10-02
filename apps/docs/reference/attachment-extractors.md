@@ -82,6 +82,9 @@ job doesn't retry it.
 The time budget is **cooperative**. When it runs out, the kernel aborts the `signal` it handed
 the extractor, and discards anything the extractor answers afterwards, so a late answer is
 never indexed. The bundled parsers check that signal, and yield to the event loop, between
-zip entries and every 256 KiB of progress, so they stop within one such step. Code that never
-yields cannot be stopped from inside the same isolate. A host that needs a hard deadline on
-an uncooperative extractor can run its extractors in a separate worker.
+zip entries and at least every 256 K units of work (the kernel's `EXTRACTION_STRIDE`: a
+character scanned or decoded, a byte inflated). That holds inside a single long comment, tag
+or run of text too, because every search through one is cut to that window, so they stop
+within one stride. Code that never yields cannot be stopped from inside the same isolate. A
+host that needs a hard deadline on an uncooperative extractor can run its extractors in a
+separate worker.

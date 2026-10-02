@@ -38,8 +38,9 @@
  *
  * What the kernel cannot do from inside one isolate is STOP code that does not yield. A
  * synchronous loop holds the thread until it returns, timer or not; the abort is a request,
- * honoured by an extractor that checks its `signal` and yields between units of work (the
- * bundled parsers do, every 64 KiB). So the guarantee is: a cooperative extractor stops
+ * honoured by an extractor that checks its `signal` and yields a turn at least every
+ * `EXTRACTION_STRIDE` units of work (the bundled parsers do, every native search included).
+ * So the guarantee is: a cooperative extractor stops
  * promptly, an uncooperative one cannot get its late answer indexed, and only the runtime's
  * own CPU limit ends it sooner. A hard deadline on uncooperative code needs process or
  * isolate isolation — a host can provide it by running its extractors in a separate worker
@@ -54,6 +55,14 @@ declare const TextDecoder: new (label?: string) => { decode(input?: Uint8Array):
 declare function setTimeout(fn: () => void, ms: number): unknown;
 declare function clearTimeout(handle: unknown): void;
 declare const AbortController: new () => { readonly signal: ExtractionSignal; abort(): void };
+
+/**
+ * How much work a cooperative extractor does between two checks of its `signal`: 256 Ki
+ * units, a unit being a character scanned or decoded, or a byte inflated or decoded. Part of
+ * the seam's contract rather than of any one parser, because it is what "stops promptly"
+ * means above — and the one number both sides of the seam cite.
+ */
+export const EXTRACTION_STRIDE = 256 * 1024;
 
 /**
  * The cancellation an extractor is handed — the runtime's own `AbortSignal`, typed here by the
