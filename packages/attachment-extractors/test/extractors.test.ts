@@ -269,6 +269,23 @@ describe('text and html', () => {
       expect(await html('</template><p>visible</p>')).toBe('visible');
     });
 
+    it('inside a template, `</template>` in a textarea, title, xmp or plaintext is TEXT: the template stays shut', async () => {
+      for (const el of ['textarea', 'title', 'xmp']) {
+        expect(await html(`<template><${el}></template>secret_in_template</${el}></template><p>visible</p>`), el).toBe('visible');
+        // The twin: once the element closes, the real `</template>` after it does end the template.
+        expect(await html(`<template><${el}>secret_in_template</${el}></template><p>visible</p>`), el).toBe('visible');
+      }
+      expect(await html('<p>visible</p><template><plaintext></template>secret_in_template')).toBe('visible');
+    });
+
+    it('outside one, their content is shown as text: markup inside is not markup', async () => {
+      expect(await html('<textarea><p>typed</p> &amp; <!-- kept --></textarea>')).toBe('<p>typed</p> & <!-- kept -->');
+      expect(await html('<title>a <b>title</b></title><p>body</p>')).toBe('a <b>title</b>\n\nbody');
+      // `xmp` and `plaintext` are raw text: shown as written, `&amp;` included.
+      expect(await html('<xmp><b>x</b> &amp;</xmp>')).toBe('<b>x</b> &amp;');
+      expect(await html('<p>before</p><plaintext></plaintext> <b>&amp;</b>')).toBe('before\n\n</plaintext> <b>&amp;</b>');
+    });
+
     it('a tag ends at a `>` outside a quoted attribute value — and a quote that opens no value is a character', async () => {
       expect(await html('<p title="a > secret_attribute">visible</p>')).toBe('visible');
       expect(await html('<p title=\'a > secret_attribute\' data-x="b>c">visible</p>')).toBe('visible');

@@ -356,6 +356,15 @@ const HTML_CELL = new Set(['td', 'th']);
  * escape rules of its own — `scriptEnd`.
  */
 const HTML_HIDDEN_RAW = new Set(['style', 'noscript', 'iframe', 'noembed', 'noframes']);
+/**
+ * Elements whose content the tokenizer also reads as TEXT up to their own end tag, but a
+ * browser SHOWS: `title` and `textarea` are RCDATA (entities decoded), `xmp` is RAWTEXT (shown
+ * as written). Markup inside them is text, so a `</template>` there closes nothing — and
+ * inside a template, their content is as hidden as the rest of it. (`plaintext` is the last
+ * of the kind: everything after it is text, to the end of the file.)
+ */
+const HTML_SHOWN_RCDATA = new Set(['title', 'textarea']);
+const HTML_SHOWN_RAWTEXT = new Set(['xmp']);
 
 /** The longest element name this scanner acts on (`blockquote`); a longer one is just a tag. */
 const HTML_NAME_MAX = 10;
@@ -515,6 +524,22 @@ async function scriptEnd(s: string, from: number, pace: Pace): Promise<number> {
 }
 
 /**
+ * Raw text (`xmp`, `plaintext`) is shown as written, so its `&` must survive the entity pass:
+ * escaped here, a window at a time, and turned back into itself there.
+ */
+async function asWritten(text: string, pace: Pace): Promise<string> {
+  const out: string[] = [];
+  for (let at = 0; at < text.length; ) {
+    await pace.turn();
+    const end = Math.min(text.length, at + pace.room);
+    out.push(text.slice(at, end).replaceAll('&', '&amp;'));
+    pace.charge(end - at);
+    at = end;
+  }
+  return out.join('');
+}
+
+/**
  * The text a reader of the page would see — in ONE linear pass.
  *
  * A scanner rather than regular expressions, deliberately. `<[^>]*>` and `<!--[\s\S]*?-->` look
@@ -525,16 +550,20 @@ async function scriptEnd(s: string, from: number, pace: Pace): Promise<number> {
  * signal as it goes, inside one long comment or tag as much as between short ones.
  *
  * Every construct ends where the HTML tokenizer ends it: a tag at a `>` outside a quoted
- * value, a comment at `-->` / `--!>` (or the abrupt `<!-->`), a raw-text element only at a
- * COMPLETE end tag of its own name, `script` by its escape rules. Comments, `script`, the
- * hidden raw-text elements and everything inside `template` are dropped, and anything left
- * UNCLOSED runs to the end of the file: a browser treats everything after an unclosed
- * `<script>` as script, and a page cut off mid-script (the prefix decode makes that ordinary)
- * must not have its source indexed as prose. So does a tag cut off before its `>`.
+ * value, a comment at `-->` / `--!>` (or the abrupt `<!-->`), `script` by its escape rules,
+ * and every element whose content the tokenizer reads as text — RAWTEXT, RCDATA, `plaintext` —
+ * only at a COMPLETE end tag of its own name, nothing inside it acting as markup. Comments,
+ * `script`, the hidden raw-text elements and everything inside `template` are dropped;
+ * `title`, `textarea`, `xmp` and `plaintext` content is text, shown unless a template holds
+ * it. Anything left UNCLOSED runs to the end of the file: a browser treats everything after
+ * an unclosed `<script>` as script, and a page cut off mid-script (the prefix decode makes
+ * that ordinary) must not have its source indexed as prose. So does a tag cut off before its
+ * `>`. `test/html-oracle.test.ts` holds this against parse5, a browser-grade parser.
  *
- * Not modelled, and each can only index LESS than a browser shows: `title` and `textarea`
- * (raw text that IS shown) and `xmp`/`plaintext` are read as ordinary markup, so tags written
- * inside them are stripped rather than shown. SVG and MathML content is read as HTML.
+ * Not modelled: SVG and MathML content, where `script`, `style` and `title` are not raw text
+ * and CDATA sections are real, and the tree builder's frameset and `select` quirks, where it
+ * drops a start tag the tokenizer would otherwise have switched on. Those are read by the HTML
+ * rules above, and can differ from a browser either way.
  */
 async function htmlText(html: string, pace: Pace): Promise<string> {
   const out: string[] = [];
@@ -582,11 +611,26 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       hidden = closing ? Math.max(0, hidden - 1) : hidden + 1;
       continue;
     }
-    if (!closing && (name === 'script' || HTML_HIDDEN_RAW.has(name))) {
+    if (!closing && name === 'plaintext') {
+      // Everything after it is text, shown as written: there is no end tag to look for.
+      if (hidden === 0) out.push('\n', await asWritten(html.slice(i), pace));
+      break;
+    }
+    const shownRcdata = HTML_SHOWN_RCDATA.has(name);
+    const shownRaw = HTML_SHOWN_RAWTEXT.has(name);
+    if (!closing && (name === 'script' || HTML_HIDDEN_RAW.has(name) || shownRcdata || shownRaw)) {
+      // Read to the end tag as ONE unit: nothing inside — a `</template>`, a `<!--` — is markup.
       const close = name === 'script' ? await scriptEnd(html, i, pace) : await rawTextEnd(html, i, name, pace);
+      const to = close < 0 ? n : close;
+      if (hidden === 0) {
+        const edge = HTML_BLOCK.has(name) ? '\n' : ' ';
+        out.push(edge);
+        if (shownRcdata) out.push(html.slice(i, to)); // RCDATA: decoded with the rest
+        else if (shownRaw) out.push(await asWritten(html.slice(i, to), pace));
+        out.push(edge);
+      }
       const end = close < 0 ? -1 : await htmlTagEnd(html, close + 2, pace);
       if (end < 0) break;
-      out.push(' ');
       i = end + 1;
       continue;
     }
