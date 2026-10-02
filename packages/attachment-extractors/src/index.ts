@@ -562,15 +562,90 @@ const SELECT_LEAVES = new Set([
   'select', 'input', 'keygen', 'textarea', 'caption', 'table', 'tbody', 'tfoot', 'thead', 'tr', 'td', 'th',
 ]);
 /**
- * Start tags that always clear a browser's frameset-ok flag, after which it ignores a
- * `<frameset>` (`input` is not here: a hidden one leaves the flag alone).
+ * Start tags a browser always clears the frameset-ok flag on: these by the "in body" rules, and
+ * `template` by the "in head" rules, wherever it appears. (`input` clears it too unless its
+ * `type` is `hidden` — `FramesetProof.tag` has the proof it accepts for that.)
  */
 const CLEARS_FRAMESET_OK = new Set([
-  'select', 'textarea', 'xmp', 'iframe', 'table', 'img', 'hr', 'li', 'dd', 'dt', 'pre', 'listing',
-  'button', 'br', 'embed', 'wbr', 'area', 'keygen', 'applet', 'marquee', 'object',
+  'select', 'textarea', 'xmp', 'iframe', 'table', 'img', 'image', 'hr', 'li', 'dd', 'dt', 'pre',
+  'listing', 'button', 'br', 'embed', 'wbr', 'area', 'keygen', 'applet', 'marquee', 'object',
+  'template',
 ]);
-/** How far into a run of text the scanner looks for proof that the frameset-ok flag is cleared. */
+/**
+ * Start tags that, outside template content, leave a browser in the head: the head's own
+ * elements, and `html`, `head` and `frameset`. Every other start tag starts the body.
+ */
+const HEAD_START_TAGS = new Set([
+  'html', 'head', 'base', 'basefont', 'bgsound', 'link', 'meta', 'title', 'noscript', 'noframes',
+  'style', 'script', 'template', 'frameset',
+]);
+/** How far into a run of text the scanner looks for a character that is surely not whitespace. */
 const FRAMESET_PROOF_SPAN = 256;
+
+/**
+ * Whether a browser would ignore a `<frameset>` at this point. Two facts decide it, and each is
+ * recorded only on PROOF, so that without both the frameset is taken to be honoured (and
+ * nothing after it is indexed):
+ *
+ * - **the body has started.** Before it, the "after head" rules honour a frameset whatever came
+ *   first — even text inside a template. Text that is surely not whitespace, a start tag other
+ *   than the head's own, or `</body>`, `</html>`, `</br>` starts it — outside template content
+ *   only, since inside one the "in template" rules hold and nothing starts the body.
+ * - **the frameset-ok flag is cleared.** Only what the "in body" rules process clears it — and
+ *   template content IS processed by them — plus a `<template>` start tag, which the "in head"
+ *   rules clear it on: such text, a start tag in `CLEARS_FRAMESET_OK`, a type-less `<input>`,
+ *   `</br>`, or `<body>` outside a template.
+ *
+ * What those rules never see proves neither: raw text, comments, a foreign region. (A select's
+ * own content is fed in all the same: its start tag has proved both facts already.) Inside a
+ * template a frameset is ignored outright.
+ */
+class FramesetProof {
+  private body = false;
+  private cleared = false;
+
+  /** Whether a frameset met here — inside template content or not — is ignored. */
+  ignores(inTemplate: boolean): boolean {
+    return inTemplate || (this.body && this.cleared);
+  }
+
+  /** A run of text the HTML rules process as characters. */
+  text(s: string, from: number, to: number, inTemplate: boolean): void {
+    if (this.body && this.cleared) return;
+    const end = Math.min(to, from + FRAMESET_PROOF_SPAN);
+    for (let k = from; k < end; k += 1) {
+      const c = s.charCodeAt(k);
+      if (isHtmlSpace(c) || c === 0) continue;
+      // An `&` proves nothing: a character reference may decode to whitespace.
+      if (c !== 38) this.character(inTemplate);
+      return;
+    }
+  }
+
+  /** A character surely not whitespace, processed by the HTML rules. */
+  character(inTemplate: boolean): void {
+    this.cleared = true;
+    if (!inTemplate) this.body = true;
+  }
+
+  /**
+   * A start or end tag the HTML rules process (`name` lower-cased; '' for a long one), with
+   * the text of its attributes when that is short.
+   */
+  tag(name: string, closing: boolean, inTemplate: boolean, attributes: string | null): void {
+    if (closing) {
+      // In template content every end tag but `</template>` is ignored.
+      if (inTemplate) return;
+      if (name === 'br') this.cleared = true; // read as a `<br>`
+      if (name === 'br' || name === 'body' || name === 'html') this.body = true;
+      return;
+    }
+    if (CLEARS_FRAMESET_OK.has(name) || (name === 'body' && !inTemplate)) this.cleared = true;
+    // An `input` clears it unless `type` is `hidden`: proof is one that names no `type` at all.
+    if (name === 'input' && attributes !== null && !/type/i.test(attributes)) this.cleared = true;
+    if (!inTemplate && !HEAD_START_TAGS.has(name)) this.body = true;
+  }
+}
 /** In a select inside a table, the end tags that close the select early. */
 const SELECT_TABLE_ENDS = new Set(['caption', 'table', 'tbody', 'tfoot', 'thead', 'tr', 'td', 'th']);
 
@@ -702,9 +777,9 @@ async function asWritten(text: string, pace: Pace): Promise<string> {
  *   (`foreignEnd`). Nothing in the region is indexed, and if the scanner cannot be sure where a
  *   browser ends the region, nothing after it either.
  * - **`frameset`** — a honoured one leaves no body to show, so nothing after it is indexed. A
- *   browser honours one only while its frameset-ok flag is set; once the scanner has PROOF
- *   the flag is cleared (text that is surely not whitespace, or a start tag that always
- *   clears it) or a template is open, it knows the frameset is ignored, and reads on.
+ *   browser ignores one only inside a template, or once the body has started AND its
+ *   frameset-ok flag is cleared; the scanner reads on past one only with proof of that
+ *   (`FramesetProof`).
  * - any of these opened inside a `select` — nothing more of the file.
  *
  * So those contexts may be under-indexed, and their text after them too; text the parser keeps
@@ -729,21 +804,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     if (shown() && to > from) out.push(html.slice(from, to));
   };
   const flags = { selfClosing: false };
-  // Whether a browser has certainly cleared its frameset-ok flag, so that it ignores a
-  // `<frameset>`. Only proof counts: the first character of a text run that is not whitespace
-  // or NUL — within a short span, and not an `&`, so no character reference can turn it into
-  // whitespace — or a start tag that always clears it.
-  let framesetIgnored = false;
-  const noteText = (from: number, to: number) => {
-    if (framesetIgnored) return;
-    const end = Math.min(to, from + FRAMESET_PROOF_SPAN);
-    for (let k = from; k < end; k += 1) {
-      const c = html.charCodeAt(k);
-      if (isHtmlSpace(c) || c === 0) continue;
-      framesetIgnored = c !== 38; // `&` proves nothing: it may decode to whitespace
-      return;
-    }
-  };
+  const frameset = new FramesetProof();
   let i = 0;
   while (i < n) {
     const lt = await pace.find(html, '<', i);
@@ -752,7 +813,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       break;
     }
     text(i, lt);
-    noteText(i, lt);
+    frameset.text(html, i, lt, hidden > 0);
     const next = html.charCodeAt(lt + 1);
     if (next === 33 && html.startsWith('--', lt + 2)) {
       const end = await commentEnd(html, lt, pace);
@@ -770,7 +831,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     }
     if (!isAsciiAlpha(next) && next !== 47) {
       text(lt, lt + 1); // `<` before anything else is text, as a browser reads it
-      framesetIgnored = true;
+      frameset.character(hidden > 0);
       i = lt + 1;
       continue;
     }
@@ -781,7 +842,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     const gt = await htmlTagEnd(html, nameAt, pace, flags);
     if (gt < 0) break;
     i = gt + 1;
-    if (!closing && CLEARS_FRAMESET_OK.has(name)) framesetIgnored = true;
+    frameset.tag(name, closing, hidden > 0, gt - nameAt <= FRAMESET_PROOF_SPAN ? html.slice(nameAt, gt) : null);
     if (selectAt >= 0 && hidden === selectAt) {
       // In the select itself: every tag but these is ignored by a browser and switches nothing.
       if (closing && name === 'select') {
@@ -823,7 +884,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       // it cannot be sure a browser has left one, nothing more of the file.
       if (selectAt >= 0) break;
       if (name === 'frameset') {
-        if (hidden > 0 || framesetIgnored) continue; // a browser ignores it
+        if (frameset.ignores(hidden > 0)) continue; // a browser ignores it
         break;
       }
       if (flags.selfClosing) continue; // `<svg/>` opens and closes at once

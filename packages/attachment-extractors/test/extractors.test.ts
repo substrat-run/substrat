@@ -332,6 +332,46 @@ describe('text and html', () => {
       }
     });
 
+    it('a frameset is honoured until the body has started AND its flag is cleared — each case with its twin', async () => {
+      const F = '<frameset><frame></frameset><p>AFTER</p>';
+      for (const [doc, expected] of [
+        // Text in a template clears the flag but cannot start the body: "after head" honours the frameset.
+        [`<title>t</title><template>x</template>${F}`, 't'],
+        [`<p></p><template>x</template>${F}`, 'AFTER'], // twin: the body has started
+        // Neither can a flag-clearing tag inside a template, nor an empty template, which clears it too.
+        [`<title>t</title><template><img></template>${F}`, 't'],
+        [`<title>t</title><template></template>${F}`, 't'],
+        [`<template><img></template><p></p>${F}`, 'AFTER'], // twin: then the body starts
+        [`<title>t</title><template></template><p></p>${F}`, 't\n\nAFTER'],
+        // A start tag that begins the body without clearing the flag leaves it honoured.
+        [`<title>t</title><p></p>${F}`, 't'],
+        [`<title>t</title><svg></svg>${F}`, 't'],
+        [`<p></p><img>${F}`, 'AFTER'], // twin: a tag that clears it
+        // Raw text clears nothing; the same text outside it does.
+        [`<title>t</title><p></p><noscript>x</noscript>${F}`, 't'],
+        [`<p></p><noscript>x</noscript>y${F}`, 'y\nAFTER'],
+        // `</br>` is read as `<br>`; `</p>` before the body is ignored.
+        [`<title>t</title></br>${F}`, 't\n\nAFTER'],
+        [`<title>t</title></p>${F}`, 't'],
+        // An explicit `<body>` starts it and clears the flag.
+        [`<title>t</title><body>${F}`, 't\n\nAFTER'],
+        // A reference to whitespace proves nothing; neither, conservatively, does any `&` — a
+        // browser ignores this frameset, and the scanner indexes less rather than guess.
+        [`<title>t</title><p></p>&#32;${F}`, 't'],
+        [`<title>t</title><p></p>&amp;${F}`, 't\n\n&'],
+        // A select's own tag starts the body and clears the flag.
+        [`<title>t</title><select>x</select>${F}`, 't\n\nAFTER'],
+        // An `input` clears it — unless its `type` is `hidden`, so one naming a `type` proves nothing.
+        [`<title>t</title><p></p><input>${F}`, 't\n\nAFTER'],
+        [`<title>t</title><p></p><input type="hidden">${F}`, 't'],
+        // Inside a template, end tags are ignored: `</body>` there starts nothing; outside, it does.
+        [`<title>t</title><template></body></template>${F}`, 't'],
+        [`<title>t</title><template></template></body>${F}`, 't\n\nAFTER'],
+      ] as const) {
+        expect(await html(doc), doc).toBe(expected);
+      }
+    });
+
     it('a frameset ends indexing only where a browser would honour it — before anything clears its flag', async () => {
       // Honoured: only a title's text came first, which leaves the frameset-ok flag set — and
       // so does a character reference to whitespace, which is why an `&` proves nothing.

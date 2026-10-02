@@ -104,6 +104,9 @@ const TOKENS = [
   '<select>', '</select>', '<input>', '<svg>', '</svg>', '<svg/>', '<math>', '</math>',
   '<annotation encoding="text/plain">', '</annotation>', '<foreignObject>', '<desc>', '<mi>',
   '<![CDATA[', ']]>', '<div>', '<b>', '<frameset>',
+  // what starts the body, and what clears the frameset-ok flag, which together decide whether
+  // a frameset is honoured (`<p>`, `<template>` and `<select>` above play their parts too)
+  '<img>', '<body>', '</br>',
   // closers that only LOOK like one: a longer name, a suffix
   '</templates>', '</scripture>', '</title-x>', '</textareas>', '</xmpp>', '</style_>',
   // real closers in other spellings: case, whitespace, `/`, an attribute holding a `>`
@@ -114,17 +117,28 @@ const TOKENS = [
 const marker = (i: number): string => `x${String(i).padStart(3, '0')}x`;
 
 /**
- * `m0 t1 m1 t2 m2 …`: a marker before, between and after the tokens. With `leading: false` the
- * document opens on its first token instead — a browser honours a `<frameset>` only before any
- * text, so that is the only way one is ever in force.
+ * A document: its tokens, and which gaps carry a marker — gap 0 before the first token, gap `n`
+ * after the last, a bit each. `m0 t1 m1 t2 m2 …` is every bit set. A document whose markers
+ * leave gaps empty puts tokens side by side, and one with no leading marker opens on its first
+ * token — the only way a browser is still in its head, where a frameset is honoured whatever
+ * came before, and the only way `</template><frameset>` meet with no text between them.
  */
-function documentOf(tokens: readonly string[], leading = true): { html: string; markers: string[] } {
-  const markers = tokens.map((_, i) => marker(i)).concat(marker(tokens.length));
-  if (!leading) markers[0] = '';
-  let html = markers[0]!;
-  tokens.forEach((t, i) => {
-    html += t + markers[i + 1]!;
-  });
+interface Doc {
+  readonly tokens: readonly string[];
+  readonly gaps: number;
+}
+const everyGap = (tokens: readonly string[]): number => (1 << (tokens.length + 1)) - 1;
+
+function documentOf({ tokens, gaps }: Doc): { html: string; markers: string[] } {
+  const markers: string[] = [];
+  let html = '';
+  for (let g = 0; g <= tokens.length; g += 1) {
+    if (gaps & (1 << g)) {
+      markers.push(marker(g));
+      html += marker(g);
+    }
+    if (g < tokens.length) html += tokens[g];
+  }
   return { html, markers };
 }
 
@@ -150,15 +164,14 @@ interface Tally {
   suppressed: number;
 }
 
-async function check(docs: Iterable<readonly string[]>, leading = true): Promise<Tally> {
+async function check(docs: Iterable<Doc>): Promise<Tally> {
   const tally: Tally = { documents: 0, leaks: [], missed: [], suppressed: 0 };
-  for (const tokens of docs) {
-    const { html, markers } = documentOf(tokens, leading);
+  for (const doc of docs) {
+    const { html, markers } = documentOf(doc);
     const { shown, openedAt } = oracle(html);
     const ours = await ourText(html);
-    const real = (m: string) => m !== ''; // the absent leading marker
-    const leaked = markers.filter((m) => real(m) && ours.includes(m) && !shown.includes(m));
-    const missing = markers.filter((m) => real(m) && shown.includes(m) && !ours.includes(m));
+    const leaked = markers.filter((m) => ours.includes(m) && !shown.includes(m));
+    const missing = markers.filter((m) => shown.includes(m) && !ours.includes(m));
     const missed = missing.filter((m) => html.indexOf(m) < openedAt);
     if (leaked.length > 0 && tally.leaks.length < 10) tally.leaks.push({ html, leaked });
     if (missed.length > 0 && tally.missed.length < 10) tally.missed.push({ html, missed });
@@ -168,7 +181,7 @@ async function check(docs: Iterable<readonly string[]>, leading = true): Promise
   return tally;
 }
 
-function* every(length: number): Generator<string[]> {
+function* sequences(length: number): Generator<string[]> {
   const idx = new Array<number>(length).fill(0);
   for (;;) {
     yield idx.map((i) => TOKENS[i]!);
@@ -178,11 +191,29 @@ function* every(length: number): Generator<string[]> {
   }
 }
 
-function* sampled(count: number, seed: number): Generator<string[]> {
+/** Every sequence of `length` tokens, a marker in every gap. */
+function* every(length: number): Generator<Doc> {
+  for (const tokens of sequences(length)) yield { tokens, gaps: everyGap(tokens) };
+}
+
+/**
+ * Every sequence of `length` tokens with NO leading marker, under every placement of markers in
+ * the gaps between tokens — the final marker always there, so what follows is seen.
+ */
+function* everyOpening(length: number): Generator<Doc> {
+  const interior = (1 << (length - 1)) - 1; // the gaps 1 … length-1
+  for (const tokens of sequences(length)) {
+    for (let mask = 0; mask <= interior; mask += 1) yield { tokens, gaps: (mask << 1) | (1 << length) };
+  }
+}
+
+/** Seeded documents of 4 to 8 tokens, the markers placed at random (the final one always). */
+function* sampled(count: number, seed: number): Generator<Doc> {
   const next = prng(seed);
   for (let n = 0; n < count; n += 1) {
-    const length = 4 + Math.floor(next() * 5); // 4 to 8 tokens
-    yield Array.from({ length }, () => TOKENS[Math.floor(next() * TOKENS.length)]!);
+    const length = 4 + Math.floor(next() * 5);
+    const tokens = Array.from({ length }, () => TOKENS[Math.floor(next() * TOKENS.length)]!);
+    yield { tokens, gaps: Math.floor(next() * (1 << length)) | (1 << length) };
   }
 }
 
@@ -205,9 +236,10 @@ describe('the HTML extractor against parse5: nothing the parser keeps out of the
       ['<svg/>'],
       ['<math/>'],
     ]) {
-      const { html, markers } = documentOf(tokens);
+      const doc = { tokens, gaps: everyGap(tokens) };
+      const { html, markers } = documentOf(doc);
       expect(oracle(html).openedAt, html).toBe(Infinity);
-      expect((await check([tokens])).missed, html).toEqual([]);
+      expect((await check([doc])).missed, html).toEqual([]);
       expect(await ourText(html), html).toContain(markers[markers.length - 1]);
     }
     // The twin: an svg that does open — even one a breakout pops at once — starts the allowance.
@@ -223,14 +255,14 @@ describe('the HTML extractor against parse5: nothing the parser keeps out of the
     expect(tally.suppressed).toBeGreaterThan(0);
   }, 300_000);
 
-  it(`every document of two tokens that OPENS on its first one (${TOKENS.length ** 2}): framesets in force`, async () => {
-    const tally = await check(every(2), false);
+  it(`every document of three tokens that OPENS on its first, markers in every placement (${4 * TOKENS.length ** 3})`, async () => {
+    const tally = await check(everyOpening(3));
     expect(tally.leaks, JSON.stringify(tally.leaks, null, 1)).toEqual([]);
     expect(tally.missed, JSON.stringify(tally.missed, null, 1)).toEqual([]);
-    expect(tally.documents).toBe(TOKENS.length ** 2);
-  });
+    expect(tally.documents).toBe(4 * TOKENS.length ** 3);
+  }, 300_000);
 
-  it('a seeded sample of 50 000 documents of four to eight tokens', async () => {
+  it('a seeded sample of 50 000 documents of four to eight tokens, markers placed at random', async () => {
     const tally = await check(sampled(50_000, 1575));
     expect(tally.leaks, JSON.stringify(tally.leaks, null, 1)).toEqual([]);
     expect(tally.missed, JSON.stringify(tally.missed, null, 1)).toEqual([]);
