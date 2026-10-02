@@ -5,7 +5,9 @@
  *
  * The UI lives at `/__vitest__/` and the bare origin is a 404, but a launch entry carries
  * a port and never a path, so `/` is redirected to the UI here. `VITEST_UI_PORT` moves
- * the port; it binds 127.0.0.1 only, since the dashboard can re-run your tests.
+ * the port; it binds 127.0.0.1 only, since the dashboard can re-run your tests. The port
+ * is strict: a busy one fails the start rather than moving the dashboard somewhere the
+ * launch entry does not point.
  */
 import { mergeConfig, type Plugin } from 'vitest/config';
 
@@ -26,6 +28,10 @@ const redirectRootToUi: Plugin = {
 export default mergeConfig(base, {
   plugins: [redirectRootToUi],
   test: {
-    api: { host: '127.0.0.1', port: Number(process.env.VITEST_UI_PORT ?? 5290) },
+    api: {
+      host: '127.0.0.1',
+      port: Number(process.env.VITEST_UI_PORT ?? 5290),
+      strictPort: true,
+    },
   },
 });
