@@ -1554,7 +1554,9 @@ async function dropFollowers(ctx: OperationContext, conversationId: string): Pro
  * widget sessions (whose browser columns are about the person, and whose token must stop
  * working). Notifications go too: they point at a conversation nobody should open. The
  * subject is blanked, because on mail it is the sender's line. The contact and the
- * assistant's turns stay, and the model's `ticket0/discard` says why.
+ * assistant's turns stay, and the model's `ticket0/discard` says why — and says exactly
+ * what the guarantee covers: these tables and every event emitted from now on, and not
+ * the copies older events already put in the outbox and the lake (#1692).
  */
 async function discardConversation(
   ctx: OperationContext,

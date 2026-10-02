@@ -2871,9 +2871,15 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * record and erasure is the platform's own story — and because a sender whose only
    * history is discarded is exactly what `discarded-before` keys on; and the assistant's
    * turns, which are what the desk was billed for — with the provider's `error` text
-   * cleared, since it can quote the message back. No event carries any of it: message
-   * events carry ids only, and `ticket0.assistant-failed` dropped the error in v2. The
-   * residual is the v1 copies emitted before that, which module code cannot rewrite.
+   * cleared, since it can quote the message back.
+   *
+   * **What the guarantee is, exactly.** A discard removes the content from the desk's
+   * tables, and from every event emitted after this change: message events carry ids
+   * only, and `ticket0.assistant-failed` stopped carrying the provider's error in v2.
+   * Events emitted BEFORE it — `assistant-failed` v1, with its error, since #993 — sit in
+   * the desk's outbox and in the lake the outbox ships to, and are covered only once
+   * outbox and lake erasure exist (#1692 tracks the lake half). Module code cannot rewrite
+   * either: a `_substrat_*` write is refused on both adapters.
    *
    * It is a CLOSE as well, and publishes `ticket0.conversation-closed` beside its own
    * event, so a consumer counting closures does not lose these.

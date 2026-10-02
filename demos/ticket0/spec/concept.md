@@ -87,9 +87,12 @@ The lifecycle:
   is what makes "not spam" lossless: restoring it puts it back exactly as it was. While
   held, nothing answers it — the assistant is never asked, so no inference is spent on
   junk — and nobody can work it. The only ways out are restore, and **discard**, which
-  closes it and deletes what was written; only a desk-admin may discard. The filter is
-  off until a desk switches it on (`settings.spamFilter`), because its false positive is
-  a real customer nobody sees until somebody opens the queue.
+  closes it and deletes what was written — from the desk's tables, and from every event
+  emitted since the suspended queue shipped; an older event's copy in the outbox or the
+  lake is covered only once outbox and lake erasure exist (#1692). Only a desk-admin may
+  discard. The filter is off until a desk switches it on (`settings.spamFilter`),
+  because its false positive is a real customer nobody sees until somebody opens the
+  queue.
 
 One transition must not be skippable, and it is the one a naive implementation gets
 wrong: nothing reaches `resolved` without at least one public reply having been sent.
