@@ -97,8 +97,9 @@ function portFrom(project: string, entry: DevServer): number {
   if (!match) {
     cannot(
       `${project}: ${entry.name} declares portEnv "${entry.portEnv}", but ${entry.portFrom}\n` +
-        `  binds no \`process.env.${entry.portEnv} ?? <port>\` (or \`\${${entry.portEnv}:-<port>}\`). The declaration and the code\n` +
-        `  disagree about which variable moves this server — fix whichever is wrong.`,
+        `  binds no \`process.env.${entry.portEnv} ?? <port>\` (or \`\${${entry.portEnv}:-<port>}\`).\n` +
+        `  The declaration and the code disagree about which variable moves this server —\n` +
+        `  fix whichever is wrong.`,
     );
   }
   return Number(match[1]);
