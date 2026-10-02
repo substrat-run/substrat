@@ -310,7 +310,8 @@ export interface ListQueryParams {
   readonly cursor?: string;
   /**
    * Narrowing, per declared column. A scalar is an equality; an ARRAY is the set
-   * of permitted values (`IN`), and an empty array permits none of them.
+   * of permitted values (`IN`), and an empty array permits none of them; `null` is
+   * the rows with no value there (`IS NULL`).
    */
   readonly filters?: Readonly<Record<string, unknown>>;
 }
@@ -391,6 +392,15 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
       // and the page size (#1741). `json_each` yields the members with their own types.
       where.push(`${column} IN (SELECT value FROM json_each(?))`);
       args.push(JSON.stringify(value));
+      continue;
+    }
+    // `null` asks for the rows that HOLD no value, and only `IS NULL` can say that:
+    // `= NULL` is never true, so it used to answer an empty page that read as "none
+    // match" (#1088). A nullable column whose absence means something — ticket0's
+    // `quarantine`, where null is the inbox — needs this to be listable at all. The
+    // column's index still serves it: SQLite seeks `IS NULL` like an equality.
+    if (value === null) {
+      where.push(`${column} IS NULL`);
       continue;
     }
     where.push(`${column} = ?`);

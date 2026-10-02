@@ -978,6 +978,40 @@
                         },
                         "updated_at": {
                           "type": "string"
+                        },
+                        "quarantine": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "suspended",
+                                "discarded"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "suspended_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "suspicion": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -1006,7 +1040,10 @@
                         "merged_into",
                         "follows",
                         "created_at",
-                        "updated_at"
+                        "updated_at",
+                        "quarantine",
+                        "suspended_at",
+                        "suspicion"
                       ],
                       "additionalProperties": false
                     }
@@ -1332,6 +1369,40 @@
                     },
                     "updated_at": {
                       "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -1360,7 +1431,10 @@
                     "merged_into",
                     "follows",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -1995,6 +2069,40 @@
                     },
                     "updated_at": {
                       "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -2023,7 +2131,10 @@
                     "merged_into",
                     "follows",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -2365,6 +2476,29 @@
                             "required": [
                               "afterHours"
                             ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "spamFilter": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "maxLinks": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 20
+                              },
+                              "repeatAfter": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20
+                              }
+                            },
                             "additionalProperties": false
                           },
                           {
@@ -4033,6 +4167,11 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "suspended": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
                         }
                       },
                       "required": [
@@ -4040,7 +4179,8 @@
                         "snoozed",
                         "unassigned",
                         "oldestUntouchedId",
-                        "oldestUntouchedAgeSeconds"
+                        "oldestUntouchedAgeSeconds",
+                        "suspended"
                       ],
                       "additionalProperties": false
                     },
@@ -4208,6 +4348,467 @@
                     "agents",
                     "csat",
                     "assistant"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationId}/discard": {
+      "post": {
+        "operationId": "ticket0-discard",
+        "summary": "Discard a suspended conversation — deletes its messages for good",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "description": "Deletes the messages for good. Refused for anything not suspended. Checks `conversation:discard`.",
+        "tags": [
+          "Suspended"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "conversationId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "conversationId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "contact_id": {
+                      "type": "string"
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "widget",
+                        "email"
+                      ]
+                    },
+                    "subject": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "new",
+                        "open",
+                        "snoozed",
+                        "resolved",
+                        "closed"
+                      ]
+                    },
+                    "assignee": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "priority": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "normal",
+                        "urgent"
+                      ]
+                    },
+                    "snoozed_until": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "snoozed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "snoozed_ms": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_public_reply_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolved_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "merged_into": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "follows": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "contact_id",
+                    "channel",
+                    "subject",
+                    "state",
+                    "assignee",
+                    "priority",
+                    "snoozed_until",
+                    "snoozed_at",
+                    "snoozed_ms",
+                    "first_public_reply_at",
+                    "first_assigned_at",
+                    "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
+                    "merged_into",
+                    "follows",
+                    "created_at",
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/conversations/suspended/discard": {
+      "post": {
+        "operationId": "ticket0-discard-suspended",
+        "summary": "Discard several suspended conversations at once — all or nothing",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "description": "All or nothing: one conversation that is not suspended, or not yours to discard, refuses the lot.",
+        "tags": [
+          "Suspended"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "conversationIds": {
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "conversationIds"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "discarded": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "discarded"
                   ],
                   "additionalProperties": false
                 }
@@ -4583,6 +5184,40 @@
                     },
                     "updated_at": {
                       "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -4611,7 +5246,10 @@
                     "merged_into",
                     "follows",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -5834,11 +6472,33 @@
             }
           },
           {
+            "name": "quarantine",
+            "in": "query",
+            "required": false,
+            "description": "Only entries whose `quarantine` equals this.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "include_closed",
             "in": "query",
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "queue",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "suspended",
+                "discarded"
+              ]
             }
           }
         ],
@@ -6091,6 +6751,40 @@
                       },
                       "updated_at": {
                         "type": "string"
+                      },
+                      "quarantine": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "suspended",
+                              "discarded"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspended_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspicion": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -6119,7 +6813,10 @@
                       "merged_into",
                       "follows",
                       "created_at",
-                      "updated_at"
+                      "updated_at",
+                      "quarantine",
+                      "suspended_at",
+                      "suspicion"
                     ],
                     "additionalProperties": false
                   }
@@ -6440,6 +7137,40 @@
                       },
                       "updated_at": {
                         "type": "string"
+                      },
+                      "quarantine": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "suspended",
+                              "discarded"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspended_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspicion": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -6468,7 +7199,10 @@
                       "merged_into",
                       "follows",
                       "created_at",
-                      "updated_at"
+                      "updated_at",
+                      "quarantine",
+                      "suspended_at",
+                      "suspicion"
                     ],
                     "additionalProperties": false
                   }
@@ -7035,6 +7769,193 @@
                       "confirmed_at",
                       "unsubscribed_at",
                       "created_at"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/conversations/suspended": {
+      "get": {
+        "operationId": "ticket0-list-suspended",
+        "summary": "The conversations held out of the inbox, with why and what they said",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. Defaults to 20, capped at 200.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "The previous page's `nextCursor`. Keyset over `id` — exclusive, so no row is repeated. Follow the `Link` header rather than assembling this yourself: a cursor is only valid for the sort that issued it.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Walk direction.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            }
+          }
+        ],
+        "description": "Who sent it, why it was held, and the start of what they wrote.",
+        "tags": [
+          "Suspended"
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of results. The walk is in the response headers.",
+            "headers": {
+              "Link": {
+                "description": "RFC 8288 link to the next page, e.g. `<https://…/customers?limit=20&cursor=01J8Z…>; rel=\"next\"`. Follow it verbatim — it carries this request's filters and page size. Absent when the walk is over, so a client stops rather than fetching an empty page.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "channel": {
+                        "type": "string",
+                        "enum": [
+                          "widget",
+                          "email"
+                        ]
+                      },
+                      "subject": {
+                        "type": "string"
+                      },
+                      "contact_id": {
+                        "type": "string"
+                      },
+                      "contact_email": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "contact_name": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspended_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "links",
+                            "repeated",
+                            "discarded-before",
+                            "marked"
+                          ]
+                        }
+                      },
+                      "excerpt": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "messages": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "created_at": {
+                        "type": "string"
+                      },
+                      "updated_at": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "channel",
+                      "subject",
+                      "contact_id",
+                      "contact_email",
+                      "contact_name",
+                      "suspended_at",
+                      "reasons",
+                      "excerpt",
+                      "messages",
+                      "created_at",
+                      "updated_at"
                     ],
                     "additionalProperties": false
                   }
@@ -7732,6 +8653,40 @@
                     },
                     "updated_at": {
                       "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -7760,7 +8715,10 @@
                     "merged_into",
                     "follows",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -8401,6 +9359,40 @@
                       },
                       "updated_at": {
                         "type": "string"
+                      },
+                      "quarantine": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "suspended",
+                              "discarded"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspended_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspicion": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -8429,7 +9421,10 @@
                       "merged_into",
                       "follows",
                       "created_at",
-                      "updated_at"
+                      "updated_at",
+                      "quarantine",
+                      "suspended_at",
+                      "suspicion"
                     ],
                     "additionalProperties": false
                   }
@@ -11179,6 +12174,40 @@
                     },
                     "updated_at": {
                       "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -11207,7 +12236,381 @@
                     "merged_into",
                     "follows",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationId}/restore": {
+      "post": {
+        "operationId": "ticket0-restore",
+        "summary": "Not spam — move a suspended conversation back into the inbox",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "description": "Not spam. Lossless: the conversation is exactly what it was.",
+        "tags": [
+          "Suspended"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "conversationId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "conversationId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "contact_id": {
+                      "type": "string"
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "widget",
+                        "email"
+                      ]
+                    },
+                    "subject": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "new",
+                        "open",
+                        "snoozed",
+                        "resolved",
+                        "closed"
+                      ]
+                    },
+                    "assignee": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "priority": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "normal",
+                        "urgent"
+                      ]
+                    },
+                    "snoozed_until": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "snoozed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "snoozed_ms": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_public_reply_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolved_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "merged_into": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "follows": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "contact_id",
+                    "channel",
+                    "subject",
+                    "state",
+                    "assignee",
+                    "priority",
+                    "snoozed_until",
+                    "snoozed_at",
+                    "snoozed_ms",
+                    "first_public_reply_at",
+                    "first_assigned_at",
+                    "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
+                    "merged_into",
+                    "follows",
+                    "created_at",
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -11572,6 +12975,19 @@
                 "urgent"
               ]
             }
+          },
+          {
+            "name": "queue",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "suspended",
+                "discarded"
+              ]
+            }
           }
         ],
         "responses": {
@@ -11813,6 +13229,40 @@
                       },
                       "updated_at": {
                         "type": "string"
+                      },
+                      "quarantine": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "suspended",
+                              "discarded"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspended_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "suspicion": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -11841,7 +13291,10 @@
                       "merged_into",
                       "follows",
                       "created_at",
-                      "updated_at"
+                      "updated_at",
+                      "quarantine",
+                      "suspended_at",
+                      "suspicion"
                     ],
                     "additionalProperties": false
                   }
@@ -12572,6 +14025,40 @@
                     },
                     "updated_at": {
                       "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -12600,7 +14087,10 @@
                     "merged_into",
                     "follows",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -13146,6 +14636,40 @@
                     },
                     "updated_at": {
                       "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -13174,7 +14698,10 @@
                     "merged_into",
                     "follows",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -13435,6 +14962,377 @@
                     "state",
                     "confirmToken",
                     "unsubscribeToken"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationId}/suspend": {
+      "post": {
+        "operationId": "ticket0-suspend",
+        "summary": "Move a new conversation out of the inbox into the suspended queue",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "description": "Only a `new` conversation — one nobody has worked.",
+        "tags": [
+          "Suspended"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "conversationId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "conversationId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "contact_id": {
+                      "type": "string"
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "widget",
+                        "email"
+                      ]
+                    },
+                    "subject": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "new",
+                        "open",
+                        "snoozed",
+                        "resolved",
+                        "closed"
+                      ]
+                    },
+                    "assignee": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "priority": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "normal",
+                        "urgent"
+                      ]
+                    },
+                    "snoozed_until": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "snoozed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "snoozed_ms": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_public_reply_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_assigned_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolved_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "first_response_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "resolution_breached_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "auto_tagged_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_waiting_since": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_candidate_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "no_reply_notified_message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "merged_into": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "follows": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "contact_id",
+                    "channel",
+                    "subject",
+                    "state",
+                    "assignee",
+                    "priority",
+                    "snoozed_until",
+                    "snoozed_at",
+                    "snoozed_ms",
+                    "first_public_reply_at",
+                    "first_assigned_at",
+                    "resolved_at",
+                    "first_response_due_at",
+                    "resolution_due_at",
+                    "first_response_breached_at",
+                    "resolution_breached_at",
+                    "auto_tagged_at",
+                    "no_reply_notified_at",
+                    "no_reply_waiting_since",
+                    "no_reply_candidate_at",
+                    "no_reply_notified_message_id",
+                    "merged_into",
+                    "follows",
+                    "created_at",
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -14183,6 +16081,40 @@
                     },
                     "updated_at": {
                       "type": "string"
+                    },
+                    "quarantine": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "suspended",
+                            "discarded"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspended_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suspicion": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -14211,7 +16143,10 @@
                     "merged_into",
                     "follows",
                     "created_at",
-                    "updated_at"
+                    "updated_at",
+                    "quarantine",
+                    "suspended_at",
+                    "suspicion"
                   ],
                   "additionalProperties": false
                 }
@@ -14442,6 +16377,9 @@
                     },
                     "created_at": {
                       "type": "string"
+                    },
+                    "suspended": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -14456,7 +16394,8 @@
                     "email_in_reply_to",
                     "delivered_at",
                     "cited_article_ids",
-                    "created_at"
+                    "created_at",
+                    "suspended"
                   ],
                   "additionalProperties": false
                 }

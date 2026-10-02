@@ -78,9 +78,19 @@ import {
   ticket0Entities,
   ticket0Lifecycles,
   ticket0Operations,
+  inTheInbox,
+  SPAM_MAX_LINKS_DEFAULT,
+  SPAM_MAX_LINKS_MAX,
+  SPAM_REPEAT_DEFAULT,
+  SPAM_REPEAT_MAX,
+  SPAM_REPEAT_MIN_CHARS,
+  SPAM_REPEAT_WINDOW_HOURS,
+  SUSPENDED_EXCERPT_CHARS,
+  SUSPICION_SIGNALS,
   type AutoTagRule,
   type DeskSetting,
   type MacroAction,
+  type SuspicionSignal,
 } from '../spec/model.js';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
 import { ticket0Migrations } from './migrations.generated.js';
@@ -692,6 +702,7 @@ function publicDesk(row: DeskRow) {
  * platform's own conflict with `reason: 'invalid_transition'`.
  */
 function step(row: ConversationRow, operation: string): string {
+  heldOrThrow(row, operation);
   const outcome = assertTransition(
     ticket0Lifecycles.conversation,
     `conversation ${row.id}`,
@@ -703,6 +714,56 @@ function step(row: ConversationRow, operation: string): string {
   // `allowed` is not a degenerate transition: writing `state` after one would move
   // an entity the declaration says stays put.
   return outcome.kind === 'transition' ? outcome.to : row.state;
+}
+
+/**
+ * What may happen to a conversation in the suspended queue (#1088), and nothing else may.
+ *
+ * Suspension keeps `state = 'new'` (see `quarantine` in the model), so the declared
+ * lifecycle would admit an assignment, a public reply or an assistant draft on one. This
+ * is the queue's half of the rule, and it lives in `step()` because every operation that
+ * touches a conversation already names itself there — one chokepoint, not a guard per
+ * handler that the next handler forgets.
+ *
+ *  - The customer's doors stay open: `ingest-message`, `widget-post` and `request-human`
+ *    write what they said into the held conversation, which stays held. Refusing them
+ *    would turn a false positive into a customer who cannot even finish a sentence.
+ *  - The ways out: `restore`, and the two discards. `suspend` again is a no-op.
+ *  - Everything else — reply, note, assign, tag, priority, snooze, resolve, close, merge,
+ *    a macro, the assistant recording a draft — is refused with `reason: 'suspended'`,
+ *    because each one is the desk working a conversation it has not accepted.
+ */
+const WHILE_SUSPENDED: ReadonlySet<string> = new Set([
+  'ticket0/ingest-message',
+  'ticket0/widget-post',
+  'ticket0/request-human',
+  'ticket0/suspend',
+  'ticket0/restore',
+  'ticket0/discard',
+  'ticket0/discard-suspended',
+]);
+
+/** The two edges that destroy content, and they take only what is suspended. */
+const DISCARD_EDGES: ReadonlySet<string> = new Set(['ticket0/discard', 'ticket0/discard-suspended']);
+
+function heldOrThrow(row: ConversationRow, operation: string): void {
+  if (row.quarantine === 'suspended' && !WHILE_SUSPENDED.has(operation)) {
+    throw substratError(
+      'conflict',
+      `conversation ${row.id} is in the suspended queue — restore it ("not spam") before ` +
+        `'${operation}', or discard it`,
+      { reason: 'suspended' },
+    );
+  }
+  // The destruction is a decision about junk somebody has looked at, never a faster
+  // close: anything not in the suspended queue is refused, whatever its state.
+  if (DISCARD_EDGES.has(operation) && row.quarantine !== 'suspended') {
+    throw substratError(
+      'conflict',
+      `conversation ${row.id} is not in the suspended queue — only a suspended conversation can be discarded`,
+      { reason: 'not_suspended' },
+    );
+  }
 }
 
 /**
@@ -1339,7 +1400,12 @@ function notifyStaff(
 function closeConversation(
   ctx: OperationContext,
   conversation: ConversationRow,
-  edge: 'ticket0/close' | 'ticket0/reap-abandoned' | 'ticket0/auto-close',
+  edge:
+    | 'ticket0/close'
+    | 'ticket0/reap-abandoned'
+    | 'ticket0/auto-close'
+    | 'ticket0/discard'
+    | 'ticket0/discard-suspended',
 ): ConversationRow {
   const row = settle(ctx, conversation, step(conversation, edge));
   ctx.emit({
@@ -1349,6 +1415,201 @@ function closeConversation(
     piiClass: 'none',
     payload: { id: row.id },
   });
+  return row;
+}
+
+// ---------------------------------------------------------------------------
+// The suspended queue (#1088) — held beside the inbox, and a person decides
+// ---------------------------------------------------------------------------
+
+/** The signals a row was held for, parsed — leniently, as every stored JSON here is read. */
+function suspicionOfRow(row: Pick<ConversationRow, 'suspicion'>): SuspicionSignal[] {
+  if (row.suspicion === null) return [];
+  try {
+    const parsed = JSON.parse(row.suspicion) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((s): s is SuspicionSignal => (SUSPICION_SIGNALS as readonly unknown[]).includes(s))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Hold a conversation out of the inbox — everything `ticket0/suspend` does after its
+ * check, and what the spam filter does at the door. One body, two doors, for
+ * `assignConversation`'s reason: the row and the event are the same whoever decided.
+ *
+ * `step()` with `ticket0/suspend` is what limits it to `new`, by the lifecycle, so the
+ * door cannot suspend a conversation somebody worked any more than a person can. Nothing
+ * but these three columns is written: a restore that clears `quarantine` is the whole
+ * undo, which is what "lossless" means here.
+ */
+function suspendConversation(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  signals: readonly SuspicionSignal[],
+): ConversationRow {
+  step(conversation, 'ticket0/suspend');
+  if (conversation.quarantine === 'suspended') return conversation;
+  ctx.sql.exec(
+    `UPDATE ticket0_conversations SET quarantine = 'suspended', suspended_at = ?, suspicion = ?
+      WHERE id = ?`,
+    [ctx.now(), JSON.stringify(signals), conversation.id],
+  );
+  const row = conversationOrThrow(ctx, conversation.id);
+  // The signal NAMES only — never which link or which text tripped one: that is the
+  // customer's message, and a log line is read by more people than the queue is.
+  ctx.log.info('conversation {conversationId} suspended for {signals}', {
+    conversationId: row.id,
+    signals: signals.join(','),
+  });
+  ctx.emit({
+    type: 'ticket0.conversation-suspended',
+    schemaVersion: 1,
+    entity: conversationRef(row.id),
+    piiClass: 'none',
+    payload: {
+      id: row.id,
+      quarantine: row.quarantine,
+      suspended_at: row.suspended_at,
+      suspicion: row.suspicion,
+    },
+  });
+  return row;
+}
+
+/**
+ * Destroy a suspended conversation's content — `ticket0/discard`, once per conversation
+ * for the bulk one too, so the trail and the events are per conversation.
+ *
+ * The close goes FIRST, through `closeConversation`, because its `step()` is where the
+ * refusals live: not suspended (`heldOrThrow`), or not `new` (the lifecycle). Nothing is
+ * deleted for a conversation either one refuses.
+ *
+ * Then the content, and the list is the whole of where a customer's words live in this
+ * desk's tables: `ticket0_messages` (their messages, the desk's notes, any draft, and the
+ * note that names a mail's attachments — the bytes were never stored), the tags, and the
+ * widget sessions (whose browser columns are about the person, and whose token must stop
+ * working). Notifications go too: they point at a conversation nobody should open. The
+ * subject is blanked, because on mail it is the sender's line. The contact and the
+ * assistant's turns stay, and the model's `ticket0/discard` says why.
+ */
+function discardConversation(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  edge: 'ticket0/discard' | 'ticket0/discard-suspended',
+): ConversationRow {
+  closeConversation(ctx, conversation, edge);
+  for (const table of [
+    'ticket0_messages',
+    'ticket0_conversation_tags',
+    'ticket0_widget_sessions',
+    'ticket0_notifications',
+  ] as const) {
+    ctx.sql.exec(`DELETE FROM ${table} WHERE conversation_id = ?`, [conversation.id]);
+  }
+  ctx.sql.exec(
+    `UPDATE ticket0_conversations SET quarantine = 'discarded', subject = '' WHERE id = ?`,
+    [conversation.id],
+  );
+  const row = conversationOrThrow(ctx, conversation.id);
+  ctx.log.info('conversation {conversationId} discarded', { conversationId: row.id });
+  ctx.emit({
+    type: 'ticket0.conversation-discarded',
+    schemaVersion: 1,
+    entity: conversationRef(row.id),
+    piiClass: 'none',
+    payload: { id: row.id, quarantine: row.quarantine, suspicion: row.suspicion },
+  });
+  return row;
+}
+
+/**
+ * How many links a text holds: `https://…`, `http://…` or `www.…`, each up to the next
+ * space or delimiter. One pass and no nesting, so a hostile message cannot make it run
+ * away. Counted in the text the customer wrote, never in a mail's HTML, whose footer
+ * links say nothing about the sender.
+ */
+function linksIn(text: string): number {
+  return text.match(/\bhttps?:\/\/[^\s<>"']+|\bwww\.[^\s<>"']+/gi)?.length ?? 0;
+}
+
+/**
+ * Why the spam filter would hold this message back — the empty list when it would not
+ * (#1088). Read at the door, before the message is written and before any model is
+ * asked, which is the issue's whole cost argument: junk is held for the price of three
+ * indexed reads and a regex, never an inference.
+ *
+ * Two questions, in this order, and the first is what keeps the false positives down:
+ *
+ *  1. **Is this a stranger?** A contact the host site vouched for (`external_id`) or who
+ *     signed in (`principal`) is not; neither is one with any conversation the desk
+ *     accepted — in the inbox now, or ever restored from the queue. Everybody else is,
+ *     which on its own means nothing: every first-time visitor is a stranger.
+ *  2. **Does what the stranger wrote look like junk?** Any of `links`, `repeated` or
+ *     `discarded-before` (see `SUSPICION_SIGNALS`) holds it back.
+ *
+ * `conversationId` is the conversation the door has just opened for this message, so it
+ * is not counted as the stranger's accepted history.
+ */
+function suspicionOf(
+  ctx: OperationContext,
+  contact: ContactRow,
+  conversationId: string,
+  body: string,
+): SuspicionSignal[] {
+  const filter = spamFilterOf(desk(ctx));
+  if (!filter) return [];
+  if (contact.external_id !== null || contact.principal !== null) return [];
+  const accepted = ctx.sql.query<{ one: number }>(
+    `SELECT 1 AS one FROM ticket0_conversations
+      WHERE contact_id = ? AND id != ? AND ${inTheInbox()} LIMIT 1`,
+    [contact.id, conversationId],
+  )[0];
+  if (accepted) return [];
+
+  const signals: SuspicionSignal[] = [];
+  if (linksIn(body) > filter.maxLinks) signals.push('links');
+  // Compared by SQLite on BOTH sides — `lower(trim(…))` of the stored text against the same
+  // of this one — so ASCII-only `lower()` and space-only `trim()` mean one thing to both.
+  // Bounded by the window, over the kernel's `(visibility, created_at, id)` message index.
+  if (body.trim().length >= SPAM_REPEAT_MIN_CHARS) {
+    const others = ctx.sql.query<{ n: number }>(
+      `SELECT COUNT(DISTINCT c.contact_id) AS n
+         FROM ticket0_messages m
+         JOIN ticket0_conversations c ON c.id = m.conversation_id
+        WHERE m.visibility = 'public'
+          AND m.created_at >= ?
+          AND m.author_kind = 'contact'
+          AND c.contact_id != ?
+          AND lower(trim(m.body_text)) = lower(trim(?))`,
+      [shiftDays(ctx.now(), -SPAM_REPEAT_WINDOW_HOURS / 24), contact.id, body],
+    )[0];
+    if (Number(others?.n ?? 0) >= filter.repeatAfter) signals.push('repeated');
+  }
+  const discarded = ctx.sql.query<{ one: number }>(
+    `SELECT 1 AS one FROM ticket0_conversations
+      WHERE contact_id = ? AND quarantine = 'discarded' LIMIT 1`,
+    [contact.id],
+  )[0];
+  if (discarded) signals.push('discarded-before');
+  return signals;
+}
+
+/**
+ * The spam filter, at a door that has just opened `conversation` for `body` (#1088):
+ * hold it back when `suspicionOf` says so, and say that the filter acted.
+ */
+function screenAtTheDoor(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  body: string,
+): ConversationRow {
+  const signals = suspicionOf(ctx, contactOrThrow(ctx, conversation.contact_id), conversation.id, body);
+  if (signals.length === 0) return conversation;
+  const row = suspendConversation(ctx, conversation, signals);
+  recordFired(ctx, 'spamFilter', 1);
   return row;
 }
 
@@ -1513,6 +1774,7 @@ export const ROUND_ROBIN_WAITING = `SELECT * FROM ticket0_conversations c
           AND c.first_assigned_at IS NULL
           AND c.state IN ('new', 'open')
           AND c.merged_into IS NULL
+          AND ${inTheInbox('c')}
           AND (? = 0
                OR c.channel != 'widget'
                OR ${escalationStandsSql('c.id')}
@@ -1539,6 +1801,7 @@ export const AUTO_TAG_PENDING = `SELECT * FROM ticket0_conversations
         WHERE auto_tagged_at IS NULL
           AND state IN ('new', 'open', 'snoozed')
           AND merged_into IS NULL
+          AND ${inTheInbox()}
         ORDER BY created_at, id LIMIT ?`;
 
 /**
@@ -1558,6 +1821,7 @@ export const AUTO_TAG_PENDING = `SELECT * FROM ticket0_conversations
 export const AUTO_CLOSE_DUE = `SELECT * FROM ticket0_conversations
         WHERE state = 'resolved'
           AND merged_into IS NULL
+          AND ${inTheInbox()}
           AND updated_at <= ?
         ORDER BY updated_at, id LIMIT ?`;
 
@@ -1579,6 +1843,7 @@ export const NO_REPLY_WAITING = `SELECT c.*, c.no_reply_waiting_since AS waiting
         WHERE c.no_reply_candidate_at IS NOT NULL
           AND c.state IN ('new', 'open')
           AND c.merged_into IS NULL
+          AND ${inTheInbox('c')}
           AND c.no_reply_candidate_at <= ?
         ORDER BY c.no_reply_candidate_at, c.id LIMIT ?`;
 
@@ -1948,6 +2213,19 @@ const noReplyHours = (row: DeskRow): number | null =>
   switchNumber(row, 'noReplyNotify', 'afterHours', NO_REPLY_MIN_HOURS, NO_REPLY_MAX_HOURS);
 
 /**
+ * The spam filter's bounds, or null: off (#1088). On is an OBJECT under `spamFilter` —
+ * `{}` included, which is on with the defaults — and a number this version would not have
+ * written falls back to its default rather than to something nobody chose.
+ */
+function spamFilterOf(row: DeskRow): { maxLinks: number; repeatAfter: number } | null {
+  if (asRecord(storedSettings(row).spamFilter) === null) return null;
+  return {
+    maxLinks: switchNumber(row, 'spamFilter', 'maxLinks', 0, SPAM_MAX_LINKS_MAX) ?? SPAM_MAX_LINKS_DEFAULT,
+    repeatAfter: switchNumber(row, 'spamFilter', 'repeatAfter', 1, SPAM_REPEAT_MAX) ?? SPAM_REPEAT_DEFAULT,
+  };
+}
+
+/**
  * The built-in behaviours, by the key each has in `deskSettingsBlob` — the closed set
  * `ticket0_behaviour_runs.behaviour` holds. Not a CHECK in the table, so the next
  * behaviour costs no migration; this type is where the set is closed.
@@ -2123,7 +2401,7 @@ const RESOLUTION_RUNNING = 'resolution_breached_at IS NULL AND resolved_at IS NU
  * pauses (`SLA_PAUSED`, below). `resolved` and `closed` are done. The losing half of a
  * merge is folded into its survivor, which keeps its own targets.
  */
-const SLA_LIVE = "state IN ('new', 'open', 'snoozed') AND merged_into IS NULL";
+const SLA_LIVE = `state IN ('new', 'open', 'snoozed') AND merged_into IS NULL AND ${inTheInbox()}`;
 
 /**
  * "No snooze is holding this target's clock right now", as SQL (#1648).
@@ -2538,16 +2816,25 @@ function heldConversation(
   ctx: OperationContext,
   sessionId: string,
   hold: WidgetHold,
+  /** What the visitor is about to write — what the spam filter reads if a thread opens. */
+  body: string,
 ): ConversationRow {
   // Only the session branch can be closed: `bindOpening` has just made the other one.
   const bound = hold.kind === 'session' ? hold.conversation : bindOpening(ctx, hold.opening);
-  return bound.state === 'closed'
-    ? moveSession(
-        ctx,
-        sessionId,
-        followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), bound.subject),
-      )
-    : bound;
+  const conversation =
+    bound.state === 'closed'
+      ? moveSession(
+          ctx,
+          sessionId,
+          followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), bound.subject),
+        )
+      : bound;
+  // A conversation THIS call opened is screened (#1088); one the desk already holds is not
+  // re-judged, in either queue — a thread the desk accepted stays accepted, and a held one
+  // stays held until a person decides.
+  return hold.kind === 'session' && conversation.id === hold.conversation.id
+    ? conversation
+    : screenAtTheDoor(ctx, conversation, body);
 }
 
 /**
@@ -2628,7 +2915,8 @@ function publicThread(
 const CONVERSATION_COLUMNS = `c.id, c.contact_id, c.channel, c.subject, c.state, c.assignee,
   c.priority, c.snoozed_until, c.snoozed_at, c.snoozed_ms, c.first_public_reply_at,
   c.first_assigned_at, c.resolved_at, c.first_response_due_at, c.resolution_due_at, c.first_response_breached_at,
-  c.resolution_breached_at, c.merged_into, c.follows, c.created_at, c.updated_at`;
+  c.resolution_breached_at, c.merged_into, c.follows, c.created_at, c.updated_at,
+  c.quarantine, c.suspended_at, c.suspicion`;
 
 // ---------------------------------------------------------------------------
 // Pricing - the vertical's, never the ledger's
@@ -3492,6 +3780,13 @@ const operations = {
       sql += ` AND c.${key} = ?`;
       params.push(value);
     }
+    // Every queue unless one is named (#1088) — the held message is often the one being
+    // looked for. Each row says which queue it is in.
+    if (input.queue === 'inbox') sql += ` AND ${inTheInbox('c')}`;
+    else if (input.queue !== undefined) {
+      sql += ' AND c.quarantine = ?';
+      params.push(input.queue);
+    }
     // Newest first by default, and the caller's `?order=` honoured — see the note on
     // `search-contacts` for why an advertised direction is not optional to obey.
     const desc = (input.order ?? 'desc') === 'desc';
@@ -3521,6 +3816,11 @@ const operations = {
     if (input.state === undefined && input.include_closed !== true) {
       filters['state'] = OPEN_STATES;
     }
+    // Which queue, always (#1088): absent is the inbox, whatever `state` or
+    // `include_closed` asked, so `state=new` means the new conversations the desk
+    // accepted and never the junk held beside them. `null` is how the walk says
+    // `quarantine IS NULL` — the same predicate `inTheInbox()` spells for the sweeps.
+    filters['quarantine'] = input.queue === undefined || input.queue === 'inbox' ? null : input.queue;
     return ctx.page<ConversationRow>('conversation', {
       ...input,
       filters,
@@ -4166,6 +4466,7 @@ const operations = {
     const due = ctx.sql.query<ConversationRow>(
       `SELECT * FROM ticket0_conversations
         WHERE state = 'snoozed'
+          AND ${inTheInbox()}
           AND ${canonicalInstant('snoozed_until')}
           AND snoozed_until <= ?
         ORDER BY snoozed_until LIMIT ?`,
@@ -4311,6 +4612,126 @@ const operations = {
     return { reaped: abandoned.length };
   },
 
+  // --- The suspended queue (#1088) -----------------------------------------
+
+  /**
+   * The queue, newest first, with what a person needs to decide without opening each
+   * row: the sender, the signals, and the start of the first thing they wrote. One
+   * statement, over the partial index migration 0021 keeps for exactly this queue.
+   * `substr` cuts the excerpt in SQL so a ten-megabyte mail is not read to show a line.
+   */
+  'ticket0/list-suspended': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    const desc = (input.order ?? 'desc') === 'desc';
+    const params: SqlValue[] = [SUSPENDED_EXCERPT_CHARS];
+    let sql = `SELECT c.id, c.channel, c.subject, c.contact_id, k.email AS contact_email,
+                      k.display_name AS contact_name, c.suspended_at, c.suspicion,
+                      c.created_at, c.updated_at,
+                      (SELECT substr(m.body_text, 1, ?) FROM ticket0_messages m
+                        WHERE m.conversation_id = c.id AND m.visibility = 'public'
+                          AND m.author_kind = 'contact'
+                        ORDER BY m.id LIMIT 1) AS excerpt,
+                      (SELECT COUNT(*) FROM ticket0_messages m WHERE m.conversation_id = c.id)
+                        AS messages
+                 FROM ticket0_conversations c
+                 JOIN ticket0_contacts k ON k.id = c.contact_id
+                WHERE c.quarantine = 'suspended'`;
+    if (input.cursor) {
+      sql += desc ? ' AND c.id < ?' : ' AND c.id > ?';
+      params.push(input.cursor);
+    }
+    sql += ` ORDER BY c.id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
+    params.push(limit);
+    const rows = ctx.sql.query<{
+      id: string;
+      channel: ConversationRow['channel'];
+      subject: string;
+      contact_id: string;
+      contact_email: string | null;
+      contact_name: string | null;
+      suspended_at: string | null;
+      suspicion: string | null;
+      excerpt: string | null;
+      messages: number;
+      created_at: string;
+      updated_at: string;
+    }>(sql, params);
+    return pageOf(
+      rows.map(({ suspicion, ...row }) => ({
+        ...row,
+        reasons: suspicionOfRow({ suspicion }),
+        messages: Number(row.messages),
+      })),
+      limit,
+      (row) => row.id,
+    );
+  },
+
+  'ticket0/suspend': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    return suspendConversation(ctx, conversationOrThrow(ctx, input.conversationId), ['marked']);
+  },
+
+  /**
+   * "Not spam". `step()` is what keeps it to a `new` conversation — the only state the
+   * queue holds — and clearing `quarantine` is the whole restore, so it is lossless by
+   * construction. `updated_at` is touched: the reaper measures silence, and the desk has
+   * only just seen this one.
+   */
+  'ticket0/restore': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/restore');
+    // Already in the inbox: the same decision made twice, not a conflict.
+    if (conversation.quarantine !== 'suspended') return conversation;
+    ctx.sql.exec('UPDATE ticket0_conversations SET quarantine = NULL WHERE id = ?', [conversation.id]);
+    const row = touch(ctx, conversation.id);
+    ctx.log.info('conversation {conversationId} restored to the inbox', { conversationId: row.id });
+    ctx.emit({
+      type: 'ticket0.conversation-restored',
+      schemaVersion: 1,
+      entity: conversationRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, state: row.state, suspicion: row.suspicion },
+    });
+    return row;
+  },
+
+  'ticket0/discard': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationDiscard, conversationRef(input.conversationId)),
+    );
+    return discardConversation(ctx, conversationOrThrow(ctx, input.conversationId), 'ticket0/discard');
+  },
+
+  /**
+   * All or nothing, and checked before anything is destroyed: every id is found, is the
+   * caller's to discard (the per-conversation check `ticket0/discard` makes), and is
+   * suspended — or the call refuses, naming the first that is not, and has written
+   * nothing. Then each is discarded through the one body, so each publishes its own
+   * events. A repeated id is the same conversation selected twice, and counted once.
+   */
+  'ticket0/discard-suspended': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDiscard));
+    const ids = [...new Set(input.conversationIds)];
+    const conversations: ConversationRow[] = [];
+    for (const id of ids) {
+      assertAllowed(await ctx.check(T0_PERM.conversationDiscard, conversationRef(id)));
+      const conversation = conversationOrThrow(ctx, id);
+      heldOrThrow(conversation, 'ticket0/discard-suspended');
+      conversations.push(conversation);
+    }
+    for (const conversation of conversations) {
+      discardConversation(ctx, conversation, 'ticket0/discard-suspended');
+    }
+    return { discarded: ids };
+  },
+
   'ticket0/merge': async (ctx, input) => {
     assertAllowed(
       await ctx.check(T0_PERM.conversationMerge, conversationRef(input.conversationId)),
@@ -4324,6 +4745,16 @@ const operations = {
     // of the loser, and one check would let a caller fold a conversation into one
     // they cannot see.
     assertAllowed(await ctx.check(T0_PERM.conversationMerge, conversationRef(survivor.id)));
+    // The loser's queue is `step()`'s business; the survivor's is checked here (#1088).
+    // Folding an accepted thread into a held or discarded one would hide it from the inbox
+    // — or, for a discarded one, put fresh words inside a tombstone.
+    if (survivor.quarantine !== null) {
+      throw substratError(
+        'conflict',
+        `conversation ${survivor.id} is ${survivor.quarantine} — merge into a conversation in the inbox`,
+        { reason: 'survivor_not_in_inbox' },
+      );
+    }
 
     /**
      * Same person, or not at all.
@@ -5233,6 +5664,7 @@ const operations = {
     const channels = ctx.sql.query<{ channel: 'widget' | 'email'; opened: number; resolved: number }>(
       `SELECT channel,
               SUM(CASE WHEN created_at >= ? AND created_at <= ? AND merged_into IS NULL
+                            AND ${inTheInbox()}
                        THEN 1 ELSE 0 END) AS opened,
               SUM(CASE WHEN resolved_at IS NOT NULL AND resolved_at >= ? AND resolved_at <= ?
                        THEN 1 ELSE 0 END) AS resolved
@@ -5265,11 +5697,20 @@ const operations = {
     // Backlog is a fact about NOW and deliberately ignores the window: what is waiting
     // does not care which dates the reader picked. `new` counts as open — nobody has
     // touched it, which is the worst kind of open there is.
-    const backlogCounts = ctx.sql.query<{ open: number; snoozed: number; unassigned: number }>(
-      `SELECT SUM(CASE WHEN state IN ('new', 'open') THEN 1 ELSE 0 END) AS open,
-              SUM(CASE WHEN state = 'snoozed' THEN 1 ELSE 0 END) AS snoozed,
-              SUM(CASE WHEN state IN ('new', 'open') AND assignee IS NULL THEN 1 ELSE 0 END)
-                AS unassigned
+    //
+    // The suspended queue is counted apart (#1088): junk is not backlog, so a spam run
+    // must not read as the desk falling behind, and every other count here is the inbox's.
+    const backlogCounts = ctx.sql.query<{
+      open: number;
+      snoozed: number;
+      unassigned: number;
+      suspended: number;
+    }>(
+      `SELECT SUM(CASE WHEN state IN ('new', 'open') AND ${inTheInbox()} THEN 1 ELSE 0 END) AS open,
+              SUM(CASE WHEN state = 'snoozed' AND ${inTheInbox()} THEN 1 ELSE 0 END) AS snoozed,
+              SUM(CASE WHEN state IN ('new', 'open') AND assignee IS NULL AND ${inTheInbox()}
+                       THEN 1 ELSE 0 END) AS unassigned,
+              SUM(CASE WHEN quarantine = 'suspended' THEN 1 ELSE 0 END) AS suspended
          FROM ticket0_conversations
         WHERE merged_into IS NULL`,
     )[0];
@@ -5278,7 +5719,7 @@ const operations = {
     const oldest = ctx.sql.query<{ id: string; seconds: number }>(
       `SELECT id, ${elapsed('updated_at', '?')} AS seconds
          FROM ticket0_conversations
-        WHERE state IN ('new', 'open') AND merged_into IS NULL
+        WHERE state IN ('new', 'open') AND merged_into IS NULL AND ${inTheInbox()}
         ORDER BY updated_at ASC, id ASC
         LIMIT 1`,
       [now],
@@ -5360,6 +5801,7 @@ const operations = {
         unassigned: Number(backlogCounts?.unassigned ?? 0),
         oldestUntouchedId: oldest?.id ?? null,
         oldestUntouchedAgeSeconds: oldest ? Number(oldest.seconds) : null,
+        suspended: Number(backlogCounts?.suspended ?? 0),
       },
       agents,
       csat: {
@@ -5441,20 +5883,25 @@ const operations = {
     // carries no contact of its own. The two paths agree rather than differ. (Binding by
     // `In-Reply-To` is the one path that does compare addresses — see `threadRepliedTo`
     // — because there the sender chose the thread, not the relay.)
-    const conversation =
+    const landed =
       bound.state === 'closed'
         ? followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), input.subject)
         : bound;
     // How the mail found its conversation — the first question when one lands in the
     // wrong place.
     const binding =
-      conversation.id !== bound.id
+      landed.id !== bound.id
         ? 'a follow-up to a closed conversation'
         : input.conversationId
           ? 'the conversation it named'
           : threaded
             ? 'the thread it replied to'
             : 'a new conversation';
+    // The spam filter (#1088), for a conversation this mail OPENED — a new one or a
+    // follow-up. Mail into a thread the desk already holds is not re-judged, in either
+    // queue. Read before the message is written, so the repeat count is of OTHER mail.
+    const opened = binding === 'a new conversation' || landed.id !== bound.id;
+    const conversation = opened ? screenAtTheDoor(ctx, landed, input.bodyText) : landed;
     ctx.log.info('mail ingested into {conversationId} as {binding}', { conversationId: conversation.id, binding });
 
     const next = step(conversation, 'ticket0/ingest-message');
@@ -5743,7 +6190,7 @@ const operations = {
     refuseIfBlockedVisitor(ctx, hold);
     // The first message opens the conversation, every later one finds it bound — and a
     // conversation an agent has closed hands over to the follow-up that continues it.
-    const conversation = heldConversation(ctx, input.sessionId, hold);
+    const conversation = heldConversation(ctx, input.sessionId, hold, input.body);
     const next = step(conversation, 'ticket0/widget-post');
     const row = writeMessage(ctx, {
       conversationId: conversation.id,
@@ -5755,7 +6202,9 @@ const operations = {
     settle(ctx, conversation, next);
     notifyHolder(ctx, conversation, 'replied');
     ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
-    return row;
+    // What the widget surface reads before it hands this message to the assistant: a
+    // held conversation is never answered, so the inference is never spent (#1088).
+    return { ...row, suspended: conversation.quarantine === 'suspended' };
   },
 
   /**
@@ -5777,8 +6226,31 @@ const operations = {
     // The same refusal as `widget-post`, for the same visitor — this door writes two
     // messages and notifies the desk, so it is the more expensive one to leave open.
     refuseIfBlockedVisitor(ctx, hold);
-    const conversation = heldConversation(ctx, input.sessionId, hold);
+    const conversation = heldConversation(ctx, input.sessionId, hold, input.body ?? '');
     const next = step(conversation, 'ticket0/request-human');
+
+    /**
+     * Held in the suspended queue (#1088): the visitor's words are written, as
+     * `widget-post` would write them, and that is all. No acknowledgement — it promises
+     * that "someone from the team will reply", which nobody has agreed to — and no
+     * notification, because a sender the filter held must not be able to page the whole
+     * desk with a button. A restore puts the conversation, and this message, in the
+     * inbox where every person sees it.
+     */
+    if (conversation.quarantine === 'suspended') {
+      const said = input.body
+        ? writeMessage(ctx, {
+            conversationId: conversation.id,
+            authorKind: 'contact',
+            authorPrincipal: null,
+            visibility: 'public',
+            bodyText: input.body,
+          })
+        : lastCustomerMessage(ctx, conversation.id);
+      settle(ctx, conversation, next);
+      if (input.body) ctx.emit(messageEvent(said, 'ticket0.message-ingested'));
+      return { ...said, notified: 0 };
+    }
 
     /**
      * The visitor's own words, when they are not already in the thread.

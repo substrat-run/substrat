@@ -527,4 +527,53 @@ export const ticket0Migrations: SqlMigration[] = [
        );
     `,
   },
+  {
+    // add-ticket0_conversations-quarantine-and-narrow-live-indexes
+    version: '0021',
+    sql: `
+      ALTER TABLE ticket0_conversations ADD COLUMN quarantine TEXT CHECK (quarantine IN ('suspended','discarded'));
+
+      ALTER TABLE ticket0_conversations ADD COLUMN suspended_at TEXT;
+
+      ALTER TABLE ticket0_conversations ADD COLUMN suspicion TEXT;
+
+      -- HAND-WRITTEN below this line (#1088). The partial indexes that hold a desk's LIVE work
+      -- now hold the inbox's live work only: a suspended conversation keeps state 'new', so
+      -- without this term every sweep would read it, and a spam run would sit at the head of
+      -- round-robin's scan on every tick. Each WHERE is the old one plus the shared predicate
+      -- (inTheInbox() in spec/model.ts), so a query that states it still implies it.
+      -- NULL is the inbox, so a row an older version writes lands in every one of them.
+
+      DROP INDEX ticket0_conversations_waiting;
+
+      CREATE INDEX ticket0_conversations_waiting ON ticket0_conversations (assignee, created_at, id)
+        WHERE assignee IS NULL AND first_assigned_at IS NULL AND state IN ('new', 'open') AND merged_into IS NULL AND quarantine IS NULL;
+
+      DROP INDEX ticket0_conversations_first_response_running;
+
+      CREATE INDEX ticket0_conversations_first_response_running ON ticket0_conversations (first_response_breached_at, first_response_due_at, id)
+        WHERE first_response_due_at IS NOT NULL AND first_response_breached_at IS NULL AND first_public_reply_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL AND quarantine IS NULL;
+
+      DROP INDEX ticket0_conversations_resolution_running;
+
+      CREATE INDEX ticket0_conversations_resolution_running ON ticket0_conversations (resolution_breached_at, resolution_due_at, id)
+        WHERE resolution_due_at IS NOT NULL AND resolution_breached_at IS NULL AND resolved_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL AND snoozed_at IS NULL AND quarantine IS NULL;
+
+      DROP INDEX ticket0_conversations_untagged;
+
+      CREATE INDEX ticket0_conversations_untagged ON ticket0_conversations (auto_tagged_at, created_at, id)
+        WHERE auto_tagged_at IS NULL AND state IN ('new', 'open', 'snoozed') AND merged_into IS NULL AND quarantine IS NULL;
+
+      DROP INDEX ticket0_conversations_no_reply_candidate;
+
+      CREATE INDEX ticket0_conversations_no_reply_candidate
+        ON ticket0_conversations (no_reply_candidate_at, id)
+        WHERE no_reply_candidate_at IS NOT NULL AND state IN ('new', 'open') AND merged_into IS NULL AND quarantine IS NULL;
+
+      -- The suspended queue itself, newest first by id. Partial, so it holds the queue and
+      -- nothing else: it is empty on every desk that never switches the filter on.
+      CREATE INDEX ticket0_conversations_suspended ON ticket0_conversations (id)
+        WHERE quarantine = 'suspended';
+    `,
+  },
 ];

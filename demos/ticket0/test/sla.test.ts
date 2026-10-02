@@ -1224,7 +1224,7 @@ describe('the scans are indexed, because they run on every tick', () => {
       const where = (index: string) =>
         (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(index) as { sql: string })
           .sql;
-      expect(where('ticket0_conversations_resolution_running')).toMatch(/AND snoozed_at IS NULL$/);
+      expect(where('ticket0_conversations_resolution_running')).toMatch(/AND snoozed_at IS NULL AND quarantine IS NULL$/);
       expect(where('ticket0_conversations_first_response_running')).not.toMatch(/snoozed_at/);
     } finally {
       db.close();

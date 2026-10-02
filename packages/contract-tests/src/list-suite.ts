@@ -88,11 +88,11 @@ export function listContractSuite(
       // by number agree — which makes a DISAGREEMENT in the status walk meaningful.
       const rows = [
         { id: '01A', number: '1001', status: 'open', kind: 'repair' },
-        { id: '01B', number: '1002', status: 'open', kind: 'repair' },
+        { id: '01B', number: '1002', status: 'open', kind: 'repair', hold: 'held' },
         { id: '01C', number: '1003', status: 'open', kind: 'service' },
         { id: '01D', number: '1004', status: 'closed', kind: 'repair' },
         { id: '01E', number: '1005', status: 'open', kind: 'service' },
-        { id: '01F', number: '1006', status: 'closed', kind: 'service' },
+        { id: '01F', number: '1006', status: 'closed', kind: 'service', hold: 'held' },
       ];
       for (const r of rows) await stub.invoke('list/add', r);
     });
@@ -166,6 +166,23 @@ export function listContractSuite(
      * "every status but `closed`" is four equalities, and four requests cannot be
      * paged as one list.
      */
+    /**
+     * `null` is the rows holding no value (#1088). It used to compose `hold = NULL`,
+     * which is never true, so the read answered an empty page that looked like "none
+     * match" while four rows did. The count follows the same `WHERE`, and the value
+     * filter beside it still means its own rows only.
+     */
+    it('filters on null as IS NULL, through the whole walk and the count', async () => {
+      const seen = await walkAll({ filters: { hold: null } }, 1);
+      expect(seen).toEqual(['01A', '01C', '01D', '01E']);
+      const counted = (await page({ limit: 1, filters: { hold: null }, total: true })) as CountedPage<Row>;
+      expect(counted.total).toBe(4);
+      const held = await walkAll({ filters: { hold: 'held' } }, 1);
+      expect(held).toEqual(['01B', '01F']);
+      const both = await walkAll({ filters: { hold: null, status: 'open' } }, 1);
+      expect(both).toEqual(['01A', '01C', '01E']);
+    });
+
     it('filters on a SET of values, and the set survives the whole walk', async () => {
       const seen = await walkAll({ filters: { status: ['open', 'closed'] } }, 2);
       expect(seen).toEqual(['01A', '01B', '01C', '01D', '01E', '01F']);

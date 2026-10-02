@@ -546,6 +546,40 @@
           },
           "updated_at": {
             "type": "string"
+          },
+          "quarantine": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "suspended",
+                  "discarded"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suspended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suspicion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -574,7 +608,10 @@
           "merged_into",
           "follows",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "quarantine",
+          "suspended_at",
+          "suspicion"
         ],
         "additionalProperties": false
       },
@@ -1643,6 +1680,8 @@
           "on": {
             "ticket0/assign": "open",
             "ticket0/close": "closed",
+            "ticket0/discard": "closed",
+            "ticket0/discard-suspended": "closed",
             "ticket0/post-public-reply": "open",
             "ticket0/reap-abandoned": "closed",
             "ticket0/resolve": "resolved"
@@ -1654,7 +1693,9 @@
             "ticket0/record-answer",
             "ticket0/record-assistant-failure",
             "ticket0/request-human",
+            "ticket0/restore",
             "ticket0/set-priority",
+            "ticket0/suspend",
             "ticket0/tag-conversation",
             "ticket0/untag-conversation",
             "ticket0/widget-post"
