@@ -29,7 +29,7 @@ import { ticket0Manifest } from '../src/manifest.js';
 import { MODULES } from '../src/provision.js';
 import { DELIVERY_DISCARDED } from '../src/module.js';
 import { signIdentity } from '../src/seed.js';
-import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX } from '../spec/model.js';
+import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX, ticket0Operations } from '../spec/model.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from './before-0021.js';
 import { createKit, ORIGIN, type ConversationRead, type Desk } from './desk-kit.js';
 
@@ -279,6 +279,103 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
     await a.invoke('ticket0/post-note', { conversationId: id, body: 'note' });
     await a.invoke('ticket0/assign', { conversationId: id, assignee: d.agents[0] });
     expect((await read(d, id)).state).toBe('open');
+  });
+
+  /**
+   * The reviewer's repro (Codex round 1, #1973): following is not in the lifecycle, so it
+   * never passed through `step()`, and an agent could hand a narrowly granted colleague
+   * a read of a held thread. The guest holds `conversation:draft` and nothing else, so a
+   * follow is the whole of what they can see.
+   */
+  it('refuses a new follow on a held conversation, and lets a guest follow an accepted one', async () => {
+    const d = await filtered({ agents: 1 });
+    const guest = await kit.guest(d);
+    const agent = await kit.as(d, d.agents[0]!);
+    const asGuest = await kit.as(d, guest);
+    const held = (await visitor(d, linky(4, 'follow'))).conversationId;
+    await expect(agent.invoke('ticket0/follow-conversation', { conversationId: held, follower: guest })).rejects.toMatchObject(
+      conflict('suspended'),
+    );
+    await expect(asGuest.invoke('ticket0/list-messages', { conversationId: held })).rejects.toThrow(/denied/i);
+
+    const kept = (await visitor(d, 'How do I rotate a key?')).conversationId;
+    await agent.invoke('ticket0/follow-conversation', { conversationId: kept, follower: guest });
+    expect(((await asGuest.invoke('ticket0/list-messages', { conversationId: kept })) as Page<Message>).entries).toHaveLength(1);
+    // Unfollow stays open while held: taking access away is always safe to allow.
+    await agent.invoke('ticket0/suspend', { conversationId: kept });
+    await agent.invoke('ticket0/unfollow-conversation', { conversationId: kept, follower: guest });
+    await expect(asGuest.invoke('ticket0/list-messages', { conversationId: kept })).rejects.toThrow(/denied/i);
+  });
+
+  /**
+   * Every operation whose input names a conversation, classified — and the classification
+   * is checked against the model, so an operation added tomorrow fails here until somebody
+   * says which kind it is. Each WORK operation is then invoked on a held conversation and
+   * must be refused by the queue's rule, by name.
+   */
+  it('refuses every operation that works a conversation, and the list is the model’s whole list', async () => {
+    const READS = ['get-conversation', 'list-messages', 'widget-session', 'get-csat', 'list-conversation-tags',
+      'render-saved-reply', 'list-turns', 'usage-summary', 'my-messages'];
+    // The ways out of the queue, the customer's own door, and the one write that only
+    // ever narrows access.
+    const ALLOWED = ['suspend', 'restore', 'discard', 'discard-suspended', 'ingest-message', 'unfollow-conversation'];
+    // `submit-csat` is the customer's, legal only on a RESOLVED conversation, which a held
+    // one never is — refused by the lifecycle before the queue, and not invoked here.
+    const LIFECYCLE_ONLY = ['submit-csat'];
+    const d = await filtered({ agents: 1 });
+    const guest = await kit.guest(d);
+    const a = await admin(d);
+    const held = (await visitor(d, linky(4, 'audit'))).conversationId;
+    const other = await kit.mail(d, { body: 'another' });
+    const reply = (await a.invoke('ticket0/create-saved-reply', { title: 'Canned', body: 'Hello' })) as { id: string };
+    const WORK: Record<string, [string, Record<string, unknown>]> = {
+      'post-note': ['admin', { body: 'note' }],
+      'post-public-reply': ['admin', { body: 'Hi' }],
+      assign: ['admin', { assignee: d.agents[0] }],
+      'set-priority': ['admin', { priority: 'urgent' }],
+      snooze: ['admin', { until: '2099-01-01T00:00:00.000Z' }],
+      wake: ['admin', {}],
+      resolve: ['admin', {}],
+      close: ['admin', {}],
+      merge: ['admin', { intoConversationId: other }],
+      'tag-conversation': ['admin', { tag: 'x' }],
+      'untag-conversation': ['admin', { tag: 'x' }],
+      'follow-conversation': ['admin', { follower: guest }],
+      'apply-saved-reply': ['admin', { savedReplyId: reply.id }],
+      'record-answer': ['admin', {
+        turnId: 'audit-turn', model: 'offline/extractive', body: 'draft', inputTokens: 0, outputTokens: 0,
+        citedArticleIds: [], outcome: 'drafted',
+      }],
+      'record-assistant-failure': ['widget', { turnId: 'audit-fail', model: 'offline/extractive', error: 'down' }],
+    };
+    const named = Object.entries(ticket0Operations)
+      .filter(([, op]) => Object.keys((op as { input?: { shape?: object } }).input?.shape ?? {}).some((k) => /^conversationIds?$/.test(k)))
+      .map(([name]) => name.replace(/^ticket0\//, ''))
+      .sort();
+    expect(named).toEqual([...READS, ...ALLOWED, ...LIFECYCLE_ONLY, ...Object.keys(WORK)].sort());
+
+    for (const [op, [who, input]] of Object.entries(WORK)) {
+      const stub = who === 'widget' ? await kit.as(d, d.widget) : a;
+      await expect(stub.invoke(`ticket0/${op}`, { conversationId: held, ...input }), op).rejects.toMatchObject(
+        conflict('suspended'),
+      );
+    }
+    expect(await messages(d, held)).toHaveLength(1);
+  });
+
+  it('never offers the relay mail to send into a held conversation', async () => {
+    // No operation can leave a pending reply on a held conversation — a public reply is
+    // refused while held and moves a `new` one to `open` otherwise — so the row is placed
+    // by hand. The predicate is defence in depth, and this is its proof.
+    const d = await kit.freshDesk({ agents: 0 });
+    const a = await admin(d);
+    const relay = await kit.as(d, d.relay);
+    const held = await kit.mail(d, { from: 'h@customer.example', body: 'one' });
+    const kept = await kit.mail(d, { from: 'k@customer.example', body: 'two' });
+    for (const id of [held, kept]) await a.invoke('ticket0/post-public-reply', { conversationId: id, body: 'Answer' });
+    kit.sql(d, (db) => db.prepare("UPDATE ticket0_conversations SET quarantine = 'suspended' WHERE id = ?").run(held));
+    const pending = (await relay.invoke('ticket0/list-pending-outbound', {})) as Page<{ conversationId: string }>;
+    expect(pending.entries.map((p) => p.conversationId)).toEqual([kept]);
   });
 
   it('cannot be merged into, and cannot be merged away, while held', async () => {
@@ -630,6 +727,23 @@ describe('discard destroys the content — completely, only what is suspended, o
       emailMessageId: '<sent-1@desk.example>',
     })) as { id: string };
     expect(looped.id).toBe(reply.id);
+  });
+
+  it('revokes every follow on the conversation it discards, and leaves a follow elsewhere standing', async () => {
+    const d = await filtered({ agents: 1 });
+    const guest = await kit.guest(d);
+    const a = await admin(d);
+    const asGuest = await kit.as(d, guest);
+    const doomed = await kit.mail(d, { from: 'doomed@customer.example', body: 'first' });
+    const kept = await kit.mail(d, { from: 'kept@customer.example', body: 'second' });
+    for (const id of [doomed, kept]) await a.invoke('ticket0/follow-conversation', { conversationId: id, follower: guest });
+    await a.invoke('ticket0/suspend', { conversationId: doomed });
+    await a.invoke('ticket0/discard', { conversationId: doomed });
+    await expect(asGuest.invoke('ticket0/get-conversation', { conversationId: doomed })).rejects.toThrow(/denied/i);
+    await asGuest.invoke('ticket0/get-conversation', { conversationId: kept });
+    expect(
+      kit.sql(d, (db) => db.prepare('SELECT conversation_id FROM ticket0_conversation_follows ORDER BY conversation_id').all()),
+    ).toEqual([{ conversation_id: kept }]);
   });
 
   it('in bulk is all or nothing: one conversation not in the queue refuses the lot', async () => {

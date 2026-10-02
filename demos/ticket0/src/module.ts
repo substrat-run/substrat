@@ -1518,6 +1518,22 @@ function suspendConversation(
 }
 
 /**
+ * Every follow on a conversation, revoked with its ledger row — what a merge does to the
+ * loser and a discard to the tombstone (#1088): neither is a thread anybody should still
+ * be holding a read grant on.
+ */
+async function dropFollowers(ctx: OperationContext, conversationId: string): Promise<void> {
+  const followers = ctx.sql.query<{ principal: string }>(
+    'SELECT principal FROM ticket0_conversation_follows WHERE conversation_id = ? ORDER BY principal',
+    [conversationId],
+  );
+  for (const follower of followers) {
+    await ctx.revoke(principalId.parse(follower.principal), T0_PERM.conversationRead, conversationRef(conversationId));
+  }
+  ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE conversation_id = ?', [conversationId]);
+}
+
+/**
  * Destroy a suspended conversation's content — `ticket0/discard`, once per conversation
  * for the bulk one too, so the trail and the events are per conversation.
  *
@@ -1533,12 +1549,14 @@ function suspendConversation(
  * subject is blanked, because on mail it is the sender's line. The contact and the
  * assistant's turns stay, and the model's `ticket0/discard` says why.
  */
-function discardConversation(
+async function discardConversation(
   ctx: OperationContext,
   conversation: ConversationRow,
   edge: 'ticket0/discard' | 'ticket0/discard-suspended',
-): ConversationRow {
+): Promise<ConversationRow> {
   closeConversation(ctx, conversation, edge);
+  // A follow is a read grant on this thread, and a tombstone is no thread to read.
+  await dropFollowers(ctx, conversation.id);
   for (const table of [
     'ticket0_messages',
     'ticket0_conversation_tags',
@@ -4753,7 +4771,7 @@ const operations = {
     assertAllowed(
       await ctx.check(T0_PERM.conversationDiscard, conversationRef(input.conversationId)),
     );
-    return discardConversation(ctx, conversationOrThrow(ctx, input.conversationId), 'ticket0/discard');
+    return await discardConversation(ctx, conversationOrThrow(ctx, input.conversationId), 'ticket0/discard');
   },
 
   /**
@@ -4768,7 +4786,7 @@ const operations = {
     const ids = [...new Set(input.conversationIds)];
     for (const id of ids) {
       assertAllowed(await ctx.check(T0_PERM.conversationDiscard, conversationRef(id)));
-      discardConversation(ctx, conversationOrThrow(ctx, id), 'ticket0/discard-suspended');
+      await discardConversation(ctx, conversationOrThrow(ctx, id), 'ticket0/discard-suspended');
     }
     return { discarded: ids };
   },
@@ -4822,14 +4840,7 @@ const operations = {
     // messages. Remove the grant and its ledger row together with the merge. The ledger
     // includes follows that predate it (migration 0019), so old grants are covered too.
     const loserRef = conversationRef(conversation.id);
-    const followers = ctx.sql.query<{ principal: string }>(
-      'SELECT principal FROM ticket0_conversation_follows WHERE conversation_id = ? ORDER BY principal',
-      [conversation.id],
-    );
-    for (const follower of followers) {
-      await ctx.revoke(principalId.parse(follower.principal), T0_PERM.conversationRead, loserRef);
-    }
-    ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE conversation_id = ?', [conversation.id]);
+    await dropFollowers(ctx, conversation.id);
 
     ctx.sql.exec('UPDATE ticket0_conversations SET merged_into = ?, updated_at = ? WHERE id = ?', [
       survivor.id,
@@ -5000,6 +5011,11 @@ const operations = {
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
+    // Following is not in the lifecycle — it moves nothing — so it does not pass through
+    // `step()`, and the queue's rule is asked of it directly (#1088): a new read grant on
+    // a conversation the desk has not accepted is the desk handing junk to a colleague.
+    // Unfollow stays open, because removing access is always safe to allow.
+    heldOrThrow(conversation, 'ticket0/follow-conversation');
     // Before the grant, not after: a durable read handed to a principal this desk
     // cannot name is the failure the directory exists to stop, and it is one nobody
     // would see — the grant confers access and leaves no row anyone lists.
@@ -6019,7 +6035,8 @@ const operations = {
                 WHERE m.visibility = 'public'
                   AND m.author_kind <> 'contact'
                   AND m.delivered_at IS NULL
-                  AND c.channel = 'email'`;
+                  AND c.channel = 'email'
+                  AND ${inTheInbox('c')}`;
     if (input.cursor) {
       sql += desc ? ' AND m.id < ?' : ' AND m.id > ?';
       params.push(input.cursor);
