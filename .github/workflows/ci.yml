@@ -229,9 +229,10 @@ jobs:
       # asserted it had both. This checks both directions: a file that SAYS it is
       # generated carries the suffix, and a file NAMED generated says by what.
       - run: pnpm lint:generated-marks
-      # Union fixtures include historical defects and aggregate --check refusal.
+      # Union and parity fixtures include historical defects and aggregate --check refusal.
       - run: |
           pnpm test:docs-union
+          pnpm test:docs-parity
           pnpm lint:docs --check
       # The machine-readable-docs checkpoint (#751). llms.txt is emitted from the
       # sidebar, so a page nobody added there is invisible to every agent while
