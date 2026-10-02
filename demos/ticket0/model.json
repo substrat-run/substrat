@@ -240,6 +240,9 @@
       "key": [
         "kind",
         "value"
+      ],
+      "outsideText": [
+        "value"
       ]
     },
     "contact": {
@@ -620,6 +623,9 @@
       },
       "parents": [
         "contact"
+      ],
+      "outsideText": [
+        "subject"
       ]
     },
     "conversationFollow": {
@@ -854,6 +860,11 @@
       "key": [
         "source_id",
         "url"
+      ],
+      "outsideText": [
+        "body",
+        "heading_path",
+        "title"
       ]
     },
     "kbSource": {
@@ -968,6 +979,9 @@
       },
       "key": [
         "url"
+      ],
+      "outsideText": [
+        "last_error"
       ]
     },
     "mailDelivery": {
@@ -1540,6 +1554,9 @@
       },
       "key": [
         "token_hash"
+      ],
+      "outsideText": [
+        "user_agent"
       ]
     },
     "widgetSession": {
@@ -1713,6 +1730,9 @@
       ],
       "key": [
         "token_hash"
+      ],
+      "outsideText": [
+        "user_agent"
       ]
     }
   },

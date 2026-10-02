@@ -28,6 +28,12 @@ const entities = defineEntities({
   },
   /** Deliberately has a `name` that is NOT erasable — a company inbox, not a person. */
   office: { table: 't_office', fields: z.object({ id: z.string(), name: z.string() }) },
+  /** A remote's error text: not a person's, so not erasable — and still not for an event. */
+  source: {
+    table: 't_source',
+    fields: z.object({ id: z.string(), url: z.string(), last_error: z.string() }),
+    outsideText: ['last_error'],
+  },
 });
 
 const PERMS = ['customer:manage', 'customer:amounts', 'contract:write'] as const;
@@ -330,6 +336,42 @@ ops({
       piiClass: 'none',
       // @ts-expect-error 'name' is @erasable on customer — events outlive erasure
       payload: ['id', 'name'],
+    },
+  },
+});
+
+// --- an outsideText field cannot ride either (#1088) --------------------------
+ops({
+  'source/fail': {
+    summary: 's',
+    permission: 'customer:manage',
+    input: z.object({}),
+    output: z.object({ id: z.string(), url: z.string(), last_error: z.string() }),
+    emits: {
+      entity: 'source',
+      entityIdFrom: 'id',
+      type: 'x.source-failed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      // @ts-expect-error 'last_error' is outsideText on source — an event outlives the row's cleanup
+      payload: ['id', 'url', 'last_error'],
+    },
+  },
+});
+// ...and the same event without it is fine: the marker refuses one field, not the event.
+ops({
+  'source/fail': {
+    summary: 's',
+    permission: 'customer:manage',
+    input: z.object({}),
+    output: z.object({ id: z.string(), url: z.string(), last_error: z.string() }),
+    emits: {
+      entity: 'source',
+      entityIdFrom: 'id',
+      type: 'x.source-failed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'url'],
     },
   },
 });

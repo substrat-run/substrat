@@ -85,6 +85,19 @@ export interface EntityDef<Names extends string = string> {
   /** Fields an erasure must be able to reach (§12). Must name fields that exist. */
   readonly erasable?: readonly string[];
   /**
+   * Text written by someone outside the module that is NOT the subject's personal data,
+   * and so not `erasable`: a provider's or a remote site's error, a subject line a sender
+   * typed, a fetched document, a raw `User-Agent`. Must name fields that exist.
+   *
+   * It may sit on its row, and may never ride an event, for `erasable`'s reason: an event
+   * is immutable, and a copy in one outlives every cleanup the module can do to the row —
+   * including deleting the content it quotes. So it is refused in an `emits.payload`
+   * exactly as an erasable field is, at compile time. Kept apart from `erasable` because
+   * the two answer different questions: what an erasure must reach is a statement about
+   * a person, and this is a statement about who wrote the text.
+   */
+  readonly outsideText?: readonly string[];
+  /**
    * Fields that used to be called something else — `{ current: previous }`.
    *
    * **The one thing a migration diff cannot derive.** A diff sees a field gone
@@ -162,6 +175,7 @@ export function defineEntities<
       primaryKey?: readonly EntityFields<T[K]>[];
       key?: readonly EntityFields<T[K]>[];
       erasable?: readonly EntityFields<T[K]>[];
+      outsideText?: readonly EntityFields<T[K]>[];
       // Keys are CURRENT field names — the thing being renamed TO. The values
       // are historical and name nothing that still exists, so they stay strings.
       //
@@ -259,6 +273,7 @@ export interface EmittedEntity {
   readonly primaryKey?: readonly string[];
   readonly key?: readonly string[];
   readonly erasable?: readonly string[];
+  readonly outsideText?: readonly string[];
 }
 
 export interface EmittedModel {
@@ -330,6 +345,7 @@ export const emittedEntity = z.object({
   primaryKey: z.array(z.string()).optional(),
   key: z.array(z.string()).optional(),
   erasable: z.array(z.string()).optional(),
+  outsideText: z.array(z.string()).optional(),
 });
 
 export const emittedExport = z.object({
@@ -392,6 +408,7 @@ export function emitModel<T extends Record<string, EntityDef>>(
       ...(primaryKeyOf(name, e).join() === 'id' ? {} : { primaryKey: primaryKeyOf(name, e) }),
       ...(e.key ? { key: [...e.key].sort() } : {}),
       ...(e.erasable ? { erasable: [...e.erasable].sort() } : {}),
+      ...(e.outsideText ? { outsideText: [...e.outsideText].sort() } : {}),
     };
   }
   const lifecycles = options.lifecycles ? emitLifecycles(options.lifecycles) : undefined;

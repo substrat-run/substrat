@@ -20,16 +20,18 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import Database from 'better-sqlite3';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, scopeId, tenantId, type CountedPage, type Page } from '@substrat-run/contracts';
+import { platformActorId, scopeId, tenantId, type CountedPage, type Page, type PrincipalId } from '@substrat-run/contracts';
 import { ulid, type ScopeStub } from '@substrat-run/kernel';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 import { ticket0Manifest } from '../src/manifest.js';
 import { MODULES } from '../src/provision.js';
 import { DELIVERY_DISCARDED } from '../src/module.js';
-import { signIdentity } from '../src/seed.js';
-import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX, ticket0Operations } from '../spec/model.js';
+import { buildHost, seed, signIdentity } from '../src/seed.js';
+import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX, ticket0Entities, ticket0Operations } from '../spec/model.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from './before-0021.js';
 import { createKit, ORIGIN, type ConversationRead, type Desk } from './desk-kit.js';
 
@@ -1102,39 +1104,124 @@ describe('migration 0021 on an existing desk', () => {
 });
 
 /**
- * No event the model declares carries text a customer or a third party wrote (Codex round
- * 3, #1973). An event is immutable and outlives every discard and every erasure, so a
- * payload field naming one of these columns is a copy nothing can take back. Most are
- * `erasable`, which the model already refuses in a payload at load time; the rest are not
- * personal data in the platform's sense — a provider's error, a remote site's error, a
- * subject line — and this is what holds them out. Desk-authored vocabulary (a saved reply,
- * a tag, a source's label, the desk's own settings) is deliberately not on the list: it
- * is the desk's text, and its events are fat on purpose.
+ * No event carries text a customer or a third party wrote (Codex rounds 3–4, #1973). An
+ * event is immutable and outlives every discard and every erasure, so a payload holding
+ * such text is a copy nothing can take back.
+ *
+ * The set is the MODEL's, not a list kept here: every field an entity marks `erasable`
+ * (the subject's personal data) or `outsideText` (a provider's or a site's text, a subject
+ * line, a raw header). A column added tomorrow is covered by marking it where it is
+ * declared, which is also where the compiler refuses it in an `emits.payload`. Two halves:
+ * what the operations DECLARE, and what the desk actually EMITS — every event of a seeded
+ * world and of the queue's own flows, by key and by value.
  */
 describe('events carry no outside text', () => {
-  const OUTSIDE_TEXT = [
-    'message.body_text', 'message.body_html', 'conversation.subject', 'aiTurn.error', 'kbSource.last_error',
-    'contact.email', 'contact.display_name', 'csat.comment', 'signup.email', 'signup.note', 'blockRule.value',
-    'widgetSession.user_agent', 'widgetOpening.user_agent',
-  ];
+  type Def = { table: string; fields: { shape: Record<string, unknown> }; erasable?: readonly string[]; outsideText?: readonly string[] };
+  const defs = ticket0Entities as unknown as Record<string, Def>;
+  const outside = (entity: string): string[] => [...(defs[entity]?.erasable ?? []), ...(defs[entity]?.outsideText ?? [])];
 
-  /** Every declared payload field, as `entity.field`. */
-  const declared = (ops: Record<string, unknown>) =>
+  /** Every declared payload field, as `entity.field`, that the entity marks outside text. */
+  const offending = (ops: Record<string, unknown>) =>
     Object.values(ops).flatMap((op) => {
       const emits = (op as { emits?: { entity: string; type: string; payload?: readonly string[] } }).emits;
-      return emits ? (emits.payload ?? []).map((field) => ({ type: emits.type, column: `${emits.entity}.${field}` })) : [];
+      return emits ? (emits.payload ?? []).filter((f) => outside(emits.entity).includes(f)).map((f) => `${emits.type}: ${emits.entity}.${f}`) : [];
     });
 
-  it('declares no payload field that names one of those columns', () => {
-    expect(declared(ticket0Operations).filter((f) => OUTSIDE_TEXT.includes(f.column))).toEqual([]);
+  it('marks the columns that hold such text, so the set is the model’s', () => {
+    // A floor, not the list: the columns this PR found carrying outside text are marked.
+    for (const [entity, field] of [
+      ['message', 'body_text'], ['aiTurn', 'error'], ['kbSource', 'last_error'], ['conversation', 'subject'],
+      ['blockRule', 'value'], ['kbArticle', 'body'], ['widgetSession', 'user_agent'], ['contact', 'email'],
+    ] as const) {
+      expect(outside(entity), `${entity}.${field}`).toContain(field);
+    }
   });
 
-  it('would catch one: a payload naming such a column is found', () => {
-    // The positive twin of the line above, so the check cannot pass by reading nothing:
-    // kb-ingest-failed as v1 declared it, with the remote's error on the payload.
-    const v1 = { 'ticket0/record-kb-ingest-failure': { emits: { entity: 'kbSource', type: 'ticket0.kb-ingest-failed', payload: ['id', 'url', 'last_error'] } } };
-    expect(declared(v1).filter((f) => OUTSIDE_TEXT.includes(f.column))).toEqual([
-      { type: 'ticket0.kb-ingest-failed', column: 'kbSource.last_error' },
-    ]);
+  it('declares no payload field the model marks as outside text', () => {
+    expect(offending(ticket0Operations)).toEqual([]);
   });
+
+  it('would catch one: a payload naming a marked column is found', () => {
+    // kb-ingest-failed as v1 declared it, with the remote's error on the payload.
+    const v1 = { fail: { emits: { entity: 'kbSource', type: 'ticket0.kb-ingest-failed', payload: ['id', 'url', 'last_error'] } } };
+    expect(offending(v1)).toEqual(['ticket0.kb-ingest-failed: kbSource.last_error']);
+  });
+
+  it('emits none: no event of a seeded world or of the queue’s flows holds a marked field, by key or by value', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ticket0-outside-text-'));
+    try {
+      const host = buildHost(dir);
+      const world = await seed(host);
+      const desk = world.substrat;
+      const as = (p: { principal: PrincipalId }) => host.getScope(p.principal, desk.tenant, desk.scope);
+      const admin = await as(desk.admin);
+      const relay = await as(desk.relay);
+      // The queue's own flows, on top of everything the seed already did: a provider's
+      // failure quoting the customer, a remote's ingest failure, a block rule, a held mail
+      // restored and another discarded.
+      await admin.invoke('ticket0/configure-desk', { settings: { spamFilter: {} } });
+      const mailIn = (from: string, subject: string, bodyText: string, n: number) =>
+        relay.invoke('ticket0/ingest-message', {
+          conversationId: null, contactEmail: from, contactName: 'Outside Person', subject, bodyText,
+          emailMessageId: `<outside-${n}@mail.example>`,
+        }) as Promise<{ conversation_id: string }>;
+      const kept = await mailIn('kept@outside.example', 'Outside subject kept 77', `${linky(4, 'kept')} outside body`, 1);
+      const junk = await mailIn('junk@outside.example', 'Outside subject junk 77', `${linky(4, 'junk')} outside body`, 2);
+      await admin.invoke('ticket0/restore', { conversationId: kept.conversation_id });
+      await (await as(desk.widget)).invoke('ticket0/record-assistant-failure', {
+        conversationId: kept.conversation_id, turnId: 'outside-turn', model: 'test/none',
+        error: 'provider quoted: outside body kept',
+      });
+      await admin.invoke('ticket0/discard', { conversationId: junk.conversation_id });
+      await admin.invoke('ticket0/add-block-rule', { kind: 'email', value: 'blocked@outside.example' });
+      const sources = (await admin.invoke('ticket0/list-kb-sources', {})) as Page<{ id: string }>;
+      if (sources.entries[0]) {
+        await admin.invoke('ticket0/record-kb-ingest-failure', {
+          sourceId: sources.entries[0].id, error: 'remote said: outside site text 77',
+        });
+      }
+
+      const keyFindings: string[] = [];
+      const valueFindings: string[] = [];
+      for (const file of readdirSync(dir).filter((f) => f.endsWith('.sqlite'))) {
+        const db = new Database(join(dir, file), { readonly: true });
+        try {
+          const hasOutbox = db.prepare("SELECT 1 FROM sqlite_master WHERE name = '_substrat_outbox'").get();
+          if (!hasOutbox) continue;
+          const events = db.prepare('SELECT type, entity_type, payload FROM _substrat_outbox').all() as {
+            type: string; entity_type: string; payload: string | null;
+          }[];
+          // Every value the scope holds in a marked column, long enough to mean something.
+          const marked: string[] = [];
+          for (const [entity, def] of Object.entries(defs)) {
+            const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(def.table);
+            for (const col of outside(entity)) {
+              if (!exists) continue;
+              for (const row of db.prepare(`SELECT ${col} AS v FROM ${def.table} WHERE ${col} IS NOT NULL`).all() as { v: unknown }[]) {
+                if (typeof row.v === 'string' && row.v.length >= 12) marked.push(row.v);
+              }
+            }
+          }
+          for (const e of events) {
+            const payload = e.payload ? (JSON.parse(e.payload) as Record<string, unknown>) : {};
+            for (const key of Object.keys(payload)) {
+              if (outside(e.entity_type).includes(key)) keyFindings.push(`${e.type}: ${e.entity_type}.${key}`);
+            }
+            for (const v of marked) if (e.payload?.includes(JSON.stringify(v).slice(1, -1))) valueFindings.push(`${e.type} holds “${v.slice(0, 40)}”`);
+          }
+          // The probe is not vacuous: the scope does hold marked text, and does emit events.
+          if (file.includes(desk.scope)) {
+            expect(events.length).toBeGreaterThan(20);
+            expect(marked.some((v) => v.includes('provider quoted: outside body kept'))).toBe(true);
+          }
+        } finally {
+          db.close();
+        }
+      }
+      expect(keyFindings).toEqual([]);
+      expect([...new Set(valueFindings)]).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

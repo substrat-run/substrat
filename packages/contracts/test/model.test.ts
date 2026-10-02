@@ -158,6 +158,21 @@ describe('entity registry', () => {
     expect(JSON.stringify(emitModel(reordered))).toBe(JSON.stringify(emitModel(forwards)));
   });
 
+  it('emits outsideText beside erasable, sorted, and only where it is declared', () => {
+    const model = emitModel(
+      defineEntities({
+        source: {
+          table: 't_source',
+          fields: z.object({ id: z.string(), url: z.string(), last_error: z.string(), body: z.string() }),
+          outsideText: ['last_error', 'body'],
+        },
+        plain: { table: 't_plain', fields: z.object({ id: z.string() }) },
+      }),
+    );
+    expect(model.entities['source']?.outsideText).toEqual(['body', 'last_error']);
+    expect(model.entities['plain']).not.toHaveProperty('outsideText');
+  });
+
   it('composes the entity-referencing manifest fragments', () => {
     const fragment = manifestEntities(entities, {
       attachmentTargets: [{ entityType: 'contract', readPermission: 'x:read' }],
@@ -201,6 +216,16 @@ defineEntities({
     fields: z.object({ id: z.string(), name: z.string() }),
     // @ts-expect-error 'emial' is not a field of customer
     erasable: ['emial'],
+  },
+});
+
+// --- outsideText likewise (#1088) -------------------------------------------
+defineEntities({
+  source: {
+    table: 't_source',
+    fields: z.object({ id: z.string(), last_error: z.string() }),
+    // @ts-expect-error 'last_eror' is not a field of source
+    outsideText: ['last_eror'],
   },
 });
 

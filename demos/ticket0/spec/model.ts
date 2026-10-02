@@ -785,6 +785,8 @@ export const ticket0Entities = defineEntities({
       suspicion: z.string().nullable(),
     }),
     parents: ['contact'],
+    // The sender's own line on mail (#1088): not erasable, and never on an event.
+    outsideText: ['subject'],
   },
 
   /**
@@ -949,6 +951,8 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['conversation'],
     key: ['token_hash'],
+    // The browser's raw header, as it arrived (#1088).
+    outsideText: ['user_agent'],
   },
 
   /**
@@ -980,6 +984,7 @@ export const ticket0Entities = defineEntities({
       ...CLIENT_COLUMNS,
     }),
     key: ['token_hash'],
+    outsideText: ['user_agent'],
   },
 
   /**
@@ -1150,6 +1155,9 @@ export const ticket0Entities = defineEntities({
     // One rule per (kind, value): blocking an address twice is the same decision made
     // twice, and two rows would mean removing it once leaves it in force.
     key: ['kind', 'value'],
+    // An address or a domain the desk refuses: kept, deliberately not erasable (above),
+    // and so held off every event by the marker rather than by memory (#1088).
+    outsideText: ['value'],
   },
 
   /**
@@ -1183,6 +1191,8 @@ export const ticket0Entities = defineEntities({
       created_at: z.string(),
     }),
     key: ['url'],
+    // Whatever the remote site or the fetch said — text this desk cannot vet (#1088).
+    outsideText: ['last_error'],
   },
 
   /**
@@ -1206,6 +1216,8 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['kbSource'],
     key: ['source_id', 'url'],
+    // A remote site's document, read as fetched (#1088).
+    outsideText: ['title', 'heading_path', 'body'],
   },
 
   /**
