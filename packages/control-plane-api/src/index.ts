@@ -40,6 +40,9 @@ export type {
 } from './auth.js';
 export { ControlPlaneClient, ControlPlaneError } from './client.js';
 export type { ControlPlaneClientOptions, ClientProvisionScopeInput } from './client.js';
+// The console's staff surface (#971). Browser-safe, so it is ALSO a subpath of its own
+// (`./browser`): a bundler resolving the root entry would pull the whole server.
+export * from './browser.js';
 export { identityTenant, identityTenantsResponse } from './identity-tenants.js';
 export type { IdentityTenant } from './identity-tenants.js';
 export { VerticalClient } from './vertical-client.js';

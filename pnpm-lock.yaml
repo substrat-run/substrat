@@ -182,6 +182,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
+      '@substrat-run/control-plane-api':
+        specifier: workspace:^
+        version: link:../../packages/control-plane-api
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
