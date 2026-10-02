@@ -1998,6 +1998,54 @@ export function scopeHostContractSuite(
       expect(flow.refused).toEqual([{ from: 'done', attempted: null, operation: 'test/move', count: 2, actors: { principal: 2 } }]);
     });
 
+    it('reads a refused transition back as a row — record, states, actor, call — like a denial (#1745)', async () => {
+      // A record of its own and a call id of its own, so the case above does not leak in.
+      const stub = await host.getScope(alice, t1, s1);
+      const call = ulid();
+      await expect(
+        stub.invoke('test/refuse', { entityId: 'r2', from: 'done' }, { invocationId: call }),
+      ).rejects.toThrow(/invalid transition/);
+
+      const rows = await host.admin.listRefusals(staff, t1, s1, { entityType: 'test-lifecycle', entityId: 'r2' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        kind: 'transition',
+        reason: 'invalid_transition',
+        actor: alice,
+        actorKind: 'principal',
+        tenantId: t1,
+        scopeId: s1,
+        entityType: 'test-lifecycle',
+        entityId: 'r2',
+        fromState: 'done',
+        attemptedState: null,
+        operation: 'test/move',
+        invokedOperation: 'test/refuse',
+        impersonation: null,
+        invocationId: call,
+        drainedAt: null,
+      });
+      expect(rows[0]!.decodeError).toBeUndefined();
+
+      // The row survived the operation's rollback — and the operation itself left nothing
+      // behind in the outbox for that call.
+      expect((await host.admin.invocationEvents(staff, t1, s1, { invocationId: call })).events).toEqual([]);
+
+      // Narrowed like the denial log: by call, by actor, by window; newest first, bounded.
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: call })).toHaveLength(1);
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: ulid() })).toEqual([]);
+      const all = await host.admin.listRefusals(staff, t1, s1, { actor: alice });
+      expect(all.length).toBeGreaterThanOrEqual(3); // r1 twice (the case above) + r2
+      expect(all[0]!.entityId).toBe('r2');
+      expect(await host.admin.listRefusals(staff, t1, s1, { until: all[all.length - 1]!.at })).toEqual([]);
+      expect(await host.admin.listRefusals(staff, t1, s1, { limit: 1 })).toHaveLength(1);
+
+      // K-24: the read is recorded; K-3: a mismatched pair is refused, never another tenant's log.
+      const logged = await host.admin.accessLog(staff, { tenantId: t1, method: 'listRefusals' });
+      expect(logged.length).toBeGreaterThan(0);
+      await expect(host.admin.listRefusals(staff, t2, s1)).rejects.toThrow();
+    });
+
     // -- scope data introspection: the §5.4 admin-query RPC --------------------
     //
     // A read-only window into a scope's OWN database (the console/dashboard Data

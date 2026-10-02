@@ -176,6 +176,8 @@ import {
   type DenialFilter,
   type DenialSummary,
   type PermissionDenial,
+  type RefusalFilter,
+  type RefusalRecord,
   type BeginImpersonationInput,
   type ImpersonationFilter,
   type ImpersonationSession,
@@ -336,6 +338,9 @@ import {
   type SystemGrantsEntry,
   type PlatformRequestRedactionCandidate,
   denialListQuery,
+  refusalListQuery,
+  mapRefusalRow,
+  type RefusalDbRow,
   denialSummaryQuery,
   denialTotalsQuery,
   DENIAL_WINDOW_QUERY,
@@ -8644,6 +8649,20 @@ export class SqliteScopeHost implements ScopeHost {
           windowNewestAt: w.newest_at ?? null,
           drained: Number(w.drained ?? 0),
         };
+      },
+      // #1745: the refusal log, read like the denial log above — same K-3 cross-check,
+      // same K-24 access row.
+      listRefusals: async (
+        actor,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        filter?: RefusalFilter,
+      ): Promise<RefusalRecord[]> => {
+        const db = this.scopeReadDbFor(tenantId, scopeId);
+        const q = refusalListQuery(filter);
+        const rows = (db.prepare(q.sql).all(...q.params) as RefusalDbRow[]).map(mapRefusalRow);
+        this.recordAccess(actor, 'listRefusals', { tenantId, scopeId }, filter ?? null, rows.length);
+        return rows;
       },
       exportScope: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeDump> => {
         // K-3: cross-check the pair before opening anything (same as the introspection reads).

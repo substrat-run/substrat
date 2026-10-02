@@ -107,6 +107,8 @@ import type {
   ScopeTable,
   DenialFilter,
   DenialSummary,
+  RefusalFilter,
+  RefusalRecord,
   PermissionDenial,
   Coverage,
   BeginImpersonationInput,
@@ -2889,6 +2891,24 @@ export interface HostAdmin {
     scopeId: ScopeId,
     filter?: DenialFilter,
   ): Promise<DenialSummary>;
+
+  /**
+   * #1745: the refusal log — every lifecycle move `assertTransition` refused and the
+   * operation failed with, recorded after the rollback exactly as a denial is. A bounded
+   * page of raw rows, newest first; narrow with `entityType`/`entityId` (which record),
+   * `actor`, `operation`, `invocationId` (which call) and a `since`/`until` window.
+   *
+   * The row read beneath `lifecycleFlow`'s `refused` counts, read like the denial log:
+   * a `PlatformActorId`, a K-24 access-log entry and the K-3 (tenantId, scopeId)
+   * cross-check. Unlike a denial row it names a record and the state it was in — a key
+   * and a status value, never the record's fields.
+   */
+  listRefusals(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: RefusalFilter,
+  ): Promise<RefusalRecord[]>;
 
   // -- directory disaster recovery (control-plane.md §4.9, #40) ---------------
   // Every method above reads or writes ONE tenant's world. These two are the only

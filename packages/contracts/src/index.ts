@@ -43,6 +43,7 @@ export * from './peer-transport.js';
 export * from './errors.js';
 export * from './platform-request.js';
 export * from './denial.js';
+export * from './refusal.js';
 export * from './manifest.js';
 export * from './openapi.js';
 export * from './deploy.js';
