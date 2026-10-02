@@ -3489,6 +3489,16 @@ export interface HostAdmin {
    */
   listIssues(actor: PlatformActorId, filter?: IssueFilter): Promise<IssueEntry[]>;
   /**
+   * Delete ops failures, issues and sweep runs past their retention (#1632), oldest first and
+   * at most `limit` rows of each table per call. It is the scheduled pass's half of the prune
+   * each of those tables already runs on write, so a directory that records nothing new still
+   * sheds them on time; a backlog larger than `limit` drains over passes. Returns what each
+   * table deleted. Not audited, like the prune-on-write it completes: retention-bounded
+   * telemetry, not evidence. Optional so a host that predates it degrades the sweep's phase
+   * to `null`.
+   */
+  pruneTelemetry?(actor: PlatformActorId, limit: number): Promise<TelemetryPruneReport>;
+  /**
    * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
    * is ingest's word and not accepted here. Returns the updated row, or undefined
    * for an unknown fingerprint. Audited with the before/after status diff (K-33).
@@ -3974,9 +3984,77 @@ export function sweepRunsIntentHasKind(indexSql: string): boolean {
  * How long an issue row outlives its last occurrence (#1233). Deliberately longer
  * than the 90-day evidence beneath it: an issue is the compressed memory of a
  * failure class, and "we saw this five months ago" is exactly what a regression
- * needs to be recognizable. Pruned on write like everything else here.
+ * needs to be recognizable. Pruned on write like everything else here, and on the
+ * scheduled pass (`pruneTelemetry`, #1632), so a quiet directory sheds it on time too.
  */
 export const ISSUE_RETENTION_DAYS = 180;
+
+/** What one `pruneTelemetry` call deleted, per table. */
+export interface TelemetryPruneReport {
+  opsFailures: number;
+  issues: number;
+  sweepRuns: number;
+}
+
+/**
+ * A caller-supplied row bound, checked before it reaches a SQL `LIMIT` (#1632). SQLite reads a
+ * negative `LIMIT` as no limit at all, so `-1` turns a bounded batch into an unbounded one; a
+ * fractional or non-finite value is refused by SQLite itself, as a failure every later call
+ * repeats. Neither is a value anyone means, so it is a configuration error, refused here with the
+ * option's name, and never silently normalized into something the caller did not ask for.
+ * Returns the value, so a call site can bind it in place.
+ */
+export function assertRowLimit(name: string, value: number): number {
+  if (Number.isInteger(value) && value > 0) return value;
+  throw substratError('validation_failed', `${name} must be a positive integer, got ${String(value)}`);
+}
+
+/** How many rows of EACH telemetry table one `pruneTelemetry` call deletes, by default. */
+export const TELEMETRY_PRUNE_BATCH = 500;
+
+/**
+ * The three telemetry retentions as statements, for `pruneTelemetry` on both adapters (#1632).
+ *
+ * Each table already prunes on write, and that bound holds only while something is written:
+ * a quiet directory keeps a row past its retention for as long as nothing new arrives in
+ * that table. An issue is the case that matters. Erasure skips an issue whose exemplar owner
+ * is unknown, on the promise that it ages out within `ISSUE_RETENTION_DAYS`, and on a
+ * directory with no new failures nothing ever deleted it. The scheduled pass runs these
+ * statements, which makes the stated retention a bound in time rather than in traffic.
+ *
+ * **Bounded per call, oldest first.** After a long pause or a restore the backlog can be a
+ * year of sweep runs, and one unbounded DELETE over it is a pass that fails on the Durable
+ * Object every tick. Each statement deletes at most `limit` rows, chosen through the table's
+ * own retention index (`… WHERE rowid IN (SELECT rowid … ORDER BY <ts> LIMIT ?)`), so the
+ * backlog drains over passes. `RETURNING` makes the count what was actually deleted on both
+ * adapters, rather than a rows-written figure that would also count index writes.
+ */
+export function telemetryRetentionStatements(
+  nowMs: number,
+  limit: number,
+): { table: keyof TelemetryPruneReport; sql: string; params: [string, number] }[] {
+  const horizon = (days: number) => new Date(nowMs - days * 86_400_000).toISOString();
+  const bounded = (table: string, column: string) =>
+    `DELETE FROM ${table} WHERE rowid IN ` +
+    `(SELECT rowid FROM ${table} WHERE ${column} < ? ORDER BY ${column} LIMIT ?) RETURNING 1`;
+  return [
+    {
+      table: 'opsFailures',
+      sql: bounded('_substrat_ops_failures', 'at'),
+      params: [horizon(OPS_FAILURE_RETENTION_DAYS), limit],
+    },
+    {
+      table: 'issues',
+      sql: bounded('_substrat_issues', 'last_seen'),
+      params: [horizon(ISSUE_RETENTION_DAYS), limit],
+    },
+    {
+      table: 'sweepRuns',
+      sql: bounded('_substrat_sweep_runs', 'at'),
+      params: [horizon(SWEEP_RUN_RETENTION_DAYS), limit],
+    },
+  ];
+}
 
 /** Filter for `listIssues` (#1233). Bounded by `limit` only — see the verb's doc. */
 export interface IssueFilter {

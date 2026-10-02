@@ -1,6 +1,7 @@
 import {
   isTerminalDispatchFailure,
   isPrimaryScope,
+  platformIntentFailureMessage,
   ulid,
   type ConnectorHandler,
   type OpsFailureInput,
@@ -177,7 +178,7 @@ export async function drainScopePlatformRequests(
         // until now the drain had {origin, code} in hand and dropped it here (#1233).
         origin: outcome.failure?.origin ?? null,
         code: outcome.failure?.code ?? null,
-        message: `platform intent ${request.id} ${outcome.error}`,
+        message: platformIntentFailureMessage(request.id, outcome.error ?? 'unknown'),
       });
     } else if (outcome.status === 'failed') {
       // #618: a TERMINAL settle is the ceiling's own argument arriving early — the intent is
@@ -193,7 +194,7 @@ export async function drainScopePlatformRequests(
         version: ctx.versionId ?? null,
         origin: outcome.failure?.origin ?? null,
         code: outcome.failure?.code ?? null,
-        message: `platform intent ${request.id} failed: ${outcome.error ?? 'unknown'}`,
+        message: platformIntentFailureMessage(request.id, `failed: ${outcome.error ?? 'unknown'}`),
       });
     }
     // No special case for a refused row: the tolerant read only ever hands back a row whose

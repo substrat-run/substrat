@@ -37,6 +37,19 @@ a fresh host.
 | `spineGuardContractSuite` | the spine guard on `ctx.sql` — module code cannot *write* a `_substrat_*` table through the connection the kernel hands it, and can still read one (#954) | `UNSAFE_allowAllChecker`; a forged grant must be refused by the connection, not by a permission |
 | `grantExpiryContractSuite` | a grant with an `expiresAt` stops granting the moment the **host's** clock passes it — the transition, not the already-dead grant `permissionContractSuite` covers (#956) | the **default** checker, on a `manualClock` the suite advances. **SQLite only** — see below |
 | `facetRecencyContractSuite` | `facetEvents` — a bucket's `lastSeen` is the **latest** event in it, not merely one of them; against the wall clock two events share a millisecond and `MIN` passes the same test `MAX` does (#1234) | the **default** checker, on a `manualClock` the suite advances. **SQLite only** — see below |
+| `capabilityContractSuite` | capabilities — whoever exchanges a capability's secret acts as the capability, reaching exactly its entity subtree and keys, never more than its minter holds right now, until it is revoked or used up; the kernel stores only the secret's hash (#1672) | the **default** checker; half the suite is that the door grants no authority of its own |
+| `capabilityAttachmentContractSuite` | attachments through a capability — it reads a file exactly when the checker, asked as the capability, would let it read the file's entity, and it writes no attachment at all, even carrying a write key (#1686) | the **default** checker, for the capability suite's reason |
+| `capabilityExpiryContractSuite` | the expiry *transitions* the capability suite cannot reach without waiting — a capability's `expiresAt`, a session's TTL and a platform `become`, each beside the step before it runs out (#1672) | the **default** checker, on a `manualClock` the suite advances. **SQLite only** — see below |
+| `jobRunContractSuite` | the resumable-run driver — a run stops and carries on: a step that committed before an interrupted pass is not repeated, starting a live run returns that run, and a subject erasure reaches a run's payload, cursor and step output (#1577, #1632) | the **default** checker; a job's steps act through the system door |
+| `systemSwitchContractSuite` | the schedule kill switch — `revokeFromSystem` turns one module's scheduled work off on one scope, and `restoreToSystem` makes it fire again on the next pass (#1666) | the **default** checker; what the switch stops is a system principal's own `ctx.check` |
+| `peerContractSuite` | the peer door — one vertical of a tenant calling another's operations as `{ vertical, scope }`: exactly the keys the target declared, on the spine as itself, refused on the next call after a revoke, tenant-bound, and no person crossing (#1706) | the **default** checker; a peer holding exactly its declared keys is the claim |
+| `verticalResolutionContractSuite` | `HostAdmin.resolveVerticalInstance` — the kernel's one rule (same tenant, primary, active, exactly one) over each adapter's own directory (#1706) | the **default** checker |
+| `verticalEventsContractSuite` | cross-vertical event delivery between two deployments — same tenant only, exported types only, only `piiClass: 'none'` carried, one effect per event and module, a watermark that only moves forward, backfill, and a cut at the hop cap (#1705) | the **default** checker on both deployments; its authority claims are about real grants |
+| `emittedReportContractSuite` | the per-request record's scope half — `onEmitted` reports only what the operation itself emitted, not its consumers' events, a rolled-back sub-transaction's, a failed call's or a replay's; and `ScopeStub.subjectKind` (#1746) | the **default** checker |
+| `moduleLogContractSuite` | `ctx.log` — the tenant, scope, operation, invocation and actor the **host** stamps on a module's line, so a reader can trust those fields without trusting the module (#1746, #1747) | the **default** checker |
+| `sqlLimitsContractSuite` | the SQL limits a Durable Object enforces on `ctx.sql` — a statement over a hosted limit is refused with the hosted message on both adapters, and one at exactly the limit is not (#1741) | `UNSAFE_allowAllChecker`; the limit is the subject, not who may run the statement |
+| `scopeRepointContractSuite` | which grant tuples a restore, fork or snapshot re-points at the scope it lands in — a scope-level grant moves, an entity-narrowed grant does not, however its type is cased (#1869) | the **default** checker, so it asserts decisions as well as stored rows |
+| `directoryRestoreSuite` | a directory restore builds every directory table from the running code's schema, and the dump contributes rows only, by column name; a table the directory does not build is refused (#1912) | no checker: it takes a directory harness, not a scope-host fixture |
 
 ```ts
 // packages/adapter-yours/test/contract.test.ts
@@ -63,20 +76,33 @@ permissionContractSuite('adapter-yours', async () => { /* default checker */ });
 scheduleContractSuite('adapter-yours', async () => { /* default checker */ });
 ```
 
-Every adapter suite takes the same `(adapterName, makeFixture)` pair; the one thing that
-varies is which checker the fixture is built with, and the table says which and why. Every
+Every adapter suite takes the same `(adapterName, makeFixture)` pair, except
+`directoryRestoreSuite`, which takes a directory harness; the one thing that varies is which
+checker the fixture is built with, and the table says which and why. Every
 suite above is one an *adapter* runs. One more, `entityCheckConformanceSuite`, holds a
 **vertical or engine** to its declarations rather than an adapter to the contract, and has
 [its own section](#the-entity-check-kit) below. The complete adapter wiring — every suite,
 with the reason beside each — is
-[`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts).
+[`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts),
+except three suites each mounted in a file of its own, with a Cloudflare twin of the same
+name:
+
+| suite | SQLite fixture | Cloudflare fixture |
+|---|---|---|
+| `verticalEventsContractSuite` | [`vertical-events.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/vertical-events.test.ts) | [`vertical-events.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-cloudflare/test/vertical-events.test.ts) |
+| `scopeRepointContractSuite` | [`scope-repoint.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/scope-repoint.test.ts) | [`scope-repoint.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-cloudflare/test/scope-repoint.test.ts) |
+| `directoryRestoreSuite` | [`directory-restore-tables.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/directory-restore-tables.test.ts) | [`directory-restore-tables.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-cloudflare/test/directory-restore-tables.test.ts) |
+
 The count is deliberately not written here: it grows with every merged guarantee.
 
-### The two suites the two adapters do not share
+### The suites the two adapters do not share
 
-Both shipped adapters run every suite in that file **except `grantExpiryContractSuite` and
-`facetRecencyContractSuite`, which mount on the SQLite host only** — and the reason is one
-property of the runtime, not two omissions.
+Both shipped adapters run every suite in that file **except `grantExpiryContractSuite`,
+`facetRecencyContractSuite` and `capabilityExpiryContractSuite`, which mount on the SQLite
+host only** — and the reason is one property of the runtime, not three omissions. The
+capability suite's expiry transitions are the grant suite's reason again: both hosts judge
+a capability with one kernel predicate, which the kernel's own tests pin against an expired
+row, and the moment it expires is read inside the ScopeDO.
 
 Each of those suites is about the *passage of time*. Grant expiry proves the transition: a
 grant that is live now and denied an hour later. Facet recency proves that a bucket's
@@ -105,10 +131,10 @@ and the `MAX(occurred_at)` aggregate come from the same kernel helpers — and
 `permissionContractSuite` proves an already-expired grant is refused on both, as
 `scopeHostContractSuite` proves `lastSeen` is present and a real timestamp on both. What is
 asserted on one adapter only is that the refusal arrives *when the clock passes*, and that
-the timestamp is the *latest* one. Neither suite is mounted-and-skipped on the Cloudflare
-host: a skipped test reads as coverage the adapter does not have. The two suite headers
-and the `clock` note in `CloudflareScopeHostOptions` carry the alternatives that were
-considered and rejected. The day the DO host can take a clock, mounting both suites is the
+the timestamp is the *latest* one. None of these suites is mounted-and-skipped on the
+Cloudflare host: a skipped test reads as coverage the adapter does not have. The suite
+headers and the `clock` note in `CloudflareScopeHostOptions` carry the alternatives that
+were considered and rejected. The day the DO host can take a clock, mounting them is the
 whole change.
 
 ## What the suites verify
@@ -169,6 +195,16 @@ adapter gets it wrong:
 - it is idempotent, and re-running still reports the tombstone;
 - after a shred what was sealed no longer opens, and nothing may be re-sealed;
 - a different subject in the same scope stays fully readable;
+- the spine's other copies go too, each with an untouched twin for another subject: a
+  platform intent that carries the event, a failed delivery's error, and a job run's
+  payload, cursor and step output;
+- so does failure text that names the subject. That covers an ops-failure message, an
+  issue's exemplar, a sweep record's error and the same error still queued in a
+  `sweep-runs` intent. Another tenant's row is never touched, an issue exemplar is
+  rewritten only for the tenant (or the platform) its writer recorded, and an exemplar
+  of unknown origin is left alone;
+- the scheduled pass prunes ops failures, issues and sweep runs past their retention, a
+  bounded batch per table, so a large backlog drains over passes;
 - the erasure lands in **both** logs — the mutation trail and the evidence-destruction one.
 
 **Introspection and the SQL console** (§5.4, #219)
@@ -228,7 +264,9 @@ adapter gets it wrong:
   great deal like the original;
 - a failed request leaves no recording, so the retry runs;
 - a key belongs to the subject that sent it; a reused key with a different request is
-  refused, never served; a replay that cannot be answered is a `409`, not a second run.
+  refused, never served; a replay that cannot be answered is a `409`, not a second run;
+- a recorded response that named an erased subject is refused the same way: never
+  replayed as the tombstone, and never run again.
 
 **Timelines** (`timelineContractSuite`, #800)
 - a burst of events from one operation shares one instant (`ctx.now()` is stable for the
@@ -251,7 +289,7 @@ adapter gets it wrong:
   the stub too.
 
 **Grant expiry under an injected clock** (`grantExpiryContractSuite`, #956 —
-[SQLite only](#the-two-suites-the-two-adapters-do-not-share))
+[SQLite only](#the-suites-the-two-adapters-do-not-share))
 - a grant with an `expiresAt` is live before it and denied after it, node-level and
   entity-narrowed alike — the transition, which against the wall clock a test could only
   reach by sleeping through the window;
@@ -260,7 +298,7 @@ adapter gets it wrong:
 - a grant with no `expiresAt` is not touched by the clock at all.
 
 **Facet recency under an injected clock** (`facetRecencyContractSuite`, #1234 —
-[SQLite only](#the-two-suites-the-two-adapters-do-not-share))
+[SQLite only](#the-suites-the-two-adapters-do-not-share))
 - a bucket's `lastSeen` is the **latest** event in it: three events a day apart report the
   third, where `MIN` would report the first and a consumer that stopped two days ago would
   read as one that just ran;

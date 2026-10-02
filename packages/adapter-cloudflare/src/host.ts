@@ -232,6 +232,7 @@ import {
   type OpsFailureFilter,
   type OpsFailureInput,
   type IssueFilter,
+  type TelemetryPruneReport,
   type AppliedMigration,
   type SweepRunFilter,
   type SweepRunInput,
@@ -311,6 +312,7 @@ import {
   type LiveReadSurface,
   type SubjectRedactionCounts,
   type LegacySubjectRedactionCounts,
+  type SubjectTextTarget,
   globalFetch,
   assertRedrainWindow,
   platformRequestOf,
@@ -351,6 +353,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
+  assertRowLimit,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -837,10 +840,14 @@ interface ControlPlaneStub {
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
   recordOpsFailure(row: OpsFailureRow): Promise<void>;
+  /** #1632: subject erasure's directory half — `redactSubjectDirectoryText`. */
+  redactSubjectText(target: SubjectTextTarget): Promise<void>;
   listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
   recordSweepRun(row: SweepRunRow): Promise<void>;
   listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;
   listIssues(query: IssueQuery): Promise<unknown[]>;
+  /** #1632: the telemetry retentions, run by the scheduled pass — `telemetryRetentionStatements`. */
+  pruneTelemetry(limit: number): Promise<TelemetryPruneReport>;
   setIssueStatus(
     fingerprint: string,
     status: 'new' | 'resolved' | 'ignored',
@@ -1359,6 +1366,8 @@ interface ScopeStubRpc {
    * **The `LegacySubjectRedactionCounts` arm is the same skew, one release later
    * (#1632).** A DO from after #1600 answers `{ events, intents }` and never looked at
    * the job-run tables, so it is refused the same way rather than read as `jobRuns: 0`.
+   * And one from before the free-text half answers the job-run count without
+   * `idempotencyResults` or `intentIds`, and is refused for the same reason.
    */
   redactSubject(
     subjectId: string,
@@ -5977,7 +5986,7 @@ export class CloudflareScopeHost implements ScopeHost {
         this.moveImportCursorAt(actor, tenantId, scopeId, raw),
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         const record = await this.scopeRecordForRead(tenantId, scopeId);
-        const bounded = Math.min(Math.max(limit ?? 200, 1), 1000);
+        const bounded = Math.min(assertRowLimit('limit', limit ?? 200), 1000);
         // #1334: on the shared control plane the scope's outbox is in its vertical's
         // deployment, and this host's own namespace is the module-less placeholder —
         // reading it would construct an empty DO and answer "nothing to ship". The
@@ -6425,7 +6434,31 @@ export class CloudflareScopeHost implements ScopeHost {
               `key while leaving their data in the job-run tables. Redeploy the vertical and re-run.`,
           );
         }
-        const { events: eventsRedacted, intents: intentsRedacted, jobRuns: jobRunsRedacted } = redacted;
+        // A DO from before the free-text half (#1632): it never looked at the idempotency
+        // ledger or a queued sweep record, and cannot name the intents the directory's drain
+        // failures quote. Refused before the key, for the reason above.
+        if (
+          !('idempotencyResults' in redacted) ||
+          typeof redacted.idempotencyResults !== 'number' ||
+          !Array.isArray(redacted.intentIds)
+        ) {
+          throw substratError(
+            'unavailable',
+            `scope ${scopeId} runs a ScopeDO whose redaction does not reach _substrat_idempotency ` +
+              `or a queued sweep-runs intent — erasing now would destroy the subject key while ` +
+              `leaving their data in those rows. Redeploy the vertical and re-run.`,
+          );
+        }
+        const {
+          events: eventsRedacted,
+          intents: intentsRedacted,
+          jobRuns: jobRunsRedacted,
+          idempotencyResults,
+          intentIds,
+        } = redacted;
+        // The directory's failure text (#1632) — a drain failure quoting one of those intents,
+        // an issue's exemplar, a sweep record's error. Still before the key.
+        await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
@@ -6447,7 +6480,7 @@ export class CloudflareScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          eventsRedacted + intentsRedacted + jobRunsRedacted,
+          eventsRedacted + intentsRedacted + jobRunsRedacted + idempotencyResults,
         );
         return receipt;
       },
@@ -6991,7 +7024,8 @@ export class CloudflareScopeHost implements ScopeHost {
         return drained;
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
-        const pruned = await this.cp.pruneAccessLog(limit);
+        // Checked here as well as in the directory, so the refusal keeps its code across the hop.
+        const pruned = await this.cp.pruneAccessLog(assertRowLimit('limit', limit));
         if (pruned > 0) {
           // The payload is the APPLIED state, so it belongs in `after` (contracts'
           // adminLogEntry: before = prior state, after = the applied payload) — the
@@ -7122,6 +7156,9 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         return rows.map((r) => sweepRunEntry.parse(r));
       },
+      // Checked here as well as in the directory, so the refusal keeps its code across the hop.
+      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> =>
+        this.cp.pruneTelemetry(assertRowLimit('limit', limit)),
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const rows = await this.cp.listIssues({
           status: filter?.status,

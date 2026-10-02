@@ -26,14 +26,18 @@
  *
  * What it therefore does NOT reach is an intent kind that carries a subject's PII
  * WITHOUT carrying the classified event — an intent payload has no `piiClass` of its
- * own, so the kernel has nothing to read. No kind does that today (kernel-design.md
- * §13.1 limit 7 says so and names the walk), and a kind that started to would be
+ * own, so the kernel has nothing to read. One shipped kind can: a `sweep-runs` entry's
+ * `error` is a scheduled operation's throw, and that text gets its own walk on the subject's
+ * id (`redactSubjectSweepRunIntents`, at the end of this file). Any other kind is limit 7 in
+ * kernel-design.md §13.1, and a kind that started carrying a person directly would be
  * inventing an unclassified PII store inside the spine.
  *
  * This is a kernel module rather than two copies of the same SQL for
  * `platformRequestHistoryQuery`'s reason, sharpened: three surfaces answer one question
  * from this table, and a privacy guarantee that holds on one adapter is not a guarantee.
  */
+
+import { SWEEP_RUNS_KIND } from '@substrat-run/contracts';
 
 /**
  * The one key a redacted intent payload carries, and nothing else in the system does.
@@ -131,14 +135,40 @@ export interface SubjectRedactionCounts {
    * a count of rewritten cells would read larger than anything a DSAR answer could say.
    */
   jobRuns: number;
+  /**
+   * Recorded idempotent responses (#1632) that named the subject and now hold the tombstone.
+   * Not on the receipt — a cached reply is not another copy of an event — but answered, so a
+   * coordinator can tell a host that looked from one that never did.
+   */
+  idempotencyResults: number;
+  /**
+   * Every intent in the journal holding this subject's tombstone after the pass, whether this
+   * pass or an earlier one wrote it. The directory half needs them (`redactSubjectDirectoryText`):
+   * a drain failure about one of these intents quotes its `last_error`. All of them rather than
+   * the new ones, so an erasure that crashed between the two halves converges on its re-run.
+   */
+  intentIds: string[];
 }
 
 /**
- * What a ScopeDO from after #1600 and before #1632 answers — the job-run count absent,
- * because that host never looked at the job tables. The coordinator refuses it rather than
- * reading the absence as zero (see `redactSubject`'s callers).
+ * What an older ScopeDO answers. One from after #1600 and before #1632 has no job-run count,
+ * because that host never looked at the job tables; one from before the free-text half has
+ * the count but no `idempotencyResults` or `intentIds`. The coordinator refuses both rather
+ * than reading an absence as zero (see `redactSubject`'s callers).
  */
-export type LegacySubjectRedactionCounts = Omit<SubjectRedactionCounts, 'jobRuns'>;
+export type LegacySubjectRedactionCounts = Omit<
+  SubjectRedactionCounts,
+  'jobRuns' | 'idempotencyResults' | 'intentIds'
+> & { jobRuns?: number };
+
+/**
+ * The needle every walk in this file searches a stored text for: the subject id with the
+ * quotes JSON.stringify adds stripped, keeping the escaped body — the exact run of characters
+ * a serialized payload holds.
+ */
+function subjectNeedle(subjectId: string): string {
+  return JSON.stringify(subjectId).slice(1, -1);
+}
 
 /**
  * The candidate read: every intent whose stored payload TEXT contains the subject id.
@@ -159,9 +189,7 @@ export function platformRequestRedactionQuery(subjectId: string): {
 } {
   return {
     sql: 'SELECT id, payload FROM _substrat_platform_requests WHERE instr(payload, ?) > 0',
-    // Strip the quotes JSON.stringify adds and keep the escaped body — the exact run of
-    // characters the serialized payload holds.
-    params: [JSON.stringify(subjectId).slice(1, -1)],
+    params: [subjectNeedle(subjectId)],
   };
 }
 
@@ -251,7 +279,7 @@ export function intentPayloadCarriesSubject(payloadText: string, subjectId: stri
  * deliberately not pinned: a later tombstone that carries more would still be nothing but
  * a tombstone, and hard-coding its shape here is how idempotency would quietly regress.
  */
-function isRedactedPayload(parsed: unknown): boolean {
+export function isRedactedPayload(parsed: unknown): boolean {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
   const keys = Object.keys(parsed);
   if (keys.length !== 1 || keys[0] !== REDACTED_INTENT_MARKER) return false;
@@ -354,8 +382,7 @@ export type RedactionSql = (sql: string, params: readonly (string | number | nul
  * Returns the number of distinct runs touched.
  */
 export function redactSubjectJobRuns(sql: RedactionSql, subjectId: string, at: string): number {
-  // The needle, spelled as `platformRequestRedactionQuery` spells it.
-  const needle = JSON.stringify(subjectId).slice(1, -1);
+  const needle = subjectNeedle(subjectId);
   const tombstone = redactedIntentPayload(subjectId, at);
   const runs = new Set<string>();
 
@@ -461,3 +488,245 @@ export const JOB_RUN_REDACTION_SQL = `UPDATE _substrat_job_runs
          updated_at = ?,
          status = CASE WHEN status = 'running' THEN 'failed' ELSE status END
    WHERE id = ?`;
+
+// -- the spine's free-text copies (#1632) ---------------------------------------------
+
+/**
+ * The note a redaction leaves where a failure's text named the subject: an ops-failure
+ * message, an issue's exemplar, a sweep record's error, or that error still queued inside a
+ * `sweep-runs` intent. One note for all four, because the drain lands the last into the third
+ * and a reader should meet the same sentence wherever the redaction found the text.
+ */
+export const REDACTED_FAILURE_NOTE =
+  'redacted by subject erasure (#37) — what this failure said is gone; that it happened, and when, is not';
+
+/**
+ * The idempotency ledger's half (#1632): a recorded response that names the subject.
+ *
+ * `result` is an operation's return value, kept for a day so a retry is answered without
+ * running again — and an operation that returns a person's record returns their id with it.
+ * Nothing else in the row says whose response it is, so the link is the direct one: the
+ * subject's id appears in the stored JSON. A `DataSubjectId` is a ULID, so the match does not
+ * happen by coincidence. A response that names the person but not their id is not reached.
+ *
+ * The result becomes the intent tombstone; every other column stays, so the key is still
+ * recorded and a retry is still not executed twice. `replayFor` refuses a tombstoned result
+ * instead of replaying it. Idempotent: a row already holding this subject's tombstone is
+ * skipped. Returns how many rows it rewrote.
+ */
+export function redactSubjectIdempotency(sql: RedactionSql, subjectId: string, at: string): number {
+  const rows = sql(
+    'SELECT subject, key, result FROM _substrat_idempotency WHERE instr(result, ?) > 0',
+    [subjectNeedle(subjectId)],
+  ) as { subject: string; key: string; result: string }[];
+  const tombstone = redactedIntentPayload(subjectId, at);
+  let redacted = 0;
+  for (const row of rows) {
+    if (isRedactedPayloadText(row.result, subjectId)) continue;
+    sql('UPDATE _substrat_idempotency SET result = ? WHERE subject = ? AND key = ?', [
+      tombstone,
+      row.subject,
+      row.key,
+    ]);
+    redacted += 1;
+  }
+  return redacted;
+}
+
+/**
+ * Every intent in the journal that holds this subject's tombstone — the ids the directory
+ * half links its drain-failure rows through. Read after the intent redaction, so it covers
+ * this pass's tombstones and every earlier pass's.
+ */
+export function redactedIntentIds(sql: RedactionSql, subjectId: string): string[] {
+  const q = platformRequestRedactionQuery(subjectId);
+  const rows = sql(q.sql, q.params) as PlatformRequestRedactionCandidate[];
+  return rows.filter((r) => isRedactedPayloadText(r.payload, subjectId)).map((r) => r.id);
+}
+
+/**
+ * The scope's free-text half (#1632), shared by both adapters so the order is one fact: a
+ * recorded idempotent response and a queued `sweep-runs` entry's error that name the subject,
+ * and THEN the intents holding its tombstone — read after every other intent write, so the ids
+ * cover this pass's tombstones and every earlier one's.
+ */
+export function redactSubjectScopeText(
+  sql: RedactionSql,
+  subjectId: string,
+  at: string,
+): Pick<SubjectRedactionCounts, 'idempotencyResults' | 'intentIds'> {
+  const idempotencyResults = redactSubjectIdempotency(sql, subjectId, at);
+  redactSubjectSweepRunIntents(sql, subjectId);
+  return { idempotencyResults, intentIds: redactedIntentIds(sql, subjectId) };
+}
+
+/**
+ * A `sweep-runs` intent's queued error text (#1632).
+ *
+ * A CP-less pass reports its schedule outcomes as one `sweep-runs` intent; the drain lands
+ * each entry in the directory's `_substrat_sweep_runs`, and the intent itself is kept like
+ * every other. So an entry's `error` — a scheduled operation's throw — is held twice, and the
+ * directory half alone would leave this copy. Only `entries[].error` is rewritten, and only
+ * where it names the subject's id: the payload keeps its shape and every other field, so a
+ * pending intent still drains (the note is a valid `error`) and lands the note instead of the
+ * text. Idempotent: the note does not name the subject.
+ */
+export function redactSubjectSweepRunIntents(sql: RedactionSql, subjectId: string): void {
+  const rows = sql(
+    'SELECT id, payload FROM _substrat_platform_requests WHERE kind = ? AND instr(payload, ?) > 0',
+    [SWEEP_RUNS_KIND, subjectNeedle(subjectId)],
+  ) as { id: string; payload: string }[];
+  for (const row of rows) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.payload);
+    } catch {
+      continue;
+    }
+    if (typeof parsed !== 'object' || parsed === null) continue;
+    const entries = (parsed as { entries?: unknown }).entries;
+    if (!Array.isArray(entries)) continue;
+    let changed = false;
+    const rewritten = entries.map((entry: unknown) => {
+      if (typeof entry !== 'object' || entry === null) return entry;
+      const error = (entry as { error?: unknown }).error;
+      if (typeof error !== 'string' || !error.includes(subjectId)) return entry;
+      changed = true;
+      return { ...entry, error: REDACTED_FAILURE_NOTE };
+    });
+    if (!changed) continue;
+    sql('UPDATE _substrat_platform_requests SET payload = ? WHERE id = ?', [
+      JSON.stringify({ ...parsed, entries: rewritten }),
+      row.id,
+    ]);
+  }
+}
+
+const PLATFORM_INTENT_FAILURE_PREFIX = 'platform intent ';
+
+/**
+ * How the drain words an ops failure about one intent. The reader below parses the same
+ * prefix, so the directory walk and the writer cannot drift about the link between them.
+ */
+export function platformIntentFailureMessage(intentId: string, text: string): string {
+  return `${PLATFORM_INTENT_FAILURE_PREFIX}${intentId} ${text}`;
+}
+
+/** The intent an ops-failure message is about, or null — `platformIntentFailureMessage` read back. */
+export function intentIdOfFailureMessage(message: string): string | null {
+  if (!message.startsWith(PLATFORM_INTENT_FAILURE_PREFIX)) return null;
+  const rest = message.slice(PLATFORM_INTENT_FAILURE_PREFIX.length);
+  const end = rest.indexOf(' ');
+  return end > 0 ? rest.slice(0, end) : null;
+}
+
+/** What the directory half is handed: the erased scope's tenant, and the scope half's intent ids. */
+export interface SubjectTextTarget {
+  tenantId: string;
+  scopeId: string;
+  subjectId: string;
+  intentIds: string[];
+}
+
+/**
+ * Whose failure an issue exemplar was copied from, as the issue upsert records it beside
+ * `last_tenant_id`: a tenant's, or the platform's own (a failure with no tenant). NULL is never
+ * written. It is reserved for an issue from before the columns that no retained row attributes,
+ * so "the platform's" and "nobody knows" stay different facts.
+ *
+ * A kind column rather than a sentinel in `last_tenant_id`, so that column stays what its name
+ * says — a tenant id or nothing — for any reader or join, and a later owner kind is a new value
+ * here instead of a second magic string.
+ */
+export type IssueExemplarOwner = 'tenant' | 'platform';
+
+/** The owner kind both adapters' issue upserts write, from the failure's tenant. */
+export function issueExemplarOwner(tenantId: string | null): IssueExemplarOwner {
+  return tenantId === null ? 'platform' : 'tenant';
+}
+
+/**
+ * #1632: the one-time backfill of an issue's exemplar owner, run as the columns are added to
+ * a directory that predates them. A row is attributed only when the retained ops-failure rows
+ * carrying its exemplar (same fingerprint, same text) all have one origin: a single tenant, or
+ * only the platform. When they name none, or more than one origin, the row stays unknown
+ * (NULL), and erasure skips it. Rows whose evidence already expired stay unknown too, so the
+ * gap fails closed.
+ */
+export const ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL = `UPDATE _substrat_issues
+     SET last_tenant_id = (SELECT MIN(o.tenant_id) FROM _substrat_ops_failures o
+                            WHERE o.fingerprint = _substrat_issues.fingerprint
+                              AND o.message = _substrat_issues.last_message),
+         last_owner_kind = CASE WHEN (SELECT MIN(o.tenant_id) FROM _substrat_ops_failures o
+                                       WHERE o.fingerprint = _substrat_issues.fingerprint
+                                         AND o.message = _substrat_issues.last_message) IS NULL
+                                THEN 'platform' ELSE 'tenant' END
+   WHERE last_owner_kind IS NULL
+     AND (SELECT COUNT(DISTINCT COALESCE(o.tenant_id, '')) FROM _substrat_ops_failures o
+           WHERE o.fingerprint = _substrat_issues.fingerprint
+             AND o.message = _substrat_issues.last_message) = 1`;
+
+/**
+ * The directory's half (#1632): three tables of failure text the control plane keeps.
+ *
+ * - `_substrat_ops_failures.message` — the drain's record of an intent it gave up on, or
+ *   settled `failed`, quotes that intent's `last_error`. When the intent is one the erasure
+ *   tombstoned (`intentIds`, in this tenant and scope), the message is a copy of text the
+ *   scope half already redacted, and goes with it. A row in this tenant, or the platform's
+ *   own row with no tenant, that names the subject's id goes too.
+ * - `_substrat_issues.last_message` — the newest exemplar of an ops-failure group. Its
+ *   writer records whose failure it copied (`last_owner_kind`, `last_tenant_id`, in the same
+ *   statement), and erasure reads that rather than the ops-failure rows, which issues outlive.
+ *   A tenant's exemplar is rewritten only for that tenant, by the same two links; the
+ *   platform's own on a direct id match, as its ops-failure row is. An exemplar of unknown
+ *   owner (a legacy row nothing attributed) is skipped: the matched text can come from
+ *   anyone's request, so an unattributed row is never read as this tenant's.
+ * - `_substrat_sweep_runs.error` — a scheduled operation's throw, matched on the subject's
+ *   id in this tenant's rows or the platform's own. There is no link to an event here.
+ *
+ * Rows for another tenant are never touched. Free text that names the person but not their
+ * id, on a row with no intent link, is not reached. Idempotent: the note names neither an
+ * intent nor the subject.
+ */
+export function redactSubjectDirectoryText(sql: RedactionSql, target: SubjectTextTarget): void {
+  const needle = subjectNeedle(target.subjectId);
+  sql(
+    `UPDATE _substrat_ops_failures SET message = ?
+      WHERE instr(message, ?) > 0 AND (tenant_id IS NULL OR tenant_id = ?)`,
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
+  );
+  sql(
+    `UPDATE _substrat_issues SET last_message = ?
+      WHERE instr(last_message, ?) > 0
+        AND ((last_owner_kind = 'tenant' AND last_tenant_id = ?) OR last_owner_kind = 'platform')`,
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
+  );
+  sql(
+    `UPDATE _substrat_sweep_runs SET error = ?
+      WHERE instr(error, ?) > 0 AND (tenant_id IS NULL OR tenant_id = ?)`,
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
+  );
+  if (target.intentIds.length === 0) return;
+  const intents = new Set(target.intentIds);
+  // Rows whose text the drain wrote about one of those intents — read back by the grammar it
+  // wrote them in, so the SQL only narrows to the prefix and the id decides.
+  const redactLinked = (table: string, key: string, text: string, where: string, params: string[]) => {
+    const rows = sql(
+      `SELECT ${key} AS key, ${text} AS text FROM ${table} WHERE ${where}instr(${text}, ?) = 1`,
+      [...params, PLATFORM_INTENT_FAILURE_PREFIX],
+    ) as { key: string; text: string }[];
+    for (const row of rows) {
+      const id = intentIdOfFailureMessage(row.text);
+      if (id !== null && intents.has(id)) {
+        sql(`UPDATE ${table} SET ${text} = ? WHERE ${key} = ?`, [REDACTED_FAILURE_NOTE, row.key]);
+      }
+    }
+  };
+  redactLinked('_substrat_ops_failures', 'id', 'message', 'tenant_id = ? AND scope_id = ? AND ', [
+    target.tenantId,
+    target.scopeId,
+  ]);
+  redactLinked('_substrat_issues', 'fingerprint', 'last_message', "last_owner_kind = 'tenant' AND last_tenant_id = ? AND ", [
+    target.tenantId,
+  ]);
+}

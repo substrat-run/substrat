@@ -23,8 +23,8 @@ import type {
   ManifestImports,
   WantedEvent,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput } from './scope-host.js';
-import { backoffAt } from './scope-host.js';
+import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
+import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
 import { resolveVerticalInstanceFrom } from './peer.js';
@@ -265,6 +265,8 @@ export interface PlatformSweepOptions {
   crossVertical?: CrossVerticalOptions;
   /** Rows shipped (and pruned) per pass. Default 500. */
   accessLogBatch?: number;
+  /** Rows of each telemetry table pruned per pass (#1632). Default `TELEMETRY_PRUNE_BATCH`. */
+  telemetryBatch?: number;
   /**
    * Also reap tenants past their grace window (control-plane.md §4.8): any tenant in
    * `deleting` whose `deletingAt` is older than this many days has every scope reaped
@@ -637,6 +639,11 @@ export interface PlatformSweepReport {
   eventDrain: EventDrainReport | null;
   /** Every cross-vertical edge this pass looked at (#1705). Null when the phase is off. */
   crossVertical?: CrossVerticalReport | null;
+  /**
+   * What the telemetry-retention phase deleted (#1632), or null when the host predates
+   * `pruneTelemetry`. Null and zeros are different facts, as everywhere in this report.
+   */
+  telemetry?: TelemetryPruneReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -651,6 +658,8 @@ export interface PlatformSweepReport {
       | 'schedule'
       | 'freshness'
       | 'access-log'
+      // #1632: the telemetry-retention prune failed; the rows stay for the next pass.
+      | 'telemetry'
       // #1334: one scope's event drain failed — its events stay undrained.
       | 'event-drain'
       // #1705: one cross-vertical edge failed in transport. Its watermark did not move, so
@@ -902,10 +911,22 @@ async function mapBounded<T>(
  * whose provider has no sweeper, or that is revoked, is skipped (and counted),
  * not an error.
  */
+/**
+ * The batch options that reach a SQL `LIMIT` unnormalized (#1632), checked before any phase runs
+ * — so a misconfigured pass is refused whole, rather than one phase deleting without a bound.
+ * `eventDrainBatch` and the cross-vertical budget are not here: their phases normalize an
+ * invalid value to the default by design, and say why where they do it.
+ */
+function assertSweepBatches(options: PlatformSweepOptions): void {
+  if (options.telemetryBatch !== undefined) assertRowLimit('telemetryBatch', options.telemetryBatch);
+  if (options.accessLogBatch !== undefined) assertRowLimit('accessLogBatch', options.accessLogBatch);
+}
+
 export async function runPlatformSweep(
   host: ScopeHost,
   options: PlatformSweepOptions,
 ): Promise<PlatformSweepReport> {
+  assertSweepBatches(options);
   const concurrency = options.concurrency ?? 8;
   const report: PlatformSweepReport = {
     scopesDrained: 0,
@@ -922,6 +943,7 @@ export async function runPlatformSweep(
     accessLog: null,
     eventDrain: null,
     crossVertical: null,
+    telemetry: null,
     errors: [],
   };
 
@@ -1439,6 +1461,21 @@ export async function runPlatformSweep(
         report.errors.push({ kind: 'event-drain', id: s.id, error: message(err) });
       }
     });
+  }
+
+  // -- telemetry retention (#1632) -------------------------------------------
+  // Ops failures, issues and sweep runs prune on write, which bounds them only while
+  // something is written. This bounds them in time — a batch per table per pass, so a
+  // backlog drains over ticks. Feature-detected, like every phase.
+  if (typeof host.admin.pruneTelemetry === 'function') {
+    try {
+      report.telemetry = await host.admin.pruneTelemetry(
+        options.actor,
+        options.telemetryBatch ?? TELEMETRY_PRUNE_BATCH,
+      );
+    } catch (err) {
+      report.errors.push({ kind: 'telemetry', id: 'telemetry', error: message(err) });
+    }
   }
 
   // -- drain the staff access log to Tier 2, then prune it (K-24, §4.4) --------
@@ -2537,6 +2574,9 @@ export function startPlatformSweeper(
   host: ScopeHost,
   options: StartPlatformSweeperOptions,
 ): PlatformSweeperHandle {
+  // At start, not on the first tick: a sweeper configured with a bad batch would otherwise
+  // report the same refusal every interval and never run a pass.
+  assertSweepBatches(options);
   const setTimer = options.setTimer ?? ((cb, ms) => setTimeout(cb, ms));
   const clearTimer = options.clearTimer ?? ((h) => clearTimeout(h));
   let stopped = false;

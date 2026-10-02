@@ -238,6 +238,9 @@ import {
   resolveScopeRecord,
   ulid,
   ISSUE_RETENTION_DAYS,
+  telemetryRetentionStatements,
+  assertRowLimit,
+  type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
   SWEEP_RUNS_INTENT_INDEX,
@@ -279,6 +282,11 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
+  redactSubjectScopeText,
+  redactSubjectDirectoryText,
+  ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
+  issueExemplarOwner,
+  type RedactionSql,
   JOB_RUN_PATCH_SQL,
   JOB_STEP_RECORD_SQL,
   DELIVERY_ERROR_REDACTION_SQL,
@@ -1116,7 +1124,7 @@ function keysetTail(
   let tail = ` ORDER BY ${key} ${order}`;
   if (page?.limit !== undefined) {
     tail += ' LIMIT ?';
-    params.push(page.limit);
+    params.push(assertRowLimit('limit', page.limit));
   }
   return tail;
 }
@@ -2087,6 +2095,12 @@ export class SqliteScopeHost implements ScopeHost {
         first_seen TEXT NOT NULL,
         last_seen TEXT NOT NULL,
         last_message TEXT NOT NULL,
+        -- #1632: whose ops failure last_message was copied from, written in the same
+        -- statement as the message: last_owner_kind is 'tenant' (last_tenant_id names it) or
+        -- 'platform' (the platform's own row; last_tenant_id NULL). NULL kind = unknown, an
+        -- issue from before the columns that no retained row attributes.
+        last_tenant_id TEXT,
+        last_owner_kind TEXT,
         last_vertical TEXT,
         last_version TEXT,
         resolved_version TEXT,
@@ -5661,7 +5675,7 @@ export class SqliteScopeHost implements ScopeHost {
       ` ORDER BY id ${order}`;
     if (filter?.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(filter.limit);
+      params.push(assertRowLimit('limit', filter.limit));
     }
     const rows = this.directory.prepare(sql).all(...params) as ModelUsageRow[];
     return rows.map((r) => modelUsageEntryOf(r));
@@ -6618,7 +6632,7 @@ export class SqliteScopeHost implements ScopeHost {
           ` ORDER BY tenant_id ${order}, role_key ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
-          params.push(filter.limit);
+          params.push(assertRowLimit('limit', filter.limit));
         }
         const rows = this.directory.prepare(sql).all(...params) as {
           tenant_id: string;
@@ -7854,7 +7868,7 @@ export class SqliteScopeHost implements ScopeHost {
         // rather than stalling the scope on it (#1636).
         const read = readUndrainedOutbox(
           (offset, count) => page.all(count, offset) as OutboxRow[],
-          Math.min(Math.max(limit ?? 200, 1), 1000),
+          Math.min(assertRowLimit('limit', limit ?? 200), 1000),
         );
         this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, read.events.length);
         return undrainedEventsOf(read);
@@ -8845,7 +8859,8 @@ export class SqliteScopeHost implements ScopeHost {
         // Both scope-side redactions in ONE turn on the scope actor (#1678): issued while an
         // invoke held its transaction open, they joined it, and its rollback put the
         // person's PII back after this verb had destroyed the key and receipted the erasure.
-        const { redacted, intentsRedacted, jobRunsRedacted } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
+        const scopeSql = redactionSqlOf(db);
+        const { redacted, intentsRedacted, jobRunsRedacted, text } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
           redacted: db
             .prepare(
               `UPDATE _substrat_outbox SET payload = NULL
@@ -8866,17 +8881,16 @@ export class SqliteScopeHost implements ScopeHost {
             .run(REDACTED_DELIVERY_NOTE, REDACTED_DELIVERY_NOTE, subjectId),
           // The job-run tables (#1632): a run, its cursor or a step's memo can hold a copy
           // of the same event. The kernel's walk, so the DO runs the identical SQL.
-          jobRunsRedacted: redactSubjectJobRuns(
-            (sql, params) => {
-              const stmt = db.prepare(sql);
-              if (stmt.reader) return stmt.all(...params);
-              stmt.run(...params);
-              return [];
-            },
-            subjectId,
-            at,
-          ),
+          jobRunsRedacted: redactSubjectJobRuns(scopeSql, subjectId, at),
+          // The free-text copies (#1632), and the tombstoned intents the directory half
+          // follows. Last, so those ids include every intent tombstoned above.
+          text: redactSubjectScopeText(scopeSql, subjectId, at),
         }));
+        const { idempotencyResults, intentIds } = text;
+        // The directory's failure text (#1632) — a drain failure quoting one of those
+        // intents, an issue's exemplar, a sweep record's error. Before the key, for the
+        // ordering reason above.
+        redactSubjectDirectoryText(redactionSqlOf(this.directory), { tenantId, scopeId, subjectId, intentIds });
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
@@ -8897,7 +8911,7 @@ export class SqliteScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          redacted.changes + intentsRedacted + jobRunsRedacted,
+          redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults,
         );
         return receipt;
       },
@@ -9778,6 +9792,7 @@ export class SqliteScopeHost implements ScopeHost {
         return info.changes;
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
+        assertRowLimit('limit', limit);
         // ONLY drained rows. Age alone is not a licence to delete evidence.
         const info = this.directory
           .prepare(
@@ -9837,7 +9852,7 @@ export class SqliteScopeHost implements ScopeHost {
           ` ORDER BY id ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
-          params.push(filter.limit);
+          params.push(assertRowLimit('limit', filter.limit));
         }
         const rows = this.directory.prepare(sql).all(...params) as AdminLogRow[];
         // Reading the audit trail is itself audited. Who examined the record of
@@ -9905,12 +9920,14 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory
           .prepare(
             `INSERT INTO _substrat_issues
-               (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_vertical, last_version, resolved_version, resolved_at)
-             VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, NULL, NULL)
+               (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
+             VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
              ON CONFLICT (fingerprint) DO UPDATE SET
                seen_count = seen_count + 1,
                last_seen = excluded.last_seen,
                last_message = excluded.last_message,
+               last_tenant_id = excluded.last_tenant_id,
+               last_owner_kind = excluded.last_owner_kind,
                last_vertical = COALESCE(excluded.last_vertical, last_vertical),
                last_version = COALESCE(excluded.last_version, last_version),
                origin = COALESCE(excluded.origin, origin),
@@ -9925,6 +9942,8 @@ export class SqliteScopeHost implements ScopeHost {
             at,
             at,
             entry.message.slice(0, 2000),
+            entry.tenantId ?? null,
+            issueExemplarOwner(entry.tenantId ?? null),
             entry.vertical ?? null,
             entry.version ?? null,
           );
@@ -9987,7 +10006,7 @@ export class SqliteScopeHost implements ScopeHost {
           ` ORDER BY id ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
-          params.push(filter.limit);
+          params.push(assertRowLimit('limit', filter.limit));
         }
         const rows = this.directory.prepare(sql).all(...params) as OpsFailureRow[];
         // Rows can name tenants and scopes, so reading them is recorded like the
@@ -10089,7 +10108,7 @@ export class SqliteScopeHost implements ScopeHost {
           ` ORDER BY id ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
-          params.push(filter.limit);
+          params.push(assertRowLimit('limit', filter.limit));
         }
         const rows = this.directory.prepare(sql).all(...params) as SweepRunRow[];
         // Rows can name tenants and scopes, so reading them is recorded (K-24).
@@ -10121,6 +10140,15 @@ export class SqliteScopeHost implements ScopeHost {
           }),
         );
       },
+      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> => {
+        // A negative LIMIT is no limit at all to SQLite (#1632): refused before any statement.
+        assertRowLimit('limit', limit);
+        const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
+        for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
+          pruned[table] = this.directory.prepare(sql).all(...params).length;
+        }
+        return pruned;
+      },
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const where: string[] = [];
         const params: (string | number)[] = [];
@@ -10142,7 +10170,7 @@ export class SqliteScopeHost implements ScopeHost {
           'SELECT * FROM _substrat_issues' +
           (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
           ' ORDER BY last_seen DESC, fingerprint LIMIT ?';
-        params.push(filter?.limit ?? 100);
+        params.push(assertRowLimit('limit', filter?.limit ?? 100));
         const rows = this.directory.prepare(sql).all(...params) as IssueRow[];
         // Issues aggregate fleet-wide failures; the read is recorded like the rows' own (K-24).
         this.recordAccess(actor, 'listIssues', {}, filter, rows.length);
@@ -10242,13 +10270,15 @@ export class SqliteScopeHost implements ScopeHost {
    * directory. `PRAGMA table_info` is available in the pure adapter (the DO adapter
    * has to attempt-and-tolerate instead — see its `ensureDirectoryColumns`).
    */
-  private ensureColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+  private ensureColumn(db: Database.Database, table: string, column: string, ddl: string): boolean {
     // Without case, as SQLite resolves a column name: a restore may have added this column
     // already, untyped and spelled as a newer kernel's dump spelled it (#1883).
     const existing = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some(
       (c) => c.name.toLowerCase() === column.toLowerCase(),
     );
-    if (!existing) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    if (existing) return false;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    return true;
   }
 
   /**
@@ -10461,6 +10491,15 @@ export class SqliteScopeHost implements ScopeHost {
     // #1236: the regression's version pair, on a directory whose issues table predates it.
     this.ensureColumn(this.directory, '_substrat_issues', 'last_version', 'last_version TEXT');
     this.ensureColumn(this.directory, '_substrat_issues', 'resolved_version', 'resolved_version TEXT');
+    // #1632: whose exemplar `last_message` is. Backfilled once, as the columns arrive, from
+    // the retained ops-failure rows that prove it; every other row stays unknown. The columns
+    // and the backfill commit together because this whole pass is `ensureDirectorySchema`'s
+    // one transaction: the backfill's gate is "this call added the column", so a column
+    // committed ahead of a backfill that then failed would read as migrated for good.
+    this.ensureColumn(this.directory, '_substrat_issues', 'last_tenant_id', 'last_tenant_id TEXT');
+    if (this.ensureColumn(this.directory, '_substrat_issues', 'last_owner_kind', 'last_owner_kind TEXT')) {
+      this.directory.exec(ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL);
+    }
     this.directory.exec(
       'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
     );
@@ -11400,6 +11439,16 @@ function cellToJson(v: unknown): unknown {
   if (typeof v === 'bigint') return v.toString();
   if (v instanceof Uint8Array) return null;
   return v;
+}
+
+/** The kernel's erasure walks over one SQLite connection — a read returns its rows, a write none. */
+function redactionSqlOf(db: Database.Database): RedactionSql {
+  return (sql, params) => {
+    const stmt = db.prepare(sql);
+    if (stmt.reader) return stmt.all(...params);
+    stmt.run(...params);
+    return [];
+  };
 }
 
 /**
