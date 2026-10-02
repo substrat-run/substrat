@@ -298,40 +298,40 @@ const seg = encodeURIComponent;
 
 export class ControlPlaneStaffClient extends ControlPlaneTransport {
   private json<T>(method: string, path: string, body?: unknown): Promise<T> {
-    return this.call<T>(path, {
+    return this.call(path, {
       method,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   }
-  private post = <T>(path: string, body?: unknown) => this.json<T>('POST', path, body);
+  private post = <T>(path: string, body?: unknown): Promise<T> => this.json('POST', path, body);
 
   // -- tenants ---------------------------------------------------------------
 
-  listTenants = (page: PageQuery = {}) => this.call<Page<Tenant>>(`/tenants${query({ ...page })}`);
-  getTenant = (id: TenantId) => this.call<Tenant>(`/tenants/${id}`);
-  createTenant = (input: { id: TenantId; slug: string; name: string }) =>
-    this.post<Tenant>('/tenants', input);
-  setTenantStatus = (id: TenantId, status: TenantStatus) =>
-    this.json<Tenant>('PATCH', `/tenants/${id}/status`, { status });
+  listTenants = (page: PageQuery = {}): Promise<Page<Tenant>> => this.call(`/tenants${query({ ...page })}`);
+  getTenant = (id: TenantId): Promise<Tenant> => this.call(`/tenants/${id}`);
+  createTenant = (input: { id: TenantId; slug: string; name: string }): Promise<Tenant> =>
+    this.post('/tenants', input);
+  setTenantStatus = (id: TenantId, status: TenantStatus): Promise<Tenant> =>
+    this.json('PATCH', `/tenants/${id}/status`, { status });
   // Reap a deleting tenant NOW (§4.8) — skips the grace window: every scope reaped,
   // PII/config directory rows cleared, the tenant row kept as a `reaped` tombstone.
-  reapTenant = (id: TenantId) => this.post<Tenant>(`/tenants/${id}/reap`);
+  reapTenant = (id: TenantId): Promise<Tenant> => this.post(`/tenants/${id}/reap`);
 
   // The per-tenant store ledgers as inventory (#301 D1, #473 R2): which database and
   // which bucket hold this tenant's bytes. Read-only — stores are minted by
   // provisioning, never from here.
-  tenantStores = (id: TenantId) => this.call<TenantStores>(`/tenants/${id}/stores`);
+  tenantStores = (id: TenantId): Promise<TenantStores> => this.call(`/tenants/${id}/stores`);
 
-  listEntitlements = (id: TenantId) => this.call<EntitlementGrant[]>(`/tenants/${id}/entitlements`);
+  listEntitlements = (id: TenantId): Promise<EntitlementGrant[]> => this.call(`/tenants/${id}/entitlements`);
   // The key rides in the PATH, so it is encoded (#691). `entitlementGrant` accepts any
   // non-empty string — looser than the manifest's `/^[a-z0-9-]+$/` — precisely so a
   // legacy grant like `t-0wv2mwk4j5/crm-eff` round-trips. Unencoded, its slash forked the
   // route and the console could neither grant nor REVOKE the very rows that needed
   // cleaning up, which is what forced the hand-curl.
-  grantEntitlement = (id: TenantId, key: string, plan?: EntitlementGrantInput) =>
-    this.json<EntitlementGrant[]>('PUT', `/tenants/${id}/entitlements/${seg(key)}`, plan);
-  revokeEntitlement = (id: TenantId, key: string) =>
-    this.json<EntitlementGrant[]>('DELETE', `/tenants/${id}/entitlements/${seg(key)}`);
+  grantEntitlement = (id: TenantId, key: string, plan?: EntitlementGrantInput): Promise<EntitlementGrant[]> =>
+    this.json('PUT', `/tenants/${id}/entitlements/${seg(key)}`, plan);
+  revokeEntitlement = (id: TenantId, key: string): Promise<EntitlementGrant[]> =>
+    this.json('DELETE', `/tenants/${id}/entitlements/${seg(key)}`);
 
   // -- platform --------------------------------------------------------------
 
@@ -340,57 +340,57 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // be a LINK into the Cloudflare dashboard rather than an id to search for. Answers
   // null on a control plane with no runtime configured (self-host): the views then show
   // the same identifiers, unlinked.
-  platformRuntime = () => this.call<PlatformRuntime | null>('/platform/runtime');
+  platformRuntime = (): Promise<PlatformRuntime | null> => this.call('/platform/runtime');
   // The Durable Object namespaces one script defines, scope-class first — the ids the
   // dashboard addresses a namespace by. 501s when the control plane has no lookup
   // configured, which callers treat as "link to the list instead".
-  doNamespaces = (script: string) =>
-    this.call<DoNamespace[]>(`/platform/do-namespaces${query({ script })}`);
+  doNamespaces = (script: string): Promise<DoNamespace[]> =>
+    this.call(`/platform/do-namespaces${query({ script })}`);
 
   // §5's meters 1 and 2 (#38) — tenants + effective-active scopes, and the entitlement
   // store grouped by SKU and tier. Computed platform-side because the billable rule
   // (a scope is billable only if its tenant is active; expiry decided at `readAt`)
   // belongs to one definition, not to whichever surface renders it. Omit `tenantId`
   // for the fleet reading.
-  readMeters = (tenantId?: TenantId) => this.call<MeterReading>(`/meters${query({ tenantId })}`);
+  readMeters = (tenantId?: TenantId): Promise<MeterReading> => this.call(`/meters${query({ tenantId })}`);
   // Storage (#1524): one PAGE of a tenant's scope-database sizes, read on demand. Each
   // scope read wakes its Durable Object, so the card calls this only when a person asks,
   // and walks further pages with `cursor` one press at a time.
-  readStorage = (tenantId: TenantId, cursor?: ScopeId) =>
-    this.call<StorageMeterReading>(`/meters/storage${query({ tenantId, cursor })}`);
+  readStorage = (tenantId: TenantId, cursor?: ScopeId): Promise<StorageMeterReading> =>
+    this.call(`/meters/storage${query({ tenantId, cursor })}`);
   // Meter 3 (#1054) — model usage, the one D-30 could not compute: the lines the
   // `model-usage` intents drained into the directory, folded per (tenant, vertical,
   // model) with the platform's margin applied at read time. Defaults to the current
   // calendar month so far; omit `tenantId` for the fleet.
-  readModelUsage = (q: { tenantId?: TenantId; since?: string; until?: string } = {}) =>
-    this.call<ModelUsageSummary>(`/model-usage/summary${query({ ...q })}`);
+  readModelUsage = (q: { tenantId?: TenantId; since?: string; until?: string } = {}): Promise<ModelUsageSummary> =>
+    this.call(`/model-usage/summary${query({ ...q })}`);
 
   // -- scopes ----------------------------------------------------------------
 
-  listScopes = (filter?: { tenantId?: TenantId; status?: ScopeStatus[]; vertical?: string } & PageQuery) =>
-    this.call<Page<Scope>>(`/scopes${query({ ...filter })}`);
+  listScopes = (filter?: { tenantId?: TenantId; status?: ScopeStatus[]; vertical?: string } & PageQuery): Promise<Page<Scope>> =>
+    this.call(`/scopes${query({ ...filter })}`);
   // Fleet migration progress (kernel-design §5.3, #49): "release N: X/Y
   // migrated, P pending, F failed" against the deployment's frontier.
-  migrationProgress = (vertical?: string) =>
-    this.call<MigrationProgress>(`/fleet/migrations${query({ vertical })}`);
-  getScope = (tenantId: TenantId, scopeId: ScopeId) =>
-    this.call<Scope>(`/tenants/${tenantId}/scopes/${scopeId}`);
+  migrationProgress = (vertical?: string): Promise<MigrationProgress> =>
+    this.call(`/fleet/migrations${query({ vertical })}`);
+  getScope = (tenantId: TenantId, scopeId: ScopeId): Promise<Scope> =>
+    this.call(`/tenants/${tenantId}/scopes/${scopeId}`);
   // Scope health (#321): an ACTIVE scope with a resolvable serving script but an empty
   // role projection serves traffic every check denies — surfaced as a platform condition
   // here instead of only as a per-app 403. `missingStores` (#825) is the same kind of
   // condition one layer down: a per-tenant store the vertical declares that this tenant
   // was never minted, invisible until the code touches it.
-  scopeHealth = (tenantId: TenantId, scopeId: ScopeId) =>
-    this.call<ScopeHealth>(`/tenants/${tenantId}/scopes/${scopeId}/health`);
+  scopeHealth = (tenantId: TenantId, scopeId: ScopeId): Promise<ScopeHealth> =>
+    this.call(`/tenants/${tenantId}/scopes/${scopeId}/health`);
 
   // The K-35 denial log (#867) — the scope's own record of every ENFORCED permission
   // refusal. Summary first: the raw log's volume is attacker-influenceable (a probing
   // client mints rows), so bucketing is what keeps a quiet actor visible next to a loud
   // one. The rows are the drill-down behind a bucket.
-  denialSummary = (t: TenantId, s: ScopeId, filter?: DenialFilter) =>
-    this.call<DenialSummary>(`/tenants/${t}/scopes/${s}/denials/summary${denialQuery(filter)}`);
-  listDenials = (t: TenantId, s: ScopeId, filter?: DenialFilter) =>
-    this.call<PermissionDenial[]>(`/tenants/${t}/scopes/${s}/denials${denialQuery(filter)}`);
+  denialSummary = (t: TenantId, s: ScopeId, filter?: DenialFilter): Promise<DenialSummary> =>
+    this.call(`/tenants/${t}/scopes/${s}/denials/summary${denialQuery(filter)}`);
+  listDenials = (t: TenantId, s: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]> =>
+    this.call(`/tenants/${t}/scopes/${s}/denials${denialQuery(filter)}`);
 
   // The #1666 schedule kill switch, read and moved from the console (#1674/#1675). No
   // new permission surface here — the route is already staff-only server-side
@@ -398,18 +398,18 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // manifest id (e.g. '@substrat-run/engine-absence'), always read off a status entry
   // rather than typed by hand. A deployment predating the route answers 501, which
   // `ControlPlaneError` relays verbatim (never a wrong `on`).
-  systemGrantsStatus = (t: TenantId, s: ScopeId) =>
-    this.call<SystemGrantsStatusEntry[]>(`/tenants/${t}/scopes/${s}/system-grants`);
+  systemGrantsStatus = (t: TenantId, s: ScopeId): Promise<SystemGrantsStatusEntry[]> =>
+    this.call(`/tenants/${t}/scopes/${s}/system-grants`);
   // DELETE on the switch route (#1676) — `reason` is required server-side
   // (`z.string().trim().min(1).max(500)`) and lands on the admin log beside the actor.
-  switchScheduleOff = (t: TenantId, s: ScopeId, moduleId: ModuleId, reason: string) =>
-    this.json<SystemSwitchResult>('DELETE', `/tenants/${t}/scopes/${s}/system-grants`, {
+  switchScheduleOff = (t: TenantId, s: ScopeId, moduleId: ModuleId, reason: string): Promise<SystemSwitchResult> =>
+    this.json('DELETE', `/tenants/${t}/scopes/${s}/system-grants`, {
       moduleId,
       reason,
     });
   // POST on the same route — the only way back on; restores exactly what the DELETE took.
-  switchScheduleOn = (t: TenantId, s: ScopeId, moduleId: ModuleId, reason: string) =>
-    this.post<SystemSwitchResult>(`/tenants/${t}/scopes/${s}/system-grants`, { moduleId, reason });
+  switchScheduleOn = (t: TenantId, s: ScopeId, moduleId: ModuleId, reason: string): Promise<SystemSwitchResult> =>
+    this.post(`/tenants/${t}/scopes/${s}/system-grants`, { moduleId, reason });
 
   // The #1706 peer kill switch, read and moved from the console. The route admits a
   // tenant's own credential as well as staff (unlike the schedule switch above), because
@@ -417,38 +417,38 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // either way. `vertical` is the CALLING vertical's registry slug, always read off a
   // status entry rather than typed by hand. A deployment predating the route answers 501,
   // which `ControlPlaneError` relays verbatim (never a wrong `on`).
-  peerGrantsStatus = (t: TenantId, s: ScopeId) =>
-    this.call<PeerGrantsStatusEntry[]>(`/tenants/${t}/scopes/${s}/peer-grants`);
+  peerGrantsStatus = (t: TenantId, s: ScopeId): Promise<PeerGrantsStatusEntry[]> =>
+    this.call(`/tenants/${t}/scopes/${s}/peer-grants`);
   // DELETE on the switch route — `reason` is required server-side and lands on the admin
   // log beside the actor, exactly as the schedule switch's does.
-  switchPeerOff = (t: TenantId, s: ScopeId, vertical: string, reason: string) =>
-    this.json<PeerSwitchResult>('DELETE', `/tenants/${t}/scopes/${s}/peer-grants`, {
+  switchPeerOff = (t: TenantId, s: ScopeId, vertical: string, reason: string): Promise<PeerSwitchResult> =>
+    this.json('DELETE', `/tenants/${t}/scopes/${s}/peer-grants`, {
       vertical,
       reason,
     });
   // POST on the same route — the only way back on; restores exactly what the DELETE took.
-  switchPeerOn = (t: TenantId, s: ScopeId, vertical: string, reason: string) =>
-    this.post<PeerSwitchResult>(`/tenants/${t}/scopes/${s}/peer-grants`, { vertical, reason });
+  switchPeerOn = (t: TenantId, s: ScopeId, vertical: string, reason: string): Promise<PeerSwitchResult> =>
+    this.post(`/tenants/${t}/scopes/${s}/peer-grants`, { vertical, reason });
 
   // #1705 PR 3: where each cross-vertical edge of a tenant stands, read live through the
   // sweep's own reach, and the replay lever on a consumer scope. The lever's body carries its
   // acknowledgement literal. Without it the plane refuses in the words it stands for.
   // `focus` narrows the read to one scope's edges, into it and out of it.
-  crossVerticalEdges = (t: TenantId, focus?: ScopeId) =>
-    this.call<EdgeHealthReport>(
+  crossVerticalEdges = (t: TenantId, focus?: ScopeId): Promise<EdgeHealthReport> =>
+    this.call(
       `/tenants/${t}/cross-vertical/edges${focus ? `?scopeId=${seg(focus)}` : ''}`,
     );
-  moveImportCursor = (t: TenantId, s: ScopeId, move: ImportCursorMove) =>
-    this.post<ImportCursorMoved>(`/tenants/${t}/scopes/${s}/import-cursor`, move);
+  moveImportCursor = (t: TenantId, s: ScopeId, move: ImportCursorMove): Promise<ImportCursorMoved> =>
+    this.post(`/tenants/${t}/scopes/${s}/import-cursor`, move);
 
-  provisionScope = (input: ProvisionScopeInput) => this.post<Scope>('/scopes', input);
+  provisionScope = (input: ProvisionScopeInput): Promise<Scope> => this.post('/scopes', input);
 
   // One method per audited transition, mirroring the API and HostAdmin. The
   // console renders only legal transitions; the graph is enforced below.
   // provisioning → active: the vertical has confirmed the scope exists (K-31).
-  activateScope = (t: TenantId, s: ScopeId) => this.post<Scope>(`/tenants/${t}/scopes/${s}/activate`);
-  suspendScope = (t: TenantId, s: ScopeId) => this.post<Scope>(`/tenants/${t}/scopes/${s}/suspend`);
-  unsuspendScope = (t: TenantId, s: ScopeId) => this.post<Scope>(`/tenants/${t}/scopes/${s}/unsuspend`);
+  activateScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/activate`);
+  suspendScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/suspend`);
+  unsuspendScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/unsuspend`);
   /**
    * Re-run the vertical's provision for a scope that already has one — NOT a status
    * transition, which is why it sits outside the ladder above and outside
@@ -462,9 +462,9 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
    * for itself at provision — a new service principal, say — which no other path can
    * ever deliver, because provision runs at install and never again.
    */
-  reprovisionScope = (t: TenantId, s: ScopeId) => this.post<Scope>(`/tenants/${t}/scopes/${s}/provision`);
-  archiveScope = (t: TenantId, s: ScopeId) => this.post<Scope>(`/tenants/${t}/scopes/${s}/archive`);
-  unarchiveScope = (t: TenantId, s: ScopeId) => this.post<Scope>(`/tenants/${t}/scopes/${s}/unarchive`);
+  reprovisionScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/provision`);
+  archiveScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/archive`);
+  unarchiveScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/unarchive`);
   // archived → reaped (§4.4): irreversibly wipe the scope's DO storage, keeping the
   // directory row as a tombstone. Staff-only server-side; the console arms it behind a
   // type-to-confirm dialog because, unlike archive, there is no restore.
@@ -473,8 +473,8 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // explicit ask as "back up or refuse", so a console reap can never quietly wipe a
   // scope because the backup bucket went unbound. The returned `backup` names the copy
   // that landed — the operator's proof it exists, and the address to restore from.
-  reapScope = (t: TenantId, s: ScopeId, opts: { backup?: boolean } = { backup: true }) =>
-    this.post<Scope & { backup: ScopeBackup | null }>(`/tenants/${t}/scopes/${s}/reap`, opts);
+  reapScope = (t: TenantId, s: ScopeId, opts: { backup?: boolean } = { backup: true }): Promise<Scope & { backup: ScopeBackup | null }> =>
+    this.post(`/tenants/${t}/scopes/${s}/reap`, opts);
   // Move ONE scope onto a DIFFERENT vertical lineage's serving script (#389) — the
   // update-rebind behind retiring a lineage in favour of another. Data-first with the
   // source script kept as the backout. `ackMigrations` is the digest gate's override:
@@ -482,16 +482,16 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // differ unless the operator acknowledges having read both surfaces. `abandonData`
   // is deliberately NOT exposed — it exists for pre-#236 relic scripts only, and a
   // console that offers it invites moving an install while leaving its data behind.
-  rebindScopeVertical = (t: TenantId, s: ScopeId, vertical: string, opts: { ackMigrations?: boolean } = {}) =>
-    this.post<{ servingRef: string; versionId: string; alreadyBound?: boolean; tables?: number }>(
+  rebindScopeVertical = (t: TenantId, s: ScopeId, vertical: string, opts: { ackMigrations?: boolean } = {}): Promise<{ servingRef: string; versionId: string; alreadyBound?: boolean; tables?: number }> =>
+    this.post(
       `/tenants/${t}/scopes/${s}/rebind-vertical`,
       { vertical, ...opts },
     );
   /** The copies held for a scope, newest first — readable after the reap (the tombstone survives). */
-  listScopeBackups = (t: TenantId, s: ScopeId) =>
-    this.call<ScopeBackup[]>(`/tenants/${t}/scopes/${s}/backups`);
+  listScopeBackups = (t: TenantId, s: ScopeId): Promise<ScopeBackup[]> =>
+    this.call(`/tenants/${t}/scopes/${s}/backups`);
   /** Take a copy without reaping — a pre-migration checkpoint, or an export to keep. */
-  backupScope = (t: TenantId, s: ScopeId) => this.post<ScopeBackup>(`/tenants/${t}/scopes/${s}/backups`);
+  backupScope = (t: TenantId, s: ScopeId): Promise<ScopeBackup> => this.post(`/tenants/${t}/scopes/${s}/backups`);
 
   // The PLATFORM's own copies (#40) — the directory, not a tenant's scope. Read and
   // take-now only: `POST /directory/restore` is deliberately NOT on this client. A
@@ -504,28 +504,28 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // A 501 here is meaningful, not an error to swallow: it means no backup store is
   // bound, i.e. this control plane keeps NO platform copy. The view renders that as
   // the alarm it is.
-  listDirectoryBackups = () => this.call<DirectoryBackup[]>('/directory/backups');
-  backupDirectory = () => this.post<DirectoryBackup>('/directory/backups');
+  listDirectoryBackups = (): Promise<DirectoryBackup[]> => this.call('/directory/backups');
+  backupDirectory = (): Promise<DirectoryBackup> => this.post('/directory/backups');
   // Hard-delete a SNAPSHOT fork (forkedFrom set): wipes its storage, hostnames, and the
   // row (unlike reap, which keeps a tombstone). Refused (409) on a non-fork primary scope.
-  deleteScope = (t: TenantId, s: ScopeId) =>
-    this.json<{ deleted: ScopeId }>('DELETE', `/tenants/${t}/scopes/${s}`);
+  deleteScope = (t: TenantId, s: ScopeId): Promise<{ deleted: ScopeId }> =>
+    this.json('DELETE', `/tenants/${t}/scopes/${s}`);
 
   // Read only — there is no route that writes a role, by design.
   // Cursor is the composite `${tenantId}|${roleKey}` sort key (scope-host.ts listRoles).
-  listRoles = (filter?: { tenantId?: TenantId; source?: string } & PageQuery) =>
-    this.call<Page<TenantRole>>(`/roles${query({ ...filter })}`);
+  listRoles = (filter?: { tenantId?: TenantId; source?: string } & PageQuery): Promise<Page<TenantRole>> =>
+    this.call(`/roles${query({ ...filter })}`);
 
   // The hostname map (§4.7). `resolveHostname` is absent on purpose — that is the
   // router's per-request path, not a staff action, and it is not on this surface.
-  listHostnames = (filter?: { tenantId?: TenantId; scopeId?: ScopeId } & PageQuery) =>
-    this.call<Page<HostnameBinding>>(`/hostnames${query({ ...filter })}`);
-  bindHostname = (input: BindHostnameInput) => this.post<HostnameBinding>('/hostnames', input);
-  setHostnameStatus = (hostname: string, status: HostnameStatus, note?: string) =>
-    this.json<HostnameBinding>('PATCH', `/hostnames/${seg(hostname)}/status`, { status, note });
+  listHostnames = (filter?: { tenantId?: TenantId; scopeId?: ScopeId } & PageQuery): Promise<Page<HostnameBinding>> =>
+    this.call(`/hostnames${query({ ...filter })}`);
+  bindHostname = (input: BindHostnameInput): Promise<HostnameBinding> => this.post('/hostnames', input);
+  setHostnameStatus = (hostname: string, status: HostnameStatus, note?: string): Promise<HostnameBinding> =>
+    this.json('PATCH', `/hostnames/${seg(hostname)}/status`, { status, note });
   // Release a bound name — what a retire pass runs before reaping a scope, so the
   // reap's bound-hostname guard is satisfied and the router stops resolving it.
-  unbindHostname = (hostname: string) => this.json<void>('DELETE', `/hostnames/${seg(hostname)}`);
+  unbindHostname = (hostname: string): Promise<void> => this.json('DELETE', `/hostnames/${seg(hostname)}`);
 
   /**
    * Create one instance of a vertical (K-31). The control plane calls the
@@ -538,121 +538,121 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   provisionInstance = (
     verticalSlug: string,
     input: { tenantId: TenantId; scopeId: ScopeId; owner: string; slug: string; name: string },
-  ) =>
-    this.post<{ tenantId: TenantId; scopeId: ScopeId; owner: string }>(
+  ): Promise<{ tenantId: TenantId; scopeId: ScopeId; owner: string }> =>
+    this.post(
       `/verticals/${seg(verticalSlug)}/instances`,
       input,
     );
 
   // -- logs and fleet reads --------------------------------------------------
 
-  adminLog = (q: AuditLogQuery = {}) => this.call<AdminLogPage>(`/admin-log${query({ ...q })}`);
+  adminLog = (q: AuditLogQuery = {}): Promise<AdminLogPage> => this.call(`/admin-log${query({ ...q })}`);
 
   // Operational failures (#559) — what the platform could NOT do, durable and
   // queryable, distinct from the admin log's successful mutations. Newest first
   // by default; `reference` finds the row a `reference = <id>` CI error names.
-  listOpsFailures = (q: OpsFailuresQuery = {}) =>
-    this.call<Page<OpsFailureEntry>>(`/ops-failures${query({ ...q })}`);
+  listOpsFailures = (q: OpsFailuresQuery = {}): Promise<Page<OpsFailureEntry>> =>
+    this.call(`/ops-failures${query({ ...q })}`);
   // The fleet's sweep record (#1232) — connections polled, schedules fired or
   // skipped, freshness verdicts. Newest first; 14-day retention.
-  listSweepRuns = (q: SweepRunsQuery = {}) =>
-    this.call<Page<SweepRunEntry>>(`/sweep-runs${query({ ...q })}`);
+  listSweepRuns = (q: SweepRunsQuery = {}): Promise<Page<SweepRunEntry>> =>
+    this.call(`/sweep-runs${query({ ...q })}`);
   // The schedule kill-switch fleet read (#1674) — every (tenant, scope, module) the
   // directory records a switch position for. `position` defaults to `off` server-side:
   // "what is switched off across the fleet" is the question this read exists to answer.
-  listSystemSwitches = (q: SystemSwitchesQuery = {}) =>
-    this.call<Page<SystemSwitchRecord>>(`/system-switches${query({ ...q })}`);
+  listSystemSwitches = (q: SystemSwitchesQuery = {}): Promise<Page<SystemSwitchRecord>> =>
+    this.call(`/system-switches${query({ ...q })}`);
   // Fleet-wide connection health (#1690) — every tenant's connections with their
   // derived health, refresh-expiry warning, and connector dead letters per provider.
-  listConnectionHealth = (q: ConnectionHealthQuery = {}) =>
-    this.call<ConnectionHealthPage>(`/connections/health${query({ ...q })}`);
+  listConnectionHealth = (q: ConnectionHealthQuery = {}): Promise<ConnectionHealthPage> =>
+    this.call(`/connections/health${query({ ...q })}`);
   // Connector calls per provider over a window (#1691) — the trend behind the health
   // line. 501s where the control plane names no connector-call dataset.
-  connectorCalls = (q: { hours: number; provider?: string }) =>
-    this.call<{ hours: number; buckets: ConnectorCallsBucket[] }>(`/connections/calls${query({ ...q })}`);
+  connectorCalls = (q: { hours: number; provider?: string }): Promise<{ hours: number; buckets: ConnectorCallsBucket[] }> =>
+    this.call(`/connections/calls${query({ ...q })}`);
   // Failures grouped by fingerprint (#1233) — counted defects with a lifecycle.
   // `{ entries }` alone: the server sends no cursor, deliberately.
-  listIssues = (q: IssuesQuery = {}) => this.call<{ entries: IssueEntry[] }>(`/issues${query({ ...q })}`);
+  listIssues = (q: IssuesQuery = {}): Promise<{ entries: IssueEntry[] }> => this.call(`/issues${query({ ...q })}`);
   // The staff verdict: resolve / ignore / reopen. The fingerprint rides in the
   // body — it embeds U+001F, and a path segment would demand percent-encoding
   // every caller can get subtly wrong.
-  setIssueStatus = (fingerprint: string, status: IssueStatusInput) =>
-    this.json<IssueEntry>('PUT', '/issues/status', { fingerprint, status });
+  setIssueStatus = (fingerprint: string, status: IssueStatusInput): Promise<IssueEntry> =>
+    this.json('PUT', '/issues/status', { fingerprint, status });
 
   // -- vertical + version registry (orchestration.md §5.6) ----------------
   // The staff surface for the two human checkpoints: admit/reject a version,
   // and promote a channel — which refuses a changed permission/migration digest
   // unless acknowledged. Register is a producer action; publishing a version
   // (with digests from a build) is CI/CLI, not hand-entry.
-  listVerticals = (page: PageQuery = {}) => this.call<Page<Vertical>>(`/verticals${query({ ...page })}`);
-  registerVertical = (input: { slug: string; name: string; source: VerticalSource }) =>
-    this.post<Vertical>('/verticals', input);
-  listVersions = (slug: string, page: PageQuery = {}) =>
-    this.call<Page<VerticalVersion>>(`/verticals/${seg(slug)}/versions${query({ ...page })}`);
-  admitVersion = (slug: string, id: string) =>
-    this.post<VerticalVersion>(`/verticals/${seg(slug)}/versions/${id}/admit`);
-  rejectVersion = (slug: string, id: string, note: string) =>
-    this.post<VerticalVersion>(`/verticals/${seg(slug)}/versions/${id}/reject`, { note });
-  listChannels = (slug: string, page: PageQuery = {}) =>
-    this.call<Page<VerticalChannel>>(`/verticals/${seg(slug)}/channels${query({ ...page })}`);
+  listVerticals = (page: PageQuery = {}): Promise<Page<Vertical>> => this.call(`/verticals${query({ ...page })}`);
+  registerVertical = (input: { slug: string; name: string; source: VerticalSource }): Promise<Vertical> =>
+    this.post('/verticals', input);
+  listVersions = (slug: string, page: PageQuery = {}): Promise<Page<VerticalVersion>> =>
+    this.call(`/verticals/${seg(slug)}/versions${query({ ...page })}`);
+  admitVersion = (slug: string, id: string): Promise<VerticalVersion> =>
+    this.post(`/verticals/${seg(slug)}/versions/${id}/admit`);
+  rejectVersion = (slug: string, id: string, note: string): Promise<VerticalVersion> =>
+    this.post(`/verticals/${seg(slug)}/versions/${id}/reject`, { note });
+  listChannels = (slug: string, page: PageQuery = {}): Promise<Page<VerticalChannel>> =>
+    this.call(`/verticals/${seg(slug)}/channels${query({ ...page })}`);
   // Publish/unpublish to the PUBLIC marketplace (marketplace-publish.md §5) — the staff
   // admission of a builder's publish request. The API refuses `listed: true` while prod
   // points at an auto-admitted version; that refusal is surfaced verbatim, not pre-checked.
-  setVerticalListed = (slug: string, listed: boolean) =>
-    this.post<{ slug: string; listed: boolean }>(`/verticals/${seg(slug)}/listing`, { listed });
+  setVerticalListed = (slug: string, listed: boolean): Promise<{ slug: string; listed: boolean }> =>
+    this.post(`/verticals/${seg(slug)}/listing`, { listed });
   // The install kill-switch: block/unblock NEW installs (existing scopes keep serving).
-  setInstallsBlocked = (slug: string, blocked: boolean) =>
-    this.post<{ slug: string; installsBlocked: boolean }>(`/verticals/${seg(slug)}/install-block`, {
+  setInstallsBlocked = (slug: string, blocked: boolean): Promise<{ slug: string; installsBlocked: boolean }> =>
+    this.post(`/verticals/${seg(slug)}/install-block`, {
       blocked,
     });
   // Grant/revoke the tenant-provisioner capability (#412): whether this vertical's scopes
   // may enqueue provision-tenant / set-entitlements intents the platform executes.
-  setTenantProvisioner = (slug: string, granted: boolean) =>
-    this.post<{ slug: string; tenantProvisioner: boolean }>(
+  setTenantProvisioner = (slug: string, granted: boolean): Promise<{ slug: string; tenantProvisioner: boolean }> =>
+    this.post(
       `/verticals/${seg(slug)}/tenant-provisioner`,
       { granted },
     );
   // Grant/revoke the email-sender capability (#303): whether this vertical's scopes may POST
   // to the /internal/email/send relay and have transactional mail sent on their behalf.
-  setEmailSender = (slug: string, granted: boolean) =>
-    this.post<{ slug: string; emailSender: boolean }>(`/verticals/${seg(slug)}/email-sender`, {
+  setEmailSender = (slug: string, granted: boolean): Promise<{ slug: string; emailSender: boolean }> =>
+    this.post(`/verticals/${seg(slug)}/email-sender`, {
       granted,
     });
   // Delete a vertical + its versions/channels. Refused (4xx) while any scope is bound.
-  deleteVertical = (slug: string) =>
-    this.json<{ slug: string; deleted: boolean }>('DELETE', `/verticals/${seg(slug)}`);
+  deleteVertical = (slug: string): Promise<{ slug: string; deleted: boolean }> =>
+    this.json('DELETE', `/verticals/${seg(slug)}`);
   promoteVersion = (
     slug: string,
     channel: ChannelName,
     versionId: string,
     acknowledge?: PromotionAcknowledgement,
-  ) =>
-    this.post<VerticalChannel>(`/verticals/${seg(slug)}/channels/${channel}/promote`, {
+  ): Promise<VerticalChannel> =>
+    this.post(`/verticals/${seg(slug)}/channels/${channel}/promote`, {
       versionId,
       acknowledge,
     });
   // #1705 PR 3: which installed apps promoting `versionId` would break, read before promoting
   // so the dialog can ask for the export-break acknowledgement up front. Staff see every app.
-  promotionImpact = (slug: string, channel: ChannelName, versionId: string) =>
-    this.call<{ affected: ExportBreak[]; otherTenants?: number }>(
+  promotionImpact = (slug: string, channel: ChannelName, versionId: string): Promise<{ affected: ExportBreak[]; otherTenants?: number }> =>
+    this.call(
       `/verticals/${seg(slug)}/channels/${channel}/promote-impact?versionId=${seg(versionId)}`,
     );
   // #1677: the two diffs a promote acknowledges. `registry` is null for a version that declared
   // none ("cannot diff"), `migrations` null for one that carries no SQL ("not available").
-  versionRegistry = (slug: string, versionId: string) =>
-    this.call<{ registry: PermissionRegistry | null }>(
+  versionRegistry = (slug: string, versionId: string): Promise<{ registry: PermissionRegistry | null }> =>
+    this.call(
       `/verticals/${seg(slug)}/versions/${seg(versionId)}/registry`,
     );
-  versionMigrations = (slug: string, versionId: string, base?: string) =>
-    this.call<{ migrations: MigrationDiff | null }>(
+  versionMigrations = (slug: string, versionId: string, base?: string): Promise<{ migrations: MigrationDiff | null }> =>
+    this.call(
       `/verticals/${seg(slug)}/versions/${seg(versionId)}/migrations${
         base === undefined ? '' : `?base=${seg(base)}`
       }`,
     );
   // Pin a scope to a version — what the router dispatches on (orchestration.md §5.4).
   // Refuses a non-admitted version below the seam.
-  bindScopeVersion = (tenantId: TenantId, scopeId: ScopeId, versionId: string) =>
-    this.post<Scope>(`/tenants/${tenantId}/scopes/${scopeId}/version`, { versionId });
+  bindScopeVersion = (tenantId: TenantId, scopeId: ScopeId, versionId: string): Promise<Scope> =>
+    this.post(`/tenants/${tenantId}/scopes/${scopeId}/version`, { versionId });
 
   // -- members (console → Members) ----------------------------------------
   // Who may act on the control plane (staff_actor) — the CP worker's own D1,
@@ -660,24 +660,24 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // control-plane-api. Every mutation returns the fresh reading: one round
   // trip, no refetch. (Builder-studio access is NOT managed here — it is the
   // `builder` entitlement on the tenant, granted like any SKU.)
-  listMembers = () => this.call<MembersReading>('/members');
-  grantStaffAccess = (email: string, name?: string) =>
-    this.post<MembersReading>('/members/staff', { email, name });
-  revokeStaffAccess = (email: string) => this.post<MembersReading>('/members/staff/revoke', { email });
+  listMembers = (): Promise<MembersReading> => this.call('/members');
+  grantStaffAccess = (email: string, name?: string): Promise<MembersReading> =>
+    this.post('/members/staff', { email, name });
+  revokeStaffAccess = (email: string): Promise<MembersReading> => this.post('/members/staff/revoke', { email });
 
   // -- observability (design/observability.md §4.1) -----------------------
   // Proxied reads over the control plane's observability seam; 501 when no
   // backend is configured. Tier-3 numbers: sampled, approximate, never money
   // (master-plan §5.3).
-  serviceMetrics = (hours: number) =>
-    this.call<ServiceMetricsRow[]>(`/observability/metrics${query({ hours })}`);
-  recentLogs = (q: { service?: string; level?: string; hours?: number; limit?: number } = {}) =>
-    this.call<RecentLogEvent[]>(`/observability/logs${query({ ...q })}`);
+  serviceMetrics = (hours: number): Promise<ServiceMetricsRow[]> =>
+    this.call(`/observability/metrics${query({ hours })}`);
+  recentLogs = (q: { service?: string; level?: string; hours?: number; limit?: number } = {}): Promise<RecentLogEvent[]> =>
+    this.call(`/observability/logs${query({ ...q })}`);
   /** Observed-vs-declared outbound egress for a vertical's deployed versions (#859). */
-  verticalEgress = (slug: string, q: { hours?: number; limit?: number } = {}) =>
-    this.call<EgressReport>(`/verticals/${seg(slug)}/egress${query({ ...q })}`);
+  verticalEgress = (slug: string, q: { hours?: number; limit?: number } = {}): Promise<EgressReport> =>
+    this.call(`/verticals/${seg(slug)}/egress${query({ ...q })}`);
   // Platform-request drain backlog, fleet-wide (#1690 §2) — terminal give-ups over a
   // window, plus the pending count as of the sweep's last drain pass (#1840). See
   // `PlatformRequestBacklog`'s own doc.
-  platformRequestBacklog = () => this.call<PlatformRequestBacklog>('/platform-requests/backlog');
+  platformRequestBacklog = (): Promise<PlatformRequestBacklog> => this.call('/platform-requests/backlog');
 }
