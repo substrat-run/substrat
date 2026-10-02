@@ -48,7 +48,7 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { ulid, type LiveChange } from '@substrat-run/kernel';
+import { listIndexMigrations, ulid, type LiveChange } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
@@ -58,6 +58,8 @@ import {
 import { classifyError } from '@substrat-run/vertical-host';
 import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
+import { ticket0Migrations } from '../../src/migrations.generated.js';
+import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
 
 interface Conversation {
   id: string;
@@ -482,7 +484,8 @@ describe('ticket0 on workerd — a snooze pauses the resolution target (#1648)',
         ].map((r) => [String(r.name), String(r.sql)]),
       ),
     );
-    expect(sql['ticket0_conversations_resolution_running']).toMatch(/AND snoozed_at IS NULL$/);
+    // #1088 (0021) narrowed it again, to the inbox; the snooze term is still in it.
+    expect(sql['ticket0_conversations_resolution_running']).toMatch(/AND snoozed_at IS NULL AND quarantine IS NULL$/);
     expect(sql['ticket0_conversations_first_response_running']).not.toMatch(/snoozed_at/);
   });
 
@@ -1378,4 +1381,149 @@ describe('ticket0 on workerd — the built-in behaviours run on a Durable Object
       (await conversation(behaviours, first)) as Conversation & { assignee: string | null },
     ).toMatchObject({ assignee: owner });
   });
+});
+
+/**
+ * #1088 on the runtime a hosted desk runs. Node's SQLite is not a Durable Object's, so the
+ * spam filter's reads (`lower(trim(…))`, `COUNT(DISTINCT …)` over a join), the kernel walk's
+ * new `IS NULL` filter, the bulk discard's deletes and migration 0021 itself are run here
+ * against the real thing. The last case is the migration on a LARGE desk — tens of thousands
+ * of conversations with messages, tags and follows — timed, because 0021 rebuilds every
+ * conversation index the kernel derives and a migration runs inside the first request a
+ * desk serves after the deploy.
+ */
+describe('ticket0 on workerd — the suspended queue and the spam filter (#1088)', () => {
+  const spamDesk = scopeId.parse(ulid());
+  const stub = () => env.SCOPE.get(env.SCOPE.idFromName(spamDesk));
+  const LINKS = 'Deals https://a.example/1 https://b.example/2 https://c.example/3';
+  const PITCH = 'Buy followers cheap, fast delivery guaranteed';
+  let mails = 0;
+
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: spamDesk, owner, entitlements })).status).toBe(201);
+    await (await host().getScope(owner, t, spamDesk)).invoke('ticket0/configure-desk', { settings: { spamFilter: {} } });
+  });
+
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: spamDesk })).status).toBe(200);
+  });
+
+  async function mail(from: string, bodyText: string): Promise<string> {
+    const relay = await host().getScope(await relayOf(spamDesk), t, spamDesk);
+    const arrived = await relay.invoke<{ conversation_id: string }>('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: from,
+      contactName: null,
+      subject: `Mail ${(mails += 1)}`,
+      bodyText,
+      emailMessageId: `<spam-${mails}@mail.example>`,
+    });
+    return arrived.conversation_id;
+  }
+
+  it('holds links and a pasted run, lists the inbox without them, and discards in bulk', async () => {
+    const admin = await host().getScope(owner, t, spamDesk);
+    const linked = await mail('one@junk.example', LINKS);
+    const plain = await mail('two@customer.example', 'How do I rotate a key?');
+    await mail('three@junk.example', PITCH);
+    await mail('four@junk.example', `  ${PITCH.toUpperCase()} `);
+    const run = await mail('five@junk.example', PITCH);
+
+    // The kernel walk's `quarantine IS NULL`, on the DO: the plain mail and the run's
+    // first two copies, and neither held one.
+    const inbox = (await admin.invoke<Page<{ id: string }>>('ticket0/list-conversations', { limit: 50 })).entries.map(
+      (c) => c.id,
+    );
+    expect(inbox).toHaveLength(3);
+    expect(inbox).toContain(plain);
+    expect(inbox).not.toContain(linked);
+    expect(inbox).not.toContain(run);
+
+    const queue = await admin.invoke<Page<{ id: string; reasons: string[] }>>('ticket0/list-suspended', { limit: 50 });
+    expect(Object.fromEntries(queue.entries.map((r) => [r.id, r.reasons]))).toEqual({
+      [linked]: ['links'],
+      [run]: ['repeated'],
+    });
+
+    const done = await admin.invoke<{ discarded: string[] }>('ticket0/discard-suspended', { conversationIds: [linked, run] });
+    expect(done.discarded).toEqual([linked, run]);
+    const left = await runInDurableObject(stub(), (_i, state) => [
+      ...state.storage.sql.exec(
+        `SELECT COUNT(*) AS n FROM ticket0_messages WHERE conversation_id IN (?, ?)`,
+        linked,
+        run,
+      ),
+    ]);
+    expect(left).toEqual([{ n: 0 }]);
+  });
+
+  it('the migration narrowed every live-work index on the DO to the inbox', async () => {
+    const sql = await runInDurableObject(stub(), (_i, state) =>
+      Object.fromEntries(
+        [
+          ...state.storage.sql.exec(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ticket0_conversations' AND name LIKE 'ticket0_%'",
+          ),
+        ].map((r) => [String(r.name), String(r.sql)]),
+      ),
+    );
+    for (const name of INBOX_PARTIAL_INDEXES) {
+      expect(sql[name], name).toMatch(/AND quarantine IS NULL$/);
+    }
+    expect(sql['ticket0_conversations_suspended']).toMatch(/WHERE quarantine = 'suspended'$/);
+  });
+
+  it('0021 on a large desk: every row stays in the inbox, and the time it takes is measured', async () => {
+    const CONVERSATIONS = 30_000;
+    const lists = MODULES.find((m) => m.manifest.id === ticket0Manifest.id)!.manifest.lists ?? [];
+    const before = listIndexMigrations(ticket0Manifest.id, listsBefore0021(lists));
+    const now = listIndexMigrations(ticket0Manifest.id, lists);
+    const changed = now.filter((m) => !before.some((b) => b.version === m.version));
+    // Exactly the conversation list re-applies: the one declaration 0021 changed.
+    expect(changed.map((m) => m.version)).toEqual([expect.stringMatching(/^list\/conversation:/)]);
+
+    const probe = env.SCOPE.get(env.SCOPE.idFromName(`migration-0021-${ulid()}`));
+    const timing = await runInDurableObject(probe, async (_i, state) => {
+      const sql = state.storage.sql;
+      // The schema a desk held before this change. 0020 is a spine repair (it rewrites
+      // `_substrat_tuples`, which this bare probe has none of) and changes no ticket0 table.
+      for (const m of ticket0Migrations.filter((x) => x.version < '0020')) sql.exec(m.sql);
+      for (const m of before) sql.exec(m.sql);
+      state.storage.transactionSync(() => {
+        sql.exec("INSERT INTO ticket0_contacts (id, created_at) VALUES ('k', '2026-01-01T00:00:00.000Z')");
+        for (let i = 0; i < CONVERSATIONS; i++) {
+          const id = `c${String(i).padStart(6, '0')}`;
+          const at = new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString();
+          sql.exec(
+            `INSERT INTO ticket0_conversations (id, contact_id, channel, subject, state, priority, created_at, updated_at,
+               first_response_due_at, no_reply_candidate_at)
+             VALUES (?, 'k', 'email', 'Before', ?, 'normal', ?, ?, ?, ?)`,
+            id, ['new', 'open', 'snoozed', 'resolved', 'closed'][i % 5]!, at, at, at, i % 3 === 0 ? at : null,
+          );
+          for (let j = 0; j < 3; j++) {
+            sql.exec(
+              `INSERT INTO ticket0_messages (id, conversation_id, author_kind, visibility, body_text, created_at)
+               VALUES (?, ?, 'contact', 'public', 'A customer message of an ordinary length.', ?)`,
+              `${id}-${j}`, id, at,
+            );
+          }
+          if (i % 3 === 0) sql.exec('INSERT INTO ticket0_conversation_tags (conversation_id, tag, created_at) VALUES (?, ?, ?)', id, 'billing', at);
+          if (i % 15 === 0) sql.exec('INSERT INTO ticket0_conversation_follows (principal, conversation_id) VALUES (?, ?)', 'p', id);
+        }
+      });
+      const started = performance.now();
+      state.storage.transactionSync(() => {
+        sql.exec(ticket0Migrations.find((m) => m.version === '0021')!.sql);
+        for (const m of changed) sql.exec(m.sql);
+      });
+      const ms = performance.now() - started;
+      const rows = [...sql.exec('SELECT COUNT(*) AS n, SUM(quarantine IS NULL) AS inbox FROM ticket0_conversations')][0];
+      return { ms, rows };
+    });
+    expect(timing.rows).toEqual({ n: CONVERSATIONS, inbox: CONVERSATIONS });
+    // Reported for the PR rather than asserted tightly: the runtime here is a laptop's
+    // workerd. The bound is the DO's default CPU limit for one request, 30 s.
+    console.log(`#1088 migration 0021 on ${CONVERSATIONS} conversations: ${Math.round(timing.ms)} ms`);
+    expect(timing.ms).toBeLessThan(30_000);
+  }, 120_000);
 });

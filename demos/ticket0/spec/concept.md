@@ -80,6 +80,19 @@ The lifecycle:
   window — thirty days unless the desk says otherwise — never one
   somebody picked up, answered, parked or left a draft on. A customer who writes in
   afterwards gets a follow-up conversation, not a refusal (below).
+- **Suspended is a queue, not a state** (#1088). A `new` conversation can be held beside
+  the inbox — by the desk's spam filter when a stranger's first message looks like junk
+  (too many links, the same text pasted by other people within a day, or a sender whose
+  only history here was discarded), or by a person. It stays `new` while held, and that
+  is what makes "not spam" lossless: restoring it puts it back exactly as it was. While
+  held, nothing answers it — the assistant is never asked, so no inference is spent on
+  junk — and nobody can work it. The only ways out are restore, and **discard**, which
+  closes it and deletes what was written — from the desk's tables, and from every event
+  emitted since the suspended queue shipped; an older event's copy in the outbox or the
+  lake is covered only once outbox and lake erasure exist (#1692). Only a desk-admin may
+  discard. The filter is off until a desk switches it on (`settings.spamFilter`),
+  because its false positive is a real customer nobody sees until somebody opens the
+  queue.
 
 One transition must not be skippable, and it is the one a naive implementation gets
 wrong: nothing reaches `resolved` without at least one public reply having been sent.

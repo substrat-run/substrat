@@ -30,6 +30,15 @@ const MODEL = {
       },
       erasable: ['name'],
     },
+    source: {
+      table: 'todo_sources',
+      fields: {
+        type: 'object',
+        properties: { id: { type: 'string' }, last_error: { type: 'string' } },
+        required: ['id'],
+      },
+      outsideText: ['last_error'],
+    },
   },
   lifecycles: {
     item: { field: 'state', initial: 'open', states: { open: { on: { closeItem: 'done' } }, done: {} } },
@@ -43,6 +52,7 @@ describe('model-view', () => {
     expect(html).toContain('todo_items');
     expect(html).toContain('item hangs off list');
     expect(html).toContain('ERASABLE');
+    expect(html).toMatch(/last_error.*OUTSIDE/s);
     expect(html).toContain('closeItem');
     expect(html).toContain('INITIAL');
   });
@@ -93,5 +103,12 @@ describe('model-view', () => {
     const html = renderModelHtml(parseModel(nasty, 'm'), { source: 'm' });
     expect(html).not.toContain('<img x>');
     expect(html).toContain('&lt;img x&gt;');
+  });
+});
+
+describe('model-view validates outsideText like the other field lists', () => {
+  it('refuses an outsideText that is not a list of field names', () => {
+    const bad = { entities: { source: { table: 't', fields: {}, outsideText: 'last_error' } } };
+    expect(() => parseModel(bad, 'x/model.json')).toThrow(/'outsideText' as something other than a list of field names/);
   });
 });

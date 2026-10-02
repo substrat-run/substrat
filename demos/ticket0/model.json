@@ -158,6 +158,9 @@
       },
       "parents": [
         "conversation"
+      ],
+      "erasable": [
+        "error"
       ]
     },
     "behaviourRun": {
@@ -236,6 +239,9 @@
       },
       "key": [
         "kind",
+        "value"
+      ],
+      "outsideText": [
         "value"
       ]
     },
@@ -318,6 +324,9 @@
       "erasable": [
         "display_name",
         "email"
+      ],
+      "outsideText": [
+        "external_id"
       ]
     },
     "conversation": {
@@ -546,6 +555,40 @@
           },
           "updated_at": {
             "type": "string"
+          },
+          "quarantine": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "suspended",
+                  "discarded"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suspended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suspicion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -574,12 +617,18 @@
           "merged_into",
           "follows",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "quarantine",
+          "suspended_at",
+          "suspicion"
         ],
         "additionalProperties": false
       },
       "parents": [
         "contact"
+      ],
+      "outsideText": [
+        "subject"
       ]
     },
     "conversationFollow": {
@@ -814,6 +863,12 @@
       "key": [
         "source_id",
         "url"
+      ],
+      "outsideText": [
+        "body",
+        "heading_path",
+        "title",
+        "url"
       ]
     },
     "kbSource": {
@@ -928,6 +983,57 @@
       },
       "key": [
         "url"
+      ],
+      "outsideText": [
+        "last_error"
+      ]
+    },
+    "mailDelivery": {
+      "table": "ticket0_mail_deliveries",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "email_message_id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "inbound",
+              "outbound"
+            ]
+          },
+          "recorded_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email_message_id",
+          "conversation_id",
+          "message_id",
+          "direction",
+          "recorded_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "email_message_id"
+      ],
+      "outsideText": [
+        "email_message_id"
       ]
     },
     "message": {
@@ -1046,6 +1152,10 @@
       "erasable": [
         "body_html",
         "body_text"
+      ],
+      "outsideText": [
+        "email_in_reply_to",
+        "email_message_id"
       ]
     },
     "notification": {
@@ -1455,6 +1565,18 @@
       },
       "key": [
         "token_hash"
+      ],
+      "outsideText": [
+        "browser",
+        "browser_version",
+        "city",
+        "country",
+        "language",
+        "os",
+        "os_version",
+        "region",
+        "timezone",
+        "user_agent"
       ]
     },
     "widgetSession": {
@@ -1628,6 +1750,18 @@
       ],
       "key": [
         "token_hash"
+      ],
+      "outsideText": [
+        "browser",
+        "browser_version",
+        "city",
+        "country",
+        "language",
+        "os",
+        "os_version",
+        "region",
+        "timezone",
+        "user_agent"
       ]
     }
   },
@@ -1643,6 +1777,8 @@
           "on": {
             "ticket0/assign": "open",
             "ticket0/close": "closed",
+            "ticket0/discard": "closed",
+            "ticket0/discard-suspended": "closed",
             "ticket0/post-public-reply": "open",
             "ticket0/reap-abandoned": "closed",
             "ticket0/resolve": "resolved"
@@ -1654,7 +1790,9 @@
             "ticket0/record-answer",
             "ticket0/record-assistant-failure",
             "ticket0/request-human",
+            "ticket0/restore",
             "ticket0/set-priority",
+            "ticket0/suspend",
             "ticket0/tag-conversation",
             "ticket0/untag-conversation",
             "ticket0/widget-post"

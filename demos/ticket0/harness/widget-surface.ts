@@ -320,10 +320,20 @@ export function mountWidgetSurface(
         const wait = spend(bucket, callerKey(bucket, body.token, origin), WIDGET_RATE_LIMITS.write);
         if (wait) return tooManyRequests(c, wait);
         const sessionId = c.req.param('sessionId');
-        const message = await desk.invoke<{ id: string; conversation_id: string; body_text: string }>(
-          'ticket0/widget-post',
-          { sessionId, token: body.token, body: body.body },
-        );
+        const { suspended, ...message } = await desk.invoke<{
+          id: string;
+          conversation_id: string;
+          body_text: string;
+          suspended: boolean;
+        }>('ticket0/widget-post', { sessionId, token: body.token, body: body.body });
+        /**
+         * Held in the suspended queue (#1088): nothing answers it, so no model is asked —
+         * the inference the spam filter exists to not spend — and no handoff is tried,
+         * because a held conversation pages nobody. The flag never reaches the browser
+         * (`message` above has it taken out): a visitor learns nothing about the filter
+         * from a response that looks like every other one.
+         */
+        if (suspended) return c.json(message);
         /**
          * A message that asks for a person is not a question, and must not reach a
          * model. The widget's button says so through the route below; this is for a

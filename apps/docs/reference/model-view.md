@@ -1,8 +1,8 @@
 # @substrat-run/model-view
 
 Render an emitted [model](/concepts/model) — the `model.json` your vertical checks in — as
-**one self-contained HTML page**: the ER diagram, a card per entity with its keys and
-erasable fields marked, and the declared [lifecycles](/concepts/lifecycle). Inline CSS,
+**one self-contained HTML page**: the ER diagram, a card per entity with its keys and its
+erasable and outside-text fields marked, and the declared [lifecycles](/concepts/lifecycle). Inline CSS,
 inline SVG, no script, no CDN, nothing fetched from anywhere.
 
 ```sh
@@ -58,7 +58,7 @@ authoring notation.
 ## What the tests prove — and don't
 
 The suite proves the rendered page carries every reviewable fact (tables, parent edges,
-composite keys, erasable marks, lifecycle edges), escapes hostile names, terminates on a
+composite keys, erasable and outside-text marks, lifecycle edges), escapes hostile names, terminates on a
 cyclic `parents` declaration, survives malformed field schemas, and references nothing
 external — no `http(s)://`, no `<script>`, no `<link>`, no `src=`. It does **not** validate
 semantic coherence of the model: `emitModel` and `emitLifecycles` refused an incoherent

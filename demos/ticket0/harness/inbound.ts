@@ -37,6 +37,7 @@
  */
 import { errorCodeOf, z } from '@substrat-run/contracts';
 import type { FetchLike } from '@substrat-run/kernel';
+import { DELIVERY_DISCARDED } from '../src/module.js';
 import type { RelayInvoke } from './relay.js';
 
 /** What a webhook request's headers are read through — a `Headers`, structurally. */
@@ -300,6 +301,12 @@ export async function receiveInbound(options: {
      * a real fault from being quietly answered 200.
      */
     if (errorCodeOf(error) !== 'forbidden') throw error;
+    // The other permanent refusal (#1088): this exact mail was received before and a
+    // person discarded it. Told apart by the sentence, which survives the hop to the
+    // scope where an error's extensions need not.
+    if (error instanceof Error && error.message.includes(DELIVERY_DISCARDED)) {
+      return { status: 200, body: { ignored: 'this mail was already received here and discarded' } };
+    }
     return { status: 200, body: { ignored: 'the sending address is blocked at this desk' } };
   }
 

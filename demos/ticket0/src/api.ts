@@ -57,6 +57,18 @@ export const API = apiCatalogFrom(SERVED, {
   'ticket0/resolve': { tag: 'Inbox', description: 'Refused until something has been sent to the customer.' },
   'ticket0/close': { tag: 'Inbox' },
   'ticket0/merge': { tag: 'Inbox', description: 'Checked on both conversations, not just the loser.' },
+
+  'ticket0/list-suspended': { tag: 'Suspended', description: 'Who sent it, why it was held, and the start of what they wrote.' },
+  'ticket0/suspend': { tag: 'Suspended', description: 'Only a `new` conversation — one nobody has worked.' },
+  'ticket0/restore': { tag: 'Suspended', description: 'Not spam. Lossless: the conversation is exactly what it was.' },
+  'ticket0/discard': {
+    tag: 'Suspended',
+    description: 'Deletes the messages for good. Refused for anything not suspended. Checks `conversation:discard`.',
+  },
+  'ticket0/discard-suspended': {
+    tag: 'Suspended',
+    description: 'All or nothing: one conversation that is not suspended, or not yours to discard, refuses the lot.',
+  },
   'ticket0/tag-conversation': { tag: 'Inbox' },
 
   'ticket0/list-saved-replies': { tag: 'Saved replies' },

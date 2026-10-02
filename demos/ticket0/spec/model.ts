@@ -181,6 +181,73 @@ export const BLOCK_VALUE_MAX = 320;
 /** How much of a reason the row keeps. A sentence about why, never a case file. */
 export const BLOCK_REASON_MAX = 500;
 
+/**
+ * Why the desk suspended a conversation instead of putting it in the inbox (#1088): the
+ * model-free signals, by name, plus the one a person adds by hand.
+ *
+ *  - `links` — the message holds more links than the desk allows a stranger.
+ *  - `repeated` — the same text arrived from other people in the last day: a run pasted
+ *    across sessions, which is what spam from fresh addresses looks like.
+ *  - `discarded-before` — this sender's only history here is conversations the desk
+ *    already discarded.
+ *  - `marked` — a person moved it out of the inbox (`ticket0/suspend`).
+ *
+ * The first three are only ever asked of a STRANGER — a contact with no conversation the
+ * desk accepted and no identity anyone vouched for. A stranger alone is not suspect:
+ * every first-time visitor is one. `src/module.ts` (`suspicionOf`) is where they are read.
+ */
+export const SUSPICION_SIGNALS = ['links', 'repeated', 'discarded-before', 'marked'] as const;
+export const suspicionSignal = z.enum(SUSPICION_SIGNALS);
+export type SuspicionSignal = z.infer<typeof suspicionSignal>;
+
+/**
+ * Where a conversation lives (#1088): the inbox, the suspended queue, or discarded. One
+ * vocabulary for every read that asks — the column stores the two that are NOT the inbox
+ * (`quarantine`, null being the inbox), and the reads take all three by name.
+ */
+export const conversationQueue = z.enum(['inbox', 'suspended', 'discarded']);
+
+/**
+ * "This conversation is in the inbox", as SQL — the ONE spelling of it (#1088).
+ *
+ * A suspended conversation keeps `state = 'new'`, so any read that selects conversations
+ * by state sees the suspended queue too unless it also says which queue it means. Every
+ * such read in `src/module.ts` and `src/health-queries.ts` states this predicate, and the
+ * partial indexes behind the sweeps carry it in migration 0021, so a query that states it
+ * still implies its index. NULL is the inbox, so a row written by a version that predates
+ * the column is counted, swept and listed rather than lost.
+ *
+ * `alias` is the table alias a query names the conversation by (`c`), when it has one.
+ */
+export function inTheInbox(alias?: string): string {
+  return `${alias ? `${alias}.` : ''}quarantine IS NULL`;
+}
+
+/** A stranger may send this many links before `links` fires, when the desk has not said. */
+export const SPAM_MAX_LINKS_DEFAULT = 2;
+/** The most a desk may allow. Past twenty, the filter is off in all but name. */
+export const SPAM_MAX_LINKS_MAX = 20;
+/**
+ * How many OTHER people must have sent the same text in the last day before `repeated`
+ * fires, when the desk has not said. Two, so the third copy of a run is held: one other
+ * person typing the same sentence is a coincidence, two is a script.
+ */
+export const SPAM_REPEAT_DEFAULT = 2;
+export const SPAM_REPEAT_MAX = 20;
+/** The window `repeated` looks back over. A day: a run is a burst, not a pattern. */
+export const SPAM_REPEAT_WINDOW_HOURS = 24;
+/**
+ * The shortest text `repeated` judges. "hi", "hello" and "help" arrive from many people
+ * in a day and are not a run; a pasted pitch is longer than this.
+ */
+export const SPAM_REPEAT_MIN_CHARS = 20;
+
+/** How much of the first message the suspended queue shows. Enough to judge, not to read. */
+export const SUSPENDED_EXCERPT_CHARS = 280;
+
+/** How many conversations one bulk discard takes. A screenful, not a script. */
+export const DISCARD_BATCH_MAX = 100;
+
 export const DESK_METRICS_AGENTS = 25;
 
 /** The window `ticket0/desk-metrics` reports when the caller names neither end. */
@@ -303,6 +370,16 @@ const CLIENT_COLUMNS = {
   city: z.string().nullable(),
   timezone: z.string().nullable(),
 } as const;
+
+/**
+ * The client columns whose values arrive from OUTSIDE the desk — an inbound header, or the
+ * edge's guess at where the request came from — and so are `outsideText` (#1088). Every
+ * client column but `device`, which the host normalises into a closed enum.
+ */
+const CLIENT_OUTSIDE_TEXT = [
+  'user_agent', 'language', 'browser', 'browser_version', 'os', 'os_version',
+  'country', 'region', 'city', 'timezone',
+] as const satisfies readonly (keyof typeof CLIENT_COLUMNS)[];
 
 /** How many auto-tag rules a desk may hold. A list an admin reads, not a program. */
 export const AUTO_TAG_RULES_MAX = 20;
@@ -435,6 +512,34 @@ export const deskSettingsBlob = z
       .strict()
       .nullable()
       .optional(),
+    /**
+     * Suspend a stranger's first message instead of putting it in the inbox, when it
+     * looks like junk by signals that need no model (#1088). `src/module.ts`
+     * (`suspicionOf`) is what reads it, at `ingest-message` and the widget's first
+     * message, BEFORE any inference is spent: a suspended conversation never reaches the
+     * assistant.
+     *
+     * Absent or `null` is off, like every key here. `{}` is on with the defaults, and
+     * each number is a bound a desk may move:
+     *
+     *  - `maxLinks` — how many links a stranger may send before `links` fires.
+     *    0 holds any link at all; the ceiling is `SPAM_MAX_LINKS_MAX`.
+     *  - `repeatAfter` — how many OTHER people must have sent the same text (at least
+     *    `SPAM_REPEAT_MIN_CHARS` long) in the last `SPAM_REPEAT_WINDOW_HOURS` before
+     *    `repeated` fires.
+     *
+     * Off by default, and on purpose. A desk that never decided keeps exactly the inbox
+     * it had: a false positive here is a real customer's first message that nobody sees
+     * until somebody opens the suspended queue, and a desk should choose that trade.
+     */
+    spamFilter: z
+      .object({
+        maxLinks: z.number().int().min(0).max(SPAM_MAX_LINKS_MAX).optional(),
+        repeatAfter: z.number().int().min(1).max(SPAM_REPEAT_MAX).optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -474,6 +579,9 @@ export const ticket0Entities = defineEntities({
     }),
     key: ['external_id'],
     erasable: ['email', 'display_name'],
+    // The host site's own id for the person — often an address — vouched for, not written
+    // here (#1088).
+    outsideText: ['external_id'],
   },
 
   /**
@@ -657,8 +765,41 @@ export const ticket0Entities = defineEntities({
       follows: z.string().nullable(),
       created_at: z.string(),
       updated_at: z.string(),
+      /**
+       * Out of the inbox, and why (#1088). NULL is the inbox — every conversation the
+       * desk has accepted, and every row older than this column.
+       *
+       *  - `suspended` — held back: by the spam filter when a stranger's first message
+       *    looked like junk, or by a person (`ticket0/suspend`). Its `state` stays `new`,
+       *    and that is what makes "not spam" lossless: suspension is entered only from
+       *    `new`, so `ticket0/restore` clears this column and the conversation is exactly
+       *    what it was. Nothing on the row, its messages or its contact is touched.
+       *  - `discarded` — a person decided it was junk (`ticket0/discard`). The
+       *    conversation is `closed`, its messages, tags and widget sessions are DELETED
+       *    and its subject blanked; the row stays as a tombstone so the ids and events
+       *    that name it still resolve.
+       *
+       * A column and not a sixth `state`, and the reason is mechanical rather than taste:
+       * `state` carries a SQL CHECK, so a new value is a rebuild of this table, and a
+       * rebuild drops the kernel's list indexes with no way to have the kernel put them
+       * back. The price is that the lifecycle does not draw the queue — `step()` in
+       * `src/module.ts` is what refuses work on a suspended conversation — and every read
+       * that selects by state must also say which queue it means. `inTheInbox()` (above)
+       * is the one predicate they share.
+       *
+       * Null rather than an `inbox` value, so a row written by a version that predates
+       * this column — a rollback after the migration ran — is in the inbox by
+       * construction instead of vanishing from it.
+       */
+      quarantine: conversationQueue.exclude(['inbox']).nullable(),
+      /** When it was last suspended. Kept after a restore: it is history, like a breach. */
+      suspended_at: z.string().nullable(),
+      /** Why, as a JSON array of `SUSPICION_SIGNALS`. Kept after a restore, for the same reason. */
+      suspicion: z.string().nullable(),
     }),
     parents: ['contact'],
+    // The sender's own line on mail (#1088): not erasable, and never on an event.
+    outsideText: ['subject'],
   },
 
   /**
@@ -701,6 +842,8 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['conversation'],
     erasable: ['body_text', 'body_html'],
+    // Mail headers as they arrived: the sender's host writes both, freely (#1088).
+    outsideText: ['email_message_id', 'email_in_reply_to'],
   },
 
   /**
@@ -726,6 +869,36 @@ export const ticket0Entities = defineEntities({
       conversation_id: z.string(),
     }),
     primaryKey: ['principal', 'conversation_id'],
+  },
+
+  /**
+   * Every mail `Message-ID` this desk has handled, in either direction — the ONE store
+   * a redelivery is recognised by (#1088).
+   *
+   * It used to be `ticket0_messages.email_message_id` itself, which made the dedupe as
+   * mortal as the words: discarding a suspended conversation deletes its messages, so a
+   * provider redelivering the same mail found nothing, ingested it again, and put the
+   * junk somebody had just destroyed back in the inbox. A delivery outlives its content
+   * here. `message_id` is the message it became, until a discard takes that message
+   * away and leaves this row saying the mail came, went where it went, and is gone.
+   *
+   * Content-free by construction: an id the sender's host minted, the conversation it
+   * belonged to, and when. Inbound rows are written by `ticket0/ingest-message`,
+   * outbound by `ticket0/record-delivery` — both, because the old lookup matched both,
+   * and a mail that comes back in under an id this desk sent is the same delivery.
+   * `src/module.ts` (`deliveryOf`) is the one reader.
+   */
+  mailDelivery: {
+    table: 'ticket0_mail_deliveries',
+    fields: z.object({
+      email_message_id: z.string(),
+      conversation_id: z.string(),
+      message_id: z.string().nullable(),
+      direction: z.enum(['inbound', 'outbound']),
+      recorded_at: z.string(),
+    }),
+    primaryKey: ['email_message_id'],
+    outsideText: ['email_message_id'],
   },
 
   /** A canned answer. Every desk grows these; better to ship the table than to watch
@@ -794,6 +967,8 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['conversation'],
     key: ['token_hash'],
+    // What the browser and the edge said, as they said it (#1088).
+    outsideText: CLIENT_OUTSIDE_TEXT,
   },
 
   /**
@@ -825,6 +1000,7 @@ export const ticket0Entities = defineEntities({
       ...CLIENT_COLUMNS,
     }),
     key: ['token_hash'],
+    outsideText: CLIENT_OUTSIDE_TEXT,
   },
 
   /**
@@ -995,6 +1171,9 @@ export const ticket0Entities = defineEntities({
     // One rule per (kind, value): blocking an address twice is the same decision made
     // twice, and two rows would mean removing it once leaves it in force.
     key: ['kind', 'value'],
+    // An address or a domain the desk refuses: kept, deliberately not erasable (above),
+    // and so held off every event by the marker rather than by memory (#1088).
+    outsideText: ['value'],
   },
 
   /**
@@ -1028,6 +1207,8 @@ export const ticket0Entities = defineEntities({
       created_at: z.string(),
     }),
     key: ['url'],
+    // Whatever the remote site or the fetch said — text this desk cannot vet (#1088).
+    outsideText: ['last_error'],
   },
 
   /**
@@ -1051,6 +1232,8 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['kbSource'],
     key: ['source_id', 'url'],
+    // A remote site's document, read as fetched, links included (#1088).
+    outsideText: ['url', 'title', 'heading_path', 'body'],
   },
 
   /**
@@ -1066,6 +1249,12 @@ export const ticket0Entities = defineEntities({
    * turn used to carry only its outcome, so the desk could see THAT the assistant had
    * not answered and nothing about why; the reason went to the dev server's stdout
    * and, on a worker, nowhere at all. Null on every other outcome.
+   *
+   * `error` is **erasable** (#1088), because "whatever threw" is a provider's text and a
+   * provider can quote the customer's message back in it. Erasable is also what keeps it
+   * off every event — the model refuses an erasable field in a payload — which is where
+   * `ticket0.assistant-failed` v1 used to carry it, out of reach of a discard or an
+   * erasure. The row keeps it for the desk that reads the card; a discard clears it.
    */
   aiTurn: {
     table: 'ticket0_ai_turns',
@@ -1084,6 +1273,7 @@ export const ticket0Entities = defineEntities({
       created_at: z.string(),
     }),
     parents: ['conversation'],
+    erasable: ['error'],
   },
 
   /**
@@ -1261,6 +1451,19 @@ export const TICKET0_PERMISSIONS = [
   'conversation:resolve',
   'conversation:merge',
   'conversation:relay',
+  /**
+   * Destroy a suspended conversation's content (#1088) — the one act on this desk that
+   * deletes what a customer wrote.
+   *
+   * Its own key, because none of the others means it and the trail records the key a
+   * check passed: a discard recorded under `conversation:resolve` would read as a close,
+   * and under `desk:configure` as a settings change. Held by `desk-admin` alone. Anyone
+   * on the desk may move junk OUT of the inbox (`ticket0/suspend`, under
+   * `conversation:assign`), so the inbox never waits on an admin; only an admin may make
+   * the words gone. A tenant that wants agents to clear the queue too grants them this
+   * one key.
+   */
+  'conversation:discard',
   /**
    * Record that a conversation has missed a service-level target, and tell the desk
    * (#1082).
@@ -1761,9 +1964,12 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'kbSource',
       entityIdFrom: 'id',
       type: 'ticket0.kb-ingest-failed',
-      schemaVersion: 1,
+      // v2 (#1088): `last_error` left the payload. It is whatever the remote site or the
+      // fetch said — text this desk does not write and cannot vet — and an event keeps it
+      // for good. The reason is on the source row, which `list-kb-sources` reads.
+      schemaVersion: 2,
       piiClass: 'none',
-      payload: ['id', 'url', 'last_error'],
+      payload: ['id', 'url'],
     },
   },
 
@@ -1966,6 +2172,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
        * closed, flag or no flag. This one only widens the unfiltered read.
        */
       include_closed: z.boolean().optional(),
+      /**
+       * Which queue (#1088). Absent is the INBOX, whatever else is asked — `state=new`
+       * means the new conversations the desk accepted, not the junk held beside them,
+       * and `include_closed` widens the inbox to its closed half without reaching the
+       * discarded tombstones. `suspended` is the queue a person clears; `discarded` is
+       * what they cleared. `inbox` says the default out loud.
+       */
+      queue: conversationQueue.optional(),
     }),
     output: ticket0Entities.conversation.fields,
     paged: {
@@ -1974,7 +2188,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
         // `updated_at` first: an inbox is sorted by what moved most recently, and
         // [0] is the default the screen gets without asking.
         sortable: ['updated_at', 'created_at', 'priority'],
-        filterable: ['state', 'assignee', 'channel', 'priority', 'contact_id'],
+        filterable: ['state', 'assignee', 'channel', 'priority', 'contact_id', 'quarantine'],
       },
       order: 'desc',
       total: true,
@@ -2048,6 +2262,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       assignee: z.string().optional(),
       channel: z.enum(['widget', 'email']).optional(),
       priority: z.enum(['low', 'normal', 'urgent']).optional(),
+      /**
+       * Narrow to one queue (#1088). Absent searches every queue, deliberately unlike
+       * the inbox list: search is how a person finds the customer who says "I wrote to
+       * you on Tuesday", and a message the spam filter held is exactly the one they are
+       * looking for. `inbox` asks for the accepted conversations only.
+       */
+      queue: conversationQueue.optional(),
     }),
     output: ticket0Entities.conversation.fields,
     // `sortKey`, because the handler composes its own SQL. Newest first, like the
@@ -2566,6 +2787,167 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     summary: 'Close conversations nobody ever picked up and nobody has added to',
     permission: 'conversation:resolve',
     output: z.object({ reaped: z.number().int() }),
+  },
+
+  // ─── The suspended queue (#1088) ─────────────────────────────────────────────
+  //
+  // Junk is held beside the inbox, not in it, and a person decides what it was. Two
+  // ways in — the spam filter at the door, and `ticket0/suspend` by hand — and two ways
+  // out: `ticket0/restore` ("not spam"), which is lossless, and `ticket0/discard`, which
+  // destroys the content and is the only operation here that deletes a customer's words.
+
+  /**
+   * The queue, as a person clearing it needs to see it: who sent it, why it is here, and
+   * the start of what they wrote — so a decision does not cost one click per row.
+   *
+   * Staff-only (`conversation:read`), like every staff read of a conversation. The
+   * excerpt is the first public message the customer wrote, cut to
+   * `SUSPENDED_EXCERPT_CHARS`; nothing internal is ever in it. Newest first, by id.
+   */
+  'ticket0/list-suspended': {
+    summary: 'The conversations held out of the inbox, with why and what they said',
+    permission: 'conversation:read',
+    output: z.object({
+      id: z.string(),
+      channel: z.enum(['widget', 'email']),
+      subject: z.string(),
+      contact_id: z.string(),
+      contact_email: z.string().nullable(),
+      contact_name: z.string().nullable(),
+      suspended_at: z.string().nullable(),
+      reasons: z.array(suspicionSignal),
+      excerpt: z.string().nullable(),
+      messages: z.number().int(),
+      created_at: z.string(),
+      updated_at: z.string(),
+    }),
+    paged: { sortKey: 'id', order: 'desc' },
+    http: { method: 'GET', path: '/conversations/suspended' },
+  },
+
+  /**
+   * Take a conversation out of the inbox by hand — the spam filter missed it.
+   *
+   * Only from `new`, so "not spam" can put it back exactly where it was: a conversation
+   * somebody has assigned, answered or parked has been worked, and taking it out of the
+   * inbox is closing it (`ticket0/close`), not suspending it. Under `conversation:assign`,
+   * the triage key: moving a conversation between queues is routing work, and anyone who
+   * may route it may also be wrong about it, which `restore` undoes.
+   *
+   * Suspending one that is already suspended answers with it and writes nothing.
+   */
+  'ticket0/suspend': {
+    summary: 'Move a new conversation out of the inbox into the suspended queue',
+    permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string() }),
+    output: ticket0Entities.conversation.fields,
+    http: { method: 'POST', path: '/conversations/{conversationId}/suspend' },
+    emits: {
+      entity: 'conversation',
+      entityIdFrom: 'id',
+      type: 'ticket0.conversation-suspended',
+      schemaVersion: 1,
+      // Signal names and an instant. Never the text that tripped a signal: that is the
+      // customer's message, erasable, and an event is where erasure cannot reach.
+      piiClass: 'none',
+      payload: ['id', 'quarantine', 'suspended_at', 'suspicion'],
+    },
+  },
+
+  /**
+   * "Not spam": put a suspended conversation in the inbox, exactly as it was.
+   *
+   * Lossless by construction rather than by care. Suspension never changed `state`
+   * (always `new`) and never touched a message, an attachment note, a tag or the contact,
+   * so clearing `quarantine` is the whole of the restore. From then on it is a `new`
+   * conversation like any other: round-robin may hand it out, its service-level targets
+   * run — from when the customer wrote, not from the restore, because they were waiting
+   * all along and a false positive should show as the late answer it caused — and the
+   * reaper measures silence from now.
+   *
+   * It does NOT call the assistant. The person restoring it is looking at it.
+   *
+   * Restoring one that is already in the inbox answers with it and writes nothing.
+   */
+  'ticket0/restore': {
+    summary: 'Not spam — move a suspended conversation back into the inbox',
+    permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string() }),
+    output: ticket0Entities.conversation.fields,
+    http: { method: 'POST', path: '/conversations/{conversationId}/restore' },
+    emits: {
+      entity: 'conversation',
+      entityIdFrom: 'id',
+      type: 'ticket0.conversation-restored',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'state', 'suspicion'],
+    },
+  },
+
+  /**
+   * Destroy a suspended conversation's content. Refused for anything not suspended: the
+   * destruction is a decision about junk somebody has looked at, never a faster close.
+   *
+   * What goes: every message (the customer's words, the desk's notes and any draft, and
+   * the internal note that names an attachment the mail carried — the desk stores no
+   * attachment bytes), its tags, and its widget sessions, so the visitor's token stops
+   * working. The subject is blanked, since on mail it is the sender's words too.
+   *
+   * What stays, and why: the conversation row, `closed` and `quarantine = 'discarded'`, so
+   * every id and event that names it still resolves; the contact, because it is a person
+   * record and erasure is the platform's own story — and because a sender whose only
+   * history is discarded is exactly what `discarded-before` keys on; and the assistant's
+   * turns, which are what the desk was billed for — with the provider's `error` text
+   * cleared, since it can quote the message back.
+   *
+   * **What the guarantee is, exactly.** A discard removes the content from the desk's
+   * tables, and from every event emitted after this change: message events carry ids
+   * only, and `ticket0.assistant-failed` stopped carrying the provider's error in v2.
+   * Events emitted BEFORE it — `assistant-failed` v1, with its error, since #993 — sit in
+   * the desk's outbox and in the lake the outbox ships to, and are covered only once
+   * outbox and lake erasure exist (#1692 tracks the lake half). Module code cannot rewrite
+   * either: a `_substrat_*` write is refused on both adapters.
+   *
+   * It is a CLOSE as well, and publishes `ticket0.conversation-closed` beside its own
+   * event, so a consumer counting closures does not lose these.
+   */
+  'ticket0/discard': {
+    summary: 'Discard a suspended conversation — deletes its messages for good',
+    permission: { key: 'conversation:discard', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string() }),
+    output: ticket0Entities.conversation.fields,
+    http: { method: 'POST', path: '/conversations/{conversationId}/discard' },
+    emits: {
+      entity: 'conversation',
+      entityIdFrom: 'id',
+      type: 'ticket0.conversation-discarded',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'quarantine', 'suspicion'],
+    },
+  },
+
+  /**
+   * The bulk discard: a screenful of the suspended queue at once.
+   *
+   * What a multi-select means, decided here once. Each conversation is checked on its own
+   * (`conversation:discard` on that conversation, as `ticket0/discard` checks it), and each
+   * publishes the events `ticket0/discard` publishes — the trail is per conversation, never
+   * one row saying "100 things". And it is ALL OR NOTHING: if any one is not suspended,
+   * not found, or not the caller's to discard, nothing is discarded and the refusal names
+   * it. A screen whose selection went stale — a colleague restored one meanwhile — gets a
+   * 409 and reloads, rather than destroying the rest of a selection the person made
+   * against a list that is no longer true.
+   */
+  'ticket0/discard-suspended': {
+    summary: 'Discard several suspended conversations at once — all or nothing',
+    permission: 'conversation:discard',
+    input: z.object({
+      conversationIds: z.array(z.string()).min(1).max(DISCARD_BATCH_MAX),
+    }),
+    output: z.object({ discarded: z.array(z.string()) }),
+    http: { method: 'POST', path: '/conversations/suspended/discard' },
   },
 
   /** Fold one conversation into another. The loser keeps its history and forwards. */
@@ -3134,9 +3516,12 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'aiTurn',
       entityIdFrom: 'id',
       type: 'ticket0.assistant-failed',
-      schemaVersion: 1,
+      // v2 (#1088): `error` left the payload. It is the provider's text, which can quote the
+      // customer, and an event is immutable — v1 put that text where neither a discard nor
+      // an erasure reaches it. The reason is on the turn, read back by `list-turns`.
+      schemaVersion: 2,
       piiClass: 'none',
-      payload: ['id', 'conversation_id', 'model', 'error'],
+      payload: ['id', 'conversation_id', 'model'],
     },
   },
 
@@ -3388,6 +3773,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
         unassigned: z.number().int(),
         oldestUntouchedId: z.string().nullable(),
         oldestUntouchedAgeSeconds: z.number().int().nullable(),
+        /**
+         * Waiting in the suspended queue (#1088). Counted apart and never in `open`:
+         * junk is not backlog, and a spam run must not read as a desk falling behind.
+         * But a queue nobody looks at hides real customers too, so its size is on the
+         * screen that says what is waiting.
+         */
+        suspended: z.number().int(),
       }),
       agents: z.array(
         z.object({
@@ -3711,7 +4103,16 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       token: z.string(),
       body: z.string().min(1),
     }),
-    output: ticket0Entities.message.fields,
+    output: ticket0Entities.message.fields.extend({
+      /**
+       * The conversation is in the suspended queue (#1088), so nothing may answer it —
+       * the one fact the widget surface needs before it hands the message to the
+       * assistant, and the reason this is decided INSIDE the operation: the inference
+       * is what the spam filter exists to not spend. The surface strips it before the
+       * browser sees the response, so a visitor learns nothing about the filter.
+       */
+      suspended: z.boolean(),
+    }),
     http: { method: 'POST', path: '/widget/sessions/{sessionId}/messages' },
     emits: {
       entity: 'message',
@@ -4201,8 +4602,19 @@ export const ticket0Lifecycles = defineLifecycles(
           // one day widened its query would be refused by the machine rather than
           // quietly closing worked conversations.
           'ticket0/reap-abandoned': 'closed',
+          // The suspended queue's destructive exit (#1088). Declared on `new` only, because
+          // a suspended conversation is always `new`: suspension is entered from nowhere
+          // else. That `discard` is refused for a `new` conversation in the INBOX is the
+          // queue's rule, not the machine's — see `step()` in `src/module.ts`.
+          'ticket0/discard': 'closed',
+          'ticket0/discard-suspended': 'closed',
         },
         allow: [
+          // In and out of the suspended queue (#1088). They move the conversation between
+          // QUEUES, not states: it is `new` before, during and after, which is what makes a
+          // restore lossless. Only here, so neither can reach a conversation somebody worked.
+          'ticket0/suspend',
+          'ticket0/restore',
           'ticket0/post-note',
           'ticket0/record-answer',
           'ticket0/record-assistant-failure',

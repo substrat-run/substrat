@@ -78,6 +78,27 @@ type ErasableOf<Entities, Engines, O> = O extends { emits: { entity: infer N } }
   : never;
 
 /**
+ * The `outsideText` fields of the entity this event is about — resolved exactly as
+ * `ErasableOf` resolves, and refused in a payload for the same reason: an event outlives
+ * whatever the module later does to the row.
+ */
+type OutsideTextOf<Entities, Engines, O> = O extends { emits: { entity: infer N } }
+  ? N extends keyof Entities
+    ? Entities[N] extends { outsideText: readonly (infer F)[] }
+      ? F & string
+      : never
+    : Engines extends readonly (infer R)[]
+      ? R extends Record<string, EntityDef>
+        ? N extends keyof R
+          ? R[N] extends { outsideText: readonly (infer F)[] }
+            ? F & string
+            : never
+          : never
+        : never
+      : never
+  : never;
+
+/**
  * The platform's own event invariant, moved from runtime to compile time.
  * `contracts/events.ts` enforces it with a `superRefine`: *"subjectId is
  * required when piiClass is 'direct' — crypto-shredding must be able to key the
@@ -711,10 +732,13 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
     readonly schemaVersion: number;
     /**
      * Fat payload, drawn from the output — minus anything the entity marks
-     * `erasable`. Immutable events are the one place in a scope an erasure
-     * cannot reach.
+     * `erasable` or `outsideText`. Immutable events are the one place in a scope an
+     * erasure cannot reach, and no cleanup of the row reaches them either.
      */
-    readonly payload?: readonly Exclude<OutputKeys<O>, ErasableOf<Entities, Engines, O>>[];
+    readonly payload?: readonly Exclude<
+      OutputKeys<O>,
+      ErasableOf<Entities, Engines, O> | OutsideTextOf<Entities, Engines, O>
+    >[];
   } & PiiShape<O, OutputKeys<O>>;
   /**
    * Per-field permission on the projection: omission, not denial. The caller

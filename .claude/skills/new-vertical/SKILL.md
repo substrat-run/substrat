@@ -149,7 +149,7 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
   the pattern: read engine lines → apply the vertical's price list → call the engine's
   complete — one transaction. Catching an engine error needs `ctx.atomic` (CLAUDE.md).
 - Every mutation emits the fat event the declaration names; the payload keys are the
-  ones `emits.payload` lists, and an `erasable` field cannot be among them.
+  ones `emits.payload` lists, and an `erasable` or `outsideText` field cannot be among them.
 - A listing is a **proof walk**: `pageVisible` with a per-entity `ctx.check`, or a `paged`
   read the kernel composes for you — never a `WHERE` clause on ownership.
 - Money and decimals are strings via the contracts helpers; time is `ctx.now()`.

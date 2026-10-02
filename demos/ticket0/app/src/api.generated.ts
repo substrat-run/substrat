@@ -113,6 +113,9 @@ export interface Conversation {
   follows: string | null;
   created_at: string;
   updated_at: string;
+  quarantine: "suspended" | "discarded" | null;
+  suspended_at: string | null;
+  suspicion: string | null;
 }
 
 /** `ticket0_messages` — declared in spec/model.ts. */
@@ -142,6 +145,15 @@ export interface ConversationTag {
 export interface ConversationFollow {
   principal: string;
   conversation_id: string;
+}
+
+/** `ticket0_mail_deliveries` — declared in spec/model.ts. */
+export interface MailDelivery {
+  email_message_id: string;
+  conversation_id: string;
+  message_id: string | null;
+  direction: "inbound" | "outbound";
+  recorded_at: string;
 }
 
 /** `ticket0_saved_replies` — declared in spec/model.ts. */
@@ -386,7 +398,7 @@ export interface Ticket0Client {
    *
    * `PATCH /desk` — `ticket0/configure-desk`
    */
-  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null; settings?: { roundRobin?: boolean; sla?: { firstResponseMinutes?: { low?: number; normal?: number; urgent?: number }; resolutionMinutes?: { low?: number; normal?: number; urgent?: number } } | null; autoTag?: { rules: ({ in: "subject" | "body" | "either"; contains: string; tag: string })[] } | null; autoClose?: { afterDays: number } | null; noReplyNotify?: { afterHours: number } | null } }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; settings: string | null; created_at: string; updated_at: string }>;
+  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null; settings?: { roundRobin?: boolean; sla?: { firstResponseMinutes?: { low?: number; normal?: number; urgent?: number }; resolutionMinutes?: { low?: number; normal?: number; urgent?: number } } | null; autoTag?: { rules: ({ in: "subject" | "body" | "either"; contains: string; tag: string })[] } | null; autoClose?: { afterDays: number } | null; noReplyNotify?: { afterHours: number } | null; spamFilter?: { maxLinks?: number; repeatAfter?: number } | null } }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; settings: string | null; created_at: string; updated_at: string }>;
 
   /**
    * Confirm an address from the link in its email
@@ -418,7 +430,21 @@ export interface Ticket0Client {
    *
    * `GET /desk-metrics` — `ticket0/desk-metrics`
    */
-  deskMetrics(input: { from?: string; to?: string }): Promise<{ from: string; to: string; volume: { opened: number; resolved: number; byChannel: ({ channel: "widget" | "email"; opened: number; resolved: number })[] }; firstResponse: { measured: number; medianSeconds: number | null; p90Seconds: number | null }; resolution: { measured: number; medianSeconds: number | null; p90Seconds: number | null }; backlog: { open: number; snoozed: number; unassigned: number; oldestUntouchedId: string | null; oldestUntouchedAgeSeconds: number | null }; agents: ({ principal: string; displayName: string | null; resolved: number; replies: number })[]; csat: { responses: number; average: number | null }; assistant: { turns: number; answered: number; drafted: number; escalated: number; failed: number; deflectionRate: number | null; escalationRate: number | null; failureRate: number | null; currency: string; cost: string; costPerResolved: string | null } }>;
+  deskMetrics(input: { from?: string; to?: string }): Promise<{ from: string; to: string; volume: { opened: number; resolved: number; byChannel: ({ channel: "widget" | "email"; opened: number; resolved: number })[] }; firstResponse: { measured: number; medianSeconds: number | null; p90Seconds: number | null }; resolution: { measured: number; medianSeconds: number | null; p90Seconds: number | null }; backlog: { open: number; snoozed: number; unassigned: number; oldestUntouchedId: string | null; oldestUntouchedAgeSeconds: number | null; suspended: number }; agents: ({ principal: string; displayName: string | null; resolved: number; replies: number })[]; csat: { responses: number; average: number | null }; assistant: { turns: number; answered: number; drafted: number; escalated: number; failed: number; deflectionRate: number | null; escalationRate: number | null; failureRate: number | null; currency: string; cost: string; costPerResolved: string | null } }>;
+
+  /**
+   * Discard a suspended conversation — deletes its messages for good
+   *
+   * `POST /conversations/{conversationId}/discard` — `ticket0/discard`
+   */
+  discard(input: { conversationId: string }): Promise<Conversation>;
+
+  /**
+   * Discard several suspended conversations at once — all or nothing
+   *
+   * `POST /conversations/suspended/discard` — `ticket0/discard-suspended`
+   */
+  discardSuspended(input: { conversationIds: string[] }): Promise<{ discarded: string[] }>;
 
   /**
    * Put a colleague on a conversation
@@ -521,7 +547,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; contact_id?: string; include_closed?: boolean }): Promise<Paged<Conversation>>;
+  listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; contact_id?: string; include_closed?: boolean; queue?: "inbox" | "suspended" | "discarded" }): Promise<Paged<Conversation>>;
 
   /**
    * The conversations carrying a tag
@@ -576,6 +602,15 @@ export interface Ticket0Client {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   listSignups(input: { kind?: "waitlist" | "newsletter"; state?: "pending" | "confirmed" | "unsubscribed" }): Promise<Paged<({ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; unsubscribe_token: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string })>>;
+
+  /**
+   * The conversations held out of the inbox, with why and what they said
+   *
+   * `GET /conversations/suspended` — `ticket0/list-suspended`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listSuspended(): Promise<Paged<({ id: string; channel: "widget" | "email"; subject: string; contact_id: string; contact_email: string | null; contact_name: string | null; suspended_at: string | null; reasons: ("links" | "repeated" | "discarded-before" | "marked")[]; excerpt: string | null; messages: number; created_at: string; updated_at: string })>>;
 
   /**
    * Every tag the desk uses, most-used first
@@ -733,6 +768,13 @@ export interface Ticket0Client {
   resolve(input: { conversationId: string }): Promise<Conversation>;
 
   /**
+   * Not spam — move a suspended conversation back into the inbox
+   *
+   * `POST /conversations/{conversationId}/restore` — `ticket0/restore`
+   */
+  restore(input: { conversationId: string }): Promise<Conversation>;
+
+  /**
    * Revoke a documentation source’s refresh hook
    *
    * `DELETE /kb/sources/{sourceId}/token` — `ticket0/revoke-kb-refresh-token`
@@ -762,7 +804,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  searchConversations(input: { q: string; state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent" }): Promise<Paged<Conversation>>;
+  searchConversations(input: { q: string; state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; queue?: "inbox" | "suspended" | "discarded" }): Promise<Paged<Conversation>>;
 
   /**
    * Search the knowledge base
@@ -835,6 +877,13 @@ export interface Ticket0Client {
   submitSignup(input: { kind: "waitlist" | "newsletter"; email: string; note?: string | null; origin: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; state: "pending" | "confirmed" | "unsubscribed"; confirmToken: string | null; unsubscribeToken: string }>;
 
   /**
+   * Move a new conversation out of the inbox into the suspended queue
+   *
+   * `POST /conversations/{conversationId}/suspend` — `ticket0/suspend`
+   */
+  suspend(input: { conversationId: string }): Promise<Conversation>;
+
+  /**
    * Tag a conversation
    *
    * `POST /conversations/{conversationId}/tags` — `ticket0/tag-conversation`
@@ -899,7 +948,7 @@ export interface Ticket0Client {
    *
    * `POST /widget/sessions/{sessionId}/messages` — `ticket0/widget-post`
    */
-  widgetPost(input: { sessionId: string; token: string; body: string }): Promise<Message>;
+  widgetPost(input: { sessionId: string; token: string; body: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; suspended: boolean }>;
 
   /**
    * The browser session behind a widget conversation
@@ -1111,6 +1160,10 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       guarded("savedReply", input.savedReplyId, `/saved-replies/${encodeURIComponent(String(input.savedReplyId))}`, "DELETE", undefined, omit(input, ["savedReplyId"])),
     deskMetrics: (input: Args) =>
       send("/desk-metrics", "GET", undefined, input),
+    discard: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/discard`, "POST", omit(input, ["conversationId"]), undefined),
+    discardSuspended: (input: Args) =>
+      send("/conversations/suspended/discard", "POST", input, undefined),
     followConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/followers`, "POST", omit(input, ["conversationId"]), undefined),
     getConversation: (input: Args) =>
@@ -1149,6 +1202,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       page("/saved-replies", "GET", undefined, undefined),
     listSignups: (input: Args) =>
       page("/signups", "GET", undefined, input),
+    listSuspended: () =>
+      page("/conversations/suspended", "GET", undefined, undefined),
     listTags: () =>
       send("/tags", "GET", undefined, undefined),
     listTurns: (input: Args) =>
@@ -1191,6 +1246,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/widget/sessions/${encodeURIComponent(String(input.sessionId))}/handoff`, "POST", omit(input, ["sessionId"]), undefined),
     resolve: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/resolve`, "POST", omit(input, ["conversationId"]), undefined),
+    restore: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/restore`, "POST", omit(input, ["conversationId"]), undefined),
     revokeKbRefreshToken: (input: Args) =>
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/token`, "DELETE", undefined, omit(input, ["sourceId"])),
     rotateVerificationSecret: () =>
@@ -1219,6 +1276,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/me/conversations/${encodeURIComponent(String(input.conversationId))}/csat`, "POST", omit(input, ["conversationId"]), undefined),
     submitSignup: (input: Args) =>
       send("/signup", "POST", input, undefined),
+    suspend: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/suspend`, "POST", omit(input, ["conversationId"]), undefined),
     tagConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "POST", omit(input, ["conversationId"]), undefined),
     unfollowConversation: (input: Args) =>

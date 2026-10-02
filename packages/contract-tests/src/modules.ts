@@ -1764,7 +1764,9 @@ export const listModManifest = moduleManifest.parse({
     {
       entityType: 'listorder',
       sortable: ['number', 'status', 'id'],
-      filterable: ['status', 'kind'],
+      // `hold` is NULLABLE, and null means something (#1088): it is how the suite holds
+      // a `null` filter to `IS NULL` rather than to an `= NULL` that matches nothing.
+      filterable: ['status', 'kind', 'hold'],
       table: 'list_orders',
       idColumn: 'id',
     },
@@ -1780,15 +1782,17 @@ export const listMod: ModuleRegistration = {
               id TEXT PRIMARY KEY, number TEXT NOT NULL,
               status TEXT NOT NULL, kind TEXT NOT NULL);`,
     },
+    { version: '0002-hold', sql: 'ALTER TABLE list_orders ADD COLUMN hold TEXT;' },
   ],
   operations: {
     'list/add': (async (ctx, input) => {
-      const i = input as { id: string; number: string; status: string; kind: string };
-      ctx.sql.exec('INSERT INTO list_orders (id, number, status, kind) VALUES (?, ?, ?, ?)', [
+      const i = input as { id: string; number: string; status: string; kind: string; hold?: string };
+      ctx.sql.exec('INSERT INTO list_orders (id, number, status, kind, hold) VALUES (?, ?, ?, ?, ?)', [
         i.id,
         i.number,
         i.status,
         i.kind,
+        i.hold ?? null,
       ]);
       return { id: i.id };
     }) as OperationHandler<never, unknown>,

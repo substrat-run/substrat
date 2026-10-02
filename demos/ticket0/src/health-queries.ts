@@ -1,8 +1,10 @@
 /** Production reads shared with the provisioned-scope query-plan regression suite. */
+import { inTheInbox } from '../spec/model.js';
 
 export const REAP_ABANDONED_SQL = `SELECT * FROM ticket0_conversations c
         WHERE c.state = 'new'
           AND c.merged_into IS NULL
+          AND ${inTheInbox('c')}
           AND c.updated_at <= ?
           AND NOT EXISTS (
                 SELECT 1 FROM ticket0_ai_turns t
@@ -26,6 +28,7 @@ export const ASSISTANT_HEALTH_RECENT_SQL = `SELECT t.id, t.conversation_id, c.su
 const WAITING = `FROM ticket0_ai_turns t
          JOIN ticket0_conversations c ON c.id = t.conversation_id
         WHERE t.outcome = 'drafted'
+          AND ${inTheInbox('c')}
           AND NOT EXISTS (
                 SELECT 1 FROM ticket0_messages m
                  WHERE m.conversation_id = t.conversation_id

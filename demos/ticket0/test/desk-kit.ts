@@ -60,6 +60,10 @@ export interface ConversationRead {
   subject: string;
   updated_at: string;
   resolved_at: string | null;
+  contact_id: string;
+  quarantine: string | null;
+  suspended_at: string | null;
+  suspicion: string | null;
   auto_tagged_at: string | null;
   no_reply_notified_at: string | null;
   no_reply_notified_message_id: string | null;
@@ -92,7 +96,10 @@ export interface Kit {
   /** A customer writes in — a new conversation, or a new message into `into`. A minute after the last. */
   mail(desk: Desk, opts?: { subject?: string; body?: string; into?: string; from?: string }): Promise<string>;
   /** A visitor opens the widget and says something, a minute after the last thing. */
-  chat(desk: Desk): Promise<{ conversationId: string; sessionId: string; token: string }>;
+  chat(
+    desk: Desk,
+    body?: string,
+  ): Promise<{ conversationId: string; sessionId: string; token: string; suspended: boolean }>;
   read(desk: Desk, id: string): Promise<ConversationRead>;
   /** An agent answers in public and resolves. */
   resolve(desk: Desk, id: string): Promise<void>;
@@ -265,7 +272,7 @@ export function createKit(prefix: string): Kit {
       return arrived.conversation_id;
     },
 
-    async chat(desk) {
+    async chat(desk, body = 'How do I rotate a key?') {
       clock.advance(60_000);
       const widget = await as(desk, desk.widget);
       const started = (await widget.invoke('ticket0/widget-start', { origin: ORIGIN })) as {
@@ -275,9 +282,9 @@ export function createKit(prefix: string): Kit {
       const posted = (await widget.invoke('ticket0/widget-post', {
         sessionId: started.sessionId,
         token: started.token,
-        body: 'How do I rotate a key?',
-      })) as { conversation_id: string };
-      return { conversationId: posted.conversation_id, ...started };
+        body,
+      })) as { conversation_id: string; suspended: boolean };
+      return { conversationId: posted.conversation_id, ...started, suspended: posted.suspended };
     },
 
     async read(desk, id) {

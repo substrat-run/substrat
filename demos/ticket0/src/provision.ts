@@ -45,6 +45,10 @@ export const ROLES: RoleDefinition[] = [
     permissions: [
       ...AGENT_PERMISSIONS,
       T0_PERM.conversationMerge,
+      // Here and in no other role (#1088): the one key that deletes a customer's words.
+      // An agent can move junk out of the inbox (`conversation:assign`); an admin decides
+      // it is gone.
+      T0_PERM.conversationDiscard,
       T0_PERM.kbManage,
       // Both halves, because the Re-read button in Settings is this same path: a
       // desk-admin who could add a source but not read it would be holding half a

@@ -15,6 +15,7 @@ import {
   ASSISTANT_HEALTH_WAITING_SQL, ASSISTANT_HEALTH_WAITING_TOTAL_SQL,
 } from '../src/health-queries.js';
 import { NO_REPLY_WAITING } from '../src/module.js';
+import { listsBefore0021 } from './before-0021.js';
 
 type Query = { sql: string; args: (string | number)[] };
 const queries = {
@@ -34,12 +35,21 @@ let beforeResults: unknown;
 let beforePlans: Record<string, string[]>;
 let afterPlans: Record<string, string[]>;
 
+/**
+ * A read as the version BEFORE 0021 sent it: the inbox predicate (#1088) names a column
+ * that schema does not have, and is the only thing 0021 added to these statements. The
+ * "before" snapshot is of the old version's own reads, so it takes them without it.
+ */
+const before0021 = (query: Query): Query => ({ ...query, sql: query.sql.replace(/\s+AND (c\.)?quarantine IS NULL/g, '') });
 function explain(query: Query): string[] {
   return (db.prepare(`EXPLAIN QUERY PLAN ${query.sql}`).all(...query.args) as { detail: string }[])
     .map(row => row.detail);
 }
-function plans() { return Object.fromEntries(Object.entries(queries).map(([name, q]) => [name, explain(q)])); }
-function results() { return Object.fromEntries(Object.entries(queries).map(([name, q]) => [name, db.prepare(q.sql).all(...q.args)])); }
+const queriesBefore0021 = Object.fromEntries(Object.entries(queries).map(([name, q]) => [name, before0021(q)]));
+function plans(qs: Record<string, Query> = queries) { return Object.fromEntries(Object.entries(qs).map(([name, q]) => [name, explain(q)])); }
+function results(qs: Record<string, Query> = queries) {
+  return Object.fromEntries(Object.entries(qs).map(([name, q]) => [name, db.prepare(q.sql).all(...q.args)]));
+}
 function rows() {
   // Literal tables/columns are fixture facts, not derived from the emitted model.
   return ['ticket0_contacts', 'ticket0_conversations', 'ticket0_ai_turns', 'ticket0_messages']
@@ -79,8 +89,14 @@ beforeAll(async () => {
   const scope = scopeId.parse(ulid());
   const provision = { tenantId: tenant, scopeId: scope, vertical: 'ticket0' };
   const previous = new SqliteScopeHost({ dir });
+  // The version this upgrades FROM, so its list declaration too: `quarantine` became a
+  // filterable column in 0021 (#1088), and a pre-0021 schema has no column to index.
   for (const module of MODULES) previous.registerModule(module.manifest.id === ticket0Manifest.id
-    ? { ...module, migrations: (module.migrations ?? []).filter(m => m.version <= '0014') }
+    ? {
+        ...module,
+        manifest: { ...module.manifest, lists: listsBefore0021(module.manifest.lists ?? []) },
+        migrations: (module.migrations ?? []).filter(m => m.version <= '0014'),
+      }
     : module);
   try {
     await previous.admin.createTenant(actor, { id: tenant, slug: 'index-upgrade', name: 'Index upgrade' });
@@ -91,8 +107,8 @@ beforeAll(async () => {
   db = new Database(filename);
   populate();
   beforeRows = rows();
-  beforeResults = results();
-  beforePlans = plans();
+  beforeResults = results(queriesBefore0021);
+  beforePlans = plans(queriesBefore0021);
   db.close();
   const upgraded = new SqliteScopeHost({ dir });
   for (const module of MODULES) upgraded.registerModule(module);
@@ -228,7 +244,10 @@ it('audits shipped list coverage and records the default multi-state inbox cavea
       expect(details.some(p => /TEMP B-TREE/.test(p))).toBe(false);
     }
   }
-  const inbox = listQuery(plan, { limit: 50, order: 'desc', filters: { state: ['new', 'open', 'snoozed', 'resolved'] } });
+  // As `list-conversations` sends it since #1088: the open states, in the inbox queue.
+  const inbox = listQuery(plan, {
+    limit: 50, order: 'desc', filters: { state: ['new', 'open', 'snoozed', 'resolved'], quarantine: null },
+  });
   const q = { sql: inbox.sql, args: inbox.params as string[] };
   // IN across states cannot promise a globally sorted equality-index walk. With
   // stats this fixture uses the already-shipped updated_at walk instead. Neither
