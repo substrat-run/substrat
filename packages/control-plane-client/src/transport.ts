@@ -21,9 +21,49 @@ export interface ControlPlaneTransportOptions {
    */
   actor: string | null;
   serviceToken?: string;
+  /**
+   * Defaults to the global `fetch`, looked up at CALL time rather than captured when the
+   * client is built — so a caller that swaps `globalThis.fetch` afterwards (a test, an
+   * instrumented runtime) is honoured, and workerd still sees the global as the receiver.
+   */
   fetch?: typeof globalThis.fetch;
   /** Passed to `fetch` only when set — `'include'` carries the console's staff session cookie. */
   credentials?: RequestCredentials;
+  /**
+   * Extra headers sent with every request — for a caller that already holds a resolved
+   * credential header map (the CLI's `Authorization: Bearer …` / `x-service-token`, plus the
+   * tenant it acts for). PRECEDENCE, lowest first: these, then the transport's own
+   * credential (`serviceToken` / `actor`), then the content type, then the request's own
+   * `init.headers`. So a configured credential option is never overridden by a stale map
+   * entry, and a single call can still override anything.
+   */
+  headers?: Record<string, string>;
+  /**
+   * The `content-type` sent on every request. Defaults to `'application/json'` (what every
+   * existing caller has always sent, bodyless GETs included); `null` sends none, for a caller
+   * whose requests set their own per call.
+   */
+  contentType?: string | null;
+  /**
+   * Called with every response that arrives — success or refusal — before it is read: the
+   * hook for a header the plane stamps on any answer (the CLI's version advisory). Never
+   * called for a transport failure, and a throw from it is the caller's own.
+   */
+  onResponse?: (res: { status: number; headers: Headers }) => void;
+}
+
+/** What a refusal carried beyond its sentence, for a caller that renders its own. */
+export interface ControlPlaneErrorDetail {
+  /** The response body as text, exactly as it arrived (`''` when it could not be read). */
+  body?: string;
+  /** The response headers. */
+  headers?: Headers;
+  /** The full URL requested. */
+  url?: string;
+  /** Set on a 2xx whose body was not the JSON the route promises — `body` says what it was. */
+  malformed?: true;
+  /** The underlying failure, for a transport error (`status` 0): the error `fetch` threw. */
+  cause?: unknown;
 }
 
 /** A non-2xx (or unreachable) control-plane response. `status` is 0 on a transport error. */
@@ -37,10 +77,22 @@ export class ControlPlaneError extends Error {
      * No valid access credentials were provided" — instead of a generic save failure.
      */
     readonly probe?: ConnectionProbe,
+    detail: ControlPlaneErrorDetail = {},
   ) {
-    super(message);
+    super(message, 'cause' in detail ? { cause: detail.cause } : undefined);
     this.name = 'ControlPlaneError';
+    this.body = detail.body;
+    this.headers = detail.headers;
+    this.url = detail.url;
+    this.malformed = detail.malformed === true;
   }
+
+  /** The refusal's raw body text; `undefined` for an error the transport did not read off a response. */
+  readonly body: string | undefined;
+  readonly headers: Headers | undefined;
+  readonly url: string | undefined;
+  /** True for a 2xx answer that was not the JSON the route promises. */
+  readonly malformed: boolean;
 }
 
 export class ControlPlaneTransport {
@@ -49,16 +101,60 @@ export class ControlPlaneTransport {
   private readonly serviceToken?: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly credentials?: RequestCredentials;
+  private readonly extraHeaders?: Record<string, string>;
+  private readonly contentType: string | null;
+  private readonly onResponse?: ControlPlaneTransportOptions['onResponse'];
 
   constructor(options: ControlPlaneTransportOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.actor = options.actor;
     this.serviceToken = options.serviceToken;
     this.credentials = options.credentials;
-    // Bind to globalThis: workerd throws "Illegal invocation" if `fetch` is called
-    // with a `this` other than the global scope (which `this.fetchImpl(...)` would
-    // otherwise set to this instance). An injected fetch is used as-is.
-    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.extraHeaders = options.headers;
+    this.contentType = options.contentType === undefined ? 'application/json' : options.contentType;
+    this.onResponse = options.onResponse;
+    // Resolved at CALL time, and called as a function on the global: workerd throws
+    // "Illegal invocation" if `fetch` is called with a `this` other than the global scope
+    // (which `this.fetchImpl(...)` would otherwise set to this instance), and reading
+    // `globalThis.fetch` per call — rather than binding it once here — lets a caller swap it
+    // afterwards. An injected fetch is used as-is.
+    this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  }
+
+  /**
+   * One request on the wire, exactly as `send` makes it, and nothing more: the base URL, the
+   * credential and the headers are applied, and the `Response` comes back whatever its status.
+   * A `fetch` rejection propagates unchanged. For a caller that owns its own reading of
+   * the answer — a retry loop, a multipart upload — and wants the transport's addressing and
+   * credentials without its error policy.
+   */
+  async request(path: string, init?: RequestInit): Promise<Response> {
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      ...init,
+      ...(this.credentials ? { credentials: this.credentials } : {}),
+      headers: {
+        ...this.extraHeaders,
+        // One credential per request (#980): a service token identifies the caller as
+        // the plane's service actor and is checked BEFORE the dev-actor stub, so the
+        // actor header would be ignored there — and a dev-only header has no business
+        // leaving a production caller at all. Without a token, the actor header IS the
+        // (local, UNSAFE) credential.
+        ...(this.serviceToken
+          ? { [SERVICE_TOKEN_HEADER]: this.serviceToken }
+          : this.actor !== null
+            ? { [DEV_ACTOR_HEADER]: this.actor }
+            : {}),
+        ...(this.contentType === null ? {} : { 'content-type': this.contentType }),
+        ...init?.headers,
+      },
+    });
+    this.onResponse?.({ status: res.status, headers: res.headers });
+    return res;
+  }
+
+  /** The full URL a path is requested at — for a message that names it. */
+  urlFor(path: string): string {
+    return `${this.baseUrl}${path}`;
   }
 
   /**
@@ -69,28 +165,14 @@ export class ControlPlaneTransport {
   protected async send(path: string, init?: RequestInit, allow404 = false): Promise<Response> {
     let res: Response;
     try {
-      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        ...init,
-        ...(this.credentials ? { credentials: this.credentials } : {}),
-        headers: {
-          // One credential per request (#980): a service token identifies the caller as
-          // the plane's service actor and is checked BEFORE the dev-actor stub, so the
-          // actor header would be ignored there — and a dev-only header has no business
-          // leaving a production caller at all. Without a token, the actor header IS the
-          // (local, UNSAFE) credential.
-          ...(this.serviceToken
-            ? { [SERVICE_TOKEN_HEADER]: this.serviceToken }
-            : this.actor !== null
-              ? { [DEV_ACTOR_HEADER]: this.actor }
-              : {}),
-          'content-type': 'application/json',
-          ...init?.headers,
-        },
-      });
+      res = await this.request(path, init);
     } catch (e) {
       // A transport failure (control plane down) must fail closed, not silently
       // pass — a vertical that cannot reach the authority does not get to run.
-      throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`);
+      throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`, undefined, {
+        cause: e,
+        url: this.urlFor(path),
+      });
     }
     if (res.status === 404 && allow404) return res;
     if (!res.ok) {
@@ -99,10 +181,18 @@ export class ControlPlaneTransport {
       // published schema — so this works either way, and keeps working the day the
       // duplicate is deleted. The status line is the fallback only when the body
       // said nothing readable.
-      const body = await res.json().catch(() => null);
+      const text = await res.text().catch(() => '');
+      let body: unknown = null;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        // Not JSON: `problemDetail(null)` is undefined and the status line speaks.
+      }
       throw new ControlPlaneError(
         res.status,
         problemDetail(body) ?? `${res.status} ${res.statusText}`,
+        undefined,
+        { body: text, headers: res.headers, url: this.urlFor(path) },
       );
     }
     return res;
@@ -112,5 +202,27 @@ export class ControlPlaneTransport {
     const res = await this.send(path, init, allow404);
     if (res.status === 404 && allow404) return undefined as T;
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+  }
+
+  /**
+   * A JSON answer, read from its text so a 2xx that is not JSON says what it was: a
+   * `ControlPlaneError` flagged `malformed`, carrying the `body` and `url` — the common
+   * misconfiguration being a base URL that points at a web page rather than the API. Unlike
+   * `call`, no status is special-cased: a 204 is an empty body, which is not JSON.
+   */
+  protected async read<T>(path: string, init?: RequestInit): Promise<T> {
+    const res = await this.send(path, init);
+    const text = await res.text();
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      const url = this.urlFor(path);
+      throw new ControlPlaneError(res.status, `got a non-JSON response from ${url}`, undefined, {
+        body: text,
+        headers: res.headers,
+        url,
+        malformed: true,
+      });
+    }
   }
 }

@@ -11,7 +11,7 @@
  * holds that line.
  */
 export { ControlPlaneTransport, ControlPlaneError } from './transport.js';
-export type { ControlPlaneTransportOptions } from './transport.js';
+export type { ControlPlaneTransportOptions, ControlPlaneErrorDetail } from './transport.js';
 export { ControlPlaneClient } from './client.js';
 export type { ControlPlaneClientOptions, ClientProvisionScopeInput } from './client.js';
 export { identityTenant, identityTenantsResponse } from './identity-tenants.js';
