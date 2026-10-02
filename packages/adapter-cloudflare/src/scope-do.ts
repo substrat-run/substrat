@@ -43,6 +43,8 @@ import {
   type DenialFilter,
   type DenialSummary,
   type PermissionDenial,
+  type RefusalFilter,
+  type RefusalRecord,
   type ScopeTablePage,
   type TenantId,
   SCOPE_TABLE_PAGE_MAX,
@@ -98,6 +100,9 @@ import {
   type SystemGrantsEntry,
   type SystemScheduleState,
   denialListQuery,
+  refusalListQuery,
+  mapRefusalRow,
+  type RefusalDbRow,
   denialSummaryQuery,
   denialTotalsQuery,
   DENIAL_WINDOW_QUERY,
@@ -4638,6 +4643,17 @@ export function defineScopeDO(
       return (
         this.sql.exec(q.sql, ...q.params).toArray() as unknown as DenialRow[]
       ).map(mapDenialRow);
+    }
+
+    /**
+     * #1745: the refusal log — every lifecycle move refused and failed with, recorded after
+     * the rollback. Authorization and the K-3 cross-check happen on the coordinator first.
+     */
+    listRefusals(filter?: RefusalFilter): RefusalRecord[] {
+      const q = refusalListQuery(filter);
+      return (
+        this.sql.exec(q.sql, ...q.params).toArray() as unknown as RefusalDbRow[]
+      ).map(mapRefusalRow);
     }
 
     /**

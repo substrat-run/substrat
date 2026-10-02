@@ -185,6 +185,8 @@ import {
   type DenialFilter,
   type DenialSummary,
   type PermissionDenial,
+  type RefusalFilter,
+  type RefusalRecord,
   type ScopeQueryResult,
   type ScopeTablePage,
   type Tenant,
@@ -1331,6 +1333,8 @@ interface ScopeStubRpc {
   /** The K-35 denial log, read back (#867) — raw rows and the bucketed view. */
   listDenials(filter?: DenialFilter): Promise<PermissionDenial[]>;
   summarizeDenials(filter?: DenialFilter): Promise<DenialSummary>;
+  /** #1745: the refusal log, read back — refused lifecycle moves, newest first. */
+  listRefusals(filter?: RefusalFilter): Promise<RefusalRecord[]>;
   /** Complete logical dump of this scope's DB (preview-and-snapshots.md §3). */
   exportDump(): Promise<ScopeDumpTable[]>;
   /**
@@ -6241,6 +6245,18 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.scopeRecordForRead(tenantId, scopeId);
         const rows = await this.scopeStub(scopeId).listDenials(filter);
         await this.recordAccess(actor, 'listDenials', { tenantId, scopeId }, filter ?? null, rows.length);
+        return rows;
+      },
+      listRefusals: async (
+        actor,
+        tenantId,
+        scopeId,
+        filter?: RefusalFilter,
+      ): Promise<RefusalRecord[]> => {
+        // #1745: the denial log's discipline — K-3 on the directory before the DO is reached.
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const rows = await this.scopeStub(scopeId).listRefusals(filter);
+        await this.recordAccess(actor, 'listRefusals', { tenantId, scopeId }, filter ?? null, rows.length);
         return rows;
       },
       summarizeDenials: async (

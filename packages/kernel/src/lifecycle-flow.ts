@@ -85,7 +85,7 @@ interface EntityWalk {
  * The kind of actor a stored `actor` names — read off its JSON shape, never decoded in
  * full: a principal is a bare JSON string, every other kind an object keyed by its kind.
  */
-function actorKindOf(stored: string): LifecycleActorKind {
+export function actorKindOf(stored: string): LifecycleActorKind {
   try {
     const actor: unknown = JSON.parse(stored);
     if (typeof actor === 'string') return 'principal';
