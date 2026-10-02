@@ -98,12 +98,174 @@ export interface TableSchema {
   readonly primaryKey: string[];
   /** Each constraint normalised to `a, b`. Excludes the primary key and any PARTIAL index. */
   readonly uniques: string[];
+  /**
+   * Column-level CHECK expressions, by column, each normalised by `normaliseSql`
+   * (`status in ('a','b')`). A table-level `CHECK (…)` is not attributed to any
+   * column and is not here: nothing the model emits is written that way.
+   */
+  readonly checks: ReadonlyMap<string, readonly string[]>;
+}
+
+/** Keywords that open a table constraint rather than a column definition. */
+const TABLE_CONSTRAINT = /^(CONSTRAINT|PRIMARY|UNIQUE|CHECK|FOREIGN)\b/i;
+
+/** Skip whitespace and comments from `i`; the index of the next significant character. */
+function skipTrivia(s: string, i: number): number {
+  for (;;) {
+    while (i < s.length && /\s/.test(s[i] as string)) i++;
+    if (s[i] === '-' && s[i + 1] === '-') {
+      while (i < s.length && s[i] !== '\n') i++;
+      continue;
+    }
+    if (s[i] === '/' && s[i + 1] === '*') {
+      const end = s.indexOf('*/', i + 2);
+      i = end === -1 ? s.length : end + 2;
+      continue;
+    }
+    return i;
+  }
+}
+
+/**
+ * Walk `s` at paren depth, quote- and comment-aware, calling `visit` with each
+ * significant character's index and the depth BEFORE it. Returns nothing; the
+ * visitor returns `false` to stop.
+ */
+function walk(s: string, from: number, visit: (i: number, depth: number) => boolean | void): void {
+  let depth = 0;
+  for (let i = from; i < s.length; i++) {
+    const c = s[i] as string;
+    if (CLOSING[c]) {
+      if (visit(i, depth) === false) return;
+      i = endOfQuoted(s, i) - 1;
+      continue;
+    }
+    if ((c === '-' && s[i + 1] === '-') || (c === '/' && s[i + 1] === '*')) {
+      i = skipTrivia(s, i) - 1;
+      continue;
+    }
+    if (visit(i, depth) === false) return;
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+  }
+}
+
+/** The parenthesised run opening at `open`, without its parens. */
+function parenthesised(s: string, open: number): string {
+  let close = s.length;
+  walk(s, open, (i, depth) => {
+    if (s[i] === ')' && depth === 1) {
+      close = i;
+      return false;
+    }
+  });
+  return s.slice(open + 1, close);
+}
+
+/** An identifier as SQLite reads it: quotes stripped, a doubled quote unescaped. */
+function unquote(id: string): string {
+  const close = CLOSING[id[0] as string];
+  if (!close || id[0] === "'") return id;
+  return id.slice(1, -1).split(close + close).join(close);
+}
+
+/**
+ * One spelling for one expression, so the same CHECK written two ways compares
+ * equal: comments dropped, whitespace collapsed (and removed just inside parens and
+ * around commas), keywords and identifiers lower-cased, simple quoted identifiers
+ * unquoted. String literals are kept exactly — `'Open'` and `'open'` are
+ * different values.
+ */
+export function normaliseSql(expr: string): string {
+  let out = '';
+  // A space is only written once the next token shows it is needed: never
+  // beside a paren or a comma, never at either end.
+  let space = false;
+  const emit = (token: string) => {
+    if (space && out && !/[(,]$/.test(out) && !/^[),]/.test(token)) out += ' ';
+    space = false;
+    out += token;
+  };
+  let i = 0;
+  while (i < expr.length) {
+    const c = expr[i] as string;
+    if (/\s/.test(c) || (c === '-' && expr[i + 1] === '-') || (c === '/' && expr[i + 1] === '*')) {
+      i = skipTrivia(expr, i);
+      space = true;
+      continue;
+    }
+    if (c === "'") {
+      const end = endOfQuoted(expr, i);
+      emit(expr.slice(i, end));
+      i = end;
+      continue;
+    }
+    if (CLOSING[c]) {
+      const end = endOfQuoted(expr, i);
+      const id = unquote(expr.slice(i, end));
+      emit(/^[A-Za-z_][A-Za-z0-9_]*$/.test(id) ? id.toLowerCase() : expr.slice(i, end));
+      i = end;
+      continue;
+    }
+    emit(c.toLowerCase());
+    i++;
+  }
+  return out;
+}
+
+/**
+ * The column-level CHECKs a stored `CREATE TABLE` declares.
+ *
+ * This reads SQLite's OWN copy of the statement (`sqlite_schema.sql`), not the
+ * journal's: after the replay it already carries every `ADD COLUMN`, every
+ * `RENAME COLUMN` (SQLite rewrites the expression) and every rebuild-and-rename,
+ * so the only parsing left is splitting one statement into its definitions. No
+ * PRAGMA reports a CHECK, which is why there is any parsing at all.
+ */
+export function columnChecks(createSql: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  let open = -1;
+  walk(createSql, 0, (i, depth) => {
+    if (createSql[i] === '(' && depth === 0) {
+      open = i;
+      return false;
+    }
+  });
+  if (open === -1) return out;
+  const body = parenthesised(createSql, open);
+
+  // Top-level definitions: split on the commas at depth 0.
+  const parts: string[] = [];
+  let start = 0;
+  walk(body, 0, (i, depth) => {
+    if (body[i] === ',' && depth === 0) {
+      parts.push(body.slice(start, i));
+      start = i + 1;
+    }
+  });
+  parts.push(body.slice(start));
+
+  for (const raw of parts) {
+    const part = raw.slice(skipTrivia(raw, 0));
+    if (!part || TABLE_CONSTRAINT.test(part)) continue;
+    const nameEnd = CLOSING[part[0] as string] ? endOfQuoted(part, 0) : (/^[^\s(]+/.exec(part)?.[0].length ?? 0);
+    const column = unquote(part.slice(0, nameEnd));
+    const checks: string[] = [];
+    walk(part, nameEnd, (i, depth) => {
+      if (depth !== 0 || !/^CHECK\b/i.test(part.slice(i, i + 6)) || /[A-Za-z0-9_]/.test(part[i - 1] ?? ' ')) return;
+      const open = skipTrivia(part, i + 5);
+      if (part[open] !== '(') return;
+      checks.push(normaliseSql(parenthesised(part, open)));
+    });
+    if (checks.length) out.set(column, checks);
+  }
+  return out;
 }
 
 /**
  * One replay per journal string.
  *
- * `planMigration` asks for columns, keys and uniques off the same journal, and
+ * `planMigration` asks for columns, keys, uniques and checks off the same journal, and
  * building three identical databases to answer three questions about one schema
  * would be silly. Keyed on the SQL itself, which is what makes it safe: the
  * readers are pure functions of their input, and this does not change that.
@@ -168,7 +330,12 @@ export function readSchema(sql: string): Map<string, TableSchema> {
         uniques.push(cols.join(', '));
       }
 
-      schema.set(name, { columns: info.map((c) => c.name), primaryKey, uniques });
+      const create = db.prepare(`SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?`).get(name) as
+        | { sql: string }
+        | undefined;
+      const checks = columnChecks(create?.sql ?? '');
+
+      schema.set(name, { columns: info.map((c) => c.name), primaryKey, uniques, checks });
     }
 
     cache.set(sql, schema);

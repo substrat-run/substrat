@@ -185,6 +185,8 @@ import {
   type DenialFilter,
   type DenialSummary,
   type PermissionDenial,
+  type RefusalFilter,
+  type RefusalRecord,
   type ScopeQueryResult,
   type ScopeTablePage,
   type Tenant,
@@ -220,6 +222,8 @@ import {
   attachmentBlobKey,
   attachmentSha256,
   entitlementDenial,
+  requiredEntitlementFor,
+  type OperationEntitlement,
   foldMeterReading,
   parseValidationRecords,
   resolveScopeRecord,
@@ -1331,6 +1335,8 @@ interface ScopeStubRpc {
   /** The K-35 denial log, read back (#867) — raw rows and the bucketed view. */
   listDenials(filter?: DenialFilter): Promise<PermissionDenial[]>;
   summarizeDenials(filter?: DenialFilter): Promise<DenialSummary>;
+  /** #1745: the refusal log, read back — refused lifecycle moves, newest first. */
+  listRefusals(filter?: RefusalFilter): Promise<RefusalRecord[]>;
   /** Complete logical dump of this scope's DB (preview-and-snapshots.md §3). */
   exportDump(): Promise<ScopeDumpTable[]>;
   /**
@@ -1927,7 +1933,9 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private readonly onBehalfOf: OnBehalfOf | null = null;
   private readonly withdrawn = new Map<string, string>(); // operation → module
-  private readonly operationEntitlement = new Map<string, string>();
+  /** Operation → who binds it (module, SKU flag, its declared schedules) — the §4.3 gate's
+   *  input, resolved per invoke by the kernel's `requiredEntitlementFor` (#1654). */
+  private readonly operationEntitlement = new Map<string, OperationEntitlement>();
   /** #574: remote connector write-back for scopes served by another deployment. */
   private readonly connectorDelegation?: ConnectorDelegation;
   /** #1334: the Tier-2 drain's reach into the deployment serving a scope. */
@@ -2763,9 +2771,14 @@ export class CloudflareScopeHost implements ScopeHost {
           `${unboundInputs.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
       );
     }
+    const binding: OperationEntitlement = {
+      moduleId: manifest.id,
+      entitlementKey: manifest.entitlementKey,
+      scheduledOperations: new Set((manifest.schedules ?? []).map((sch) => sch.operation)),
+    };
     for (const name of Object.keys(registration.operations ?? {})) {
       this.bindOperation(name);
-      this.operationEntitlement.set(name, manifest.entitlementKey);
+      this.operationEntitlement.set(name, binding);
     }
   }
 
@@ -4023,7 +4036,17 @@ export class CloudflareScopeHost implements ScopeHost {
         // (`cp.tenantHoldsEntitlement`); for a hosted/CP-less scope that call is a trusting
         // no-op, so the SAME `requiredKey` is passed to the DO, which fails closed against
         // its PROJECTED entitlements (#304). One or the other enforces, never neither.
-        const requiredKey = operationEntitlement.get(operation);
+        //
+        // EXCEPTION (#1654): a module's own declared schedule, through this system door,
+        // demands no SKU — its `system:<moduleId>` grant is the switch, as it already is for
+        // permissions (#383). `requiredEntitlementFor` holds the whole rule and why; it
+        // answers `undefined` there, so neither the coordinator nor the DO asks. Every other
+        // door passes no `systemModuleId` and is gated exactly as before.
+        const requiredKey = requiredEntitlementFor(
+          operation,
+          operationEntitlement.get(operation),
+          systemModuleId,
+        );
         if (requiredKey && !(await cp.tenantHoldsEntitlement(tenantId, requiredKey))) {
           // Required AND held (#691) — a second CP read, but only on the denial path.
           const now = new Date().toISOString();
@@ -6241,6 +6264,18 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.scopeRecordForRead(tenantId, scopeId);
         const rows = await this.scopeStub(scopeId).listDenials(filter);
         await this.recordAccess(actor, 'listDenials', { tenantId, scopeId }, filter ?? null, rows.length);
+        return rows;
+      },
+      listRefusals: async (
+        actor,
+        tenantId,
+        scopeId,
+        filter?: RefusalFilter,
+      ): Promise<RefusalRecord[]> => {
+        // #1745: the denial log's discipline — K-3 on the directory before the DO is reached.
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const rows = await this.scopeStub(scopeId).listRefusals(filter);
+        await this.recordAccess(actor, 'listRefusals', { tenantId, scopeId }, filter ?? null, rows.length);
         return rows;
       },
       summarizeDenials: async (

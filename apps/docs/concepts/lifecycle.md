@@ -128,7 +128,8 @@ the way a denied permission is recorded. Pass the record as `assertTransition`'s
 argument, `{ entityType, entityId }`, so the attempt counts against it. Without it the
 refusal is still recorded, with the record unknown. The process map draws these as red
 stubs out of the state the record was in, and the details never reach the HTTP caller:
-the response is the same `conflict` it always was.
+the response is the same `conflict` it always was. The rows themselves are read through
+`HostAdmin.listRefusals`, narrowed by record, actor or call, the way the denial log is.
 
 **Review.** `pnpm lint:model` re-emits the machine into `model.json`, and CI re-emits with
 `--check`. A redirected edge or a state that stops admitting substates has to appear in a PR

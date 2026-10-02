@@ -107,6 +107,8 @@ import type {
   ScopeTable,
   DenialFilter,
   DenialSummary,
+  RefusalFilter,
+  RefusalRecord,
   PermissionDenial,
   Coverage,
   BeginImpersonationInput,
@@ -2890,6 +2892,24 @@ export interface HostAdmin {
     filter?: DenialFilter,
   ): Promise<DenialSummary>;
 
+  /**
+   * #1745: the refusal log — every lifecycle move `assertTransition` refused and the
+   * operation failed with, recorded after the rollback exactly as a denial is. A bounded
+   * page of raw rows, newest first; narrow with `entityType`/`entityId` (which record),
+   * `actor`, `operation`, `invocationId` (which call) and a `since`/`until` window.
+   *
+   * The row read beneath `lifecycleFlow`'s `refused` counts, read like the denial log:
+   * a `PlatformActorId`, a K-24 access-log entry and the K-3 (tenantId, scopeId)
+   * cross-check. Unlike a denial row it names a record and the state it was in — a key
+   * and a status value, never the record's fields.
+   */
+  listRefusals(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: RefusalFilter,
+  ): Promise<RefusalRecord[]>;
+
   // -- directory disaster recovery (control-plane.md §4.9, #40) ---------------
   // Every method above reads or writes ONE tenant's world. These two are the only
   // pair whose subject is the platform's own database — the mapping that makes all
@@ -3122,6 +3142,8 @@ export interface HostAdmin {
   // as if it had never been registered. Granting one is the point of the console.
   // Widened by #33 to express a plan: expiry (enforced here, fail-closed at the
   // gate), quota and tier (expression only — the builder portal counts, D-33).
+  // One exception (#1654): a module's own declared schedule, through the system door,
+  // is authorised by its system grant instead — see `requiredEntitlementFor`.
 
   /**
    * Turn a SKU flag on for a tenant, optionally carrying plan fields. Idempotent
@@ -3751,6 +3773,69 @@ declare const crypto: { subtle: { digest(algorithm: string, data: Uint8Array): P
 export async function attachmentSha256(body: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', body);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Who binds an operation, as the §4.3 entitlement gate needs to know it: the owning
+ * module, the SKU flag its manifest declares, and the operations that module declares
+ * as its own recurring schedules (#383). Each adapter records one per bound operation
+ * at `registerModule`, and hands it to {@link requiredEntitlementFor} at every invoke.
+ */
+export interface OperationEntitlement {
+  moduleId: string;
+  entitlementKey: string;
+  scheduledOperations: ReadonlySet<string>;
+}
+
+/**
+ * The SKU flag the §4.3 gate demands for ONE invoke — `undefined` when it demands none.
+ * One predicate, run by every place the gate lives (the Cloudflare coordinator, the
+ * ScopeDO it hands the key to, the SQLite stub), so no adapter can be the lenient one.
+ *
+ * **The rule:** a module loads for a tenant only if the tenant holds its SKU flag. An
+ * operation with no recorded binding (a bare `defineOperation`, tests and glue) is ungated.
+ *
+ * **The one exception (#1654): a module's own declared schedule, fired through the
+ * system door.** All three must hold:
+ *   1. the invoke came through the system door (`getSystemScope`, so `systemModuleId`
+ *      is set) — a door with no route; no HTTP request, principal, connection or peer
+ *      reaches it;
+ *   2. the operation is bound by THAT module (`moduleId === systemModuleId`) — the system
+ *      principal of one module never borrows the exception for another module's operation;
+ *   3. the module declares that operation in its own `schedules` — a system-door invoke of
+ *      any other operation is still gated, so a job run or a direct `getSystemScope` call
+ *      is not widened.
+ *
+ * Why the SKU is not the switch there: a composed engine's schedule runs in the engine's
+ * name, but the engine is loaded into the scope by the VERTICAL that composes it, and a
+ * standard install grants the vertical's keys, not the engine's (meridian composes
+ * `engine-absence` by call; its `absence/expire-stale` was refused on every install).
+ * The schedule's authority is already the `system:<moduleId>` grant — seated only by
+ * provisioning a scope with that module registered, holding exactly the permissions the
+ * schedules declare, and pulled by the kill switch (#1666). "The grant IS the switch"
+ * (#383) now holds for loading as well as for permissions. What does NOT change: every
+ * user-reachable door — `getScope`, connector, capability, peer, impersonation — still
+ * demands the operation's own key, so the engine's operations stay unreachable on an
+ * install that does not hold the engine's SKU.
+ *
+ * The cost, stated: on a tenant whose SKU for a module lapses, that module's own declared
+ * schedules keep running on scopes that still hold the system grant. Stopping them is the
+ * schedule switch (`revokeFromSystem`, #1666), or archiving the scope.
+ */
+export function requiredEntitlementFor(
+  operation: string,
+  binding: OperationEntitlement | undefined,
+  systemModuleId: string | undefined,
+): string | undefined {
+  if (!binding) return undefined;
+  if (
+    systemModuleId !== undefined &&
+    binding.moduleId === systemModuleId &&
+    binding.scheduledOperations.has(operation)
+  ) {
+    return undefined;
+  }
+  return binding.entitlementKey;
 }
 
 /**

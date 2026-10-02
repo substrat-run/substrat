@@ -50,6 +50,7 @@ export type {
   LiveReadSurface,
   LiveRefusal,
   LiveUpgradeRequest,
+  OperationEntitlement,
   ScheduleRegistration,
   ScheduleRunReport,
   ScopeAttachments,
@@ -94,6 +95,7 @@ export {
   attachmentSha256,
   consumersFor,
   entitlementDenial,
+  requiredEntitlementFor,
   backoffAt,
   globalFetch,
   parseValidationRecords,
@@ -234,6 +236,7 @@ export type {
 } from './attachment-text.js';
 export {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  EXTRACTION_STRIDE,
   assertAttachmentExtractors,
   assertAttachmentTextBounds,
   chooseAttachmentExtractor,
@@ -458,6 +461,7 @@ export {
 } from './impersonation.js';
 export { readLifecycleFlow } from './lifecycle-flow.js';
 export { REFUSALS_DDL, refusalInsert, refusedTransitionOf, type RefusalRow } from './refusals.js';
+export { REFUSAL_COLUMNS, mapRefusalRow, refusalListQuery, type RefusalDbRow } from './refusal-query.js';
 export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
 export type { ScopeWalkPage } from './timeline.js';
 export type { TimelineReader } from './timeline.js';

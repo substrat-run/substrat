@@ -705,6 +705,26 @@ Loading rule: the kernel loads a module only if the tenant's entitlements includ
 `entitlementKey` and the semver ranges are satisfiable. Entitlements are kernel-owned
 precisely because they gate this loader (D-20).
 
+**One exception: a module's own declared schedule, fired through the system door
+([#1654](https://github.com/substrat-run/substrat/issues/1654)).** A composed engine's
+schedule runs in the engine's name (meridian composes `engine-absence` by call, and
+`absence/expire-stale` is the engine's operation), but a standard install grants the
+*vertical's* keys, so the gate refused it on every install. For an invoke through
+`getSystemScope` (#383) whose operation is bound by that same module *and* declared in its
+`schedules`, the gate asks for no SKU: the `system:<moduleId>` grant is the switch — seated
+only by provisioning a scope with the module registered, holding exactly the permissions the
+schedules declare, pulled by the kill switch (#1666). "The grant IS the switch" now holds for
+loading as it already did for permissions. Every door a request can reach — principal,
+connection, capability, peer, impersonation — still demands the operation's own key, so the
+engine's operations do not become invocable on an install that lacks its SKU; neither does a
+system-door invoke of an operation the module does not declare as a schedule, nor another
+module's system door. The rule is one kernel predicate, `requiredEntitlementFor`, that every
+place the gate lives runs (the Cloudflare coordinator, the ScopeDO it hands the key to, the
+SQLite stub), held by `scheduleEntitlementContractSuite` on both adapters. The cost: when a
+tenant's SKU for a module lapses, that module's own declared schedules keep running on scopes
+still holding the system grant; stopping them is the schedule switch (`revokeFromSystem`) or
+archiving the scope.
+
 ### 7.2 Attachment contracts
 
 The kernel owns no entities (D-1); it offers services that bind to opaque refs:

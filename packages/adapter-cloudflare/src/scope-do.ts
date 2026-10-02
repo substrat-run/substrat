@@ -43,6 +43,8 @@ import {
   type DenialFilter,
   type DenialSummary,
   type PermissionDenial,
+  type RefusalFilter,
+  type RefusalRecord,
   type ScopeTablePage,
   type TenantId,
   SCOPE_TABLE_PAGE_MAX,
@@ -98,6 +100,9 @@ import {
   type SystemGrantsEntry,
   type SystemScheduleState,
   denialListQuery,
+  refusalListQuery,
+  mapRefusalRow,
+  type RefusalDbRow,
   denialSummaryQuery,
   denialTotalsQuery,
   DENIAL_WINDOW_QUERY,
@@ -1946,6 +1951,9 @@ export function defineScopeDO(
        * where the control plane is unreachable by the sandbox contract and the projected
        * entitlements are the source of truth. A console-managed scope is gated on the
        * coordinator against the shared CP, so this is left undefined / a no-op there.
+       * Also undefined for a module's own declared schedule through the system door
+       * (#1654): the coordinator resolves the key with the kernel's `requiredEntitlementFor`,
+       * which exempts exactly that invoke, so the DO enforces whatever it is handed.
        */
       requiredEntitlement?: string,
       /**
@@ -4638,6 +4646,17 @@ export function defineScopeDO(
       return (
         this.sql.exec(q.sql, ...q.params).toArray() as unknown as DenialRow[]
       ).map(mapDenialRow);
+    }
+
+    /**
+     * #1745: the refusal log — every lifecycle move refused and failed with, recorded after
+     * the rollback. Authorization and the K-3 cross-check happen on the coordinator first.
+     */
+    listRefusals(filter?: RefusalFilter): RefusalRecord[] {
+      const q = refusalListQuery(filter);
+      return (
+        this.sql.exec(q.sql, ...q.params).toArray() as unknown as RefusalDbRow[]
+      ).map(mapRefusalRow);
     }
 
     /**

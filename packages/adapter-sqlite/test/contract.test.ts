@@ -15,6 +15,7 @@ import {
   connectorTestFetch,
   permissionContractSuite,
   scheduleContractSuite,
+  scheduleEntitlementContractSuite,
   jobRunContractSuite,
   systemSwitchContractSuite,
   peerContractSuite,
@@ -73,6 +74,23 @@ permissionContractSuite('adapter-sqlite', async () => {
 // system grant resolves through the real tuple engine, not an allow-all.
 scheduleContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1654: a composed engine's own schedule runs without the engine's SKU, and nothing else
+// the exception could reach does. The DEFAULT checker, so the user-door case's role is real.
+scheduleEntitlementContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-sku-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),

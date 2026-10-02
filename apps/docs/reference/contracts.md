@@ -190,6 +190,14 @@ The refused-check log's shapes (K-35): `permissionDenial` / `PermissionDenial`,
 `DEFAULT_DENIAL_LIMIT` / `DENIAL_LIMIT_MAX`. Read through `HostAdmin.listDenials` /
 `summarizeDenials`. See [Denials are recorded](/concepts/permissions#denials-are-recorded).
 
+## Refusals (`refusal.ts`)
+
+The refused-transition log's read shapes (#1745), the denial log's sibling: `refusalRecord` /
+`RefusalRecord` (the record, `fromState`, `attemptedState`, `operation`, the actor and its
+`actorKind`, the problem code as `reason`, the `invocationId`), `refusalFilter` (record, actor,
+operation, call, `since`/`until`), and `DEFAULT_REFUSAL_LIMIT` / `REFUSAL_LIMIT_MAX`. Read
+through `HostAdmin.listRefusals`. See [A refusal is recorded](/concepts/lifecycle).
+
 ## Events (`events.ts`)
 
 - `entityRef` / `EntityRef` — the opaque `(entityType, entityId)` reference everything
