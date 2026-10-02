@@ -12,7 +12,9 @@ import type {
   AdminAction,
   BecomeCapabilityInput,
   CapabilityExchange,
+  CapabilityFilter,
   CapabilityId,
+  CapabilityRecord,
   MintedCapability,
   ListPage,
   Connection,
@@ -2909,6 +2911,28 @@ export interface HostAdmin {
     scopeId: ScopeId,
     filter?: RefusalFilter,
   ): Promise<RefusalRecord[]>;
+
+  /**
+   * The operator's read of a scope's capabilities (#1686): the directory `ctx.capabilities.list`
+   * reads from inside a module, for someone who has no operation to stand in. Newest first,
+   * live (unrevoked) ones only unless `includeRevoked`, narrowable to one `entity`, bounded
+   * (`limit` 1..200, default 50).
+   *
+   * **Never a secret, never a hash.** A record carries what the capability may do (mode, entity,
+   * keys, operation allowlist, or the principal a `become` yields), who minted and revoked it,
+   * its expiry, use limit and use count. The kernel's one query (`capabilityListQuery`) does not
+   * select `token_hash`, and the record schema has no field to hold one.
+   *
+   * Read like the denial log: a `PlatformActorId`, a K-24 access-log entry and the K-3
+   * (tenantId, scopeId) cross-check. Pull-only — it changes nothing, so it is not in the admin
+   * log; `mintCapability` and `revokeCapability` are.
+   */
+  listCapabilities(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: CapabilityFilter,
+  ): Promise<CapabilityRecord[]>;
 
   // -- directory disaster recovery (control-plane.md §4.9, #40) ---------------
   // Every method above reads or writes ONE tenant's world. These two are the only

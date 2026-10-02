@@ -659,5 +659,164 @@ export function capabilityContractSuite(
         ).toBe('not_found');
       });
     });
+
+    // #1686: the operator's read. A staff actor has no operation to stand in, so
+    // `HostAdmin.listCapabilities` is the directory `ctx.capabilities.list` reads, for them.
+    // The property that matters is what it NEVER returns — a secret or a hash — and each such
+    // check below has its positive twin: the same record shows everything else it should.
+    describe('the operator read — HostAdmin.listCapabilities (#1686)', () => {
+      const HEX64 = /\b[0-9a-f]{64}\b/i;
+      let shareLink: MintedCapability;
+      let narrowed: MintedCapability;
+      let revoked: MintedCapability;
+      let claim: MintedCapability;
+      let expiry: Instant;
+      let sessionToken: string;
+      const own = <R extends { id: string }>(rows: R[]): R[] => rows.filter((r) => [shareLink, narrowed, revoked, claim].some((m) => m.id === r.id));
+
+      beforeAll(async () => {
+        expiry = inFuture(3_600_000);
+        shareLink = await share(alice, { entity: folder('F'), permissions: [CAP_READ], label: 'ops-share' });
+        narrowed = await share(alice, {
+          entity: folder('G'),
+          permissions: [CAP_READ],
+          operations: ['cap/read'],
+          expiresAt: expiry,
+          maxUses: 3,
+          label: 'ops-narrowed',
+        });
+        revoked = await share(alice, { entity: folder('F2'), permissions: [CAP_READ], label: 'ops-revoked' });
+        await (await as(alice)).invoke('cap/unshare', { id: revoked.id });
+        claim = await host.admin.mintCapability(staff, t1, s1, {
+          principal: seat,
+          expiresAt: inFuture(3_600_000),
+          maxUses: 1,
+          label: 'ops-claim',
+        });
+        sessionToken = await sessionOf(narrowed.secret); // one counted use on `narrowed`
+      });
+
+      it('lists what the module-side list does, as records an operator can read', async () => {
+        const rows = own(await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 }));
+        expect(rows.map((r) => r.id).sort()).toEqual([shareLink.id, narrowed.id, revoked.id, claim.id].sort());
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        expect(byId.get(shareLink.id)).toMatchObject({
+          mode: 'act',
+          label: 'ops-share',
+          entity: folder('F'),
+          permissions: [CAP_READ],
+          operations: null,
+          mintedBy: alice,
+          expiresAt: null,
+          maxUses: null,
+          uses: 0,
+          revokedAt: null,
+          revokedBy: null,
+        });
+        expect(byId.get(narrowed.id)).toMatchObject({
+          mode: 'act',
+          entity: folder('G'),
+          operations: ['cap/read'],
+          expiresAt: expiry,
+          maxUses: 3,
+          uses: 1,
+        });
+        expect(byId.get(narrowed.id)!.lastUsedAt).not.toBeNull();
+        expect(byId.get(revoked.id)).toMatchObject({ revokedBy: alice });
+        expect(byId.get(revoked.id)!.revokedAt).not.toBeNull();
+        expect(byId.get(claim.id)).toMatchObject({
+          mode: 'become',
+          principal: seat,
+          mintedBy: { platform: staff },
+          maxUses: 1,
+        });
+        // Every row is exactly the published record — the same schema ctx.capabilities.list is held to.
+        for (const r of rows) expect(capabilityRecord.parse(r)).toEqual(r);
+      });
+
+      it('never returns a secret or a hash — not as a field, not anywhere in the text', async () => {
+        const rows = await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 });
+        const text = JSON.stringify(rows);
+        // The positive twin of everything below: the read is not empty and is a faithful one.
+        expect(own(rows)).toHaveLength(4);
+        for (const m of [shareLink, narrowed, revoked, claim]) {
+          expect(text).toContain(m.id);
+          expect(text).not.toContain(m.secret);
+          expect(text).not.toContain(await capabilityTokenHash(m.secret));
+        }
+        // A session token's hash is as live a credential as the capability's own.
+        expect(text).not.toContain(sessionToken);
+        expect(text).not.toContain(await capabilityTokenHash(sessionToken));
+        // And whatever else a column might carry: no 64-hex digest of anything.
+        expect(text).not.toMatch(HEX64);
+        // Field by field: a record has only the published keys, and none of them is a credential.
+        const allowed = new Set([
+          ...Object.keys(capabilityRecord.options[0].shape),
+          ...Object.keys(capabilityRecord.options[1].shape),
+        ]);
+        for (const r of rows) {
+          for (const key of Object.keys(r)) {
+            expect(allowed.has(key)).toBe(true);
+            expect(key).not.toMatch(/hash|secret|token/i);
+          }
+        }
+      });
+
+      it('is live-only by default, and shows the revoked one when asked', async () => {
+        const live = own(await host.admin.listCapabilities(staff, t1, s1, { limit: 200 })).map((r) => r.id);
+        expect(live).toContain(shareLink.id);
+        expect(live).not.toContain(revoked.id);
+        const all = own(await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 }));
+        expect(all.map((r) => r.id)).toContain(revoked.id);
+      });
+
+      it('is newest first, narrows by entity, and is bounded', async () => {
+        const all = await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 });
+        const ids = all.map((r) => r.id);
+        expect(ids).toEqual([...ids].sort().reverse()); // ULIDs: id order IS mint order
+        const onG = await host.admin.listCapabilities(staff, t1, s1, { entity: folder('G'), includeRevoked: true });
+        expect(onG.length).toBeGreaterThan(0);
+        expect(onG.every((r) => r.mode === 'act' && r.entity.entityId === 'G')).toBe(true);
+        expect(onG.map((r) => r.id)).toContain(narrowed.id);
+        expect(await host.admin.listCapabilities(staff, t1, s1, { limit: 1 })).toHaveLength(1);
+        // The bound is the filter's: past it is refused, not silently clamped.
+        await expect(host.admin.listCapabilities(staff, t1, s1, { limit: 201 })).rejects.toThrow();
+        await expect(host.admin.listCapabilities(staff, t1, s1, { limit: 0 })).rejects.toThrow();
+      });
+
+      it('reads the scope it is asked about and no other (K-3), and each read leaves an access row', async () => {
+        const other = await host.admin.listCapabilities(staff, t1, s2, { includeRevoked: true, limit: 200 });
+        expect(own(other)).toEqual([]);
+        // A scope of another tenant: the pair does not resolve, so no log of another tenant's is reachable.
+        const t2 = tenantId.parse(ulid());
+        const s3 = scopeId.parse(ulid());
+        await host.admin.createTenant(staff, { id: t2, slug: 'cap-tenant-2', name: 'Cap Tenant 2' });
+        await host.admin.grantEntitlement(staff, t2, 'cap');
+        await host.provisionScope(staff, { tenantId: t2, scopeId: s3, vertical: 'cap-vertical' });
+        await host.admin.activateScope(staff, t2, s3);
+        const foreign = await host.admin.mintCapability(staff, t2, s3, {
+          principal: seat,
+          expiresAt: inFuture(60_000),
+          maxUses: 1,
+          label: 'ops-foreign',
+        });
+        await expect(host.admin.listCapabilities(staff, t2, s1)).rejects.toThrow();
+        await expect(host.admin.listCapabilities(staff, t1, s3)).rejects.toThrow();
+        // The twin: the foreign tenant's own pair reads its own row, which t1's never showed.
+        const theirs = await host.admin.listCapabilities(staff, t2, s3);
+        expect(theirs.map((r) => r.id)).toEqual([foreign.id]);
+        expect(JSON.stringify(await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 }))).not.toContain(foreign.id);
+
+        const logged = await host.admin.accessLog(staff, { tenantId: t1, method: 'listCapabilities' });
+        expect(logged.length).toBeGreaterThan(0);
+        expect(JSON.stringify(logged)).not.toContain(shareLink.secret);
+      });
+
+      it('is a read: the use counts it reports do not move because it was asked', async () => {
+        const a = await host.admin.listCapabilities(staff, t1, s1, { entity: folder('G'), includeRevoked: true });
+        const b = await host.admin.listCapabilities(staff, t1, s1, { entity: folder('G'), includeRevoked: true });
+        expect(b).toEqual(a);
+      });
+    });
   });
 }

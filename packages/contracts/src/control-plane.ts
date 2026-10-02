@@ -36,6 +36,7 @@ import {
   type ReadScopeTableInput,
 } from './introspection.js';
 import type { DenialFilter } from './denial.js';
+import type { CapabilityFilter } from './capability.js';
 import type { LifecycleFlowInput } from './lifecycle-flow.js';
 import { errorCode } from './errors.js';
 import { impersonationStamp } from './impersonation.js';
@@ -580,6 +581,7 @@ export const delegatedReadMethod = z.enum([
   'queryScope',
   'listDenials',
   'summarizeDenials',
+  'listCapabilities',
   'entityHistory',
   'facetEvents',
   'eventCause',
@@ -597,6 +599,7 @@ export interface DelegatedReadInput {
   queryScope: QueryScopeInput;
   listDenials: DenialFilter | undefined;
   summarizeDenials: DenialFilter | undefined;
+  listCapabilities: CapabilityFilter | undefined;
   entityHistory: EntityHistoryInput;
   facetEvents: EventFacetInput;
   eventCause: EventCauseInput;
@@ -638,6 +641,7 @@ export const delegatedReadParams: {
   queryScope: (i) => ({ sql: i.sql }),
   listDenials: (f) => f ?? null,
   summarizeDenials: (f) => f ?? null,
+  listCapabilities: (f) => f ?? null,
   entityHistory: (i) => ({ entityType: i.entityType, entityId: i.entityId }),
   // What the answer withheld, then the request — on both branches, so the row stays one
   // row. The withheld fields go FIRST: both adapters cut the stored params at 500 chars,

@@ -66,6 +66,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     listDenialsLocal: async (_s: unknown, filter?: unknown) => note('listDenialsLocal', [filter]) as never,
     summarizeDenialsLocal: async (_s: unknown, filter?: unknown) =>
       note('summarizeDenialsLocal', { buckets: [filter] }) as never,
+    listCapabilitiesLocal: async (_s: unknown, filter?: unknown) => note('listCapabilitiesLocal', [filter]) as never,
     listPlatformRequests: async () => note('listPlatformRequests', []),
     listPlatformRequestHistory: async (_t: unknown, _s: unknown, filter?: unknown) =>
       note('listPlatformRequestHistory', [filter]) as never,
@@ -244,6 +245,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     ['/internal/undrained-events?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials/summary?scopeId=' + SCOPE, { headers: authed() }],
+    ['/internal/capabilities?scopeId=' + SCOPE, { headers: authed() }],
   ];
   it.each(cases)('GET %s is served (not 404)', async (path, init) => {
     const res = await appWith(fakeHost()).request(path, init, ENV);
@@ -667,6 +669,46 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     );
     expect(wide.status).toBe(400);
     expect(host.calls).not.toContain('entityHistoryLocal');
+  });
+
+  // #1686: the operator's capability read. The query string is the filter, decoded by the
+  // contracts decoder (the same one the control plane's staff route uses), and the route sits
+  // behind the platform secret like every /internal read.
+  describe('the capability directory read (#1686)', () => {
+    const path = (q = '') => `/internal/capabilities?scopeId=${SCOPE}${q}`;
+
+    it('passes the filter through to the host, decoded', async () => {
+      const host = fakeHost();
+      const res = await appWith(host).request(
+        path('&entityType=folder&entityId=F1&includeRevoked=true&limit=5'),
+        { headers: authed() },
+        ENV,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([
+        { entity: { entityType: 'folder', entityId: 'F1' }, includeRevoked: true, limit: 5 },
+      ]);
+      // The twin: an unnarrowed read forwards an empty filter, not an invented one.
+      const bare = await appWith(host).request(path(), { headers: authed() }, ENV);
+      expect(await bare.json()).toEqual([{}]);
+    });
+
+    it('is behind the platform secret, and reads nothing without it', async () => {
+      const host = fakeHost();
+      expect((await appWith(host).request(path(), {}, ENV)).status).toBe(403);
+      expect((await appWith(host).request(path(), { headers: { [PLATFORM_SECRET_HEADER]: 'nope' } }, ENV)).status).toBe(403);
+      expect(host.calls).not.toContain('listCapabilitiesLocal');
+      expect((await appWith(host).request(path(), { headers: authed() }, ENV)).status).toBe(200);
+    });
+
+    it('refuses a malformed filter rather than widening it', async () => {
+      const host = fakeHost();
+      for (const bad of ['&limit=201', '&limit=0', '&entityType=folder', '&entityId=F1', '&includeRevoked=maybe']) {
+        const res = await appWith(host).request(path(bad), { headers: authed() }, ENV);
+        expect([bad, res.status]).toEqual([bad, 400]);
+      }
+      expect(host.calls).not.toContain('listCapabilitiesLocal');
+    });
   });
 
   it('refuses a malformed denial filter rather than widening it', async () => {

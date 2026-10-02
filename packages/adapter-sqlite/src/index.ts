@@ -101,7 +101,9 @@ import {
   type BecomeCapabilityInput,
   type Instant,
   type CapabilityExchange,
+  type CapabilityFilter,
   type CapabilityId,
+  type CapabilityRecord,
   type MintedCapability,
   type Connection,
   type ConnectionGrant,
@@ -212,12 +214,15 @@ import {
   CAPABILITY_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
+  capabilityListQuery,
+  capabilityRecordOf,
   capabilityTokenHash,
   createCapabilityVerbs,
   createEntityEdgeVerbs,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
   mintBecomeCapability,
+  type CapabilityRow,
   plausibleSessionToken,
   redactSecrets,
   redactSecretText,
@@ -6992,6 +6997,22 @@ export class SqliteScopeHost implements ScopeHost {
           capabilityId,
           revoked: true,
         });
+      },
+
+      // #1686 — the operator's read of the directory `ctx.capabilities.list` reads. The
+      // denial log's discipline: `scopeReadDbFor` is the K-3 cross-check, the query is the
+      // kernel's one (no `token_hash` column in it), and the read leaves a K-24 row.
+      listCapabilities: async (
+        actor,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        filter?: CapabilityFilter,
+      ): Promise<CapabilityRecord[]> => {
+        const db = this.scopeReadDbFor(tenantId, scopeId);
+        const q = capabilityListQuery(filter);
+        const rows = (db.prepare(q.sql).all(...q.params) as CapabilityRow[]).map(capabilityRecordOf);
+        this.recordAccess(actor, 'listCapabilities', { tenantId, scopeId }, filter ?? null, rows.length);
+        return rows;
       },
 
       grantToOrg: async (actor, orgId, permission, node, entity) => {

@@ -55,6 +55,65 @@ it('normalizes pre-metrics migration replies without discarding recorded values'
   expect(urls.every((url) => url.includes(`/internal/migrations?scopeId=${s}`))).toBe(true);
 });
 
+describe('VerticalClient.listCapabilities (#1686)', () => {
+  const record = {
+    mode: 'act',
+    id: ulid(),
+    label: 'client review',
+    mintedBy: ulid(),
+    mintedAt: '2026-10-01T00:00:00.000Z',
+    expiresAt: null,
+    maxUses: null,
+    uses: 0,
+    lastUsedAt: null,
+    revokedAt: null,
+    revokedBy: null,
+    entity: { entityType: 'folder', entityId: 'F1' },
+    permissions: ['doc:read'],
+    operations: null,
+  };
+  const clientAnswering = (body: unknown, urls: string[] = []) =>
+    new VerticalClient({
+      fetch: (async (url: string) => {
+        urls.push(url);
+        return new Response(JSON.stringify(body), { status: 200 });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('sends the scope and the filter in the one encoding, and returns the records', async () => {
+    const urls: string[] = [];
+    const rows = await clientAnswering([record], urls).listCapabilities(s, {
+      entity: { entityType: 'folder', entityId: 'F1' },
+      includeRevoked: true,
+      limit: 5,
+    });
+    expect(rows).toEqual([record]);
+    const url = new URL(urls[0]!, 'http://x');
+    expect(url.pathname).toBe('/internal/capabilities');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      scopeId: s,
+      entityType: 'folder',
+      entityId: 'F1',
+      includeRevoked: 'true',
+      limit: '5',
+    });
+  });
+
+  // The platform parses on arrival, so a vertical that answers with more than the record —
+  // an older build selecting `*`, say — cannot pass a hash through the control plane.
+  it('drops anything but the record: a hash a vertical sent never reaches the caller', async () => {
+    const hash = 'ab'.repeat(32);
+    const rows = await clientAnswering([{ ...record, token_hash: hash, tokenHash: hash }]).listCapabilities(s);
+    expect(rows).toEqual([record]);
+    expect(JSON.stringify(rows)).not.toContain(hash);
+  });
+
+  it('refuses a shape that is not a record rather than relaying it', async () => {
+    await expect(clientAnswering([{ id: 'x' }]).listCapabilities(s)).rejects.toThrow();
+  });
+});
+
 describe('VerticalClient — transport rejections become diagnosable 502s (#391)', () => {
   it('configureInstance: a thrown fetch is a 502 naming the verb and the cause', async () => {
     const err = await rejecting('Worker threw exception')

@@ -65,6 +65,7 @@ import {
   systemSwitchRecord,
   entitlementGrant,
   entitlementGrantInput,
+  capabilityFilter,
   instant,
   meterReading,
   subjectRef,
@@ -151,6 +152,7 @@ import {
   type BecomeCapabilityInput,
   type CapabilityExchange,
   type CapabilityId,
+  type CapabilityFilter,
   type CapabilityRecord,
   type MintedCapability,
   type PrincipalId,
@@ -1063,6 +1065,8 @@ interface ScopeStubRpc {
   mintBecomeCapability(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
   /** The platform's revoke (#1672) — the record as it stood before, or null. */
   revokeCapabilityAsPlatform(id: string, actor: PlatformActorId): Promise<CapabilityRecord | null>;
+  /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
+  listCapabilities(filter?: CapabilityFilter): Promise<CapabilityRecord[]>;
   /** Where a module's schedules stand on this scope (#383, #1666) — the kernel's
    *  `systemScheduleState`, run in the scope's own storage. */
   systemScheduleState(moduleId: string): Promise<SystemScheduleState>;
@@ -2503,6 +2507,16 @@ export class CloudflareScopeHost implements ScopeHost {
 
   async summarizeDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary> {
     return this.scopeStub(scopeId).summarizeDenials(filter);
+  }
+
+  /**
+   * The operator's capability read's CP-less path (#1686) — the denial log's trust line: the
+   * directory rows live in the scope's own DO, in the vertical's deployment, reachable only
+   * through its platform-gated `/internal/capabilities`; the K-3 check and the K-24 entry are
+   * the control plane's, made before it calls. Records only — the DO's query selects no hash.
+   */
+  async listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityRecord[]> {
+    return this.scopeStub(scopeId).listCapabilities(filter);
   }
 
   /**
@@ -6264,6 +6278,25 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.scopeRecordForRead(tenantId, scopeId);
         const rows = await this.scopeStub(scopeId).listDenials(filter);
         await this.recordAccess(actor, 'listDenials', { tenantId, scopeId }, filter ?? null, rows.length);
+        return rows;
+      },
+      // #1686: the operator's capability read. K-3 on the directory before the DO, like the
+      // denial log. On the shared control plane a scope a vertical's own deployment serves
+      // holds its storage THERE, and this namespace holds a placeholder: the control-plane
+      // API asks the vertical (`listCapabilitiesLocal`), so this branch is the co-located one.
+      listCapabilities: async (
+        actor,
+        tenantId,
+        scopeId,
+        filter?: CapabilityFilter,
+      ): Promise<CapabilityRecord[]> => {
+        // Checked here as well as in the ScopeDO, so a bad bound keeps its error across the hop
+        // instead of arriving as a bare message from the stub.
+        const parsed = capabilityFilter.parse(filter ?? {});
+        const rec = await this.scopeRecordForRead(tenantId, scopeId);
+        this.assertServedHere(rec, scopeId, 'listCapabilities');
+        const rows = await this.scopeStub(scopeId).listCapabilities(parsed);
+        await this.recordAccess(actor, 'listCapabilities', { tenantId, scopeId }, filter ?? null, rows.length);
         return rows;
       },
       listRefusals: async (

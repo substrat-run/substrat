@@ -62,6 +62,11 @@ import {
   PREVIEW_CLIENT_PATH,
   attachmentRecord,
   denialFilterParams,
+  capabilityFilterParams,
+  capabilityRecord,
+  z,
+  type CapabilityFilter,
+  type CapabilityRecord,
   mintedPreviewClient,
   ownerSeat,
   ownerClaimLink,
@@ -470,6 +475,19 @@ export class VerticalClient {
     return this.getInternal<DenialSummary>(
       `/internal/denials/summary?${denialParams(scopeId, filter)}`,
     );
+  }
+
+  /**
+   * The scope's capability directory (#1686), the operator's read — pulled for the same reason
+   * the denials are: the rows are in the scope's own DO, in the vertical's deployment. What
+   * crosses is a scope id and a filter. Parsed on arrival, so a vertical answering with a
+   * stale or hash-bearing shape is a diagnosis here, not a leak upstream: the record schema
+   * has no field for a hash, and Zod drops an unknown key.
+   */
+  async listCapabilities(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityRecord[]> {
+    const q = capabilityFilterParams(filter);
+    q.set('scopeId', scopeId);
+    return z.array(capabilityRecord).parse(await this.getInternal<unknown>(`/internal/capabilities?${q}`));
   }
 
   /**

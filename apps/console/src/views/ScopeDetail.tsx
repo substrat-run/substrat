@@ -23,6 +23,7 @@ import {
   type TenantStores,
 } from '../lib/cf-links';
 import { walkAll, type Api } from '../lib/api';
+import { CapabilitiesCard } from '../patterns/CapabilitiesCard';
 import { DenialLog } from '../patterns/DenialLog';
 import { PeersCard } from '../patterns/PeersCard';
 import { EdgesCard } from '../patterns/EdgesCard';
@@ -445,6 +446,10 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
           database of the scope whose operation was rolled back. Renders nothing when the
           log cannot be read (a scope with no reachable deployment has no log to show). */}
       <DenialLog api={api} scope={scope} />
+
+      {/* The scope's link-share and claim-link directory (#1686): staff-only read, records
+          only — never a secret, never a hash. */}
+      <CapabilitiesCard api={api} scope={scope} />
 
       {/* The #1666 kill switch (#1675): one module's scheduled work, on or off, on
           THIS scope — pulled today by a curl on staff routes the console now fronts. */}

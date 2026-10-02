@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CAPABILITY_SECRET_PREFIX,
   capabilityId,
+  capabilityStatus,
   node as nodeSchema,
   permissionKey,
   principalId,
@@ -12,7 +13,9 @@ import {
 import {
   WITHHELD_SECRET,
   capabilityExchangeable,
+  capabilityListQuery,
   capabilityLive,
+  capabilityRecordOf,
   capabilityTokenHash,
   carriesSecret,
   guardSecrets,
@@ -284,5 +287,59 @@ describe('the secret', () => {
     guarded.exec('INSERT INTO t VALUES (?)', ['fine']);
     guarded.exec('INSERT INTO t VALUES (?)', [new TextEncoder().encode('fine')]);
     expect(ran).toEqual(['INSERT INTO t VALUES (?)', 'INSERT INTO t VALUES (?)']);
+  });
+});
+
+describe('the operator read of the directory (#1686)', () => {
+  it('the one list query selects no token_hash, however it is narrowed, and binds every value', () => {
+    for (const filter of [
+      undefined,
+      { includeRevoked: true },
+      { entity: { entityType: 'folder', entityId: 'F' }, limit: 5 },
+    ]) {
+      const q = capabilityListQuery(filter);
+      expect(q.sql).not.toMatch(/token_hash/);
+      expect(q.sql).not.toMatch(/\*/); // never SELECT *: that is what would carry the hash
+      expect(q.sql).toMatch(/ORDER BY id DESC LIMIT \?$/);
+    }
+    // Live only unless asked, and the entity rides as bound parameters, not text.
+    expect(capabilityListQuery().sql).toMatch(/WHERE revoked_at IS NULL/);
+    expect(capabilityListQuery({ includeRevoked: true }).sql).not.toMatch(/WHERE/);
+    const narrowed = capabilityListQuery({ entity: { entityType: 'folder', entityId: "F'; --" }, limit: 7 });
+    expect(narrowed.sql).not.toContain("F'; --");
+    expect(narrowed.params).toEqual(['folder', "F'; --", 7]);
+    // Bounded: past the filter's cap is refused, never silently clamped.
+    expect(() => capabilityListQuery({ limit: 201 })).toThrow();
+    expect(() => capabilityListQuery({ limit: 0 })).toThrow();
+  });
+
+  it('a row that somehow carried a hash still decodes to a record with no hash in it', () => {
+    const row = { ...capRow({ label: 'x' }), token_hash: 'a'.repeat(64) } as CapabilityRow;
+    const text = JSON.stringify(capabilityRecordOf(row));
+    expect(text).toContain(CAP);
+    expect(text).not.toContain('a'.repeat(64));
+  });
+
+  // The console reads `capabilityStatus` off a RECORD; the checker and the exchange read
+  // `capabilityLive` / `capabilityExchangeable` off the ROW. They must never part company.
+  it('capabilityStatus on a record agrees with the kernel predicates on its row', () => {
+    const cases: Partial<CapabilityRow>[] = [
+      {},
+      { revoked_at: NOW },
+      { expires_at: NOW },
+      { expires_at: '2026-01-01T00:00:01.000Z' },
+      { max_uses: 2, uses: 1 },
+      { max_uses: 2, uses: 2 },
+      { max_uses: 2, uses: 2, revoked_at: NOW },
+      { max_uses: 2, uses: 2, expires_at: NOW },
+    ];
+    for (const over of cases) {
+      const row = capRow(over);
+      const status = capabilityStatus(capabilityRecordOf(row), NOW);
+      // 'live' ⇔ may be exchanged; 'used-up' ⇔ still acts but cannot be exchanged;
+      // anything else ⇔ the checker refuses it.
+      expect(status === 'live').toBe(capabilityExchangeable(row, NOW));
+      expect(status === 'live' || status === 'used-up').toBe(capabilityLive(row, NOW));
+    }
   });
 });

@@ -170,6 +170,31 @@ export function capabilityByIdQuery(id: string): { sql: string; params: SqlValue
 }
 
 /**
+ * The SELECT behind every read of a scope's capabilities — `ctx.capabilities.list` and the
+ * operator's `HostAdmin.listCapabilities` (#1686) both build it here, so "newest first" and
+ * "live only unless asked" have one definition. Columns are `CAPABILITY_COLUMNS`, which never
+ * includes `token_hash`: no reader of this query can return a hash. The filter is re-parsed
+ * (bounded: `limit` is 1..200, default 50) and every value is bound.
+ */
+export function capabilityListQuery(raw?: CapabilityFilter): { sql: string; params: SqlValue[] } {
+  const filter = capabilityFilter.parse(raw ?? {});
+  const where: string[] = [];
+  const params: SqlValue[] = [];
+  if (filter.entity) {
+    where.push('entity_type = ? AND entity_id = ?');
+    params.push(filter.entity.entityType, filter.entity.entityId);
+  }
+  if (!filter.includeRevoked) where.push('revoked_at IS NULL');
+  params.push(filter.limit ?? 50);
+  return {
+    sql:
+      `SELECT ${CAPABILITY_COLUMNS} FROM _substrat_capabilities` +
+      `${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT ?`,
+    params,
+  };
+}
+
+/**
  * Is this capability USABLE — not revoked, not expired? The ONE predicate for it: the
  * permission checker, the session door and the exchange all call this, so the three can
  * never disagree about whether a revoked or expired capability still acts. Same shape as
@@ -594,22 +619,8 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
     },
 
     list(raw) {
-      const filter = capabilityFilter.parse(raw ?? {});
-      const where: string[] = [];
-      const params: SqlValue[] = [];
-      if (filter.entity) {
-        where.push('entity_type = ? AND entity_id = ?');
-        params.push(filter.entity.entityType, filter.entity.entityId);
-      }
-      if (!filter.includeRevoked) where.push('revoked_at IS NULL');
-      params.push(filter.limit ?? 50);
-      const rows = deps.sql.query<CapabilityRow>(
-        `SELECT ${CAPABILITY_COLUMNS} FROM _substrat_capabilities
-         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-         ORDER BY id DESC LIMIT ?`,
-        params,
-      );
-      return rows.map(capabilityRecordOf);
+      const q = capabilityListQuery(raw);
+      return deps.sql.query<CapabilityRow>(q.sql, q.params).map(capabilityRecordOf);
     },
   };
 }
