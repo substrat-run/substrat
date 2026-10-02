@@ -18,6 +18,9 @@ catalogs:
     '@vitest/ui':
       specifier: ^3.2.7
       version: 3.2.7
+    parse5:
+      specifier: ^7.3.0
+      version: 7.3.0
     typescript:
       specifier: ^7.0.0
       version: 7.0.2
@@ -1802,6 +1805,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.4
+      parse5:
+        specifier: 'catalog:'
+        version: 7.3.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

@@ -234,6 +234,7 @@ export type {
 } from './attachment-text.js';
 export {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  EXTRACTION_STRIDE,
   assertAttachmentExtractors,
   assertAttachmentTextBounds,
   chooseAttachmentExtractor,

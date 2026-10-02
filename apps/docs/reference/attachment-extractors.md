@@ -44,7 +44,7 @@ stay searchable by filename, and their content is not indexed.
 | Extractor | Reads |
 |---|---|
 | `textExtractor` | `text/*` other than HTML, and `.txt` `.md` `.csv` `.tsv` when the type says nothing |
-| `htmlExtractor` | `text/html` and `application/xhtml+xml`, as the visible text. Comments and `script`/`style` bodies are dropped, including an unclosed one cut off at the end of a file |
+| `htmlExtractor` | `text/html` and `application/xhtml+xml`, as the text a browser's parser puts in the rendered document. Each construct ends where a browser's HTML tokenizer ends it, so a `script` closes only at a complete `</script>`. Comments, `script`, `style`, `template` content and the other elements whose content a browser does not render are dropped, including an unclosed one cut off at the end of a file |
 | `docxExtractor` | Word documents: the body, then footnotes, endnotes, headers and footers |
 | `xlsxExtractor` | Spreadsheets: shared and inline strings, never a cell's number |
 | `pptxExtractor` | Presentations: slides in order, then speaker notes |
@@ -53,6 +53,31 @@ The declared content type decides which extractor runs. The file extension is co
 when the type says nothing (`application/octet-stream`). There is no PDF extractor yet, and
 nothing is OCR'd. A host can add its own extractor to the list, provided it meets the
 `AttachmentExtractor` interface from `@substrat-run/kernel`.
+
+### What the HTML extractor guarantees
+
+It **never indexes text the HTML parser keeps out of the rendered document**: comments, `script`,
+`style`, the other elements whose content a browser does not render, and everything inside a
+`template`. Where it does not model how a browser parses, it indexes less instead of guessing.
+It may **under-index** these contexts:
+
+- **`select`**: nothing inside a select is indexed. Indexing resumes at the `</select>` a
+  browser would act on. A tag at which a browser leaves the select early (`input`, `textarea`,
+  a table tag, a nested `select`) ends indexing for the rest of the file.
+- **Inline `svg` and `math`**: nothing inside is indexed. Indexing resumes after the closing
+  tag only when the extractor is certain that is where a browser ends it, as for a typical
+  icon. Otherwise, nothing after it is indexed either.
+- **`frameset`**: nothing after one is indexed, unless the extractor can prove a browser ignores
+  it. A browser ignores a frameset inside a template, or once the body has started and its
+  frameset-ok flag has been cleared. A browser that honours one discards the body, so the
+  extractor also drops what it read from the point the body may have started.
+
+These rules are checked against parse5, a browser-grade HTML parser, in the package's tests.
+
+It follows the parser, not the renderer. It does not evaluate the `hidden` attribute, CSS (inline
+or in a stylesheet) or interactive state such as a closed `<details>`, so text hidden that way
+**is** indexed. That is never more than a searcher can read: attachment search is gated by the
+same read permission as opening the file.
 
 ## Bounds
 
@@ -82,6 +107,9 @@ job doesn't retry it.
 The time budget is **cooperative**. When it runs out, the kernel aborts the `signal` it handed
 the extractor, and discards anything the extractor answers afterwards, so a late answer is
 never indexed. The bundled parsers check that signal, and yield to the event loop, between
-zip entries and every 256 KiB of progress, so they stop within one such step. Code that never
-yields cannot be stopped from inside the same isolate. A host that needs a hard deadline on
-an uncooperative extractor can run its extractors in a separate worker.
+zip entries and at least every 256 K units of work (the kernel's `EXTRACTION_STRIDE`: a
+character scanned or decoded, a byte inflated). That holds inside a single long comment, tag
+or run of text too, because every search through one is cut to that window, so they stop
+within one stride. Code that never yields cannot be stopped from inside the same isolate. A
+host that needs a hard deadline on an uncooperative extractor can run its extractors in a
+separate worker.

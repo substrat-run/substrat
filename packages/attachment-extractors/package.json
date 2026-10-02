@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "parse5": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
