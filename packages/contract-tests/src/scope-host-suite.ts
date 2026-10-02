@@ -2948,6 +2948,50 @@ export function scopeHostContractSuite(
             expect(await host.admin.listSweepRuns(staff, { unit: fresh.unit })).toHaveLength(1);
           });
 
+          it('drains a telemetry backlog larger than the batch over passes, oldest first', async () => {
+            // After a long pause or a restore the backlog can be months of rows, and one
+            // unbounded DELETE over it fails on the Durable Object every tick. Each pass
+            // deletes at most `limit` rows per table, so the backlog converges instead.
+            await host.admin.pruneTelemetry!(staff, 100_000); // whatever earlier tests left
+            const backlog = Array.from({ length: 5 }, (_, i) => ({ op: op(`backlog-${i}`), unit: `${s1}:erasure/backlog-${i}-${ulid()}` }));
+            const fresh = { op: op('kept'), unit: `${s1}:erasure/kept-${ulid()}` };
+            for (const x of [...backlog, fresh]) {
+              await fail(x.op, 'a failure');
+              await host.admin.recordSweepRun({ kind: 'schedule', unit: x.unit, outcome: 'failed', tenantId: t1, scopeId: s1, operation: 'erasure/run', error: 'x' });
+            }
+            const ops = new Set(backlog.map((b) => b.op));
+            const units = new Set(backlog.map((b) => b.unit));
+            const LONG_AGO = '2020-01-01T00:00:00.000Z';
+            const copy = await host.admin.exportDirectory(staff);
+            const age = (t: (typeof copy.tables)[number], match: Set<string>, matchCol: string, cols: string[]) => {
+              const m = t.columns.indexOf(matchCol);
+              const at = cols.map((c) => t.columns.indexOf(c));
+              return { ...t, rows: t.rows.map((r) => (match.has(r[m] as string) ? r.map((c, i) => (at.includes(i) ? LONG_AGO : c)) : r)) };
+            };
+            await host.admin.restoreDirectory(staff, {
+              ...copy,
+              tables: copy.tables.map((t) =>
+                t.name === '_substrat_ops_failures' ? age(t, ops, 'operation', ['at'])
+                : t.name === '_substrat_issues' ? age(t, ops, 'operation', ['first_seen', 'last_seen'])
+                : t.name === '_substrat_sweep_runs' ? age(t, units, 'unit', ['at'])
+                : t,
+              ),
+            });
+
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 3, issues: 3, sweepRuns: 3 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 2, issues: 2, sweepRuns: 2 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 0, issues: 0, sweepRuns: 0 });
+            for (const b of backlog) {
+              expect(await host.admin.listOpsFailures(staff, { operation: b.op })).toEqual([]);
+              expect(await host.admin.listIssues(staff, { operation: b.op })).toEqual([]);
+              expect(await host.admin.listSweepRuns(staff, { unit: b.unit })).toEqual([]);
+            }
+            // Rows inside their retention are never part of a batch.
+            expect(await host.admin.listOpsFailures(staff, { operation: fresh.op })).toHaveLength(1);
+            expect(await host.admin.listIssues(staff, { operation: fresh.op })).toHaveLength(1);
+            expect(await host.admin.listSweepRuns(staff, { unit: fresh.unit })).toHaveLength(1);
+          });
+
           it('rewrites a queued sweep-runs entry\'s error, and keeps the rest of the intent', async () => {
             // A CP-less pass queues its schedule outcomes as one `sweep-runs` intent, and the
             // drain lands each entry's `error` in `_substrat_sweep_runs`. The intent is kept like

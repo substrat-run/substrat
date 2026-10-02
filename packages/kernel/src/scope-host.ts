@@ -3489,13 +3489,15 @@ export interface HostAdmin {
    */
   listIssues(actor: PlatformActorId, filter?: IssueFilter): Promise<IssueEntry[]>;
   /**
-   * Delete every ops failure, issue and sweep run past its retention (#1632) — the
-   * scheduled pass's half of the prune each of those tables already runs on write, so a
-   * directory that records nothing new still sheds them on time. Not audited, like the
-   * prune-on-write it completes: retention-bounded telemetry, not evidence. Optional so
-   * a host that predates it degrades the sweep's phase to `null`.
+   * Delete ops failures, issues and sweep runs past their retention (#1632), oldest first and
+   * at most `limit` rows of each table per call. It is the scheduled pass's half of the prune
+   * each of those tables already runs on write, so a directory that records nothing new still
+   * sheds them on time; a backlog larger than `limit` drains over passes. Returns what each
+   * table deleted. Not audited, like the prune-on-write it completes: retention-bounded
+   * telemetry, not evidence. Optional so a host that predates it degrades the sweep's phase
+   * to `null`.
    */
-  pruneTelemetry?(actor: PlatformActorId): Promise<TelemetryPruneReport>;
+  pruneTelemetry?(actor: PlatformActorId, limit: number): Promise<TelemetryPruneReport>;
   /**
    * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
    * is ingest's word and not accepted here. Returns the updated row, or undefined
@@ -3955,6 +3957,9 @@ export interface TelemetryPruneReport {
   sweepRuns: number;
 }
 
+/** How many rows of EACH telemetry table one `pruneTelemetry` call deletes, by default. */
+export const TELEMETRY_PRUNE_BATCH = 500;
+
 /**
  * The three telemetry retentions as statements, for `pruneTelemetry` on both adapters (#1632).
  *
@@ -3964,26 +3969,37 @@ export interface TelemetryPruneReport {
  * is unknown, on the promise that it ages out within `ISSUE_RETENTION_DAYS`, and on a
  * directory with no new failures nothing ever deleted it. The scheduled pass runs these
  * statements, which makes the stated retention a bound in time rather than in traffic.
+ *
+ * **Bounded per call, oldest first.** After a long pause or a restore the backlog can be a
+ * year of sweep runs, and one unbounded DELETE over it is a pass that fails on the Durable
+ * Object every tick. Each statement deletes at most `limit` rows, chosen through the table's
+ * own retention index (`… WHERE rowid IN (SELECT rowid … ORDER BY <ts> LIMIT ?)`), so the
+ * backlog drains over passes. `RETURNING` makes the count what was actually deleted on both
+ * adapters, rather than a rows-written figure that would also count index writes.
  */
 export function telemetryRetentionStatements(
   nowMs: number,
-): { table: keyof TelemetryPruneReport; sql: string; params: [string] }[] {
+  limit: number,
+): { table: keyof TelemetryPruneReport; sql: string; params: [string, number] }[] {
   const horizon = (days: number) => new Date(nowMs - days * 86_400_000).toISOString();
+  const bounded = (table: string, column: string) =>
+    `DELETE FROM ${table} WHERE rowid IN ` +
+    `(SELECT rowid FROM ${table} WHERE ${column} < ? ORDER BY ${column} LIMIT ?) RETURNING 1`;
   return [
     {
       table: 'opsFailures',
-      sql: 'DELETE FROM _substrat_ops_failures WHERE at < ?',
-      params: [horizon(OPS_FAILURE_RETENTION_DAYS)],
+      sql: bounded('_substrat_ops_failures', 'at'),
+      params: [horizon(OPS_FAILURE_RETENTION_DAYS), limit],
     },
     {
       table: 'issues',
-      sql: 'DELETE FROM _substrat_issues WHERE last_seen < ?',
-      params: [horizon(ISSUE_RETENTION_DAYS)],
+      sql: bounded('_substrat_issues', 'last_seen'),
+      params: [horizon(ISSUE_RETENTION_DAYS), limit],
     },
     {
       table: 'sweepRuns',
-      sql: 'DELETE FROM _substrat_sweep_runs WHERE at < ?',
-      params: [horizon(SWEEP_RUN_RETENTION_DAYS)],
+      sql: bounded('_substrat_sweep_runs', 'at'),
+      params: [horizon(SWEEP_RUN_RETENTION_DAYS), limit],
     },
   ];
 }

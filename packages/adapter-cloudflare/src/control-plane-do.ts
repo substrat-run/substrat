@@ -4327,10 +4327,10 @@ export class ControlPlaneDO extends DurableObject {
 
   /** The fingerprint-grouped failure classes (#1233), most recently seen first. */
   /** #1632: the telemetry retentions, on the scheduled pass's clock — `telemetryRetentionStatements`. */
-  pruneTelemetry(): TelemetryPruneReport {
+  pruneTelemetry(limit: number): TelemetryPruneReport {
     const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
-    for (const { table, sql, params } of telemetryRetentionStatements(Date.now())) {
-      pruned[table] = this.sql.exec(sql, ...params).rowsWritten;
+    for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
+      pruned[table] = this.sql.exec(sql, ...params).toArray().length;
     }
     return pruned;
   }

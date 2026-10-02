@@ -839,7 +839,7 @@ interface ControlPlaneStub {
   listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;
   listIssues(query: IssueQuery): Promise<unknown[]>;
   /** #1632: the telemetry retentions, run by the scheduled pass — `telemetryRetentionStatements`. */
-  pruneTelemetry(): Promise<TelemetryPruneReport>;
+  pruneTelemetry(limit: number): Promise<TelemetryPruneReport>;
   setIssueStatus(
     fingerprint: string,
     status: 'new' | 'resolved' | 'ignored',
@@ -7083,7 +7083,7 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         return rows.map((r) => sweepRunEntry.parse(r));
       },
-      pruneTelemetry: async (): Promise<TelemetryPruneReport> => this.cp.pruneTelemetry(),
+      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> => this.cp.pruneTelemetry(limit),
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const rows = await this.cp.listIssues({
           status: filter?.status,

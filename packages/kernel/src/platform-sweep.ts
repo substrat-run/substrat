@@ -24,7 +24,7 @@ import type {
   WantedEvent,
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
-import { backoffAt } from './scope-host.js';
+import { backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
 import { resolveVerticalInstanceFrom } from './peer.js';
@@ -265,6 +265,8 @@ export interface PlatformSweepOptions {
   crossVertical?: CrossVerticalOptions;
   /** Rows shipped (and pruned) per pass. Default 500. */
   accessLogBatch?: number;
+  /** Rows of each telemetry table pruned per pass (#1632). Default `TELEMETRY_PRUNE_BATCH`. */
+  telemetryBatch?: number;
   /**
    * Also reap tenants past their grace window (control-plane.md §4.8): any tenant in
    * `deleting` whose `deletingAt` is older than this many days has every scope reaped
@@ -1451,10 +1453,14 @@ export async function runPlatformSweep(
 
   // -- telemetry retention (#1632) -------------------------------------------
   // Ops failures, issues and sweep runs prune on write, which bounds them only while
-  // something is written. This bounds them in time. Feature-detected, like every phase.
+  // something is written. This bounds them in time — a batch per table per pass, so a
+  // backlog drains over ticks. Feature-detected, like every phase.
   if (typeof host.admin.pruneTelemetry === 'function') {
     try {
-      report.telemetry = await host.admin.pruneTelemetry(options.actor);
+      report.telemetry = await host.admin.pruneTelemetry(
+        options.actor,
+        options.telemetryBatch ?? TELEMETRY_PRUNE_BATCH,
+      );
     } catch (err) {
       report.errors.push({ kind: 'telemetry', id: 'telemetry', error: message(err) });
     }

@@ -10083,10 +10083,10 @@ export class SqliteScopeHost implements ScopeHost {
           }),
         );
       },
-      pruneTelemetry: async (): Promise<TelemetryPruneReport> => {
+      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> => {
         const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
-        for (const { table, sql, params } of telemetryRetentionStatements(Date.now())) {
-          pruned[table] = this.directory.prepare(sql).run(...params).changes;
+        for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
+          pruned[table] = this.directory.prepare(sql).all(...params).length;
         }
         return pruned;
       },
