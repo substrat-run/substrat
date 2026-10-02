@@ -87,7 +87,10 @@ jobs:
       # sharp half of the check reads emitted `.d.ts`: TypeScript writes the
       # ORIGINAL specifier into declarations however the source imported it, so
       # a package's published types can require a module its package.json never
-      # mentions. contract-tests shipped 130 `import("zod")` that way.
+      # mentions. contract-tests shipped 130 `import("zod")` that way. It also holds K-43's
+      # forbidden edges — the kernel and the adapters never depend on the attachment parsers —
+      # and the test first proves that rule still refuses.
+      - run: pnpm test:declared-deps
       - run: node tools/declared-deps.mjs
       # The runtime's `fetch` is handed on as the kernel's `globalFetch`, never as the
       # bare global. workerd refuses the bare global called with any other receiver

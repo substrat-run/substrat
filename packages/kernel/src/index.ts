@@ -1,5 +1,6 @@
 export type {
   AccessLogFilter,
+  AttachmentSearchOptions,
   AttachmentUploadInput,
   AuditLogFilter,
   BlobStoreProvisionInput,
@@ -90,6 +91,7 @@ export {
 export {
   assertRedrainWindow,
   attachmentBlobKey,
+  attachmentSha256,
   consumersFor,
   entitlementDenial,
   backoffAt,
@@ -204,6 +206,51 @@ export type {
   SearchTokenizer,
   SearchableDeclaration,
 } from './search-index.js';
+export {
+  ATTACHMENT_SEARCH_OWNER_MAX,
+  ATTACHMENT_SEARCH_OWNERS_SQL,
+  ATTACHMENT_SEARCH_SQL,
+  ATTACHMENT_SEARCH_TOO_MANY_OWNERS,
+  ATTACHMENT_TEXT_DDL,
+  ATTACHMENT_TEXT_JOB,
+  ATTACHMENT_TEXT_MODULE,
+  assertJobRegistrable,
+  attachmentRecordOfRow,
+  attachmentTextJob,
+  enqueueAttachmentText,
+  isAttachmentTextRun,
+  readAttachmentText,
+  reconcileAttachmentText,
+  recordAttachmentText,
+  searchAttachments,
+} from './attachment-text.js';
+export type {
+  AttachmentRowShape,
+  AttachmentSearchGate,
+  AttachmentTextSource,
+  AttachmentTextState,
+  AttachmentTextStatus,
+} from './attachment-text.js';
+export {
+  DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  assertAttachmentExtractors,
+  assertAttachmentTextBounds,
+  chooseAttachmentExtractor,
+  inputBoundRefusal,
+  isPositiveIntegerBound,
+  mediaTypeOf,
+  normalizeExtractedText,
+  runAttachmentExtractor,
+  truncateUtf8,
+} from './attachment-extractor.js';
+export type {
+  AttachmentExtractor,
+  AttachmentExtractorInput,
+  AttachmentExtractorResult,
+  AttachmentTextBounds,
+  ExtractionOutcome,
+  ExtractionSignal,
+} from './attachment-extractor.js';
 export {
   FilterNotDeclared,
   LIST_INDEX_PREFIX,

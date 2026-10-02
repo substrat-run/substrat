@@ -226,6 +226,7 @@ import {
   revokeCapabilityAsPlatform,
   assertReadOnlyQuery,
   attachmentBlobKey,
+  attachmentSha256,
   entitlementDenial,
   foldMeterReading,
   guardSpine,
@@ -412,6 +413,17 @@ import {
   type SearchHit,
   type SearchIndexPlan,
   type SearchOptions,
+  type AttachmentExtractor,
+  ATTACHMENT_TEXT_DDL,
+  assertAttachmentExtractors,
+  assertJobRegistrable,
+  attachmentRecordOfRow,
+  attachmentTextJob,
+  enqueueAttachmentText,
+  isAttachmentTextRun,
+  reconcileAttachmentText,
+  recordAttachmentText,
+  searchAttachments,
   entityVersionQuery,
   entityVersionOf,
   assertIfMatch,
@@ -660,6 +672,13 @@ interface DeclaredGuard {
 }
 
 export interface SqliteScopeHostOptions {
+  /**
+   * The parsers attachment text is extracted with (#1575, K-43) — `defaultAttachmentExtractors()`
+   * from `@substrat-run/attachment-extractors`, or a list of the deployment's own. The kernel
+   * and this adapter parse no file format; omitted, every upload records `unsupported`, with
+   * that reason, which is a valid configuration rather than a broken one.
+   */
+  attachmentExtractors?: readonly AttachmentExtractor[];
   /** Directory holding one SQLite file per scope plus the directory database. */
   dir: string;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
@@ -937,6 +956,9 @@ const KERNEL_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_attachments_entity
     ON _substrat_attachments (entity_type, entity_id);
+  -- #1575: attachment text and its FTS5 index, shared from @substrat-run/kernel. After
+  -- _substrat_attachments, whose delete trigger it adds.
+  ${ATTACHMENT_TEXT_DDL}
   -- #901: an entity's version is the ULID of the last event about it, so
   -- MAX(id) per (entity_type, entity_id) is the read. The id column sits last so
   -- SQLite walks to the end of the matched range instead of aggregating over it.
@@ -1527,6 +1549,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly onBehalfOf: OnBehalfOf | null = null;
   private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
   private readonly secretBox: SecretBox;
+  /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
+  private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly fetchImpl: FetchLike;
   private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
@@ -1541,6 +1565,8 @@ export class SqliteScopeHost implements ScopeHost {
 
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
+    assertAttachmentExtractors(options.attachmentExtractors ?? []);
+    this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
@@ -3041,22 +3067,6 @@ export class SqliteScopeHost implements ScopeHost {
       }
       return gate;
     };
-    const rowToRecord = (row: AttachmentRow): AttachmentRecord =>
-      attachmentRecord.parse({
-        id: row.id,
-        entity: { entityType: row.entity_type, entityId: row.entity_id },
-        filename: row.filename,
-        contentType: row.content_type,
-        size: row.size,
-        sha256: row.sha256,
-        visibility: row.visibility,
-        createdBy: row.created_by,
-        createdAt: row.created_at,
-      });
-    const sha256Hex = async (body: Uint8Array): Promise<string> => {
-      const digest = await globalThis.crypto.subtle.digest('SHA-256', body);
-      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    };
     // One attachment mutation/read = one serialized scope task, transactional exactly
     // like an operation invoke (including K-35 denial recording and prompt dispatch of
     // the events it emitted).
@@ -3149,7 +3159,7 @@ export class SqliteScopeHost implements ScopeHost {
           filename: input.filename,
           contentType: input.contentType,
           size: input.body.byteLength,
-          sha256: await sha256Hex(input.body),
+          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy: creator.id,
           createdAt: new Date().toISOString(),
@@ -3187,6 +3197,9 @@ export class SqliteScopeHost implements ScopeHost {
               piiClass: 'none',
               payload: { attachment: record },
             });
+            // #1575: queue its text extraction in the same transaction — a `pending` row
+            // and a job run. Nothing is extracted here, so nothing here can fail the upload.
+            enqueueAttachmentText(spineSql(rt.db), record.id, ulid(), this.clock());
             return record;
           });
         } catch (err) {
@@ -3206,7 +3219,7 @@ export class SqliteScopeHost implements ScopeHost {
                ORDER BY id DESC`,
             )
             .all(entity.entityType, entity.entityId) as AttachmentRow[];
-          return rows.map(rowToRecord);
+          return rows.map(attachmentRecordOfRow);
         }),
       open: async (attachmentId) => {
         const record = await guarded('attachments.open', async (ctx) => {
@@ -3216,13 +3229,13 @@ export class SqliteScopeHost implements ScopeHost {
           if (!row) return null;
           if (opts.admitByEvent !== undefined) {
             admitByDelivery(rt, opts.admitByEvent, row);
-            return rowToRecord(row);
+            return attachmentRecordOfRow(row);
           }
           const gate = targetGate(row.entity_type);
           assertAllowed(
             await ctx.check(gate.read, { entityType: row.entity_type, entityId: row.entity_id }),
           );
-          return rowToRecord(row);
+          return attachmentRecordOfRow(row);
         });
         if (!record) return null;
         const obj = await store.get(attachmentBlobKey(rt.scopeId, record.id));
@@ -3232,7 +3245,7 @@ export class SqliteScopeHost implements ScopeHost {
               `survived something the object did not (rewind/reap); see the #473 integrity notes`,
           );
         }
-        if ((await sha256Hex(obj.body)) !== record.sha256) {
+        if ((await attachmentSha256(obj.body)) !== record.sha256) {
           throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
         }
         return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
@@ -3258,7 +3271,7 @@ export class SqliteScopeHost implements ScopeHost {
             await ctx.check(gate.write, { entityType: row.entity_type, entityId: row.entity_id }),
           );
           rt.db.prepare('DELETE FROM _substrat_attachments WHERE id = ?').run(attachmentId);
-          const record = rowToRecord(row);
+          const record = attachmentRecordOfRow(row);
           kernelEmit(ctx, {
             type: ATTACHMENT_REMOVED,
             schemaVersion: 1,
@@ -3272,6 +3285,25 @@ export class SqliteScopeHost implements ScopeHost {
         // dangling row.
         if (removed) await store.delete(attachmentBlobKey(rt.scopeId, removed.id)).catch(() => {});
         return removed;
+      },
+      // #1575: extracted text, gated per hit by the check `open` makes, before the limit.
+      search: async (term, options) => {
+        if (opts.admitByEvent !== undefined) {
+          // The delivery-admitted surface reads the ONE attachment its delivery names; a
+          // search would reach past it. Nothing builds this surface for anything but `open`.
+          throw new Error('attachments.search is not available on a delivery-scoped surface');
+        }
+        // The term is judged before the turn: a refusal costs no queue slot.
+        searchMatchExpression(term, 'prefix');
+        // Authorized first, as this surface's subject, then matched over readable owners only.
+        return guarded('attachments.search', (ctx) =>
+          searchAttachments(
+            spineSql(rt.db),
+            { targets: this.attachmentTargets, check: (permission, entity) => ctx.check(permission, entity) },
+            term,
+            searchLimit(options?.limit),
+          ),
+        );
       },
     };
   }
@@ -3396,6 +3428,10 @@ export class SqliteScopeHost implements ScopeHost {
       for (const plan of this.searchPlans.values()) {
         if (present.has(plan.table)) db.exec(searchIndexDdl(plan));
       }
+      // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
+      // text of attachments the dump did not bring back, and queue extraction for those
+      // it brought back without text — the bytes decide what that run finds.
+      reconcileAttachmentText(spineSql(db), ulid, this.clock());
       // Re-point scope-level grants at the scope they now live in. They are written as
       // `object = scope:<scopeId>`, so a fork, a restore into a different scope, or #286's
       // migration onto a stable script name all land rows naming a scope that is not this
@@ -5000,6 +5036,8 @@ export class SqliteScopeHost implements ScopeHost {
     handler: JobHandler,
     retry?: ExecutorRetryPolicy,
   ): void {
+    // #1575: the kernel's own jobs are dispatched before this registry is read.
+    assertJobRegistrable(moduleId, name);
     const key = `${moduleId}/${name}`;
     if (this.jobs.has(key)) throw new Error(`job '${key}' is already registered`);
     this.jobs.set(key, { handler, retry });
@@ -5129,6 +5167,36 @@ export class SqliteScopeHost implements ScopeHost {
     };
   }
 
+  /**
+   * The extraction job's adapter half (#1575): the record and the bytes with no permission
+   * gate — extraction is the kernel's own derivation, and the person-facing gate is at
+   * search — and the outcome written in a turn of its own, like every job store write.
+   */
+  private attachmentTextHandler(rt: ScopeRuntime): JobHandler {
+    return attachmentTextJob(
+      {
+        record: (attachmentId) =>
+          rt.actor.enqueue(() => {
+            const row = rt.db.prepare('SELECT * FROM _substrat_attachments WHERE id = ?').get(attachmentId) as
+              | AttachmentRow
+              | undefined;
+            return row ? attachmentRecordOfRow(row) : null;
+          }),
+        bytes: async (record) => {
+          const scope = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(rt.scopeId) as
+            | { vertical: string | null }
+            | undefined;
+          const store = this.attachmentStore(rt.tenantId, scope?.vertical ?? null);
+          return (await store.get(attachmentBlobKey(rt.scopeId, record.id)))?.body ?? null;
+        },
+        write: (attachmentId, outcome) =>
+          rt.actor.enqueue(() => recordAttachmentText(spineSql(rt.db), attachmentId, outcome, this.clock())),
+      },
+      // K-43: the host's parsers, handed in — this adapter imports none.
+      this.attachmentExtractors,
+    );
+  }
+
   async startJobRun(
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -5146,9 +5214,13 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<JobDriveReport> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
+    // #1575: the kernel's extraction job is this host's own, bound to this scope — no
+    // deployment registers it, and none can shadow it.
+    const attachmentText = { handler: this.attachmentTextHandler(rt) };
     return runDueJobRuns({
       store: this.jobStore(rt),
-      handlerFor: (run) => this.jobs.get(`${run.module_id}/${run.job}`),
+      handlerFor: (run) =>
+        isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
       now: this.clock,
       openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
       maxPasses: options?.maxPasses,

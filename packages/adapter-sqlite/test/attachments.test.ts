@@ -104,6 +104,42 @@ describe('attachment surface (pure adapter)', () => {
     expect(opened!.contentType).toBe('image/jpeg');
   });
 
+  // #1575: a host refuses, when it is built, an extractor declaration it could not honour.
+  it('refuses at construction an extractor whose input bound is not a positive integer', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-att-bad-'));
+    try {
+      expect(
+        () =>
+          new SqliteScopeHost({
+            dir,
+            attachmentExtractors: [
+              { name: 'x', maxInputBytes: Number.NaN, accepts: () => true, extract: async () => ({ text: '' }) },
+            ],
+          }),
+      ).toThrow(/positive integer/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #1575, K-43: this harness passes no extractors, which is a valid host — every upload says so.
+  it('records every upload unsupported, with the reason, on a host given no extractors', async () => {
+    const { host, staff, t, s, editor } = await world();
+    const rec = await (await host.attachments(editor, t, s)).upload({
+      entity: { entityType: 'doc', entityId: 'd1' },
+      filename: 'note.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: bytes('the quokka memo'),
+    });
+    while ((await host.runDueJobs(t, s, { limit: 100 })).attempted > 0);
+    const row = await host.admin.queryScope(staff, t, s, {
+      sql: `SELECT status, detail, body FROM _substrat_search__attachment_text WHERE attachment_id = '${rec.id}'`,
+    });
+    expect(row.rows).toEqual([['unsupported', "no extractor for content type 'text/plain'", null]]);
+    expect(await (await host.attachments(editor, t, s)).search('quokka')).toEqual([]);
+  });
+
   it('opens bytes for a registered system module only after its read grant', async () => {
     const { host, staff, t, s, editor } = await world();
     const rec = await (await host.attachments(editor, t, s)).upload({

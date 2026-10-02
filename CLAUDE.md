@@ -49,6 +49,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/adapter-cloudflare` | The hosted scope host — a Durable Object per scope | AGPL + commercial |
 | `packages/adapter-email` | Inbound/outbound email for a vertical that speaks it | AGPL, private |
 | `packages/contract-tests` | Suites every adapter must pass | AGPL + commercial |
+| `packages/attachment-extractors` | The file-format parsers behind the kernel's attachment extractor seam (K-43): text, HTML, DOCX, XLSX, PPTX. A host passes them in; the kernel and the adapters never import them (`lint:deps` refuses it) | AGPL + commercial |
 | `packages/control-plane-api` | HTTP surface over `HostAdmin` — the audited control-plane transport | AGPL + commercial |
 | `packages/vertical-host` | The host a deployed vertical runs on — routing, guards, input parsing | AGPL + commercial |
 | `packages/vertical-auth` | One auth composition a vertical mounts (OIDC RP + session + identity) | AGPL + commercial |
@@ -500,14 +501,15 @@ and no suffix for a year while this file asserted it had both),
 `lint:spine-ddl` (`tools/spine-ddl-drift.mjs`: the `_substrat_*` spine is built
 independently by each adapter, and the copies have nothing keeping them in step — it
 executes each side's DDL *plus* the columns it ALTERs in afterwards and compares the
-schemas a query would actually meet — columns, indexes and foreign keys — so only a real
+schemas a query would actually meet — columns, indexes, foreign keys and triggers — so only a real
 divergence between what self-host runs and what production runs is red, #969. It compared
 columns ALONE until #969's own review, which meant a one-sided `CREATE INDEX` or `UNIQUE`
 passed green: the worst-behaved drift this gate exists for, since the query is correct on
-both sides and only plans a scan in production. Two things it still does not judge — a
-table on one side only is a note, because the adapters genuinely partition the spine, and
-triggers and CHECK constraints are not compared at all, which is affordable only because
-the spine has none), `lint:bound-fetch` (`tools/bound-fetch.mjs`: the
+both sides and only plans a scan in production. Triggers joined the comparison with the
+first spine triggers (#1575's attachment text index keeps itself in step with them). Two
+things it still does not judge — a table on one side only is a note, because the adapters
+genuinely partition the spine, and CHECK constraints are not compared at all, which is
+affordable only because the spine has none), `lint:bound-fetch` (`tools/bound-fetch.mjs`: the
 runtime's `fetch` is handed on as **`globalFetch` from `@substrat-run/kernel`** — the one
 place the `FetchLike` cast lives — never as the bare global, in any spelling. workerd
 throws `Illegal invocation` when a connector calls the bare global as `input.fetch(…)`,

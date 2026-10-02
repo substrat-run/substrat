@@ -1722,6 +1722,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
+      '@substrat-run/attachment-extractors':
+        specifier: workspace:^
+        version: link:../attachment-extractors
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../contract-tests
@@ -1768,6 +1771,9 @@ importers:
         specifier: 13.0.3
         version: 13.0.3
     devDependencies:
+      '@substrat-run/attachment-extractors':
+        specifier: workspace:^
+        version: link:../attachment-extractors
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../contract-tests
@@ -1786,6 +1792,22 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+
+  packages/attachment-extractors:
+    dependencies:
+      '@substrat-run/kernel':
+        specifier: workspace:^
+        version: link:../kernel
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.4
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/boundary-lint:
     devDependencies:

@@ -218,6 +218,7 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
+  attachmentSha256,
   entitlementDenial,
   foldMeterReading,
   parseValidationRecords,
@@ -293,6 +294,14 @@ import {
   jobRunOf,
   runDueJobRuns,
   startJobRun,
+  attachmentTextJob,
+  assertAttachmentExtractors,
+  assertJobRegistrable,
+  isAttachmentTextRun,
+  searchLimit,
+  searchMatchExpression,
+  type AttachmentExtractor,
+  type ExtractionOutcome,
   type JobDriveReport,
   type JobHandler,
   type JobRun,
@@ -1261,6 +1270,27 @@ interface ScopeStubRpc {
     operation: 'attachments.upload' | 'attachments.remove',
     target: { entityType: string } | { attachmentId: string },
   ): Promise<CapabilityAttachmentReply<never>>;
+  /** #1575: extracted-text search as `principal` (or the connection), its failure as data. */
+  attachmentSearch(
+    term: string,
+    limit: number,
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    connectionId?: string,
+  ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>>;
+  /** #1575: the same search through a capability session, as an envelope. */
+  capabilityAttachmentSearch(
+    term: string,
+    limit: number,
+    sessionHash: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>>;
+  /** #1575: the extraction job's record read — no gate, the kernel's own derivation. */
+  attachmentTextSource(attachmentId: string): Promise<AttachmentRecord | null>;
+  /** #1575: write an extraction outcome; false when the attachment was removed meanwhile. */
+  attachmentTextRecord(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean>;
   /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
    *  `entitlements` (#304) rides the same snapshot — preserve-on-undefined, so a role-only re-projection
    *  leaves projected entitlements untouched. */
@@ -1576,6 +1606,13 @@ export interface EventDrainDelegation {
 
 export interface CloudflareScopeHostOptions {
   /**
+   * The parsers attachment text is extracted with (#1575, K-43) — `defaultAttachmentExtractors()`
+   * from `@substrat-run/attachment-extractors`, or a list of the deployment's own. The kernel
+   * and this adapter parse no file format; omitted, every upload records `unsupported`, with
+   * that reason, which is a valid configuration rather than a broken one.
+   */
+  attachmentExtractors?: readonly AttachmentExtractor[];
+  /**
    * Service accounts minted by this vertical, read before CP-less provisioning/reconcile
    * (#1896). Their roles still authorize work but do not prevent human lockout repair.
    * Keep this source complete; a failed read refuses provisioning before projection.
@@ -1865,6 +1902,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly blobStores?: R2BlobStores;
   /** Worker-side attachment-bucket resolver (#473); undefined ⇒ attachments() refuses. */
   private readonly attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
+  /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
+  private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly executors = new Map<string, RegisteredEffector>();
   /**
    * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
@@ -1927,6 +1966,8 @@ export class CloudflareScopeHost implements ScopeHost {
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
     this.attachmentBuckets = options.attachmentBuckets;
+    assertAttachmentExtractors(options.attachmentExtractors ?? []);
+    this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
@@ -2187,6 +2228,8 @@ export class CloudflareScopeHost implements ScopeHost {
     handler: JobHandler,
     retry?: ExecutorRetryPolicy,
   ): void {
+    // #1575: the kernel's own jobs are dispatched before this registry is read.
+    assertJobRegistrable(moduleId, name);
     const key = `${moduleId}/${name}`;
     if (this.jobs.has(key)) throw new Error(`job '${key}' is already registered`);
     this.jobs.set(key, { handler, retry });
@@ -2219,6 +2262,27 @@ export class CloudflareScopeHost implements ScopeHost {
     };
   }
 
+  /**
+   * The extraction job's adapter half (#1575). The record and the outcome are RPCs to the
+   * scope DO; the bytes are read here, where the per-tenant bucket is bound — the DO never
+   * holds them. No permission gate on any of it: extraction is the kernel's own derivation,
+   * and the person-facing gate is at search.
+   */
+  private attachmentTextHandler(tenantId: TenantId, scopeId: ScopeId): JobHandler {
+    const stub = this.scopeStub(scopeId);
+    return attachmentTextJob(
+      {
+        record: (attachmentId) => stub.attachmentTextSource(attachmentId),
+        bytes: async (record) =>
+          (await (await this.resolveAttachmentStore(tenantId)).get(attachmentBlobKey(scopeId, record.id)))?.body ??
+          null,
+        write: (attachmentId, outcome: ExtractionOutcome) => stub.attachmentTextRecord(attachmentId, outcome),
+      },
+      // K-43: the host's parsers, handed in — this adapter imports none.
+      this.attachmentExtractors,
+    );
+  }
+
   async startJobRun(
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -2240,9 +2304,13 @@ export class CloudflareScopeHost implements ScopeHost {
     // advance, and an archived one's never move again.
     await this.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
+    // #1575: the kernel's extraction job is this host's own, bound to this scope — no
+    // deployment registers it, and none can shadow it.
+    const attachmentText = { handler: this.attachmentTextHandler(tenantId, scopeId) };
     return runDueJobRuns({
       store: this.jobStore(scopeId),
-      handlerFor: (run) => this.jobs.get(`${run.module_id}/${run.job}`),
+      handlerFor: (run) =>
+        isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
       now: () => new Date().toISOString(),
       openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
       maxPasses: options?.maxPasses,
@@ -3035,6 +3103,8 @@ export class CloudflareScopeHost implements ScopeHost {
           }),
         list: notDelegated('list'),
         remove: notDelegated('remove'),
+        // #1575: undelegated for `list`'s reason — a connector picks a document by id.
+        search: notDelegated('search'),
       };
     }
     await this.migrateAndRecord(scopeId);
@@ -3112,6 +3182,14 @@ export class CloudflareScopeHost implements ScopeHost {
               attachmentId,
             }),
           ),
+        search: async (term, options) => {
+          // Judged here too, so a short term reaches the caller as `SearchTermTooShort`
+          // rather than as a message that crossed the RPC boundary. The DO judges again.
+          searchMatchExpression(term, 'prefix');
+          return unwrapCapabilityReply(
+            await stub.capabilityAttachmentSearch(term, searchLimit(options?.limit), hash, tenantId, scopeId),
+          );
+        },
       };
     }
     const connectionId = 'connectionId' in subject ? subject.connectionId : undefined;
@@ -3132,7 +3210,7 @@ export class CloudflareScopeHost implements ScopeHost {
           filename: input.filename,
           contentType: input.contentType,
           size: input.body.byteLength,
-          sha256: await sha256Hex(input.body),
+          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy,
           createdAt: new Date().toISOString(),
@@ -3171,6 +3249,16 @@ export class CloudflareScopeHost implements ScopeHost {
         if (removed) await store.delete(attachmentBlobKey(scopeId, removed.id)).catch(() => {});
         return removed;
       },
+      search: async (term, options) => {
+        if (forEvent) {
+          // The delivery-admitted surface reads the ONE attachment its delivery names.
+          throw new Error('attachments.search is not available on a delivery-scoped surface');
+        }
+        searchMatchExpression(term, 'prefix');
+        return unwrapCapabilityReply(
+          await stub.attachmentSearch(term, searchLimit(options?.limit), asPrincipalId, tenantId, scopeId, connectionId),
+        );
+      },
     };
   }
 
@@ -3191,7 +3279,7 @@ export class CloudflareScopeHost implements ScopeHost {
           `survived something the object did not (rewind/reap); see the #473 integrity notes`,
       );
     }
-    if ((await sha256Hex(obj.body)) !== record.sha256) {
+    if ((await attachmentSha256(obj.body)) !== record.sha256) {
       throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
     }
     return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
@@ -8562,12 +8650,6 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     return importsOfManifestJson(v.manifest_json);
   }
-}
-
-/** SHA-256 hex of an attachment's bytes — what `AttachmentRecord.sha256` holds. */
-async function sha256Hex(body: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', body);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /** A ledger row -> the wire entry, the attribution re-nested (#1054). */

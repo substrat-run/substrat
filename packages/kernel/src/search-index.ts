@@ -154,6 +154,13 @@ export const SEARCH_INDEX_PREFIX = '_substrat_search_';
  * merely contains an fts5 table (cloudflare/workers-sdk#9519). Excluding it is
  * also just correct: an index is derived data, and the import rebuilds it from
  * the content tables it just loaded. Nothing is lost that was not recomputable.
+ *
+ * **The attachment text tables share the prefix on purpose (#1575).**
+ * `_substrat_search__attachment_text` holds text extracted from attachment BYTES, and a
+ * dump carries an attachment's metadata row and never its bytes. Keeping the text out of
+ * the dump keeps it wherever the bytes are; a load re-queues extraction for the rows it
+ * brought back (`reconcileAttachmentText`) instead of carrying a plaintext copy of every
+ * file into every exported dump and backup.
  */
 export function isSearchIndexTable(name: string): boolean {
   return name.startsWith(SEARCH_INDEX_PREFIX);

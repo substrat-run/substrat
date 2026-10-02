@@ -236,6 +236,7 @@ export function guideSidebar() {
         { text: '@substrat-run/kernel', link: '/reference/kernel' },
         { text: '@substrat-run/adapter-sqlite', link: '/reference/adapter-sqlite' },
         { text: '@substrat-run/adapter-cloudflare', link: '/reference/adapter-cloudflare' },
+        { text: '@substrat-run/attachment-extractors', link: '/reference/attachment-extractors' },
         { text: '@substrat-run/vertical-host', link: '/reference/vertical-host' },
         { text: '@substrat-run/vertical-auth', link: '/reference/vertical-auth' },
         { text: '@substrat-run/control-plane-api', link: '/reference/control-plane-api' },

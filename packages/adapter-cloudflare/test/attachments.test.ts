@@ -1,7 +1,15 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import {
+  ATTACHMENT_SEARCH_OWNERS_SQL,
+  ATTACHMENT_SEARCH_SQL,
+  ulid,
+  webCryptoSecretBox,
+  type AttachmentExtractor,
+  type AttachmentTextState,
+} from '@substrat-run/kernel';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { permMod } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
 import type { R2BlobStores } from '../src/r2.js';
@@ -68,7 +76,8 @@ describe('attachment surface (cloudflare host)', () => {
     return { r2, created, get n() { return n; } };
   };
 
-  const world = async () => {
+  // K-43: the host's parsers, passed in at the composition root — `[]` is a host wired with none.
+  const world = async (attachmentExtractors: readonly AttachmentExtractor[] = defaultAttachmentExtractors()) => {
     const fake = fakeR2();
     const bucket = fakeBucket();
     const host = new CloudflareScopeHost({
@@ -76,6 +85,7 @@ describe('attachment surface (cloudflare host)', () => {
       controlPlane: env.CONTROL_PLANE,
       blobStores: fake.r2,
       attachmentBuckets: () => bucket.bucket,
+      attachmentExtractors,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     });
     host.registerModule(permMod);
@@ -389,5 +399,95 @@ describe('attachment surface (cloudflare host)', () => {
     await expect(
       bare.provisionBlobStore(staff, { tenantId: t, vertical: 'docs', binding: 'ATTACHMENTS' }),
     ).rejects.toThrow(/not configured/);
+  });
+
+  // #1575: a host refuses, when it is built, an extractor declaration it could not honour.
+  it('refuses at construction an extractor whose input bound is not a positive integer', () => {
+    expect(
+      () =>
+        new CloudflareScopeHost({
+          scope: env.SCOPE,
+          controlPlane: env.CONTROL_PLANE,
+          attachmentExtractors: [
+            { name: 'x', maxInputBytes: Number.NaN, accepts: () => true, extract: async () => ({ text: '' }) },
+          ],
+        }),
+    ).toThrow(/positive integer/);
+  });
+
+  // #1575, K-43: a host wired with no extractors parses nothing — and says so for every upload.
+  it('records every upload unsupported, with the reason, on a host given no extractors', async () => {
+    const { host, t, s, editor } = await world([]);
+    const rec = await (await host.attachments(editor, t, s)).upload({
+      entity: { entityType: 'item', entityId: 'i1' },
+      filename: 'note.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: bytes('the quokka memo'),
+    });
+    while ((await host.runDueJobs(t, s, { limit: 100 })).attempted > 0);
+    const state = await (await host.getScope(editor, t, s)).invoke<AttachmentTextState | null>('perm/attachment-text', {
+      id: rec.id,
+    });
+    expect(state).toMatchObject({ status: 'unsupported', detail: "no extractor for content type 'text/plain'" });
+    expect(await (await host.attachments(editor, t, s)).search('quokka')).toEqual([]);
+  });
+
+  /**
+   * #1575: the search's two statements, planned by DO SQLite itself. The match drives from
+   * the FTS index, every join is a key lookup, and the readable-owner `IN`s — a JSON array
+   * of types and a row-value `IN` over JSON pairs — are each ONE list subquery built once,
+   * never a correlated subquery run per matching row. The owner enumeration walks the
+   * `(entity_type, entity_id)` index. A plan that scanned `_substrat_attachments` or the
+   * text table whole would be a search whose cost grows with every file in the scope.
+   */
+  it('plans the search from the FTS index, with key lookups and uncorrelated owner lists', async () => {
+    const { host, t, s, editor } = await world();
+    const att = await host.attachments(editor, t, s);
+    for (let i = 0; i < 5; i += 1) {
+      await att.upload({
+        entity: { entityType: 'item', entityId: `i${i}` },
+        filename: `f${i}.txt`,
+        contentType: 'text/plain',
+        visibility: 'internal',
+        body: bytes(`the margay ledger ${i}`),
+      });
+    }
+    while ((await host.runDueJobs(t, s, { limit: 100 })).attempted > 0);
+    const details = (rows: Record<string, unknown>[]) => rows.map((r) => String(r.detail));
+    const plan = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_, state) => ({
+      search: details(
+        state.storage.sql
+          .exec(
+            `EXPLAIN QUERY PLAN ${ATTACHMENT_SEARCH_SQL}`,
+            '"margay"*',
+            JSON.stringify(['other']),
+            JSON.stringify([['item', 'i1'], ['item', 'i3']]),
+            20,
+          )
+          .toArray(),
+      ),
+      owners: details(
+        state.storage.sql.exec(`EXPLAIN QUERY PLAN ${ATTACHMENT_SEARCH_OWNERS_SQL}`, JSON.stringify(['item']), 2001).toArray(),
+      ),
+    }));
+    expect(plan.search).toContainEqual(expect.stringMatching(/^SCAN _substrat_search__attachments VIRTUAL TABLE INDEX \d+:M/));
+    expect(plan.search).toContain('SEARCH t USING INTEGER PRIMARY KEY (rowid=?)');
+    expect(plan.search).toContainEqual(expect.stringMatching(/^SEARCH a USING INDEX sqlite_autoindex__substrat_attachments_\d+ \(id=\?\)$/));
+    expect(plan.search.filter((d) => d.startsWith('LIST SUBQUERY'))).toHaveLength(2);
+    expect(plan.search.filter((d) => /CORRELATED|^SCAN (a|t)\b/.test(d))).toEqual([]);
+    expect(plan.owners).toContain('SEARCH a USING INDEX _substrat_attachments_entity (entity_type=?)');
+    expect(plan.owners).toContainEqual(
+      expect.stringMatching(/^SEARCH t USING INDEX sqlite_autoindex__substrat_search__attachment_text_\d+ \(attachment_id=\?\)$/),
+    );
+    expect(plan.owners.filter((d) => /CORRELATED|^SCAN (a|t)\b/.test(d))).toEqual([]);
+    // And the statement runs, answering exactly the listed owners' matches, newest first.
+    const hits = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_, state) =>
+      state.storage.sql
+        .exec(ATTACHMENT_SEARCH_SQL, '"margay"*', JSON.stringify([]), JSON.stringify([['item', 'i1'], ['item', 'i3']]), 20)
+        .toArray()
+        .map((r) => r.entity_id),
+    );
+    expect(hits).toEqual(['i3', 'i1']);
   });
 });

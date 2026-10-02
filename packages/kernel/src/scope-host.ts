@@ -3741,6 +3741,18 @@ export function attachmentBlobKey(scopeId: string, attachmentId: string): string
   return `scope/${scopeId}/att/${attachmentId}`;
 }
 
+declare const crypto: { subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> } };
+
+/**
+ * An attachment's integrity witness: the lowercase hex SHA-256 of its bytes (Web Crypto).
+ * One definition for the hash an upload records and every read that holds bytes to it —
+ * both adapters' `open`, and the extraction job (#1575).
+ */
+export async function attachmentSha256(body: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', body);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * The §4.3 entitlement-gate denial, worded identically wherever the gate lives — the
  * coordinator against the shared CP, a scope DO against its projection, the SQLite
@@ -3843,6 +3855,33 @@ export interface ScopeAttachments {
   open(attachmentId: string): Promise<OpenedAttachment | null>;
   /** Delete row (and event) first, then bytes; returns the removed record, null if unknown. */
   remove(attachmentId: string): Promise<AttachmentRecord | null>;
+  /**
+   * Attachments whose EXTRACTED TEXT matches `term` (#1575), newest first, as records the
+   * caller could `open`.
+   *
+   * Authorized BEFORE it matches: the owners the caller may read — the check `open` makes,
+   * the target's `readPermission` on the owning entity — are decided from the scope and the
+   * caller alone, and the match runs over those owners only, so an attachment the caller
+   * cannot open neither appears nor takes a slot, however many there are. No count, no
+   * score, no snippet, and newest-first rather than relevance order: each of those would
+   * describe matches the caller may not see (`attachment-text.ts` says how). The term
+   * grammar and the limit are `ctx.search`'s (`searchMatchExpression`, `searchLimit`);
+   * a term too short to match throws `SearchTermTooShort`.
+   *
+   * A caller without scope-level read on a target type has that type's owners checked one
+   * by one, at most `ATTACHMENT_SEARCH_OWNER_MAX` of them; past that the search throws
+   * `forbidden` with reason `ATTACHMENT_SEARCH_TOO_MANY_OWNERS`, the same for every term.
+   *
+   * Only text that has been extracted matches: an upload is searchable once its
+   * extraction job has run (`readAttachmentText` says where it is).
+   */
+  search(term: string, options?: AttachmentSearchOptions): Promise<AttachmentRecord[]>;
+}
+
+/** `ScopeAttachments.search`'s options. */
+export interface AttachmentSearchOptions {
+  /** Defaults to `DEFAULT_SEARCH_LIMIT`, capped at `MAX_SEARCH_LIMIT`. */
+  readonly limit?: number;
 }
 
 /**
