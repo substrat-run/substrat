@@ -175,8 +175,9 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(mapError(new Error(sentence)).status).toBe(500);
   });
 
-  it('reads `is owned by`, `is auto-admitted` and `not admitted` from the code now that their rows are gone (#113 phase 5)', () => {
-    // The sixth to eighth families off `CODE_PATTERNS`: the registry's own refusals. Every
+  it('reads the registry\'s own refusals from the code now that their rows are gone (#113 phases 5–6)', () => {
+    // The sixth to tenth families off `CODE_PATTERNS`: `is owned by`, `is auto-admitted`,
+    // `not admitted`, and — `rejectVersion` / `promoteVersion` — `is already admitted` and `belongs to`. Every
     // site is on the coordinator (`host.ts`, `adapter-sqlite`) — none is raised inside a
     // Durable Object — so the real error object reaches `mapError` and the code is read.
     const sentences = [
@@ -185,25 +186,6 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
       `vertical 'crm' prod version 01ABC is auto-admitted (private self-serve) — a staff admit must vouch for it before listing`,
       `version 01ABC is pending, not admitted — it cannot be bound to a scope`,
       `version 01ABC is rejected, not admitted — it cannot be promoted`,
-    ];
-    for (const sentence of sentences) {
-      const typed = mapError(substratError('conflict', sentence));
-      expect(typed.status).toBe(409);
-      expect(typed.body.code).toBe('conflict');
-      expect(typed.body.detail).toBe(sentence);
-
-      // The other half: untyped, the same sentence is an unreviewed throw and gets the
-      // generic 500 — what makes the deletion real. The contract suite is what proves the
-      // throws are typed, since THIS case would pass whatever the adapters did.
-      expect(mapError(new Error(sentence)).status).toBe(500);
-    }
-  });
-
-  it('reads `is already admitted` and `belongs to` from the code now that their rows are gone (#113 phase 6)', () => {
-    // The last two coordinator-only registry refusals: `rejectVersion` on an admitted
-    // version, and `promoteVersion` through a vertical that does not own the version. Both
-    // are raised in `host.ts` / `adapter-sqlite`, never inside a Durable Object.
-    const sentences = [
       `version 01ABC is already admitted — it may be bound`,
       `version 01ABC belongs to 'helpdesk'`,
     ];
@@ -214,7 +196,8 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
       expect(typed.body.detail).toBe(sentence);
 
       // The other half: untyped, the same sentence is an unreviewed throw and gets the
-      // generic 500. The contract suite is what proves the throws are typed.
+      // generic 500 — what makes the deletion real. The contract suite is what proves the
+      // throws are typed, since THIS case would pass whatever the adapters did.
       expect(mapError(new Error(sentence)).status).toBe(500);
     }
   });

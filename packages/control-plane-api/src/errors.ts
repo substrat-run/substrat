@@ -52,8 +52,8 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   claim-on-first-push, a slug's owner is fixed at first push), `is auto-admitted` (the
  *   publish seam, `setVerticalListed`: prod points at a version only the AUTO admission note
  *   vouches for, so a staff admit is what it names as the way out) and `not admitted`
- *   (`bindScopeVersion` and `promoteVersion` refusing a version that is not admitted). The ninth and
- *   tenth are the last two coordinator-only registry refusals: `is already admitted`
+ *   (`bindScopeVersion` and `promoteVersion` refusing a version that is not admitted).
+ *   The ninth and tenth are the last two coordinator-only registry refusals: `is already admitted`
  *   (`rejectVersion` — an admitted version may be bound, so it cannot be un-vouched) and
  *   `belongs to '` (`promoteVersion` — a version promoted through a vertical that does not own
  *   it), now `substratError('conflict', …)` at one site per adapter each.

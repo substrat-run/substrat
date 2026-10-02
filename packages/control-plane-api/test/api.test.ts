@@ -4179,7 +4179,7 @@ describe('control-plane API — vertical registry', () => {
     expect((await json(`/tenants/${t1}/scopes/${sc}/version`, 'POST', { versionId: v2 })).status).toBe(409);
   });
 
-  it('answers the two ownership/admission refusals as 409 conflict with their sentence intact (#113 phase 6)', async () => {
+  it('answers reject-when-admitted and promote-through-another-vertical as 409 conflict (#113 phase 6)', async () => {
     // v1 is admitted. Rejecting it, and promoting it through a vertical that does not own it,
     // are typed `conflict` by the adapter — the same problem document the pattern rows built.
     const reject = await json(`/verticals/fsm/versions/${v1}/reject`, 'POST', { note: 'too late' });
