@@ -55,6 +55,12 @@
         "dir": "app",
         "portEnv": "WEB_PORT",
         "portFrom": "app/vite.config.ts"
+      },
+      {
+        "name": "tests",
+        "run": "test:ui",
+        "portEnv": "VITEST_UI_PORT",
+        "portFrom": "package.json"
       }
     ]
   },
@@ -67,6 +73,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.workerd-test.json --noEmit",
     "test": "vitest run && vitest run -c vitest.workers.config.ts",
+    "test:ui": "vitest --ui --open=false --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5295}",
     "server": "tsx src/server.ts",
     "dev": "concurrently -n issuer,api,app -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "cf:dev": "wrangler dev --var ALLOW_DEV_NODE:true",
@@ -100,6 +107,7 @@
     "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
+    "@vitest/ui": "catalog:",
     "better-sqlite3": "^13.0.3",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",

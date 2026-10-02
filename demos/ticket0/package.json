@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.workerd-test.json --noEmit",
     "test": "vitest run && vitest run -c vitest.workers.config.ts",
+    "test:ui": "vitest --ui --open=false --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5297}",
     "lint:boundaries": "substrat-boundary-lint",
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "server": "tsx src/server.ts",
@@ -43,6 +44,7 @@
     "@substrat-run/oidc-rp": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
+    "@vitest/ui": "catalog:",
     "ai": "7.0.114",
     "better-sqlite3": "^13.0.3",
     "concurrently": "^9.0.0",
@@ -74,6 +76,12 @@
         "dir": "app",
         "portEnv": "WEB_PORT",
         "portFrom": "app/vite.config.ts"
+      },
+      {
+        "name": "tests",
+        "run": "test:ui",
+        "portEnv": "VITEST_UI_PORT",
+        "portFrom": "package.json"
       }
     ],
     "client": {

@@ -89,11 +89,15 @@ function portFrom(project: string, entry: DevServer): number {
     );
   }
   const source = readFileSync(file, 'utf8');
-  const match = new RegExp(`process\\.env\\.${entry.portEnv}\\s*\\?\\?\\s*(\\d+)`).exec(source);
+  // The second shape is a package.json script — `${PORT_ENV:-1234}` — for a process with
+  // no source file of its own to bind it in (the vitest UI is a CLI flag, not a config).
+  const match =
+    new RegExp(`process\\.env\\.${entry.portEnv}\\s*\\?\\?\\s*(\\d+)`).exec(source) ??
+    new RegExp(`\\$\\{${entry.portEnv}:-(\\d+)\\}`).exec(source);
   if (!match) {
     cannot(
       `${project}: ${entry.name} declares portEnv "${entry.portEnv}", but ${entry.portFrom}\n` +
-        `  binds no \`process.env.${entry.portEnv} ?? <port>\`. The declaration and the code\n` +
+        `  binds no \`process.env.${entry.portEnv} ?? <port>\` (or \`\${${entry.portEnv}:-<port>}\`). The declaration and the code\n` +
         `  disagree about which variable moves this server — fix whichever is wrong.`,
     );
   }
