@@ -27,6 +27,7 @@ import { ulid, type ScopeStub } from '@substrat-run/kernel';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 import { ticket0Manifest } from '../src/manifest.js';
 import { MODULES } from '../src/provision.js';
+import { DELIVERY_DISCARDED } from '../src/module.js';
 import { signIdentity } from '../src/seed.js';
 import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX } from '../spec/model.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from './before-0021.js';
@@ -567,6 +568,50 @@ describe('discard destroys the content — completely, only what is suspended, o
     expect(kit.events(d, 'ticket0.conversation-closed')).toHaveLength(2);
   });
 
+  /**
+   * The reviewer's repro (Codex round 1, #1973): the filter ABSENT, a person suspends and
+   * discards a mail, and the provider delivers the same Message-ID again. The dedupe used
+   * to be the message row, which the discard had deleted, so the junk came back as a new
+   * inbox conversation with its subject and body.
+   */
+  it('refuses a redelivery of a discarded mail, and still answers a kept one with its own message', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const a = await admin(d);
+    const relay = await kit.as(d, d.relay);
+    const deliver = (emailMessageId: string, subject: string, bodyText: string) =>
+      relay.invoke('ticket0/ingest-message', {
+        conversationId: null,
+        contactEmail: 'once@junk.example',
+        contactName: null,
+        subject,
+        bodyText,
+        emailMessageId,
+      }) as Promise<{ id: string; conversation_id: string }>;
+
+    const junk = await deliver('<junk-1@junk.example>', 'REDELIVERED-SUBJECT', 'REDELIVERED-BODY');
+    await a.invoke('ticket0/suspend', { conversationId: junk.conversation_id });
+    await a.invoke('ticket0/discard', { conversationId: junk.conversation_id });
+    const before = await inbox(d, { include_closed: true });
+
+    await expect(deliver('<junk-1@junk.example>', 'REDELIVERED-SUBJECT', 'REDELIVERED-BODY')).rejects.toMatchObject({
+      code: 'forbidden',
+      message: DELIVERY_DISCARDED,
+    });
+    expect(await inbox(d, { include_closed: true })).toEqual(before);
+    const hits = (await a.invoke('ticket0/search-conversations', { q: 'REDELIVERED' })) as Page<Conversation>;
+    expect(hits.entries).toEqual([]);
+    // The record that stopped it holds no words: the id, where it went, and that its message is gone.
+    expect(
+      kit.sql(d, (db) => db.prepare('SELECT * FROM ticket0_mail_deliveries WHERE email_message_id = ?').get('<junk-1@junk.example>')),
+    ).toMatchObject({ conversation_id: junk.conversation_id, message_id: null, direction: 'inbound' });
+
+    // The positive twin: a redelivery of mail the desk kept is the same message, once.
+    const kept = await deliver('<kept-1@customer.example>', 'Kept', 'A real question');
+    const again = await deliver('<kept-1@customer.example>', 'Kept', 'A real question');
+    expect(again.id).toBe(kept.id);
+    expect(await messages(d, kept.conversation_id)).toHaveLength(1);
+  });
+
   it('in bulk is all or nothing: one conversation not in the queue refuses the lot', async () => {
     const d = await filtered();
     const a = await admin(d);
@@ -725,6 +770,15 @@ describe('migration 0021 on an existing desk', () => {
         `INSERT INTO ticket0_conversations (id, contact_id, channel, subject, state, priority, created_at, updated_at)
          VALUES (?, 'k1', 'email', 'Before', ?, 'normal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
       ).run(id, state);
+    // A mail received, and a reply sent, before the delivery record existed — both are
+    // Message-IDs the old dedupe recognised, so the upgrade must carry both across.
+    const message = db.prepare(
+      `INSERT INTO ticket0_messages (id, conversation_id, author_kind, visibility, body_text, email_message_id, created_at)
+       VALUES (?, 'c1', ?, 'public', 'old', ?, '2026-01-01T00:00:00.000Z')`,
+    );
+    message.run('m1', 'contact', '<in@old.example>');
+    message.run('m2', 'agent', '<out@desk.example>');
+    message.run('m3', 'agent', null);
     db.close();
 
     const current = new SqliteScopeHost({ dir: kit.dir });
@@ -739,6 +793,14 @@ describe('migration 0021 on an existing desk', () => {
         { id: 'c1', quarantine: null },
         { id: 'c2', quarantine: null },
         { id: 'c3', quarantine: null },
+      ]);
+      expect(
+        after
+          .prepare('SELECT email_message_id, conversation_id, message_id, direction FROM ticket0_mail_deliveries ORDER BY message_id')
+          .all(),
+      ).toEqual([
+        { email_message_id: '<in@old.example>', conversation_id: 'c1', message_id: 'm1', direction: 'inbound' },
+        { email_message_id: '<out@desk.example>', conversation_id: 'c1', message_id: 'm2', direction: 'outbound' },
       ]);
     } finally {
       after.close();

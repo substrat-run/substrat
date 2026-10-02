@@ -528,7 +528,7 @@ export const ticket0Migrations: SqlMigration[] = [
     `,
   },
   {
-    // add-ticket0_conversations-quarantine-and-narrow-live-indexes
+    // add-ticket0_conversations-quarantine-and-mail-deliveries
     version: '0021',
     sql: `
       ALTER TABLE ticket0_conversations ADD COLUMN quarantine TEXT CHECK (quarantine IN ('suspended','discarded'));
@@ -536,6 +536,14 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_conversations ADD COLUMN suspended_at TEXT;
 
       ALTER TABLE ticket0_conversations ADD COLUMN suspicion TEXT;
+
+      CREATE TABLE ticket0_mail_deliveries (
+        email_message_id TEXT PRIMARY KEY NOT NULL,
+        conversation_id TEXT NOT NULL,
+        message_id TEXT,
+        direction TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
+        recorded_at TEXT NOT NULL
+      );
 
       -- HAND-WRITTEN below this line (#1088). The partial indexes that hold a desk's LIVE work
       -- now hold the inbox's live work only: a suspended conversation keeps state 'new', so
@@ -574,6 +582,17 @@ export const ticket0Migrations: SqlMigration[] = [
       -- nothing else: it is empty on every desk that never switches the filter on.
       CREATE INDEX ticket0_conversations_suspended ON ticket0_conversations (id)
         WHERE quarantine = 'suspended';
+
+      -- Every Message-ID the desk already holds, so a redelivery of mail ingested before this
+      -- migration is still recognised once the dedupe reads ticket0_mail_deliveries. Inbound
+      -- is the customer's, outbound is what record-delivery stamped on a sent reply. OR IGNORE,
+      -- oldest message first, so an id two messages share keeps the one that took it first.
+      INSERT OR IGNORE INTO ticket0_mail_deliveries (email_message_id, conversation_id, message_id, direction, recorded_at)
+        SELECT email_message_id, conversation_id, id,
+               CASE WHEN author_kind = 'contact' THEN 'inbound' ELSE 'outbound' END, created_at
+          FROM ticket0_messages
+         WHERE email_message_id IS NOT NULL
+         ORDER BY id;
     `,
   },
 ];

@@ -113,6 +113,7 @@ type NotificationRow = EntityRow<typeof ticket0Entities, 'notification'>;
 type SignupRow = EntityRow<typeof ticket0Entities, 'signup'>;
 type BlockRuleRow = EntityRow<typeof ticket0Entities, 'blockRule'>;
 type BehaviourRunRow = EntityRow<typeof ticket0Entities, 'behaviourRun'>;
+type MailDeliveryRow = EntityRow<typeof ticket0Entities, 'mailDelivery'>;
 
 const conversationRef = (id: string) => ({ entityType: 'conversation', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
@@ -242,8 +243,12 @@ function conversationOrThrow(ctx: OperationContext, id: string): ConversationRow
   return row;
 }
 
+function messageOrNull(ctx: OperationContext, id: string): MessageRow | undefined {
+  return ctx.sql.query<MessageRow>('SELECT * FROM ticket0_messages WHERE id = ?', [id])[0];
+}
+
 function messageOrThrow(ctx: OperationContext, id: string): MessageRow {
-  const row = ctx.sql.query<MessageRow>('SELECT * FROM ticket0_messages WHERE id = ?', [id])[0];
+  const row = messageOrNull(ctx, id);
   if (!row) throw substratError('not_found', `message not found: ${id}`);
   return row;
 }
@@ -869,6 +874,39 @@ function addressKey(email: string): string {
  * letting Resend retry a mail this desk will never accept.
  */
 export const SENDER_BLOCKED = 'this desk is not accepting messages from you';
+
+/**
+ * What a redelivery of a DISCARDED mail is told (#1088), and why it is a refusal rather
+ * than an answer: the mail was received, a person decided it was junk and destroyed
+ * it, and the one honest reply to "here it is again" is that it was already handled.
+ * Ingesting it again would put back exactly what was destroyed.
+ *
+ * `forbidden`, like `SENDER_BLOCKED`, so `harness/inbound.ts` answers the provider a 2xx
+ * and the retries stop; exported for the same reason that one is, so the receiver can
+ * tell the two apart without re-typing the prose.
+ */
+export const DELIVERY_DISCARDED = 'this mail was already received here, and discarded';
+
+/**
+ * The delivery a mail `Message-ID` names, if this desk has handled it — the ONE dedupe
+ * read for mail (#1088). See `mailDelivery` in the model for why it is not the message.
+ */
+function deliveryOf(ctx: OperationContext, emailMessageId: string): MailDeliveryRow | undefined {
+  return ctx.sql.query<MailDeliveryRow>('SELECT * FROM ticket0_mail_deliveries WHERE email_message_id = ?', [
+    emailMessageId,
+  ])[0];
+}
+
+/** Write it down. OR IGNORE: the first message to carry an id keeps it, as the dedupe always read it. */
+function recordDelivery(ctx: OperationContext, message: MessageRow, direction: MailDeliveryRow['direction']): void {
+  if (!message.email_message_id) return;
+  ctx.sql.exec(
+    `INSERT OR IGNORE INTO ticket0_mail_deliveries
+       (email_message_id, conversation_id, message_id, direction, recorded_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [message.email_message_id, message.conversation_id, message.id, direction, ctx.now()],
+  );
+}
 
 /** What a rule looks like once a person's typing has been taken out of it. */
 function blockValueOf(ctx: OperationContext, kind: BlockRuleRow['kind'], raw: string): string {
@@ -1509,6 +1547,11 @@ function discardConversation(
   ] as const) {
     ctx.sql.exec(`DELETE FROM ${table} WHERE conversation_id = ?`, [conversation.id]);
   }
+  // The mail stays RECEIVED — that is what stops a redelivery from bringing the words
+  // back — and stops pointing at a message that no longer exists.
+  ctx.sql.exec('UPDATE ticket0_mail_deliveries SET message_id = NULL WHERE conversation_id = ?', [
+    conversation.id,
+  ]);
   ctx.sql.exec(
     `UPDATE ticket0_conversations SET quarantine = 'discarded', subject = '' WHERE id = ?`,
     [conversation.id],
@@ -2089,6 +2132,9 @@ function threadRepliedTo(
   // trailing comments some clients add around it.
   const id = /<[^<>\s]+>/.exec(inReplyTo)?.[0] ?? inReplyTo.trim();
   if (!id) return undefined;
+  // A LIVE message, not the delivery record (#1088): threading needs a thread to join,
+  // and a discarded one has none, so a reply to junk is a new conversation the spam
+  // filter judges. The dedupe is `deliveryOf`'s job, and it does read the record.
   const repliedTo = ctx.sql.query<{ conversation_id: string }>(
     'SELECT conversation_id FROM ticket0_messages WHERE email_message_id = ?',
     [id],
@@ -4817,6 +4863,12 @@ const operations = {
         ctx.relink({ entityType, entityId: row.id }, loserRef, survivorRef);
       }
     }
+    // A mail's delivery record names the conversation its message is in, so it moves
+    // with the message (#1088).
+    ctx.sql.exec('UPDATE ticket0_mail_deliveries SET conversation_id = ? WHERE conversation_id = ?', [
+      survivor.id,
+      conversation.id,
+    ]);
     // Notifications point at whichever conversation a person should open, which is
     // now the survivor.
     ctx.sql.exec(
@@ -5825,16 +5877,21 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.conversationRelay));
 
     // Idempotent on the provider's message id: mail providers redeliver, and a
-    // redelivered message must not become a second message in the thread.
-    const seen = ctx.sql.query<MessageRow>(
-      'SELECT * FROM ticket0_messages WHERE email_message_id = ?',
-      [input.emailMessageId],
-    )[0];
-    if (seen) {
-      // A provider redelivering. The conversation id, not the Message-ID: that header
-      // names the sender's host.
-      ctx.log.debug('mail already ingested into {conversationId}', { conversationId: seen.conversation_id });
-      return seen;
+    // redelivered message must not become a second message in the thread. Read from the
+    // delivery record, which outlives the message (#1088): a mail the desk DISCARDED is
+    // still a mail it received, and a redelivery of it is refused rather than ingested.
+    const delivered = deliveryOf(ctx, input.emailMessageId);
+    if (delivered) {
+      const seen = delivered.message_id ? messageOrNull(ctx, delivered.message_id) : undefined;
+      // The conversation id, not the Message-ID: that header names the sender's host.
+      if (seen) {
+        ctx.log.debug('mail already ingested into {conversationId}', { conversationId: seen.conversation_id });
+        return seen;
+      }
+      ctx.log.info('redelivery of a mail discarded from {conversationId} refused', {
+        conversationId: delivered.conversation_id,
+      });
+      throw substratError('forbidden', DELIVERY_DISCARDED, { reason: 'delivery-discarded' });
     }
 
     /**
@@ -5910,6 +5967,7 @@ const operations = {
       emailMessageId: input.emailMessageId,
       emailInReplyTo: input.emailInReplyTo ?? null,
     });
+    recordDelivery(ctx, row, 'inbound');
 
     // The files, as a note rather than as files (#1080). There is still nowhere to put
     // the bytes, so this does not pretend otherwise — it makes the loss AUDIBLE, which
@@ -6014,6 +6072,7 @@ const operations = {
       message.id,
     ]);
     const row = messageOrThrow(ctx, message.id);
+    recordDelivery(ctx, row, 'outbound');
     ctx.emit({
       type: 'ticket0.message-delivered',
       schemaVersion: 1,

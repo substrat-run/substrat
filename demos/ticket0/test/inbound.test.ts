@@ -150,6 +150,42 @@ describe('a signed delivery becomes a message, from the re-read', () => {
   });
 });
 
+/**
+ * A redelivery of mail the desk DISCARDED (#1088). The dedupe used to be the message
+ * row, which a discard deletes, so the provider sending the same mail again put the
+ * destroyed words back in the inbox. The delivery record outlives the message.
+ */
+describe('a redelivery of a discarded mail is answered, and ingests nothing', () => {
+  const emails = {
+    em_junk: {
+      from: 'Bulk Sender <bulk@junk.example>',
+      subject: 'DISCARDED-SUBJECT-4417',
+      text: 'DISCARDED-BODY-4417',
+      message_id: '<junk-1@junk.example>',
+    },
+  };
+
+  it('answers 200 so the retries stop, with no new conversation and none of the words back', async () => {
+    const desk = world.substrat;
+    const { fetchImpl } = fakeResend(emails);
+    const first = (await receive(desk, fetchImpl, await delivery('em_junk'))).body as { conversationId: string };
+    const admin = await host.getScope(desk.admin.principal, desk.tenant, desk.scope);
+    await admin.invoke('ticket0/suspend', { conversationId: first.conversationId });
+    await admin.invoke('ticket0/discard', { conversationId: first.conversationId });
+
+    const again = await receive(desk, fetchImpl, await delivery('em_junk'));
+    expect(again).toEqual({ status: 200, body: { ignored: 'this mail was already received here and discarded' } });
+    const found = (await admin.invoke('ticket0/search-conversations', { q: 'DISCARDED-BODY-4417' })) as {
+      entries: unknown[];
+    };
+    expect(found.entries).toEqual([]);
+    const subjects = (await admin.invoke('ticket0/search-conversations', { q: 'DISCARDED-SUBJECT-4417' })) as {
+      entries: unknown[];
+    };
+    expect(subjects.entries).toEqual([]);
+  });
+});
+
 describe('a reply threads on In-Reply-To, and only from the conversation’s own contact', () => {
   // The desk's reply went out as this Message-ID; the customer's client quotes it back.
   const SENT = '<reply-1@desk.example>';

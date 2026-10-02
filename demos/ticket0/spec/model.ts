@@ -854,6 +854,35 @@ export const ticket0Entities = defineEntities({
     primaryKey: ['principal', 'conversation_id'],
   },
 
+  /**
+   * Every mail `Message-ID` this desk has handled, in either direction — the ONE store
+   * a redelivery is recognised by (#1088).
+   *
+   * It used to be `ticket0_messages.email_message_id` itself, which made the dedupe as
+   * mortal as the words: discarding a suspended conversation deletes its messages, so a
+   * provider redelivering the same mail found nothing, ingested it again, and put the
+   * junk somebody had just destroyed back in the inbox. A delivery outlives its content
+   * here. `message_id` is the message it became, until a discard takes that message
+   * away and leaves this row saying the mail came, went where it went, and is gone.
+   *
+   * Content-free by construction: an id the sender's host minted, the conversation it
+   * belonged to, and when. Inbound rows are written by `ticket0/ingest-message`,
+   * outbound by `ticket0/record-delivery` — both, because the old lookup matched both,
+   * and a mail that comes back in under an id this desk sent is the same delivery.
+   * `src/module.ts` (`deliveryOf`) is the one reader.
+   */
+  mailDelivery: {
+    table: 'ticket0_mail_deliveries',
+    fields: z.object({
+      email_message_id: z.string(),
+      conversation_id: z.string(),
+      message_id: z.string().nullable(),
+      direction: z.enum(['inbound', 'outbound']),
+      recorded_at: z.string(),
+    }),
+    primaryKey: ['email_message_id'],
+  },
+
   /** A canned answer. Every desk grows these; better to ship the table than to watch
    *  them accumulate as browser bookmarks. */
   savedReply: {
