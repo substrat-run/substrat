@@ -1044,11 +1044,10 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     );
 
   /**
-   * Take back every live role in the desk: the lockout the repair exists for. Revoking the
-   * owner alone is not one here, because the desk's service principals (relay, widget,
-   * assistant) each hold a role of their own and count as holders.
+   * Take back every human role, leaving service roles live (#1896). The reconcile
+   * must repair the human lockout without revoking or relying on those service seats.
    */
-  async function revokeEveryRole(s: ScopeId): Promise<void> {
+  async function revokeEveryHumanRole(s: ScopeId): Promise<void> {
     const live = await runInDurableObject(scopeStub(s), async (_instance, state) =>
       [
         ...state.storage.sql.exec(
@@ -1059,7 +1058,11 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
       ].map((r) => ({ who: String(r.subject).slice('principal:'.length), role: String(r.relation).slice('role:'.length) })),
     );
     expect(live.length).toBeGreaterThan(0);
-    for (const { who, role } of live) expect(await host().revokeScopeRole(s, principalId.parse(who), role)).toBe(true);
+    const serviceRoles = new Set(['relay', 'widget', 'assistant']);
+    expect(live.filter(({ role }) => serviceRoles.has(role)).length).toBeGreaterThan(0);
+    for (const { who, role } of live.filter(({ role }) => !serviceRoles.has(role))) {
+      expect(await host().revokeScopeRole(s, principalId.parse(who), role)).toBe(true);
+    }
   }
 
   /** B made a member the way an invite does: the role granted, then the invite accepted. */
@@ -1099,9 +1102,9 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     expect(await ownerSeats(s)).toEqual([B]);
     expect(await canAdmin(A, s)).toBe(false);
 
-    // The lockout: B revoked too, with every other role, nobody seated in between. The repair
+    // The lockout: B revoked too, with every other human role; services stay live. The repair
     // re-seats the RECORD.
-    await revokeEveryRole(s);
+    await revokeEveryHumanRole(s);
     expect(await canAdmin(B, s)).toBe(false); // locked out: nobody here passes a check
     const repaired = await reconcile(s);
     expect(repaired.status).toBe(200);
@@ -1116,7 +1119,7 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
   it('after A hands to B, a re-provision (the install re-run) repairs a lockout with B, not A', async () => {
     const s = await installed();
     expect((await transfer(s, A, B)).status).toBe(200);
-    await revokeEveryRole(s);
+    await revokeEveryHumanRole(s);
     // The platform re-sends `/internal/provision` with the owner it minted at install: A.
     const res = await platform('/internal/provision', { tenantId: tenant, scopeId: s, owner: A, entitlements });
     expect(res.status).toBe(201);
@@ -1130,7 +1133,7 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
     const s = await installed();
     await host().assignScopeRole(s, B, 'desk-admin'); // B seated first, as #1659 advises
     expect(await host().revokeScopeRole(s, A, 'desk-admin')).toBe(true);
-    await revokeEveryRole(s); // later B too, and with it the desk's last holder
+    await revokeEveryHumanRole(s); // later B too, and with it the desk's last holder
     expect((await reconcile(s)).status).toBe(200);
     expect(await directory().getOwnerOfRecord(s)).toBe(A);
     expect(await ownerSeats(s)).toEqual([A]); // the original owner, re-seated from a stale record

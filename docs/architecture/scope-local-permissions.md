@@ -190,3 +190,14 @@ still a control-plane act.)
    don't use orgs skip it entirely (they can) or it is always projected.
 4. **Does the dashboard's own scope go CP-less too**, or does the platform vertical keep a
    privileged reader? It runs in the platform's own deployment, so it is not forced to.
+
+### Human lockout repair and service accounts (#1896)
+
+A CP-less vertical that mints service principals supplies `CloudflareScopeHostOptions.servicePrincipals`
+from its own durable account record. The host reads this set before provisioning or reconciliation;
+a failed read refuses the projection. The owner-of-record is re-seated when no effective role holder
+remains outside that set. Service role tuples are preserved and continue to authorize service work.
+A human successor with a current role still prevents re-seating a deliberately revoked owner.
+The enforcement flip guard counts all effective holders, including services. Ticket0 supplies its
+recorded relay, widget and assistant IDs; account kind is never inferred from role names or from
+missing identity links.
