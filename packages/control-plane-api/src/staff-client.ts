@@ -53,6 +53,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
 
+import type { ClientProvisionScopeInput } from './client.js';
 import type { DoNamespaceRecord } from './do-namespaces.js';
 import type { ConnectorCallsBucket } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
@@ -260,16 +261,16 @@ export interface ScopeHealth {
   missingStores?: { binding: string; kind: 'relational' | 'blob' }[];
 }
 
-export interface ProvisionScopeInput {
-  tenantId: TenantId;
-  scopeId: ScopeId;
-  slug?: string;
-  kind?: string;
-  name?: string;
-  vertical?: string | null;
+/** What the connect seam provisions, plus the storage shape the console picks. */
+export interface ProvisionScopeInput extends ClientProvisionScopeInput {
   storageShape?: 'A' | 'B';
-  // Only `global` is accepted today; `eu`/`us` are gated server-side (K-32).
-  jurisdiction?: 'eu' | 'us' | 'global';
+}
+
+export interface RebindScopeResult {
+  servingRef: string;
+  versionId: string;
+  alreadyBound?: boolean;
+  tables?: number;
 }
 
 export interface BindHostnameInput {
@@ -473,7 +474,11 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // explicit ask as "back up or refuse", so a console reap can never quietly wipe a
   // scope because the backup bucket went unbound. The returned `backup` names the copy
   // that landed — the operator's proof it exists, and the address to restore from.
-  reapScope = (t: TenantId, s: ScopeId, opts: { backup?: boolean } = { backup: true }): Promise<Scope & { backup: ScopeBackup | null }> =>
+  reapScope = (
+    t: TenantId,
+    s: ScopeId,
+    opts: { backup?: boolean } = { backup: true },
+  ): Promise<Scope & { backup: ScopeBackup | null }> =>
     this.post(`/tenants/${t}/scopes/${s}/reap`, opts);
   // Move ONE scope onto a DIFFERENT vertical lineage's serving script (#389) — the
   // update-rebind behind retiring a lineage in favour of another. Data-first with the
@@ -482,7 +487,12 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // differ unless the operator acknowledges having read both surfaces. `abandonData`
   // is deliberately NOT exposed — it exists for pre-#236 relic scripts only, and a
   // console that offers it invites moving an install while leaving its data behind.
-  rebindScopeVertical = (t: TenantId, s: ScopeId, vertical: string, opts: { ackMigrations?: boolean } = {}): Promise<{ servingRef: string; versionId: string; alreadyBound?: boolean; tables?: number }> =>
+  rebindScopeVertical = (
+    t: TenantId,
+    s: ScopeId,
+    vertical: string,
+    opts: { ackMigrations?: boolean } = {},
+  ): Promise<RebindScopeResult> =>
     this.post(
       `/tenants/${t}/scopes/${s}/rebind-vertical`,
       { vertical, ...opts },
@@ -633,7 +643,11 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
     });
   // #1705 PR 3: which installed apps promoting `versionId` would break, read before promoting
   // so the dialog can ask for the export-break acknowledgement up front. Staff see every app.
-  promotionImpact = (slug: string, channel: ChannelName, versionId: string): Promise<{ affected: ExportBreak[]; otherTenants?: number }> =>
+  promotionImpact = (
+    slug: string,
+    channel: ChannelName,
+    versionId: string,
+  ): Promise<{ affected: ExportBreak[]; otherTenants?: number }> =>
     this.call(
       `/verticals/${seg(slug)}/channels/${channel}/promote-impact?versionId=${seg(versionId)}`,
     );

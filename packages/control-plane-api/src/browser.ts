@@ -21,6 +21,7 @@ export type {
   PageQuery,
   PlatformRuntime,
   ProvisionScopeInput,
+  RebindScopeResult,
   RecentLogEvent,
   ScopeHealth,
   ServiceMetricsRow,
