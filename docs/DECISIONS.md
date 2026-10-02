@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-103 decisions · 61 plan · 42 kernel
+104 decisions · 61 plan · 43 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -115,3 +115,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-59](decisions/D-059-the-model-provider-seam-is-a-table-platform-billed-inference-is-a-cr.md) | 2026-08-29 | plan | The model-provider seam is a table; platform-billed inference is a credential-resolution rule, not a provider <br>*amends D-30* | #1054, #1073 |
 | [D-60](decisions/D-060-the-dashboard-is-an-ordinary-sandbox-clean-vertical-its-privile.md) | 2026-09-02 | plan | The Dashboard is an ordinary sandbox-clean vertical: its privileged half is a platform intent, not a narrowed credential <br>*awaiting ratification* | #1185, #978, #977 |
 | [D-61](decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md) | 2026-09-20 | plan | DO-originated egress is observed and never refused: D-46's limit stands, and no platform-authored code enters a customer's bundle <br>*awaiting ratification* | #861, #1579 |
+| [K-43](decisions/K-043-the-kernel-indexes-attachment-text-it-does-not-parse-file-fo.md) | 2026-10-02 | kernel | The kernel indexes attachment text; it does not parse file formats | #1575, #1976 |
