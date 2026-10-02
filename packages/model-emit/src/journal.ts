@@ -82,3 +82,24 @@ export function journalPrimaryKeys(sql: string): Map<string, string[]> {
   for (const [table, schema] of readSchema(sql)) out.set(table, [...schema.primaryKey]);
   return out;
 }
+
+/**
+ * Column-level CHECK expressions per table and column, read out of a journal.
+ *
+ * The fourth schema fact the planner holds the model to, after columns, keys
+ * and uniqueness — and the one it missed until #1974: an enum field is emitted
+ * as `CHECK (state IN ('a','b'))`, so a value added to the model is a value
+ * every database the journal builds still refuses. No PRAGMA reports a CHECK,
+ * so this is read from SQLite's own stored `CREATE TABLE` after the replay —
+ * which already carries every `ADD COLUMN`, `RENAME COLUMN` and rebuild.
+ *
+ * Each expression is normalised (`state in ('a','b')`) so the same CHECK written
+ * two ways compares equal; string literals are kept exactly.
+ */
+export function journalChecks(sql: string): Map<string, Map<string, string[]>> {
+  const out = new Map<string, Map<string, string[]>>();
+  for (const [table, schema] of readSchema(sql)) {
+    out.set(table, new Map([...schema.checks].map(([column, checks]) => [column, [...checks]])));
+  }
+  return out;
+}
