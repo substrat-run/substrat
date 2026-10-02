@@ -36,8 +36,31 @@
  * A file that is not what it says, or breaks a bound, is answered `{ failed }` with a
  * content-free reason — never a throw, and never a quote of the file: the reason lands in
  * the scope, and the content it would quote is what the read gate protects.
+ *
+ * ## CPU, bounded by construction — and stoppable
+ *
+ * Every parser here is a LINEAR scan (no regular expression that can rescan from each
+ * opener), over an input with a fixed cap, so the worst case is a property of the code rather
+ * than of the file. Per format, at the default bounds:
+ *
+ * - **text**: one native decode of at most 4 × the kernel's output cap (2 MiB).
+ * - **html**: one native decode of at most 16 × the output cap (8 MiB), one forward scan of
+ *   it, one entity pass over what survives.
+ * - **docx / xlsx / pptx**: the central directory (at most 20 000 entries), native inflate of
+ *   at most `maxInflatedBytes` (16 MiB) in total, and one forward scan of each inflated part;
+ *   parts stop being read once the text collected is twice the output cap.
+ *
+ * Each extractor honours the kernel's time budget cooperatively: it checks the `signal`, and
+ * yields a turn of the event loop so the kernel's timer can fire, between zip entries and
+ * every 256 KiB of inflate or scan progress — an aborted extraction answers
+ * `{ failed: 'the extraction was aborted' }` within one such step.
  */
-import type { AttachmentExtractor, AttachmentExtractorInput, AttachmentExtractorResult } from '@substrat-run/kernel';
+import type {
+  AttachmentExtractor,
+  AttachmentExtractorInput,
+  AttachmentExtractorResult,
+  ExtractionSignal,
+} from '@substrat-run/kernel';
 
 declare const TextDecoder: new (
   label?: string,
@@ -56,6 +79,8 @@ declare const DecompressionStream: new (format: 'deflate-raw') => {
     };
   };
 };
+
+declare function setTimeout(fn: () => void, ms: number): unknown;
 
 /** The bounds that protect the parsing process (K-43). */
 export interface ExtractorBounds {
@@ -110,6 +135,30 @@ class ExtractionBoundExceeded extends Error {}
 
 /** A file that is not what its type says, or is damaged. Carries a content-free reason. */
 class MalformedInput extends Error {}
+
+/** The kernel's budget ran out and aborted the signal: the extraction stops where it is. */
+class ExtractionAborted extends Error {}
+
+/**
+ * How much work runs between two checks of the kernel's signal: 256 KiB of a parse's
+ * progress, or of an entry's inflated output. Small enough that an abort is honoured within
+ * a few milliseconds of parsing; large enough that the yields cost little.
+ */
+const STRIDE = 256 * 1024;
+
+/** One turn of the event loop — a macrotask, so the kernel's timer can run before what follows. */
+const nextTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
+ * Cooperation with the kernel's time budget (K-43): stop if the signal is aborted, and yield
+ * a turn first so a timer that is due gets to abort it. Without the yield a long parse would
+ * hold the thread and the timer would never run until it was over.
+ */
+async function checkpoint(signal: ExtractionSignal): Promise<void> {
+  if (signal.aborted) throw new ExtractionAborted('the extraction was aborted');
+  await nextTurn();
+  if (signal.aborted) throw new ExtractionAborted('the extraction was aborted');
+}
 
 /** Decode bytes as text: a UTF-16 BOM wins, then a declared charset, then UTF-8. */
 function decodeText(bytes: Uint8Array, charset: string | null): string {
@@ -169,30 +218,89 @@ function decodeEntities(text: string, named: Record<string, string>): string {
   });
 }
 
-/** Elements whose end reads as a line break when the tags are stripped. */
-const HTML_BLOCK =
-  /<\/?(?:p|div|br|li|ul|ol|tr|table|h[1-6]|section|article|header|footer|blockquote|pre|hr|title|dt|dd)\b[^>]*>/gi;
+/** Elements whose start or end reads as a line break when the tags are stripped. */
+const HTML_BLOCK = new Set([
+  'p', 'div', 'br', 'li', 'ul', 'ol', 'tr', 'table', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'section', 'article', 'header', 'footer', 'blockquote', 'pre', 'hr', 'title', 'dt', 'dd',
+]);
+/** Table cells: their boundary reads as a space, so neighbouring cells do not run together. */
+const HTML_CELL = new Set(['td', 'th']);
+/** Elements whose content is not text a reader sees, dropped with it. */
+const HTML_RAW = new Set(['script', 'style', 'template', 'noscript']);
+
+/** `<` starts a tag only before a letter, `/`, `!` or `?` — as a browser reads it. Else it is text. */
+const startsTag = (code: number): boolean =>
+  (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 47 || code === 33 || code === 63;
+
+/** The lower-cased element name of the tag whose body runs from `from` to `to`. */
+function tagNameOf(s: string, from: number, to: number): string {
+  let k = s[from] === '/' ? from + 1 : from;
+  const start = k;
+  while (k < to && /[A-Za-z0-9-]/.test(s[k]!)) k += 1;
+  return s.slice(start, k).toLowerCase();
+}
 
 /**
- * The text a reader of the page would see.
+ * The text a reader of the page would see — in ONE linear pass.
  *
- * Comments and `script`/`style`/`template`/`noscript` bodies go first, closed ones and then
- * an UNCLOSED one through to the end of the file: a browser treats everything after an
- * unclosed `<script>` as script, and a page cut off mid-script (or written carelessly) must
- * not have its source indexed as prose. The prefix decode above makes the cut-off case an
- * ordinary one, not a rare one.
+ * A scanner rather than regular expressions, deliberately. `<[^>]*>` and `<!--[\s\S]*?-->` look
+ * linear and are not: on a file of `<` with no `>` after it, or of `<!--` with no `-->`, every
+ * opener rescans to the end, and an 8 MiB page of them is quadratic work no time budget can
+ * cut short in time. Here every index moves forward only, so the work is bounded by the
+ * input — and a pass this long checks the kernel's signal as it goes.
+ *
+ * Comments and `script`/`style`/`template`/`noscript` bodies are dropped, and an UNCLOSED one
+ * runs to the end of the file: a browser treats everything after an unclosed `<script>` as
+ * script, and a page cut off mid-script (the prefix decode makes that ordinary) must not
+ * have its source indexed as prose. So does a tag cut off before its `>`.
  */
-function htmlText(html: string): string {
-  const stripped = html
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<(script|style|template|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
-    .replace(/<!--[\s\S]*$/, ' ')
-    // From the opener's NAME, not its `>`: a file cut off inside the tag has no `>` at all.
-    .replace(/<(script|style|template|noscript)\b[\s\S]*$/i, ' ')
-    .replace(HTML_BLOCK, '\n')
-    .replace(/<\/?(?:td|th)\b[^>]*>/gi, ' ')
-    .replace(/<[^>]*>/g, '');
-  return decodeEntities(stripped, NAMED_ENTITIES);
+async function htmlText(html: string, signal: ExtractionSignal): Promise<string> {
+  const out: string[] = [];
+  const n = html.length;
+  let i = 0;
+  let nextCheck = STRIDE;
+  while (i < n) {
+    if (i >= nextCheck) {
+      await checkpoint(signal);
+      nextCheck = i + STRIDE;
+    }
+    const lt = html.indexOf('<', i);
+    if (lt < 0) {
+      out.push(html.slice(i));
+      break;
+    }
+    out.push(html.slice(i, lt));
+    if (html.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt + 4);
+      if (end < 0) break;
+      out.push(' ');
+      i = end + 3;
+      continue;
+    }
+    if (!startsTag(html.charCodeAt(lt + 1))) {
+      out.push('<');
+      i = lt + 1;
+      continue;
+    }
+    const gt = html.indexOf('>', lt + 1);
+    if (gt < 0) break;
+    const name = tagNameOf(html, lt + 1, gt);
+    if (html[lt + 1] !== '/' && HTML_RAW.has(name)) {
+      // A literal search from here on: one pass, whether or not the closer exists.
+      const closer = new RegExp(`</${name}`, 'gi');
+      closer.lastIndex = gt + 1;
+      const found = closer.exec(html);
+      const end = found ? html.indexOf('>', found.index) : -1;
+      if (end < 0) break;
+      out.push(' ');
+      i = end + 1;
+      continue;
+    }
+    if (HTML_BLOCK.has(name)) out.push('\n');
+    else if (HTML_CELL.has(name)) out.push(' ');
+    i = gt + 1;
+  }
+  return decodeEntities(out.join(''), NAMED_ENTITIES);
 }
 
 // -- ZIP -----------------------------------------------------------------------------
@@ -273,7 +381,12 @@ interface InflateBudget {
  * not started. The read loop counts what the inflater actually produces and cancels the
  * stream the moment the budget is spent.
  */
-async function readEntry(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget): Promise<Uint8Array> {
+async function readEntry(
+  zip: Uint8Array,
+  entry: ZipEntry,
+  budget: InflateBudget,
+  signal: ExtractionSignal,
+): Promise<Uint8Array> {
   if (entry.flags & 0x1) throw new MalformedInput('the archive is encrypted');
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   const at = entry.localHeaderOffset;
@@ -301,6 +414,7 @@ async function readEntry(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget
   const reader = ds.readable.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let nextCheck = STRIDE;
   try {
     for (;;) {
       let next: { done: boolean; value?: Uint8Array };
@@ -317,6 +431,15 @@ async function readEntry(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget
         throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
       }
       chunks.push(chunk);
+      if (signal.aborted || total >= nextCheck) {
+        nextCheck = total + STRIDE;
+        try {
+          await checkpoint(signal);
+        } catch (err) {
+          await reader.cancel().catch(() => {});
+          throw err;
+        }
+      }
     }
   } finally {
     await writing;
@@ -333,6 +456,25 @@ async function readEntry(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget
 
 // -- OOXML ---------------------------------------------------------------------------
 
+/** The index of the first `>` at or after `from` that is outside a quoted value, or -1. */
+function tagEnd(s: string, from: number): number {
+  let quote = 0;
+  for (let k = from; k < s.length; k += 1) {
+    const c = s.charCodeAt(k);
+    if (quote !== 0) {
+      if (c === quote) quote = 0;
+    } else if (c === 34 || c === 39) {
+      quote = c;
+    } else if (c === 62) {
+      return k;
+    }
+  }
+  return -1;
+}
+
+/** Whitespace, `/` or `>` ends an XML name. */
+const endsName = (c: number): boolean => c === 32 || c === 9 || c === 10 || c === 13 || c === 47 || c === 62;
+
 /**
  * Text out of an OOXML part: the content of every element whose LOCAL name is `t`.
  *
@@ -341,26 +483,67 @@ async function readEntry(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget
  * strings a bare `t` — all of them text a person typed. `rPh` (phonetic guides in a
  * spreadsheet) is skipped whole, since its `t` repeats the cell it annotates. Paragraph-
  * like ends become newlines, so phrases do not run together across paragraphs.
+ *
+ * ONE linear pass, for the reason `htmlText` gives: a tokenizer regex with lazy `[\s\S]*?`
+ * or an alternation over quoted values rescans to the end from every unclosed `<![CDATA[`,
+ * `<!--` or quote, which a hostile part can repeat until the work is quadratic. Here every
+ * index moves forward only; content after a construct that never closes is not text.
  */
-function ooxmlText(xml: string): string {
+async function ooxmlText(xml: string, signal: ExtractionSignal): Promise<string> {
   const out: string[] = [];
   const BREAK_AFTER = new Set(['p', 'si', 'row', 'tr']);
   const BREAK = new Set(['br', 'cr']);
-  const TOKEN =
-    /<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!(?:[^>"']|"[^"]*"|'[^']*')*>|<(\/?)([^\s/>]+)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>|([^<]+)/g;
   let inText = 0;
   let skip = 0;
-  for (const m of xml.matchAll(TOKEN)) {
-    const [, cdata, closing, qname, , selfClosing, chars] = m;
-    if (chars !== undefined || cdata !== undefined) {
-      if (inText > 0 && skip === 0) out.push(cdata ?? decodeEntities(chars!, XML_ENTITIES));
+  const emit = (text: string) => {
+    if (inText > 0 && skip === 0) out.push(text);
+  };
+  const n = xml.length;
+  let i = 0;
+  let nextCheck = STRIDE;
+  while (i < n) {
+    if (i >= nextCheck) {
+      await checkpoint(signal);
+      nextCheck = i + STRIDE;
+    }
+    const lt = xml.indexOf('<', i);
+    if (lt < 0) {
+      emit(decodeEntities(xml.slice(i), XML_ENTITIES));
+      break;
+    }
+    if (lt > i) emit(decodeEntities(xml.slice(i, lt), XML_ENTITIES));
+    if (xml.startsWith('<![CDATA[', lt)) {
+      const end = xml.indexOf(']]>', lt + 9);
+      if (end < 0) break;
+      emit(xml.slice(lt + 9, end));
+      i = end + 3;
       continue;
     }
-    if (qname === undefined) continue; // comment, processing instruction, doctype
+    if (xml.startsWith('<!--', lt)) {
+      const end = xml.indexOf('-->', lt + 4);
+      if (end < 0) break;
+      i = end + 3;
+      continue;
+    }
+    if (xml.startsWith('<?', lt)) {
+      const end = xml.indexOf('?>', lt + 2);
+      if (end < 0) break;
+      i = end + 2;
+      continue;
+    }
+    const gt = tagEnd(xml, lt + 1);
+    if (gt < 0) break;
+    i = gt + 1;
+    if (xml[lt + 1] === '!') continue; // a declaration
+    const closing = xml[lt + 1] === '/';
+    const selfClosing = xml[gt - 1] === '/';
+    const nameStart = closing ? lt + 2 : lt + 1;
+    let nameEnd = nameStart;
+    while (nameEnd < gt && !endsName(xml.charCodeAt(nameEnd))) nameEnd += 1;
+    const qname = xml.slice(nameStart, nameEnd);
     const local = qname.slice(qname.indexOf(':') + 1);
     if (local === 'rPh') {
-      if (selfClosing) continue;
-      skip += closing ? -1 : 1;
+      if (!selfClosing) skip += closing ? -1 : 1;
       continue;
     }
     if (local === 't') {
@@ -411,6 +594,7 @@ async function ooxmlExtract(
   zip: Uint8Array,
   bounds: ExtractorBounds,
   maxTextBytes: number,
+  signal: ExtractionSignal,
 ): Promise<{ text: string; truncated: boolean }> {
   const entries = zipEntries(zip);
   if (!entries.some((e) => REQUIRED_PART[format].test(e.name))) {
@@ -429,7 +613,8 @@ async function ooxmlExtract(
       stoppedEarly = true;
       break;
     }
-    const text = ooxmlText(decoder.decode(await readEntry(zip, entry, budget)));
+    await checkpoint(signal);
+    const text = await ooxmlText(decoder.decode(await readEntry(zip, entry, budget, signal)), signal);
     pieces.push(text, '\n');
     collected += text.length;
   }
@@ -453,7 +638,9 @@ function extractWith(
     try {
       return await read(input);
     } catch (err) {
-      if (err instanceof MalformedInput || err instanceof ExtractionBoundExceeded) return { failed: err.message };
+      if (err instanceof MalformedInput || err instanceof ExtractionBoundExceeded || err instanceof ExtractionAborted) {
+        return { failed: err.message };
+      }
       throw err;
     }
   };
@@ -467,11 +654,12 @@ function extractWith(
 async function decodedPrefix(
   input: AttachmentExtractorInput,
   scanFactor: number,
-  toText: (decoded: string) => string,
+  toText: (decoded: string, signal: ExtractionSignal) => string | Promise<string>,
 ): Promise<{ text: string; truncated: boolean }> {
   const scan = input.maxTextBytes * scanFactor;
+  await checkpoint(input.signal);
   const decoded = decodeText(input.body.subarray(0, scan), parseContentType(input.contentType).charset);
-  return { text: toText(decoded), truncated: input.body.length > scan };
+  return { text: await toText(decoded, input.signal), truncated: input.body.length > scan };
 }
 
 /** `text/*` other than HTML — and `.txt`, `.md`, `.csv`, `.tsv` when the type says nothing. */
@@ -502,7 +690,7 @@ function ooxmlExtractor(format: 'docx' | 'xlsx' | 'pptx', mediaType: string, bou
     name: format,
     maxInputBytes: bounds.maxInputBytes,
     accepts: acceptsBy((type) => type === mediaType, [format]),
-    extract: extractWith(bounds, (input) => ooxmlExtract(format, input.body, bounds, input.maxTextBytes)),
+    extract: extractWith(bounds, (input) => ooxmlExtract(format, input.body, bounds, input.maxTextBytes, input.signal)),
   };
 }
 

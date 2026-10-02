@@ -6,7 +6,13 @@ import {
   runAttachmentExtractor,
   type ExtractionOutcome,
 } from '@substrat-run/kernel';
-import { DEFAULT_EXTRACTOR_BOUNDS, defaultAttachmentExtractors, type ExtractorBounds } from '../src/index.js';
+import {
+  DEFAULT_EXTRACTOR_BOUNDS,
+  defaultAttachmentExtractors,
+  docxExtractor,
+  htmlExtractor,
+  type ExtractorBounds,
+} from '../src/index.js';
 
 /**
  * The parsers, each through the kernel's own enforcement (`runAttachmentExtractor`) — so an
@@ -349,3 +355,87 @@ describe('docx, xlsx and pptx', () => {
   });
 });
 
+
+// -- bounded CPU, and the kernel's abort ------------------------------------------------
+
+describe('CPU bounded by construction: inputs that made the old regular expressions quadratic', () => {
+  /**
+   * Each of these is a megabyte or two of one opener that never closes. A regex that rescans
+   * from every opener to the end of the file does ~10^12 steps on them; a forward scan does one
+   * pass. The bound below is generous by orders of magnitude for a linear pass and far short of
+   * what the quadratic version needed.
+   */
+  const fast = async (label: string, run: () => Promise<unknown>) => {
+    const started = performance.now();
+    await run();
+    expect(performance.now() - started, label).toBeLessThan(2_000);
+  };
+
+  it('html: unclosed tags, comments, scripts and bare `<` by the million', async () => {
+    const mb = 2 * 1024 * 1024;
+    for (const [label, unit] of [
+      ['<a', '<a'],
+      ['<!--', '<!--'],
+      ['<script', '<script>'],
+      ['<p ', '<p '],
+      ['< (text)', 'x < y '],
+    ] as const) {
+      await fast(label, () => ex('text/html', enc(`<p>kept</p>${unit.repeat(Math.floor(mb / unit.length))}`)));
+    }
+  });
+
+  it('docx: unclosed CDATA, comments, processing instructions and quotes by the million', async () => {
+    const mb = 2 * 1024 * 1024;
+    for (const unit of ['<![CDATA[', '<!--', '<?pi', '<w:t a="']) {
+      const xml = docxXml(`<w:p><w:r><w:t>kept</w:t></w:r></w:p>${unit.repeat(Math.floor(mb / unit.length))}`);
+      await fast(unit, async () => {
+        const out = await ex(DOCX, await zip([{ name: 'word/document.xml', data: enc(xml) }]));
+        expect(indexedText(out)).toBe('kept');
+      });
+    }
+  });
+});
+
+describe("the kernel's abort: a bundled parser stops promptly on a large VALID file", () => {
+  const abortAfter = (ms: number) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), ms);
+    return controller.signal;
+  };
+  const input = (body: Uint8Array, contentType: string, signal: AbortSignal) => ({
+    body,
+    contentType,
+    filename: 'f',
+    maxTextBytes: 64 * 1024 * 1024, // no early stop: only the abort can end it sooner
+    signal,
+  });
+
+  it('docx: aborted mid-parse it answers within a few steps, long before the parse would have ended', async () => {
+    const para = '<w:p><w:r><w:t xml:space="preserve">the quick brown fox </w:t></w:r></w:p>';
+    const file = await zip([{ name: 'word/document.xml', data: enc(docxXml(para.repeat(300_000))) }]);
+    const docx = docxExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 64 * 1024 * 1024 });
+
+    const fullStart = performance.now();
+    const full = await docx.extract(input(file, DOCX, new AbortController().signal));
+    const fullMs = performance.now() - fullStart;
+    expect('text' in full).toBe(true);
+
+    const start = performance.now();
+    const aborted = await docx.extract(input(file, DOCX, abortAfter(10)));
+    const abortedMs = performance.now() - start;
+    expect(aborted).toEqual({ failed: 'the extraction was aborted' });
+    expect(abortedMs).toBeLessThan(10 + 150);
+    expect(abortedMs).toBeLessThan(fullMs);
+  });
+
+  it('html: the same, mid-scan; and an already-aborted signal stops before any work', async () => {
+    const page = enc(`<p>${'word <b>bold</b> '.repeat(400_000)}</p>`);
+    const html = htmlExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 1 });
+    const start = performance.now();
+    expect(await html.extract(input(page, 'text/html', abortAfter(5)))).toEqual({ failed: 'the extraction was aborted' });
+    expect(performance.now() - start).toBeLessThan(5 + 150);
+    const done = new AbortController();
+    done.abort();
+    expect(await html.extract(input(page, 'text/html', done.signal))).toEqual({ failed: 'the extraction was aborted' });
+  });
+});

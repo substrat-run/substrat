@@ -65,6 +65,10 @@ The bounds that protect the process doing the parsing live here:
   across every part of one file. An entry's declared size is never trusted, because a zip bomb
   is exactly a file that lies about it.
 
+Every parser here is a single forward scan over a capped input, so its worst case is bounded
+by the code, not the file. Text decodes at most 2 MiB. HTML decodes at most 8 MiB and scans
+it once. An office file inflates at most 16 MiB and scans each part once.
+
 The bounds that protect the scope are the kernel's, and they apply to whatever an extractor
 returns:
 
@@ -72,5 +76,12 @@ returns:
 - a time budget;
 - a check on the shape of the result.
 
-An extractor that throws, hangs or answers nonsense records `failed`, and the job doesn't
-retry it.
+An extractor that throws, answers nonsense or runs past the budget records `failed`, and the
+job doesn't retry it.
+
+The time budget is **cooperative**. When it runs out, the kernel aborts the `signal` it handed
+the extractor, and discards anything the extractor answers afterwards, so a late answer is
+never indexed. The bundled parsers check that signal, and yield to the event loop, between
+zip entries and every 256 KiB of progress, so they stop within one such step. Code that never
+yields cannot be stopped from inside the same isolate. A host that needs a hard deadline on
+an uncooperative extractor can run its extractors in a separate worker.

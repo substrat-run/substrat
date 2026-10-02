@@ -249,6 +249,7 @@ export type {
   AttachmentExtractorResult,
   AttachmentTextBounds,
   ExtractionOutcome,
+  ExtractionSignal,
 } from './attachment-extractor.js';
 export {
   FilterNotDeclared,

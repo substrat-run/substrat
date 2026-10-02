@@ -45,6 +45,11 @@ the kernel, so an oversized file is refused before a byte is fetched. `maxInflat
 the scope, 512 KiB of text per attachment, is the kernel's, and it applies to whatever an
 extractor returns.
 
+Every parser is a single forward scan over a capped input, so its CPU is bounded by the code
+rather than the file. The kernel's time budget is cooperative. The parsers check the `signal`
+they are handed and yield between zip entries and every 256 KiB of progress, so an aborted
+extraction stops within one such step.
+
 ## License
 
 AGPL-3.0-only.

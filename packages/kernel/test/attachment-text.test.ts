@@ -28,6 +28,7 @@ import {
   type AttachmentExtractor,
   type AttachmentTextBounds,
   type ExtractionOutcome,
+  type ExtractionSignal,
 } from '../src/attachment-extractor.js';
 import { JOB_RUN_DDL, type JobPassContext } from '../src/job-run.js';
 import { attachmentSha256, type ScopedSql, type SqlValue } from '../src/scope-host.js';
@@ -504,9 +505,84 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
     });
   });
 
-  it('records an extractor that does not answer within the budget as failed', async () => {
-    const hung = await runAttachmentExtractor(answering(() => new Promise(() => {})), input, bounds);
-    expect(hung).toEqual({ status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' did not answer within 50 ms" });
+  const timedOut = { status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' did not answer within 50 ms" };
+
+  it('records an extractor that does not answer within the budget as failed, and aborts its signal', async () => {
+    let seen: ExtractionSignal | undefined;
+    const hung = await runAttachmentExtractor(
+      answering(({ signal }) => {
+        seen = signal;
+        return new Promise(() => {});
+      }),
+      input,
+      bounds,
+    );
+    expect(hung).toEqual(timedOut);
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('discards the late answer of a SYNCHRONOUS extractor that ran past the budget — never indexed', async () => {
+    const busy = (ms: number) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        // a parser that never yields
+      }
+    };
+    const late = answering((async () => {
+      busy(120);
+      return { text: 'arrived after the deadline' };
+    }) as AttachmentExtractor['extract']);
+    expect(await runAttachmentExtractor(late, input, bounds)).toEqual(timedOut);
+    // The same for one that throws late: the deadline decides, not the throw.
+    const lateThrow = answering((() => {
+      busy(120);
+      throw new Error('late');
+    }) as unknown as AttachmentExtractor['extract']);
+    expect(await runAttachmentExtractor(lateThrow, input, bounds)).toEqual(timedOut);
+    // The twin: a synchronous extractor inside the budget is indexed.
+    const quick = answering((async () => {
+      busy(5);
+      return { text: 'in time' };
+    }) as AttachmentExtractor['extract']);
+    expect(await runAttachmentExtractor(quick, input, bounds)).toMatchObject({ status: 'indexed', text: 'in time' });
+  });
+
+  it('ignores what an aborted async extractor answers later — a resolution or a rejection', async () => {
+    const started = Date.now();
+    let resolvedAt = 0;
+    const slow = answering(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => {
+            resolvedAt = Date.now();
+            resolve({ text: 'too late' });
+          }, 200),
+        ),
+    );
+    expect(await runAttachmentExtractor(slow, input, bounds)).toEqual(timedOut);
+    const answeredAt = Date.now();
+    expect(answeredAt - started).toBeLessThan(200);
+    // A later rejection is swallowed, not an unhandled rejection that fails the suite.
+    const rejectsLate = answering(() => new Promise((_, reject) => setTimeout(() => reject(new Error('late')), 100)));
+    expect(await runAttachmentExtractor(rejectsLate, input, bounds)).toEqual(timedOut);
+    await new Promise((r) => setTimeout(r, 250));
+    expect(resolvedAt).toBeGreaterThan(answeredAt);
+  });
+
+  it('lets a COOPERATIVE extractor see the abort and stop', async () => {
+    let turns = 0;
+    let stoppedBy: string | undefined;
+    const cooperative = answering(async ({ signal }) => {
+      while (!signal.aborted) {
+        turns += 1;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      stoppedBy = 'the signal';
+      return { failed: 'aborted' };
+    });
+    expect(await runAttachmentExtractor(cooperative, input, bounds)).toEqual(timedOut);
+    await new Promise((r) => setTimeout(r, 10));
+    expect([stoppedBy, turns > 0]).toEqual(['the signal', true]);
   });
 
   it('records a result of the wrong shape as failed — and a claimed failure, cut short', async () => {
