@@ -70,13 +70,13 @@
  * delete), and a trigger on `_substrat_attachments` removes the text row with it, which
  * takes its index entries out through the index's own triggers.
  */
-import type { AttachmentRecord, EntityRef, ModuleId } from '@substrat-run/contracts';
-import type { JobHandler, JobRunKey } from './job-run.js';
-import { attachmentSha256, type ScopedSql, type SqlValue } from './scope-host.js';
+import { utf8Length, type AttachmentRecord, type EntityRef, type ModuleId } from '@substrat-run/contracts';
+import type { JobHandler } from './job-run.js';
+import { attachmentSha256, type ScopedSql } from './scope-host.js';
 import {
   DEFAULT_EXTRACTION_BOUNDS,
   extractAttachmentText,
-  extractorFor,
+  extractionPlan,
   type ExtractionBounds,
   type ExtractionOutcome,
 } from './attachment-extract.js';
@@ -107,6 +107,12 @@ export function isAttachmentTextRun(run: { module_id: string; job: string }): bo
  * row however it is written, and the fourth removes the row when its attachment goes.
  * Interpolated into each adapter's `KERNEL_DDL` after `_substrat_attachments`, which the
  * fourth trigger names.
+ *
+ * **Only a body reaches the index.** Most rows never carry one — every upload starts
+ * `pending`, and an image or a PDF stays bodiless — so the index triggers are guarded on
+ * it: a NULL body would index no term and still cost the index's own bookkeeping writes,
+ * inside the upload's transaction. An update that leaves the body as it was (a replayed
+ * extraction) re-tokenizes nothing.
  */
 export const ATTACHMENT_TEXT_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_search__attachment_text (
@@ -133,19 +139,20 @@ export const ATTACHMENT_TEXT_DDL = `
     body, content='_substrat_search__attachment_text', content_rowid='rid', tokenize='unicode61'
   );
   CREATE TRIGGER IF NOT EXISTS _substrat_search__attachment_text_ai
-    AFTER INSERT ON _substrat_search__attachment_text BEGIN
+    AFTER INSERT ON _substrat_search__attachment_text WHEN new.body IS NOT NULL BEGIN
     INSERT INTO _substrat_search__attachments(rowid, body) VALUES (new.rid, new.body);
   END;
   CREATE TRIGGER IF NOT EXISTS _substrat_search__attachment_text_ad
-    AFTER DELETE ON _substrat_search__attachment_text BEGIN
+    AFTER DELETE ON _substrat_search__attachment_text WHEN old.body IS NOT NULL BEGIN
     INSERT INTO _substrat_search__attachments(_substrat_search__attachments, rowid, body)
       VALUES ('delete', old.rid, old.body);
   END;
   CREATE TRIGGER IF NOT EXISTS _substrat_search__attachment_text_au
-    AFTER UPDATE ON _substrat_search__attachment_text BEGIN
+    AFTER UPDATE ON _substrat_search__attachment_text WHEN old.body IS NOT new.body BEGIN
     INSERT INTO _substrat_search__attachments(_substrat_search__attachments, rowid, body)
-      VALUES ('delete', old.rid, old.body);
-    INSERT INTO _substrat_search__attachments(rowid, body) VALUES (new.rid, new.body);
+      SELECT 'delete', old.rid, old.body WHERE old.body IS NOT NULL;
+    INSERT INTO _substrat_search__attachments(rowid, body)
+      SELECT new.rid, new.body WHERE new.body IS NOT NULL;
   END;
   CREATE TRIGGER IF NOT EXISTS _substrat_attachments_text_ad
     AFTER DELETE ON _substrat_attachments BEGIN
@@ -169,33 +176,21 @@ export interface AttachmentTextState {
   updatedAt: string;
 }
 
-/**
- * A synchronous SQL handle, the same two-way shape `RedactionSql` has: a read returns its
- * rows, a write returns nothing. Both adapters' drivers are synchronous (better-sqlite3,
- * a Durable Object's `SqlStorage`), so the writes below run inside whatever transaction the
- * caller already holds — the upload's, or a restore's.
+/*
+ * The writes below take the kernel's own UNGUARDED spine handle (`spineSql` on the pure
+ * adapter, `doSpineSql` on the DO). Both drivers are synchronous, so each write runs inside
+ * whatever transaction the caller already holds — the upload's, or a restore's.
  */
-export type AttachmentTextSql = (sql: string, params: readonly SqlValue[]) => Record<string, unknown>[];
 
 const RUN_PAYLOAD_KEY = 'attachmentId';
 
 /**
- * Queue one attachment's extraction: a `pending` row and a coalesced run, both written
- * through `sql` inside the caller's transaction.
- *
- * The run is inserted only when no LIVE run exists for the attachment — the driver's own
+ * Start one attachment's extraction run unless a LIVE one exists — the driver's own
  * coalescing rule (`startJobRun`), as one statement, so a re-queue joins an extraction in
- * flight rather than racing it. An existing text row is left as it is: re-extracting an
- * indexed attachment keeps its current text searchable until the new outcome replaces it.
+ * flight rather than racing it.
  */
-export function enqueueAttachmentText(sql: AttachmentTextSql, attachmentId: string, runId: string, at: string): void {
-  sql(
-    `INSERT INTO _substrat_search__attachment_text (attachment_id, status, updated_at)
-       VALUES (?, 'pending', ?)
-       ON CONFLICT (attachment_id) DO NOTHING`,
-    [attachmentId, at],
-  );
-  sql(
+function startAttachmentTextRun(sql: ScopedSql, attachmentId: string, runId: string, at: string): void {
+  sql.exec(
     `INSERT INTO _substrat_job_runs
        (id, module_id, job, instance, payload, subject_id, status, cursor, counters, attempts,
         last_error, started_at, updated_at, next_attempt_at, ended_at)
@@ -219,9 +214,19 @@ export function enqueueAttachmentText(sql: AttachmentTextSql, attachmentId: stri
   );
 }
 
-/** The coalescing key of one attachment's extraction run. */
-export function attachmentTextRunKey(attachmentId: string): JobRunKey {
-  return { moduleId: ATTACHMENT_TEXT_MODULE, job: ATTACHMENT_TEXT_JOB, instance: attachmentId };
+/**
+ * Queue one attachment's extraction: a `pending` row and a coalesced run, inside the
+ * caller's transaction. An existing text row is left as it is: re-extracting an indexed
+ * attachment keeps its current text searchable until the new outcome replaces it.
+ */
+export function enqueueAttachmentText(sql: ScopedSql, attachmentId: string, runId: string, at: string): void {
+  sql.exec(
+    `INSERT INTO _substrat_search__attachment_text (attachment_id, status, updated_at)
+       VALUES (?, 'pending', ?)
+       ON CONFLICT (attachment_id) DO NOTHING`,
+    [attachmentId, at],
+  );
+  startAttachmentTextRun(sql, attachmentId, runId, at);
 }
 
 /**
@@ -233,19 +238,17 @@ export function attachmentTextRunKey(attachmentId: string): JobRunKey {
  * the write are one statement, and the return says which happened.
  *
  * Idempotent: the same outcome written twice leaves one row and one set of index entries,
- * because an upsert on a present row is an UPDATE, whose trigger deletes the old terms
- * before it inserts the new ones.
+ * because an upsert on a present row is an UPDATE, whose trigger replaces the old terms
+ * with the new ones (and touches nothing when the body did not change).
  */
 export function recordAttachmentText(
-  sql: AttachmentTextSql,
+  sql: ScopedSql,
   attachmentId: string,
   outcome: ExtractionOutcome,
   at: string,
 ): boolean {
-  const exists = sql('SELECT 1 AS present FROM _substrat_attachments WHERE id = ?', [attachmentId]).length > 0;
-  if (!exists) return false;
   const indexed = outcome.status === 'indexed' ? outcome : null;
-  sql(
+  const { changes } = sql.exec(
     `INSERT INTO _substrat_search__attachment_text
        (attachment_id, status, extractor, body, body_bytes, truncated, detail, updated_at)
      SELECT ?, ?, ?, ?, ?, ?, ?, ?
@@ -266,12 +269,8 @@ export function recordAttachmentText(
       attachmentId,
     ],
   );
-  return true;
+  return changes > 0;
 }
-
-declare const TextEncoder: new () => { encode(input: string): Uint8Array };
-const encoder = new TextEncoder();
-const utf8Length = (s: string): number => encoder.encode(s).length;
 
 /**
  * After a restore or a fork: drop text whose attachment the load did not bring back, and
@@ -286,26 +285,25 @@ const utf8Length = (s: string): number => encoder.encode(s).length;
  * outcome is a `failed` row that says so.
  */
 export function reconcileAttachmentText(
-  sql: AttachmentTextSql,
+  sql: ScopedSql,
   mintId: () => string,
   at: string,
 ): { removed: number; queued: number } {
-  const orphans = sql(
-    `SELECT attachment_id FROM _substrat_search__attachment_text
-      WHERE attachment_id NOT IN (SELECT id FROM _substrat_attachments)`,
-    [],
-  );
-  for (const row of orphans) {
-    sql('DELETE FROM _substrat_search__attachment_text WHERE attachment_id = ?', [row.attachment_id as string]);
-  }
-  const missing = sql(
-    `SELECT id FROM _substrat_attachments
+  const removed = sql.query(
+    `DELETE FROM _substrat_search__attachment_text
+      WHERE attachment_id NOT IN (SELECT id FROM _substrat_attachments)
+     RETURNING attachment_id`,
+  ).length;
+  const queued = sql.query<{ attachment_id: string }>(
+    `INSERT INTO _substrat_search__attachment_text (attachment_id, status, updated_at)
+     SELECT id, 'pending', ? FROM _substrat_attachments
       WHERE id NOT IN (SELECT attachment_id FROM _substrat_search__attachment_text)
-      ORDER BY id`,
-    [],
+     RETURNING attachment_id`,
+    [at],
   );
-  for (const row of missing) enqueueAttachmentText(sql, row.id as string, mintId(), at);
-  return { removed: orphans.length, queued: missing.length };
+  // One run each: a run id is a ULID, which SQL cannot mint.
+  for (const { attachment_id } of queued) startAttachmentTextRun(sql, attachment_id, mintId(), at);
+  return { removed, queued: queued.length };
 }
 
 /**
@@ -471,6 +469,15 @@ export function attachmentTextJob(
   source: AttachmentTextSource,
   bounds: ExtractionBounds = DEFAULT_EXTRACTION_BOUNDS,
 ): JobHandler {
+  const outcomeFor = async (record: AttachmentRecord): Promise<ExtractionOutcome> => {
+    const plan = extractionPlan(record.contentType, record.filename, record.size, bounds);
+    if ('outcome' in plan) return plan.outcome;
+    const failed = (detail: string): ExtractionOutcome => ({ status: 'failed', extractor: plan.extractor, detail });
+    const body = await source.bytes(record);
+    if (body === null) return failed('the bytes are missing from the blob store');
+    if ((await attachmentSha256(body)) !== record.sha256) return failed('the bytes do not match the recorded sha256');
+    return extractAttachmentText({ contentType: record.contentType, filename: record.filename, body }, bounds);
+  };
   return async (pass) => {
     const attachmentId = attachmentIdOf(pass.payload);
     const record = await source.record(attachmentId);
@@ -478,33 +485,7 @@ export function attachmentTextJob(
       pass.count('gone');
       return { done: true };
     }
-    let outcome: ExtractionOutcome;
-    const chosen = extractorFor(record.contentType, record.filename);
-    if ('unsupported' in chosen) {
-      outcome = { status: 'unsupported', detail: chosen.unsupported };
-    } else if (record.size > bounds.maxInputBytes) {
-      outcome = {
-        status: 'failed',
-        extractor: chosen.extractor,
-        detail: `the file is ${record.size} bytes, over the ${bounds.maxInputBytes}-byte extraction bound`,
-      };
-    } else {
-      const body = await source.bytes(record);
-      if (body === null) {
-        outcome = { status: 'failed', extractor: chosen.extractor, detail: 'the bytes are missing from the blob store' };
-      } else if ((await attachmentSha256(body)) !== record.sha256) {
-        outcome = {
-          status: 'failed',
-          extractor: chosen.extractor,
-          detail: 'the bytes do not match the recorded sha256',
-        };
-      } else {
-        outcome = await extractAttachmentText(
-          { contentType: record.contentType, filename: record.filename, body },
-          bounds,
-        );
-      }
-    }
+    const outcome = await outcomeFor(record);
     const kept = await source.write(attachmentId, outcome);
     pass.count(kept ? outcome.status : 'gone');
     return { done: true };

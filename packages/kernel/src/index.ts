@@ -209,7 +209,6 @@ export {
   ATTACHMENT_TEXT_MODULE,
   attachmentSearchQuery,
   attachmentTextJob,
-  attachmentTextRunKey,
   enqueueAttachmentText,
   isAttachmentTextRun,
   readAttachmentText,
@@ -220,13 +219,13 @@ export {
 export type {
   AttachmentSearchCandidate,
   AttachmentTextSource,
-  AttachmentTextSql,
   AttachmentTextState,
   AttachmentTextStatus,
 } from './attachment-text.js';
 export {
   DEFAULT_EXTRACTION_BOUNDS,
   extractAttachmentText,
+  extractionPlan,
   extractorFor,
   truncateUtf8,
 } from './attachment-extract.js';

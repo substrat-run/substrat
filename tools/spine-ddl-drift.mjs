@@ -416,23 +416,20 @@ function indexDrift(a, b) {
   return out;
 }
 
-/** Foreign-key drift between one table built two ways. */
-function fkDrift(a, b) {
+/** Drift between two sets of rendered facts about one table — what either side has alone. */
+const setDrift = (noun, verb) => (a, b) => {
   const out = [];
   const [sa, sb] = [new Set(a), new Set(b)];
-  for (const d of sa) if (!sb.has(d)) out.push(`foreign key ${d} is declared by the first side only`);
-  for (const d of sb) if (!sa.has(d)) out.push(`foreign key ${d} is declared by the second side only`);
+  for (const d of sa) if (!sb.has(d)) out.push(`${noun} ${d} is ${verb} by the first side only`);
+  for (const d of sb) if (!sa.has(d)) out.push(`${noun} ${d} is ${verb} by the second side only`);
   return out;
-}
+};
+
+/** Foreign-key drift between one table built two ways. */
+const fkDrift = setDrift('foreign key', 'declared');
 
 /** Trigger drift on one table built two ways — a missing trigger, or one whose text differs. */
-function triggerDrift(a = [], b = []) {
-  const out = [];
-  const [sa, sb] = [new Set(a), new Set(b)];
-  for (const d of sa) if (!sb.has(d)) out.push(`trigger ${d} is built by the first side only`);
-  for (const d of sb) if (!sa.has(d)) out.push(`trigger ${d} is built by the second side only`);
-  return out;
-}
+const triggerDrift = setDrift('trigger', 'built');
 
 /**
  * Prove the comparison still refuses, on every run, before trusting it to pass.

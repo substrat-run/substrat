@@ -190,6 +190,9 @@ function decodeText(bytes: Uint8Array, charset: string | null): string {
 
 // -- HTML ----------------------------------------------------------------------------
 
+/** The five entities XML itself defines — all an OOXML part may use by name. */
+const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
 /** The Latin-1 named entities, plus the XML five. Enough for prose in western languages. */
 const NAMED_ENTITIES: Record<string, string> = (() => {
   const latin1 =
@@ -200,7 +203,7 @@ const NAMED_ENTITIES: Record<string, string> = (() => {
     'szlig agrave aacute acirc atilde auml aring aelig ccedil egrave eacute ecirc euml igrave iacute ' +
     'icirc iuml eth ntilde ograve oacute ocirc otilde ouml divide oslash ugrave uacute ucirc uuml ' +
     'yacute thorn yuml';
-  const map: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+  const map: Record<string, string> = { ...XML_ENTITIES };
   latin1.split(' ').forEach((name, i) => {
     map[name] = String.fromCharCode(0xa0 + i);
   });
@@ -229,8 +232,6 @@ function decodeEntities(text: string, named: Record<string, string>): string {
     return named[ref] ?? whole;
   });
 }
-
-const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 
 /** Elements whose end reads as a line break when the tags are stripped. */
 const HTML_BLOCK =
@@ -488,6 +489,31 @@ async function ooxmlExtract(
 }
 
 /**
+ * What can be decided before a byte is read: the extractor to run, or the outcome there
+ * will be without one — a type nothing reads, or a size over the input bound. The job
+ * asks this with the RECORDED size, so such a file is never fetched at all.
+ */
+export function extractionPlan(
+  contentType: string,
+  filename: string,
+  size: number,
+  bounds: ExtractionBounds,
+): { extractor: AttachmentExtractor } | { outcome: ExtractionOutcome } {
+  const chosen = extractorFor(contentType, filename);
+  if ('unsupported' in chosen) return { outcome: { status: 'unsupported', detail: chosen.unsupported } };
+  if (size > bounds.maxInputBytes) {
+    return {
+      outcome: {
+        status: 'failed',
+        extractor: chosen.extractor,
+        detail: `the file is ${size} bytes, over the ${bounds.maxInputBytes}-byte extraction bound`,
+      },
+    };
+  }
+  return chosen;
+}
+
+/**
  * Extract an attachment's text.
  *
  * Never throws for anything the FILE did: a damaged archive, a lying header, a bound
@@ -498,16 +524,9 @@ export async function extractAttachmentText(
   input: { contentType: string; filename: string; body: Uint8Array },
   bounds: ExtractionBounds = DEFAULT_EXTRACTION_BOUNDS,
 ): Promise<ExtractionOutcome> {
-  const chosen = extractorFor(input.contentType, input.filename);
-  if ('unsupported' in chosen) return { status: 'unsupported', detail: chosen.unsupported };
-  const { extractor } = chosen;
-  if (input.body.length > bounds.maxInputBytes) {
-    return {
-      status: 'failed',
-      extractor,
-      detail: `the file is ${input.body.length} bytes, over the ${bounds.maxInputBytes}-byte extraction bound`,
-    };
-  }
+  const plan = extractionPlan(input.contentType, input.filename, input.body.length, bounds);
+  if ('outcome' in plan) return plan.outcome;
+  const { extractor } = plan;
   try {
     let result: { text: string; truncated: boolean };
     if (extractor === 'text' || extractor === 'html') {

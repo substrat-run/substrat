@@ -139,7 +139,6 @@ import {
   reconcileAttachmentText,
   recordAttachmentText,
   type AttachmentSearchCandidate,
-  type AttachmentTextSql,
   type ExtractionOutcome,
   IDEMPOTENCY_DDL,
   REFUSALS_DDL,
@@ -2890,7 +2889,7 @@ export function defineScopeDO(
             });
             // #1575: queue its text extraction in the same transaction — a `pending` row
             // and a job run. Nothing is extracted here, so nothing here can fail the upload.
-            enqueueAttachmentText(this.attachmentTextSql(), parsed.id, ulid(), new Date().toISOString());
+            enqueueAttachmentText(doSpineSql(this.sql), parsed.id, ulid(), new Date().toISOString());
           });
         } catch (err) {
           if (err instanceof PermissionDenied) {
@@ -3068,11 +3067,6 @@ export function defineScopeDO(
 
     // -- attachment text (#1575) ---------------------------------------------------
 
-    /** The kernel's attachment-text SQL over this DO's storage — synchronous, like the driver. */
-    private attachmentTextSql(): AttachmentTextSql {
-      return (sql, params) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[];
-    }
-
     /**
      * Extracted-text search, newest first. Each candidate passes the check `open` makes —
      * the target's read key on the owning entity, as this subject — before the limit, so
@@ -3135,7 +3129,7 @@ export function defineScopeDO(
       await this.ensureMigrations();
       return this.queue.enqueue(async () =>
         this.ctx.storage.transactionSync(() =>
-          recordAttachmentText(this.attachmentTextSql(), attachmentId, outcome, new Date().toISOString()),
+          recordAttachmentText(doSpineSql(this.sql), attachmentId, outcome, new Date().toISOString()),
         ),
       );
     }
@@ -4951,7 +4945,7 @@ export function defineScopeDO(
         // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
         // text of attachments the dump did not bring back, and queue extraction for those
         // it brought back without text — the bytes decide what that run finds.
-        reconcileAttachmentText(this.attachmentTextSql(), ulid, new Date().toISOString());
+        reconcileAttachmentText(doSpineSql(this.sql), ulid, new Date().toISOString());
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
         if (destScopeId) {

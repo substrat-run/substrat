@@ -13,7 +13,6 @@ import {
   reconcileAttachmentText,
   recordAttachmentText,
   type AttachmentTextSource,
-  type AttachmentTextSql,
 } from '../src/attachment-text.js';
 import {
   DEFAULT_EXTRACTION_BOUNDS,
@@ -24,6 +23,7 @@ import {
   type ExtractionOutcome,
 } from '../src/attachment-extract.js';
 import { JOB_RUN_DDL, type JobPassContext } from '../src/job-run.js';
+import { attachmentSha256, type ScopedSql, type SqlValue } from '../src/scope-host.js';
 import { searchMatchExpression } from '../src/search-index.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -345,11 +345,12 @@ function scope() {
   db.exec(ATTACHMENTS_DDL);
   db.exec(JOB_RUN_DDL);
   db.exec(ATTACHMENT_TEXT_DDL);
-  const sql: AttachmentTextSql = (q, params) => {
-    const stmt = db.prepare(q);
-    if (/^\s*SELECT/i.test(q)) return stmt.all(...(params as never[])) as Record<string, unknown>[];
-    stmt.run(...(params as never[]));
-    return [];
+  // The kernel's spine handle shape, over node SQLite — what `spineSql` is over better-sqlite3.
+  const sql: ScopedSql = {
+    query: <T>(q: string, params: readonly SqlValue[] = []) => db.prepare(q).all(...(params as never[])) as T[],
+    exec: (q: string, params: readonly SqlValue[] = []) => ({
+      changes: Number(db.prepare(q).run(...(params as never[])).changes),
+    }),
   };
   const attach = (id: string, entityId = 'e1') =>
     db
@@ -363,7 +364,7 @@ function scope() {
       'SELECT count(*) AS n FROM _substrat_search__attachments WHERE _substrat_search__attachments MATCH ?',
       searchMatchExpression(word, 'prefix'),
     );
-  const ctx = { sql: { query: <T>(q: string, params: readonly unknown[] = []) => db.prepare(q).all(...(params as never[])) as T[] } };
+  const ctx = { sql };
   return { db, sql, attach, one, count, matches, ctx };
 }
 
@@ -521,15 +522,13 @@ describe('readableAttachmentIds', () => {
 // -- the job -------------------------------------------------------------------------
 
 describe('attachmentTextJob', () => {
-  const sha = async (b: Uint8Array) =>
-    [...new Uint8Array(await crypto.subtle.digest('SHA-256', b))].map((x) => x.toString(16).padStart(2, '0')).join('');
   const recordOf = async (over: Partial<AttachmentRecord>, body = enc('the kinkajou note')): Promise<AttachmentRecord> => ({
     id: 'A1',
     entity: { entityType: 'item', entityId: 'e1' },
     filename: 'n.txt',
     contentType: 'text/plain',
     size: body.length,
-    sha256: await sha(body),
+    sha256: await attachmentSha256(body),
     visibility: 'internal',
     createdBy: 'p',
     createdAt: '2026-10-01T00:00:00.000Z' as AttachmentRecord['createdAt'],

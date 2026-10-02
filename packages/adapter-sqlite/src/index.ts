@@ -414,7 +414,6 @@ import {
   reconcileAttachmentText,
   recordAttachmentText,
   type AttachmentSearchCandidate,
-  type AttachmentTextSql,
   entityVersionQuery,
   entityVersionOf,
   assertIfMatch,
@@ -3188,7 +3187,7 @@ export class SqliteScopeHost implements ScopeHost {
             });
             // #1575: queue its text extraction in the same transaction — a `pending` row
             // and a job run. Nothing is extracted here, so nothing here can fail the upload.
-            enqueueAttachmentText(attachmentTextSqlOf(rt.db), record.id, ulid(), this.clock());
+            enqueueAttachmentText(spineSql(rt.db), record.id, ulid(), this.clock());
             return record;
           });
         } catch (err) {
@@ -3427,7 +3426,7 @@ export class SqliteScopeHost implements ScopeHost {
       // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
       // text of attachments the dump did not bring back, and queue extraction for those
       // it brought back without text — the bytes decide what that run finds.
-      reconcileAttachmentText(attachmentTextSqlOf(db), ulid, this.clock());
+      reconcileAttachmentText(spineSql(db), ulid, this.clock());
       // Re-point scope-level grants at the scope they now live in. They are written as
       // `object = scope:<scopeId>`, so a fork, a restore into a different scope, or #286's
       // migration onto a stable script name all land rows naming a scope that is not this
@@ -5183,7 +5182,7 @@ export class SqliteScopeHost implements ScopeHost {
         return (await store.get(attachmentBlobKey(rt.scopeId, record.id)))?.body ?? null;
       },
       write: (attachmentId, outcome) =>
-        rt.actor.enqueue(() => recordAttachmentText(attachmentTextSqlOf(rt.db), attachmentId, outcome, this.clock())),
+        rt.actor.enqueue(() => recordAttachmentText(spineSql(rt.db), attachmentId, outcome, this.clock())),
     });
   }
 
@@ -11441,16 +11440,6 @@ function spineSql(db: Database.Database): ScopedSql {
       const info = db.prepare(sql).run(...params);
       return { changes: info.changes };
     },
-  };
-}
-
-/** The kernel's attachment-text writes (#1575), on the connection the caller's transaction holds. */
-function attachmentTextSqlOf(db: Database.Database): AttachmentTextSql {
-  return (sql, params) => {
-    const stmt = db.prepare(sql);
-    if (stmt.reader) return stmt.all(...params) as Record<string, unknown>[];
-    stmt.run(...params);
-    return [];
   };
 }
 
