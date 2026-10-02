@@ -6448,10 +6448,10 @@ const operations = {
         : sideThread
           ? 'a third party on the conversation they were forwarded'
           : input.conversationId
-          ? 'the conversation it named'
-          : threaded
-            ? 'the thread it replied to'
-            : 'a new conversation';
+            ? 'the conversation it named'
+            : threaded
+              ? 'the thread it replied to'
+              : 'a new conversation';
     // The spam filter (#1088), for a conversation this mail OPENED — a new one or a
     // follow-up. Mail into a thread the desk already holds is not re-judged, in either
     // queue. Read before the message is written, so the repeat count is of OTHER mail.
@@ -6910,12 +6910,11 @@ const operations = {
    * Nobody holds `conversation:read-own` scope-wide, so this is a per-row proof walk
    * rather than a `WHERE contact_id = ?`. The distinction matters: a WHERE clause is
    * a promise the author remembered to keep; the walk is one the kernel keeps.
-   */
-  /**
-   * Two proofs per row, and either is enough: the kernel's walk (the caller's own
-   * conversation, through the parent edge) or a CC's (`readableAsCc`, #1086). The CC proof
-   * is read once for the whole page, and only when some row on it was not the caller's
-   * own — a customer with no CCs anywhere pays one query, the same as before.
+   *
+   * Two proofs per row since #1086, and either is enough: the walk (the caller's own
+   * conversation, through the parent edge) or a CC's (`readableAsCc`). The CC proof is read
+   * once for the whole page, and only when some row on it was not the caller's own — so a
+   * customer whose every conversation is their own pays nothing more than before.
    */
   'ticket0/my-conversations': async (ctx, input) => {
     let batch: string[] = [];
