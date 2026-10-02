@@ -31,6 +31,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  dataSubjectId,
   errorCodeOf,
   permissionKey,
   platformActorId,
@@ -41,7 +42,7 @@ import {
   IDEMPOTENCY_REUSED,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import { REDACTED_INTENT_MARKER, ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { idempotencyMod } from './modules.js';
 
@@ -291,6 +292,57 @@ export function idempotencyContractSuite(
       expect(tags).toHaveLength(2);
       expect(tags[1]).toBe(tags[0]);
       expect(tags[0]).not.toBeNull();
+    });
+
+    describe('subject erasure (#1632)', () => {
+      /** Every recorded row, keyed by the client's key — raw, as the dump carries it. */
+      const ledger = async (): Promise<Map<string, Record<string, unknown>>> => {
+        const dump = await host.admin.exportScope(staff, t1, s1);
+        const table = dump.tables.find((t) => t.name === '_substrat_idempotency')!;
+        return new Map(
+          table.rows.map((r) => {
+            const row = Object.fromEntries(table.columns.map((c, i) => [c, r[i]]));
+            return [row['key'] as string, row];
+          }),
+        );
+      };
+
+      it('redacts a recorded response naming the subject, and refuses to replay it', async () => {
+        // A recorded response is an operation's return value, kept for a day — and an
+        // operation that returns a person's record returns their id with it.
+        const erased = dataSubjectId.parse(ulid());
+        const spared = dataSubjectId.parse(ulid());
+        const mine = `erase-${ulid()}`;
+        const theirs = `spare-${ulid()}`;
+        await create('erasure-a', mine, `contact ${erased} (Anna Ek)`);
+        const kept = await create('erasure-b', theirs, `contact ${spared} (Bo Lund)`);
+        const before = await ledger();
+        const ran = await runs();
+
+        await host.admin.shredSubject(staff, t1, s1, erased);
+
+        const after = await ledger();
+        const row = after.get(mine)!;
+        expect(JSON.stringify(row)).not.toContain('Anna Ek');
+        expect(JSON.parse(row['result'] as string)).toEqual({
+          [REDACTED_INTENT_MARKER]: expect.objectContaining({ reason: 'subject-erasure', subjectId: erased }),
+        });
+        // The envelope stays: the key is still recorded, for the same request, at the same time.
+        expect({ ...row, result: null }).toEqual({ ...before.get(mine)!, result: null });
+        // The positive twin: another subject's recorded response is exactly what it was.
+        expect(after.get(theirs)).toEqual(before.get(theirs));
+
+        // A retry is refused — never re-executed, and never answered with the tombstone.
+        await expect(create('erasure-a', mine, `contact ${erased} (Anna Ek)`)).rejects.toSatisfy(
+          (err: unknown) => errorCodeOf(err) === 'conflict' && reasonOf(err) === IDEMPOTENCY_REPLAY_UNAVAILABLE,
+        );
+        expect(await create('erasure-b', theirs, `contact ${spared} (Bo Lund)`)).toEqual(kept);
+        expect(await runs()).toBe(ran);
+
+        // Idempotent: the tombstone names the subject, and is recognised rather than re-stamped.
+        await host.admin.shredSubject(staff, t1, s1, erased);
+        expect(await ledger()).toEqual(after);
+      });
     });
 
     it('does not report a version for a replay of an unguarded operation', async () => {

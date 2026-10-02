@@ -25,13 +25,16 @@ import {
   type PlatformRequestId,
   type PrincipalId,
   type ScopeDump,
+  SWEEP_RUNS_KIND,
   type ScopeId,
   type TenantId,
   type ModelUsageLine,
 } from '@substrat-run/contracts';
 import {
   isSearchIndexTable,
+  platformIntentFailureMessage,
   REDACTED_DELIVERY_NOTE,
+  REDACTED_FAILURE_NOTE,
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
   ulid,
@@ -2681,6 +2684,213 @@ export function scopeHostContractSuite(
           expect((await host.admin.shredSubject(staff, t1, s1, erased)).intentsRedacted).toBe(0);
           const twice = (await journal(kind)).find((r) => r.id === id)!;
           expect(twice).toEqual(once);
+        });
+
+        // -- the free-text copies (#1632) ---------------------------------------
+        //
+        // The directory keeps failure text about a scope: an ops failure's message, its
+        // issue's newest exemplar, a sweep record's error. The drain's failure row quotes the
+        // intent it gave up on, so a row about a tombstoned intent is a copy of redacted text;
+        // anything else is reached only when it names the subject's id.
+        describe('the directory\'s failure text, and a queued sweep record (#1632)', () => {
+          const op = (name: string) => `intent.erasure-${name}-${ulid()}`;
+          const fail = (
+            operation: string,
+            message: string,
+            tenant: TenantId | null = t1,
+            scope: ScopeId | null = s1,
+          ) =>
+            host.admin.recordOpsFailure({
+              actor: staff,
+              operation,
+              stage: 'terminal',
+              tenantId: tenant,
+              scopeId: scope,
+              message,
+            });
+          const failureOf = async (operation: string) =>
+            (await host.admin.listOpsFailures(staff, { operation }))[0]!;
+          const issueOf = async (operation: string) =>
+            (await host.admin.listIssues(staff, { operation }))[0]!;
+          const sweepOf = async (unit: string) => (await host.admin.listSweepRuns(staff, { unit }))[0]!;
+          const snapshot = async (ops: Record<string, string>, units: Record<string, string>) => {
+            const out: Record<string, unknown> = {};
+            for (const [k, o] of Object.entries(ops)) {
+              out[`failure:${k}`] = await failureOf(o);
+              out[`issue:${k}`] = await issueOf(o);
+            }
+            for (const [k, u] of Object.entries(units)) out[`sweep:${k}`] = await sweepOf(u);
+            return out;
+          };
+
+          it('redacts the subject\'s failure text, and leaves every other row as it was', async () => {
+            const kind = `connector:erasure-${ulid()}`;
+            const erased = dataSubjectId.parse(ulid());
+            const spared = dataSubjectId.parse(ulid());
+            const linked = await routeIntent(kind, erased, 'Anna Ek');
+            const unlinked = await routeIntent(kind, spared, 'Bo Lund');
+            const ops = {
+              linked: op('linked'),
+              byId: op('by-id'),
+              platform: op('platform'),
+              spared: op('spared'),
+              otherTenant: op('other-tenant'),
+              unlinked: op('unlinked'),
+              nameOnly: op('name-only'),
+            };
+            await fail(ops.linked, platformIntentFailureMessage(linked, 'failed: HTTP 409: Anna Ek needs a personal number'));
+            await fail(ops.byId, `schedule threw on contact ${erased} (Anna Ek)`);
+            await fail(ops.platform, `digest named contact ${erased}`, null, null);
+            await fail(ops.spared, `schedule threw on contact ${spared} (Bo Lund)`);
+            await fail(ops.otherTenant, `schedule threw on contact ${erased}`, t2, null);
+            await fail(ops.unlinked, platformIntentFailureMessage(unlinked, 'failed: HTTP 409: Bo Lund needs a personal number'));
+            await fail(ops.nameOnly, 'schedule threw: Anna Ek has no postal address');
+            const units = {
+              byId: `${s1}:erasure/by-id-${ulid()}`,
+              spared: `${s1}:erasure/spared-${ulid()}`,
+              otherTenant: `${s1}:erasure/other-tenant-${ulid()}`,
+            };
+            const sweep = (unit: string, error: string, tenant: TenantId = t1) =>
+              host.admin.recordSweepRun({
+                kind: 'schedule',
+                unit,
+                outcome: 'failed',
+                tenantId: tenant,
+                scopeId: tenant === t1 ? s1 : null,
+                operation: 'erasure/run',
+                error,
+              });
+            await sweep(units.byId, `contact ${erased} (Anna Ek) bounced`);
+            await sweep(units.spared, `contact ${spared} (Bo Lund) bounced`);
+            await sweep(units.otherTenant, `contact ${erased} bounced`, t2);
+            const before = await snapshot(ops, units);
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            const after = await snapshot(ops, units);
+            // Text about the subject: the drain's row about a tombstoned intent, and every row
+            // in this tenant (or the platform's own) that names the subject's id.
+            for (const k of ['linked', 'byId', 'platform']) {
+              expect(after[`failure:${k}`]).toEqual({ ...(before[`failure:${k}`] as object), message: REDACTED_FAILURE_NOTE });
+              expect(after[`issue:${k}`]).toEqual({ ...(before[`issue:${k}`] as object), lastMessage: REDACTED_FAILURE_NOTE });
+            }
+            expect(after['sweep:byId']).toEqual({ ...(before['sweep:byId'] as object), error: REDACTED_FAILURE_NOTE });
+            // The twins: another subject's text, another tenant's row, a drain row about an
+            // intent the erasure did not touch — and the documented residual, a sentence that
+            // names the person with neither their id nor an intent link (§13.1).
+            for (const k of ['spared', 'otherTenant', 'unlinked', 'nameOnly']) {
+              expect(after[`failure:${k}`]).toEqual(before[`failure:${k}`]);
+              expect(after[`issue:${k}`]).toEqual(before[`issue:${k}`]);
+            }
+            expect(after['sweep:spared']).toEqual(before['sweep:spared']);
+            expect(after['sweep:otherTenant']).toEqual(before['sweep:otherTenant']);
+
+            // Idempotent: the note names neither the subject nor an intent.
+            await host.admin.shredSubject(staff, t1, s1, erased);
+            expect(await snapshot(ops, units)).toEqual(after);
+            await host.settlePlatformRequest(t1, s1, unlinked, { status: 'done' });
+          });
+
+          it('reaches a drain failure recorded after an earlier erasure tombstoned its intent', async () => {
+            // An erasure that crashed between its scope half and its directory half, re-run:
+            // the intent is already a tombstone, so the link has to come from every tombstone
+            // in the journal and not only the ones this pass wrote.
+            const kind = `connector:erasure-${ulid()}`;
+            const erased = dataSubjectId.parse(ulid());
+            const id = await routeIntent(kind, erased, 'Anna Ek');
+            await host.admin.shredSubject(staff, t1, s1, erased);
+            const operation = op('late');
+            await fail(operation, platformIntentFailureMessage(id, 'gave up after 5 drain attempts — last error: Anna Ek'));
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            expect((await failureOf(operation)).message).toBe(REDACTED_FAILURE_NOTE);
+            expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
+          });
+
+          it('rewrites a queued sweep-runs entry\'s error, and keeps the rest of the intent', async () => {
+            // A CP-less pass queues its schedule outcomes as one `sweep-runs` intent, and the
+            // drain lands each entry's `error` in `_substrat_sweep_runs`. The intent is kept like
+            // every other, so the same text is held twice. `sweep-runs` is platform-authored —
+            // module code cannot enqueue it — so the rows are planted through a restore.
+            const erased = dataSubjectId.parse(ulid());
+            const spared = dataSubjectId.parse(ulid());
+            // Guarantees the journal has a row to copy the envelope columns from.
+            const template = await routeIntent(`connector:erasure-${ulid()}`, spared, 'Bo Lund');
+            const backup = await host.admin.exportScope(staff, t1, s1);
+            const table = backup.tables.find((t) => t.name === '_substrat_platform_requests')!;
+            const idCol = table.columns.indexOf('id');
+            const base = table.rows.find((r) => r[idCol] === template)!;
+            const at = '2026-09-20T00:00:00.000Z';
+            const entry = (operation: string, error: string | null) => ({
+              kind: 'schedule',
+              operation,
+              outcome: error === null ? 'ok' : 'failed',
+              at,
+              error,
+              elapsedMs: 12,
+            });
+            const payloads = {
+              mine: {
+                version: null,
+                entries: [
+                  entry('crm/sync', `contact ${erased} (Anna Ek) bounced`),
+                  entry('crm/tidy', 'nothing to tidy'),
+                  entry('crm/ok', null),
+                ],
+              },
+              theirs: { version: 'v-1', entries: [entry('crm/sync', `contact ${spared} (Bo Lund) bounced`)] },
+            };
+            const ids = { mine: ulid(), theirs: ulid() };
+            const plant = (id: string, payload: unknown) =>
+              table.columns.map((c, i) =>
+                c === 'id' ? id
+                : c === 'kind' ? SWEEP_RUNS_KIND
+                : c === 'payload' ? JSON.stringify(payload)
+                : c === 'status' ? 'pending'
+                : c === 'attempts' ? 0
+                : c === 'settled_at' || c === 'last_error' || c === 'last_failure' || c === 'result' ? null
+                : base[i],
+              );
+            const s = scopeId.parse(ulid());
+            await host.provisionScope(staff, { tenantId: t1, scopeId: s, jurisdiction: 'eu', vertical: 'connector-vertical' });
+            await host.admin.activateScope(staff, t1, s);
+            await host.restoreScope(staff, t1, s, {
+              ...backup,
+              scopeId: s,
+              tables: backup.tables.map((t) =>
+                t === table ? { ...t, rows: [...t.rows, plant(ids.mine, payloads.mine), plant(ids.theirs, payloads.theirs)] } : t,
+              ),
+            });
+            await host.settlePlatformRequest(t1, s1, template, { status: 'done' });
+            const queued = async () => {
+              const rows = await host.listPlatformRequestHistory(t1, s, { kind: SWEEP_RUNS_KIND });
+              return { mine: rows.find((r) => r.id === ids.mine)!, theirs: rows.find((r) => r.id === ids.theirs)! };
+            };
+            const before = await queued();
+
+            await host.admin.shredSubject(staff, t1, s, erased);
+
+            const after = await queued();
+            // Only the error that named the subject; the shape, the other entries, the
+            // version and the row's own columns are as they were — still pending, so the
+            // drain lands the note instead of the text.
+            expect(after.mine).toEqual({
+              ...before.mine,
+              payload: {
+                ...payloads.mine,
+                entries: [
+                  { ...payloads.mine.entries[0], error: REDACTED_FAILURE_NOTE },
+                  payloads.mine.entries[1],
+                  payloads.mine.entries[2],
+                ],
+              },
+            });
+            expect(after.theirs).toEqual(before.theirs);
+
+            await host.admin.shredSubject(staff, t1, s, erased);
+            expect(await queued()).toEqual(after);
+          });
         });
       });
 

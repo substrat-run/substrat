@@ -278,6 +278,11 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
+  redactSubjectIdempotency,
+  redactSubjectSweepRunIntents,
+  redactSubjectDirectoryText,
+  redactedIntentIds,
+  type RedactionSql,
   JOB_RUN_PATCH_SQL,
   JOB_STEP_RECORD_SQL,
   DELIVERY_ERROR_REDACTION_SQL,
@@ -8786,7 +8791,8 @@ export class SqliteScopeHost implements ScopeHost {
         // Both scope-side redactions in ONE turn on the scope actor (#1678): issued while an
         // invoke held its transaction open, they joined it, and its rollback put the
         // person's PII back after this verb had destroyed the key and receipted the erasure.
-        const { redacted, intentsRedacted, jobRunsRedacted } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
+        const scopeSql = redactionSqlOf(db);
+        const { redacted, intentsRedacted, jobRunsRedacted, idempotencyResults, intentIds } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
           redacted: db
             .prepare(
               `UPDATE _substrat_outbox SET payload = NULL
@@ -8807,17 +8813,18 @@ export class SqliteScopeHost implements ScopeHost {
             .run(REDACTED_DELIVERY_NOTE, REDACTED_DELIVERY_NOTE, subjectId),
           // The job-run tables (#1632): a run, its cursor or a step's memo can hold a copy
           // of the same event. The kernel's walk, so the DO runs the identical SQL.
-          jobRunsRedacted: redactSubjectJobRuns(
-            (sql, params) => {
-              const stmt = db.prepare(sql);
-              if (stmt.reader) return stmt.all(...params);
-              stmt.run(...params);
-              return [];
-            },
-            subjectId,
-            at,
-          ),
+          jobRunsRedacted: redactSubjectJobRuns(scopeSql, subjectId, at),
+          // The free-text copies (#1632): a recorded idempotent response that names the
+          // subject, and a queued `sweep-runs` entry's error that does.
+          idempotencyResults: redactSubjectIdempotency(scopeSql, subjectId, at),
+          sweepRunIntents: redactSubjectSweepRunIntents(scopeSql, subjectId),
+          // Read last, so it holds this pass's intent tombstones and every earlier one's.
+          intentIds: redactedIntentIds(scopeSql, subjectId),
         }));
+        // The directory's failure text (#1632) — a drain failure quoting one of those
+        // intents, an issue's exemplar, a sweep record's error. Before the key, for the
+        // ordering reason above.
+        redactSubjectDirectoryText(redactionSqlOf(this.directory), { tenantId, scopeId, subjectId, intentIds });
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
@@ -8838,7 +8845,7 @@ export class SqliteScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          redacted.changes + intentsRedacted + jobRunsRedacted,
+          redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults,
         );
         return receipt;
       },
@@ -11353,6 +11360,16 @@ function cellToJson(v: unknown): unknown {
  * because these are the kernel's writes to `_substrat_capabilities`, which module code may
  * never make. Never handed to module code.
  */
+/** The kernel's erasure walks over one SQLite connection — a read returns its rows, a write none. */
+function redactionSqlOf(db: Database.Database): RedactionSql {
+  return (sql, params) => {
+    const stmt = db.prepare(sql);
+    if (stmt.reader) return stmt.all(...params);
+    stmt.run(...params);
+    return [];
+  };
+}
+
 function spineSql(db: Database.Database): ScopedSql {
   return {
     query: <T>(sql: string, params: readonly SqlValue[] = []): T[] =>

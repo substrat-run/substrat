@@ -830,6 +830,13 @@ interface ControlPlaneStub {
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
   recordOpsFailure(row: OpsFailureRow): Promise<void>;
+  /** #1632: subject erasure's directory half — `redactSubjectDirectoryText`. */
+  redactSubjectText(target: {
+    tenantId: string;
+    scopeId: string;
+    subjectId: string;
+    intentIds: string[];
+  }): Promise<void>;
   listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
   recordSweepRun(row: SweepRunRow): Promise<void>;
   listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;
@@ -1331,6 +1338,8 @@ interface ScopeStubRpc {
    * **The `LegacySubjectRedactionCounts` arm is the same skew, one release later
    * (#1632).** A DO from after #1600 answers `{ events, intents }` and never looked at
    * the job-run tables, so it is refused the same way rather than read as `jobRuns: 0`.
+   * And one from before the free-text half answers the job-run count without
+   * `idempotencyResults` or `intentIds`, and is refused for the same reason.
    */
   redactSubject(
     subjectId: string,
@@ -6350,7 +6359,31 @@ export class CloudflareScopeHost implements ScopeHost {
               `key while leaving their data in the job-run tables. Redeploy the vertical and re-run.`,
           );
         }
-        const { events: eventsRedacted, intents: intentsRedacted, jobRuns: jobRunsRedacted } = redacted;
+        // A DO from before the free-text half (#1632): it never looked at the idempotency
+        // ledger or a queued sweep record, and cannot name the intents the directory's drain
+        // failures quote. Refused before the key, for the reason above.
+        if (
+          !('idempotencyResults' in redacted) ||
+          typeof redacted.idempotencyResults !== 'number' ||
+          !Array.isArray(redacted.intentIds)
+        ) {
+          throw substratError(
+            'unavailable',
+            `scope ${scopeId} runs a ScopeDO whose redaction does not reach _substrat_idempotency ` +
+              `or a queued sweep-runs intent — erasing now would destroy the subject key while ` +
+              `leaving their data in those rows. Redeploy the vertical and re-run.`,
+          );
+        }
+        const {
+          events: eventsRedacted,
+          intents: intentsRedacted,
+          jobRuns: jobRunsRedacted,
+          idempotencyResults,
+          intentIds,
+        } = redacted;
+        // The directory's failure text (#1632) — a drain failure quoting one of those intents,
+        // an issue's exemplar, a sweep record's error. Still before the key.
+        await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
@@ -6372,7 +6405,7 @@ export class CloudflareScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          eventsRedacted + intentsRedacted + jobRunsRedacted,
+          eventsRedacted + intentsRedacted + jobRunsRedacted + idempotencyResults,
         );
         return receipt;
       },

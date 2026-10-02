@@ -39,6 +39,7 @@ import {
   LEGACY_SCOPE_ROWS_BACKFILL,
   loadDirectoryDump,
   type ImpersonationRow,
+  redactSubjectDirectoryText,
 } from '@substrat-run/kernel';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
 import { doBuiltColumnsOf } from './sql.js';
@@ -4118,6 +4119,14 @@ export class ControlPlaneDO extends DurableObject {
       const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
       this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
     }
+  }
+
+  /**
+   * #1632: subject erasure's directory half — the failure text this directory keeps about a
+   * scope's subject. The kernel's walk, so the SQLite host runs the identical statements.
+   */
+  redactSubjectText(target: { tenantId: string; scopeId: string; subjectId: string; intentIds: string[] }): void {
+    redactSubjectDirectoryText((sql, params) => this.sql.exec(sql, ...params).toArray(), target);
   }
 
   listOpsFailures(query: OpsFailureQuery): OpsFailureEntry[] {

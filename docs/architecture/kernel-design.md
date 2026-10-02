@@ -1431,6 +1431,27 @@ executor's throw, which can quote the payload it choked on — becomes a note fo
 erasure redacts; it is keyed by `event_id`, so the outbox predicate names those rows exactly and
 no walk is needed.
 
+**The spine's free-text columns are reached by link or by id (#1632).** Four more columns can
+hold text about a person, and none carries a subject key. Where a link exists the erasure
+follows it: the drain's ops-failure row about an intent it gave up on, or settled `failed`,
+quotes that intent's `last_error` and names its id, so `_substrat_ops_failures.message` for a
+tombstoned intent in the same tenant and scope becomes a note, and so does
+`_substrat_issues.last_message` when that row is its exemplar. Every intent holding the
+subject's tombstone counts, not only this pass's, so an erasure re-run after a crash between its
+two halves converges. Where no link exists the erasure matches the subject's id directly. A
+`DataSubjectId` is a ULID, so the match does not happen by chance. That covers
+`_substrat_idempotency.result` in the scope, plus `_substrat_ops_failures.message`,
+`_substrat_issues.last_message` and `_substrat_sweep_runs.error` in the directory, and the same
+error still queued inside a `sweep-runs` intent (`entries[].error` only, so the intent keeps its
+shape and still drains). The directory half never touches another tenant's row. A row with no
+tenant is the platform's own, and is in reach. An issue has no tenant column, so it is spared when
+its exemplar is a row recorded for another tenant. A redacted idempotency result becomes the
+intent tombstone, with the key, operation, fingerprint and recording time kept. A retry under
+that key is refused as unavailable, the same answer an oversized response gets. It is not
+re-executed, and it is not handed the tombstone. The directory half runs after the scope half
+and before the key is destroyed, for the same ordering reason as the rest. What it does not
+reach is limit 9.
+
 **A platform-retained copy is not mutable, so erasure there is cryptographic.** Reap
 backups and stored dumps are full-fidelity on purpose — a backup that cannot restore is a
 false promise — which is exactly why `UPDATE … SET payload = NULL` can never reach one.
@@ -1444,9 +1465,9 @@ store's independence"*).
 The mechanism is staff-triggered and audited in **both** logs — the admin log because it is
 a mutation, the access log because it destroys evidence.
 
-**Eight limits, stated so nobody has to discover them** (the sixth added once the lake existed,
-the seventh once the spine's second copy was reached — #1600 — and the eighth once the job-run
-tables were — #1632):
+**Nine limits, stated so nobody has to discover them** (the sixth added once the lake existed,
+the seventh once the spine's second copy was reached — #1600 — the eighth once the job-run
+tables were, and the ninth once the free-text columns were — both #1632):
 
 1. **One subject per event.** The spine keys erasure on a single `subjectId`; a transcript
    naming a dozen people is keyed to one of them. *"I cannot do 'erase Jens Palmgren from
@@ -1470,17 +1491,19 @@ tables were — #1632):
    unsealed, as it stands in the outbox. An event redacted before it drains reaches the lake
    with a null payload. An event drained before its subject was erased keeps its payload
    in the lake, and nothing here removes it.
-7. **An intent that carries PII outside a classified event is not reached.** The intent
-   redaction above keys on the embedded `DomainEvent`'s own `piiClass`/`subjectId`, because
-   an intent payload has none of its own — `ctx.requestPlatform` takes `payload: unknown`,
-   and the kernel has nothing to read. Today no kind puts a person into a payload any other
-   way: the shipped kinds are `provision-sibling` (slug, name, owner principal),
-   `archive-scope` (a scope id), `provision-tenant` (tenant/instance ids, names and
-   entitlement keys), `set-entitlements` (ids and a plan), `model-usage` (token counts and
-   attribution), `sweep-runs` (schedule outcomes), and the `connector:<provider>` family,
-   which is the one that embeds an event. A kind that started carrying a name directly would
-   be inventing an unclassified PII store inside the spine, and the right answer there is the
-   classification, not a wider erasure heuristic.
+7. **An intent that carries PII outside a classified event is not reached, with one
+   exception.** The intent redaction above keys on the embedded `DomainEvent`'s own
+   `piiClass`/`subjectId`, because an intent payload has none of its own:
+   `ctx.requestPlatform` takes `payload: unknown`, and the kernel has nothing to read. The
+   shipped kinds are `provision-sibling` (slug, name, owner principal), `archive-scope` (a
+   scope id), `provision-tenant` (tenant/instance ids, names and entitlement keys),
+   `set-entitlements` (ids and a plan), `model-usage` (token counts and attribution),
+   `sweep-runs` (schedule outcomes), and the `connector:<provider>` family, which is the one
+   that embeds an event. `sweep-runs` is the exception: an entry's `error` is a scheduled
+   operation's throw, which can name a person. That field alone is matched on the subject's
+   id and rewritten (#1632), and limit 9 applies to it. A kind that started carrying a name
+   directly would be inventing an unclassified PII store inside the spine, and the right
+   answer there is the classification, not a wider erasure heuristic.
 8. **Job output without a declared subject or classified envelope is not reached.**
    `startJobRun({ subject })` records a pseudonymous `subject_id`. Erasure reaches that
    run's entire payload, cursor, step results, and error text, and stops it if it is still
@@ -1489,6 +1512,14 @@ tables were — #1632):
    copies. External output without either link cannot be assigned to a person reliably,
    so it is not erased by guessing from free text. Hosts handling one person's external
    data should declare the subject when starting the run.
+9. **Free text that names a person without their id or a link is not reached.** The four
+   free-text columns above, and a queued `sweep-runs` entry's error, are redacted when they
+   follow a tombstoned intent or contain the subject's id. A sentence that gives only the
+   person's name, on a row with no intent link, carries nothing the erasure can read as
+   theirs. So does an idempotent response that names them without their id. A
+   declared-subject column on these tables would close it, and is a migration. An issue
+   exemplar whose source row has aged out of the 90-day ops-failure retention is redacted on an
+   id match without its tenant being checked, because nothing is left to check it against.
 
 
 ## 14. Design log

@@ -39,9 +39,10 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
   /**
    * The real host, optionally with `redactSubject` answering the way it used to: `true` is
    * the pre-#1600 bare count, `'pre-1632'` the `{ events, intents }` a DO answered after
-   * #1600 and before the job-run tables were reached.
+   * #1600 and before the job-run tables were reached, `'pre-text'` the `{ events, intents,
+   * jobRuns }` a DO answered before the free-text columns were reached.
    */
-  const hostFor = (legacy: boolean | 'pre-1632' = false) =>
+  const hostFor = (legacy: boolean | 'pre-1632' | 'pre-text' = false) =>
     new CloudflareScopeHost({
       scope: legacy
         ? ({
@@ -54,7 +55,12 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
               return new Proxy(real, {
                 get: (target, prop, receiver) =>
                   prop === 'redactSubject'
-                    ? async () => (legacy === 'pre-1632' ? { events: 1, intents: 0 } : 1)
+                    ? async () =>
+                        legacy === 'pre-1632'
+                          ? { events: 1, intents: 0 }
+                          : legacy === 'pre-text'
+                            ? { events: 1, intents: 0, jobRuns: 0 }
+                            : 1
                     : Reflect.get(target, prop, receiver),
               });
             },
@@ -102,6 +108,26 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
     const legacy = hostFor('pre-1632');
     await expect(legacy.admin.shredSubject(staff, t, s, subject)).rejects.toSatisfy(
       (e: unknown) => errorCodeOf(e) === 'unavailable' && /before #1632/.test((e as Error).message),
+    );
+    const [opened] = await hostFor().admin.openSubjectPayloads(staff, t, s, [
+      { subjectId: subject, sealed: sealed! },
+    ]);
+    expect(opened).toBe('in the backup');
+    await hostFor().close();
+    await legacy.close();
+  });
+
+  it('refuses a DO from before the free-text half the same way (#1632)', async () => {
+    // Its reply has every count, so only the missing `idempotencyResults` / `intentIds`
+    // show it never looked at the idempotency ledger or a queued sweep record — and the
+    // directory half would have no intents to follow.
+    const subject = dataSubjectId.parse(ulid());
+    const [sealed] = await hostFor().admin.sealSubjectPayloads(staff, t, s, [
+      { subjectId: subject, plaintext: 'in the backup' },
+    ]);
+    const legacy = hostFor('pre-text');
+    await expect(legacy.admin.shredSubject(staff, t, s, subject)).rejects.toSatisfy(
+      (e: unknown) => errorCodeOf(e) === 'unavailable' && /_substrat_idempotency/.test((e as Error).message),
     );
     const [opened] = await hostFor().admin.openSubjectPayloads(staff, t, s, [
       { subjectId: subject, sealed: sealed! },

@@ -277,6 +277,13 @@ export {
   REDACTED_JOB_NOTE,
   redactedIntentPayload,
   redactSubjectJobRuns,
+  REDACTED_FAILURE_NOTE,
+  redactedIntentIds,
+  redactSubjectIdempotency,
+  redactSubjectSweepRunIntents,
+  redactSubjectDirectoryText,
+  platformIntentFailureMessage,
+  intentIdOfFailureMessage,
 } from './subject-redaction.js';
 export type {
   LegacySubjectRedactionCounts,
