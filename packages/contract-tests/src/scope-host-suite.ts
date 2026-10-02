@@ -2772,8 +2772,13 @@ export function scopeHostContractSuite(
             // in this tenant (or the platform's own) that names the subject's id.
             for (const k of ['linked', 'byId', 'platform']) {
               expect(after[`failure:${k}`]).toEqual({ ...(before[`failure:${k}`] as object), message: REDACTED_FAILURE_NOTE });
+            }
+            for (const k of ['linked', 'byId']) {
               expect(after[`issue:${k}`]).toEqual({ ...(before[`issue:${k}`] as object), lastMessage: REDACTED_FAILURE_NOTE });
             }
+            // The platform's own exemplar has no tenant to vouch for it, and an erasure rewrites
+            // only an exemplar attributed to the erasing tenant (§13.1 limit 9).
+            expect(after['issue:platform']).toEqual(before['issue:platform']);
             expect(after['sweep:byId']).toEqual({ ...(before['sweep:byId'] as object), error: REDACTED_FAILURE_NOTE });
             // The twins: another subject's text, another tenant's row, a drain row about an
             // intent the erasure did not touch — and the documented residual, a sentence that
@@ -2808,61 +2813,84 @@ export function scopeHostContractSuite(
             expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
           });
 
-          it('rewrites an issue exemplar only on retained evidence that it is this tenant\'s', async () => {
-            // An issue has no tenant column and outlives its ops-failure rows (180 days vs 90).
-            // Once those rows have expired nothing says whose an exemplar is, and the text it
-            // holds can come from anyone's request — so an erasure in one tenant must not read
-            // the absence as permission. Expiry is simulated by restoring a directory copy with
-            // the source rows taken out, which is what the 90-day prune leaves behind.
+          /** The issues table as the directory stores it — `last_tenant_id` is not on the read shape. */
+          const exemplarTenantOf = async (operation: string) => {
+            const dump = await host.admin.exportDirectory(staff);
+            const t = dump.tables.find((x) => x.name === '_substrat_issues')!;
+            const row = t.rows.find((r) => r[t.columns.indexOf('operation')] === operation)!;
+            return row[t.columns.indexOf('last_tenant_id')];
+          };
+
+          it('rewrites an issue exemplar only when its writer attributed it to the erasing tenant', async () => {
+            // An issue has no tenant of its own and outlives its ops-failure rows (180 days vs
+            // 90), so the writer records whose failure each exemplar copied, and erasure reads
+            // that rather than the rows. Expiry is simulated by restoring a directory copy with
+            // the source rows taken out — what the 90-day prune leaves behind.
             const erased = dataSubjectId.parse(ulid());
             const ops = {
               otherExpired: op('other-expired'),
               ownExpired: op('own-expired'),
-              ownKept: op('own-kept'),
+              legacy: op('legacy'),
             };
             await fail(ops.otherExpired, `schedule threw on contact ${erased}`, t2, null);
             await fail(ops.ownExpired, `schedule threw on contact ${erased} (Anna Ek)`);
-            await fail(ops.ownKept, `schedule threw on contact ${erased} (Anna Ek)`);
+            await fail(ops.legacy, `schedule threw on contact ${erased} (Anna Ek)`);
             const copy = await host.admin.exportDirectory(staff);
-            const expired = new Set([ops.otherExpired, ops.ownExpired]);
+            const expired = new Set(Object.values(ops));
             await host.admin.restoreDirectory(staff, {
               ...copy,
               tables: copy.tables.map((t) => {
-                if (t.name !== '_substrat_ops_failures') return t;
-                const col = t.columns.indexOf('operation');
-                return { ...t, rows: t.rows.filter((r) => !expired.has(r[col] as string)) };
+                if (t.name === '_substrat_ops_failures') {
+                  const col = t.columns.indexOf('operation');
+                  return { ...t, rows: t.rows.filter((r) => !expired.has(r[col] as string)) };
+                }
+                if (t.name === '_substrat_issues') {
+                  // An issue from before attribution that nothing could backfill.
+                  const op = t.columns.indexOf('operation');
+                  const tenant = t.columns.indexOf('last_tenant_id');
+                  return { ...t, rows: t.rows.map((r) => (r[op] === ops.legacy ? r.map((c, i) => (i === tenant ? null : c)) : r)) };
+                }
+                return t;
               }),
             });
             expect(await host.admin.listOpsFailures(staff, { operation: ops.ownExpired })).toEqual([]);
             const before = {
               otherExpired: await issueOf(ops.otherExpired),
               ownExpired: await issueOf(ops.ownExpired),
-              ownKept: await issueOf(ops.ownKept),
+              legacy: await issueOf(ops.legacy),
             };
 
             await host.admin.shredSubject(staff, t1, s1, erased);
 
-            // Another tenant's exemplar, its evidence gone: byte-equal.
+            // Another tenant's exemplar, its rows expired: byte-equal.
             expect(await issueOf(ops.otherExpired)).toEqual(before.otherExpired);
-            // This tenant's, its evidence gone: skipped too — the stated residual (§13.1
-            // limit 9), the price of never guessing whose an exemplar is.
-            expect(await issueOf(ops.ownExpired)).toEqual(before.ownExpired);
-            // With its row retained, the exemplar goes with the row.
-            expect(await issueOf(ops.ownKept)).toEqual({ ...before.ownKept, lastMessage: REDACTED_FAILURE_NOTE });
-            expect((await failureOf(ops.ownKept)).message).toBe(REDACTED_FAILURE_NOTE);
+            // This tenant's, its rows expired: the attribution is enough.
+            expect(await issueOf(ops.ownExpired)).toEqual({ ...before.ownExpired, lastMessage: REDACTED_FAILURE_NOTE });
+            // Unattributed: skipped — the legacy residual (§13.1 limit 9), never a guess.
+            expect(await issueOf(ops.legacy)).toEqual(before.legacy);
+          });
 
-            // The same text retained under two tenants: this tenant's row goes, and the shared
-            // exemplar stays, because another tenant's retained row still says it.
+          it('attributes each exemplar to the failure it copied, and a newer one takes it over', async () => {
+            const erased = dataSubjectId.parse(ulid());
             const shared = op('shared');
             const text = `schedule threw on contact ${erased}`;
-            await fail(shared, text, t2, null);
             await fail(shared, text);
-            const sharedIssue = await issueOf(shared);
+            expect(await exemplarTenantOf(shared)).toBe(t1);
+            // The same group, a newer exemplar from another tenant: the attribution moves with it.
+            await fail(shared, text, t2, null);
+            expect(await exemplarTenantOf(shared)).toBe(t2);
+            const exemplar = await issueOf(shared);
+
             await host.admin.shredSubject(staff, t1, s1, erased);
-            expect(await issueOf(shared)).toEqual(sharedIssue);
+
+            // This tenant's own row goes; the exemplar is now another tenant's and stays.
             const rows = await host.admin.listOpsFailures(staff, { operation: shared });
             expect(rows.find((r) => r.tenantId === t1)!.message).toBe(REDACTED_FAILURE_NOTE);
             expect(rows.find((r) => r.tenantId === t2)!.message).toBe(text);
+            expect(await issueOf(shared)).toEqual(exemplar);
+            // And the platform's own failure leaves an exemplar with no tenant at all.
+            await fail(shared, 'the platform failed', null, null);
+            expect(await exemplarTenantOf(shared)).toBeNull();
           });
 
           it('rewrites a queued sweep-runs entry\'s error, and keeps the rest of the intent', async () => {

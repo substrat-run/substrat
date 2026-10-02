@@ -629,6 +629,23 @@ export interface SubjectTextTarget {
 }
 
 /**
+ * #1632: the one-time backfill of `_substrat_issues.last_tenant_id`, run as the column is
+ * added to a directory that predates it. A row is attributed only when the retained
+ * ops-failure rows carrying its exemplar (same fingerprint, same text) name exactly one
+ * tenant. When they name none, more than one, or include the platform's own row, the row
+ * stays NULL. Rows whose evidence already expired stay NULL too, and erasure skips a NULL
+ * row, so the gap fails closed and ages out with issue retention.
+ */
+export const ISSUE_EXEMPLAR_TENANT_BACKFILL_SQL = `UPDATE _substrat_issues
+     SET last_tenant_id = (SELECT MIN(o.tenant_id) FROM _substrat_ops_failures o
+                            WHERE o.fingerprint = _substrat_issues.fingerprint
+                              AND o.message = _substrat_issues.last_message)
+   WHERE last_tenant_id IS NULL
+     AND (SELECT COUNT(DISTINCT COALESCE(o.tenant_id, '')) FROM _substrat_ops_failures o
+           WHERE o.fingerprint = _substrat_issues.fingerprint
+             AND o.message = _substrat_issues.last_message) = 1`;
+
+/**
  * The directory's half (#1632): three tables of failure text the control plane keeps.
  *
  * - `_substrat_ops_failures.message` — the drain's record of an intent it gave up on, or
@@ -636,13 +653,12 @@ export interface SubjectTextTarget {
  *   tombstoned (`intentIds`, in this tenant and scope), the message is a copy of text the
  *   scope half already redacted, and goes with it. A row in this tenant, or the platform's
  *   own row with no tenant, that names the subject's id goes too.
- * - `_substrat_issues.last_message` — the newest exemplar of an ops-failure group, copied
- *   from a row above. The table has no tenant column, so an exemplar is rewritten only on
- *   positive evidence: it is the text of an ops-failure row this erasure rewrites, under that
- *   row's fingerprint, and no other tenant's retained row carries the same text. An exemplar
- *   whose source row has expired (ops failures are kept 90 days, issues 180) has no evidence
- *   left and is skipped. The matched text can come from anyone's request, so absence of
- *   evidence is never read as permission to touch a row another tenant may own.
+ * - `_substrat_issues.last_message` — the newest exemplar of an ops-failure group. Its
+ *   writer records whose failure it copied (`last_tenant_id`, in the same statement), and an
+ *   exemplar is rewritten only when that is the erasing tenant — by the same two links, and
+ *   with no ops-failure row needed, since issues outlive them. An exemplar with no tenant
+ *   (the platform's own, or a legacy row nothing attributed) is skipped: the matched text can
+ *   come from anyone's request, so an unattributed row is never read as this tenant's.
  * - `_substrat_sweep_runs.error` — a scheduled operation's throw, matched on the subject's
  *   id in this tenant's rows or the platform's own. There is no link to an event here.
  *
@@ -651,44 +667,40 @@ export interface SubjectTextTarget {
  * intent nor the subject.
  */
 export function redactSubjectDirectoryText(sql: RedactionSql, target: SubjectTextTarget): void {
-  type FailureRow = { id: string; fingerprint: string | null; message: string };
-  const doomed = new Map<string, FailureRow>();
-  const byId = sql(
-    `SELECT id, fingerprint, message FROM _substrat_ops_failures
+  const needle = subjectNeedle(target.subjectId);
+  sql(
+    `UPDATE _substrat_ops_failures SET message = ?
       WHERE instr(message, ?) > 0 AND (tenant_id IS NULL OR tenant_id = ?)`,
-    [subjectNeedle(target.subjectId), target.tenantId],
-  ) as FailureRow[];
-  for (const row of byId) doomed.set(row.id, row);
-  if (target.intentIds.length > 0) {
-    // The drain's rows about those intents — read back by the grammar it wrote them in, so
-    // the SQL only narrows to the prefix and the id decides.
-    const intents = new Set(target.intentIds);
-    const linked = sql(
-      `SELECT id, fingerprint, message FROM _substrat_ops_failures
-        WHERE tenant_id = ? AND scope_id = ? AND instr(message, ?) = 1`,
-      [target.tenantId, target.scopeId, PLATFORM_INTENT_FAILURE_PREFIX],
-    ) as FailureRow[];
-    for (const row of linked) {
-      const id = intentIdOfFailureMessage(row.message);
-      if (id !== null && intents.has(id)) doomed.set(row.id, row);
-    }
-  }
-  for (const row of doomed.values()) {
-    // The issue first, while this row still holds the text that is the evidence.
-    sql(
-      `UPDATE _substrat_issues SET last_message = ?
-        WHERE fingerprint = ? AND last_message = ?
-          AND NOT EXISTS (SELECT 1 FROM _substrat_ops_failures o
-                           WHERE o.fingerprint = _substrat_issues.fingerprint
-                             AND o.message = _substrat_issues.last_message
-                             AND o.tenant_id IS NOT NULL AND o.tenant_id != ?)`,
-      [REDACTED_FAILURE_NOTE, row.fingerprint, row.message, target.tenantId],
-    );
-    sql('UPDATE _substrat_ops_failures SET message = ? WHERE id = ?', [REDACTED_FAILURE_NOTE, row.id]);
-  }
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
+  );
+  sql(
+    'UPDATE _substrat_issues SET last_message = ? WHERE last_tenant_id = ? AND instr(last_message, ?) > 0',
+    [REDACTED_FAILURE_NOTE, target.tenantId, needle],
+  );
   sql(
     `UPDATE _substrat_sweep_runs SET error = ?
       WHERE instr(error, ?) > 0 AND (tenant_id IS NULL OR tenant_id = ?)`,
-    [REDACTED_FAILURE_NOTE, subjectNeedle(target.subjectId), target.tenantId],
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
   );
+  if (target.intentIds.length === 0) return;
+  const intents = new Set(target.intentIds);
+  // Rows whose text the drain wrote about one of those intents — read back by the grammar it
+  // wrote them in, so the SQL only narrows to the prefix and the id decides.
+  const redactLinked = (table: string, key: string, text: string, where: string, params: string[]) => {
+    const rows = sql(
+      `SELECT ${key} AS key, ${text} AS text FROM ${table} WHERE ${where}instr(${text}, ?) = 1`,
+      [...params, PLATFORM_INTENT_FAILURE_PREFIX],
+    ) as { key: string; text: string }[];
+    for (const row of rows) {
+      const id = intentIdOfFailureMessage(row.text);
+      if (id !== null && intents.has(id)) {
+        sql(`UPDATE ${table} SET ${text} = ? WHERE ${key} = ?`, [REDACTED_FAILURE_NOTE, row.key]);
+      }
+    }
+  };
+  redactLinked('_substrat_ops_failures', 'id', 'message', 'tenant_id = ? AND scope_id = ? AND ', [
+    target.tenantId,
+    target.scopeId,
+  ]);
+  redactLinked('_substrat_issues', 'fingerprint', 'last_message', 'last_tenant_id = ? AND ', [target.tenantId]);
 }

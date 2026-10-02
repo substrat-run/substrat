@@ -279,6 +279,7 @@ export {
   redactSubjectJobRuns,
   REDACTED_FAILURE_NOTE,
   redactSubjectScopeText,
+  ISSUE_EXEMPLAR_TENANT_BACKFILL_SQL,
   redactSubjectDirectoryText,
   platformIntentFailureMessage,
   intentIdOfFailureMessage,
