@@ -595,4 +595,96 @@ export const ticket0Migrations: SqlMigration[] = [
          ORDER BY id;
     `,
   },
+  {
+    // add-ticket0_conversation_participants-and-rebuild-ticket0_messages
+    version: '0022',
+    sql: `
+      CREATE TABLE ticket0_conversation_participants (
+        id TEXT PRIMARY KEY NOT NULL,
+        conversation_id TEXT NOT NULL REFERENCES ticket0_conversations(id),
+        contact_id TEXT NOT NULL REFERENCES ticket0_contacts(id),
+        role TEXT NOT NULL CHECK (role IN ('cc','third-party')),
+        added_by TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (conversation_id, contact_id)
+      );
+
+      -- HAND-WRITTEN below this line (#1086). Who a contact is on: a discard deletes a contact
+      -- the junk alone brought in, and needs to ask whether any OTHER conversation names it.
+      CREATE INDEX ticket0_conversation_participants_by_contact
+        ON ticket0_conversation_participants (contact_id);
+
+      -- ticket0_messages gains a third visibility, 'forward' (the desk and one third party), and
+      -- SQLite cannot widen a CHECK in place, so the table is rebuilt the long way round: create
+      -- it under a new name with the new CHECK, copy, drop, rename onto the name. No foreign key
+      -- REFERENCES ticket0_messages and no trigger is defined on it, so the DROP takes nothing but
+      -- the table's own indexes, and every one of them is re-created after the rename.
+      --
+      -- Two columns arrive with it. author_contact_id is filled for every contact message that
+      -- already exists: until now the conversation's own contact was the only contact who could
+      -- write in it, and a merge only ever joins two conversations of one contact. So that is a
+      -- fact, not a guess. third_party_contact_id starts NULL everywhere: no forward exists yet.
+      CREATE TABLE ticket0_messages_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        conversation_id TEXT NOT NULL REFERENCES ticket0_conversations(id),
+        author_kind TEXT NOT NULL CHECK (author_kind IN ('contact','agent','assistant','system')),
+        author_principal TEXT,
+        visibility TEXT NOT NULL CHECK (visibility IN ('public','internal','forward')),
+        body_text TEXT NOT NULL,
+        body_html TEXT,
+        email_message_id TEXT,
+        email_in_reply_to TEXT,
+        delivered_at TEXT,
+        author_contact_id TEXT,
+        third_party_contact_id TEXT,
+        cited_article_ids TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      INSERT INTO ticket0_messages_new
+        (id, conversation_id, author_kind, author_principal, visibility, body_text, body_html,
+         email_message_id, email_in_reply_to, delivered_at, author_contact_id, third_party_contact_id,
+         cited_article_ids, created_at)
+        SELECT m.id, m.conversation_id, m.author_kind, m.author_principal, m.visibility, m.body_text,
+               m.body_html, m.email_message_id, m.email_in_reply_to, m.delivered_at,
+               CASE WHEN m.author_kind = 'contact'
+                    THEN (SELECT c.contact_id FROM ticket0_conversations c WHERE c.id = m.conversation_id)
+               END,
+               NULL, m.cited_article_ids, m.created_at
+          FROM ticket0_messages m;
+
+      DROP TABLE ticket0_messages;
+
+      ALTER TABLE ticket0_messages_new RENAME TO ticket0_messages;
+
+      -- Everything the DROP took, exactly as it was. The two this journal declared:
+      CREATE INDEX ticket0_messages_public_by_conversation ON ticket0_messages (conversation_id, visibility, id);
+
+      CREATE INDEX ticket0_messages_desk_reply ON ticket0_messages (conversation_id, created_at)
+        WHERE visibility = 'public' AND author_kind != 'contact';
+
+      -- New with the two columns: who wrote a message, and which third party a forward was with,
+      -- for the one question that has to find a contact's messages across the desk — whether a
+      -- discard may delete a contact the junk alone brought in. Partial, so a desk's own messages
+      -- (no author contact) and every non-forward cost the third-party index nothing.
+      CREATE INDEX ticket0_messages_by_author_contact ON ticket0_messages (author_contact_id)
+        WHERE author_contact_id IS NOT NULL;
+
+      CREATE INDEX ticket0_messages_by_third_party ON ticket0_messages (third_party_contact_id)
+        WHERE third_party_contact_id IS NOT NULL;
+
+      -- And the kernel's derived list indexes for ticket0/list-messages. The kernel applies those
+      -- once per declaration and records that it did, so an unchanged declaration would never put
+      -- them back: re-created here under the names and columns it derived, which
+      -- test/participants.test.ts holds to a fresh desk's.
+      CREATE INDEX _substrat_list_substrat_run_demo_ticket0_message_created_at ON ticket0_messages (created_at, id);
+
+      CREATE INDEX _substrat_list_substrat_run_demo_ticket0_message_author_kind_created_at ON ticket0_messages (author_kind, created_at, id);
+
+      CREATE INDEX _substrat_list_substrat_run_demo_ticket0_message_conversation_id_created_at ON ticket0_messages (conversation_id, created_at, id);
+
+      CREATE INDEX _substrat_list_substrat_run_demo_ticket0_message_visibility_created_at ON ticket0_messages (visibility, created_at, id);
+
+    `,
+  },
 ];

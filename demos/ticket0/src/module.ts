@@ -69,6 +69,7 @@ import {
   macroActions,
   NO_REPLY_MAX_HOURS,
   NO_REPLY_MIN_HOURS,
+  PARTICIPANTS_MAX,
   SAVED_REPLY_VARIABLES,
   savedReplyToken,
   SEARCH_OVERFETCH,
@@ -114,6 +115,7 @@ type SignupRow = EntityRow<typeof ticket0Entities, 'signup'>;
 type BlockRuleRow = EntityRow<typeof ticket0Entities, 'blockRule'>;
 type BehaviourRunRow = EntityRow<typeof ticket0Entities, 'behaviourRun'>;
 type MailDeliveryRow = EntityRow<typeof ticket0Entities, 'mailDelivery'>;
+type ParticipantRow = EntityRow<typeof ticket0Entities, 'conversationParticipant'>;
 
 const conversationRef = (id: string) => ({ entityType: 'conversation', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
@@ -1115,6 +1117,10 @@ interface WriteMessage {
   readonly emailMessageId?: string | null;
   readonly emailInReplyTo?: string | null;
   readonly citedArticleIds?: readonly string[];
+  /** Which contact wrote it, when a contact did (#1086). */
+  readonly authorContactId?: string | null;
+  /** The third party a `forward` message went to or came from (#1086). */
+  readonly thirdPartyContactId?: string | null;
 }
 
 function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
@@ -1123,8 +1129,9 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
   ctx.sql.exec(
     `INSERT INTO ticket0_messages
        (id, conversation_id, author_kind, author_principal, visibility, body_text, body_html,
-        email_message_id, email_in_reply_to, delivered_at, cited_article_ids, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        email_message_id, email_in_reply_to, delivered_at, author_contact_id,
+        third_party_contact_id, cited_article_ids, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
     [
       id,
       m.conversationId,
@@ -1135,6 +1142,8 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
       m.bodyHtml ?? null,
       m.emailMessageId ?? null,
       m.emailInReplyTo ?? null,
+      m.authorContactId ?? null,
+      m.thirdPartyContactId ?? null,
       m.citedArticleIds && m.citedArticleIds.length > 0
         ? JSON.stringify(m.citedArticleIds)
         : null,
@@ -1540,6 +1549,294 @@ async function dropFollowers(ctx: OperationContext, conversationId: string): Pro
   ctx.sql.exec('DELETE FROM ticket0_conversation_follows WHERE conversation_id = ?', [conversationId]);
 }
 
+// ---------------------------------------------------------------------------
+// Participants (#1086) — who else is on a conversation
+// ---------------------------------------------------------------------------
+
+/** Where somebody stands on a conversation: the requester, a participant, or nowhere. */
+type Standing = 'requester' | ParticipantRow['role'];
+
+const PARTICIPANT_COLUMNS = 'id, conversation_id, contact_id, role, added_by, created_at';
+
+/** One contact's participant row on one conversation, or nothing. */
+function participantOf(
+  ctx: OperationContext,
+  conversationId: string,
+  contactId: string,
+): ParticipantRow | undefined {
+  return ctx.sql.query<ParticipantRow>(
+    `SELECT ${PARTICIPANT_COLUMNS} FROM ticket0_conversation_participants
+      WHERE conversation_id = ? AND contact_id = ?`,
+    [conversationId, contactId],
+  )[0];
+}
+
+/** Every participant row on a conversation, in the order they joined. */
+function participantsOf(ctx: OperationContext, conversationId: string): ParticipantRow[] {
+  return ctx.sql.query<ParticipantRow>(
+    `SELECT ${PARTICIPANT_COLUMNS} FROM ticket0_conversation_participants
+      WHERE conversation_id = ? ORDER BY created_at, id`,
+    [conversationId],
+  );
+}
+
+/**
+ * Where a contact stands on a conversation — the ONE reading of it, for threading, for
+ * which audience an inbound mail is written to, and for who may add people by mail.
+ * Null is a stranger to this conversation.
+ */
+function standingOn(ctx: OperationContext, conversation: ConversationRow, contactId: string): Standing | null {
+  if (conversation.contact_id === contactId) return 'requester';
+  return participantOf(ctx, conversation.id, contactId)?.role ?? null;
+}
+
+/**
+ * Whether an address is the desk's own (#1086). A CC on it would copy every reply back to
+ * the desk as inbound mail, so it is never captured and never added — the one loop this
+ * feature could otherwise open. Compared as an address, case and all, by `addressKey`.
+ */
+function isDeskAddress(ctx: OperationContext, email: string): boolean {
+  return addressKey(email) === addressKey(desk(ctx).from_address);
+}
+
+/**
+ * The contact an address names, made when there is none — the same exact lookup an inbound
+ * sender gets (`contactByEmail`), so a CC who later writes in from that address is the
+ * contact they were copied in as. `verified_at` stays null: nobody has heard from them.
+ */
+function contactForAddress(ctx: OperationContext, email: string, name?: string | null): ContactRow {
+  return contactByEmail(ctx, email) ?? createContact(ctx, { email, display_name: name ?? null });
+}
+
+/**
+ * Who a person may put on a conversation by address, or a refusal naming why not —
+ * shared by `add-participant` and `forward-message`, so the two doors cannot disagree.
+ *
+ * Not the desk itself (the loop `isDeskAddress` closes), and not a sender this desk
+ * blocks: their reply would be refused at the door, which makes adding them a side thread
+ * that can never come back.
+ */
+function recipientOrThrow(ctx: OperationContext, email: string, name?: string | null): ContactRow {
+  if (isDeskAddress(ctx, email)) {
+    throw substratError('validation_failed', 'that is this desk’s own address — its mail would come straight back');
+  }
+  if (blockedBy(ctx, { emails: [email], contactId: contactByEmail(ctx, email)?.id ?? null })) {
+    throw substratError('validation_failed', 'this desk blocks that sender, so nothing they wrote back would arrive');
+  }
+  return contactForAddress(ctx, email, name);
+}
+
+/**
+ * Put a contact on a conversation in a role — everything the three doors share after their
+ * own checks: a person's `add-participant`, a forward's third party, and a mail's To and Cc.
+ *
+ * Idempotent on the person: somebody already on it in this role is answered with their
+ * row, and nothing is written or announced. Somebody on it in the OTHER role is a
+ * conflict, because one address on both the customer's thread and a side thread is a
+ * forward the customer can read. The requester is never added — they are the
+ * conversation. `PARTICIPANTS_MAX` is checked last, so a repeat of somebody already on a
+ * full conversation still answers.
+ *
+ * The event carries ids and the role, never the address, which is the contact's and
+ * erasable.
+ */
+function putParticipant(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  contact: ContactRow,
+  role: ParticipantRow['role'],
+  addedBy: string | null,
+): { row: ParticipantRow; added: boolean } {
+  if (contact.id === conversation.contact_id) {
+    throw substratError('validation_failed', 'that is the person this conversation is with — they are already on it');
+  }
+  const existing = participantOf(ctx, conversation.id, contact.id);
+  if (existing) {
+    if (existing.role === role) return { row: existing, added: false };
+    throw substratError(
+      'conflict',
+      existing.role === 'cc'
+        ? 'they are copied in on the customer’s thread — a forward to them is a reply the customer can read'
+        : 'they are a third party on this conversation — copying them in would show them the customer’s thread',
+      { reason: 'participant_role' },
+    );
+  }
+  const count = ctx.sql.query<{ n: number }>(
+    'SELECT COUNT(*) AS n FROM ticket0_conversation_participants WHERE conversation_id = ?',
+    [conversation.id],
+  )[0];
+  if (Number(count?.n ?? 0) >= PARTICIPANTS_MAX) {
+    throw substratError('conflict', `a conversation carries at most ${PARTICIPANTS_MAX} people besides the customer`, {
+      reason: 'participants_full',
+    });
+  }
+  const id = ulid();
+  ctx.sql.exec(
+    `INSERT INTO ticket0_conversation_participants (${PARTICIPANT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, conversation.id, contact.id, role, addedBy, ctx.now()],
+  );
+  const row = participantOf(ctx, conversation.id, contact.id)!;
+  ctx.emit({
+    type: 'ticket0.participant-added',
+    schemaVersion: 1,
+    entity: conversationRef(conversation.id),
+    piiClass: 'none',
+    payload: {
+      id: row.id,
+      conversation_id: row.conversation_id,
+      contact_id: row.contact_id,
+      role: row.role,
+      added_by: row.added_by,
+    },
+  });
+  return { row, added: true };
+}
+
+/**
+ * The people an inbound mail was addressed to, put on the conversation as CCs (#1086).
+ *
+ * Only when the mail came from somebody on the customer's thread — the requester or a CC.
+ * A third party's mail adds nobody: their recipient list is theirs, and copying it onto
+ * the customer's thread is the side thread leaking into it. A stranger's mail into a
+ * conversation it was bound to by id adds nobody either.
+ *
+ * Never refuses the mail. An address that does not parse, the sender, the requester, the
+ * desk itself, a blocked sender, a third party already on it, and everyone past
+ * `PARTICIPANTS_MAX` are left out — and the count of those left out for being past the
+ * cap is logged, because a mail whose recipients were dropped is a fact somebody should be
+ * able to find. Never which addresses: a log is read by more people than the thread is.
+ */
+function captureRecipients(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  sender: ContactRow,
+  addresses: readonly string[],
+): void {
+  const standing = standingOn(ctx, conversation, sender.id);
+  if (standing !== 'requester' && standing !== 'cc') return;
+  const seen = new Set<string>([addressKey(sender.email ?? '')]);
+  let overCap = 0;
+  for (const raw of addresses) {
+    const parsed = z.string().email().safeParse(raw.trim());
+    if (!parsed.success) continue;
+    const email = parsed.data;
+    if (seen.has(addressKey(email))) continue;
+    seen.add(addressKey(email));
+    if (isDeskAddress(ctx, email)) continue;
+    const known = contactByEmail(ctx, email);
+    if (known && standingOn(ctx, conversation, known.id) !== null) continue;
+    if (blockedBy(ctx, { emails: [email], contactId: known?.id ?? null })) continue;
+    const full = ctx.sql.query<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM ticket0_conversation_participants WHERE conversation_id = ?',
+      [conversation.id],
+    )[0];
+    if (Number(full?.n ?? 0) >= PARTICIPANTS_MAX) {
+      overCap++;
+      continue;
+    }
+    putParticipant(ctx, conversation, known ?? contactForAddress(ctx, email), 'cc', null);
+  }
+  if (overCap > 0) {
+    ctx.log.warn('{overCap} recipients of a mail on {conversationId} were not copied in: the conversation is full', {
+      overCap,
+      conversationId: conversation.id,
+    });
+  }
+}
+
+/**
+ * Every CC on `closed`, carried onto the follow-up that continues it — the people on a
+ * thread are on its continuation. Third parties are not: a side thread belonged to the
+ * conversation it was about.
+ */
+function carryCcs(ctx: OperationContext, closed: ConversationRow, followUp: ConversationRow): void {
+  for (const p of participantsOf(ctx, closed.id)) {
+    if (p.role !== 'cc') continue;
+    putParticipant(ctx, followUp, contactOrThrow(ctx, p.contact_id), 'cc', p.added_by);
+  }
+}
+
+/**
+ * The conversations among `conversationIds` the caller reads as a CC (#1086) — the
+ * portal's second proof, beside the kernel's own walk.
+ *
+ * A `cc` row names a contact on a conversation, and the caller is checked by the KERNEL
+ * for `conversation:read-own` on that contact — the grant a customer's portal is made of.
+ * So nothing is granted to make a CC visible and nothing has to be revoked to stop it:
+ * the row is the fact, the check is the proof, and deleting the row ends it at once.
+ * `third-party` rows are not read here at all.
+ *
+ * One read for the whole page and one check per distinct contact on it.
+ */
+async function readableAsCc(ctx: OperationContext, conversationIds: readonly string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (conversationIds.length === 0) return out;
+  const rows = ctx.sql.query<{ conversation_id: string; contact_id: string }>(
+    // One bound JSON array: a page can name more conversations than a DO binds (#1759).
+    `SELECT conversation_id, contact_id FROM ticket0_conversation_participants
+      WHERE role = 'cc' AND conversation_id IN (SELECT value FROM json_each(?))`,
+    [JSON.stringify(conversationIds)],
+  );
+  const verdicts = new Map<string, boolean>();
+  for (const row of rows) {
+    let allowed = verdicts.get(row.contact_id);
+    if (allowed === undefined) {
+      allowed = (await ctx.check(T0_PERM.conversationReadOwn, contactRef(row.contact_id))).allowed;
+      verdicts.set(row.contact_id, allowed);
+    }
+    if (allowed) out.add(row.conversation_id);
+  }
+  return out;
+}
+
+/**
+ * The portal's door to one conversation: the kernel's walk (the requester's own grant,
+ * through the parent edge), or a CC's proof (`readableAsCc`). Refused with the walk's own
+ * denial, so a caller who is neither learns nothing new about why.
+ */
+async function assertReadsAsCustomer(ctx: OperationContext, conversationId: string): Promise<void> {
+  const walk = await ctx.check(T0_PERM.conversationReadOwn, conversationRef(conversationId));
+  if (walk.allowed) return;
+  if ((await readableAsCc(ctx, [conversationId])).has(conversationId)) return;
+  assertAllowed(walk);
+}
+
+/**
+ * Take a discarded conversation's participants away, and with them the contacts that
+ * junk alone brought into this desk (#1086).
+ *
+ * A mail's recipient list is the sender's text, and a discard is the desk deciding the
+ * mail was junk. So a contact made to be a CC or a third party on it, who is on nothing
+ * else here, goes with it: no other conversation is theirs, they are on no other one, no
+ * message elsewhere names them, no rule blocks them, and neither a host site nor a login
+ * vouched for them. A contact anything else names stays, exactly as the requester stays
+ * (`ticket0/discard` says why).
+ *
+ * The widget's two tables are not asked, and need not be: a session's contact is its
+ * conversation's (`bindOpening`), which "no conversation is theirs" already rules out, and
+ * an opening names a contact only for a visitor the host site vouched for, which carries
+ * an `external_id`. Every question asked is answered by an index.
+ */
+function dropParticipants(ctx: OperationContext, conversationId: string): void {
+  const people = ctx.sql.query<{ contact_id: string }>(
+    'SELECT contact_id FROM ticket0_conversation_participants WHERE conversation_id = ?',
+    [conversationId],
+  );
+  ctx.sql.exec('DELETE FROM ticket0_conversation_participants WHERE conversation_id = ?', [conversationId]);
+  if (people.length === 0) return;
+  ctx.sql.exec(
+    `DELETE FROM ticket0_contacts AS k
+      WHERE k.id IN (SELECT value FROM json_each(?))
+        AND k.external_id IS NULL AND k.principal IS NULL
+        AND NOT EXISTS (SELECT 1 FROM ticket0_conversations c WHERE c.contact_id = k.id)
+        AND NOT EXISTS (SELECT 1 FROM ticket0_conversation_participants p WHERE p.contact_id = k.id)
+        AND NOT EXISTS (SELECT 1 FROM ticket0_messages m WHERE m.author_contact_id = k.id)
+        AND NOT EXISTS (SELECT 1 FROM ticket0_messages m WHERE m.third_party_contact_id = k.id)
+        AND NOT EXISTS (SELECT 1 FROM ticket0_block_rules b WHERE b.kind = 'contact' AND b.value = k.id)`,
+    [JSON.stringify(people.map((p) => p.contact_id))],
+  );
+}
+
 /**
  * Destroy a suspended conversation's content — `ticket0/discard`, once per conversation
  * for the bulk one too, so the trail and the events are per conversation.
@@ -1552,8 +1849,10 @@ async function dropFollowers(ctx: OperationContext, conversationId: string): Pro
  * desk's tables: `ticket0_messages` (their messages, the desk's notes, any draft, and the
  * note that names a mail's attachments — the bytes were never stored), the tags, and the
  * widget sessions (whose browser columns are about the person, and whose token must stop
- * working). Notifications go too: they point at a conversation nobody should open. The
- * subject is blanked, because on mail it is the sender's line. The contact and the
+ * working). Notifications go too: they point at a conversation nobody should open. So do
+ * its CCs and third parties, and the contacts the junk alone brought in for them
+ * (`dropParticipants`, #1086): a recipient list is the sender's text as much as the body
+ * is. The subject is blanked, because on mail it is the sender's line. The contact and the
  * assistant's turns stay, and the model's `ticket0/discard` says why — and says exactly
  * what the guarantee covers: these tables and every event emitted from now on, and not
  * the copies older events already put in the outbox and the lake (#1692).
@@ -1574,6 +1873,9 @@ async function discardConversation(
   ] as const) {
     ctx.sql.exec(`DELETE FROM ${table} WHERE conversation_id = ?`, [conversation.id]);
   }
+  // The people the junk named, and the contacts it alone brought in (#1086). After the
+  // messages, which are what would otherwise still name them.
+  dropParticipants(ctx, conversation.id);
   // The turns stay, for what they billed; the provider's error text goes, because it can
   // quote the message back (#1973 review).
   ctx.sql.exec('UPDATE ticket0_ai_turns SET error = NULL WHERE conversation_id = ?', [conversation.id]);
@@ -1648,14 +1950,18 @@ function suspicionOf(
   // of this one — so ASCII-only `lower()` and space-only `trim()` mean one thing to both.
   // Bounded by the window, over the kernel's `(visibility, created_at, id)` message index.
   if (body.trim().length >= SPAM_REPEAT_MIN_CHARS) {
+    // The AUTHOR of each copy (#1086): a CC's message on somebody else's conversation is
+    // the CC writing, and the requester of that conversation did not send it. Migration
+    // 0022 filled the column for every older contact message; the COALESCE covers a row
+    // a version before it writes after a rollback, which carries none.
     const others = ctx.sql.query<{ n: number }>(
-      `SELECT COUNT(DISTINCT c.contact_id) AS n
+      `SELECT COUNT(DISTINCT COALESCE(m.author_contact_id, c.contact_id)) AS n
          FROM ticket0_messages m
          JOIN ticket0_conversations c ON c.id = m.conversation_id
         WHERE m.visibility = 'public'
           AND m.created_at >= ?
           AND m.author_kind = 'contact'
-          AND c.contact_id != ?
+          AND COALESCE(m.author_contact_id, c.contact_id) != ?
           AND lower(trim(m.body_text)) = lower(trim(?))`,
       [shiftInstant(ctx.now(), -SPAM_REPEAT_WINDOW_HOURS * 3_600_000), contact.id, body],
     )[0];
@@ -2038,8 +2344,12 @@ async function verifyIdentity(
   return diff === 0;
 }
 
+function contactOrNull(ctx: OperationContext, id: string): ContactRow | undefined {
+  return ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [id])[0];
+}
+
 function contactOrThrow(ctx: OperationContext, id: string): ContactRow {
-  const row = ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [id])[0];
+  const row = contactOrNull(ctx, id);
   if (!row) throw substratError('not_found', `contact not found: ${id}`);
   return row;
 }
@@ -2129,7 +2439,9 @@ function followUp(
   contact: ContactRow,
   subject: string,
 ): ConversationRow {
-  return openConversation(ctx, contact, closed.channel, subject, closed.id);
+  const next = openConversation(ctx, contact, closed.channel, subject, closed.id);
+  carryCcs(ctx, closed, next);
+  return next;
 }
 
 /**
@@ -2141,9 +2453,12 @@ function followUp(
  * writes freely, which is why it is not enough on its own: anyone who has seen one
  * `Message-ID` from a thread (a forwarded mail, a CC) could otherwise post into
  * somebody else's conversation, where an agent reads it as that customer and answers
- * them. So the thread is taken only when the sending address is that conversation's
- * contact; anything else falls back to a conversation of its own, which is what every
- * inbound mail got before this, and loses nothing but the stitch.
+ * them. So the thread is taken only when the sending address is somebody ON that
+ * conversation — its contact, a CC, or a third party it was forwarded to (#1086,
+ * `standingOn`); anything else falls back to a conversation of its own, which is what
+ * every inbound mail got before this, and loses nothing but the stitch. Being on it is
+ * something only the requester's own mail or a person at the desk decides, so nobody
+ * puts themselves on a stranger's thread by mailing it.
  *
  * `contactByEmail` matches exactly, so a sender whose address differs in case from the
  * contact's is also a new conversation. The conservative miss, on purpose: an agent can
@@ -2171,7 +2486,7 @@ function threadRepliedTo(
   )[0];
   if (!repliedTo) return undefined;
   const conversation = conversationOrThrow(ctx, repliedTo.conversation_id);
-  return conversation.contact_id === sender.id ? conversation : undefined;
+  return standingOn(ctx, conversation, sender.id) !== null ? conversation : undefined;
 }
 
 /**
@@ -2977,7 +3292,10 @@ function publicThread(
   return pageOf(
     withCitations(
       ctx,
-      rows.map(({ author_principal: _hidden, ...rest }) => rest),
+      // The model's `customerMessage`, at runtime: nothing about who else is on the thread.
+      rows.map(
+        ({ author_principal: _who, author_contact_id: _contact, third_party_contact_id: _third, ...rest }) => rest,
+      ),
     ),
     limit,
     (row) => row.id,
@@ -4912,6 +5230,22 @@ const operations = {
       conversation.id,
     ]);
     /**
+     * The loser's CCs and third parties move with it (#1086), the way its tags do: one row
+     * per person per conversation, so somebody already on the survivor keeps the survivor's
+     * row — and its role — and the loser's copy goes. Both conversations are one contact's,
+     * so nobody moved can be the survivor's requester. A merge can carry the survivor past
+     * `PARTICIPANTS_MAX`: the cap bounds what is ADDED, and dropping somebody already on
+     * the thread to honour it would stop mailing a person nobody decided to stop mailing.
+     */
+    ctx.sql.exec(
+      `UPDATE ticket0_conversation_participants SET conversation_id = ? WHERE conversation_id = ?
+         AND contact_id NOT IN (SELECT contact_id FROM ticket0_conversation_participants WHERE conversation_id = ?)`,
+      [survivor.id, conversation.id, survivor.id],
+    );
+    ctx.sql.exec('DELETE FROM ticket0_conversation_participants WHERE conversation_id = ?', [
+      conversation.id,
+    ]);
+    /**
      * `csat` deliberately stays. It is keyed by the conversation and it is a rating OF
      * that conversation — moving it would either collide with the survivor's own
      * rating or silently reattribute one exchange's score to another.
@@ -5100,6 +5434,130 @@ const operations = {
       payload: { conversation_id: conversation.id, follower: principal },
     });
     return { conversation_id: conversation.id, follower: principal, following: false };
+  },
+
+  // --- Participants (#1086) -------------------------------------------------
+
+  /**
+   * The four roles from the three places they live, requester first, then everyone else
+   * in the order they joined, then the followers by principal. Ids only — see the
+   * declaration for why an address is not this read's to hand out.
+   */
+  'ticket0/list-participants': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const followers = ctx.sql.query<{ principal: string }>(
+      'SELECT principal FROM ticket0_conversation_follows WHERE conversation_id = ? ORDER BY principal',
+      [conversation.id],
+    );
+    return {
+      participants: [
+        {
+          role: 'requester' as const,
+          contact_id: conversation.contact_id,
+          principal: null,
+          added_by: null,
+          created_at: conversation.created_at,
+        },
+        ...participantsOf(ctx, conversation.id).map((p) => ({
+          role: p.role,
+          contact_id: p.contact_id,
+          principal: null,
+          added_by: p.added_by,
+          created_at: p.created_at,
+        })),
+        ...followers.map((f) => ({
+          role: 'follower' as const,
+          contact_id: null,
+          principal: f.principal,
+          added_by: null,
+          created_at: null,
+        })),
+      ],
+    };
+  },
+
+  /**
+   * Copy somebody in. Not in the lifecycle, like a follow: it is a decision about who is
+   * on the conversation, not work on it — but the suspended queue's rule is asked
+   * directly, because copying somebody in on junk is the desk mailing it on.
+   */
+  'ticket0/add-participant': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationForward, conversationRef(input.conversationId)));
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    heldOrThrow(conversation, 'ticket0/add-participant');
+    const contact = recipientOrThrow(ctx, input.email, input.name);
+    return putParticipant(ctx, conversation, contact, 'cc', String(ctx.principal)).row;
+  },
+
+  /**
+   * Take somebody off. Asks nothing about them, for `unfollow-conversation`'s reason, and
+   * is open in every queue: removing a recipient is always safe to allow. Announced only
+   * when somebody was actually taken off, the way untagging is.
+   */
+  'ticket0/remove-participant': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationForward, conversationRef(input.conversationId)));
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    if (input.contactId === conversation.contact_id) {
+      throw substratError('validation_failed', 'the person this conversation is with cannot be taken off it');
+    }
+    const existing = participantOf(ctx, conversation.id, input.contactId);
+    if (!existing) return { conversation_id: conversation.id, contact_id: input.contactId, removed: false };
+    ctx.sql.exec('DELETE FROM ticket0_conversation_participants WHERE id = ?', [existing.id]);
+    ctx.emit({
+      type: 'ticket0.participant-removed',
+      schemaVersion: 1,
+      entity: conversationRef(conversation.id),
+      piiClass: 'none',
+      payload: { conversation_id: conversation.id, contact_id: existing.contact_id },
+    });
+    return { conversation_id: conversation.id, contact_id: existing.contact_id, removed: true };
+  },
+
+  /**
+   * A side thread: the third party on, the message written as `forward`, and the relay
+   * told — by `ticket0.forward-requested`, which carries ids, and by
+   * `list-pending-outbound`, which is what it actually sweeps.
+   *
+   * `step()` with this operation is where closed and suspended conversations are refused.
+   * It moves nothing, and it is not a response: the customer has been told nothing, so
+   * neither service-level target and neither no-reply clock hears of it (`writeMessage`
+   * arms and clears those for `public` only). `updated_at` is touched — the desk did work
+   * the conversation.
+   */
+  'ticket0/forward-message': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationForward, conversationRef(input.conversationId)));
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/forward-message');
+    const contact = recipientOrThrow(ctx, input.to, input.name);
+    if (contact.id === conversation.contact_id) {
+      throw substratError('validation_failed', 'that is the customer — a reply is how the desk writes to them');
+    }
+    putParticipant(ctx, conversation, contact, 'third-party', String(ctx.principal));
+    const row = writeMessage(ctx, {
+      conversationId: conversation.id,
+      authorKind: 'agent',
+      authorPrincipal: String(ctx.principal),
+      visibility: 'forward',
+      bodyText: input.body,
+      bodyHtml: input.bodyHtml ?? null,
+      thirdPartyContactId: contact.id,
+    });
+    touch(ctx, conversation.id);
+    ctx.log.info('forwarded a question on {conversationId}', { conversationId: conversation.id });
+    ctx.emit({
+      type: 'ticket0.forward-requested',
+      schemaVersion: 1,
+      entity: { entityType: 'message', entityId: row.id },
+      piiClass: 'none',
+      payload: {
+        id: row.id,
+        conversation_id: row.conversation_id,
+        visibility: row.visibility,
+        third_party_contact_id: row.third_party_contact_id,
+      },
+    });
+    return row;
   },
 
   /**
@@ -5949,6 +6407,10 @@ const operations = {
     const bound = input.conversationId
       ? conversationOrThrow(ctx, input.conversationId)
       : (threaded ?? openConversation(ctx, contact, 'email', input.subject));
+    // Where the sender stands on the conversation the mail found (#1086). A third party
+    // writes on a side thread, and that decides both where a reply to a closed thread
+    // goes (below) and who may read what they wrote.
+    const standing = standingOn(ctx, bound, contact.id);
     // A reply to a thread the desk has closed is a new thread, for the reason
     // `followUp` gives. The relay is told which conversation the message landed in by
     // the row it gets back, so a threading header pointing at the closed one does not
@@ -5963,16 +6425,29 @@ const operations = {
     // carries no contact of its own. The two paths agree rather than differ. (Binding by
     // `In-Reply-To` is the one path that does compare addresses — see `threadRepliedTo`
     // — because there the sender chose the thread, not the relay.)
+    //
+    // Except a THIRD PARTY's mail (#1086). A follow-up is the customer's conversation, and
+    // what lands in one is public — so a supplier answering a forward after the thread
+    // was closed would be read by the customer. Their mail opens a conversation of their
+    // own instead, as any stranger's does: nothing is lost, and nothing crosses over.
     const landed =
-      bound.state === 'closed'
-        ? followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), input.subject)
-        : bound;
+      bound.state !== 'closed'
+        ? bound
+        : standing === 'third-party'
+          ? openConversation(ctx, contact, 'email', input.subject)
+          : followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), input.subject);
+    // A side thread: the third party writing into the conversation they were forwarded.
+    const sideThread = standing === 'third-party' && landed.id === bound.id;
     // How the mail found its conversation — the first question when one lands in the
     // wrong place.
     const binding =
       landed.id !== bound.id
-        ? 'a follow-up to a closed conversation'
-        : input.conversationId
+        ? standing === 'third-party'
+          ? 'a conversation of its own, from a third party on a closed one'
+          : 'a follow-up to a closed conversation'
+        : sideThread
+          ? 'a third party on the conversation they were forwarded'
+          : input.conversationId
           ? 'the conversation it named'
           : threaded
             ? 'the thread it replied to'
@@ -5989,13 +6464,20 @@ const operations = {
       conversationId: conversation.id,
       authorKind: 'contact',
       authorPrincipal: null,
-      visibility: 'public',
+      // A third party's words are the side thread's (#1086): the desk reads them, and no
+      // customer-facing read ever returns them — each of those asks for `public` by name.
+      visibility: sideThread ? 'forward' : 'public',
       bodyText: input.bodyText,
       bodyHtml: input.bodyHtml ?? null,
       emailMessageId: input.emailMessageId,
       emailInReplyTo: input.emailInReplyTo ?? null,
+      authorContactId: contact.id,
+      thirdPartyContactId: sideThread ? contact.id : null,
     });
     recordDelivery(ctx, row, 'inbound');
+    // Whoever else the mail was addressed to, as CCs — when it came from somebody on the
+    // customer's thread (`captureRecipients` says who may add people by mail).
+    captureRecipients(ctx, conversation, contact, [...(input.to ?? []), ...(input.cc ?? [])]);
 
     // The files, as a note rather than as files (#1080). There is still nowhere to put
     // the bytes, so this does not pretend otherwise — it makes the loss AUDIBLE, which
@@ -6034,6 +6516,12 @@ const operations = {
    * message outbound is that the DESK wrote it, and a `system` message on an email
    * conversation is the desk speaking too. The one kind that can never be sent back
    * to where it came from is the customer's own, which is what this excludes.
+   *
+   * Two kinds of mail, named by visibility and never by exclusion (#1086): a `public`
+   * reply on an EMAIL conversation (a widget visitor reads theirs in the widget), and a
+   * `forward` on ANY conversation, while its third party is still on it — a forward is
+   * always mail, and one whose third party was taken off is never sent, so it must not
+   * sit at the head of this queue being skipped on every sweep either.
    */
   'ticket0/list-pending-outbound': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRelay));
@@ -6044,10 +6532,14 @@ const operations = {
                       m.created_at AS createdAt
                  FROM ticket0_messages m
                  JOIN ticket0_conversations c ON c.id = m.conversation_id
-                WHERE m.visibility = 'public'
-                  AND m.author_kind <> 'contact'
+                WHERE m.author_kind <> 'contact'
                   AND m.delivered_at IS NULL
-                  AND c.channel = 'email'
+                  AND ((m.visibility = 'public' AND c.channel = 'email')
+                       OR (m.visibility = 'forward'
+                           AND EXISTS (SELECT 1 FROM ticket0_conversation_participants p
+                                        WHERE p.conversation_id = m.conversation_id
+                                          AND p.contact_id = m.third_party_contact_id
+                                          AND p.role = 'third-party')))
                   AND ${inTheInbox('c')}`;
     if (input.cursor) {
       sql += desc ? ' AND m.id < ?' : ' AND m.id > ?';
@@ -6065,7 +6557,9 @@ const operations = {
   'ticket0/read-outbound': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRelay));
     const message = messageOrThrow(ctx, input.messageId);
-    if (message.visibility !== 'public')
+    // Named, not excluded: a visibility this read does not know is never mailed (#1086).
+    const visibility = message.visibility;
+    if (visibility !== 'public' && visibility !== 'forward')
       throw substratError('permission_denied', 'internal notes are never sent to a customer');
     const conversation = conversationOrThrow(ctx, message.conversation_id);
     // The relay reads a body to SEND it, so a held conversation is refused here as it is
@@ -6073,9 +6567,25 @@ const operations = {
     // accepted, and a relay holding an id from before the suspension is refused too.
     // `record-delivery` stays open — it records a send that already happened.
     heldOrThrow(conversation, 'ticket0/read-outbound');
-    const contact = ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [
-      conversation.contact_id,
-    ])[0];
+    /**
+     * Who it goes to (#1086). A public reply: the requester, with every CC copied. A
+     * forward: its third party alone, and only while they are still on the conversation —
+     * taken off, a forward still waiting is not sent (`toEmail` null, which the relay
+     * skips). Never both: the customer's thread and a side thread do not share a mail.
+     */
+    let toEmail: string | null;
+    let ccEmails: string[] = [];
+    if (visibility === 'forward') {
+      const third = message.third_party_contact_id;
+      const on = third ? participantOf(ctx, conversation.id, third) : undefined;
+      toEmail = on?.role === 'third-party' ? (contactOrNull(ctx, on.contact_id)?.email ?? null) : null;
+    } else {
+      toEmail = contactOrNull(ctx, conversation.contact_id)?.email ?? null;
+      ccEmails = participantsOf(ctx, conversation.id)
+        .filter((p) => p.role === 'cc')
+        .map((p) => contactOrNull(ctx, p.contact_id)?.email ?? null)
+        .filter((email): email is string => email !== null && !isDeskAddress(ctx, email));
+    }
     const author = message.author_principal
       ? ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
           message.author_principal,
@@ -6086,7 +6596,9 @@ const operations = {
       messageId: message.id,
       conversationId: conversation.id,
       subject: conversation.subject,
-      toEmail: contact?.email ?? null,
+      toEmail,
+      ccEmails,
+      visibility,
       fromAddress: desk(ctx).from_address,
       agentName: author?.display_name ?? null,
       // Gone after an erasure - which is exactly why the event carried ids only:
@@ -6286,6 +6798,8 @@ const operations = {
       authorPrincipal: null,
       visibility: 'public',
       bodyText: input.body,
+      // The visitor holding the session is the conversation's own contact (`bindOpening`).
+      authorContactId: conversation.contact_id,
     });
     settle(ctx, conversation, next);
     notifyHolder(ctx, conversation, 'replied');
@@ -6332,6 +6846,7 @@ const operations = {
           authorPrincipal: null,
           visibility: 'public',
           bodyText: input.body,
+          authorContactId: conversation.contact_id,
         })
       : lastCustomerMessage(ctx, conversation.id);
 
@@ -6396,17 +6911,30 @@ const operations = {
    * rather than a `WHERE contact_id = ?`. The distinction matters: a WHERE clause is
    * a promise the author remembered to keep; the walk is one the kernel keeps.
    */
-  'ticket0/my-conversations': async (ctx, input) =>
-    pageVisible(
-      (p) => ctx.page<ConversationRow>('conversation', p),
+  /**
+   * Two proofs per row, and either is enough: the kernel's walk (the caller's own
+   * conversation, through the parent edge) or a CC's (`readableAsCc`, #1086). The CC proof
+   * is read once for the whole page, and only when some row on it was not the caller's
+   * own — a customer with no CCs anywhere pays one query, the same as before.
+   */
+  'ticket0/my-conversations': async (ctx, input) => {
+    let batch: string[] = [];
+    let asCc: Promise<Set<string>> | undefined;
+    return pageVisible(
+      (p) => {
+        const page = ctx.page<ConversationRow>('conversation', p);
+        batch = page.entries.map((c) => c.id);
+        return page;
+      },
       input,
-      async (c) => (await ctx.check(T0_PERM.conversationReadOwn, conversationRef(c.id))).allowed,
-    ),
+      async (c) =>
+        (await ctx.check(T0_PERM.conversationReadOwn, conversationRef(c.id))).allowed ||
+        (await (asCc ??= readableAsCc(ctx, batch))).has(c.id),
+    );
+  },
 
   'ticket0/my-messages': async (ctx, input) => {
-    assertAllowed(
-      await ctx.check(T0_PERM.conversationReadOwn, conversationRef(input.conversationId)),
-    );
+    await assertReadsAsCustomer(ctx, input.conversationId);
     conversationOrThrow(ctx, input.conversationId);
     return publicThread(ctx, input.conversationId, input);
   },
