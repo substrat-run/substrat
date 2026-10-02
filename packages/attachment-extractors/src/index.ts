@@ -15,7 +15,10 @@
  * - **html** (`text/html`, `application/xhtml+xml`): tags stripped, each construct ended where
  *   the HTML tokenizer ends it; comments, `script`, `style` and the other raw-text elements a
  *   browser hides, and `template` content, dropped — an unclosed one through to the end;
- *   entities decoded.
+ *   entities decoded. **Its contract is conservative: it never indexes content a browser
+ *   hides, and may under-index what it does not model** — inline SVG and MathML, `select`, a
+ *   frameset — indexing nothing inside them, and nothing after one whose end it cannot be sure
+ *   of (`htmlText` lists the rules).
  * - **docx / xlsx / pptx**: an OOXML file is a zip of XML parts, so this reads the zip's
  *   central directory, inflates only the parts that carry text, and keeps the text of
  *   their `t` elements. The inflate is the web-standard `DecompressionStream('deflate-raw')`,
@@ -413,17 +416,28 @@ const QUOTED = 6;
  * The `>` that ends the tag whose name starts at `from`, or -1 — by the HTML tokenizer's own
  * states, so a `>` inside a quoted attribute value ends nothing (`<a title="x > y">`), while
  * a quote that opens no value (`<a "x>`) is just a character.
+ *
+ * `flags.selfClosing` says whether the tokenizer set the tag's self-closing flag: a `/` met
+ * outside a value, right before the `>`. `<svg/>` sets it; `<svg a=b/>` does not, because that
+ * `/` is part of the unquoted value — a difference that decides whether foreign content opened.
  */
-function htmlTagEnd(s: string, from: number, pace: Pace): Promise<number> {
+function htmlTagEnd(s: string, from: number, pace: Pace, flags?: { selfClosing: boolean }): Promise<number> {
   let state = TAG_NAME;
   let quote = 0;
+  let slash = false;
   return pace.scan(s, from, (c) => {
     if (state === QUOTED) {
+      slash = false;
       if (c === quote) state = BEFORE_ATTR;
       return false;
     }
-    if (c === 62) return true;
+    if (c === 62) {
+      if (flags) flags.selfClosing = slash;
+      return true;
+    }
     const space = isHtmlSpace(c);
+    // The tokenizer's self-closing start tag state is entered by a `/` outside a value.
+    slash = c === 47 && state !== BEFORE_VALUE && state !== UNQUOTED;
     switch (state) {
       case TAG_NAME:
         if (space || c === 47) state = BEFORE_ATTR;
@@ -524,6 +538,111 @@ async function scriptEnd(s: string, from: number, pace: Pace): Promise<number> {
 }
 
 /**
+ * Start tags at which a browser leaves foreign content wherever it is (`font` only with certain
+ * attributes — here, conservatively, always). `</br>` and `</p>` do the same as end tags.
+ */
+const FOREIGN_BREAKOUT = new Set([
+  'b', 'big', 'blockquote', 'body', 'br', 'center', 'code', 'dd', 'div', 'dl', 'dt', 'em', 'embed',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'hr', 'i', 'img', 'li', 'listing', 'menu', 'meta',
+  'nobr', 'ol', 'p', 'pre', 'ruby', 's', 'small', 'span', 'strong', 'strike', 'sub', 'sup', 'table',
+  'tt', 'u', 'ul', 'var', 'font',
+]);
+/**
+ * Foreign elements inside which a start tag is parsed as HTML — SVG's HTML integration points
+ * and MathML's text integration points, with `annotation-xml` counted whatever its encoding.
+ */
+const INTEGRATION_POINTS = new Set(['foreignobject', 'desc', 'title', 'mi', 'mo', 'mn', 'ms', 'mtext', 'annotation-xml']);
+/**
+ * In a select, the start tags at which a browser leaves it early — or that it ignores but this
+ * scanner would not follow (foreign content, a frameset, `plaintext`). Either way the scanner
+ * can no longer be sure what a browser shows, so nothing more of the file is indexed.
+ */
+const SELECT_LEAVES = new Set([
+  'select', 'input', 'keygen', 'textarea', 'caption', 'table', 'tbody', 'tfoot', 'thead', 'tr', 'td', 'th',
+  'svg', 'math', 'frameset', 'plaintext',
+]);
+/** In a select inside a table, the end tags that close the select early. */
+const SELECT_TABLE_ENDS = new Set(['caption', 'table', 'tbody', 'tfoot', 'thead', 'tr', 'td', 'th']);
+
+/** The longest foreign element name followed; a longer one makes the region uncertain. */
+const FOREIGN_NAME_MAX = 64;
+
+/** A tag name in foreign content, ASCII lower-cased — '' when longer than any followed. */
+function foreignName(s: string, at: number): string {
+  let k = at;
+  while (k < s.length && k - at <= FOREIGN_NAME_MAX && !endsTagName(s.charCodeAt(k))) k += 1;
+  if (k - at > FOREIGN_NAME_MAX) return '';
+  return s.slice(at, k).replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+
+/**
+ * Where a foreign-content region — an `<svg>` or `<math>` and everything in it — ends: the index
+ * just past the `>` of the end tag that closes its root, or -1 when the scanner cannot be SURE
+ * that is where a browser ends it. The caller indexes nothing in the region, and after a -1,
+ * nothing more of the file.
+ *
+ * Inside foreign content a browser tokenizes differently — no raw text, real CDATA sections, no
+ * template contents — and its tree builder can leave the region early (a breakout tag, an end
+ * tag only HTML rules match) or late (an end tag ignored inside HTML content an integration point
+ * holds). So the region is followed only while every token in it is one whose effect is certain:
+ * text, comments, CDATA, foreign start tags (self-closing honoured), and end tags that close an
+ * element open in the region. A breakout tag, a start tag inside an integration point, or an
+ * end tag matching nothing open is the browser leaving the rules followed here — and -1.
+ */
+async function foreignEnd(s: string, from: number, root: string, pace: Pace): Promise<number> {
+  const open = [root];
+  const flags = { selfClosing: false };
+  for (let i = from; ; ) {
+    const lt = await pace.find(s, '<', i);
+    if (lt < 0) return -1;
+    const next = s.charCodeAt(lt + 1);
+    if (next === 33 && s.startsWith('--', lt + 2)) {
+      const end = await commentEnd(s, lt, pace);
+      if (end < 0) return -1;
+      i = end + 1;
+      continue;
+    }
+    if (s.startsWith('<![CDATA[', lt)) {
+      const end = await pace.find(s, ']]>', lt + 9); // a real CDATA section, in foreign content
+      if (end < 0) return -1;
+      i = end + 3;
+      continue;
+    }
+    if (next === 33 || next === 63 || (next === 47 && !isAsciiAlpha(s.charCodeAt(lt + 2)))) {
+      const end = await pace.find(s, '>', lt + 2);
+      if (end < 0) return -1;
+      i = end + 1;
+      continue;
+    }
+    if (!isAsciiAlpha(next) && next !== 47) {
+      i = lt + 1;
+      continue;
+    }
+    const closing = next === 47;
+    const nameAt = closing ? lt + 2 : lt + 1;
+    const name = foreignName(s, nameAt);
+    if (name === '') return -1;
+    if (closing ? name === 'br' || name === 'p' : FOREIGN_BREAKOUT.has(name) || INTEGRATION_POINTS.has(open[open.length - 1]!)) {
+      return -1;
+    }
+    flags.selfClosing = false;
+    const gt = await htmlTagEnd(s, nameAt, pace, flags);
+    if (gt < 0) return -1;
+    i = gt + 1;
+    if (!closing) {
+      if (!flags.selfClosing) open.push(name);
+      continue;
+    }
+    // An end tag pops to the nearest open element of its name; one that matches nothing open
+    // falls through to the HTML rules, which this scanner does not follow from here.
+    const at = open.lastIndexOf(name);
+    if (at < 0) return -1;
+    open.length = at;
+    if (at === 0) return i;
+  }
+}
+
+/**
  * Raw text (`xmp`, `plaintext`) is shown as written, so its `&` must survive the entity pass:
  * escaped here, a window at a time, and turned back into itself there.
  */
@@ -560,19 +679,37 @@ async function asWritten(text: string, pace: Pace): Promise<string> {
  * that ordinary) must not have its source indexed as prose. So does a tag cut off before its
  * `>`. `test/html-oracle.test.ts` holds this against parse5, a browser-grade parser.
  *
- * Not modelled: SVG and MathML content, where `script`, `style` and `title` are not raw text
- * and CDATA sections are real, and the tree builder's frameset and `select` quirks, where it
- * drops a start tag the tokenizer would otherwise have switched on. Those are read by the HTML
- * rules above, and can differ from a browser either way.
+ * **The contract is conservative: never index what a browser hides; index less where unsure.**
+ * Some contexts change how a browser parses in ways this scanner does not follow, and there it
+ * indexes NOTHING rather than guess:
+ *
+ * - **`select`** — the tree builder ignores almost every start tag inside one, so a `title` or
+ *   `style` there switches nothing: only `script` and `template` change how it tokenizes. The
+ *   scanner follows exactly that, indexes nothing, and stops at the `</select>` a browser
+ *   would; a tag at which a browser leaves the select early (`input`, `textarea`, a table
+ *   tag, a nested `select`, …) ends indexing for the rest of the file.
+ * - **inline `svg` and `math`** — foreign content: no raw text, real CDATA, its own way out
+ *   (`foreignEnd`). Nothing in the region is indexed, and if the scanner cannot be sure where a
+ *   browser ends the region, nothing after it either.
+ * - **`frameset`** — a honoured one leaves no body to show, so nothing after it is indexed.
+ * - any of these opened inside a `select` — nothing more of the file.
+ *
+ * So those contexts may be under-indexed, and their text after them too; nothing a browser
+ * hides is ever indexed. The oracle holds both halves: over-indexing fails anywhere, and
+ * under-indexing is allowed only from the first such context on.
  */
 async function htmlText(html: string, pace: Pace): Promise<string> {
   const out: string[] = [];
   const n = html.length;
   // Open `template` elements: their content is parsed as usual and shown nowhere.
   let hidden = 0;
+  // The template depth a `select` was opened at, or -1: nothing is indexed inside one.
+  let selectAt = -1;
+  const shown = () => hidden === 0 && selectAt < 0;
   const text = (from: number, to: number) => {
-    if (hidden === 0 && to > from) out.push(html.slice(from, to));
+    if (shown() && to > from) out.push(html.slice(from, to));
   };
+  const flags = { selfClosing: false };
   let i = 0;
   while (i < n) {
     const lt = await pace.find(html, '<', i);
@@ -604,16 +741,50 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     const closing = next === 47;
     const nameAt = closing ? lt + 2 : lt + 1;
     const name = shortTagName(html, nameAt);
-    const gt = await htmlTagEnd(html, nameAt, pace);
+    flags.selfClosing = false;
+    const gt = await htmlTagEnd(html, nameAt, pace, flags);
     if (gt < 0) break;
     i = gt + 1;
+    if (selectAt >= 0 && hidden === selectAt) {
+      // In the select itself: every tag but these is ignored by a browser and switches nothing.
+      if (closing && name === 'select') {
+        selectAt = -1;
+        continue;
+      }
+      if (closing ? name === 'template' || SELECT_TABLE_ENDS.has(name) : SELECT_LEAVES.has(name)) break;
+      if (!closing && name === 'template') {
+        hidden += 1; // a template's content is parsed by the HTML rules again
+      } else if (!closing && name === 'script') {
+        const close = await scriptEnd(html, i, pace);
+        const end = close < 0 ? -1 : await htmlTagEnd(html, close + 2, pace);
+        if (end < 0) break;
+        i = end + 1;
+      }
+      continue;
+    }
+    if (name === 'select') {
+      // One opened inside a select's template is a select within a select: unsure from here.
+      if (!closing && selectAt >= 0) break;
+      if (!closing) selectAt = hidden;
+      continue;
+    }
     if (name === 'template') {
       hidden = closing ? Math.max(0, hidden - 1) : hidden + 1;
       continue;
     }
+    if (!closing && (name === 'svg' || name === 'math' || name === 'frameset')) {
+      // Contexts the scanner does not model (see above): nothing inside is indexed — and where
+      // it cannot be sure a browser has left one, nothing more of the file.
+      if (name === 'frameset' || selectAt >= 0) break;
+      if (flags.selfClosing) continue; // `<svg/>` opens and closes at once
+      const end = await foreignEnd(html, i, name, pace);
+      if (end < 0) break;
+      i = end;
+      continue;
+    }
     if (!closing && name === 'plaintext') {
       // Everything after it is text, shown as written: there is no end tag to look for.
-      if (hidden === 0) out.push('\n', await asWritten(html.slice(i), pace));
+      if (shown()) out.push('\n', await asWritten(html.slice(i), pace));
       break;
     }
     const shownRcdata = HTML_SHOWN_RCDATA.has(name);
@@ -622,7 +793,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       // Read to the end tag as ONE unit: nothing inside — a `</template>`, a `<!--` — is markup.
       const close = name === 'script' ? await scriptEnd(html, i, pace) : await rawTextEnd(html, i, name, pace);
       const to = close < 0 ? n : close;
-      if (hidden === 0) {
+      if (shown()) {
         const edge = HTML_BLOCK.has(name) ? '\n' : ' ';
         out.push(edge);
         if (shownRcdata) out.push(html.slice(i, to)); // RCDATA: decoded with the rest
@@ -634,7 +805,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       i = end + 1;
       continue;
     }
-    if (hidden > 0) continue;
+    if (!shown()) continue;
     if (HTML_BLOCK.has(name)) out.push('\n');
     else if (HTML_CELL.has(name)) out.push(' ');
   }

@@ -37,6 +37,12 @@ extractors" a valid configuration, not a broken one.
 
 There is no PDF extractor yet, and nothing is OCR'd.
 
+The HTML extractor's contract is conservative: it **never indexes content a browser hides**, and
+it may **under-index** the contexts it does not model, rather than guess. It indexes nothing
+inside a `select`, inline `svg` or `math`, and nothing after a `frameset`. After such a context
+it resumes only where it is certain a browser ends it, and otherwise indexes nothing more of the
+file. Its tests hold this against parse5, a browser-grade HTML parser.
+
 ## Bounds
 
 The bounds that protect the parsing process live here. `maxInputBytes` (32 MiB) is declared to

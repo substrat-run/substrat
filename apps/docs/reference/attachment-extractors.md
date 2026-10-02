@@ -54,6 +54,22 @@ when the type says nothing (`application/octet-stream`). There is no PDF extract
 nothing is OCR'd. A host can add its own extractor to the list, provided it meets the
 `AttachmentExtractor` interface from `@substrat-run/kernel`.
 
+### What the HTML extractor guarantees
+
+It **never indexes content a browser hides**: comments, `script`, `style` and the other elements
+a browser does not render, and everything inside a `template`. Where it does not model how a
+browser parses, it indexes less instead of guessing. It may **under-index** these contexts:
+
+- **`select`**: nothing inside a select is indexed. Indexing resumes at the `</select>` a
+  browser would act on. A tag at which a browser leaves the select early (`input`, `textarea`,
+  a table tag, a nested `select`) ends indexing for the rest of the file.
+- **Inline `svg` and `math`**: nothing inside is indexed. Indexing resumes after the closing
+  tag only when the extractor is certain that is where a browser ends it, as for a typical
+  icon. Otherwise, nothing after it is indexed either.
+- **`frameset`**: nothing after one is indexed.
+
+These rules are checked against parse5, a browser-grade HTML parser, in the package's tests.
+
 ## Bounds
 
 The bounds that protect the process doing the parsing live here:

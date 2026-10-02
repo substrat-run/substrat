@@ -286,6 +286,40 @@ describe('text and html', () => {
       expect(await html('<p>before</p><plaintext></plaintext> <b>&amp;</b>')).toBe('before\n\n</plaintext> <b>&amp;</b>');
     });
 
+    it('a context it does not model indexes NOTHING: what a browser hides there never comes out', async () => {
+      // The review's two: a `title` a select ignores, and a MathML annotation nothing renders.
+      expect(await html('<select><title><template>secret_select</template></title><option>opt</option></select><p>after</p>'))
+        .toBe('after');
+      expect(await html('<math><annotation encoding="text/plain">secret_math</annotation></math><p>after</p>')).toBe('after');
+      // In a select only `script` and `template` switch the tokenizer: this `title` hides no template from it.
+      expect(await html('<select><title><template></title></select>secret</template></select><p>after</p>')).toBe('after');
+    });
+
+    it('it resumes after the context only where a browser certainly ends it — else indexes nothing more', async () => {
+      // An icon: text-only title, self-closing path. The browser leaves at `</svg>`, and so does the scanner.
+      expect(await html('<p>before</p><svg><title>Close</title><path d="M0 0"/></svg><p>after</p>')).toBe('before\n\nafter');
+      expect(await html('<p>before</p><svg/><p>after</p>')).toBe('before\n\nafter');
+      expect(await html('<p>before</p><svg><![CDATA[</svg>]]></svg><p>after</p>')).toBe('before\n\nafter');
+      expect(await html('<p>before</p><select><option>a</option></select><p>after</p>')).toBe('before\n\nafter');
+      // Uncertain — a breakout tag, a start tag inside an integration point, an end tag matching
+      // nothing open, `<svg a=b/>` (that `/` is the value's), a select left early, a frameset:
+      // nothing after it is indexed.
+      for (const uncertain of [
+        '<svg><p>x</p></svg>',
+        '<svg><desc><i>x</i></desc></svg>',
+        '<div><svg></div></svg>',
+        '<svg a=b/>',
+        '<select><input></select>',
+        '<select><svg></svg></select>',
+        // a select inside a select's template: losing track of the outer one would read its
+        // `title` as RCDATA and index the template a browser keeps hidden behind it
+        '<select><template><select></select></template><title><template>secret</template></title></select>',
+        '<frameset></frameset>',
+      ]) {
+        expect(await html(`<p>before</p>${uncertain}<p>after</p>`), uncertain).toBe('before');
+      }
+    });
+
     it('a tag ends at a `>` outside a quoted attribute value — and a quote that opens no value is a character', async () => {
       expect(await html('<p title="a > secret_attribute">visible</p>')).toBe('visible');
       expect(await html('<p title=\'a > secret_attribute\' data-x="b>c">visible</p>')).toBe('visible');
