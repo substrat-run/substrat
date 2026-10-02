@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox, type ModuleLogLine } from '@substrat-run/kernel';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   atomicContractSuite,
   grantExpiryContractSuite,
@@ -188,6 +189,8 @@ capabilityAttachmentContractSuite('adapter-sqlite', async () => {
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    // K-43: the host's parsers, passed in at the composition root.
+    attachmentExtractors: defaultAttachmentExtractors(),
   });
   return {
     host,
@@ -204,6 +207,8 @@ attachmentTextContractSuite('adapter-sqlite', async () => {
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    // K-43: the host's parsers, passed in at the composition root.
+    attachmentExtractors: defaultAttachmentExtractors(),
   });
   return {
     host,

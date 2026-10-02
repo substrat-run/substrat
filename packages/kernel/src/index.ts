@@ -232,13 +232,21 @@ export type {
   AttachmentTextStatus,
 } from './attachment-text.js';
 export {
-  DEFAULT_EXTRACTION_BOUNDS,
-  extractAttachmentText,
-  extractionPlan,
-  extractorFor,
+  DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  assertAttachmentExtractors,
+  chooseAttachmentExtractor,
+  mediaTypeOf,
+  normalizeExtractedText,
+  runAttachmentExtractor,
   truncateUtf8,
-} from './attachment-extract.js';
-export type { AttachmentExtractor, ExtractionBounds, ExtractionOutcome } from './attachment-extract.js';
+} from './attachment-extractor.js';
+export type {
+  AttachmentExtractor,
+  AttachmentExtractorInput,
+  AttachmentExtractorResult,
+  AttachmentTextBounds,
+  ExtractionOutcome,
+} from './attachment-extractor.js';
 export {
   FilterNotDeclared,
   LIST_INDEX_PREFIX,

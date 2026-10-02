@@ -18,337 +18,30 @@ import {
   type AttachmentTextSource,
 } from '../src/attachment-text.js';
 import {
-  DEFAULT_EXTRACTION_BOUNDS,
-  extractAttachmentText,
-  extractorFor,
+  DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  assertAttachmentExtractors,
+  chooseAttachmentExtractor,
+  runAttachmentExtractor,
   truncateUtf8,
-  type ExtractionBounds,
+  type AttachmentExtractor,
+  type AttachmentTextBounds,
   type ExtractionOutcome,
-} from '../src/attachment-extract.js';
+} from '../src/attachment-extractor.js';
 import { JOB_RUN_DDL, type JobPassContext } from '../src/job-run.js';
 import { attachmentSha256, type ScopedSql, type SqlValue } from '../src/scope-host.js';
 import { SearchTermTooShort, searchMatchExpression } from '../src/search-index.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
-const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
-// -- a minimal zip writer, for archives no producer would write ----------------------
-
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n += 1) {
-    let c = n;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
-const crc32 = (data: Uint8Array): number => {
-  let c = 0xffffffff;
-  for (const b of data) c = CRC_TABLE[(c ^ b) & 0xff]! ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
+/**
+ * A stand-in for the host-side text extractor (K-43): the kernel parses no format, so its own
+ * tests hand it one, as a host does. The real ones are `@substrat-run/attachment-extractors`.
+ */
+const plainText: AttachmentExtractor = {
+  name: 'text',
+  accepts: (contentType) => contentType.startsWith('text/'),
+  extract: async ({ body }) => ({ text: new TextDecoder().decode(body) }),
 };
-
-async function deflateRaw(data: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([data]).stream().pipeThrough(new CompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-interface Part {
-  name: string;
-  data: Uint8Array;
-  /** 0 = stored, 8 = deflate (default), anything else is written as-is. */
-  method?: number;
-  /** Override what the headers DECLARE the inflated size to be — a bomb lies here. */
-  declaredSize?: number;
-  /** Replace the compressed bytes outright (corrupt data). */
-  raw?: Uint8Array;
-  flags?: number;
-}
-
-async function zip(parts: Part[]): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  const central: Uint8Array[] = [];
-  let offset = 0;
-  for (const p of parts) {
-    const method = p.method ?? 8;
-    const body = p.raw ?? (method === 8 ? await deflateRaw(p.data) : p.data);
-    const name = enc(p.name);
-    const size = p.declaredSize ?? p.data.length;
-    const crc = crc32(p.data);
-    const local = new Uint8Array(30 + name.length);
-    const lv = new DataView(local.buffer);
-    lv.setUint32(0, 0x04034b50, true);
-    lv.setUint16(4, 20, true);
-    lv.setUint16(6, p.flags ?? 0, true);
-    lv.setUint16(8, method, true);
-    lv.setUint32(14, crc, true);
-    lv.setUint32(18, body.length, true);
-    lv.setUint32(22, size, true);
-    lv.setUint16(26, name.length, true);
-    local.set(name, 30);
-    const cd = new Uint8Array(46 + name.length);
-    const cv = new DataView(cd.buffer);
-    cv.setUint32(0, 0x02014b50, true);
-    cv.setUint16(4, 20, true);
-    cv.setUint16(6, 20, true);
-    cv.setUint16(8, p.flags ?? 0, true);
-    cv.setUint16(10, method, true);
-    cv.setUint32(16, crc, true);
-    cv.setUint32(20, body.length, true);
-    cv.setUint32(24, size, true);
-    cv.setUint16(28, name.length, true);
-    cv.setUint32(42, offset, true);
-    cd.set(name, 46);
-    chunks.push(local, body);
-    central.push(cd);
-    offset += local.length + body.length;
-  }
-  const cdSize = central.reduce((n, c) => n + c.length, 0);
-  const eocd = new Uint8Array(22);
-  const ev = new DataView(eocd.buffer);
-  ev.setUint32(0, 0x06054b50, true);
-  ev.setUint16(8, parts.length, true);
-  ev.setUint16(10, parts.length, true);
-  ev.setUint32(12, cdSize, true);
-  ev.setUint32(16, offset, true);
-  const all = [...chunks, ...central, eocd];
-  const out = new Uint8Array(all.reduce((n, c) => n + c.length, 0));
-  let o = 0;
-  for (const c of all) {
-    out.set(c, o);
-    o += c.length;
-  }
-  return out;
-}
-
-const docxXml = (body: string) =>
-  `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="w"><w:body>${body}</w:body></w:document>`;
-const docxOf = async (body: string, extra: Part[] = []) =>
-  zip([{ name: '[Content_Types].xml', data: enc('<Types/>') }, { name: 'word/document.xml', data: enc(docxXml(body)) }, ...extra]);
-const indexedText = (o: ExtractionOutcome): string => {
-  if (o.status !== 'indexed') throw new Error(`expected indexed, got ${JSON.stringify(o)}`);
-  return o.text;
-};
-
-// -- routing ---------------------------------------------------------------------------
-
-describe('extractorFor', () => {
-  it('routes by the declared type, parameters and case ignored', () => {
-    expect(extractorFor('text/plain; charset=UTF-8', 'a.bin')).toEqual({ extractor: 'text' });
-    expect(extractorFor('TEXT/CSV', 'a')).toEqual({ extractor: 'text' });
-    expect(extractorFor('text/markdown', 'a')).toEqual({ extractor: 'text' });
-    expect(extractorFor('text/html', 'a')).toEqual({ extractor: 'html' });
-    expect(extractorFor('application/xhtml+xml', 'a')).toEqual({ extractor: 'html' });
-    expect(extractorFor(DOCX, 'a')).toEqual({ extractor: 'docx' });
-    expect(extractorFor(XLSX, 'a')).toEqual({ extractor: 'xlsx' });
-    expect(extractorFor(PPTX, 'a')).toEqual({ extractor: 'pptx' });
-  });
-
-  it('reads the extension only when the type says nothing — never against a specific type', () => {
-    expect(extractorFor('application/octet-stream', 'Brief.DOCX')).toEqual({ extractor: 'docx' });
-    expect(extractorFor('', 'notes.md')).toEqual({ extractor: 'text' });
-    expect(extractorFor('image/png', 'looks-like.txt')).toMatchObject({ unsupported: expect.any(String) });
-    expect(extractorFor('application/octet-stream', 'blob.bin')).toMatchObject({ unsupported: expect.any(String) });
-  });
-
-  it('says why a PDF, an image or a legacy office file gets no extractor', () => {
-    expect(extractorFor('application/pdf', 'a.pdf')).toEqual({ unsupported: expect.stringMatching(/PDF/) });
-    expect(extractorFor('image/jpeg', 'a.jpg')).toEqual({ unsupported: expect.stringMatching(/OCR/) });
-    expect(extractorFor('application/msword', 'a.doc')).toEqual({
-      unsupported: "no extractor for content type 'application/msword'",
-    });
-  });
-});
-
-// -- text and html ------------------------------------------------------------------------
-
-describe('text and html', () => {
-  const ex = (contentType: string, body: Uint8Array, bounds?: ExtractionBounds) =>
-    extractAttachmentText({ contentType, filename: 'f', body }, bounds);
-
-  it('decodes a declared charset, a UTF-16 BOM, and falls back to UTF-8 on an unknown label', async () => {
-    expect(indexedText(await ex('text/plain; charset=iso-8859-1', new Uint8Array([0x63, 0x61, 0x66, 0xe9])))).toBe('café');
-    expect(indexedText(await ex('text/plain', new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00])))).toBe('hi');
-    expect(indexedText(await ex('text/plain; charset=no-such-label', enc('räksmörgås')))).toBe('räksmörgås');
-  });
-
-  it('normalizes: CRLF, runs of blanks, control characters, three or more newlines', async () => {
-    const text = indexedText(await ex('text/plain', enc('a\r\n\r\n\r\n\r\nb\t\t c\u0000d\u0007')));
-    expect(text).toBe('a\n\nb cd');
-  });
-
-  it('records a file with only whitespace as empty, not as indexed', async () => {
-    expect(await ex('text/plain', enc(' \n\t '))).toEqual({ status: 'empty', extractor: 'text' });
-  });
-
-  it('strips markup, drops script and style bodies, decodes entities, keeps blocks apart', async () => {
-    const html =
-      '<html><head><style>p{x:1}</style><script>let s = "<p>scripted</p>";</script></head>' +
-      '<body><!-- comment --><p>one&nbsp;&amp;&#32;two</p><p>caf&eacute; &#xE4;r &unknownentity;</p>' +
-      '<table><tr><td>cell</td><td>next</td></tr></table></body></html>';
-    const text = indexedText(await ex('text/html', enc(html)));
-    expect(text).not.toMatch(/scripted|x:1|comment/);
-    expect(text).toContain('one & two');
-    expect(text).toContain('café är &unknownentity;');
-    expect(text).toContain('cell next');
-    expect(text.split('\n')).toContain('one & two');
-  });
-
-  it('drops an UNCLOSED script, style or comment through to the end — even one cut off inside its tag', async () => {
-    const html = (s: string) => ex('text/html', enc(s));
-    expect(indexedText(await html('<p>visible words</p><script>var leaked = "scriptsource";'))).toBe('visible words');
-    expect(indexedText(await html('<p>kept</p><STYLE type="text/css">.x { content: "stylesource" }'))).toBe('kept');
-    expect(indexedText(await html('<p>kept</p><script src="https://cut-off-mid-tag'))).toBe('kept');
-    expect(indexedText(await html('<p>kept</p><!-- an unclosed comment with commentsource'))).toBe('kept');
-    // The twins: a CLOSED script leaves the text after it, and a cut-off page keeps what
-    // came before the script it was cut in.
-    expect(indexedText(await html('<script>x()</script><p>after it</p>'))).toBe('after it');
-    expect(indexedText(await html('<p>before</p><script>a()</script><p>between</p><script>b(')))
-      .toBe('before\n\nbetween');
-  });
-
-  it('cuts at the UTF-8 cap on a code point boundary and says so', async () => {
-    const bounds = { ...DEFAULT_EXTRACTION_BOUNDS, maxTextBytes: 10 };
-    const out = await ex('text/plain', enc('abcdefghi€€€'), bounds);
-    expect(out).toEqual({ status: 'indexed', extractor: 'text', text: 'abcdefghi', truncated: true });
-  });
-
-  it('truncateUtf8 never splits a character', () => {
-    expect(truncateUtf8('aé', 2)).toEqual({ text: 'a', truncated: true });
-    expect(truncateUtf8('aé', 3)).toEqual({ text: 'aé', truncated: false });
-    expect(truncateUtf8('a😀', 4)).toEqual({ text: 'a', truncated: true });
-    expect(truncateUtf8('a😀', 5)).toEqual({ text: 'a😀', truncated: false });
-  });
-
-  it('refuses a file over the input bound without reading it', async () => {
-    const bounds = { ...DEFAULT_EXTRACTION_BOUNDS, maxInputBytes: 4 };
-    expect(await ex('text/plain', enc('hello'), bounds)).toEqual({
-      status: 'failed',
-      extractor: 'text',
-      detail: 'the file is 5 bytes, over the 4-byte extraction bound',
-    });
-  });
-});
-
-// -- OOXML ---------------------------------------------------------------------------
-
-describe('docx, xlsx and pptx', () => {
-  const ex = (contentType: string, body: Uint8Array, bounds?: ExtractionBounds) =>
-    extractAttachmentText({ contentType, filename: 'f', body }, bounds);
-
-  it('docx: text runs joined, paragraphs apart, tabs and breaks kept, deleted text dropped', async () => {
-    const body =
-      '<w:p><w:r><w:t>Index</w:t></w:r><w:r><w:t xml:space="preserve">ation </w:t></w:r>' +
-      '<w:r><w:t>clause</w:t></w:r><w:r><w:tab/><w:t>A&amp;B</w:t></w:r></w:p>' +
-      '<w:p><w:r><w:t>line one</w:t><w:br/><w:t>line two</w:t></w:r></w:p>' +
-      '<w:p><w:del><w:r><w:delText>struck out</w:delText></w:r></w:del>' +
-      '<w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:t><![CDATA[kept <cdata>]]></w:t></w:r></w:p>';
-    const text = indexedText(await ex(DOCX, await docxOf(body)));
-    expect(text).toBe('Indexation clause A&B\nline one\nline two\nkept <cdata>');
-  });
-
-  it('docx: footnotes and headers after the body, so a cut keeps the body', async () => {
-    const file = await docxOf('<w:p><w:r><w:t>body first</w:t></w:r></w:p>', [
-      { name: 'word/header1.xml', data: enc('<w:hdr xmlns:w="w"><w:p><w:r><w:t>the header</w:t></w:r></w:p></w:hdr>') },
-      { name: 'word/footnotes.xml', data: enc('<w:footnotes xmlns:w="w"><w:p><w:r><w:t>a footnote</w:t></w:r></w:p></w:footnotes>') },
-    ]);
-    expect(indexedText(await ex(DOCX, file))).toBe('body first\n\na footnote\n\nthe header');
-  });
-
-  it('xlsx: shared strings and inline strings, never a phonetic guide or a cell value', async () => {
-    const file = await zip([
-      { name: 'xl/workbook.xml', data: enc('<workbook/>') },
-      {
-        name: 'xl/sharedStrings.xml',
-        data: enc('<sst><si><t>Item</t></si><si><r><t>Rich </t></r><r><t>run</t></r><rPh><t>ruby</t></rPh></si></sst>'),
-      },
-      {
-        name: 'xl/worksheets/sheet1.xml',
-        data: enc('<worksheet><sheetData><row><c t="s"><v>0</v></c><c><v>4242</v></c><c t="inlineStr"><is><t>inline</t></is></c></row></sheetData></worksheet>'),
-      },
-    ]);
-    const text = indexedText(await ex(XLSX, file));
-    expect(text).toBe('Item\nRich run\n\ninline');
-    expect(text).not.toMatch(/ruby|4242/);
-  });
-
-  it('pptx: slides in numeric order, then their notes — and a stored (uncompressed) part reads too', async () => {
-    const slide = (t: string) => enc(`<p:sld><a:p><a:r><a:t>${t}</a:t></a:r></a:p></p:sld>`);
-    const file = await zip([
-      { name: 'ppt/presentation.xml', data: enc('<p:presentation/>') },
-      { name: 'ppt/slides/slide10.xml', data: slide('ten') },
-      { name: 'ppt/slides/slide2.xml', data: slide('two'), method: 0 },
-      { name: 'ppt/notesSlides/notesSlide1.xml', data: slide('a note') },
-      { name: 'ppt/slides/slide1.xml', data: slide('one') },
-    ]);
-    expect(indexedText(await ex(PPTX, file))).toBe('one\n\ntwo\n\nten\n\na note');
-  });
-
-  it('a docx past the text cap is cut, and stops reading parts it would only cut off', async () => {
-    const para = `<w:p><w:r><w:t>${'word '.repeat(50)}</w:t></w:r></w:p>`;
-    const file = await docxOf(para.repeat(40), [
-      { name: 'word/footer1.xml', data: enc(`<w:ftr xmlns:w="w">${para}</w:ftr>`) },
-    ]);
-    const out = await ex(DOCX, file, { ...DEFAULT_EXTRACTION_BOUNDS, maxTextBytes: 1000 });
-    expect(out).toMatchObject({ status: 'indexed', truncated: true });
-    expect(enc(indexedText(out)).length).toBeLessThanOrEqual(1000);
-  });
-
-  describe('a file that is not what it says, legibly', () => {
-    const fails = async (body: Uint8Array, detail: RegExp, bounds?: ExtractionBounds, type = DOCX) => {
-      const out = await ex(type, body, bounds);
-      expect(out).toEqual({ status: 'failed', extractor: expect.any(String), detail: expect.stringMatching(detail) });
-      return out;
-    };
-
-    it('not a zip at all', () => fails(enc('plain words, SECRETWORD inside'), /not a zip archive/));
-    it('a zip that is not a docx', async () =>
-      fails(await zip([{ name: 'xl/workbook.xml', data: enc('<w/>') }]), /not a docx file/));
-    it('an encrypted entry', async () =>
-      fails(
-        await zip([{ name: 'word/document.xml', data: enc(docxXml('<w:p/>')), flags: 1 }]),
-        /encrypted/,
-      ));
-    it('corrupt deflate data', async () =>
-      fails(
-        await zip([{ name: 'word/document.xml', data: enc(docxXml('<w:p/>')), raw: new Uint8Array([0xff, 0xff, 0xff, 0xff]) }]),
-        /not valid deflate data/,
-      ));
-    it('an unsupported compression method', async () =>
-      fails(await zip([{ name: 'word/document.xml', data: enc(docxXml('<w:p/>')), method: 12 }]), /compression method/));
-
-    it('a zip bomb whose header lies about its size: the inflate counter refuses it', async () => {
-      const bomb = new Uint8Array(1024 * 1024); // a megabyte of zeros deflates to about a kilobyte
-      const file = await zip([{ name: 'word/document.xml', data: bomb, declaredSize: 10 }]);
-      expect(file.length).toBeLessThan(4096);
-      await fails(file, /inflates past the extraction bound/, { ...DEFAULT_EXTRACTION_BOUNDS, maxInflatedBytes: 64 * 1024 });
-    });
-
-    it('a part whose declared size is already over the bound is refused before inflating', async () => {
-      const file = await zip([{ name: 'word/document.xml', data: enc(docxXml('<w:p/>')), declaredSize: 1_000_000 }]);
-      await fails(file, /inflates past/, { ...DEFAULT_EXTRACTION_BOUNDS, maxInflatedBytes: 1000 });
-    });
-
-    it('the inflate budget is per FILE, across its parts', async () => {
-      const part = enc(docxXml(`<w:p><w:r><w:t>${'x'.repeat(600)}</w:t></w:r></w:p>`));
-      const file = await docxOf('<w:p/>', [
-        { name: 'word/header1.xml', data: part },
-        { name: 'word/header2.xml', data: part },
-      ]);
-      // Each part fits alone; together they do not.
-      await fails(file, /inflates past/, { ...DEFAULT_EXTRACTION_BOUNDS, maxInflatedBytes: 1000 });
-    });
-
-    it('never quotes the file in its detail', async () => {
-      const out = await fails(enc('plain words, SECRETWORD inside'), /./);
-      expect(JSON.stringify(out)).not.toContain('SECRETWORD');
-    });
-  });
-});
-
 // -- the SQL, against a real SQLite ----------------------------------------------------
 
 const ATTACHMENTS_DDL = `CREATE TABLE _substrat_attachments (
@@ -631,7 +324,12 @@ describe('attachmentTextJob', () => {
     createdAt: '2026-10-01T00:00:00.000Z' as AttachmentRecord['createdAt'],
     ...over,
   });
-  const run = async (source: Partial<AttachmentTextSource>, payload: unknown = { attachmentId: 'A1' }, bounds?: ExtractionBounds) => {
+  const run = async (
+    source: Partial<AttachmentTextSource>,
+    payload: unknown = { attachmentId: 'A1' },
+    bounds?: AttachmentTextBounds,
+    extractors: readonly AttachmentExtractor[] = [plainText],
+  ) => {
     const written: ExtractionOutcome[] = [];
     let fetched = 0;
     const counters: Record<string, number> = {};
@@ -662,6 +360,7 @@ describe('attachmentTextJob', () => {
           return source.write ? source.write(id, outcome) : true;
         },
       },
+      extractors,
       bounds,
     );
     const result = await handler(pass);
@@ -675,17 +374,29 @@ describe('attachmentTextJob', () => {
     expect(r.counters).toEqual({ indexed: 1 });
   });
 
-  it('never fetches the bytes of a type it cannot read, or of a file over the input bound', async () => {
+  it('never fetches the bytes of a type no extractor reads — and says so', async () => {
     const pdf = await run({ record: async () => recordOf({ contentType: 'application/pdf' }) });
-    expect([pdf.fetched, pdf.written[0]?.status]).toEqual([0, 'unsupported']);
-    const big = await run(
-      { record: async () => recordOf({ size: 10_000 }) },
-      undefined,
-      { ...DEFAULT_EXTRACTION_BOUNDS, maxInputBytes: 100 },
-    );
+    expect([pdf.fetched, pdf.written]).toEqual([
+      0,
+      [{ status: 'unsupported', detail: "no extractor for content type 'application/pdf'" }],
+    ]);
+    // A host wired with NO extractors records every type that way: valid, and legible.
+    const bare = await run({}, undefined, undefined, []);
+    expect([bare.fetched, bare.written]).toEqual([0, [{ status: 'unsupported', detail: "no extractor for content type 'text/plain'" }]]);
+  });
+
+  it('judges the input bound on the RECORDED size, before a byte is fetched — the smaller of the two bounds', async () => {
+    const big = await run({ record: async () => recordOf({ size: 10_000 }) }, undefined, { ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, maxInputBytes: 100 });
     expect([big.fetched, big.written[0]]).toEqual([
       0,
-      { status: 'failed', extractor: 'text', detail: 'the file is 10000 bytes, over the 100-byte extraction bound' },
+      { status: 'failed', extractor: 'text', detail: 'the file is 10000 bytes, over the 100-byte input bound' },
+    ]);
+    // The extractor's own, lower, declaration wins over the kernel's ceiling.
+    const strict = { ...plainText, maxInputBytes: 5 };
+    const declared = await run({}, undefined, undefined, [strict]);
+    expect([declared.fetched, declared.written[0]]).toEqual([
+      0,
+      { status: 'failed', extractor: 'text', detail: 'the file is 17 bytes, over the 5-byte input bound' },
     ]);
   });
 
@@ -710,5 +421,111 @@ describe('attachmentTextJob', () => {
 
   it('refuses a payload that names no attachment', async () => {
     await expect(run({}, { other: 1 })).rejects.toThrow(/attachmentId/);
+  });
+});
+
+// -- the extractor seam: what the kernel enforces after an extractor returns ----------------
+
+describe('runAttachmentExtractor: an extractor answers for nothing the scope depends on', () => {
+  const input = { body: enc('irrelevant'), contentType: 'text/plain', filename: 'f.txt' };
+  const answering = (extract: AttachmentExtractor['extract']): AttachmentExtractor => ({
+    name: 'rogue',
+    accepts: () => true,
+    extract,
+  });
+  const bounds = { ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, maxTextBytes: 100, timeoutMs: 50 };
+
+  it('cuts oversized output at the cap and records it truncated — the extractor told only as a hint', async () => {
+    let hint = 0;
+    const out = await runAttachmentExtractor(
+      answering(async ({ maxTextBytes }) => {
+        hint = maxTextBytes;
+        return { text: 'é'.repeat(10_000) };
+      }),
+      input,
+      bounds,
+    );
+    expect(hint).toBe(100);
+    expect(out).toMatchObject({ status: 'indexed', extractor: 'rogue', truncated: true });
+    expect(enc((out as { text: string }).text).length).toBe(100);
+  });
+
+  it('normalizes what comes back, and records whitespace-only text as empty', async () => {
+    expect(await runAttachmentExtractor(answering(async () => ({ text: 'a\u0000\r\n\r\n\r\n\r\nb\t\t c' })), input, bounds)).toEqual({
+      status: 'indexed',
+      extractor: 'rogue',
+      text: 'a\n\nb c',
+      truncated: false,
+    });
+    expect(await runAttachmentExtractor(answering(async () => ({ text: ' \n\t ' })), input, bounds)).toEqual({
+      status: 'empty',
+      extractor: 'rogue',
+    });
+  });
+
+  it('records a throw as failed — never its message, which is the parser\'s text and may quote the file', async () => {
+    const thrown = await runAttachmentExtractor(
+      answering(async () => {
+        throw new RangeError('could not parse near SECRET CONTRACT TEXT');
+      }),
+      input,
+      bounds,
+    );
+    expect(thrown).toEqual({ status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' threw (RangeError)" });
+    // A synchronous throw, and a thrown non-Error, are the same outcome.
+    const sync = answering((() => {
+      throw 'a bare string';
+    }) as unknown as AttachmentExtractor['extract']);
+    expect(await runAttachmentExtractor(sync, input, bounds)).toEqual({
+      status: 'failed',
+      extractor: 'rogue',
+      detail: "extractor 'rogue' threw (a value)",
+    });
+  });
+
+  it('records an extractor that does not answer within the budget as failed', async () => {
+    const hung = await runAttachmentExtractor(answering(() => new Promise(() => {})), input, bounds);
+    expect(hung).toEqual({ status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' did not answer within 50 ms" });
+  });
+
+  it('records a result of the wrong shape as failed — and a claimed failure, cut short', async () => {
+    for (const wrong of [undefined, null, 7, 'text', {}, { text: 5 }, { text: 'x', truncated: 'yes' }, { failed: 'x', text: 'y' }]) {
+      expect(await runAttachmentExtractor(answering(async () => wrong as never), input, bounds), JSON.stringify(wrong)).toEqual({
+        status: 'failed',
+        extractor: 'rogue',
+        detail: "extractor 'rogue' returned an unreadable result",
+      });
+    }
+    const long = await runAttachmentExtractor(answering(async () => ({ failed: 'x'.repeat(5000) })), input, bounds);
+    expect(long).toMatchObject({ status: 'failed', extractor: 'rogue' });
+    expect((long as { detail: string }).detail).toHaveLength(500);
+  });
+
+  it('keeps an extractor\'s own early stop on the record', async () => {
+    expect(await runAttachmentExtractor(answering(async () => ({ text: 'short', truncated: true })), input, bounds)).toEqual({
+      status: 'indexed',
+      extractor: 'rogue',
+      text: 'short',
+      truncated: true,
+    });
+  });
+
+  it('chooses the first extractor that accepts, reads an `accepts` that throws as a no, and refuses a bad list', () => {
+    const named = (name: string, accepts: () => boolean): AttachmentExtractor => ({ name, accepts, extract: async () => ({ text: '' }) });
+    const boom = named('boom', () => {
+      throw new Error('nope');
+    });
+    expect(chooseAttachmentExtractor([boom, named('second', () => true)], 'text/plain', 'f')?.name).toBe('second');
+    expect(chooseAttachmentExtractor([boom], 'text/plain', 'f')).toBeUndefined();
+    expect(() => assertAttachmentExtractors([named('a', () => true), named('a', () => true)])).toThrow(/twice/);
+    expect(() => assertAttachmentExtractors([named('Not A Name', () => true)])).toThrow(/identifier/);
+    expect(() => assertAttachmentExtractors([named('text', () => true), named('docx', () => true)])).not.toThrow();
+  });
+
+  it('truncateUtf8 never splits a character', () => {
+    expect(truncateUtf8('aé', 2)).toEqual({ text: 'a', truncated: true });
+    expect(truncateUtf8('aé', 3)).toEqual({ text: 'aé', truncated: false });
+    expect(truncateUtf8('a😀', 4)).toEqual({ text: 'a', truncated: true });
+    expect(truncateUtf8('a😀', 5)).toEqual({ text: 'a😀', truncated: false });
   });
 });

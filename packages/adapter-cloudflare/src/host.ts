@@ -295,10 +295,12 @@ import {
   runDueJobRuns,
   startJobRun,
   attachmentTextJob,
+  assertAttachmentExtractors,
   assertJobRegistrable,
   isAttachmentTextRun,
   searchLimit,
   searchMatchExpression,
+  type AttachmentExtractor,
   type ExtractionOutcome,
   type JobDriveReport,
   type JobHandler,
@@ -1604,6 +1606,13 @@ export interface EventDrainDelegation {
 
 export interface CloudflareScopeHostOptions {
   /**
+   * The parsers attachment text is extracted with (#1575, K-43) — `defaultAttachmentExtractors()`
+   * from `@substrat-run/attachment-extractors`, or a list of the deployment's own. The kernel
+   * and this adapter parse no file format; omitted, every upload records `unsupported`, with
+   * that reason, which is a valid configuration rather than a broken one.
+   */
+  attachmentExtractors?: readonly AttachmentExtractor[];
+  /**
    * Service accounts minted by this vertical, read before CP-less provisioning/reconcile
    * (#1896). Their roles still authorize work but do not prevent human lockout repair.
    * Keep this source complete; a failed read refuses provisioning before projection.
@@ -1893,6 +1902,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly blobStores?: R2BlobStores;
   /** Worker-side attachment-bucket resolver (#473); undefined ⇒ attachments() refuses. */
   private readonly attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
+  /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
+  private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly executors = new Map<string, RegisteredEffector>();
   /**
    * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
@@ -1955,6 +1966,8 @@ export class CloudflareScopeHost implements ScopeHost {
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
     this.attachmentBuckets = options.attachmentBuckets;
+    assertAttachmentExtractors(options.attachmentExtractors ?? []);
+    this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
@@ -2257,13 +2270,17 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private attachmentTextHandler(tenantId: TenantId, scopeId: ScopeId): JobHandler {
     const stub = this.scopeStub(scopeId);
-    return attachmentTextJob({
-      record: (attachmentId) => stub.attachmentTextSource(attachmentId),
-      bytes: async (record) =>
-        (await (await this.resolveAttachmentStore(tenantId)).get(attachmentBlobKey(scopeId, record.id)))?.body ??
-        null,
-      write: (attachmentId, outcome: ExtractionOutcome) => stub.attachmentTextRecord(attachmentId, outcome),
-    });
+    return attachmentTextJob(
+      {
+        record: (attachmentId) => stub.attachmentTextSource(attachmentId),
+        bytes: async (record) =>
+          (await (await this.resolveAttachmentStore(tenantId)).get(attachmentBlobKey(scopeId, record.id)))?.body ??
+          null,
+        write: (attachmentId, outcome: ExtractionOutcome) => stub.attachmentTextRecord(attachmentId, outcome),
+      },
+      // K-43: the host's parsers, handed in — this adapter imports none.
+      this.attachmentExtractors,
+    );
   }
 
   async startJobRun(

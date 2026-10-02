@@ -193,9 +193,19 @@ const files = await host.attachments(principal, tenantId, scopeId);
 const hits = await files.search('indexation clause', { limit: 20 });
 ```
 
-The job reads plain text, Markdown, CSV and other `text/*` files, HTML, DOCX, XLSX and PPTX.
-PDF is not extracted yet, and images are never OCR'd. Every attachment records how its
-extraction went: `pending`, `indexed`, `empty`, `unsupported` or `failed`, with a reason.
+The kernel parses no file format itself. The parsers live in
+`@substrat-run/attachment-extractors`, and whoever constructs the host passes them in:
+
+```ts
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
+
+new CloudflareScopeHost({ /* … */, attachmentExtractors: defaultAttachmentExtractors() });
+```
+
+They read plain text, Markdown, CSV and other `text/*` files, HTML, DOCX, XLSX and PPTX.
+PDF is not extracted yet, and images are never OCR'd. A host given no extractor for a type
+records it as unsupported. Every attachment records how its extraction went: `pending`,
+`indexed`, `empty`, `unsupported` or `failed`, with a reason.
 Module code reads that record with `readAttachmentText(ctx, attachmentId)`, so a file that
 yielded nothing can say so rather than look like a search with no match. The job runs off
 the upload, so a file is not searchable in the same breath it lands. On a hosted vertical,

@@ -1,41 +1,50 @@
 /**
- * Text extraction for attachments (#1575) — pure functions over bytes, no dependency.
+ * `@substrat-run/attachment-extractors` — the parsers behind the kernel's attachment
+ * extractor seam (#1575, K-43).
+ *
+ * **The kernel indexes attachment text; it does not parse file formats** (K-43). It owns the
+ * text table, its index, the job, the outcome states, the output cap and the gated search,
+ * and defines one seam, `AttachmentExtractor`. Everything that reads a file FORMAT lives
+ * here, and the kernel and the adapters never import this package (`lint:deps` refuses it):
+ * whoever constructs the host passes `defaultAttachmentExtractors()` in, or a list of its
+ * own. Untrusted-input parsing belongs at the edge, not beside the permission checker.
  *
  * Best-effort by content type, and explicit about what it does not do:
  *
  * - **text** (`text/*` other than HTML): decoded as the declared charset, UTF-8 otherwise.
- * - **html** (`text/html`, `application/xhtml+xml`): tags stripped, `script`/`style`
- *   dropped, entities decoded.
+ * - **html** (`text/html`, `application/xhtml+xml`): tags stripped; comments and `script` /
+ *   `style` / `template` / `noscript` bodies dropped, an unclosed one through to the end;
+ *   entities decoded.
  * - **docx / xlsx / pptx**: an OOXML file is a zip of XML parts, so this reads the zip's
  *   central directory, inflates only the parts that carry text, and keeps the text of
  *   their `t` elements. The inflate is the web-standard `DecompressionStream('deflate-raw')`,
- *   present in Node and workerd alike, so the whole format costs no package.
- * - **PDF is not extracted yet**, and nothing is OCR'd. Both come back `unsupported`, with
- *   the reason, which is the legible outcome the issue asks for: a scanned page that yields
- *   nothing must read as "never extracted", not as "indexed, no match".
+ *   present in Node and workerd alike, so the whole format costs no dependency.
+ * - **No PDF yet, and no OCR.** A host given no extractor for a type records `unsupported`
+ *   with that reason — a legible outcome, never "indexed, no match".
  *
- * ## The bounds, and why each exists
+ * ## The bounds this package owns, and why
  *
- * - `maxInputBytes` is judged on the RECORDED size, before any byte is fetched, so an
- *   oversized file is refused without being read into memory at all.
+ * The bounds that protect the PROCESS doing the parsing live here (K-43); the one that
+ * protects the scope — the output cap — is the kernel's, enforced on whatever comes back.
+ *
+ * - `maxInputBytes` is declared on each extractor, so the kernel can refuse an oversized
+ *   file on its RECORDED size before fetching a byte; each extractor checks it again.
  * - `maxInflatedBytes` is the zip-bomb cap: a counter on the bytes the inflater actually
  *   produces, across every part of one file. An entry's declared size is checked first as
  *   a cheap refusal, and never trusted, because a bomb is exactly a file that lies about it.
- * - `maxTextBytes` caps what one attachment contributes to the index, in UTF-8 bytes. It is
- *   what keeps a row under a Durable Object's row limit; past it the text is cut on a code
- *   point boundary and the outcome says `truncated`.
  *
- * Error text never quotes the file. A `detail` lands in the scope and a job run's
- * `last_error`, and the content it would quote is exactly what the read gate protects.
+ * A file that is not what it says, or breaks a bound, is answered `{ failed }` with a
+ * content-free reason — never a throw, and never a quote of the file: the reason lands in
+ * the scope, and the content it would quote is what the read gate protects.
  */
+import type { AttachmentExtractor, AttachmentExtractorInput, AttachmentExtractorResult } from '@substrat-run/kernel';
 
-declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 declare const TextDecoder: new (
   label?: string,
   options?: { fatal?: boolean; ignoreBOM?: boolean },
 ) => { decode(input?: Uint8Array): string };
-// Web-standard and present in Node >= 18 and workerd; declared locally because the kernel
-// builds without DOM typings, as `secret-box.ts` declares `TextEncoder`.
+// Web-standard and present in Node >= 18 and workerd; declared locally because the package
+// builds without DOM typings, as the kernel declares `TextEncoder`.
 declare const DecompressionStream: new (format: 'deflate-raw') => {
   readonly writable: {
     getWriter(): { write(chunk: Uint8Array): Promise<void>; close(): Promise<void> };
@@ -48,54 +57,26 @@ declare const DecompressionStream: new (format: 'deflate-raw') => {
   };
 };
 
-/** The extractors this file knows, by the name a recorded outcome carries. */
-export type AttachmentExtractor = 'text' | 'html' | 'docx' | 'xlsx' | 'pptx';
-
-/** What one extraction produced. `indexed` is the only outcome that carries text. */
-export type ExtractionOutcome =
-  | { status: 'indexed'; extractor: AttachmentExtractor; text: string; truncated: boolean }
-  | { status: 'empty'; extractor: AttachmentExtractor }
-  | { status: 'unsupported'; detail: string }
-  | { status: 'failed'; extractor: AttachmentExtractor | null; detail: string };
-
-export interface ExtractionBounds {
-  /** Largest recorded attachment size an extractor will read. */
+/** The bounds that protect the parsing process (K-43). */
+export interface ExtractorBounds {
+  /** Largest file an extractor will read, declared to the kernel and checked again here. */
   readonly maxInputBytes: number;
   /** Bytes the inflater may produce across every part of one file (the zip-bomb cap). */
   readonly maxInflatedBytes: number;
-  /** UTF-8 bytes of text one attachment may contribute to the index. */
-  readonly maxTextBytes: number;
 }
 
 /**
- * The defaults. `maxTextBytes` is 512 KiB of UTF-8 — a few hundred pages of prose, and a
- * quarter of the ~2 MB a Durable Object row holds, so the row stays comfortably inside it.
- * 16 MiB of inflated XML is far more than the text of any ordinary office document, and
- * small enough that decoding it fits a Worker's memory.
+ * The defaults. 16 MiB of inflated XML is far more than the text of any ordinary office
+ * document, and small enough that decoding it fits a Worker's memory.
  */
-export const DEFAULT_EXTRACTION_BOUNDS: ExtractionBounds = {
+export const DEFAULT_EXTRACTOR_BOUNDS: ExtractorBounds = {
   maxInputBytes: 32 * 1024 * 1024,
   maxInflatedBytes: 16 * 1024 * 1024,
-  maxTextBytes: 512 * 1024,
 };
 
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-
-/** By file extension — consulted only when the declared type says nothing (`application/octet-stream`). */
-const BY_EXTENSION: Record<string, AttachmentExtractor> = {
-  txt: 'text',
-  md: 'text',
-  markdown: 'text',
-  csv: 'text',
-  tsv: 'text',
-  html: 'html',
-  htm: 'html',
-  docx: 'docx',
-  xlsx: 'xlsx',
-  pptx: 'pptx',
-};
 
 /** `text/plain; charset=UTF-8` → `{ type: 'text/plain', charset: 'utf-8' }`. */
 function parseContentType(contentType: string): { type: string; charset: string | null } {
@@ -109,71 +90,26 @@ function parseContentType(contentType: string): { type: string; charset: string 
 }
 
 /**
- * Which extractor an attachment gets, or why it gets none.
- *
- * The declared content type decides. The file name is consulted only when the type is the
- * generic `application/octet-stream` (or absent), because a client that knew better would
- * have said so — and a name contradicting a specific type is not evidence worth more than
- * the type.
+ * Whether a file is this format: the declared type decides. The file name is consulted only
+ * when the type says nothing (`application/octet-stream`, or absent), because a client that
+ * knew better would have said so — and a name contradicting a specific type is not evidence
+ * worth more than the type.
  */
-export function extractorFor(
-  contentType: string,
-  filename: string,
-): { extractor: AttachmentExtractor } | { unsupported: string } {
-  const { type } = parseContentType(contentType);
-  if (type === 'text/html' || type === 'application/xhtml+xml') return { extractor: 'html' };
-  if (type.startsWith('text/')) return { extractor: 'text' };
-  if (type === DOCX) return { extractor: 'docx' };
-  if (type === XLSX) return { extractor: 'xlsx' };
-  if (type === PPTX) return { extractor: 'pptx' };
-  if (type === '' || type === 'application/octet-stream') {
+function acceptsBy(types: (type: string) => boolean, extensions: readonly string[]) {
+  return (contentType: string, filename: string): boolean => {
+    const { type } = parseContentType(contentType);
+    if (types(type)) return true;
+    if (type !== '' && type !== 'application/octet-stream') return false;
     const ext = /\.([A-Za-z0-9]+)$/.exec(filename)?.[1]?.toLowerCase();
-    const byName = ext ? BY_EXTENSION[ext] : undefined;
-    if (byName) return { extractor: byName };
-  }
-  if (type === 'application/pdf') return { unsupported: 'PDF text extraction is not implemented yet' };
-  if (type.startsWith('image/')) return { unsupported: 'images are not OCR\'d' };
-  return { unsupported: `no extractor for content type '${type || 'unknown'}'` };
+    return ext !== undefined && extensions.includes(ext);
+  };
 }
 
-/** Raised when a bound refuses the work. Distinct so the outcome can say which bound. */
+/** Raised when a bound refuses the work. Distinct so the answer can say which bound. */
 class ExtractionBoundExceeded extends Error {}
 
 /** A file that is not what its type says, or is damaged. Carries a content-free reason. */
 class MalformedInput extends Error {}
-
-const utf8 = new TextEncoder();
-
-/**
- * Cut `text` to at most `maxBytes` of UTF-8, on a code point boundary.
- *
- * Encodes once and backs off over continuation bytes (`10xxxxxx`), so a cut never splits
- * a multi-byte character into a replacement character at the end of the index.
- */
-export function truncateUtf8(text: string, maxBytes: number): { text: string; truncated: boolean } {
-  const bytes = utf8.encode(text);
-  if (bytes.length <= maxBytes) return { text, truncated: false };
-  let cut = maxBytes;
-  while (cut > 0 && (bytes[cut]! & 0xc0) === 0x80) cut -= 1;
-  return { text: new TextDecoder('utf-8').decode(bytes.subarray(0, cut)), truncated: true };
-}
-
-/**
- * Whitespace collapsed, control characters dropped, line structure kept.
- *
- * For the index whitespace is noise, and for the cap it is worse: a spreadsheet's padding
- * or an HTML file's indentation would spend the per-attachment budget on nothing.
- */
-function normalize(text: string): string {
-  return text
-    .replace(/\r\n?/g, '\n')
-    // C0 controls other than tab and newline, DEL, and the C1 range.
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '')
-    .replace(/[ \t ]+/g, ' ')
-    .replace(/ *\n */g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 
 /** Decode bytes as text: a UTF-16 BOM wins, then a declared charset, then UTF-8. */
 function decodeText(bytes: Uint8Array, charset: string | null): string {
@@ -471,24 +407,25 @@ const REQUIRED_PART: Record<'docx' | 'xlsx' | 'pptx', RegExp> = {
 };
 
 async function ooxmlExtract(
-  extractor: 'docx' | 'xlsx' | 'pptx',
+  format: 'docx' | 'xlsx' | 'pptx',
   zip: Uint8Array,
-  bounds: ExtractionBounds,
+  bounds: ExtractorBounds,
+  maxTextBytes: number,
 ): Promise<{ text: string; truncated: boolean }> {
   const entries = zipEntries(zip);
-  if (!entries.some((e) => REQUIRED_PART[extractor].test(e.name))) {
-    throw new MalformedInput(`the archive is not a ${extractor} file`);
+  if (!entries.some((e) => REQUIRED_PART[format].test(e.name))) {
+    throw new MalformedInput(`the archive is not a ${format} file`);
   }
   const budget: InflateBudget = { remaining: bounds.maxInflatedBytes };
   const decoder = new TextDecoder('utf-8');
   const pieces: string[] = [];
-  // Stop reading parts once the collected text is safely past the output cap: the rest
-  // could only be cut off again, and inflating it would spend the budget for nothing.
-  // Twice the cap, because normalizing can still shrink what has been collected.
+  // Stop reading parts once the collected text is safely past the kernel's output cap: the
+  // rest could only be cut off again, and inflating it would spend the budget for nothing.
+  // Twice the cap, because the kernel's normalizing can still shrink what was collected.
   let collected = 0;
   let stoppedEarly = false;
-  for (const entry of ooxmlParts(extractor, entries)) {
-    if (collected > bounds.maxTextBytes * 2) {
+  for (const entry of ooxmlParts(format, entries)) {
+    if (collected > maxTextBytes * 2) {
       stoppedEarly = true;
       break;
     }
@@ -496,71 +433,92 @@ async function ooxmlExtract(
     pieces.push(text, '\n');
     collected += text.length;
   }
-  const cut = truncateUtf8(normalize(pieces.join('')), bounds.maxTextBytes);
-  return { text: cut.text, truncated: cut.truncated || stoppedEarly };
+  return { text: pieces.join(''), truncated: stoppedEarly };
 }
 
 /**
- * What can be decided before a byte is read: the extractor to run, or the outcome there
- * will be without one — a type nothing reads, or a size over the input bound. The job
- * asks this with the RECORDED size, so such a file is never fetched at all.
+ * One extractor's `extract`: the input bound checked again (the kernel judged the recorded
+ * size; this judges the bytes it was actually handed), and everything the FILE did turned
+ * into a `failed` answer. A throw from anywhere else — an inflater the runtime lacks — is
+ * left to the kernel, which records it as a failed extraction.
  */
-export function extractionPlan(
-  contentType: string,
-  filename: string,
-  size: number,
-  bounds: ExtractionBounds,
-): { extractor: AttachmentExtractor } | { outcome: ExtractionOutcome } {
-  const chosen = extractorFor(contentType, filename);
-  if ('unsupported' in chosen) return { outcome: { status: 'unsupported', detail: chosen.unsupported } };
-  if (size > bounds.maxInputBytes) {
-    return {
-      outcome: {
-        status: 'failed',
-        extractor: chosen.extractor,
-        detail: `the file is ${size} bytes, over the ${bounds.maxInputBytes}-byte extraction bound`,
-      },
-    };
-  }
-  return chosen;
+function extractWith(
+  bounds: ExtractorBounds,
+  read: (input: AttachmentExtractorInput) => Promise<{ text: string; truncated: boolean }>,
+): (input: AttachmentExtractorInput) => Promise<AttachmentExtractorResult> {
+  return async (input) => {
+    if (input.body.length > bounds.maxInputBytes) {
+      return { failed: `the file is ${input.body.length} bytes, over the ${bounds.maxInputBytes}-byte input bound` };
+    }
+    try {
+      return await read(input);
+    } catch (err) {
+      if (err instanceof MalformedInput || err instanceof ExtractionBoundExceeded) return { failed: err.message };
+      throw err;
+    }
+  };
 }
 
 /**
- * Extract an attachment's text.
+ * Text and HTML decode only a PREFIX: the kernel keeps at most `maxTextBytes`, and markup or
+ * padding shrinks by a few times. Decoding a 30 MB log to keep its first half-megabyte would
+ * hold the whole file as a string for nothing.
+ */
+async function decodedPrefix(
+  input: AttachmentExtractorInput,
+  scanFactor: number,
+  toText: (decoded: string) => string,
+): Promise<{ text: string; truncated: boolean }> {
+  const scan = input.maxTextBytes * scanFactor;
+  const decoded = decodeText(input.body.subarray(0, scan), parseContentType(input.contentType).charset);
+  return { text: toText(decoded), truncated: input.body.length > scan };
+}
+
+/** `text/*` other than HTML — and `.txt`, `.md`, `.csv`, `.tsv` when the type says nothing. */
+export function textExtractor(bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS): AttachmentExtractor {
+  return {
+    name: 'text',
+    maxInputBytes: bounds.maxInputBytes,
+    accepts: acceptsBy(
+      (type) => type.startsWith('text/') && type !== 'text/html',
+      ['txt', 'md', 'markdown', 'csv', 'tsv'],
+    ),
+    extract: extractWith(bounds, (input) => decodedPrefix(input, 4, (decoded) => decoded)),
+  };
+}
+
+/** HTML and XHTML — the text a reader of the page would see. */
+export function htmlExtractor(bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS): AttachmentExtractor {
+  return {
+    name: 'html',
+    maxInputBytes: bounds.maxInputBytes,
+    accepts: acceptsBy((type) => type === 'text/html' || type === 'application/xhtml+xml', ['html', 'htm']),
+    extract: extractWith(bounds, (input) => decodedPrefix(input, 16, htmlText)),
+  };
+}
+
+function ooxmlExtractor(format: 'docx' | 'xlsx' | 'pptx', mediaType: string, bounds: ExtractorBounds): AttachmentExtractor {
+  return {
+    name: format,
+    maxInputBytes: bounds.maxInputBytes,
+    accepts: acceptsBy((type) => type === mediaType, [format]),
+    extract: extractWith(bounds, (input) => ooxmlExtract(format, input.body, bounds, input.maxTextBytes)),
+  };
+}
+
+/** Word documents: the body, then footnotes, endnotes, headers and footers. */
+export const docxExtractor = (bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS) => ooxmlExtractor('docx', DOCX, bounds);
+/** Spreadsheets: shared strings and inline strings — never a cell's number. */
+export const xlsxExtractor = (bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS) => ooxmlExtractor('xlsx', XLSX, bounds);
+/** Presentations: slides in order, then their speaker notes. */
+export const pptxExtractor = (bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS) => ooxmlExtractor('pptx', PPTX, bounds);
+
+/**
+ * Every extractor this package has, in the order a host should try them — what a host is
+ * constructed with when it has no list of its own:
  *
- * Never throws for anything the FILE did: a damaged archive, a lying header, a bound
- * exceeded — each is an outcome with a reason. What can still throw is the platform (an
- * inflater that is not there), which the job driver retries like any transient failure.
+ *     new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors() })
  */
-export async function extractAttachmentText(
-  input: { contentType: string; filename: string; body: Uint8Array },
-  bounds: ExtractionBounds = DEFAULT_EXTRACTION_BOUNDS,
-): Promise<ExtractionOutcome> {
-  const plan = extractionPlan(input.contentType, input.filename, input.body.length, bounds);
-  if ('outcome' in plan) return plan.outcome;
-  const { extractor } = plan;
-  try {
-    let result: { text: string; truncated: boolean };
-    if (extractor === 'text' || extractor === 'html') {
-      const { charset } = parseContentType(input.contentType);
-      // Only a prefix is ever decoded: the index keeps at most `maxTextBytes`, and markup
-      // or padding can shrink by a few times. Decoding a 30 MB log to keep its first
-      // half-megabyte would hold the whole file as a string for nothing.
-      const scan = extractor === 'html' ? bounds.maxTextBytes * 16 : bounds.maxTextBytes * 4;
-      const prefix = input.body.subarray(0, scan);
-      const decoded = decodeText(prefix, charset);
-      const text = normalize(extractor === 'html' ? htmlText(decoded) : decoded);
-      const cut = truncateUtf8(text, bounds.maxTextBytes);
-      result = { text: cut.text, truncated: cut.truncated || input.body.length > scan };
-    } else {
-      result = await ooxmlExtract(extractor, input.body, bounds);
-    }
-    if (result.text.length === 0) return { status: 'empty', extractor };
-    return { status: 'indexed', extractor, text: result.text, truncated: result.truncated };
-  } catch (err) {
-    if (err instanceof MalformedInput || err instanceof ExtractionBoundExceeded) {
-      return { status: 'failed', extractor, detail: err.message };
-    }
-    throw err;
-  }
+export function defaultAttachmentExtractors(bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS): AttachmentExtractor[] {
+  return [textExtractor(bounds), htmlExtractor(bounds), docxExtractor(bounds), xlsxExtractor(bounds), pptxExtractor(bounds)];
 }

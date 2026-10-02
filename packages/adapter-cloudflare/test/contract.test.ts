@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
 import {
   connectionId,
@@ -182,6 +183,8 @@ const attachmentHostFixture = async () => {
     controlPlane: env.CONTROL_PLANE,
     blobStores: { create: async (name) => name, remove: async () => {} },
     attachmentBuckets: () => bucket,
+    // K-43: the host's parsers, passed in at the composition root.
+    attachmentExtractors: defaultAttachmentExtractors(),
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };

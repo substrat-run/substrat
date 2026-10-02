@@ -49,6 +49,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/adapter-cloudflare` | The hosted scope host — a Durable Object per scope | AGPL + commercial |
 | `packages/adapter-email` | Inbound/outbound email for a vertical that speaks it | AGPL, private |
 | `packages/contract-tests` | Suites every adapter must pass | AGPL + commercial |
+| `packages/attachment-extractors` | The file-format parsers behind the kernel's attachment extractor seam (K-43): text, HTML, DOCX, XLSX, PPTX. A host passes them in; the kernel and the adapters never import them (`lint:deps` refuses it) | AGPL + commercial |
 | `packages/control-plane-api` | HTTP surface over `HostAdmin` — the audited control-plane transport | AGPL + commercial |
 | `packages/vertical-host` | The host a deployed vertical runs on — routing, guards, input parsing | AGPL + commercial |
 | `packages/vertical-auth` | One auth composition a vertical mounts (OIDC RP + session + identity) | AGPL + commercial |

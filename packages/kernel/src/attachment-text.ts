@@ -18,8 +18,8 @@
  *    whatever happens next.
  * 2. **The job driver** (`runDueJobs`, which the scope sweeper calls when a deployment
  *    opts into `runJobs`) runs `attachmentTextJob`: read the record, read the bytes, run
- *    `extractAttachmentText`, write the outcome. Each adapter supplies the handler itself
- *    for this key, so no deployment has to register it.
+ *    the host's extractor for its type (K-43), write the outcome. Each adapter supplies
+ *    the handler itself for this key, so no deployment has to register it.
  * 3. **Search** is `ScopeAttachments.search`, authorized before it matches (below).
  *
  * ## Reading the bytes needs no grant, and that is deliberate
@@ -90,12 +90,14 @@ import type { JobHandler } from './job-run.js';
 import { attachmentSha256, type ScopedSql } from './scope-host.js';
 import { searchLimit, searchMatchExpression } from './search-index.js';
 import {
-  DEFAULT_EXTRACTION_BOUNDS,
-  extractAttachmentText,
-  extractionPlan,
-  type ExtractionBounds,
+  DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  chooseAttachmentExtractor,
+  mediaTypeOf,
+  runAttachmentExtractor,
+  type AttachmentExtractor,
+  type AttachmentTextBounds,
   type ExtractionOutcome,
-} from './attachment-extract.js';
+} from './attachment-extractor.js';
 
 /** The job's module: the kernel itself, which owns the index. Parses as a `ModuleId`. */
 export const ATTACHMENT_TEXT_MODULE = '@substrat-run/kernel' as ModuleId;
@@ -594,10 +596,13 @@ function attachmentIdOf(payload: unknown): string {
 /**
  * The extraction job: one pass per attachment, done when its outcome is written.
  *
- * Everything decidable without the bytes is decided first — a type no extractor reads, a
- * recorded size over the bound — so those files are never fetched. Bytes that are gone, or
- * that no longer match the recorded hash, are recorded `failed`: retrying cannot bring
- * them back. Only a throw from the store is retried, by the driver's backoff.
+ * Everything decidable without the bytes is decided first — no extractor for the type, a
+ * recorded size over the input bound — so those files are never fetched. Bytes that are
+ * gone, or that no longer match the recorded hash, are recorded `failed`: retrying cannot
+ * bring them back. Only a throw from the store is retried, by the driver's backoff; what
+ * the EXTRACTOR does, it answers for in its outcome (`runAttachmentExtractor`).
+ *
+ * The extractors are the host's, handed in (K-43): the kernel parses no format itself.
  *
  * No `step()`: the pass is one idempotent unit (read, extract, upsert), so a replay after
  * a crash simply does it again, and a step memo would only park the extracted text in
@@ -605,16 +610,26 @@ function attachmentIdOf(payload: unknown): string {
  */
 export function attachmentTextJob(
   source: AttachmentTextSource,
-  bounds: ExtractionBounds = DEFAULT_EXTRACTION_BOUNDS,
+  extractors: readonly AttachmentExtractor[],
+  bounds: AttachmentTextBounds = DEFAULT_ATTACHMENT_TEXT_BOUNDS,
 ): JobHandler {
   const outcomeFor = async (record: AttachmentRecord): Promise<ExtractionOutcome> => {
-    const plan = extractionPlan(record.contentType, record.filename, record.size, bounds);
-    if ('outcome' in plan) return plan.outcome;
-    const failed = (detail: string): ExtractionOutcome => ({ status: 'failed', extractor: plan.extractor, detail });
+    const extractor = chooseAttachmentExtractor(extractors, record.contentType, record.filename);
+    if (!extractor) {
+      return {
+        status: 'unsupported',
+        detail: `no extractor for content type '${mediaTypeOf(record.contentType) || 'unknown'}'`,
+      };
+    }
+    const failed = (detail: string): ExtractionOutcome => ({ status: 'failed', extractor: extractor.name, detail });
+    const inputMax = Math.min(bounds.maxInputBytes, extractor.maxInputBytes ?? Number.POSITIVE_INFINITY);
+    if (record.size > inputMax) {
+      return failed(`the file is ${record.size} bytes, over the ${inputMax}-byte input bound`);
+    }
     const body = await source.bytes(record);
     if (body === null) return failed('the bytes are missing from the blob store');
     if ((await attachmentSha256(body)) !== record.sha256) return failed('the bytes do not match the recorded sha256');
-    return extractAttachmentText({ contentType: record.contentType, filename: record.filename, body }, bounds);
+    return runAttachmentExtractor(extractor, { body, contentType: record.contentType, filename: record.filename }, bounds);
   };
   return async (pass) => {
     const attachmentId = attachmentIdOf(pass.payload);

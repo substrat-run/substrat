@@ -43,7 +43,7 @@ import {
   ATTACHMENT_SEARCH_TOO_MANY_OWNERS,
   ATTACHMENT_TEXT_JOB,
   ATTACHMENT_TEXT_MODULE,
-  DEFAULT_EXTRACTION_BOUNDS,
+  DEFAULT_ATTACHMENT_TEXT_BOUNDS,
   SearchTermTooShort,
   isSearchIndexTable,
   ulid,
@@ -357,7 +357,7 @@ export function attachmentTextContractSuite(
 
       it('cuts text at the per-attachment cap, says so, and still writes and finds the capped row', async () => {
         const s = await newScope();
-        const cap = DEFAULT_EXTRACTION_BOUNDS.maxTextBytes;
+        const cap = DEFAULT_ATTACHMENT_TEXT_BOUNDS.maxTextBytes;
         // A head phrase, then three-byte characters well past the cap — so the cut lands on a
         // multi-byte boundary — and a tail phrase that falls beyond it.
         const body = `kinkajou opening ${'€'.repeat(Math.ceil(cap / 3) + 1000)} capybara ending`;

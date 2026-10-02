@@ -31,8 +31,9 @@
  * explicit `"types": ["node"]` when the tree shifted under them.
  */
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { builtinModules } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const ROOTS = ['packages', 'engines', 'connectors', 'demos', 'apps'];
 /**
@@ -68,7 +69,7 @@ const stripComments = (text) =>
   text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:'"\`])\/\/[^\n]*/g, '$1');
 
 /** Bare specifiers referenced by a file — imports, re-exports, and `import("x")`. */
-function specifiersIn(raw) {
+export function specifiersIn(raw) {
   const text = stripComments(raw);
   const found = new Set();
   const patterns = [
@@ -93,61 +94,112 @@ function specifiersIn(raw) {
   return found;
 }
 
-const problems = [];
-let checkedPackages = 0;
+/**
+ * Edges that must not exist, however a package declares them (K-43).
+ *
+ * **The kernel indexes attachment text; it does not parse file formats.** Every parser lives
+ * in `@substrat-run/attachment-extractors`, which whoever constructs a host passes in — the
+ * kernel and the adapters never import it. A guard nobody can accidentally undo is the point
+ * of that decision, so it is held here rather than in prose: neither a runtime declaration
+ * (dependencies, peer, optional) nor a reference in source or shipped types. A DEV dependency
+ * stays legal, because an adapter's own test harness is a composition root and wires the
+ * extractors in exactly as a deployment does.
+ */
+export const FORBIDDEN_EDGES = {
+  '@substrat-run/kernel': ['@substrat-run/attachment-extractors'],
+  '@substrat-run/adapter-sqlite': ['@substrat-run/attachment-extractors'],
+  '@substrat-run/adapter-cloudflare': ['@substrat-run/attachment-extractors'],
+};
 
-for (const root of ROOTS) {
-  if (!existsSync(root)) continue;
-  for (const name of readdirSync(root)) {
-    const dir = join(root, name);
-    const pjPath = join(dir, 'package.json');
-    if (!existsSync(pjPath)) continue;
-    const pj = JSON.parse(readFileSync(pjPath, 'utf8'));
-    const declared = new Set([
-      ...Object.keys(pj.dependencies ?? {}),
-      ...Object.keys(pj.devDependencies ?? {}),
-      ...Object.keys(pj.peerDependencies ?? {}),
-      ...Object.keys(pj.optionalDependencies ?? {}),
-      pj.name,
-    ]);
-    checkedPackages += 1;
+/**
+ * The forbidden edges one package has: `pj` is its package.json, `files` its source and
+ * shipped-type texts keyed by a path to name in the report.
+ */
+export function forbiddenEdgeProblems(pj, files, forbidden = FORBIDDEN_EDGES) {
+  const banned = forbidden[pj.name] ?? [];
+  const out = [];
+  for (const target of banned) {
+    for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+      if (pj[field] && target in pj[field]) out.push(`${pj.name} declares '${target}' in ${field} (K-43)`);
+    }
+    for (const [where, text] of Object.entries(files)) {
+      if (specifiersIn(text).has(target)) out.push(`${pj.name} references '${target}' in ${where} (K-43)`);
+    }
+  }
+  return out;
+}
 
-    const surfaces = [
-      { label: 'published types', files: walk(join(dir, 'dist')).filter((f) => f.endsWith('.d.ts')) },
-      {
-        label: 'source',
-        // `*.generated.ts` is emitted, gitignored, and frequently embeds other
-        // projects' source verbatim — its imports are not this package's.
-        files: walk(join(dir, 'src')).filter(
-          (f) => /\.(ts|tsx|mts)$/.test(f) && !f.endsWith('.d.ts') && !f.includes('.generated.'),
+function main() {
+  const problems = [];
+  let checkedPackages = 0;
+
+  for (const root of ROOTS) {
+    if (!existsSync(root)) continue;
+    for (const name of readdirSync(root)) {
+      const dir = join(root, name);
+      const pjPath = join(dir, 'package.json');
+      if (!existsSync(pjPath)) continue;
+      const pj = JSON.parse(readFileSync(pjPath, 'utf8'));
+      const declared = new Set([
+        ...Object.keys(pj.dependencies ?? {}),
+        ...Object.keys(pj.devDependencies ?? {}),
+        ...Object.keys(pj.peerDependencies ?? {}),
+        ...Object.keys(pj.optionalDependencies ?? {}),
+        pj.name,
+      ]);
+      checkedPackages += 1;
+
+      const surfaces = [
+        { label: 'published types', files: walk(join(dir, 'dist')).filter((f) => f.endsWith('.d.ts')) },
+        {
+          label: 'source',
+          // `*.generated.ts` is emitted, gitignored, and frequently embeds other
+          // projects' source verbatim — its imports are not this package's.
+          files: walk(join(dir, 'src')).filter(
+            (f) => /\.(ts|tsx|mts)$/.test(f) && !f.endsWith('.d.ts') && !f.includes('.generated.'),
+          ),
+        },
+      ];
+
+      problems.push(
+        ...forbiddenEdgeProblems(
+          pj,
+          Object.fromEntries(
+            surfaces.flatMap(({ files }) => files.map((f) => [relative(dir, f), readFileSync(f, 'utf8')])),
+          ),
         ),
-      },
-    ];
+      );
 
-    for (const { label, files } of surfaces) {
-      const missing = new Map();
-      for (const f of files) {
-        for (const spec of specifiersIn(readFileSync(f, 'utf8'))) {
-          if (!declared.has(spec)) {
-            if (!missing.has(spec)) missing.set(spec, relative(dir, f));
+      for (const { label, files } of surfaces) {
+        const missing = new Map();
+        for (const f of files) {
+          for (const spec of specifiersIn(readFileSync(f, 'utf8'))) {
+            if (!declared.has(spec)) {
+              if (!missing.has(spec)) missing.set(spec, relative(dir, f));
+            }
           }
         }
-      }
-      for (const [spec, where] of missing) {
-        problems.push(`${pj.name} (${dir}): ${label} reference '${spec}' — not declared. First seen: ${where}`);
+        for (const [spec, where] of missing) {
+          problems.push(`${pj.name} (${dir}): ${label} reference '${spec}' — not declared. First seen: ${where}`);
+        }
       }
     }
   }
-}
 
-if (problems.length > 0) {
-  console.error('declared-deps: a package references modules it never declared\n');
-  for (const p of problems.sort()) console.error(`  ✕ ${p}`);
-  console.error(
-    `\n${problems.length} undeclared reference(s). A published package must declare what its\n` +
-      'types and code reference — anything else is relying on another package hoisting it.',
+  if (problems.length > 0) {
+    console.error('declared-deps: a package references modules it never declared, or an edge K-43 forbids\n');
+    for (const p of problems.sort()) console.error(`  ✕ ${p}`);
+    console.error(
+      `\n${problems.length} undeclared reference(s). A published package must declare what its\n` +
+        'types and code reference — anything else is relying on another package hoisting it.',
+    );
+    process.exit(1);
+  }
+
+  console.log(
+    `declared-deps: ${checkedPackages} packages declare everything they reference, and no forbidden edge exists`,
   );
-  process.exit(1);
 }
 
-console.log(`declared-deps: ${checkedPackages} packages declare everything they reference`);
+// Run as a command; importable for its test without running the sweep.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

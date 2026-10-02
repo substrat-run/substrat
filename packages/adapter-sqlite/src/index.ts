@@ -413,7 +413,9 @@ import {
   type SearchHit,
   type SearchIndexPlan,
   type SearchOptions,
+  type AttachmentExtractor,
   ATTACHMENT_TEXT_DDL,
+  assertAttachmentExtractors,
   assertJobRegistrable,
   attachmentRecordOfRow,
   attachmentTextJob,
@@ -670,6 +672,13 @@ interface DeclaredGuard {
 }
 
 export interface SqliteScopeHostOptions {
+  /**
+   * The parsers attachment text is extracted with (#1575, K-43) — `defaultAttachmentExtractors()`
+   * from `@substrat-run/attachment-extractors`, or a list of the deployment's own. The kernel
+   * and this adapter parse no file format; omitted, every upload records `unsupported`, with
+   * that reason, which is a valid configuration rather than a broken one.
+   */
+  attachmentExtractors?: readonly AttachmentExtractor[];
   /** Directory holding one SQLite file per scope plus the directory database. */
   dir: string;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
@@ -1540,6 +1549,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly onBehalfOf: OnBehalfOf | null = null;
   private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
   private readonly secretBox: SecretBox;
+  /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
+  private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly fetchImpl: FetchLike;
   private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
@@ -1554,6 +1565,8 @@ export class SqliteScopeHost implements ScopeHost {
 
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
+    assertAttachmentExtractors(options.attachmentExtractors ?? []);
+    this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
@@ -5160,24 +5173,28 @@ export class SqliteScopeHost implements ScopeHost {
    * search — and the outcome written in a turn of its own, like every job store write.
    */
   private attachmentTextHandler(rt: ScopeRuntime): JobHandler {
-    return attachmentTextJob({
-      record: (attachmentId) =>
-        rt.actor.enqueue(() => {
-          const row = rt.db.prepare('SELECT * FROM _substrat_attachments WHERE id = ?').get(attachmentId) as
-            | AttachmentRow
+    return attachmentTextJob(
+      {
+        record: (attachmentId) =>
+          rt.actor.enqueue(() => {
+            const row = rt.db.prepare('SELECT * FROM _substrat_attachments WHERE id = ?').get(attachmentId) as
+              | AttachmentRow
+              | undefined;
+            return row ? attachmentRecordOfRow(row) : null;
+          }),
+        bytes: async (record) => {
+          const scope = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(rt.scopeId) as
+            | { vertical: string | null }
             | undefined;
-          return row ? attachmentRecordOfRow(row) : null;
-        }),
-      bytes: async (record) => {
-        const scope = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(rt.scopeId) as
-          | { vertical: string | null }
-          | undefined;
-        const store = this.attachmentStore(rt.tenantId, scope?.vertical ?? null);
-        return (await store.get(attachmentBlobKey(rt.scopeId, record.id)))?.body ?? null;
+          const store = this.attachmentStore(rt.tenantId, scope?.vertical ?? null);
+          return (await store.get(attachmentBlobKey(rt.scopeId, record.id)))?.body ?? null;
+        },
+        write: (attachmentId, outcome) =>
+          rt.actor.enqueue(() => recordAttachmentText(spineSql(rt.db), attachmentId, outcome, this.clock())),
       },
-      write: (attachmentId, outcome) =>
-        rt.actor.enqueue(() => recordAttachmentText(spineSql(rt.db), attachmentId, outcome, this.clock())),
-    });
+      // K-43: the host's parsers, handed in — this adapter imports none.
+      this.attachmentExtractors,
+    );
   }
 
   async startJobRun(

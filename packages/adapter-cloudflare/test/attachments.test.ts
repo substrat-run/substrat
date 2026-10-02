@@ -1,7 +1,15 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ATTACHMENT_SEARCH_OWNERS_SQL, ATTACHMENT_SEARCH_SQL, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import {
+  ATTACHMENT_SEARCH_OWNERS_SQL,
+  ATTACHMENT_SEARCH_SQL,
+  ulid,
+  webCryptoSecretBox,
+  type AttachmentExtractor,
+  type AttachmentTextState,
+} from '@substrat-run/kernel';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { permMod } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
 import type { R2BlobStores } from '../src/r2.js';
@@ -68,7 +76,8 @@ describe('attachment surface (cloudflare host)', () => {
     return { r2, created, get n() { return n; } };
   };
 
-  const world = async () => {
+  // K-43: the host's parsers, passed in at the composition root — `[]` is a host wired with none.
+  const world = async (attachmentExtractors: readonly AttachmentExtractor[] = defaultAttachmentExtractors()) => {
     const fake = fakeR2();
     const bucket = fakeBucket();
     const host = new CloudflareScopeHost({
@@ -76,6 +85,7 @@ describe('attachment surface (cloudflare host)', () => {
       controlPlane: env.CONTROL_PLANE,
       blobStores: fake.r2,
       attachmentBuckets: () => bucket.bucket,
+      attachmentExtractors,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     });
     host.registerModule(permMod);
@@ -389,6 +399,24 @@ describe('attachment surface (cloudflare host)', () => {
     await expect(
       bare.provisionBlobStore(staff, { tenantId: t, vertical: 'docs', binding: 'ATTACHMENTS' }),
     ).rejects.toThrow(/not configured/);
+  });
+
+  // #1575, K-43: a host wired with no extractors parses nothing — and says so for every upload.
+  it('records every upload unsupported, with the reason, on a host given no extractors', async () => {
+    const { host, t, s, editor } = await world([]);
+    const rec = await (await host.attachments(editor, t, s)).upload({
+      entity: { entityType: 'item', entityId: 'i1' },
+      filename: 'note.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: bytes('the quokka memo'),
+    });
+    while ((await host.runDueJobs(t, s, { limit: 100 })).attempted > 0);
+    const state = await (await host.getScope(editor, t, s)).invoke<AttachmentTextState | null>('perm/attachment-text', {
+      id: rec.id,
+    });
+    expect(state).toMatchObject({ status: 'unsupported', detail: "no extractor for content type 'text/plain'" });
+    expect(await (await host.attachments(editor, t, s)).search('quokka')).toEqual([]);
   });
 
   /**

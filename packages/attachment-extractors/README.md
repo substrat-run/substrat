@@ -1,0 +1,50 @@
+# @substrat-run/attachment-extractors
+
+The file-format parsers behind [Substrat](https://github.com/substrat-run/substrat)'s attachment
+content search. They turn an uploaded file into plain text for the kernel to index.
+
+**How content search works: https://substrat.net/concepts/reads#searching-inside-attachments**
+
+## Why it is a separate package
+
+The kernel indexes attachment text. It does not parse file formats (decision K-43). It owns
+the text table and its full-text index, the extraction job, the outcome states, the output
+cap and the permission-gated search, and defines one seam: `AttachmentExtractor`. Every
+parser lives here, and neither the kernel nor an adapter imports this package. Whoever
+constructs the host passes the extractors in.
+
+A zip reader is handed hostile input by design, and its inflate budget is a security
+boundary. Parsing untrusted files belongs at the edge, not beside the permission checker.
+
+## Use
+
+```ts
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
+
+const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors() });
+```
+
+A host with no extractor for a type records `unsupported`, with the reason. That makes "no
+extractors" a valid configuration, not a broken one.
+
+| Extractor | Reads |
+|---|---|
+| `textExtractor` | `text/*` other than HTML, and `.txt` `.md` `.csv` `.tsv` when the type says nothing |
+| `htmlExtractor` | `text/html`, `application/xhtml+xml`: the visible text, with script, style and comments dropped |
+| `docxExtractor` | Word documents: the body, then footnotes, endnotes, headers and footers |
+| `xlsxExtractor` | Spreadsheets: shared and inline strings, never a cell's number |
+| `pptxExtractor` | Presentations: slides in order, then speaker notes |
+
+There is no PDF extractor yet, and nothing is OCR'd.
+
+## Bounds
+
+The bounds that protect the parsing process live here. `maxInputBytes` (32 MiB) is declared to
+the kernel, so an oversized file is refused before a byte is fetched. `maxInflatedBytes`
+(16 MiB) caps what a zip may inflate to, across every part of one file. The bound that protects
+the scope, 512 KiB of text per attachment, is the kernel's, and it applies to whatever an
+extractor returns.
+
+## License
+
+AGPL-3.0-only.
