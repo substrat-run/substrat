@@ -44,7 +44,7 @@ stay searchable by filename, and their content is not indexed.
 | Extractor | Reads |
 |---|---|
 | `textExtractor` | `text/*` other than HTML, and `.txt` `.md` `.csv` `.tsv` when the type says nothing |
-| `htmlExtractor` | `text/html` and `application/xhtml+xml`, as the visible text. Comments and `script`/`style` bodies are dropped, including an unclosed one cut off at the end of a file |
+| `htmlExtractor` | `text/html` and `application/xhtml+xml`, as the visible text. Each construct ends where a browser's HTML tokenizer ends it, so a `script` closes only at a complete `</script>`. Comments, `script`, `style`, `template` content and the other elements a browser hides are dropped, including an unclosed one cut off at the end of a file |
 | `docxExtractor` | Word documents: the body, then footnotes, endnotes, headers and footers |
 | `xlsxExtractor` | Spreadsheets: shared and inline strings, never a cell's number |
 | `pptxExtractor` | Presentations: slides in order, then speaker notes |

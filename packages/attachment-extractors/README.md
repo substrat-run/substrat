@@ -30,7 +30,7 @@ extractors" a valid configuration, not a broken one.
 | Extractor | Reads |
 |---|---|
 | `textExtractor` | `text/*` other than HTML, and `.txt` `.md` `.csv` `.tsv` when the type says nothing |
-| `htmlExtractor` | `text/html`, `application/xhtml+xml`: the visible text, with script, style and comments dropped |
+| `htmlExtractor` | `text/html`, `application/xhtml+xml`: the visible text, each construct ended where a browser's tokenizer ends it; script, style, template content and comments dropped |
 | `docxExtractor` | Word documents: the body, then footnotes, endnotes, headers and footers |
 | `xlsxExtractor` | Spreadsheets: shared and inline strings, never a cell's number |
 | `pptxExtractor` | Presentations: slides in order, then speaker notes |

@@ -226,6 +226,65 @@ describe('text and html', () => {
       .toBe('before\n\nbetween');
   });
 
+  describe('html: every construct ends where the HTML tokenizer ends it', () => {
+    const html = async (s: string) => indexedText(await ex('text/html', enc(s)));
+
+    it('a raw-text element ends only at a COMPLETE end tag of its own name — never a longer name it prefixes', async () => {
+      expect(await html('<script>var x="</scripture>"; secret_from_script();</script><p>visible</p>')).toBe('visible');
+      expect(await html('<script>a</script-x>secret_from_script()</script><p>visible</p>')).toBe('visible');
+      expect(await html('<style>a{}</styles>b{secret_from_style}</style><p>visible</p>')).toBe('visible');
+      // The closer is case folded, and whitespace, `/` or attributes may sit before its `>`.
+      expect(await html('<ScRiPt>secret()</sCrIpT><p>visible</p>')).toBe('visible');
+      expect(
+        await html('<script>secret()</script ><p>a</p><script>secret()</script\n><p>b</p><script>secret()</script/><p>c</p>'),
+      ).toBe('a\n\nb\n\nc');
+      expect(await html('<script>secret()</script x=">"><p>visible</p>')).toBe('visible');
+      // With no complete closer at all, the script runs to the end of the file.
+      expect(await html('<p>visible</p><script>secret()</scrip')).toBe('visible');
+      expect(await html('<p>visible</p><script>secret()</script')).toBe('visible');
+    });
+
+    it('a script keeps the escape rules a browser applies: `<!--<script>` inside one defers its end', async () => {
+      // Inside a `<!--`, a `<script>` makes the next `</script>` close only that; the one after closes the element.
+      expect(await html('<script><!--<script>x</script>secret_from_script()</script><p>visible</p>')).toBe('visible');
+      // `-->` ends that, and a `</script>` inside a plain `<!--` still closes the element.
+      expect(await html('<script><!--<script>--></script><p>visible</p>')).toBe('visible');
+      expect(await html('<script><!-- </script><p>visible</p>')).toBe('visible');
+    });
+
+    it('a tag name runs to whitespace, `/` or `>`: `<script_x>` is no script, `<script/>` is one', async () => {
+      expect(await html('<script_x>visible</script_x>')).toBe('visible');
+      expect(await html('<SCRIPTS>visible</SCRIPTS>')).toBe('visible');
+      expect(await html('<script/>secret()</script><p>visible</p>')).toBe('visible');
+    });
+
+    it('template content is dropped, nested or not; so are the raw-text elements a browser hides', async () => {
+      expect(await html('<template><template></template>secret_template</template><p>visible</p>')).toBe('visible');
+      expect(await html('<template><!-- </template> -->secret_template</template><p>visible</p>')).toBe('visible');
+      expect(
+        await html('<iframe><p>secret_fallback</p></iframe><noembed>x</noembed><noframes>y</noframes><p>visible</p>'),
+      ).toBe('visible');
+      // The twin: an end tag with no template open hides nothing after it.
+      expect(await html('</template><p>visible</p>')).toBe('visible');
+    });
+
+    it('a tag ends at a `>` outside a quoted attribute value — and a quote that opens no value is a character', async () => {
+      expect(await html('<p title="a > secret_attribute">visible</p>')).toBe('visible');
+      expect(await html('<p title=\'a > secret_attribute\' data-x="b>c">visible</p>')).toBe('visible');
+      expect(await html('<p a= "x>secret_attribute" b=c>visible</p>')).toBe('visible');
+      // `"` where a NAME is expected opens nothing, so this `>` ends the tag.
+      expect(await html('<p "x>visible</p>')).toBe('visible');
+    });
+
+    it('a comment ends at `-->` or `--!>`, or the abrupt `<!-->` and `<!--->` — and at nothing shorter', async () => {
+      expect(await html('<!-->visible')).toBe('visible');
+      expect(await html('<!--->visible')).toBe('visible');
+      expect(await html('<!-- a --!>visible')).toBe('visible');
+      expect(await html('<!--!> secret_comment --><p>visible</p>')).toBe('visible');
+      expect(await html('<!-- -- secret_comment --><p>visible</p>')).toBe('visible');
+    });
+  });
+
   it('cuts at the UTF-8 cap on a code point boundary and says so', async () => {
     const bounds = { maxTextBytes: 10 };
     const out = await ex('text/plain', enc('abcdefghi€€€'), bounds);

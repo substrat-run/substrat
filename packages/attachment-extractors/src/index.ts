@@ -12,8 +12,9 @@
  * Best-effort by content type, and explicit about what it does not do:
  *
  * - **text** (`text/*` other than HTML): decoded as the declared charset, UTF-8 otherwise.
- * - **html** (`text/html`, `application/xhtml+xml`): tags stripped; comments and `script` /
- *   `style` / `template` / `noscript` bodies dropped, an unclosed one through to the end;
+ * - **html** (`text/html`, `application/xhtml+xml`): tags stripped, each construct ended where
+ *   the HTML tokenizer ends it; comments, `script`, `style` and the other raw-text elements a
+ *   browser hides, and `template` content, dropped — an unclosed one through to the end;
  *   entities decoded.
  * - **docx / xlsx / pptx**: an OOXML file is a zip of XML parts, so this reads the zip's
  *   central directory, inflates only the parts that carry text, and keeps the text of
@@ -225,19 +226,180 @@ const HTML_BLOCK = new Set([
 ]);
 /** Table cells: their boundary reads as a space, so neighbouring cells do not run together. */
 const HTML_CELL = new Set(['td', 'th']);
-/** Elements whose content is not text a reader sees, dropped with it. */
-const HTML_RAW = new Set(['script', 'style', 'template', 'noscript']);
+/**
+ * Raw-text elements a reader never sees: the tokenizer reads their content as text up to
+ * their own end tag, and a browser does not render it. (`noscript` is raw text when scripting
+ * is on, as it is in every browser a page is opened in.) `script` is raw text too, with
+ * escape rules of its own — `scriptEnd`.
+ */
+const HTML_HIDDEN_RAW = new Set(['style', 'noscript', 'iframe', 'noembed', 'noframes']);
 
-/** `<` starts a tag only before a letter, `/`, `!` or `?` — as a browser reads it. Else it is text. */
-const startsTag = (code: number): boolean =>
-  (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 47 || code === 33 || code === 63;
+/** The longest element name this scanner acts on (`blockquote`); a longer one is just a tag. */
+const HTML_NAME_MAX = 10;
 
-/** The lower-cased element name of the tag whose body runs from `from` to `to`. */
-function tagNameOf(s: string, from: number, to: number): string {
-  let k = s[from] === '/' ? from + 1 : from;
-  const start = k;
-  while (k < to && /[A-Za-z0-9-]/.test(s[k]!)) k += 1;
-  return s.slice(start, k).toLowerCase();
+const isAsciiAlpha = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+/** The tokenizer's whitespace (tab, LF, FF, CR, space). */
+const isHtmlSpace = (c: number): boolean => c === 9 || c === 10 || c === 12 || c === 13 || c === 32;
+/** What ends a tag name, for the tokenizer: whitespace, `/` or `>` — nothing else. */
+const endsTagName = (c: number): boolean => isHtmlSpace(c) || c === 47 || c === 62;
+
+/** `s.indexOf(needle, from)`: every search for a construct's end goes through here. */
+function find(s: string, needle: string, from: number): number {
+  return s.indexOf(needle, from);
+}
+
+/** Visit `s` from `from`; `step(c, k)` returns true to stop at `k`. The index stopped at, or -1. */
+function scan(s: string, from: number, step: (c: number, k: number) => boolean): number {
+  for (let k = from; k < s.length; k += 1) if (step(s.charCodeAt(k), k)) return k;
+  return -1;
+}
+
+/**
+ * Whether the tag name `name` (lower case) is spelled at `at` and ENDS there — ASCII case
+ * folded, then whitespace, `/` or `>` — which is the tokenizer's test for an end tag that
+ * closes a raw-text element. `</scripture>` and `</script-x>` spell `script` and close
+ * nothing; `</SCRIPT >` closes it. A name running into the end of the file closes nothing.
+ */
+function namedAt(s: string, at: number, name: string): boolean {
+  if (at + name.length >= s.length) return false;
+  for (let j = 0; j < name.length; j += 1) {
+    // `| 0x20` folds A–Z onto a–z, and maps nothing else onto a lower-case letter.
+    if ((s.charCodeAt(at + j) | 0x20) !== name.charCodeAt(j)) return false;
+  }
+  return endsTagName(s.charCodeAt(at + name.length));
+}
+
+/** The tag name at `at`, ASCII lower-cased — or '' when it is longer than any name acted on. */
+function shortTagName(s: string, at: number): string {
+  let k = at;
+  while (k < s.length && k - at <= HTML_NAME_MAX && !endsTagName(s.charCodeAt(k))) k += 1;
+  if (k - at > HTML_NAME_MAX) return '';
+  return s.slice(at, k).replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+
+// The tokenizer's states inside a tag, as far as finding its end needs them: its self-closing
+// and after-quoted-value states end a tag and begin an attribute exactly as "before attribute
+// name" does, so they share its number.
+const TAG_NAME = 0;
+const BEFORE_ATTR = 1;
+const ATTR_NAME = 2;
+const AFTER_ATTR = 3;
+const BEFORE_VALUE = 4;
+const UNQUOTED = 5;
+const QUOTED = 6;
+
+/**
+ * The `>` that ends the tag whose name starts at `from`, or -1 — by the HTML tokenizer's own
+ * states, so a `>` inside a quoted attribute value ends nothing (`<a title="x > y">`), while
+ * a quote that opens no value (`<a "x>`) is just a character.
+ */
+function htmlTagEnd(s: string, from: number): number {
+  let state = TAG_NAME;
+  let quote = 0;
+  return scan(s, from, (c) => {
+    if (state === QUOTED) {
+      if (c === quote) state = BEFORE_ATTR;
+      return false;
+    }
+    if (c === 62) return true;
+    const space = isHtmlSpace(c);
+    switch (state) {
+      case TAG_NAME:
+        if (space || c === 47) state = BEFORE_ATTR;
+        break;
+      case BEFORE_ATTR:
+        if (!space && c !== 47) state = ATTR_NAME; // an `=` here starts a NAME, not a value
+        break;
+      case ATTR_NAME:
+        if (space) state = AFTER_ATTR;
+        else if (c === 47) state = BEFORE_ATTR;
+        else if (c === 61) state = BEFORE_VALUE;
+        break;
+      case AFTER_ATTR:
+        if (c === 47) state = BEFORE_ATTR;
+        else if (c === 61) state = BEFORE_VALUE;
+        else if (!space) state = ATTR_NAME;
+        break;
+      case BEFORE_VALUE:
+        if (c === 34 || c === 39) {
+          state = QUOTED;
+          quote = c;
+        } else if (!space) state = UNQUOTED;
+        break;
+      case UNQUOTED:
+        if (space) state = BEFORE_ATTR;
+        break;
+    }
+    return false;
+  });
+}
+
+/**
+ * The `>` that ends the comment opened at `lt`, or -1. As the tokenizer reads one: `-->` ends
+ * it, so does `--!>`, and so do the abrupt `<!-->` and `<!--->` — which is why the search for
+ * `-->` may overlap the opener's own dashes, and the one for `--!>` may not.
+ */
+function commentEnd(s: string, lt: number): number {
+  for (let p = lt + 2; ; ) {
+    const k = find(s, '--', p);
+    if (k < 0) return -1;
+    if (s.charCodeAt(k + 2) === 62) return k + 2;
+    if (k >= lt + 4 && s.charCodeAt(k + 2) === 33 && s.charCodeAt(k + 3) === 62) return k + 3;
+    p = k + 1;
+  }
+}
+
+/** Where the end tag closing a raw-text element's content starts (`</style …`), or -1. */
+function rawTextEnd(s: string, from: number, name: string): number {
+  for (let k = from; ; ) {
+    const lt = find(s, '</', k);
+    if (lt < 0 || namedAt(s, lt + 2, name)) return lt;
+    k = lt + 2;
+  }
+}
+
+const closesScript = (s: string, lt: number): boolean => s.charCodeAt(lt + 1) === 47 && namedAt(s, lt + 2, 'script');
+
+/**
+ * Where the `</script` closing a script's content starts, or -1 — by the tokenizer's script
+ * data states. Only a complete `</script` closes it; and after a `<!--` inside the script, a
+ * `<script` there makes the next `</script` close only that, until `-->` (the "double escaped"
+ * state, which a browser honours: `<script><!--<script></script>still script</script>`).
+ */
+function scriptEnd(s: string, from: number): number {
+  for (let k = from; ; ) {
+    const lt = find(s, '<', k);
+    if (lt < 0 || closesScript(s, lt)) return lt;
+    if (!s.startsWith('<!--', lt)) {
+      k = lt + 1;
+      continue;
+    }
+    // Escaped (after `<!--`), and double escaped (after a `<script` in that) — back to plain
+    // script data at the next `-->`.
+    let double = false;
+    let dashes = 2;
+    let closer = -1;
+    const back = scan(s, lt + 4, (c, j) => {
+      if (c === 45) {
+        dashes += 1;
+        return false;
+      }
+      if (c === 62 && dashes >= 2) return true;
+      dashes = 0;
+      if (c !== 60) return false;
+      if (double) {
+        if (closesScript(s, j)) double = false;
+      } else if (closesScript(s, j)) {
+        closer = j;
+        return true;
+      } else if (namedAt(s, j + 1, 'script')) {
+        double = true;
+      }
+      return false;
+    });
+    if (back < 0 || closer >= 0) return closer;
+    k = back + 1;
+  }
 }
 
 /**
@@ -249,14 +411,26 @@ function tagNameOf(s: string, from: number, to: number): string {
  * cut short in time. Here every index moves forward only, so the work is bounded by the
  * input — and a pass this long checks the kernel's signal as it goes.
  *
- * Comments and `script`/`style`/`template`/`noscript` bodies are dropped, and an UNCLOSED one
- * runs to the end of the file: a browser treats everything after an unclosed `<script>` as
- * script, and a page cut off mid-script (the prefix decode makes that ordinary) must not
- * have its source indexed as prose. So does a tag cut off before its `>`.
+ * Every construct ends where the HTML tokenizer ends it: a tag at a `>` outside a quoted
+ * value, a comment at `-->` / `--!>` (or the abrupt `<!-->`), a raw-text element only at a
+ * COMPLETE end tag of its own name, `script` by its escape rules. Comments, `script`, the
+ * hidden raw-text elements and everything inside `template` are dropped, and anything left
+ * UNCLOSED runs to the end of the file: a browser treats everything after an unclosed
+ * `<script>` as script, and a page cut off mid-script (the prefix decode makes that ordinary)
+ * must not have its source indexed as prose. So does a tag cut off before its `>`.
+ *
+ * Not modelled, and each can only index LESS than a browser shows: `title` and `textarea`
+ * (raw text that IS shown) and `xmp`/`plaintext` are read as ordinary markup, so tags written
+ * inside them are stripped rather than shown. SVG and MathML content is read as HTML.
  */
 async function htmlText(html: string, signal: ExtractionSignal): Promise<string> {
   const out: string[] = [];
   const n = html.length;
+  // Open `template` elements: their content is parsed as usual and shown nowhere.
+  let hidden = 0;
+  const text = (from: number, to: number) => {
+    if (hidden === 0 && to > from) out.push(html.slice(from, to));
+  };
   let i = 0;
   let nextCheck = STRIDE;
   while (i < n) {
@@ -264,41 +438,53 @@ async function htmlText(html: string, signal: ExtractionSignal): Promise<string>
       await checkpoint(signal);
       nextCheck = i + STRIDE;
     }
-    const lt = html.indexOf('<', i);
+    const lt = find(html, '<', i);
     if (lt < 0) {
-      out.push(html.slice(i));
+      text(i, n);
       break;
     }
-    out.push(html.slice(i, lt));
-    if (html.startsWith('<!--', lt)) {
-      const end = html.indexOf('-->', lt + 4);
-      if (end < 0) break;
-      out.push(' ');
-      i = end + 3;
-      continue;
-    }
-    if (!startsTag(html.charCodeAt(lt + 1))) {
-      out.push('<');
-      i = lt + 1;
-      continue;
-    }
-    const gt = html.indexOf('>', lt + 1);
-    if (gt < 0) break;
-    const name = tagNameOf(html, lt + 1, gt);
-    if (html[lt + 1] !== '/' && HTML_RAW.has(name)) {
-      // A literal search from here on: one pass, whether or not the closer exists.
-      const closer = new RegExp(`</${name}`, 'gi');
-      closer.lastIndex = gt + 1;
-      const found = closer.exec(html);
-      const end = found ? html.indexOf('>', found.index) : -1;
+    text(i, lt);
+    const next = html.charCodeAt(lt + 1);
+    if (next === 33 && html.startsWith('--', lt + 2)) {
+      const end = commentEnd(html, lt);
       if (end < 0) break;
       out.push(' ');
       i = end + 1;
       continue;
     }
+    if (next === 33 || next === 63 || (next === 47 && !isAsciiAlpha(html.charCodeAt(lt + 2)))) {
+      // `<!DOCTYPE …>`, `<?…>`, `</ …>`: a bogus comment, to the first `>`.
+      const end = find(html, '>', lt + 2);
+      if (end < 0) break;
+      i = end + 1;
+      continue;
+    }
+    if (!isAsciiAlpha(next) && next !== 47) {
+      text(lt, lt + 1); // `<` before anything else is text, as a browser reads it
+      i = lt + 1;
+      continue;
+    }
+    const closing = next === 47;
+    const nameAt = closing ? lt + 2 : lt + 1;
+    const name = shortTagName(html, nameAt);
+    const gt = htmlTagEnd(html, nameAt);
+    if (gt < 0) break;
+    i = gt + 1;
+    if (name === 'template') {
+      hidden = closing ? Math.max(0, hidden - 1) : hidden + 1;
+      continue;
+    }
+    if (!closing && (name === 'script' || HTML_HIDDEN_RAW.has(name))) {
+      const close = name === 'script' ? scriptEnd(html, i) : rawTextEnd(html, i, name);
+      const end = close < 0 ? -1 : htmlTagEnd(html, close + 2);
+      if (end < 0) break;
+      out.push(' ');
+      i = end + 1;
+      continue;
+    }
+    if (hidden > 0) continue;
     if (HTML_BLOCK.has(name)) out.push('\n');
     else if (HTML_CELL.has(name)) out.push(' ');
-    i = gt + 1;
   }
   return decodeEntities(out.join(''), NAMED_ENTITIES);
 }
