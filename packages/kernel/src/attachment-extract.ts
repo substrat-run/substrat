@@ -237,10 +237,22 @@ function decodeEntities(text: string, named: Record<string, string>): string {
 const HTML_BLOCK =
   /<\/?(?:p|div|br|li|ul|ol|tr|table|h[1-6]|section|article|header|footer|blockquote|pre|hr|title|dt|dd)\b[^>]*>/gi;
 
+/**
+ * The text a reader of the page would see.
+ *
+ * Comments and `script`/`style`/`template`/`noscript` bodies go first, closed ones and then
+ * an UNCLOSED one through to the end of the file: a browser treats everything after an
+ * unclosed `<script>` as script, and a page cut off mid-script (or written carelessly) must
+ * not have its source indexed as prose. The prefix decode above makes the cut-off case an
+ * ordinary one, not a rare one.
+ */
 function htmlText(html: string): string {
   const stripped = html
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<(script|style|template|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<!--[\s\S]*$/, ' ')
+    // From the opener's NAME, not its `>`: a file cut off inside the tag has no `>` at all.
+    .replace(/<(script|style|template|noscript)\b[\s\S]*$/i, ' ')
     .replace(HTML_BLOCK, '\n')
     .replace(/<\/?(?:td|th)\b[^>]*>/gi, ' ')
     .replace(/<[^>]*>/g, '');

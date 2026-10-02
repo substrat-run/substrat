@@ -899,6 +899,18 @@ export const ATTACHMENT_TEXT_FIXTURES: readonly AttachmentTextFixture[] = [
     hides: 'scriptonlyword',
   },
   {
+    // A page cut off mid-script, as the extractor's prefix decode routinely produces: the
+    // script's source runs to the end of the file and must not be indexed as prose.
+    name: 'html with an unclosed script',
+    filename: 'truncated.html',
+    contentType: 'text/html',
+    body: utf8('<html><body><p>The serval notice.</p><script>var tail = "unclosedscriptword"; render('),
+    status: 'indexed',
+    extractor: 'html',
+    finds: ['serval notice'],
+    hides: 'unclosedscriptword',
+  },
+  {
     name: 'docx',
     filename: 'agreement.docx',
     contentType: DOCX,

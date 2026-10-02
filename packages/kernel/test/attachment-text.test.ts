@@ -194,6 +194,19 @@ describe('text and html', () => {
     expect(text.split('\n')).toContain('one & two');
   });
 
+  it('drops an UNCLOSED script, style or comment through to the end — even one cut off inside its tag', async () => {
+    const html = (s: string) => ex('text/html', enc(s));
+    expect(indexedText(await html('<p>visible words</p><script>var leaked = "scriptsource";'))).toBe('visible words');
+    expect(indexedText(await html('<p>kept</p><STYLE type="text/css">.x { content: "stylesource" }'))).toBe('kept');
+    expect(indexedText(await html('<p>kept</p><script src="https://cut-off-mid-tag'))).toBe('kept');
+    expect(indexedText(await html('<p>kept</p><!-- an unclosed comment with commentsource'))).toBe('kept');
+    // The twins: a CLOSED script leaves the text after it, and a cut-off page keeps what
+    // came before the script it was cut in.
+    expect(indexedText(await html('<script>x()</script><p>after it</p>'))).toBe('after it');
+    expect(indexedText(await html('<p>before</p><script>a()</script><p>between</p><script>b(')))
+      .toBe('before\n\nbetween');
+  });
+
   it('cuts at the UTF-8 cap on a code point boundary and says so', async () => {
     const bounds = { ...DEFAULT_EXTRACTION_BOUNDS, maxTextBytes: 10 };
     const out = await ex('text/plain', enc('abcdefghi€€€'), bounds);
