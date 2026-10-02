@@ -237,6 +237,8 @@ import {
   resolveScopeRecord,
   ulid,
   ISSUE_RETENTION_DAYS,
+  telemetryRetentionStatements,
+  type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
   SWEEP_RUNS_INTENT_INDEX,
@@ -10080,6 +10082,13 @@ export class SqliteScopeHost implements ScopeHost {
             at: r.at,
           }),
         );
+      },
+      pruneTelemetry: async (): Promise<TelemetryPruneReport> => {
+        const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
+        for (const { table, sql, params } of telemetryRetentionStatements(Date.now())) {
+          pruned[table] = this.directory.prepare(sql).run(...params).changes;
+        }
+        return pruned;
       },
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const where: string[] = [];

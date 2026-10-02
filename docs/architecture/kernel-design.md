@@ -1528,7 +1528,10 @@ tables were, and the ninth once the free-text columns were — both #1632):
    exemplar whose owner is unknown (`last_owner_kind` NULL) is not reached either. These are
    issues written before the columns whose retained ops-failure rows did not prove a single
    origin when the columns were added, and issues restored from a dump taken before them. They
-   age out with issue retention, within 180 days of their last occurrence.
+   age out with issue retention, 180 days after their last occurrence. Issues prune on write and
+   on the platform's scheduled pass, so that bound holds on a directory that records nothing new.
+   A deployment that runs no scheduled pass, such as a self-host that never starts the sweeper,
+   prunes only when another ops failure is recorded.
 
 
 ## 14. Design log

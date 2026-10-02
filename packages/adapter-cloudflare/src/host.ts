@@ -231,6 +231,7 @@ import {
   type OpsFailureFilter,
   type OpsFailureInput,
   type IssueFilter,
+  type TelemetryPruneReport,
   type AppliedMigration,
   type SweepRunFilter,
   type SweepRunInput,
@@ -837,6 +838,8 @@ interface ControlPlaneStub {
   recordSweepRun(row: SweepRunRow): Promise<void>;
   listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;
   listIssues(query: IssueQuery): Promise<unknown[]>;
+  /** #1632: the telemetry retentions, run by the scheduled pass — `telemetryRetentionStatements`. */
+  pruneTelemetry(): Promise<TelemetryPruneReport>;
   setIssueStatus(
     fingerprint: string,
     status: 'new' | 'resolved' | 'ignored',
@@ -7080,6 +7083,7 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         return rows.map((r) => sweepRunEntry.parse(r));
       },
+      pruneTelemetry: async (): Promise<TelemetryPruneReport> => this.cp.pruneTelemetry(),
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const rows = await this.cp.listIssues({
           status: filter?.status,

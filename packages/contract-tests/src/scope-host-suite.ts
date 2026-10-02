@@ -2899,6 +2899,55 @@ export function scopeHostContractSuite(
             expect(await exemplarOwnerOf(shared)).toEqual({ kind: 'platform', tenant: null });
           });
 
+          it('ages telemetry out on the scheduled pass, not only when something new is written', async () => {
+            // Issues, ops failures and sweep runs prune on write, which bounds them only while
+            // something is written. Erasure skips an issue of unknown owner on the promise that
+            // it ages out within its retention, so a quiet directory must shed it on time too.
+            // Aged by restoring a directory copy with the rows' timestamps moved past retention.
+            const expired = { op: op('expired'), unit: `${s1}:erasure/expired-${ulid()}` };
+            const fresh = { op: op('fresh'), unit: `${s1}:erasure/fresh-${ulid()}` };
+            for (const x of [expired, fresh]) {
+              await fail(x.op, 'a failure');
+              await host.admin.recordSweepRun({ kind: 'schedule', unit: x.unit, outcome: 'failed', tenantId: t1, scopeId: s1, operation: 'erasure/run', error: 'x' });
+            }
+            const LONG_AGO = '2020-01-01T00:00:00.000Z';
+            const copy = await host.admin.exportDirectory(staff);
+            const age = (t: (typeof copy.tables)[number], match: string, matchCol: string, cols: string[]) => {
+              const m = t.columns.indexOf(matchCol);
+              const at = cols.map((c) => t.columns.indexOf(c));
+              return { ...t, rows: t.rows.map((r) => (r[m] === match ? r.map((c, i) => (at.includes(i) ? LONG_AGO : c)) : r)) };
+            };
+            await host.admin.restoreDirectory(staff, {
+              ...copy,
+              tables: copy.tables.map((t) =>
+                t.name === '_substrat_ops_failures' ? age(t, expired.op, 'operation', ['at'])
+                : t.name === '_substrat_issues' ? age(t, expired.op, 'operation', ['first_seen', 'last_seen'])
+                : t.name === '_substrat_sweep_runs' ? age(t, expired.unit, 'unit', ['at'])
+                : t,
+              ),
+            });
+            expect(await host.admin.listIssues(staff, { operation: expired.op })).toHaveLength(1);
+
+            const report = await runPlatformSweep(host, {
+              actor: staff,
+              fetch: connectorTestFetch,
+              sweepers: {},
+              drainRetries: false,
+            });
+
+            expect(report.errors.filter((e) => e.kind === 'telemetry')).toEqual([]);
+            expect(report.telemetry?.opsFailures).toBeGreaterThanOrEqual(1);
+            expect(report.telemetry?.issues).toBeGreaterThanOrEqual(1);
+            expect(report.telemetry?.sweepRuns).toBeGreaterThanOrEqual(1);
+            expect(await host.admin.listOpsFailures(staff, { operation: expired.op })).toEqual([]);
+            expect(await host.admin.listIssues(staff, { operation: expired.op })).toEqual([]);
+            expect(await host.admin.listSweepRuns(staff, { unit: expired.unit })).toEqual([]);
+            // The positive twin: rows inside their retention stay.
+            expect(await host.admin.listOpsFailures(staff, { operation: fresh.op })).toHaveLength(1);
+            expect(await host.admin.listIssues(staff, { operation: fresh.op })).toHaveLength(1);
+            expect(await host.admin.listSweepRuns(staff, { unit: fresh.unit })).toHaveLength(1);
+          });
+
           it('rewrites a queued sweep-runs entry\'s error, and keeps the rest of the intent', async () => {
             // A CP-less pass queues its schedule outcomes as one `sweep-runs` intent, and the
             // drain lands each entry's `error` in `_substrat_sweep_runs`. The intent is kept like

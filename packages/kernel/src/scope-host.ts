@@ -3489,6 +3489,14 @@ export interface HostAdmin {
    */
   listIssues(actor: PlatformActorId, filter?: IssueFilter): Promise<IssueEntry[]>;
   /**
+   * Delete every ops failure, issue and sweep run past its retention (#1632) — the
+   * scheduled pass's half of the prune each of those tables already runs on write, so a
+   * directory that records nothing new still sheds them on time. Not audited, like the
+   * prune-on-write it completes: retention-bounded telemetry, not evidence. Optional so
+   * a host that predates it degrades the sweep's phase to `null`.
+   */
+  pruneTelemetry?(actor: PlatformActorId): Promise<TelemetryPruneReport>;
+  /**
    * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
    * is ingest's word and not accepted here. Returns the updated row, or undefined
    * for an unknown fingerprint. Audited with the before/after status diff (K-33).
@@ -3935,9 +3943,50 @@ export function sweepRunsIntentHasKind(indexSql: string): boolean {
  * How long an issue row outlives its last occurrence (#1233). Deliberately longer
  * than the 90-day evidence beneath it: an issue is the compressed memory of a
  * failure class, and "we saw this five months ago" is exactly what a regression
- * needs to be recognizable. Pruned on write like everything else here.
+ * needs to be recognizable. Pruned on write like everything else here, and on the
+ * scheduled pass (`pruneTelemetry`, #1632), so a quiet directory sheds it on time too.
  */
 export const ISSUE_RETENTION_DAYS = 180;
+
+/** What one `pruneTelemetry` call deleted, per table. */
+export interface TelemetryPruneReport {
+  opsFailures: number;
+  issues: number;
+  sweepRuns: number;
+}
+
+/**
+ * The three telemetry retentions as statements, for `pruneTelemetry` on both adapters (#1632).
+ *
+ * Each table already prunes on write, and that bound holds only while something is written:
+ * a quiet directory keeps a row past its retention for as long as nothing new arrives in
+ * that table. An issue is the case that matters. Erasure skips an issue whose exemplar owner
+ * is unknown, on the promise that it ages out within `ISSUE_RETENTION_DAYS`, and on a
+ * directory with no new failures nothing ever deleted it. The scheduled pass runs these
+ * statements, which makes the stated retention a bound in time rather than in traffic.
+ */
+export function telemetryRetentionStatements(
+  nowMs: number,
+): { table: keyof TelemetryPruneReport; sql: string; params: [string] }[] {
+  const horizon = (days: number) => new Date(nowMs - days * 86_400_000).toISOString();
+  return [
+    {
+      table: 'opsFailures',
+      sql: 'DELETE FROM _substrat_ops_failures WHERE at < ?',
+      params: [horizon(OPS_FAILURE_RETENTION_DAYS)],
+    },
+    {
+      table: 'issues',
+      sql: 'DELETE FROM _substrat_issues WHERE last_seen < ?',
+      params: [horizon(ISSUE_RETENTION_DAYS)],
+    },
+    {
+      table: 'sweepRuns',
+      sql: 'DELETE FROM _substrat_sweep_runs WHERE at < ?',
+      params: [horizon(SWEEP_RUN_RETENTION_DAYS)],
+    },
+  ];
+}
 
 /** Filter for `listIssues` (#1233). Bounded by `limit` only — see the verb's doc. */
 export interface IssueFilter {

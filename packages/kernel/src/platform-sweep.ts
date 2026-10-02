@@ -23,7 +23,7 @@ import type {
   ManifestImports,
   WantedEvent,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput } from './scope-host.js';
+import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import { backoffAt } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -637,6 +637,11 @@ export interface PlatformSweepReport {
   eventDrain: EventDrainReport | null;
   /** Every cross-vertical edge this pass looked at (#1705). Null when the phase is off. */
   crossVertical?: CrossVerticalReport | null;
+  /**
+   * What the telemetry-retention phase deleted (#1632), or null when the host predates
+   * `pruneTelemetry`. Null and zeros are different facts, as everywhere in this report.
+   */
+  telemetry?: TelemetryPruneReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -651,6 +656,8 @@ export interface PlatformSweepReport {
       | 'schedule'
       | 'freshness'
       | 'access-log'
+      // #1632: the telemetry-retention prune failed; the rows stay for the next pass.
+      | 'telemetry'
       // #1334: one scope's event drain failed — its events stay undrained.
       | 'event-drain'
       // #1705: one cross-vertical edge failed in transport. Its watermark did not move, so
@@ -922,6 +929,7 @@ export async function runPlatformSweep(
     accessLog: null,
     eventDrain: null,
     crossVertical: null,
+    telemetry: null,
     errors: [],
   };
 
@@ -1439,6 +1447,17 @@ export async function runPlatformSweep(
         report.errors.push({ kind: 'event-drain', id: s.id, error: message(err) });
       }
     });
+  }
+
+  // -- telemetry retention (#1632) -------------------------------------------
+  // Ops failures, issues and sweep runs prune on write, which bounds them only while
+  // something is written. This bounds them in time. Feature-detected, like every phase.
+  if (typeof host.admin.pruneTelemetry === 'function') {
+    try {
+      report.telemetry = await host.admin.pruneTelemetry(options.actor);
+    } catch (err) {
+      report.errors.push({ kind: 'telemetry', id: 'telemetry', error: message(err) });
+    }
   }
 
   // -- drain the staff access log to Tier 2, then prune it (K-24, §4.4) --------
