@@ -479,6 +479,18 @@ describe('forward — a side thread the customer never reads', () => {
     expect(await pending(d)).not.toContain(sent.id);
     expect((await readOutbound(d, sent.id)).toEmail).toBeNull();
 
+    // Withdrawn on the forward itself: putting the same person back does not send it.
+    expect(
+      kit.sql(d, (db) => db.prepare('SELECT withdrawn_at FROM ticket0_messages WHERE id = ?').get(sent.id)) as {
+        withdrawn_at: string | null;
+      },
+    ).toMatchObject({ withdrawn_at: expect.any(String) });
+    const resent = (await forward('s@vendor.example')) as Message;
+    expect(await pending(d)).toContain(resent.id);
+    expect(await pending(d)).not.toContain(sent.id);
+    expect((await readOutbound(d, sent.id)).toEmail).toBeNull();
+    expect((await readOutbound(d, resent.id)).toEmail).toBe('s@vendor.example');
+
     await admin.invoke('ticket0/close', { conversationId });
     await expect(forward('t@vendor.example')).rejects.toThrow(/invalid transition|closed/i);
   });
@@ -783,11 +795,13 @@ describe('migration 0022 on an existing desk', () => {
     const after = new Database(file(old));
     try {
       const rows = after.prepare('SELECT * FROM ticket0_messages ORDER BY id').all() as Record<string, unknown>[];
-      expect(rows.map(({ author_contact_id: _a, third_party_contact_id: _t, ...rest }) => rest)).toEqual(beforeRows);
-      expect(rows.map((r) => [r.id, r.author_contact_id, r.third_party_contact_id])).toEqual([
-        ['m1', 'k1', null],
-        ['m2', null, null],
-        ['m3', null, null],
+      expect(rows.map(({ author_contact_id: _a, third_party_contact_id: _t, withdrawn_at: _w, ...rest }) => rest)).toEqual(
+        beforeRows,
+      );
+      expect(rows.map((r) => [r.id, r.author_contact_id, r.third_party_contact_id, r.withdrawn_at])).toEqual([
+        ['m1', 'k1', null, null],
+        ['m2', null, null, null],
+        ['m3', null, null, null],
       ]);
       // And after: the third audience is admitted, and nothing beyond it is.
       after

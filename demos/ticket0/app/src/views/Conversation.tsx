@@ -559,7 +559,13 @@ function MessageRow({ message, people }: { message: MessageWithCitations; people
         ) : null}
         {forward && message.author_kind !== 'contact' ? (
           <div className="t-small" style={{ marginTop: 5 }}>
-            forward · {message.delivered_at ? 'delivered by email' : 'waiting to be sent'} · the customer never sees this
+            forward ·{' '}
+            {message.delivered_at
+              ? 'delivered by email'
+              : message.withdrawn_at
+                ? 'withdrawn — never sent'
+                : 'waiting to be sent'}{' '}
+            · the customer never sees this
           </div>
         ) : null}
       </div>

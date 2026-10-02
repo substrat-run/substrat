@@ -872,6 +872,14 @@ export const ticket0Entities = defineEntities({
        */
       third_party_contact_id: z.string().nullable(),
       /**
+       * When an unsent forward was withdrawn, because its third party was taken off the
+       * conversation before the relay sent it (#1086). Null on every other message. Set
+       * once and never cleared: a forward withdrawn is never sent, even if the same person
+       * is put back on — putting them back is a new decision, and a new forward says what
+       * it is for.
+       */
+      withdrawn_at: z.string().nullable(),
+      /**
        * The knowledge-base articles this message was sent with, as JSON ids.
        *
        * Deliberately not the same fact as `ai_turn.cited_article_ids`: the turn records
@@ -1641,6 +1649,7 @@ export const customerMessageRow = ticket0Entities.message.fields.omit({
   author_principal: true,
   author_contact_id: true,
   third_party_contact_id: true,
+  withdrawn_at: true,
 });
 const customerMessage = customerMessageRow.extend({ citations: z.array(
     z.object({

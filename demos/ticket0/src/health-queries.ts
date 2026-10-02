@@ -25,12 +25,19 @@ export const ASSISTANT_HEALTH_RECENT_SQL = `SELECT t.id, t.conversation_id, c.su
         ORDER BY t.created_at DESC, t.id DESC
         LIMIT ?`;
 
+/**
+ * Pinned to the partial desk-reply index (`INDEXED BY`, as `NO_REPLY_WAITING` is pinned to
+ * its own), because the planner's unaided choice was a tie it broke the other way the
+ * moment the message table grew a column (#1086): without statistics it took the kernel's
+ * `(visibility, created_at, id)` list index and read every public message on the desk per
+ * waiting draft. The index is migration 0015's and is on every desk this code runs on.
+ */
 const WAITING = `FROM ticket0_ai_turns t
          JOIN ticket0_conversations c ON c.id = t.conversation_id
         WHERE t.outcome = 'drafted'
           AND ${inTheInbox('c')}
           AND NOT EXISTS (
-                SELECT 1 FROM ticket0_messages m
+                SELECT 1 FROM ticket0_messages m INDEXED BY ticket0_messages_desk_reply
                  WHERE m.conversation_id = t.conversation_id
                    AND m.visibility = 'public'
                    AND m.author_kind != 'contact'

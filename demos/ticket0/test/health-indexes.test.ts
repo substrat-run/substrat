@@ -37,10 +37,17 @@ let afterPlans: Record<string, string[]>;
 
 /**
  * A read as the version BEFORE 0021 sent it: the inbox predicate (#1088) names a column
- * that schema does not have, and is the only thing 0021 added to these statements. The
+ * that schema does not have, and is (with #1086's index pin) all that was added to these statements. The
  * "before" snapshot is of the old version's own reads, so it takes them without it.
  */
-const before0021 = (query: Query): Query => ({ ...query, sql: query.sql.replace(/\s+AND (c\.)?quarantine IS NULL/g, '') });
+const before0021 = (query: Query): Query => ({
+  ...query,
+  sql: query.sql
+    .replace(/\s+AND (c\.)?quarantine IS NULL/g, '')
+    // Nor the pin #1086 added to the waiting read: that version sent it unpinned, and its
+    // schema has no index to pin to.
+    .replace(/ INDEXED BY ticket0_messages_desk_reply/g, ''),
+});
 function explain(query: Query): string[] {
   return (db.prepare(`EXPLAIN QUERY PLAN ${query.sql}`).all(...query.args) as { detail: string }[])
     .map(row => row.detail);

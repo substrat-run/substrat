@@ -5611,6 +5611,15 @@ const operations = {
     const existing = participantOf(ctx, conversation.id, input.contactId);
     if (!existing) return { conversation_id: conversation.id, contact_id: input.contactId, removed: false };
     ctx.sql.exec('DELETE FROM ticket0_conversation_participants WHERE id = ?', [existing.id]);
+    // Every forward still waiting to go to them is withdrawn, on the forward itself (Codex
+    // round 1): putting the same person back later is a new decision, and must not send
+    // what was written for the one taken back.
+    ctx.sql.exec(
+      `UPDATE ticket0_messages SET withdrawn_at = ?
+        WHERE conversation_id = ? AND third_party_contact_id = ? AND visibility = 'forward'
+          AND author_kind <> 'contact' AND delivered_at IS NULL AND withdrawn_at IS NULL`,
+      [ctx.now(), conversation.id, existing.contact_id],
+    );
     ctx.emit({
       type: 'ticket0.participant-removed',
       schemaVersion: 1,
@@ -6625,9 +6634,10 @@ const operations = {
    *
    * Two kinds of mail, named by visibility and never by exclusion (#1086): a `public`
    * reply on an EMAIL conversation (a widget visitor reads theirs in the widget), and a
-   * `forward` on ANY conversation, while its third party is still on it — a forward is
-   * always mail, and one whose third party was taken off is never sent, so it must not
-   * sit at the head of this queue being skipped on every sweep either.
+   * `forward` on ANY conversation, while its third party is still on it and it was not
+   * withdrawn — a forward is always mail, and one whose third party was taken off is never
+   * sent, not even once they are put back (`withdrawn_at`), so it must not sit at the head
+   * of this queue being skipped on every sweep either.
    */
   'ticket0/list-pending-outbound': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRelay));
@@ -6642,6 +6652,7 @@ const operations = {
                   AND m.delivered_at IS NULL
                   AND ((m.visibility = 'public' AND c.channel = 'email')
                        OR (m.visibility = 'forward'
+                           AND m.withdrawn_at IS NULL
                            AND EXISTS (SELECT 1 FROM ticket0_conversation_participants p
                                         WHERE p.conversation_id = m.conversation_id
                                           AND p.contact_id = m.third_party_contact_id
@@ -6707,7 +6718,7 @@ const operations = {
     if (visibility === 'forward') {
       // Never to a mailbox on the customer's thread, however it is spelled: that would be
       // the side thread delivered to the customer's side.
-      const third = addressesOf('third-party', message.third_party_contact_id)[0] ?? null;
+      const third = message.withdrawn_at === null ? (addressesOf('third-party', message.third_party_contact_id)[0] ?? null) : null;
       toEmail = third !== null && !taken.has(addressKey(third)) ? third : null;
     } else {
       toEmail = requester;

@@ -625,10 +625,11 @@ export const ticket0Migrations: SqlMigration[] = [
       -- REFERENCES ticket0_messages and no trigger is defined on it, so the DROP takes nothing but
       -- the table's own indexes, and every one of them is re-created after the rename.
       --
-      -- Two columns arrive with it. author_contact_id is filled for every contact message that
+      -- Three columns arrive with it. author_contact_id is filled for every contact message that
       -- already exists: until now the conversation's own contact was the only contact who could
       -- write in it, and a merge only ever joins two conversations of one contact. So that is a
-      -- fact, not a guess. third_party_contact_id starts NULL everywhere: no forward exists yet.
+      -- fact, not a guess. third_party_contact_id and withdrawn_at start NULL everywhere: no
+      -- forward exists yet.
       CREATE TABLE ticket0_messages_new (
         id TEXT PRIMARY KEY NOT NULL,
         conversation_id TEXT NOT NULL REFERENCES ticket0_conversations(id),
@@ -642,6 +643,7 @@ export const ticket0Migrations: SqlMigration[] = [
         delivered_at TEXT,
         author_contact_id TEXT,
         third_party_contact_id TEXT,
+        withdrawn_at TEXT,
         cited_article_ids TEXT,
         created_at TEXT NOT NULL
       );
@@ -649,13 +651,13 @@ export const ticket0Migrations: SqlMigration[] = [
       INSERT INTO ticket0_messages_new
         (id, conversation_id, author_kind, author_principal, visibility, body_text, body_html,
          email_message_id, email_in_reply_to, delivered_at, author_contact_id, third_party_contact_id,
-         cited_article_ids, created_at)
+         withdrawn_at, cited_article_ids, created_at)
         SELECT m.id, m.conversation_id, m.author_kind, m.author_principal, m.visibility, m.body_text,
                m.body_html, m.email_message_id, m.email_in_reply_to, m.delivered_at,
                CASE WHEN m.author_kind = 'contact'
                     THEN (SELECT c.contact_id FROM ticket0_conversations c WHERE c.id = m.conversation_id)
                END,
-               NULL, m.cited_article_ids, m.created_at
+               NULL, NULL, m.cited_article_ids, m.created_at
           FROM ticket0_messages m;
 
       DROP TABLE ticket0_messages;

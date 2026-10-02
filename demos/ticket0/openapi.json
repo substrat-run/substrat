@@ -5368,6 +5368,16 @@
                         }
                       ]
                     },
+                    "withdrawn_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -5395,6 +5405,7 @@
                     "delivered_at",
                     "author_contact_id",
                     "third_party_contact_id",
+                    "withdrawn_at",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -6387,6 +6398,16 @@
                         }
                       ]
                     },
+                    "withdrawn_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -6414,6 +6435,7 @@
                     "delivered_at",
                     "author_contact_id",
                     "third_party_contact_id",
+                    "withdrawn_at",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -8067,6 +8089,16 @@
                           }
                         ]
                       },
+                      "withdrawn_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "cited_article_ids": {
                         "anyOf": [
                           {
@@ -8121,6 +8153,7 @@
                       "delivered_at",
                       "author_contact_id",
                       "third_party_contact_id",
+                      "withdrawn_at",
                       "cited_article_ids",
                       "created_at",
                       "citations"
@@ -10636,6 +10669,16 @@
                         }
                       ]
                     },
+                    "withdrawn_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -10663,6 +10706,7 @@
                     "delivered_at",
                     "author_contact_id",
                     "third_party_contact_id",
+                    "withdrawn_at",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -10870,6 +10914,16 @@
                         }
                       ]
                     },
+                    "withdrawn_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -10897,6 +10951,7 @@
                     "delivered_at",
                     "author_contact_id",
                     "third_party_contact_id",
+                    "withdrawn_at",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -11741,6 +11796,16 @@
                         }
                       ]
                     },
+                    "withdrawn_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -11768,6 +11833,7 @@
                     "delivered_at",
                     "author_contact_id",
                     "third_party_contact_id",
+                    "withdrawn_at",
                     "cited_article_ids",
                     "created_at"
                   ],
@@ -12693,6 +12759,16 @@
                         }
                       ]
                     },
+                    "withdrawn_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -12723,6 +12799,7 @@
                     "delivered_at",
                     "author_contact_id",
                     "third_party_contact_id",
+                    "withdrawn_at",
                     "cited_article_ids",
                     "created_at",
                     "notified"
@@ -17243,6 +17320,16 @@
                         }
                       ]
                     },
+                    "withdrawn_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "cited_article_ids": {
                       "anyOf": [
                         {
@@ -17273,6 +17360,7 @@
                     "delivered_at",
                     "author_contact_id",
                     "third_party_contact_id",
+                    "withdrawn_at",
                     "cited_article_ids",
                     "created_at",
                     "suspended"

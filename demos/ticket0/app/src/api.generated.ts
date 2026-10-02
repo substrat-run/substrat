@@ -132,6 +132,7 @@ export interface Message {
   delivered_at: string | null;
   author_contact_id: string | null;
   third_party_contact_id: string | null;
+  withdrawn_at: string | null;
   cited_article_ids: string | null;
   created_at: string;
 }
@@ -607,7 +608,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  listMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; withdrawn_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
    * Who is on a conversation
@@ -805,7 +806,7 @@ export interface Ticket0Client {
    *
    * `POST /widget/sessions/{sessionId}/handoff` — `ticket0/request-human`
    */
-  requestHuman(input: { sessionId: string; token: string; body?: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; cited_article_ids: string | null; created_at: string; notified: number }>;
+  requestHuman(input: { sessionId: string; token: string; body?: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; withdrawn_at: string | null; cited_article_ids: string | null; created_at: string; notified: number }>;
 
   /**
    * Mark a conversation resolved
@@ -995,7 +996,7 @@ export interface Ticket0Client {
    *
    * `POST /widget/sessions/{sessionId}/messages` — `ticket0/widget-post`
    */
-  widgetPost(input: { sessionId: string; token: string; body: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; cited_article_ids: string | null; created_at: string; suspended: boolean }>;
+  widgetPost(input: { sessionId: string; token: string; body: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; withdrawn_at: string | null; cited_article_ids: string | null; created_at: string; suspended: boolean }>;
 
   /**
    * The browser session behind a widget conversation
