@@ -14,9 +14,11 @@ import { mapError } from '../src/errors.js';
  */
 describe('mapError — a refusal that names its fix must survive as itself', () => {
   // The exact text both adapters throw (adapter-sqlite `setVerticalListed`,
-  // adapter-cloudflare `host.ts` — identical strings, pinned by the contract suite as
-  // /auto-admitted.*staff admit/).
-  const autoAdmitRefusal = new Error(
+  // adapter-cloudflare `host.ts` — identical strings), typed `conflict` by both and pinned
+  // on that code by the contract suite. Its pattern row is gone (#113 phase 5), so a throw
+  // reaches `mapError` carrying the code, as the adapters now raise it.
+  const autoAdmitRefusal = substratError(
+    'conflict',
     `vertical 'substrat-9yjbbn/auth-server' prod version 01KZN76M38AWJ9KHE6RWVFSC8W is auto-admitted ` +
       `(private self-serve) — a staff admit must vouch for it before listing`,
   );
@@ -33,13 +35,13 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
   });
 
   it('is not swallowed by a neighbouring admission pattern (order is significant)', () => {
-    // `/is already admitted/` and `/not admitted/` sit beside it and describe DIFFERENT
-    // states. Were either to match this message, the operator would be told the version
-    // is already admitted — which is true, and precisely the confusion that hid the real
+    // `/is already admitted/` still sits beside it in the table and describes a DIFFERENT
+    // state. Were it to match this message, the operator would be told the version is
+    // already admitted — which is true, and precisely the confusion that hid the real
     // requirement: admitted is not the same as vouched for.
     expect(mapError(autoAdmitRefusal).body.error).not.toMatch(/^unknown /);
+    expect(mapError(autoAdmitRefusal).body.error).not.toMatch(/^version .* is already admitted/);
     expect(mapError(new Error('version 01J is already admitted')).status).toBe(409);
-    expect(mapError(new Error('version 01J is not admitted')).status).toBe(409);
   });
 
   it('keeps the note itself out of the matching — the text is the contract, not the constant', () => {
@@ -171,6 +173,30 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     // 500 — what makes the deletion real. The contract suite is what proves the throws are
     // typed, since THIS case would pass whatever the adapters did.
     expect(mapError(new Error(sentence)).status).toBe(500);
+  });
+
+  it('reads `is owned by`, `is auto-admitted` and `not admitted` from the code now that their rows are gone (#113 phase 5)', () => {
+    // The sixth to eighth families off `CODE_PATTERNS`: the registry's own refusals. Every
+    // site is on the coordinator (`host.ts`, `adapter-sqlite`) — none is raised inside a
+    // Durable Object — so the real error object reaches `mapError` and the code is read.
+    const sentences = [
+      `vertical 'helpdesk' is owned by 01AAA, not 01BBB`,
+      `vertical 'helpdesk' is owned by the platform, not 01BBB`,
+      `vertical 'crm' prod version 01ABC is auto-admitted (private self-serve) — a staff admit must vouch for it before listing`,
+      `version 01ABC is pending, not admitted — it cannot be bound to a scope`,
+      `version 01ABC is rejected, not admitted — it cannot be promoted`,
+    ];
+    for (const sentence of sentences) {
+      const typed = mapError(substratError('conflict', sentence));
+      expect(typed.status).toBe(409);
+      expect(typed.body.code).toBe('conflict');
+      expect(typed.body.detail).toBe(sentence);
+
+      // The other half: untyped, the same sentence is an unreviewed throw and gets the
+      // generic 500 — what makes the deletion real. The contract suite is what proves the
+      // throws are typed, since THIS case would pass whatever the adapters did.
+      expect(mapError(new Error(sentence)).status).toBe(500);
+    }
   });
 
   it('relays a downstream status as about:blank — our taxonomy is not theirs to wear', () => {

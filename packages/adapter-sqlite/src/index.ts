@@ -6054,7 +6054,8 @@ export class SqliteScopeHost implements ScopeHost {
       // private vertical self-admit, and what lets a LISTED vertical's builder keep
       // previewing their own new code (issue #509 ask (d)).
       if (v.admission !== 'admitted' && scope.kind !== 'preview') {
-        throw new Error(
+        throw substratError(
+          'conflict',
           `version ${versionId} is ${v.admission}, not admitted — it cannot be bound to a scope`,
         );
       }
@@ -7204,7 +7205,8 @@ export class SqliteScopeHost implements ScopeHost {
             return;
           }
           if (existing.ownerTenant !== parsed.ownerTenant) {
-            throw new Error(
+            throw substratError(
+              'conflict',
               `vertical '${parsed.slug}' is owned by ${existing.ownerTenant ?? 'the platform'}, not ${parsed.ownerTenant ?? 'the platform'}`,
             );
           }
@@ -7307,7 +7309,8 @@ export class SqliteScopeHost implements ScopeHost {
             .get(slug) as { version_id: string } | undefined;
           const prodVersion = prod ? readVersion(prod.version_id) : undefined;
           if (prodVersion?.admissionNote === AUTO_ADMISSION_NOTE) {
-            throw new Error(
+            throw substratError(
+              'conflict',
               `vertical '${slug}' prod version ${prodVersion.id} is auto-admitted (private self-serve) — ` +
                 `a staff admit must vouch for it before listing`,
             );
@@ -7463,7 +7466,8 @@ export class SqliteScopeHost implements ScopeHost {
           throw new Error(`version ${versionId} belongs to '${incoming.verticalSlug}'`);
         }
         if (incoming.admission !== 'admitted') {
-          throw new Error(
+          throw substratError(
+            'conflict',
             `version ${versionId} is ${incoming.admission}, not admitted — it cannot be promoted`,
           );
         }
