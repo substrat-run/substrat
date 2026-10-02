@@ -298,7 +298,12 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   emitted it or the row predates the column, no version identity was present), which a
   hand-rolled `SELECT` reads as missing data instead. `version` lives on the outbox column
   only, never the envelope, so `readHistory` is the one sanctioned join from an event to
-  its push. Neither checks a permission; the caller does, first, as always.
+  its push. The scope-wide counterparts are `readScopeTimeline` / `readScopeHistory`
+  (#1582): everything since a watermark (the last applied event `id` — not `nextCursor`,
+  which is null once caught up), each entry carrying its `entity`, decoded the same way —
+  so a projection or an offline mirror never hand-rolls the outbox walk either. None of
+  them checks a permission; the caller does, first, as always — and in front of a
+  scope-wide walk that check must itself be scope-wide.
 - Every operation's first line: `assertAllowed(await ctx.check(PERM))`; per-entity
   checks (`ctx.check(perm, entityRef)`) for portal-style walks.
 - Every mutation emits a **fat** event (consumer must never need a cross-module read);

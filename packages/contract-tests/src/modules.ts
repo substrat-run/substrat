@@ -29,6 +29,9 @@ import {
   readAttachmentText,
   readHistory,
   readTimeline,
+  readScopeTimeline,
+  readScopeHistory,
+  type ScopeWalkPage,
   ulid,
   type ConsumerHandler,
   type ModuleRegistration,
@@ -543,11 +546,13 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
   // Emit about a NAMED entity. `test/emit-event` is fixed to `x1`, and the suite
   // needs two entities moving independently to prove the version is per-entity
   // and not just "the newest event in the scope".
-  'test/emit-about': ((ctx, input: { entityId: string; subject?: string }) => {
+  // `entityType` is optional and defaults to the one every per-entity case uses; the
+  // scope-wide walk (#1582) needs a second type to prove its filter narrows.
+  'test/emit-about': ((ctx, input: { entityId: string; subject?: string; entityType?: string }) => {
     ctx.emit({
       type: 'test.happened',
       schemaVersion: 1,
-      entity: { entityType: 'test-thing', entityId: input.entityId },
+      entity: { entityType: input.entityType ?? 'test-thing', entityId: input.entityId },
       piiClass: input.subject ? 'pseudonymous' : 'none',
       ...(input.subject ? { subjectId: dataSubjectId.parse(input.subject) } : {}),
       payload: { about: input.entityId },
@@ -602,6 +607,12 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
       { entityType: input.entityType, entityId: input.entityId },
       input,
     )) as OperationHandler<never, unknown>,
+  // #1582: the scope-wide walks. The whole `ScopeWalkPage` passes through, so the
+  // suite drives the watermark, the order and the entity-type filter directly.
+  'test/scope-timeline': ((ctx, input: ScopeWalkPage) =>
+    readScopeTimeline(ctx, input)) as OperationHandler<never, unknown>,
+  'test/scope-history': ((ctx, input: ScopeWalkPage) =>
+    readScopeHistory(ctx, input)) as OperationHandler<never, unknown>,
   // An event carrying PII, so the suite can shred it and assert the history
   // degrades to a null payload instead of vanishing or throwing.
   //

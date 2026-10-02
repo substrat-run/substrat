@@ -1,5 +1,6 @@
 import {
   deadLetter,
+  entityRef,
   eventDelivery,
   historyEntry,
   listLimitOf,
@@ -22,6 +23,8 @@ import {
   type ListPage,
   type Page,
   type TimelineEntry,
+  type ScopeTimelineEntry,
+  type ScopeHistoryEntry,
   type EventFacetInput,
   type EventFacetResult,
 } from '@substrat-run/contracts';
@@ -275,6 +278,175 @@ export function readHistory(
   const { sql, params } = timelineQuery(HISTORY_COLUMNS, entity, page, limit);
   const rows = ctx.sql.query<HistoryRow>(sql, params);
   return pageOf(rows.map(mapHistoryRow), limit, (entry) => entry.id);
+}
+
+/**
+ * The page params of a scope-wide walk (#1582): a `ListPage` whose `cursor` is the
+ * WATERMARK, plus one optional equality filter.
+ *
+ * `entityType` narrows the walk to events about one kind of entity — what an offline
+ * mirror of one entity type, or a projection over it, wants. Equality only, for K-41's
+ * reason: a richer filter is where a page read becomes a query language. A read that
+ * needs more is an operation with its own name.
+ */
+export interface ScopeWalkPage extends ListPage {
+  entityType?: string;
+}
+
+interface ScopeRow {
+  entity_type: string;
+  entity_id: string;
+}
+
+/** The entity columns a scope-wide walk adds, so every entry can say what it was about. */
+const SCOPE_COLUMNS = 'entity_type, entity_id';
+
+/**
+ * The one SELECT behind both scope-wide reads — `timelineQuery` without the entity
+ * pinned.
+ *
+ * **The walk key is `id`, alone, and that IS K-41's tie-break discipline rather than
+ * an exception to it.** K-41 makes every kernel-composed walk run over
+ * `(sortColumn, idColumn)` because a keyset cursor over a NON-unique column skips
+ * the rest of its ties. Here the sort column is the unique id itself, so the
+ * composite collapses to one column and there is no tie for a page boundary to land
+ * inside. What must NOT be done — and is the bug meridian's timeline shipped — is
+ * to walk `occurred_at`: every event one invocation emits shares `ctx.now()`, so a
+ * cursor on the instant drops the rest of that invocation's events.
+ *
+ * **Why `id` is a sound watermark**, which is a stronger claim than a sound page
+ * key: a resumed walk is only correct if no row committed after the caller read
+ * page N can sort BEFORE the watermark it kept. Three properties hold that:
+ * event ids are minted from one per-scope monotonic writer (#956), its floor is
+ * reseeded from `MAX(id)` on every wake so an evicted Durable Object or a rewound
+ * clock cannot mint underneath a stored row (#1335), and a scope's operations
+ * commit one at a time, so an id is never minted in one transaction and committed
+ * behind a later one. An id from a rolled-back operation leaves a gap, never a
+ * row that appears later below the watermark.
+ *
+ * `_substrat_outbox` is never pruned — the drain marks `drained_at` and retains the
+ * row — so a watermark stays resumable for the life of the scope.
+ *
+ * Unfiltered, this is a range seek on the primary key. With `entityType` it is the
+ * same PK walk with a predicate: bounded by `LIMIT`, but costing every row it steps
+ * over that is about another type. No `(entity_type, id)` index exists yet; add one
+ * to the spine DDL on both adapters when a hot filtered walk asks for it, rather
+ * than in advance.
+ */
+function scopeWalkQuery(
+  columns: string,
+  page: ScopeWalkPage | undefined,
+  limit: number,
+): { sql: string; params: (string | number)[] } {
+  const desc = page?.order === 'desc';
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (page?.entityType !== undefined) {
+    where.push('entity_type = ?');
+    params.push(page.entityType);
+  }
+  if (page?.cursor !== undefined) {
+    where.push(desc ? 'id < ?' : 'id > ?');
+    params.push(page.cursor);
+  }
+  params.push(limit);
+  return {
+    sql:
+      `SELECT ${columns}, ${SCOPE_COLUMNS} FROM _substrat_outbox` +
+      (where.length === 0 ? '' : ` WHERE ${where.join(' AND ')}`) +
+      ` ORDER BY id ${desc ? 'DESC' : 'ASC'} LIMIT ?`,
+    params,
+  };
+}
+
+function entityOfRow(d: RowDecoder, row: ScopeRow): EntityRef {
+  const shape = entityRef.shape;
+  return {
+    entityType: d.required<string>('entity_type', shape.entityType, row.entity_type),
+    entityId: d.required<string>('entity_id', shape.entityId, row.entity_id),
+  };
+}
+
+/**
+ * Everything that happened in this scope, since a watermark — the envelope only
+ * (#1582).
+ *
+ * `readTimeline` with the entity unpinned, and each entry carrying the `entity` it
+ * was about. This is the read a projection IS, and an offline mirror under another
+ * name: a per-scope monotonic sequence resumed from a client-held watermark.
+ *
+ * **The watermark is the `id` of the last entry you APPLIED, not `nextCursor`.**
+ * `nextCursor` is null on a short page, which means "caught up", and a caller that
+ * stored it would restart from the beginning on its next poll. Keep the last id;
+ * pass it back as `cursor`; the walk is exclusive, so nothing is applied twice.
+ *
+ * ## It checks nothing — and here that is most load-bearing
+ *
+ * Same posture as `readTimeline`, stated again because the stakes are higher: a
+ * per-entity read can be gated by a per-entity check, but THIS read returns events
+ * about every entity in the scope, including ones the caller may not read. So the
+ * caller's check must be one that justifies seeing all of them — a SCOPE-WIDE
+ * permission, checked first:
+ *
+ * ```ts
+ * assertAllowed(await ctx.check(AUDIT.read));          // no entity: the whole scope
+ * return readScopeTimeline(ctx, { ...input, entityType: 'workorder' });
+ * ```
+ *
+ * A caller who can only justify SOME entities must not use this read and filter
+ * afterwards without saying so: post-filtering with `ctx.check(perm, entry.entity)`
+ * per row is legitimate, but it changes the page size (a page of 20 can come back
+ * with 3) and the cursor must then advance by the last row EXAMINED, not the last
+ * row returned — see callout's `portal-orders` for that shape. A walk that only
+ * visits what the caller may read is a different read with a different cost, and
+ * is deliberately not this one.
+ */
+export function readScopeTimeline(
+  ctx: TimelineReader,
+  page?: ScopeWalkPage,
+): Page<ScopeTimelineEntry> {
+  const limit = listLimitOf(page?.limit);
+  const { sql, params } = scopeWalkQuery(TIMELINE_COLUMNS, page, limit);
+  const rows = ctx.sql.query<TimelineRow & ScopeRow>(sql, params);
+  const entries = rows.map((row) => {
+    const d = rowDecoder(`outbox row ${JSON.stringify(row.id)}`, 'ScopeTimelineEntry');
+    return d.finish<ScopeTimelineEntry>({ ...envelopeOf(d, row), entity: entityOfRow(d, row) });
+  });
+  return pageOf(entries, limit, (entry) => entry.id);
+}
+
+/**
+ * Everything that happened in this scope, since a watermark — with what was said
+ * and under what authority (#1582).
+ *
+ * `readHistory` with the entity unpinned. Every field decodes exactly as it does
+ * there, through the same mapper, so the nulls keep their meanings: `payload` null
+ * after a shred (the row stays), `authorization` null for a row written before
+ * K-34, `operation` null for a consumer emit or a pre-column row, `version` from
+ * the outbox COLUMN and never the envelope. A hand-rolled scope walk reads every
+ * one of those as missing data; that is the reason this exists.
+ *
+ * Same watermark rule as `readScopeTimeline` — keep the last applied `id`, not
+ * `nextCursor`. Same permission posture, with the payload making it heavier still:
+ * this read discloses what every event in the scope SAID, so the caller's scope-wide
+ * check comes first, and nothing here makes it for them.
+ */
+export function readScopeHistory(
+  ctx: TimelineReader,
+  page?: ScopeWalkPage,
+): Page<ScopeHistoryEntry> {
+  const limit = listLimitOf(page?.limit);
+  const { sql, params } = scopeWalkQuery(HISTORY_COLUMNS, page, limit);
+  const rows = ctx.sql.query<HistoryRow & ScopeRow>(sql, params);
+  const entries = rows.map((row) => {
+    const { entry } = decodeHistoryRow(row);
+    // A second decoder for the two entity columns, folded in by hand: both are NOT
+    // NULL and required, so a failure throws rather than marking `decodeError`, and
+    // there is nothing for the history decoder's `failed` set to learn from it.
+    const d = rowDecoder(`outbox row ${JSON.stringify(row.id)}`, 'ScopeHistoryEntry');
+    return d.finish<ScopeHistoryEntry>({ ...entry, entity: entityOfRow(d, row) });
+  });
+  return pageOf(entries, limit, (entry) => entry.id);
 }
 
 /**

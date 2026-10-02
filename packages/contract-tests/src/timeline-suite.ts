@@ -34,8 +34,11 @@ import {
   type ListPage,
   type Page,
   type PrincipalId,
+  type ScopeHistoryEntry,
+  type ScopeTimelineEntry,
   type TimelineEntry,
 } from '@substrat-run/contracts';
+import type { ScopeWalkPage } from '@substrat-run/kernel';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { contractTestBareOps, testMod } from './modules.js';
@@ -46,7 +49,7 @@ export function timelineContractSuite(
   adapterName: string,
   makeFixture: () => Promise<ScopeHostFixture>,
 ): void {
-  describe(`entity timeline (readTimeline / readHistory): ${adapterName}`, () => {
+  describe(`spine timeline (readTimeline / readHistory / readScopeTimeline / readScopeHistory): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
     let host: ScopeHost;
     let stub: ScopeStub;
@@ -65,6 +68,30 @@ export function timelineContractSuite(
       stub.invoke<string>('test/emit-burst', { entityId, count });
     const said = (entityId: string, subject: string, what: string) =>
       stub.invoke('test/emit-about-with-payload', { entityId, subject, said: what });
+
+    const scopeTimeline = (page: ScopeWalkPage = {}) =>
+      stub.invoke<Page<ScopeTimelineEntry>>('test/scope-timeline', page);
+    const scopeHistory = (page: ScopeWalkPage = {}) =>
+      stub.invoke<Page<ScopeHistoryEntry>>('test/scope-history', page);
+    const emitAboutType = (entityType: string, entityId: string) =>
+      stub.invoke('test/emit-about', { entityType, entityId });
+    /** The newest event id in the scope — a watermark taken NOW, so a case reads only its own events. */
+    const watermark = async (): Promise<string> => {
+      const { entries } = await scopeTimeline({ order: 'desc', limit: 1 });
+      expect(entries).toHaveLength(1);
+      return entries[0]!.id;
+    };
+    /** Walk the scope forward from `cursor` to the end, `limit` at a time, as a mirror would. */
+    const walkFrom = async (cursor: string, limit: number, filter: ScopeWalkPage = {}) => {
+      const seen: ScopeTimelineEntry[] = [];
+      let next: string | null = cursor;
+      for (let guard = 0; next !== null && guard < 50; guard++) {
+        const page: Page<ScopeTimelineEntry> = await scopeTimeline({ ...filter, limit, cursor: next });
+        seen.push(...page.entries);
+        next = page.nextCursor;
+      }
+      return seen;
+    };
 
     beforeAll(async () => {
       fixture = await makeFixture();
@@ -272,6 +299,118 @@ export function timelineContractSuite(
       const page = await timeline(id, { limit: 0 });
       expect(page.entries).toHaveLength(3);
       expect(page.nextCursor).toBeNull();
+    });
+
+    // -- #1582: the scope-wide walk, since a watermark -------------------------
+    // The suite's scope is shared by every case above, so each case below takes
+    // a watermark first and reads only what it emitted after it — which is the
+    // feature itself, exercised as a mirror would use it.
+
+    it('walks every entity in the scope since a watermark, in creation order', async () => {
+      const mark = await watermark();
+      const a = `e-${ulid()}`;
+      const b = `e-${ulid()}`;
+      await emitAbout(a);
+      await burst(b, 5);
+      await emitAboutType('other-thing', a);
+
+      // limit 2 lands page boundaries INSIDE the burst, whose five rows share one
+      // `occurred_at` — K-41's tie case, which a timestamp cursor loses.
+      const walked = await walkFrom(mark, 2);
+      expect(walked).toHaveLength(7);
+      const ids = walked.map((e) => e.id);
+      expect(new Set(ids).size).toBe(7);
+      expect([...ids].sort()).toEqual(ids);
+      expect(ids.every((id) => id > mark)).toBe(true);
+      // Each entry says what it was about — the field a per-entity read never
+      // needed, and the one a projection routes on.
+      expect(walked.map((e) => `${e.entity.entityType}/${e.entity.entityId}`)).toEqual([
+        `test-thing/${a}`,
+        ...Array.from({ length: 5 }, () => `test-thing/${b}`),
+        `other-thing/${a}`,
+      ]);
+      expect(walked[0]!.actor).toBe(alice);
+    });
+
+    it('resumes from the last applied id — not from nextCursor, which is null once caught up', async () => {
+      const mark = await watermark();
+      const id = `e-${ulid()}`;
+      await emitAbout(id);
+      await emitAbout(id);
+
+      const caughtUp = await scopeTimeline({ cursor: mark });
+      expect(caughtUp.entries).toHaveLength(2);
+      // Short page ⇒ null cursor. A mirror that stored THIS would restart from
+      // the beginning of the scope on its next poll.
+      expect(caughtUp.nextCursor).toBeNull();
+      const applied = caughtUp.entries[caughtUp.entries.length - 1]!.id;
+
+      // Nothing new: an empty page, not the last entry again — the cursor is exclusive.
+      expect((await scopeTimeline({ cursor: applied })).entries).toEqual([]);
+
+      await emitAbout(id);
+      const resumed = await scopeTimeline({ cursor: applied });
+      expect(resumed.entries).toHaveLength(1);
+      expect(resumed.entries[0]!.id > applied).toBe(true);
+    });
+
+    it('narrows to one entity type, keeping the watermark walk intact', async () => {
+      const mark = await watermark();
+      const id = `e-${ulid()}`;
+      await emitAboutType('other-thing', id);
+      await emitAbout(id);
+      await emitAboutType('other-thing', id);
+      await emitAboutType('other-thing', id);
+
+      const others = await walkFrom(mark, 2, { entityType: 'other-thing' });
+      expect(others).toHaveLength(3);
+      expect(others.every((e) => e.entity.entityType === 'other-thing')).toBe(true);
+      const things = await walkFrom(mark, 2, { entityType: 'test-thing' });
+      expect(things).toHaveLength(1);
+      expect(things[0]!.entity).toEqual({ entityType: 'test-thing', entityId: id });
+    });
+
+    it('walks newest-first on `desc`, exclusive below the cursor', async () => {
+      const mark = await watermark();
+      const id = `e-${ulid()}`;
+      await burst(id, 4);
+
+      const asc = (await walkFrom(mark, 10)).map((e) => e.id);
+      const top = await scopeTimeline({ order: 'desc', limit: 2 });
+      expect(top.entries.map((e) => e.id)).toEqual(asc.slice(2).reverse());
+      const below = await scopeTimeline({ order: 'desc', limit: 2, cursor: top.nextCursor! });
+      expect(below.entries.map((e) => e.id)).toEqual(asc.slice(0, 2).reverse());
+    });
+
+    it('decodes the history columns with the per-entity nulls intact, through a shred', async () => {
+      const mark = await watermark();
+      const id = `e-${ulid()}`;
+      const subject = dataSubjectId.parse(ulid());
+      await said(id, subject, 'something about a person');
+
+      const [entry] = (await scopeHistory({ cursor: mark })).entries;
+      expect(entry!.entity).toEqual({ entityType: 'test-thing', entityId: id });
+      expect(entry!.payload).toEqual({ said: 'something about a person' });
+      expect(entry!.authorization!.map((a) => a.permission)).toContain(PERM_USE);
+      expect(entry!.operation).toBe('test/emit-about-with-payload');
+      // From the outbox column, as `readHistory` reads it — never the envelope.
+      expect(entry!.version).toBe(fixture.versionId ?? null);
+      expect(entry!.subjectId).toBe(subject);
+      // The same event, read per entity, is the same entry minus `entity`.
+      const [perEntity] = (await history(id)).entries;
+      const { entity: _entity, ...rest } = entry!;
+      expect(rest).toEqual(perEntity);
+      // And the timeline walk carries no payload at all.
+      const [envelope] = (await scopeTimeline({ cursor: mark })).entries;
+      expect(envelope).not.toHaveProperty('payload');
+
+      await host.admin.shredSubject(staff, t1, s1, subject);
+      const [after] = (await scopeHistory({ cursor: mark })).entries;
+      // §5.3, scope-wide: the payload goes, the row and its entity stay — so a
+      // mirror replaying past the shred sees "something happened to this", not a gap.
+      expect(after!.payload).toBeNull();
+      expect(after!.id).toBe(entry!.id);
+      expect(after!.entity).toEqual(entry!.entity);
     });
   });
 }

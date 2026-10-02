@@ -462,7 +462,8 @@ export {
 export { readLifecycleFlow } from './lifecycle-flow.js';
 export { REFUSALS_DDL, refusalInsert, refusedTransitionOf, type RefusalRow } from './refusals.js';
 export { REFUSAL_COLUMNS, mapRefusalRow, refusalListQuery, type RefusalDbRow } from './refusal-query.js';
-export { readTimeline, readHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
+export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
+export type { ScopeWalkPage } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 // #1636: one undecodable spine row no longer takes a list — or a delivery loop — with it.
 export { rowDecoder, UNDECODED_ACTOR, UNDECODED_PERMISSION } from './row-decode.js';
