@@ -49,7 +49,7 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   which the scope's outbox is replayed against for the process map — edge counts, instances
   per state, time in state, the longest stuck, the funnel), and `/fleet/migrations`. The table, query, health,
   denial and event reads (`tables`, `tables/:table`, `query`, `health`, `denials`,
-  `denials/summary`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`, `lifecycle-flow`) run one ladder: resolve the
+  `denials/summary`, `capabilities`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`, `lifecycle-flow`) run one ladder: resolve the
   scope record, then ask the vertical's own `/internal/*` route when one is bound and the
   co-located host otherwise. The vertical's answer is relayed as it came, with one
   exception: a `facets` answer is normalized, and a payload grouping from a vertical whose
@@ -141,6 +141,14 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   (resolve, ignore, reopen — `regressed` is ingest's word and is refused). Staff-only: an
   issue is a fleet-scoped aggregate with no tenant column, so the forced-filter posture
   cannot narrow it. No cursor, by design — the grouping is the compression.
+- **Capabilities** — `/tenants/:t/scopes/:s/capabilities` (#1686): the operator's read of the
+  directory behind link shares and claim links — what each may do (mode, entity, keys, operation
+  allowlist, or the principal a claim link yields), who minted and revoked it, its expiry, use
+  limit and use count. Newest first, live ones unless `?includeRevoked=true`, narrowed with
+  `?entityType=…&entityId=…` (both or neither), bounded by `?limit` (1–200). **Staff-only** — a
+  builder or a tenant credential is refused 403 even for its own tenant, because a row names the
+  vertical's end users — and ladder-delegated like the denial log. Records only: no secret is
+  stored and no hash is ever selected or returned.
 - **Denials** — `/tenants/:t/scopes/:s/denials` and `…/denials/summary`: the refusals a
   scope recorded (K-35). The third log beside the two above — the admin log holds staff
   *mutations*, the K-24 access log staff *reads*, and this one the operations that were
