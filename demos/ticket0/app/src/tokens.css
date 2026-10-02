@@ -44,6 +44,16 @@
   --internal-text-3: #4d4636;
   --internal-tab: #fbf2d9;
 
+  /* Forward — slate blue, and reserved like the amber (#1086): a side thread with ONE third
+     party, which the customer never sees. Nothing decorative may use these either. */
+  --forward-bg: #f1f4fa;
+  --forward-border: #9fb0d0;
+  --forward-border-soft: #ccd6ea;
+  --forward-stripe: #5a73a8;
+  --forward-text: #3d5487;
+  --forward-text-3: #2f3a52;
+  --forward-tab: #e4eaf6;
+
   /* Danger */
   --danger: #b3261e;
   --danger-2: #8f1d16;
@@ -193,6 +203,15 @@ button {
 .btn-internal:hover:not(:disabled) {
   background: #c8990f;
   border-color: #c8990f;
+}
+.btn-forward {
+  background: var(--forward-stripe);
+  border-color: var(--forward-stripe);
+  color: #fff;
+}
+.btn-forward:hover:not(:disabled) {
+  background: var(--forward-text);
+  border-color: var(--forward-text);
 }
 
 .input,

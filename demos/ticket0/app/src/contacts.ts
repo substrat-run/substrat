@@ -18,6 +18,14 @@ export function contacts(): Promise<Map<string, Contact>> {
   return cache;
 }
 
+/**
+ * Forget the directory, so the next `contacts()` reads it again — for the one screen that
+ * makes a contact (#1086): copying in an address nobody has written from yet creates them.
+ */
+export function forgetContacts(): void {
+  cache = null;
+}
+
 /** What to call somebody. Anonymous visitors are named as such, never as an id. */
 export function nameOf(c: Contact | undefined, channel?: string): string {
   if (!c) return channel === 'widget' ? 'Anonymous visitor' : 'Contact';
