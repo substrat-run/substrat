@@ -7,7 +7,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { FORBIDDEN_EDGES, forbiddenEdgeProblems } from './declared-deps.mjs';
+import {
+  FORBIDDEN_EDGES,
+  PERMISSIVE_ONLY,
+  forbiddenEdgeProblems,
+  licenseProblem,
+  licenseProblems,
+  realResolver,
+  workspaceMembers,
+} from './declared-deps.mjs';
 
 const PARSERS = '@substrat-run/attachment-extractors';
 const kernel = (extra = {}) => ({ name: '@substrat-run/kernel', ...extra });
@@ -73,5 +81,98 @@ test('names the kernel and both adapters, and the repo as it stands has no forbi
       [...walk(join(abs, 'src')), ...walk(join(abs, 'dist'))].map((f) => [relative(abs, f), readFileSync(f, 'utf8')]),
     );
     assert.deepEqual(forbiddenEdgeProblems(pj, files), [], dir);
+  }
+});
+
+/**
+ * The licence guard (#971): the CLI and the control-plane client are Apache-2.0, and a
+ * dependency is the quiet way to make that untrue. A literal graph stands in for the
+ * workspace so every shape is judged beside its twin.
+ */
+const graph = (pkgs) => (name) => (pkgs[name] ? { pj: { name, ...pkgs[name] }, key: name } : null);
+const CLI = { name: '@substrat-run/cli', license: 'Apache-2.0' };
+
+test('licenseProblem: refuses the copyleft family and a missing licence, allows the permissive ones', () => {
+  for (const bad of ['AGPL-3.0-only', 'AGPL-3.0-or-later', 'GPL-3.0', 'LGPL-2.1', 'SSPL-1.0', 'BUSL-1.1', '(MIT OR GPL-3.0)']) {
+    assert.ok(licenseProblem(bad), bad);
+  }
+  assert.equal(licenseProblem(undefined), 'declares no licence');
+  assert.equal(licenseProblem('  '), 'declares no licence');
+  for (const ok of ['Apache-2.0', 'MIT', 'ISC', 'BSD-3-Clause', '(MIT OR Apache-2.0)', '0BSD', 'Unlicense']) {
+    assert.equal(licenseProblem(ok), null, ok);
+  }
+});
+
+test('refuses an AGPL package as a direct runtime dependency, whichever field declares it', () => {
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+    const read = graph({ '@substrat-run/control-plane-api': { license: 'AGPL-3.0-only' } });
+    assert.deepEqual(
+      licenseProblems({ ...CLI, [field]: { '@substrat-run/control-plane-api': 'workspace:^' } }, 'cli', read),
+      ['@substrat-run/cli → @substrat-run/control-plane-api is AGPL-3.0-only'],
+      field,
+    );
+  }
+});
+
+test('refuses it through a permissive package, naming the path — the closure, not just the edge', () => {
+  const read = graph({
+    '@substrat-run/control-plane-client': { license: 'Apache-2.0', dependencies: { hono: '^4' } },
+    hono: { license: 'MIT', dependencies: { '@substrat-run/kernel': '*' } },
+    '@substrat-run/kernel': { license: 'AGPL-3.0-only' },
+  });
+  assert.deepEqual(
+    licenseProblems({ ...CLI, dependencies: { '@substrat-run/control-plane-client': '*' } }, 'cli', read),
+    ['@substrat-run/cli → @substrat-run/control-plane-client → hono → @substrat-run/kernel is AGPL-3.0-only'],
+  );
+});
+
+test('allows the twins: a devDependency, a permissive closure, a cycle, and an unresolved optional one', () => {
+  const read = graph({
+    '@substrat-run/control-plane-api': { license: 'AGPL-3.0-only' },
+    esbuild: { license: 'MIT', optionalDependencies: { '@esbuild/other-platform': '1' } },
+    a: { license: 'MIT', dependencies: { b: '1' } },
+    b: { license: 'ISC', dependencies: { a: '1' } },
+  });
+  assert.deepEqual(
+    licenseProblems(
+      {
+        ...CLI,
+        dependencies: { esbuild: '1', a: '1' },
+        devDependencies: { '@substrat-run/control-plane-api': 'workspace:^' },
+      },
+      'cli',
+      read,
+    ),
+    [],
+  );
+});
+
+test('refuses what it cannot judge: a required dependency it cannot resolve, a dependency with no licence', () => {
+  assert.deepEqual(licenseProblems({ ...CLI, dependencies: { ghost: '1' } }, 'cli', graph({})), [
+    '@substrat-run/cli → ghost: cannot be resolved — run `pnpm install`',
+  ]);
+  assert.deepEqual(licenseProblems({ ...CLI, dependencies: { mystery: '1' } }, 'cli', graph({ mystery: {} })), [
+    '@substrat-run/cli → mystery declares no licence',
+  ]);
+});
+
+test('the guarded packages exist, are themselves permissive, and the repo as it stands holds the rule', () => {
+  const root = new URL('..', import.meta.url).pathname;
+  const cwd = process.cwd();
+  process.chdir(root);
+  try {
+    const workspace = workspaceMembers();
+    assert.deepEqual([...PERMISSIVE_ONLY].sort(), ['@substrat-run/cli', '@substrat-run/control-plane-client']);
+    for (const name of PERMISSIVE_ONLY) {
+      const member = workspace.get(name);
+      assert.ok(member, `${name} is a workspace member`);
+      assert.equal(licenseProblem(member.pj.license), null, name);
+      assert.deepEqual(licenseProblems(member.pj, member.key, realResolver(workspace)), [], name);
+    }
+    // The positive twin on the real tree: the resolver does see the AGPL server's closure.
+    const api = workspace.get('@substrat-run/control-plane-api');
+    assert.ok(licenseProblems({ name: 'probe', dependencies: { [api.pj.name]: '*' } }, root, realResolver(workspace)).length > 0);
+  } finally {
+    process.chdir(cwd);
   }
 });

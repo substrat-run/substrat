@@ -30,8 +30,8 @@
  * `lib: ES2023` refusing to declare it, which is why two packages needed an
  * explicit `"types": ["node"]` when the tree shifted under them.
  */
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { builtinModules } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -129,6 +129,97 @@ export function forbiddenEdgeProblems(pj, files, forbidden = FORBIDDEN_EDGES) {
   return out;
 }
 
+/**
+ * Packages whose RUNTIME dependency closure must hold no copyleft licence (#971).
+ *
+ * `@substrat-run/cli` and `@substrat-run/control-plane-client` are Apache-2.0 on purpose
+ * (LICENSING.md): the tools a builder runs against their own code must never
+ * copyleft-capture it. A dependency is the quiet way to break that — the tarball would still
+ * say Apache-2.0 while `npm install` pulled the AGPL server in beside it — which is exactly
+ * what moving the client out of `control-plane-api` was for. So the closure is judged, not
+ * only the direct edge: `dependencies`, `peerDependencies` and `optionalDependencies`, one
+ * hop after another, workspace and registry packages alike. A devDependency is not shipped
+ * and stays legal (the CLI's own tests may import anything).
+ */
+export const PERMISSIVE_ONLY = ['@substrat-run/cli', '@substrat-run/control-plane-client'];
+
+/** SPDX ids (and their loose spellings) that bind a dependent: any GPL family, SSPL, BUSL. */
+const COPYLEFT = /(?:^|[^a-z])(?:a|l)?gpl|sspl|busl|business source/i;
+
+/** Why a `license` field is not acceptable in a permissive-only closure, or `null`. */
+export function licenseProblem(license) {
+  const text = typeof license === 'string' ? license : license && typeof license === 'object' ? license.type : undefined;
+  if (!text || !String(text).trim()) return 'declares no licence';
+  if (COPYLEFT.test(String(text))) return `is ${text}`;
+  return null;
+}
+
+/**
+ * The closure problems of one package. `read(name, fromKey)` answers
+ * `{ pj, key } | null` for a dependency named from the package at `fromKey` — the CLI wires
+ * it to the workspace and `node_modules`; a test wires it to a literal graph. An optional
+ * dependency that cannot be resolved is skipped (esbuild's per-platform binaries are
+ * installed for one platform only); a required one is a problem, because a check that
+ * silently skipped what it could not find would pass on an empty install.
+ */
+export function licenseProblems(rootPj, rootKey, read) {
+  const out = [];
+  const seen = new Set([rootPj.name]);
+  const walkDeps = (pj, key, trail) => {
+    const optional = new Set(Object.keys(pj.optionalDependencies ?? {}));
+    const names = new Set([
+      ...Object.keys(pj.dependencies ?? {}),
+      ...Object.keys(pj.peerDependencies ?? {}),
+      ...optional,
+    ]);
+    for (const name of names) {
+      if (seen.has(name)) continue;
+      const dep = read(name, key);
+      if (!dep) {
+        if (!optional.has(name)) out.push(`${[...trail, name].join(' → ')}: cannot be resolved — run \`pnpm install\``);
+        continue;
+      }
+      seen.add(name);
+      const why = licenseProblem(dep.pj.license);
+      if (why) out.push(`${[...trail, name].join(' → ')} ${why}`);
+      walkDeps(dep.pj, dep.key, [...trail, name]);
+    }
+  };
+  walkDeps(rootPj, rootKey, [rootPj.name]);
+  return out;
+}
+
+/** The real resolver: workspace members by name, everything else up the `node_modules` chain. */
+export function realResolver(workspace) {
+  return (name, fromKey) => {
+    const member = workspace.get(name);
+    if (member) return member;
+    let dir = fromKey;
+    for (;;) {
+      const pjPath = join(dir, 'node_modules', name, 'package.json');
+      if (existsSync(pjPath)) return { pj: JSON.parse(readFileSync(pjPath, 'utf8')), key: realpathSync(dirname(pjPath)) };
+      const up = dirname(dir);
+      if (up === dir) return null;
+      dir = up;
+    }
+  };
+}
+
+/** Every workspace member under the roots, by package name. */
+export function workspaceMembers(roots = ROOTS) {
+  const members = new Map();
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    for (const name of readdirSync(root)) {
+      const pjPath = join(root, name, 'package.json');
+      if (!existsSync(pjPath)) continue;
+      const pj = JSON.parse(readFileSync(pjPath, 'utf8'));
+      members.set(pj.name, { pj, key: resolve(root, name) });
+    }
+  }
+  return members;
+}
+
 function main() {
   const problems = [];
   let checkedPackages = 0;
@@ -186,18 +277,33 @@ function main() {
     }
   }
 
+  const workspace = workspaceMembers();
+  const read = realResolver(workspace);
+  for (const name of PERMISSIVE_ONLY) {
+    const member = workspace.get(name);
+    if (!member) {
+      // A rename must not silently drop the guard.
+      problems.push(`${name}: listed in PERMISSIVE_ONLY but no workspace member has that name`);
+      continue;
+    }
+    const own = licenseProblem(member.pj.license);
+    if (own) problems.push(`${name} ${own}`);
+    for (const p of licenseProblems(member.pj, member.key, read)) problems.push(`licence closure: ${p}`);
+  }
+
   if (problems.length > 0) {
-    console.error('declared-deps: a package references modules it never declared, or an edge K-43 forbids\n');
+    console.error('declared-deps: a package references modules it never declared, an edge K-43 forbids, or a permissive-only package depends on copyleft\n');
     for (const p of problems.sort()) console.error(`  ✕ ${p}`);
     console.error(
-      `\n${problems.length} undeclared reference(s). A published package must declare what its\n` +
-        'types and code reference — anything else is relying on another package hoisting it.',
+      `\n${problems.length} problem(s). A published package must declare what its types and code\n` +
+        'reference — anything else is relying on another package hoisting it — and a permissive-only\n' +
+        'package (PERMISSIVE_ONLY) must not reach a copyleft licence through any runtime dependency.',
     );
     process.exit(1);
   }
 
   console.log(
-    `declared-deps: ${checkedPackages} packages declare everything they reference, and no forbidden edge exists`,
+    `declared-deps: ${checkedPackages} packages declare everything they reference, no forbidden edge exists, and ${PERMISSIVE_ONLY.length} permissive-only closures hold no copyleft`,
   );
 }
 
