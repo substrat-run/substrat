@@ -143,13 +143,14 @@ production version, or the first admitted version if none is in production. The 
 displays existing tagged previews, which may contain copied data. It shows the **bound version**,
 not a verification of the code serving the URL.
 
-::: warning Existing production serving pins are not repaired
+::: warning Existing production serving pins need a bind or push
 A preview adopted before this prevention change may still carry a `servingRef` and serve production
 code even while its bound version stays unchanged. A directory version or dashboard label alone
-cannot prove what that URL runs. This change neither clears those pins nor moves existing data.
-The existing preview push path carries data before clearing the pin; `scope bind` alone does not
-clear it. Inventory and repair of already-adopted previews remain separate work in #1724, and old
-script retention and erasure remain #1722. Do not clear a pin without a reviewed data-carry plan.
+cannot prove what that URL runs. A preview push or `scope bind` now carries the preview's data
+from the serving script to the bound version's script before clearing the pin. Binding the
+currently bound version is enough to repair a long-lived preview without advancing it. Previews
+that are never pushed or bound still need a one-time inventory and repair pass (#1724), and old
+script retention and erasure remain #1722. Do not clear a pin without carrying its data.
 :::
 
 ## Sticky-per-PR **and** per-build URLs
