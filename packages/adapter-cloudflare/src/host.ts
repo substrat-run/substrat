@@ -292,6 +292,11 @@ import {
   jobRunOf,
   runDueJobRuns,
   startJobRun,
+  attachmentTextJob,
+  isAttachmentTextRun,
+  searchLimit,
+  searchMatchExpression,
+  type ExtractionOutcome,
   type JobDriveReport,
   type JobHandler,
   type JobRun,
@@ -1254,6 +1259,27 @@ interface ScopeStubRpc {
     operation: 'attachments.upload' | 'attachments.remove',
     target: { entityType: string } | { attachmentId: string },
   ): Promise<CapabilityAttachmentReply<never>>;
+  /** #1575: extracted-text search, each hit gated as `principal` (or the connection). */
+  attachmentSearch(
+    term: string,
+    limit: number,
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    connectionId?: string,
+  ): Promise<AttachmentRecord[]>;
+  /** #1575: the same search through a capability session, as an envelope. */
+  capabilityAttachmentSearch(
+    term: string,
+    limit: number,
+    sessionHash: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>>;
+  /** #1575: the extraction job's record read — no gate, the kernel's own derivation. */
+  attachmentTextSource(attachmentId: string): Promise<AttachmentRecord | null>;
+  /** #1575: write an extraction outcome; false when the attachment was removed meanwhile. */
+  attachmentTextRecord(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean>;
   /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
    *  `entitlements` (#304) rides the same snapshot — preserve-on-undefined, so a role-only re-projection
    *  leaves projected entitlements untouched. */
@@ -2210,6 +2236,23 @@ export class CloudflareScopeHost implements ScopeHost {
     };
   }
 
+  /**
+   * The extraction job's adapter half (#1575). The record and the outcome are RPCs to the
+   * scope DO; the bytes are read here, where the per-tenant bucket is bound — the DO never
+   * holds them. No permission gate on any of it: extraction is the kernel's own derivation,
+   * and the person-facing gate is at search.
+   */
+  private attachmentTextHandler(tenantId: TenantId, scopeId: ScopeId): JobHandler {
+    const stub = this.scopeStub(scopeId);
+    return attachmentTextJob({
+      record: (attachmentId) => stub.attachmentTextSource(attachmentId),
+      bytes: async (record) =>
+        (await (await this.resolveAttachmentStore(tenantId)).get(attachmentBlobKey(scopeId, record.id)))?.body ??
+        null,
+      write: (attachmentId, outcome: ExtractionOutcome) => stub.attachmentTextRecord(attachmentId, outcome),
+    });
+  }
+
   async startJobRun(
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -2231,9 +2274,13 @@ export class CloudflareScopeHost implements ScopeHost {
     // advance, and an archived one's never move again.
     await this.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
+    // #1575: the kernel's extraction job is this host's own, bound to this scope — no
+    // deployment registers it, and none can shadow it.
+    const attachmentText = { handler: this.attachmentTextHandler(tenantId, scopeId) };
     return runDueJobRuns({
       store: this.jobStore(scopeId),
-      handlerFor: (run) => this.jobs.get(`${run.module_id}/${run.job}`),
+      handlerFor: (run) =>
+        isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
       now: () => new Date().toISOString(),
       openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
       maxPasses: options?.maxPasses,
@@ -3026,6 +3073,8 @@ export class CloudflareScopeHost implements ScopeHost {
           }),
         list: notDelegated('list'),
         remove: notDelegated('remove'),
+        // #1575: undelegated for `list`'s reason — a connector picks a document by id.
+        search: notDelegated('search'),
       };
     }
     await this.migrateAndRecord(scopeId);
@@ -3103,6 +3152,14 @@ export class CloudflareScopeHost implements ScopeHost {
               attachmentId,
             }),
           ),
+        search: async (term, options) => {
+          // Judged here too, so a short term reaches the caller as `SearchTermTooShort`
+          // rather than as a message that crossed the RPC boundary. The DO judges again.
+          searchMatchExpression(term, 'prefix');
+          return unwrapCapabilityReply(
+            await stub.capabilityAttachmentSearch(term, searchLimit(options?.limit), hash, tenantId, scopeId),
+          );
+        },
       };
     }
     const connectionId = 'connectionId' in subject ? subject.connectionId : undefined;
@@ -3161,6 +3218,14 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         if (removed) await store.delete(attachmentBlobKey(scopeId, removed.id)).catch(() => {});
         return removed;
+      },
+      search: async (term, options) => {
+        if (forEvent) {
+          // The delivery-admitted surface reads the ONE attachment its delivery names.
+          throw new Error('attachments.search is not available on a delivery-scoped surface');
+        }
+        searchMatchExpression(term, 'prefix');
+        return stub.attachmentSearch(term, searchLimit(options?.limit), asPrincipalId, tenantId, scopeId, connectionId);
       },
     };
   }

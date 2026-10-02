@@ -1,5 +1,6 @@
 export type {
   AccessLogFilter,
+  AttachmentSearchOptions,
   AttachmentUploadInput,
   AuditLogFilter,
   BlobStoreProvisionInput,
@@ -200,6 +201,35 @@ export type {
   SearchTokenizer,
   SearchableDeclaration,
 } from './search-index.js';
+export {
+  ATTACHMENT_SEARCH_SCAN_MAX,
+  ATTACHMENT_TEXT_DDL,
+  ATTACHMENT_TEXT_JOB,
+  ATTACHMENT_TEXT_MODULE,
+  attachmentSearchQuery,
+  attachmentTextJob,
+  attachmentTextRunKey,
+  enqueueAttachmentText,
+  isAttachmentTextRun,
+  readAttachmentText,
+  readableAttachmentIds,
+  reconcileAttachmentText,
+  recordAttachmentText,
+} from './attachment-text.js';
+export type {
+  AttachmentSearchCandidate,
+  AttachmentTextSource,
+  AttachmentTextSql,
+  AttachmentTextState,
+  AttachmentTextStatus,
+} from './attachment-text.js';
+export {
+  DEFAULT_EXTRACTION_BOUNDS,
+  extractAttachmentText,
+  extractorFor,
+  truncateUtf8,
+} from './attachment-extract.js';
+export type { AttachmentExtractor, ExtractionBounds, ExtractionOutcome } from './attachment-extract.js';
 export {
   FilterNotDeclared,
   LIST_INDEX_PREFIX,

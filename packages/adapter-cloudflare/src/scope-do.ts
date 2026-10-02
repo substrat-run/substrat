@@ -132,6 +132,15 @@ import {
   type SearchHit,
   type SearchIndexPlan,
   type SearchOptions,
+  ATTACHMENT_TEXT_DDL,
+  attachmentSearchQuery,
+  enqueueAttachmentText,
+  readableAttachmentIds,
+  reconcileAttachmentText,
+  recordAttachmentText,
+  type AttachmentSearchCandidate,
+  type AttachmentTextSql,
+  type ExtractionOutcome,
   IDEMPOTENCY_DDL,
   REFUSALS_DDL,
   refusalInsert,
@@ -654,6 +663,9 @@ const KERNEL_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_attachments_entity
     ON _substrat_attachments (entity_type, entity_id);
+  -- #1575: attachment text and its FTS5 index, shared from @substrat-run/kernel. After
+  -- _substrat_attachments, whose delete trigger it adds.
+  ${ATTACHMENT_TEXT_DDL}
   -- #901: an entity's version is the ULID of the last event about it, so
   -- MAX(id) per (entity_type, entity_id) is the read. The id column sits last so
   -- SQLite walks to the end of the matched range instead of aggregating over it.
@@ -2876,6 +2888,9 @@ export function defineScopeDO(
               piiClass: 'none',
               payload: { attachment: parsed },
             });
+            // #1575: queue its text extraction in the same transaction — a `pending` row
+            // and a job run. Nothing is extracted here, so nothing here can fail the upload.
+            enqueueAttachmentText(this.attachmentTextSql(), parsed.id, ulid(), new Date().toISOString());
           });
         } catch (err) {
           if (err instanceof PermissionDenied) {
@@ -3051,6 +3066,80 @@ export function defineScopeDO(
       });
     }
 
+    // -- attachment text (#1575) ---------------------------------------------------
+
+    /** The kernel's attachment-text SQL over this DO's storage — synchronous, like the driver. */
+    private attachmentTextSql(): AttachmentTextSql {
+      return (sql, params) => this.sql.exec(sql, ...params).toArray() as Record<string, unknown>[];
+    }
+
+    /**
+     * Extracted-text search, newest first. Each candidate passes the check `open` makes —
+     * the target's read key on the owning entity, as this subject — before the limit, so
+     * a match the caller cannot open neither appears nor takes a slot. Refusals are not
+     * recorded as denials: nobody asked for those rows by name.
+     */
+    private async searchAttachments(ctx: OperationContext, term: string, limit: number): Promise<AttachmentRecord[]> {
+      const q = attachmentSearchQuery(searchMatchExpression(term, 'prefix'));
+      const candidates = this.sql.exec(q.sql, ...q.params).toArray() as unknown as AttachmentSearchCandidate[];
+      const ids = await readableAttachmentIds(
+        candidates,
+        async (entity) => {
+          const gate = this.attachmentTargets.get(entity.entityType);
+          // A target no registered module declares any more has no read key to pass.
+          return gate ? (await ctx.check(gate.read, entity)).allowed : false;
+        },
+        searchLimit(limit),
+      );
+      // Re-read by id: an attachment removed while the checks awaited is dropped, not served.
+      return ids.map((id) => this.attachmentRow(id)).filter((r): r is AttachmentRecord => r !== null);
+    }
+
+    /** #1575: `ScopeAttachments.search` for a principal or a connection. */
+    async attachmentSearch(
+      term: string,
+      limit: number,
+      principal: PrincipalId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      connectionId?: string,
+    ): Promise<AttachmentRecord[]> {
+      await this.ensureMigrations();
+      try {
+        const ctx = this.operationContext(
+          principal, tenantId, scopeId, undefined, connectionId,
+          undefined, undefined, undefined, 'attachments.search',
+        );
+        return await this.searchAttachments(ctx, term, limit);
+      } catch (err) {
+        throw toRpcError(err);
+      }
+    }
+
+    /**
+     * #1575: the extraction job's read of one record. No gate, deliberately — extraction
+     * is the kernel's own derivation and the coordinator is its only caller; what a person
+     * learns is gated at search.
+     */
+    async attachmentTextSource(attachmentId: string): Promise<AttachmentRecord | null> {
+      await this.ensureMigrations();
+      return this.attachmentRow(attachmentId);
+    }
+
+    /**
+     * #1575: write one extraction outcome, guarded on the attachment still existing.
+     * Through the queue, so it can never land inside an invoke's or an upload's open
+     * transaction and roll back with it.
+     */
+    async attachmentTextRecord(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () =>
+        this.ctx.storage.transactionSync(() =>
+          recordAttachmentText(this.attachmentTextSql(), attachmentId, outcome, new Date().toISOString()),
+        ),
+      );
+    }
+
     // -- attachments through a capability (#1686) -------------------------------
     // The coordinator hashed the session token; only the hash arrives. Each verb resolves it
     // INSIDE the queue, as `invoke` does, so nothing can revoke between the resolution and
@@ -3147,6 +3236,20 @@ export function defineScopeDO(
         assertAllowed(await ctx.check(gate.read, record.entity));
         return record;
       });
+    }
+
+    /** #1575: extracted-text search as the capability — its keys, its subtree, its minter now. */
+    async capabilityAttachmentSearch(
+      term: string,
+      limit: number,
+      sessionHash: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>> {
+      await this.ensureMigrations();
+      return this.asCapability(sessionHash, tenantId, scopeId, 'attachments.search', (ctx) =>
+        this.searchAttachments(ctx, term, limit),
+      );
     }
 
     /**
@@ -4845,6 +4948,10 @@ export function defineScopeDO(
         // not this one. Dropped, so a restore never carries a receipt over; the repair
         // projection that follows writes this scope's own.
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+        // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
+        // text of attachments the dump did not bring back, and queue extraction for those
+        // it brought back without text — the bytes decide what that run finds.
+        reconcileAttachmentText(this.attachmentTextSql(), ulid, new Date().toISOString());
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
         if (destScopeId) {

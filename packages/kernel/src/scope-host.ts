@@ -3833,6 +3833,28 @@ export interface ScopeAttachments {
   open(attachmentId: string): Promise<OpenedAttachment | null>;
   /** Delete row (and event) first, then bytes; returns the removed record, null if unknown. */
   remove(attachmentId: string): Promise<AttachmentRecord | null>;
+  /**
+   * Attachments whose EXTRACTED TEXT matches `term` (#1575), newest first, as records the
+   * caller could `open`.
+   *
+   * Every candidate passes the same check `open` makes — the target's `readPermission`
+   * on the owning entity, as this surface's principal — BEFORE the limit is applied, so
+   * an attachment the caller cannot open neither appears nor takes a slot. No count, no
+   * score, no snippet, and newest-first rather than relevance order: each of those would
+   * describe matches the caller may not see (`attachment-text.ts` says how). The term
+   * grammar and the limit are `ctx.search`'s (`searchMatchExpression`, `searchLimit`);
+   * a term too short to match throws `SearchTermTooShort`.
+   *
+   * Only text that has been extracted matches: an upload is searchable once its
+   * extraction job has run (`readAttachmentText` says where it is).
+   */
+  search(term: string, options?: AttachmentSearchOptions): Promise<AttachmentRecord[]>;
+}
+
+/** `ScopeAttachments.search`'s options. */
+export interface AttachmentSearchOptions {
+  /** Defaults to `DEFAULT_SEARCH_LIMIT`, capped at `MAX_SEARCH_LIMIT`. */
+  readonly limit?: number;
 }
 
 /**

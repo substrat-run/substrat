@@ -309,6 +309,17 @@ function schemaOf(ddl, additions, label) {
   const tables = new Map();
   const indexes = new Map();
   const fks = new Map();
+  // Triggers (#1575 put the first ones in the spine: the attachment text index keeps itself
+  // in step with them). Compared by their text with whitespace collapsed, grouped by the table
+  // they fire on — a trigger is code, and there is no PRAGMA that reads it back any other way.
+  const triggers = new Map();
+  for (const { name, tbl_name: table, sql } of db
+    .prepare(`SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name`)
+    .all()) {
+    const list = triggers.get(table) ?? [];
+    list.push(`${name}: ${String(sql).replace(/\s+/g, ' ').trim()}`);
+    triggers.set(table, list);
+  }
   for (const { name } of db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
     .all()) {
@@ -360,7 +371,7 @@ function schemaOf(ddl, additions, label) {
     );
   }
   db.close();
-  return { tables, indexes, fks };
+  return { tables, indexes, fks, triggers };
 }
 
 const describe = (c) =>
@@ -414,6 +425,15 @@ function fkDrift(a, b) {
   return out;
 }
 
+/** Trigger drift on one table built two ways — a missing trigger, or one whose text differs. */
+function triggerDrift(a = [], b = []) {
+  const out = [];
+  const [sa, sb] = [new Set(a), new Set(b)];
+  for (const d of sa) if (!sb.has(d)) out.push(`trigger ${d} is built by the first side only`);
+  for (const d of sb) if (!sa.has(d)) out.push(`trigger ${d} is built by the second side only`);
+  return out;
+}
+
 /**
  * Prove the comparison still refuses, on every run, before trusting it to pass.
  *
@@ -433,6 +453,12 @@ function proveItRefuses(reference) {
   if (!cols) throw new Error('spine-ddl-drift self-check: no table with two columns to perturb');
   const ixs = [...reference.indexes.values()].find((i) => i.length > 0);
   if (!ixs) throw new Error('spine-ddl-drift self-check: no indexed table to perturb');
+  // A store with no trigger (the directory) is perturbed with a probe, so the comparison is
+  // still proved to refuse — it is the same function either way.
+  const trs = [...reference.triggers.values()].find((t) => t.length > 0) ?? [
+    '__probe_tr: CREATE TRIGGER __probe_tr AFTER INSERT ON t BEGIN SELECT 1; END',
+    '__probe_tr2: CREATE TRIGGER __probe_tr2 AFTER DELETE ON t BEGIN SELECT 2; END',
+  ];
   const probeIx = { name: '__probe_ix', unique: 0, partial: 0, columns: 'a, b' };
 
   const cases = [
@@ -451,6 +477,8 @@ function proveItRefuses(reference) {
     ['an index over different columns', () => indexDrift([probeIx], [{ ...probeIx, columns: 'b, a' }])],
     ['an index that stopped being UNIQUE', () => indexDrift([{ ...probeIx, unique: 1 }], [probeIx])],
     ['a dropped foreign key', () => fkDrift(['x → y.z (on delete NO ACTION)'], [])],
+    ['a dropped trigger', () => triggerDrift(trs, trs.slice(1))],
+    ['a trigger whose body changed', () => triggerDrift(trs, [`${trs[0]} -- changed`, ...trs.slice(1)])],
   ];
   for (const [what, run] of cases) {
     if (run().length === 0) {
@@ -466,6 +494,9 @@ function proveItRefuses(reference) {
   }
   if (indexDrift(ixs, copy(ixs)).length !== 0) {
     throw new Error('spine-ddl-drift self-check: an identical index set was reported as drift');
+  }
+  if (triggerDrift(trs, [...trs]).length !== 0) {
+    throw new Error('spine-ddl-drift self-check: an identical trigger set was reported as drift');
   }
   return cases.length;
 }
@@ -608,6 +639,7 @@ function main() {
         ...tableDrift(a.tables.get(table), b.tables.get(table)),
         ...indexDrift(a.indexes.get(table), b.indexes.get(table)),
         ...fkDrift(a.fks.get(table), b.fks.get(table)),
+        ...triggerDrift(a.triggers.get(table), b.triggers.get(table)),
       ];
       for (const line of lines) {
         failures.push(
@@ -652,7 +684,7 @@ function main() {
   }
 
   console.log(
-    `spine schema: ${PAIRS.length} stores built two ways, no column, index or foreign-key drift ` +
+    `spine schema: ${PAIRS.length} stores built two ways, no column, index, foreign-key or trigger drift ` +
       `in any table both adapters build` +
       (notes.length > 0 ? ` (${notes.length} one-sided tables, by design)` : '') +
       `; ${proved} perturbations re-checked as still caught`,
