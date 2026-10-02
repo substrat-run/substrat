@@ -25,15 +25,48 @@
  * is the single-surface vertical, unchanged.
  *
  * **What this refuses.** Anything that would rewrite history or lose data: a
- * dropped table or column, a retyped column, a moved primary key, or a required
- * column added to a table that may already hold rows. Those are real decisions
+ * dropped table or column, a retyped column, a moved primary key, an enum whose
+ * values changed (a CHECK, which SQLite cannot alter in place — #1974), or a
+ * required column added to a table that may already hold rows. Those are real decisions
  * (expand/contract, a rebuild, a backfill, a `renamedFrom` declaration) and a
  * generator that guessed at them would be guessing with somebody's data.
  */
 import { z } from 'zod';
 import { columnsOf, emitTables, primaryKeyConstraint, uniqueConstraints } from './emit-sql.js';
 import { primaryKeyOf, type EntityDef } from '@substrat-run/contracts';
-import { journalColumns, journalPrimaryKeys, journalUniques } from './journal.js';
+import { journalChecks, journalColumns, journalPrimaryKeys, journalUniques } from './journal.js';
+
+/**
+ * The values an enum CHECK admits, or `undefined` for a CHECK that is not one.
+ *
+ * Only the shape the emitter writes counts — `<column> IN ('a','b')`, every
+ * entry a string literal — so a hand-written CHECK the model cannot declare
+ * (`qty >= 0`) is the journal's own business and is left alone. Takes the
+ * NORMALISED expression (`state in ('a','b')`), which `journalChecks` returns.
+ */
+function enumValues(expr: string, column: string): string[] | undefined {
+  const m = /^(.+?) in ?\((.*)\)$/.exec(expr);
+  if (!m || m[1] !== column.toLowerCase()) return undefined;
+  const list = m[2] as string;
+  if (!/^'(?:[^']|'')*'(?:,'(?:[^']|'')*')*$/.test(list)) return undefined;
+  return [...list.matchAll(/'((?:[^']|'')*)'/g)].map((v) => (v[1] as string).replace(/''/g, "'"));
+}
+
+/**
+ * What a column's enum CHECKs admit together — their intersection, since a row
+ * must pass every one — or `undefined` when the column has none.
+ */
+function admitted(checks: readonly string[], column: string): Set<string> | undefined {
+  let out: Set<string> | undefined;
+  for (const expr of checks) {
+    const values = enumValues(expr, column);
+    if (!values) continue;
+    out = out ? new Set(values.filter((v) => out?.has(v))) : new Set(values);
+  }
+  return out;
+}
+
+const listOf = (values: Iterable<string>) => `(${[...values].map((v) => `'${v}'`).join(', ')})`;
 
 export interface JournalEntry {
   /** Derived, monotonic, zero-padded: `0001`. Never authored. */
@@ -136,6 +169,7 @@ export function planMigration<T extends Record<string, EntityDef>>(
   const desired = journalColumns(emitTables(entities));
   const appliedUniques = journalUniques(journalSql);
   const appliedKeys = journalPrimaryKeys(journalSql);
+  const desiredChecks = journalChecks(emitTables(entities));
 
   // table name → the entity that owns it, so a diff can be reported in the
   // vocabulary the model uses rather than in raw table names.
@@ -198,10 +232,12 @@ export function planMigration<T extends Record<string, EntityDef>>(
       if (have.has(previous) && !have.has(current)) renames.set(current, previous);
     }
 
+    const renameStatements: string[] = [];
     for (const [current, previous] of renames) {
-      statements.push(`ALTER TABLE ${table} RENAME COLUMN ${previous} TO ${current};`);
+      renameStatements.push(`ALTER TABLE ${table} RENAME COLUMN ${previous} TO ${current};`);
       changes.push(`rename-${table}-${previous}-to-${current}`);
     }
+    statements.push(...renameStatements);
 
     for (const col of emitted) {
       if (have.has(col.name)) continue;
@@ -289,6 +325,60 @@ export function planMigration<T extends Record<string, EntityDef>>(
         `'${table}' declares a key over (${want}) that the journal does not have — SQLite ` +
           'cannot add a UNIQUE constraint to an existing table without rebuilding it. Rebuild ' +
           'it in a hand-written entry, or drop the key',
+      );
+    }
+    // -- an enum whose values moved ----------------------------------------------
+    // An enum field is emitted as `CHECK (state IN ('a','b'))`, and SQLite cannot
+    // alter a CHECK in place — so without this a value added to the model planned
+    // as "up to date" while every database the journal builds, a fresh scope
+    // included, went on refusing it at the first write (#1974). Narrowing is the
+    // same gap reversed: the model stops admitting a value the database still
+    // accepts, and nothing says so.
+    //
+    // Refused rather than planned, like a moved key: the fix is a rebuild, and a
+    // rebuild is a decision about live data — a narrowed enum must first decide
+    // what happens to rows holding the value it drops. Values are compared as
+    // SETS, so reordering an enum is not a migration.
+    //
+    // The journal is read AFTER the renames this plan is about to emit, because
+    // SQLite rewrites a CHECK along with the column it names, and comparing the
+    // untranslated expression would read a renamed enum as a changed one.
+    const haveChecks = (renameStatements.length
+      ? journalChecks(`${journalSql}\n${renameStatements.join('\n')}`)
+      : journalChecks(journalSql)
+    ).get(table);
+    for (const col of emitted) {
+      if (!have.has(renames.get(col.name) ?? col.name)) continue; // added by this plan, with the model's CHECK
+      const want = admitted(desiredChecks.get(table)?.get(col.name) ?? [], col.name);
+      const got = admitted(haveChecks?.get(col.name) ?? [], col.name);
+      if (!want && !got) continue;
+      if (want && got && want.size === got.size && [...want].every((v) => got.has(v))) continue;
+
+      const gained = want ? [...want].filter((v) => !got?.has(v)) : [];
+      const lost = got ? [...got].filter((v) => !want?.has(v)) : [];
+      const what = !got
+        ? `the journal lets '${table}.${col.name}' hold any value and the model restricts it to ${listOf(want ?? [])}`
+        : !want
+          ? `the journal restricts '${table}.${col.name}' to ${listOf(got)} and the model admits any value`
+          : `'${table}.${col.name}' admits ${listOf(got)} in the journal and ${listOf(want)} in the model` +
+            [gained.length ? ` — gained ${listOf(gained)}` : '', lost.length ? ` — lost ${listOf(lost)}` : ''].join('');
+      const widened = gained.length > 0 || (got !== undefined && want === undefined);
+      const narrowed = lost.length > 0 || (got === undefined && want !== undefined);
+      const consequence = [
+        widened ? 'refuse at runtime a value the model allows' : '',
+        narrowed ? 'go on accepting a value the model no longer does' : '',
+      ]
+        .filter(Boolean)
+        .join(', and ');
+      refusals.push(
+        `${what}. SQLite cannot change a CHECK in place, so every scope built from this journal, ` +
+          `a fresh one included, would keep the old one and ${consequence}. Rebuild the table in a ` +
+          'hand-written entry (create a `_new` with the new CHECK, copy, drop, rename onto the name)' +
+          (narrowed ? ', after deciding what happens to rows holding a value the model drops' : '') +
+          " — and re-create everything the DROP takes with it: the table's indexes, including " +
+          "the kernel's derived list indexes (applied once per declaration, so they do not come " +
+          'back on their own), its triggers, including the search-index triggers, and check that ' +
+          'any table whose foreign key REFERENCES it still resolves. Or restore the declared values',
       );
     }
   }

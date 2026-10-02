@@ -186,6 +186,18 @@ decisions — expand/contract, a backfill, a
 guessing with somebody's data. A refusal names each reason in the vocabulary of your model,
 not in raw table names.
 
+The same goes for a change SQLite can only make by rebuilding the table: a moved primary key,
+a `key` declared after the table exists, and an **enum whose values changed**. An enum is
+emitted as a `CHECK`, and SQLite cannot alter a `CHECK` in place, so a value added to
+`z.enum([...])` would otherwise plan as up to date while every scope the journal builds — a
+fresh one included — refuses it at the first write. The planner compares the values the
+journal's `CHECK` admits with the model's, as a set (reordering is not a change), and refuses
+either direction with what the rebuild has to re-create: the table's indexes, including the
+kernel's derived list indexes (applied once per declaration, so a `DROP TABLE` loses them for
+good), its triggers, including the search-index ones, and anything whose foreign key
+references it. A `CHECK` the model cannot declare, such as `qty >= 0`, is left alone.
+`journalChecks` is the reader behind it.
+
 ### A vertical composed of surfaces has more than one journal
 
 A vertical assembled from surfaces ships one concatenated migration list built from several

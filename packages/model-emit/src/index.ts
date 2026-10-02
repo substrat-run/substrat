@@ -6,8 +6,8 @@ export {
   type EmitSqlOptions,
   type EmittedColumn,
 } from './emit-sql.js';
-export { journalColumns, journalUniques, journalPrimaryKeys } from './journal.js';
-export { readSchema, statements, type TableSchema } from './replay.js';
+export { journalColumns, journalUniques, journalPrimaryKeys, journalChecks } from './journal.js';
+export { readSchema, statements, normaliseSql, columnChecks, type TableSchema } from './replay.js';
 export {
   planMigration,
   parseJournal,
