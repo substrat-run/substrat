@@ -153,6 +153,7 @@ import {
   type CapabilityExchange,
   type CapabilityId,
   type CapabilityFilter,
+  type CapabilityPage,
   type CapabilityRecord,
   type MintedCapability,
   type PrincipalId,
@@ -1066,7 +1067,7 @@ interface ScopeStubRpc {
   /** The platform's revoke (#1672) — the record as it stood before, or null. */
   revokeCapabilityAsPlatform(id: string, actor: PlatformActorId): Promise<CapabilityRecord | null>;
   /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
-  listCapabilities(filter?: CapabilityFilter): Promise<CapabilityRecord[]>;
+  listCapabilities(filter?: CapabilityFilter): Promise<CapabilityPage>;
   /** Where a module's schedules stand on this scope (#383, #1666) — the kernel's
    *  `systemScheduleState`, run in the scope's own storage. */
   systemScheduleState(moduleId: string): Promise<SystemScheduleState>;
@@ -2515,7 +2516,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * through its platform-gated `/internal/capabilities`; the K-3 check and the K-24 entry are
    * the control plane's, made before it calls. Records only — the DO's query selects no hash.
    */
-  async listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityRecord[]> {
+  async listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage> {
     return this.scopeStub(scopeId).listCapabilities(filter);
   }
 
@@ -6289,14 +6290,14 @@ export class CloudflareScopeHost implements ScopeHost {
         tenantId,
         scopeId,
         filter?: CapabilityFilter,
-      ): Promise<CapabilityRecord[]> => {
+      ): Promise<CapabilityPage> => {
         // Parsed here too: a typed refusal thrown inside the DO arrives as a bare message.
         const parsed = capabilityFilter.parse(filter ?? {});
         const rec = await this.scopeRecordForRead(tenantId, scopeId);
         this.assertServedHere(rec, scopeId, 'listCapabilities');
-        const rows = await this.scopeStub(scopeId).listCapabilities(parsed);
-        await this.recordAccess(actor, 'listCapabilities', { tenantId, scopeId }, filter ?? null, rows.length);
-        return rows;
+        const page = await this.scopeStub(scopeId).listCapabilities(parsed);
+        await this.recordAccess(actor, 'listCapabilities', { tenantId, scopeId }, filter ?? null, page.entries.length);
+        return page;
       },
       listRefusals: async (
         actor,

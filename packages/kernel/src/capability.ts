@@ -23,6 +23,7 @@ import {
   type CapabilityId,
   type CapabilityMintInput,
   type CapabilityMintedPayload,
+  type CapabilityPage,
   type CapabilityRecord,
   type CapabilityRevokedPayload,
   type CheckSubject,
@@ -174,9 +175,18 @@ export function capabilityByIdQuery(id: string): { sql: string; params: SqlValue
  * operator's `HostAdmin.listCapabilities` (#1686) both build it here, so "newest first" and
  * "live only unless asked" have one definition. Columns are `CAPABILITY_COLUMNS`, which never
  * includes `token_hash`: no reader of this query can return a hash. The filter is re-parsed
- * (bounded: `limit` is 1..200, default 50) and every value is bound.
+ * (bounded: `limit` is 1..200, default 50; a `cursor` must be a capability id) and every value
+ * is bound.
+ *
+ * Keyset-paged on `id`, the table's primary key, walked backwards: a ULID id IS creation
+ * order, and a record minted mid-walk gets a LARGER id than any cursor already handed out, so
+ * a concurrent mint can neither repeat a record nor make the walk skip one. `extra` reads that
+ * many rows beyond the page, which is how `readCapabilityPage` knows more follow.
  */
-export function capabilityListQuery(raw?: CapabilityFilter): { sql: string; params: SqlValue[] } {
+export function capabilityListQuery(
+  raw?: CapabilityFilter,
+  extra = 0,
+): { sql: string; params: SqlValue[] } {
   const filter = capabilityFilter.parse(raw ?? {});
   const where: string[] = [];
   const params: SqlValue[] = [];
@@ -185,7 +195,11 @@ export function capabilityListQuery(raw?: CapabilityFilter): { sql: string; para
     params.push(filter.entity.entityType, filter.entity.entityId);
   }
   if (!filter.includeRevoked) where.push('revoked_at IS NULL');
-  params.push(filter.limit ?? 50);
+  if (filter.cursor !== undefined) {
+    where.push('id < ?');
+    params.push(filter.cursor);
+  }
+  params.push((filter.limit ?? DEFAULT_CAPABILITY_LIMIT) + extra);
   return {
     sql:
       `SELECT ${CAPABILITY_COLUMNS} FROM _substrat_capabilities` +
@@ -194,15 +208,34 @@ export function capabilityListQuery(raw?: CapabilityFilter): { sql: string; para
   };
 }
 
+/** A read that names no `limit` gets this many records. */
+export const DEFAULT_CAPABILITY_LIMIT = 50;
+
 /**
- * The directory read, decoded — the ONE function behind `ctx.capabilities.list` and
- * `HostAdmin.listCapabilities` on both adapters, so "a reader returns records and never a
- * hash" is held in one place: the query selects no `token_hash`, and the decode keeps only
- * the record schema's fields.
+ * The directory read, decoded — the ONE function behind `ctx.capabilities.list`, and (as
+ * `readCapabilityPage`) `HostAdmin.listCapabilities` on both adapters, so "a reader returns
+ * records and never a hash" is held in one place: the query selects no `token_hash`, and the
+ * decode keeps only the record schema's fields.
  */
 export function readCapabilities(sql: ScopedSql, filter?: CapabilityFilter): CapabilityRecord[] {
   const q = capabilityListQuery(filter);
   return sql.query<CapabilityRow>(q.sql, q.params).map(capabilityRecordOf);
+}
+
+/**
+ * One page of the operator's read. Reads one row past the page: `nextCursor` is the last
+ * returned record's id when that extra row exists, and `null` when the walk is complete — so
+ * the caller can always tell "that is all" from "there is more", and a console never has to
+ * guess from a full page whether it truncated.
+ */
+export function readCapabilityPage(sql: ScopedSql, filter?: CapabilityFilter): CapabilityPage {
+  const parsed = capabilityFilter.parse(filter ?? {});
+  const limit = parsed.limit ?? DEFAULT_CAPABILITY_LIMIT;
+  const q = capabilityListQuery(parsed, 1);
+  const rows = sql.query<CapabilityRow>(q.sql, q.params);
+  const entries = rows.slice(0, limit).map(capabilityRecordOf);
+  const last = entries[entries.length - 1];
+  return { entries, nextCursor: rows.length > limit && last ? last.id : null };
 }
 
 /**

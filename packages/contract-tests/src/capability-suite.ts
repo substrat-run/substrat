@@ -46,6 +46,7 @@ import {
   scopeId,
   tenantId,
   type CapabilityExchange,
+  type CapabilityFilter,
   type EntityRef,
   type Instant,
   type MintedCapability,
@@ -672,6 +673,8 @@ export function capabilityContractSuite(
       let claim: MintedCapability;
       let expiry: Instant;
       let sessionToken: string;
+      const entriesOf = async (t: typeof t1, sc: ScopeId, filter?: CapabilityFilter) =>
+        (await host.admin.listCapabilities(staff, t, sc, filter)).entries;
       const own = <R extends { id: string }>(rows: R[]): R[] => rows.filter((r) => [shareLink, narrowed, revoked, claim].some((m) => m.id === r.id));
 
       beforeAll(async () => {
@@ -697,7 +700,7 @@ export function capabilityContractSuite(
       });
 
       it('lists what the module-side list does, as records an operator can read', async () => {
-        const rows = own(await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 }));
+        const rows = own(await entriesOf(t1, s1, { includeRevoked: true, limit: 200 }));
         expect(rows.map((r) => r.id).sort()).toEqual([shareLink.id, narrowed.id, revoked.id, claim.id].sort());
         const byId = new Map(rows.map((r) => [r.id, r]));
         expect(byId.get(shareLink.id)).toMatchObject({
@@ -735,7 +738,7 @@ export function capabilityContractSuite(
       });
 
       it('never returns a secret or a hash — not as a field, not anywhere in the text', async () => {
-        const rows = await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 });
+        const rows = await entriesOf(t1, s1, { includeRevoked: true, limit: 200 });
         const text = JSON.stringify(rows);
         // The positive twin of everything below: the read is not empty and is a faithful one.
         expect(own(rows)).toHaveLength(4);
@@ -763,29 +766,29 @@ export function capabilityContractSuite(
       });
 
       it('is live-only by default, and shows the revoked one when asked', async () => {
-        const live = own(await host.admin.listCapabilities(staff, t1, s1, { limit: 200 })).map((r) => r.id);
+        const live = own(await entriesOf(t1, s1, { limit: 200 })).map((r) => r.id);
         expect(live).toContain(shareLink.id);
         expect(live).not.toContain(revoked.id);
-        const all = own(await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 }));
+        const all = own(await entriesOf(t1, s1, { includeRevoked: true, limit: 200 }));
         expect(all.map((r) => r.id)).toContain(revoked.id);
       });
 
       it('is newest first, narrows by entity, and is bounded', async () => {
-        const all = await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 });
+        const all = await entriesOf(t1, s1, { includeRevoked: true, limit: 200 });
         const ids = all.map((r) => r.id);
         expect(ids).toEqual([...ids].sort().reverse()); // ULIDs: id order IS mint order
-        const onG = await host.admin.listCapabilities(staff, t1, s1, { entity: folder('G'), includeRevoked: true });
+        const onG = await entriesOf(t1, s1, { entity: folder('G'), includeRevoked: true });
         expect(onG.length).toBeGreaterThan(0);
         expect(onG.every((r) => r.mode === 'act' && r.entity.entityId === 'G')).toBe(true);
         expect(onG.map((r) => r.id)).toContain(narrowed.id);
-        expect(await host.admin.listCapabilities(staff, t1, s1, { limit: 1 })).toHaveLength(1);
+        expect(await entriesOf(t1, s1, { limit: 1 })).toHaveLength(1);
         // The bound is the filter's: past it is refused, not silently clamped.
         await expect(host.admin.listCapabilities(staff, t1, s1, { limit: 201 })).rejects.toThrow();
         await expect(host.admin.listCapabilities(staff, t1, s1, { limit: 0 })).rejects.toThrow();
       });
 
       it('reads the scope it is asked about and no other (K-3), and each read leaves an access row', async () => {
-        const other = await host.admin.listCapabilities(staff, t1, s2, { includeRevoked: true, limit: 200 });
+        const other = await entriesOf(t1, s2, { includeRevoked: true, limit: 200 });
         expect(own(other)).toEqual([]);
         // A scope of another tenant: the pair does not resolve, so no log of another tenant's is reachable.
         const t2 = tenantId.parse(ulid());
@@ -803,9 +806,9 @@ export function capabilityContractSuite(
         await expect(host.admin.listCapabilities(staff, t2, s1)).rejects.toThrow();
         await expect(host.admin.listCapabilities(staff, t1, s3)).rejects.toThrow();
         // The twin: the foreign tenant's own pair reads its own row, which t1's never showed.
-        const theirs = await host.admin.listCapabilities(staff, t2, s3);
+        const theirs = await entriesOf(t2, s3);
         expect(theirs.map((r) => r.id)).toEqual([foreign.id]);
-        expect(JSON.stringify(await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true, limit: 200 }))).not.toContain(foreign.id);
+        expect(JSON.stringify(await entriesOf(t1, s1, { includeRevoked: true, limit: 200 }))).not.toContain(foreign.id);
 
         const logged = await host.admin.accessLog(staff, { tenantId: t1, method: 'listCapabilities' });
         expect(logged.length).toBeGreaterThan(0);
@@ -813,9 +816,131 @@ export function capabilityContractSuite(
       });
 
       it('is a read: the use counts it reports do not move because it was asked', async () => {
-        const a = await host.admin.listCapabilities(staff, t1, s1, { entity: folder('G'), includeRevoked: true });
-        const b = await host.admin.listCapabilities(staff, t1, s1, { entity: folder('G'), includeRevoked: true });
+        const a = await entriesOf(t1, s1, { entity: folder('G'), includeRevoked: true });
+        const b = await entriesOf(t1, s1, { entity: folder('G'), includeRevoked: true });
         expect(b).toEqual(a);
+      });
+
+      // Paging. A scope with more capabilities than one page holds is walked to the end by
+      // the cursor each page hands back — the operator is never left with the newest 50 and no
+      // way to the rest. The walk runs on a scope of its own so its count is exact.
+      describe('paging', () => {
+        const TOTAL = 205; // past the filter's own ceiling of 200, so no single read can hold it
+        const walkScope = scopeId.parse(ulid());
+        const minted: string[] = []; // oldest first
+        const mintMore = async (n: number): Promise<string[]> => {
+          const stub = await as(alice, walkScope);
+          const ids: string[] = [];
+          for (let i = 0; i < n; i++) {
+            ids.push((await stub.invoke<MintedCapability>('cap/share', { entity: folder('F'), permissions: [CAP_READ] })).id);
+          }
+          return ids;
+        };
+        const walk = async (limit: number, between?: (page: number) => Promise<void>) => {
+          const seen: string[] = [];
+          const sizes: number[] = [];
+          let cursor: string | undefined;
+          for (let page = 0; ; page++) {
+            const p = await host.admin.listCapabilities(staff, t1, walkScope, {
+              limit,
+              ...(cursor === undefined ? {} : { cursor: cursor as never }),
+            });
+            seen.push(...p.entries.map((r) => r.id));
+            sizes.push(p.entries.length);
+            if (p.nextCursor === null) return { seen, sizes };
+            // The cursor is the last record of the page just read, and only a page with more behind it carries one.
+            expect(p.nextCursor).toBe(p.entries[p.entries.length - 1]!.id);
+            expect(p.entries).toHaveLength(limit);
+            cursor = p.nextCursor;
+            await between?.(page);
+            expect(page).toBeLessThan(TOTAL + 100); // a cursor that does not advance would loop for ever
+          }
+        };
+
+        beforeAll(async () => {
+          await host.provisionScope(staff, { tenantId: t1, scopeId: walkScope, vertical: 'cap-vertical' });
+          await host.admin.activateScope(staff, t1, walkScope);
+          minted.push(...(await mintMore(TOTAL)));
+        }, 120_000);
+
+        it('hands back a cursor exactly when more follow, and the whole set is reachable in pages', async () => {
+          const newestFirst = [...minted].reverse();
+          // The default page is not the whole set — and says so rather than looking complete.
+          const first = await host.admin.listCapabilities(staff, t1, walkScope);
+          expect(first.entries.map((r) => r.id)).toEqual(newestFirst.slice(0, 50));
+          expect(first.nextCursor).toBe(newestFirst[49]);
+          // Even the ceiling does not hold 205: the 5 oldest are behind the cursor, not dropped.
+          const max = await host.admin.listCapabilities(staff, t1, walkScope, { limit: 200 });
+          expect(max.entries).toHaveLength(200);
+          expect(max.nextCursor).toBe(newestFirst[199]);
+          const rest = await host.admin.listCapabilities(staff, t1, walkScope, { limit: 200, cursor: max.nextCursor! });
+          expect(rest.entries.map((r) => r.id)).toEqual(newestFirst.slice(200));
+          expect(rest.nextCursor).toBeNull();
+          // The walk, at several page sizes: every record once, newest first, no gap, no repeat.
+          for (const limit of [1, 50, 73, 200]) {
+            const { seen } = await walk(limit);
+            expect([limit, seen]).toEqual([limit, newestFirst]);
+          }
+        }, 120_000);
+
+        it('a page that ends exactly at the end carries no cursor (no trailing empty page)', async () => {
+          // 205 = 5 × 41: five full pages of 41 end the walk exactly, with nothing after the fifth.
+          const { sizes } = await walk(41);
+          expect(sizes).toEqual([41, 41, 41, 41, 41]);
+          const { sizes: by5 } = await walk(5);
+          expect(by5).toEqual(Array(TOTAL / 5).fill(5));
+        });
+
+        it('a record minted mid-walk neither repeats nor drops one the walk had yet to reach', async () => {
+          const before = [...minted].reverse();
+          const added: string[] = [];
+          const { seen } = await walk(40, async () => {
+            added.push(...(await mintMore(1)));
+          });
+          // Every record that existed when the walk began, once and in order…
+          expect(seen).toEqual(before);
+          // …and the newcomers sort ahead of every cursor already handed out, so they are the
+          // next walk's first records rather than a hole in this one.
+          expect(added.length).toBeGreaterThan(0);
+          const fresh = await host.admin.listCapabilities(staff, t1, walkScope, { limit: added.length });
+          expect(fresh.entries.map((r) => r.id)).toEqual([...added].reverse());
+          minted.push(...added);
+        }, 120_000);
+
+        it('narrows and pages together: the cursor walks the filtered set', async () => {
+          const stub = await as(alice, walkScope);
+          const g = await stub.invoke<MintedCapability>('cap/share', { entity: folder('G'), permissions: [CAP_READ] });
+          const g2 = await stub.invoke<MintedCapability>('cap/share', { entity: folder('G'), permissions: [CAP_READ] });
+          minted.push(g.id, g2.id);
+          const one = await host.admin.listCapabilities(staff, t1, walkScope, { entity: folder('G'), limit: 1 });
+          expect(one.entries.map((r) => r.id)).toEqual([g2.id]);
+          expect(one.nextCursor).toBe(g2.id);
+          const two = await host.admin.listCapabilities(staff, t1, walkScope, {
+            entity: folder('G'),
+            limit: 1,
+            cursor: one.nextCursor!,
+          });
+          expect(two.entries.map((r) => r.id)).toEqual([g.id]);
+          expect(two.nextCursor).toBeNull();
+        });
+
+        it('refuses a cursor that is not a capability id, and a limit past the bound', async () => {
+          for (const cursor of ['', 'not-an-id', 'sbcap_x', '01JZ0000000000000000000000'.toLowerCase()]) {
+            await expect(
+              host.admin.listCapabilities(staff, t1, walkScope, { cursor: cursor as never }),
+            ).rejects.toThrow();
+          }
+          await expect(host.admin.listCapabilities(staff, t1, walkScope, { limit: 201 })).rejects.toThrow();
+          // The twin: a well-formed cursor is accepted, even one that matches nothing.
+          const nothing = await host.admin.listCapabilities(staff, t1, walkScope, { cursor: ulid() as never });
+          expect(nothing.entries.length).toBeGreaterThanOrEqual(0);
+        });
+
+        it('pages carry the same records and no hash, however they are cut', async () => {
+          const p = await host.admin.listCapabilities(staff, t1, walkScope, { limit: 3 });
+          expect(JSON.stringify(p)).not.toMatch(HEX64);
+          expect(Object.keys(p).sort()).toEqual(['entries', 'nextCursor']);
+        });
       });
     });
   });

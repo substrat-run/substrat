@@ -18,13 +18,14 @@ describe('capabilityFilter on the wire', () => {
     entity: { entityType: 'folder', entityId: 'F1' },
     includeRevoked: true,
     limit: 25,
+    cursor: '01JZ0000000000000000CPC001',
   });
 
   it('round-trips every field the filter declares, through the one encoder and the one decoder', () => {
     const q = Object.fromEntries(capabilityFilterParams(full));
     expect(capabilityFilterQuery.parse(q)).toEqual(full);
     expect(capabilityFilterQuery.parse({})).toEqual({});
-    expect(Object.keys(q).sort()).toEqual(['entityId', 'entityType', 'includeRevoked', 'limit']);
+    expect(Object.keys(q).sort()).toEqual(['cursor', 'entityId', 'entityType', 'includeRevoked', 'limit']);
   });
 
   it('an unnarrowed read adds no `?`; a narrowed one carries its params', () => {
@@ -43,6 +44,11 @@ describe('capabilityFilter on the wire', () => {
     expect(() => capabilityFilterQuery.parse({ limit: '201' })).toThrow();
     expect(() => capabilityFilterQuery.parse({ limit: '0' })).toThrow();
     expect(() => capabilityFilterQuery.parse({ includeRevoked: 'maybe' })).toThrow();
+    // A cursor must be a capability id: one that is not is refused, never read as "from the start".
+    for (const cursor of ['nope', 'sbcap_x', '01jz0000000000000000cpc001']) {
+      expect(() => capabilityFilterQuery.parse({ cursor })).toThrow();
+    }
+    expect(capabilityFilterQuery.parse({ cursor: '01JZ0000000000000000CPC001' })).toEqual({ cursor: '01JZ0000000000000000CPC001' });
     expect(capabilityFilterQuery.parse({ includeRevoked: 'false' })).toEqual({ includeRevoked: false });
   });
 });

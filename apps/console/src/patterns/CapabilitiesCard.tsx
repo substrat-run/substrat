@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { capabilityStatus, type CapabilityRecord, type Scope } from '@substrat-run/contracts';
-import { Badge, Card, Checkbox, Table } from '../components';
+import { Badge, Button, Card, Checkbox, Table } from '../components';
 import type { Api } from '../lib/api';
 import { switchCardState } from '../lib/schedules';
 import {
   STATUS_LABEL,
+  appendPage,
   authorLine,
+  coverageLine,
   grantLine,
   operationsLine,
   capabilityTone,
@@ -25,25 +27,54 @@ const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
  */
 export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
   const [rows, setRows] = useState<CapabilityRecord[] | null>(null);
+  // Where the next page starts: null once the walk is complete, so "more" is never a guess.
+  const [next, setNext] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [moreError, setMoreError] = useState<unknown>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [revoked, setRevoked] = useState(false);
+  // Which read the screen is waiting on, so a page that lands after the filter moved is dropped.
+  const generation = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
+    const mine = ++generation.current;
     setRows(null);
+    setNext(null);
     setError(null);
+    setMoreError(null);
+    setLoadingMore(false);
     api
       .listCapabilities(scope.tenantId, scope.id, { includeRevoked: revoked })
-      .then((r) => {
-        if (!cancelled) setRows(r);
+      .then((p) => {
+        if (generation.current !== mine) return;
+        setRows(p.entries);
+        setNext(p.nextCursor);
       })
       .catch((e) => {
-        if (!cancelled) setError(e);
+        if (generation.current === mine) setError(e);
       });
     return () => {
-      cancelled = true;
+      // Invalidates this read's answer if it is still in flight.
+      generation.current++;
     };
   }, [api, scope.tenantId, scope.id, revoked]);
+
+  async function loadMore() {
+    if (next === null || loadingMore) return;
+    const mine = generation.current;
+    setLoadingMore(true);
+    setMoreError(null);
+    try {
+      const p = await api.listCapabilities(scope.tenantId, scope.id, { includeRevoked: revoked, cursor: next as never });
+      if (generation.current !== mine) return;
+      setRows((held) => appendPage(held ?? [], p.entries));
+      setNext(p.nextCursor);
+    } catch (e) {
+      if (generation.current === mine) setMoreError(e);
+    } finally {
+      if (generation.current === mine) setLoadingMore(false);
+    }
+  }
 
   const state = switchCardState(rows, error);
   // Stamped at render: a standing is judged against the clock at the moment it is shown.
@@ -122,6 +153,23 @@ export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
             },
           ]}
         />
+      )}
+      {state.kind === 'ready' && state.entries.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+          <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }} aria-live="polite">
+            {coverageLine(state.entries.length, next !== null)}
+          </span>
+          {next !== null && (
+            <Button size="sm" variant="secondary" onClick={loadMore} loading={loadingMore}>
+              Load older
+            </Button>
+          )}
+          {moreError !== null && moreError !== undefined && (
+            <Badge status="danger">
+              {moreError instanceof Error ? moreError.message : 'Could not load older capabilities'}
+            </Badge>
+          )}
+        </div>
       )}
     </Card>
   );

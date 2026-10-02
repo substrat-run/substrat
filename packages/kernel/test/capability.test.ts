@@ -16,6 +16,7 @@ import {
   capabilityListQuery,
   capabilityLive,
   capabilityRecordOf,
+  readCapabilityPage,
   capabilityTokenHash,
   carriesSecret,
   guardSecrets,
@@ -311,6 +312,34 @@ describe('the operator read of the directory (#1686)', () => {
     // Bounded: past the filter's cap is refused, never silently clamped.
     expect(() => capabilityListQuery({ limit: 201 })).toThrow();
     expect(() => capabilityListQuery({ limit: 0 })).toThrow();
+  });
+
+  it('pages by id: the cursor is an exclusive bound, and the page reads one row past itself', () => {
+    const cursor = '01JZ00000000000000000000C9';
+    const q = capabilityListQuery({ cursor: cursor as never, limit: 7 }, 1);
+    expect(q.sql).toMatch(/WHERE revoked_at IS NULL AND id < \? ORDER BY id DESC LIMIT \?$/);
+    expect(q.params).toEqual([cursor, 8]);
+    // No cursor, no bound — and the default page is 50.
+    expect(capabilityListQuery().params).toEqual([50]);
+    // A cursor that is not a capability id is refused, never read as "from the start".
+    expect(() => capabilityListQuery({ cursor: 'nope' as never })).toThrow();
+  });
+
+  it('readCapabilityPage: a cursor only when a record follows the page', () => {
+    const rowsOf = (n: number): CapabilityRow[] =>
+      Array.from({ length: n }, (_, i) => capRow({ id: `01JZ00000000000000000000${String(90 - i).padStart(2, '0')}` }));
+    const sqlReturning = (rows: CapabilityRow[]): ScopedSql => ({
+      query: <T,>() => rows as unknown as T[],
+      exec: () => ({ changes: 0 }),
+    });
+    const full = readCapabilityPage(sqlReturning(rowsOf(4)), { limit: 3 });
+    expect(full.entries.map((e) => e.id)).toEqual(rowsOf(3).map((r) => r.id));
+    expect(full.nextCursor).toBe(rowsOf(3)[2]!.id);
+    // Exactly a page's worth and no more: the walk is done, so no cursor.
+    const exact = readCapabilityPage(sqlReturning(rowsOf(3)), { limit: 3 });
+    expect(exact.entries).toHaveLength(3);
+    expect(exact.nextCursor).toBeNull();
+    expect(readCapabilityPage(sqlReturning([]), { limit: 3 })).toEqual({ entries: [], nextCursor: null });
   });
 
   it('a row that somehow carried a hash still decodes to a record with no hash in it', () => {

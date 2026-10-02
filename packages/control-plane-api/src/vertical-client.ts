@@ -63,10 +63,9 @@ import {
   attachmentRecord,
   denialFilterParams,
   capabilityFilterParams,
-  capabilityRecord,
-  z,
+  capabilityPage,
   type CapabilityFilter,
-  type CapabilityRecord,
+  type CapabilityPage,
   mintedPreviewClient,
   ownerSeat,
   ownerClaimLink,
@@ -478,10 +477,10 @@ export class VerticalClient {
   }
 
   /** The scope's capability directory (#1686), pulled from the vertical that holds it and parsed on arrival, so a hash-bearing answer cannot pass through. */
-  async listCapabilities(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityRecord[]> {
+  async listCapabilities(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage> {
     const q = capabilityFilterParams(filter);
     q.set('scopeId', scopeId);
-    return z.array(capabilityRecord).parse(await this.getInternal<unknown>(`/internal/capabilities?${q}`));
+    return capabilityPage.parse(await this.getInternal<unknown>(`/internal/capabilities?${q}`));
   }
 
   /**

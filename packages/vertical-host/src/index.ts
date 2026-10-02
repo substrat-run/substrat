@@ -62,7 +62,7 @@ import {
   denialFilter,
   capabilityFilterQuery,
   type CapabilityFilter,
-  type CapabilityRecord,
+  type CapabilityPage,
   type DenialFilter,
   type DenialSummary,
   type PermissionDenial,
@@ -225,7 +225,7 @@ export interface VerticalScopeHost {
   listDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]>;
   summarizeDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary>;
   /** The operator's capability read (#1686): records, never a secret or a hash. */
-  listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityRecord[]>;
+  listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage>;
   listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]>;
   listPlatformRequestHistory(
     tenantId: TenantId,

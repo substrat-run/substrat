@@ -3452,7 +3452,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           viaVertical: (v) => v.listCapabilities(scopeId, filter),
           colocated: () => c.var.admin.listCapabilities(c.get('actor'), tenantId, scopeId, filter),
         },
-        (r) => r.length,
+        (r) => r.entries.length,
       ),
     );
   });

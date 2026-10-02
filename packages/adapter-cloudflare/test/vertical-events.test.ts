@@ -120,9 +120,9 @@ describe('cross-vertical verbs on the shared control plane (#1705)', () => {
   it('refuses the capability read for a hosted scope, and reads one it serves itself', async () => {
     const served = `is served by the '${BOARD_VERTICAL}' deployment`;
     await expect(shared.admin.listCapabilities(staff, t, hosted)).rejects.toThrow(served);
-    expect(await shared.admin.listCapabilities(staff, t, ownScope)).toEqual([]);
+    expect(await shared.admin.listCapabilities(staff, t, ownScope)).toEqual({ entries: [], nextCursor: null });
     // The vertical's own door is the local read, with no directory gate of its own.
-    expect(await shared.listCapabilitiesLocal(ownScope)).toEqual([]);
+    expect(await shared.listCapabilitiesLocal(ownScope)).toEqual({ entries: [], nextCursor: null });
     // A bad bound keeps its error across the DO hop: refused here, not as a bare stub message.
     await expect(shared.admin.listCapabilities(staff, t, ownScope, { limit: 201 })).rejects.toThrow(/200/);
   });

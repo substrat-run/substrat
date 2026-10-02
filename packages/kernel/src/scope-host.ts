@@ -14,7 +14,7 @@ import type {
   CapabilityExchange,
   CapabilityFilter,
   CapabilityId,
-  CapabilityRecord,
+  CapabilityPage,
   MintedCapability,
   ListPage,
   Connection,
@@ -2915,8 +2915,10 @@ export interface HostAdmin {
   /**
    * The operator's read of a scope's capabilities (#1686): the directory `ctx.capabilities.list`
    * reads from inside a module, for someone who has no operation to stand in. Newest first,
-   * live (unrevoked) ones only unless `includeRevoked`, narrowable to one `entity`, bounded
-   * (`limit` 1..200, default 50).
+   * live (unrevoked) ones only unless `includeRevoked`, narrowable to one `entity`, and
+   * keyset-paged: `limit` 1..200 (default 50) and a `cursor`, the previous page's `nextCursor`.
+   * `nextCursor` is set only when more records follow, so a walk never truncates silently and
+   * a full last page ends it. A malformed cursor is refused.
    *
    * **Never a secret, never a hash.** A record carries what the capability may do (mode, entity,
    * keys, operation allowlist, or the principal a `become` yields), who minted and revoked it,
@@ -2932,7 +2934,7 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     filter?: CapabilityFilter,
-  ): Promise<CapabilityRecord[]>;
+  ): Promise<CapabilityPage>;
 
   // -- directory disaster recovery (control-plane.md §4.9, #40) ---------------
   // Every method above reads or writes ONE tenant's world. These two are the only

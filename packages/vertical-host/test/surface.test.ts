@@ -66,7 +66,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     listDenialsLocal: async (_s: unknown, filter?: unknown) => note('listDenialsLocal', [filter]) as never,
     summarizeDenialsLocal: async (_s: unknown, filter?: unknown) =>
       note('summarizeDenialsLocal', { buckets: [filter] }) as never,
-    listCapabilitiesLocal: async (_s: unknown, filter?: unknown) => note('listCapabilitiesLocal', [filter]) as never,
+    listCapabilitiesLocal: async (_s: unknown, filter?: unknown) => note('listCapabilitiesLocal', { entries: [filter], nextCursor: null }) as never,
     listPlatformRequests: async () => note('listPlatformRequests', []),
     listPlatformRequestHistory: async (_t: unknown, _s: unknown, filter?: unknown) =>
       note('listPlatformRequestHistory', [filter]) as never,
@@ -680,17 +680,18 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     it('passes the filter through to the host, decoded', async () => {
       const host = fakeHost();
       const res = await appWith(host).request(
-        path('&entityType=folder&entityId=F1&includeRevoked=true&limit=5'),
+        path('&entityType=folder&entityId=F1&includeRevoked=true&limit=5&cursor=01JZ0000000000000000CPC001'),
         { headers: authed() },
         ENV,
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual([
-        { entity: { entityType: 'folder', entityId: 'F1' }, includeRevoked: true, limit: 5 },
-      ]);
+      expect(await res.json()).toEqual({
+        entries: [{ entity: { entityType: 'folder', entityId: 'F1' }, includeRevoked: true, limit: 5, cursor: '01JZ0000000000000000CPC001' }],
+        nextCursor: null,
+      });
       // The twin: an unnarrowed read forwards an empty filter, not an invented one.
       const bare = await appWith(host).request(path(), { headers: authed() }, ENV);
-      expect(await bare.json()).toEqual([{}]);
+      expect(await bare.json()).toEqual({ entries: [{}], nextCursor: null });
     });
 
     it('is behind the platform secret, and reads nothing without it', async () => {
@@ -703,7 +704,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
 
     it('refuses a malformed filter rather than widening it', async () => {
       const host = fakeHost();
-      for (const bad of ['&limit=201', '&limit=0', '&entityType=folder', '&entityId=F1', '&includeRevoked=maybe']) {
+      for (const bad of ['&limit=201', '&limit=0', '&cursor=nope', '&entityType=folder', '&entityId=F1', '&includeRevoked=maybe']) {
         const res = await appWith(host).request(path(bad), { headers: authed() }, ENV);
         expect([bad, res.status]).toEqual([bad, 400]);
       }

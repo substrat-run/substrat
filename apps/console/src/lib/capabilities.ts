@@ -21,11 +21,14 @@ export function capabilityTone(status: CapabilityStatus): BadgeTone {
   return 'neutral';
 }
 
-/** What the capability lets its holder do, in one line: the entity and keys, or who they become. */
+/**
+ * What the capability lets its holder do, in one line: the entity and EVERY key, or who they
+ * become. Never a count — two links with different key sets on one entity must read
+ * differently, because the keys are the whole of what a link grants.
+ */
 export function grantLine(r: CapabilityRecord): string {
   if (r.mode === 'become') return `becomes ${r.principal}`;
-  const keys = r.permissions.length === 1 ? r.permissions[0] : `${r.permissions.length} keys`;
-  return `${keys} on ${r.entity.entityType}:${r.entity.entityId}`;
+  return `${r.permissions.join(', ')} on ${r.entity.entityType}:${r.entity.entityId}`;
 }
 
 /** The operation allowlist, or the words for its absence. Only an `act` capability has one. */
@@ -42,4 +45,23 @@ export function authorLine(a: CapabilityRecord['mintedBy']): string {
 /** `n` or `n / max`. */
 export function usesLine(r: CapabilityRecord): string {
   return r.maxUses === null ? String(r.uses) : `${r.uses} / ${r.maxUses}`;
+}
+
+/**
+ * How much of the directory the card holds, in words — so a page that is not the whole walk
+ * says so, and a card never reads as complete when it is not.
+ */
+export function coverageLine(shown: number, more: boolean): string {
+  const noun = shown === 1 ? 'capability' : 'capabilities';
+  return more ? `Showing the newest ${shown} ${noun}; older ones follow.` : `${shown} ${noun}.`;
+}
+
+/**
+ * Append the next page to what the card already holds. A page can overlap the rows shown
+ * only if the server repeats one, which keyset paging does not — but a duplicate row in an
+ * operator's table reads as two links, so the append is by id rather than by trust.
+ */
+export function appendPage(held: CapabilityRecord[], next: CapabilityRecord[]): CapabilityRecord[] {
+  const have = new Set(held.map((r) => r.id));
+  return [...held, ...next.filter((r) => !have.has(r.id))];
 }

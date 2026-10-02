@@ -6,7 +6,7 @@ import type {
   ConnectionHealthPage,
   ConnectionHealthState,
   CapabilityFilter,
-  CapabilityRecord,
+  CapabilityPage,
   DenialFilter,
   DenialSummary,
   DirectoryBackup,
@@ -397,7 +397,7 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
 
   // The operator's read of a scope's capabilities (#1686). Staff-only server-side; a
   // deployment predating the route answers 404/501 like the other late reads. Records only.
-  listCapabilities = (t: TenantId, s: ScopeId, filter?: CapabilityFilter): Promise<CapabilityRecord[]> =>
+  listCapabilities = (t: TenantId, s: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage> =>
     this.call(`/tenants/${t}/scopes/${s}/capabilities${capabilityQuery(filter)}`);
 
   // The #1666 schedule kill switch, read and moved from the console (#1674/#1675). No

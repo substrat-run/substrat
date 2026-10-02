@@ -83,12 +83,13 @@ describe('VerticalClient.listCapabilities (#1686)', () => {
 
   it('sends the scope and the filter in the one encoding, and returns the records', async () => {
     const urls: string[] = [];
-    const rows = await clientAnswering([record], urls).listCapabilities(s, {
+    const rows = await clientAnswering({ entries: [record], nextCursor: record.id }, urls).listCapabilities(s, {
       entity: { entityType: 'folder', entityId: 'F1' },
       includeRevoked: true,
       limit: 5,
+      cursor: record.id as never,
     });
-    expect(rows).toEqual([record]);
+    expect(rows).toEqual({ entries: [record], nextCursor: record.id });
     const url = new URL(urls[0]!, 'http://x');
     expect(url.pathname).toBe('/internal/capabilities');
     expect(Object.fromEntries(url.searchParams)).toEqual({
@@ -97,6 +98,7 @@ describe('VerticalClient.listCapabilities (#1686)', () => {
       entityId: 'F1',
       includeRevoked: 'true',
       limit: '5',
+      cursor: record.id,
     });
   });
 
@@ -104,13 +106,19 @@ describe('VerticalClient.listCapabilities (#1686)', () => {
   // an older build selecting `*`, say — cannot pass a hash through the control plane.
   it('drops anything but the record: a hash a vertical sent never reaches the caller', async () => {
     const hash = 'ab'.repeat(32);
-    const rows = await clientAnswering([{ ...record, token_hash: hash, tokenHash: hash }]).listCapabilities(s);
-    expect(rows).toEqual([record]);
+    const rows = await clientAnswering({
+      entries: [{ ...record, token_hash: hash, tokenHash: hash }],
+      nextCursor: null,
+      token_hash: hash,
+    }).listCapabilities(s);
+    expect(rows).toEqual({ entries: [record], nextCursor: null });
     expect(JSON.stringify(rows)).not.toContain(hash);
   });
 
   it('refuses a shape that is not a record rather than relaying it', async () => {
-    await expect(clientAnswering([{ id: 'x' }]).listCapabilities(s)).rejects.toThrow();
+    await expect(clientAnswering({ entries: [{ id: 'x' }], nextCursor: null }).listCapabilities(s)).rejects.toThrow();
+    // …and so is a bare array, the shape this read had before it paged.
+    await expect(clientAnswering([record]).listCapabilities(s)).rejects.toThrow();
   });
 });
 

@@ -20,7 +20,7 @@ import {
   scopeId,
   tenantId,
   type CapabilityFilter,
-  type CapabilityRecord,
+  type CapabilityPage,
   type Instant,
   type MintedCapability,
 } from '@substrat-run/contracts';
@@ -100,7 +100,8 @@ describe('GET /tenants/:t/scopes/:s/capabilities (#1686)', () => {
   const route = (scope: string = s, tenant: string = t, query = '') =>
     `/tenants/${tenant}/scopes/${scope}/capabilities${query}`;
   const get = (path: string, headers: Record<string, string>, a = app) => a.request(path, { method: 'GET', headers });
-  const rows = async (res: Response) => (await res.json()) as CapabilityRecord[];
+  const page = async (res: Response) => (await res.json()) as CapabilityPage;
+  const rows = async (res: Response) => (await page(res)).entries;
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-capabilities-'));
@@ -190,7 +191,7 @@ describe('GET /tenants/:t/scopes/:s/capabilities (#1686)', () => {
   it('carries neither a secret nor a hash, in the body of any read', async () => {
     const res = await get(route(s, t, '?includeRevoked=true&limit=200'), asStaff);
     const text = await res.text();
-    expect(JSON.parse(text)).toHaveLength(3); // the twin: a real, full read
+    expect(JSON.parse(text).entries).toHaveLength(3); // the twin: a real, full read
     for (const m of [link, gone, claim]) {
       expect(text).toContain(m.id);
       expect(text).not.toContain(m.secret);
@@ -230,8 +231,26 @@ describe('GET /tenants/:t/scopes/:s/capabilities (#1686)', () => {
     expect((await get(route(scopeId.parse(ulid())), asStaff)).status).toBe(404);
   });
 
+  it('pages: a cursor only while more follow, and the next page picks up after the last entry', async () => {
+    // Three live records on this scope: the share link, the claim, and (revoked) the withdrawn one.
+    const first = await page(await get(route(s, t, '?limit=1&includeRevoked=true'), asStaff));
+    expect(first.entries).toHaveLength(1);
+    expect(first.nextCursor).toBe(first.entries[0]!.id);
+    const seen = [first.entries[0]!.id];
+    let cursor = first.nextCursor;
+    while (cursor !== null) {
+      const next = await page(await get(route(s, t, `?limit=1&includeRevoked=true&cursor=${cursor}`), asStaff));
+      seen.push(...next.entries.map((r) => r.id));
+      cursor = next.nextCursor;
+    }
+    expect(seen.sort()).toEqual([link.id, gone.id, claim.id].sort());
+    expect(new Set(seen).size).toBe(3); // no record twice
+    // The twin: a page that holds everything carries no cursor.
+    expect((await page(await get(route(s, t, '?includeRevoked=true'), asStaff))).nextCursor).toBeNull();
+  });
+
   it('refuses a malformed filter rather than widening it', async () => {
-    for (const q of ['?limit=201', '?limit=0', '?entityType=folder', '?entityId=F1', '?includeRevoked=maybe']) {
+    for (const q of ['?limit=201', '?limit=0', '?cursor=nope', '?cursor=', '?entityType=folder', '?entityId=F1', '?includeRevoked=maybe']) {
       expect([q, (await get(route(s, t, q), asStaff)).status]).toEqual([q, 400]);
     }
   });
@@ -258,7 +277,7 @@ describe('GET /tenants/:t/scopes/:s/capabilities (#1686)', () => {
       const fakeVertical = {
         listCapabilities: async (scope: string, filter?: CapabilityFilter) => {
           calls.push({ scopeId: scope, filter });
-          return [];
+          return { entries: [], nextCursor: null } satisfies CapabilityPage;
         },
       } as unknown as VerticalClient;
       delegated = createControlPlaneApi({

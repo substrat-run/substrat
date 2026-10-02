@@ -179,13 +179,34 @@ export const capabilityExchange = z.discriminatedUnion('kind', [
 ]);
 export type CapabilityExchange = z.infer<typeof capabilityExchange>;
 
-/** What narrows `ctx.capabilities.list`. Live capabilities only unless `includeRevoked`. */
+/**
+ * What narrows `ctx.capabilities.list` and `HostAdmin.listCapabilities`. Live capabilities
+ * only unless `includeRevoked`.
+ *
+ * `cursor` is the platform's keyset cursor (`pagination.ts`): the `id` of the last record of
+ * the previous page, EXCLUSIVE, walking newest to oldest. A capability id is a ULID, so a
+ * cursor that is not one is refused rather than read as "from the start" — a walk that
+ * silently restarted would loop forever.
+ */
 export const capabilityFilter = z.object({
   entity: entityRef.optional(),
   includeRevoked: z.boolean().optional(),
   limit: z.number().int().min(1).max(200).optional(),
+  cursor: capabilityId.optional(),
 });
 export type CapabilityFilter = z.infer<typeof capabilityFilter>;
+
+/**
+ * One page of the operator's capability read: records newest first, and `nextCursor` — the
+ * last entry's id — ONLY when at least one more record follows. The adapters read one row
+ * past the page to know, so a full last page ends the walk instead of costing an empty fetch.
+ * Parsing a vertical's answer through this drops any field a record does not declare.
+ */
+export const capabilityPage = z.object({
+  entries: z.array(capabilityRecord),
+  nextCursor: capabilityId.nullable(),
+});
+export type CapabilityPage = z.infer<typeof capabilityPage>;
 
 /**
  * Where a capability stands NOW, read off its record — for a surface that shows many at once
@@ -222,6 +243,7 @@ export function capabilityFilterParams(filter?: CapabilityFilter): URLSearchPara
   }
   if (filter?.includeRevoked) q.set('includeRevoked', 'true');
   if (filter?.limit) q.set('limit', String(filter.limit));
+  if (filter?.cursor) q.set('cursor', filter.cursor);
   return q;
 }
 
@@ -244,6 +266,7 @@ export const capabilityFilterQuery = z
     entityId: z.string().min(1).optional(),
     includeRevoked: z.enum(['true', 'false']).optional(),
     limit: z.coerce.number().int().optional(),
+    cursor: z.string().min(1).optional(),
   })
   .superRefine((q, ctx) => {
     if ((q.entityType === undefined) !== (q.entityId === undefined)) {
@@ -257,6 +280,7 @@ export const capabilityFilterQuery = z
         : {}),
       ...(q.includeRevoked !== undefined ? { includeRevoked: q.includeRevoked === 'true' } : {}),
       ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
     });
     if (parsed.success) return parsed.data;
     for (const issue of parsed.error.issues) ctx.addIssue({ code: 'custom', message: issue.message, path: issue.path });
