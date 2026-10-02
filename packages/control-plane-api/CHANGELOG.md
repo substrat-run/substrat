@@ -1,5 +1,17 @@
 # @substrat-run/control-plane-api
 
+## 0.133.0
+
+### Patch Changes
+
+- 6416ce9: Carry data off a legacy preview's production serving script and clear its serving pin when binding the preview to a version (#1724).
+- Updated dependencies [8a32578]
+- Updated dependencies [c74c091]
+- Updated dependencies [a08c42e]
+- Updated dependencies [a128e65]
+  - @substrat-run/kernel@0.133.0
+  - @substrat-run/contracts@0.133.0
+
 ## 0.132.1
 
 ### Patch Changes
