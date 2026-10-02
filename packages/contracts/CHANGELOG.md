@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.134.0
+
+### Minor Changes
+
+- 4347933: An entity may mark `outsideText` fields: text written by someone outside the module that is not the subject's personal data (a provider's or a remote site's error, a subject line, a raw header). Like `erasable`, such a field is refused in an `emits.payload` at compile time, and it is emitted to `model.json`.
+
 ## 0.133.0
 
 ### Minor Changes
@@ -5949,7 +5955,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

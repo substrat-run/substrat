@@ -1,5 +1,23 @@
 # @substrat-run/control-plane-api
 
+## 0.134.0
+
+### Minor Changes
+
+- f5689cc: Add `ControlPlaneStaffClient`, the typed client for the control plane's staff surface (tenants, scopes, fleet and log reads, the vertical registry), and a browser-safe `@substrat-run/control-plane-api/browser` entry that exposes it. It shares one transport with `ControlPlaneClient`, so both raise the same `ControlPlaneError` and read a problem document the same way. `ControlPlaneClient` is unchanged: same requests, same headers, same error.
+
+### Patch Changes
+
+- 6f7c650: `mapError`'s `CODE_PATTERNS` table loses three rows — `is owned by`, `is auto-admitted (private self-serve)` and `not admitted` — 19 rows to 16 (#113 phase 5). Both adapters now throw those registry refusals typed as `conflict`, so the code is read from the declaration one branch earlier and the rows had nothing left to match. The response is unchanged — same 409, same detail — and every other row is untouched. An untyped throw of the same sentences now falls through to the generic 500, which is the point, and a new case pins both halves.
+- 560eec4: Subject erasure now reaches the spine's free-text columns. A recorded idempotent response that names the subject becomes a redaction tombstone, and a retry under its key is refused rather than replayed or re-run. Ops-failure messages, issue exemplars and sweep records are rewritten to a redaction note when they quote an intent the erasure redacted or name the subject's id. Another tenant's rows are never touched. Issues now record whose failure their exemplar came from (`_substrat_issues.last_owner_kind` and `last_tenant_id`, additive directory columns, backfilled where the retained failure rows prove a single origin). A tenant's exemplar is rewritten only for that tenant, the platform's own on a direct match, and one of unknown origin is left alone. A queued `sweep-runs` intent gets the same note in the entry error that named the subject. Erasing through a coordinator now refuses a scope still running an older ScopeDO that cannot do this, before the subject key is destroyed. The scheduled platform pass now also prunes ops failures, issues and sweep runs past their retention (`HostAdmin.pruneTelemetry`), oldest first and a bounded batch per table per pass, so those bounds hold on a directory that records nothing new and a large backlog drains over passes.
+- Updated dependencies [176fe60]
+- Updated dependencies [4347933]
+- Updated dependencies [4347933]
+- Updated dependencies [1addd27]
+- Updated dependencies [560eec4]
+  - @substrat-run/kernel@0.134.0
+  - @substrat-run/contracts@0.134.0
+
 ## 0.133.0
 
 ### Patch Changes
