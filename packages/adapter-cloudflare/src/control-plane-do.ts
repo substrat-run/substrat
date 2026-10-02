@@ -58,7 +58,7 @@ import type {
   TenantStatus,
   VerticalResolution,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, opsFailureFingerprint } from '@substrat-run/contracts';
+import { assertReplayableDump, opsFailureFingerprint, substratError } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -2786,11 +2786,14 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): void {
-    this.sql.exec(
-      'UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?',
-      versionId, verticalSlug, scopeId,
-    );
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null): void {
+    const update = expectedVersionId === undefined
+      ? this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?', versionId, verticalSlug, scopeId)
+      : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ?',
+          versionId, verticalSlug, scopeId, expectedVersionId);
+    if (update.rowsWritten === 0) {
+      throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+    }
   }
 
   /**

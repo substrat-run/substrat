@@ -2117,6 +2117,10 @@ export interface HostAdmin {
    * bad upgrade has a rollback point. Gated on the digest change (a code-only rebind
    * snapshots nothing) and opt-in until retention/GC ships.
    *
+   * `opts.expectedVersionId` (#1722) makes the pointer update compare-and-set. `null`
+   * expects an unbound scope; omitting it keeps an unconditional bind. A changed binding
+   * is refused with `precondition_failed`, leaving its version and vertical untouched.
+   *
    * **#1756: refuses a bind that breaks an app in the scope's own tenant** unless
    * `opts.acknowledge.exportBreak` is set — the promote gate's question
    * (`bindExportBreaksOf`), asked of one install. Judged on what the scope RUNS before and
@@ -2128,7 +2132,7 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     versionId: string,
-    opts?: { snapshot?: boolean; acknowledge?: BindAcknowledgement },
+    opts?: { snapshot?: boolean; acknowledge?: BindAcknowledgement; expectedVersionId?: string | null },
   ): Promise<void>;
   /**
    * Which apps in the scope's tenant binding `versionId` would break (#1756): the answer

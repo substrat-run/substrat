@@ -110,9 +110,30 @@ orphaned. The host maintains a **directory** (a separate database) as the author
 inventory of tenants and scopes; it's what `getScope` validates addressing against, and the
 input to migration sweeps and ops tooling.
 
-Provisioning is one step of a longer lifecycle — `active → suspended ⇄ active → archiving →
-archived` — which, along with entitlements, custom domains, and the rest of what sits *below*
-a vertical, is [The platform layer](/concepts/platform).
+A scope begins in `provisioning`, becomes `active`, and can be suspended and resumed.
+Archiving is reversible while its storage is retained; reaping an archived scope deletes
+that storage and leaves a terminal `reaped` directory tombstone. The tenant has its own
+reversible `deleting` grace state before a terminal reap. Entitlements, custom domains,
+and these lifecycle actions are described in [The platform layer](/concepts/platform).
+
+## Guarding a version bind
+
+A scope's `verticalVersionId` records its bound version. A caller moving data before
+binding can ask the directory to update that pointer only if the binding it read still
+holds:
+
+```ts
+await host.admin.bindScopeVersion(actor, tenantId, scopeId, incomingVersionId, {
+  expectedVersionId: current.verticalVersionId,
+});
+```
+
+`null` expects a scope with no bound version. Omitting `expectedVersionId` keeps an
+unconditional bind. A changed binding is refused with `precondition_failed`; the caller
+must reload the scope before retrying its move. Both adapters enforce the expectation in
+the atomic pointer update, so two moves from the same version cannot both win. This guard
+protects the bind itself; carrying and cleaning up data across deployment scripts need
+their own coordination.
 
 ## Storage shapes
 

@@ -4706,6 +4706,38 @@ export function scopeHostContractSuite(
     // differently. The invariant that earns the registry its keep is that a push
     // is not a deploy.
 
+    it('compare-and-set binding refuses stale moves and permits only one concurrent winner (#1722)', async () => {
+      const slug = `cas-bind-${ulid().toLowerCase()}`;
+      await host.admin.registerVertical(staff, { slug, name: 'Binding guard', source: 'cli', ownerTenant: t1 });
+      const versions = [ulid(), ulid(), ulid()];
+      for (const [index, id] of versions.entries()) {
+        await host.admin.publishVersion(staff, { id, verticalSlug: slug, version: `1.0.${index}`,
+          manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null });
+      }
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: slug });
+      await host.admin.activateScope(staff, t1, s);
+      const [v1, v2, v3] = versions as [string, string, string];
+      await host.admin.bindScopeVersion(staff, t1, s, v1, { expectedVersionId: null });
+      const before = await host.admin.getScopeRecord(staff, t1, s);
+      await expect(host.admin.bindScopeVersion(staff, t1, s, v2, { expectedVersionId: null }))
+        .rejects.toThrow(/scope binding changed/);
+      expect(await host.admin.getScopeRecord(staff, t1, s)).toEqual(before);
+      const moves = await Promise.allSettled([
+        host.admin.bindScopeVersion(staff, t1, s, v2, { expectedVersionId: v1 }),
+        host.admin.bindScopeVersion(staff, t1, s, v3, { expectedVersionId: v1 }),
+      ]);
+      expect(moves.filter((move) => move.status === 'fulfilled')).toHaveLength(1);
+      const loser = moves.find((move) => move.status === 'rejected') as PromiseRejectedResult;
+      expect(String(loser.reason)).toMatch(/scope binding changed/);
+      const winner = (await host.admin.getScopeRecord(staff, t1, s))!.verticalVersionId;
+      expect([v2, v3]).toContain(winner);
+      const log = await host.admin.auditLog(staff, { action: 'bindScopeVersion', scopeId: s });
+      expect(log).toHaveLength(2); // first bind and winner; refusals record no successful move
+      await host.admin.bindScopeVersion(staff, t1, s, v1); // legacy unconditional caller
+      expect((await host.admin.getScopeRecord(staff, t1, s))!.verticalVersionId).toBe(v1);
+    });
+
     it('publishes a version as pending, and refuses to bind it until admitted', async () => {
       const versionId = ulid();
       await host.admin.registerVertical(staff, {

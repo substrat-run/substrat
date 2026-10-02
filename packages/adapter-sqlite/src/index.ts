@@ -7636,6 +7636,9 @@ export class SqliteScopeHost implements ScopeHost {
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const { v, scope } = bindTarget(tenantId, scopeId, versionId);
+        if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
+          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
@@ -7652,13 +7655,19 @@ export class SqliteScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        this.directory
-          .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
-          .run(versionId, v.verticalSlug, scopeId);
+        const update = opts?.expectedVersionId === undefined
+          ? this.directory.prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
+              .run(versionId, v.verticalSlug, scopeId)
+          : this.directory.prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ?')
+              .run(versionId, v.verticalSlug, scopeId, opts.expectedVersionId);
+        if (update.changes === 0) {
+          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        }
         this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId,
           vertical: v.verticalSlug,
           version: v.version,
+          ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },
