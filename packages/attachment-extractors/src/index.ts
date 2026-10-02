@@ -553,14 +553,23 @@ const FOREIGN_BREAKOUT = new Set([
  */
 const INTEGRATION_POINTS = new Set(['foreignobject', 'desc', 'title', 'mi', 'mo', 'mn', 'ms', 'mtext', 'annotation-xml']);
 /**
- * In a select, the start tags at which a browser leaves it early — or that it ignores but this
- * scanner would not follow (foreign content, a frameset, `plaintext`). Either way the scanner
- * can no longer be sure what a browser shows, so nothing more of the file is indexed.
+ * In a select, the start tags at which a browser leaves it early. After one, the scanner can no
+ * longer be sure what a browser shows, so nothing more of the file is indexed. (Every other
+ * start tag in a select — `svg`, `frameset`, `plaintext` included — a browser ignores.)
  */
 const SELECT_LEAVES = new Set([
   'select', 'input', 'keygen', 'textarea', 'caption', 'table', 'tbody', 'tfoot', 'thead', 'tr', 'td', 'th',
-  'svg', 'math', 'frameset', 'plaintext',
 ]);
+/**
+ * Start tags that always clear a browser's frameset-ok flag, after which it ignores a
+ * `<frameset>` (`input` is not here: a hidden one leaves the flag alone).
+ */
+const CLEARS_FRAMESET_OK = new Set([
+  'select', 'textarea', 'xmp', 'iframe', 'table', 'img', 'hr', 'li', 'dd', 'dt', 'pre', 'listing',
+  'button', 'br', 'embed', 'wbr', 'area', 'keygen', 'applet', 'marquee', 'object',
+]);
+/** How far into a run of text the scanner looks for proof that the frameset-ok flag is cleared. */
+const FRAMESET_PROOF_SPAN = 256;
 /** In a select inside a table, the end tags that close the select early. */
 const SELECT_TABLE_ENDS = new Set(['caption', 'table', 'tbody', 'tfoot', 'thead', 'tr', 'td', 'th']);
 
@@ -691,7 +700,10 @@ async function asWritten(text: string, pace: Pace): Promise<string> {
  * - **inline `svg` and `math`** — foreign content: no raw text, real CDATA, its own way out
  *   (`foreignEnd`). Nothing in the region is indexed, and if the scanner cannot be sure where a
  *   browser ends the region, nothing after it either.
- * - **`frameset`** — a honoured one leaves no body to show, so nothing after it is indexed.
+ * - **`frameset`** — a honoured one leaves no body to show, so nothing after it is indexed. A
+ *   browser honours one only while its frameset-ok flag is set; once the scanner has PROOF
+ *   the flag is cleared (text that is surely not whitespace, or a start tag that always
+ *   clears it) or a template is open, it knows the frameset is ignored, and reads on.
  * - any of these opened inside a `select` — nothing more of the file.
  *
  * So those contexts may be under-indexed, and their text after them too; nothing a browser
@@ -710,6 +722,21 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     if (shown() && to > from) out.push(html.slice(from, to));
   };
   const flags = { selfClosing: false };
+  // Whether a browser has certainly cleared its frameset-ok flag, so that it ignores a
+  // `<frameset>`. Only proof counts: the first character of a text run that is not whitespace
+  // or NUL — within a short span, and not an `&`, so no character reference can turn it into
+  // whitespace — or a start tag that always clears it.
+  let framesetIgnored = false;
+  const noteText = (from: number, to: number) => {
+    if (framesetIgnored) return;
+    const end = Math.min(to, from + FRAMESET_PROOF_SPAN);
+    for (let k = from; k < end; k += 1) {
+      const c = html.charCodeAt(k);
+      if (isHtmlSpace(c) || c === 0) continue;
+      framesetIgnored = c !== 38; // `&` proves nothing: it may decode to whitespace
+      return;
+    }
+  };
   let i = 0;
   while (i < n) {
     const lt = await pace.find(html, '<', i);
@@ -718,6 +745,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       break;
     }
     text(i, lt);
+    noteText(i, lt);
     const next = html.charCodeAt(lt + 1);
     if (next === 33 && html.startsWith('--', lt + 2)) {
       const end = await commentEnd(html, lt, pace);
@@ -735,6 +763,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     }
     if (!isAsciiAlpha(next) && next !== 47) {
       text(lt, lt + 1); // `<` before anything else is text, as a browser reads it
+      framesetIgnored = true;
       i = lt + 1;
       continue;
     }
@@ -745,13 +774,23 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     const gt = await htmlTagEnd(html, nameAt, pace, flags);
     if (gt < 0) break;
     i = gt + 1;
+    if (!closing && CLEARS_FRAMESET_OK.has(name)) framesetIgnored = true;
     if (selectAt >= 0 && hidden === selectAt) {
       // In the select itself: every tag but these is ignored by a browser and switches nothing.
       if (closing && name === 'select') {
         selectAt = -1;
         continue;
       }
-      if (closing ? name === 'template' || SELECT_TABLE_ENDS.has(name) : SELECT_LEAVES.has(name)) break;
+      if (closing && name === 'template') {
+        // Closing the template the select sits in closes the select with it; with no template
+        // open, a browser ignores it.
+        if (hidden > 0) {
+          hidden -= 1;
+          selectAt = -1;
+        }
+        continue;
+      }
+      if (closing ? SELECT_TABLE_ENDS.has(name) : SELECT_LEAVES.has(name)) break;
       if (!closing && name === 'template') {
         hidden += 1; // a template's content is parsed by the HTML rules again
       } else if (!closing && name === 'script') {
@@ -775,7 +814,11 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     if (!closing && (name === 'svg' || name === 'math' || name === 'frameset')) {
       // Contexts the scanner does not model (see above): nothing inside is indexed — and where
       // it cannot be sure a browser has left one, nothing more of the file.
-      if (name === 'frameset' || selectAt >= 0) break;
+      if (selectAt >= 0) break;
+      if (name === 'frameset') {
+        if (hidden > 0 || framesetIgnored) continue; // a browser ignores it
+        break;
+      }
       if (flags.selfClosing) continue; // `<svg/>` opens and closes at once
       const end = await foreignEnd(html, i, name, pace);
       if (end < 0) break;

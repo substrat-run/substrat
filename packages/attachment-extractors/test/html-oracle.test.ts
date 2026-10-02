@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parse } from 'parse5';
+import { defaultTreeAdapter, parse } from 'parse5';
 import { htmlExtractor } from '../src/index.js';
 
 /**
@@ -17,6 +17,13 @@ import { htmlExtractor } from '../src/index.js';
  * shows BEFORE the first of those contexts opens must be indexed. From that opener on, the
  * extractor may index less (it suppresses to the context's end, or to the end of the file
  * when it cannot be sure where that is) — under-indexing there is counted, never failed.
+ *
+ * "Opens" is parse5's word, not the source's: the opener is the earliest element of those four
+ * that parse5 actually PUSHED onto its stack of open elements, by source offset. A `<svg>`
+ * written inside a textarea or a comment opens nothing, and neither does a self-closing
+ * `<svg/>` (appended, never pushed), so neither excuses a miss after it. Template content
+ * counts: the extractor stops indexing at a region it cannot be sure of wherever it is, and a
+ * template's end cannot be found reliably from inside one.
  */
 
 interface P5Node {
@@ -25,6 +32,7 @@ interface P5Node {
   data?: string;
   childNodes?: P5Node[];
   content?: P5Node;
+  sourceCodeLocation?: { startOffset: number } | null;
 }
 
 /**
@@ -35,21 +43,35 @@ const HIDDEN = new Set([
   'template', 'script', 'style', 'noscript', 'iframe', 'noembed', 'noframes',
   'select', 'svg', 'math', 'frameset',
 ]);
-/** A token that opens a context the extractor does not model; under-indexing is allowed after it. */
-const UNMODELLED = /^<(select|svg|math|frameset)\b/i;
+/** The contexts the extractor does not model; under-indexing is allowed once parse5 opens one. */
+const UNMODELLED_ELEMENTS = new Set(['select', 'svg', 'math', 'frameset']);
 
-/** All text parse5 shows, joined: every text node with no hidden ancestor. */
-function visibleText(html: string): string {
+/**
+ * What parse5 makes of a document: all the text it shows, joined (every text node with no hidden
+ * ancestor), and the source offset where it first opened an unmodelled context (`Infinity`
+ * when it opened none).
+ */
+function oracle(html: string): { shown: string; openedAt: number } {
+  const opened = new WeakSet<object>();
+  const doc = parse(html, {
+    sourceCodeLocationInfo: true,
+    treeAdapter: { ...defaultTreeAdapter, onItemPush: (element: object) => void opened.add(element) },
+  }) as unknown as P5Node;
   const out: string[] = [];
+  let openedAt = Infinity;
   const walk = (node: P5Node, hidden: boolean): void => {
     if (node.nodeName === '#text' && !hidden) out.push(node.value ?? '');
+    if (UNMODELLED_ELEMENTS.has(node.nodeName) && opened.has(node) && node.sourceCodeLocation) {
+      openedAt = Math.min(openedAt, node.sourceCodeLocation.startOffset);
+    }
     const inside = hidden || HIDDEN.has(node.nodeName);
     for (const child of node.childNodes ?? []) walk(child, inside);
     if (node.content) walk(node.content, true); // a template's content fragment
   };
-  walk(parse(html) as unknown as P5Node, false);
-  return out.join('\u0000');
+  walk(doc, false);
+  return { shown: out.join('\u0000'), openedAt };
 }
+const visibleText = (html: string): string => oracle(html).shown;
 
 const extractor = htmlExtractor();
 const signal = new AbortController().signal;
@@ -130,15 +152,12 @@ async function check(docs: Iterable<readonly string[]>, leading = true): Promise
   const tally: Tally = { documents: 0, leaks: [], missed: [], suppressed: 0 };
   for (const tokens of docs) {
     const { html, markers } = documentOf(tokens, leading);
-    const shown = visibleText(html);
+    const { shown, openedAt } = oracle(html);
     const ours = await ourText(html);
-    // Marker i stands before token i, so markers up to the opener's index precede it.
-    const opener = tokens.findIndex((t) => UNMODELLED.test(t));
-    const strictUpTo = opener < 0 ? markers.length - 1 : opener;
     const real = (m: string) => m !== ''; // the absent leading marker
     const leaked = markers.filter((m) => real(m) && ours.includes(m) && !shown.includes(m));
-    const missing = markers.map((m, i) => ({ m, i })).filter(({ m }) => real(m) && shown.includes(m) && !ours.includes(m));
-    const missed = missing.filter(({ i }) => i <= strictUpTo).map(({ m }) => m);
+    const missing = markers.filter((m) => real(m) && shown.includes(m) && !ours.includes(m));
+    const missed = missing.filter((m) => html.indexOf(m) < openedAt);
     if (leaked.length > 0 && tally.leaks.length < 10) tally.leaks.push({ html, leaked });
     if (missed.length > 0 && tally.missed.length < 10) tally.missed.push({ html, missed });
     if (missing.length > missed.length) tally.suppressed += 1;
@@ -174,6 +193,23 @@ describe('the HTML extractor against parse5: nothing a browser hides is ever ind
     );
     for (const hidden of ['x001x', 'x003x', 'x005x']) expect(shown).not.toContain(hidden);
     for (const visible of ['x002x', 'x004x', 'x006x']) expect(shown).toContain(visible);
+  });
+
+  it('an svg or math that opens nothing — text, a comment, self-closing — excuses no miss after it', async () => {
+    for (const tokens of [
+      ['<textarea>', '<svg>', '</textarea>'],
+      ['<title>', '<math>', '</title>'],
+      ['<!--', '<svg>', '-->'],
+      ['<svg/>'],
+      ['<math/>'],
+    ]) {
+      const { html, markers } = documentOf(tokens);
+      expect(oracle(html).openedAt, html).toBe(Infinity);
+      expect((await check([tokens])).missed, html).toEqual([]);
+      expect(await ourText(html), html).toContain(markers[markers.length - 1]);
+    }
+    // The twin: an svg that does open — even one a breakout pops at once — starts the allowance.
+    expect(oracle('x000x<svg><p>x001x').openedAt).toBe(5);
   });
 
   it(`every document of three tokens (${TOKENS.length ** 3})`, async () => {

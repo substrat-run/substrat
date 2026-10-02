@@ -301,6 +301,10 @@ describe('text and html', () => {
       expect(await html('<p>before</p><svg/><p>after</p>')).toBe('before\n\nafter');
       expect(await html('<p>before</p><svg><![CDATA[</svg>]]></svg><p>after</p>')).toBe('before\n\nafter');
       expect(await html('<p>before</p><select><option>a</option></select><p>after</p>')).toBe('before\n\nafter');
+      // A select ignores an `svg` start tag; it closes at its own `</select>` as usual.
+      expect(await html('<p>before</p><select><svg></svg></select><p>after</p>')).toBe('before\n\nafter');
+      // Closing the template a select sits in closes the select too.
+      expect(await html('<template><select></template><p>after</p>')).toBe('after');
       // Uncertain — a breakout tag, a start tag inside an integration point, an end tag matching
       // nothing open, `<svg a=b/>` (that `/` is the value's), a select left early, a frameset:
       // nothing after it is indexed.
@@ -310,14 +314,23 @@ describe('text and html', () => {
         '<div><svg></div></svg>',
         '<svg a=b/>',
         '<select><input></select>',
-        '<select><svg></svg></select>',
         // a select inside a select's template: losing track of the outer one would read its
         // `title` as RCDATA and index the template a browser keeps hidden behind it
         '<select><template><select></select></template><title><template>secret</template></title></select>',
-        '<frameset></frameset>',
       ]) {
         expect(await html(`<p>before</p>${uncertain}<p>after</p>`), uncertain).toBe('before');
       }
+    });
+
+    it('a frameset ends indexing only where a browser would honour it — before anything clears its flag', async () => {
+      // Honoured: only a title's text came first, which leaves the frameset-ok flag set — and
+      // so does a character reference to whitespace, which is why an `&` proves nothing.
+      expect(await html('<title>t</title><frameset><frame></frameset><p>after</p>')).toBe('t');
+      expect(await html('<title>t</title>&#32;<frameset><frame></frameset><p>after</p>')).toBe('t');
+      // Ignored: text before it, a tag that clears the flag, or a template around it.
+      expect(await html('<p>before</p><frameset></frameset><p>after</p>')).toBe('before\n\nafter');
+      expect(await html('<img><frameset></frameset><p>after</p>')).toBe('after');
+      expect(await html('<template><frameset></template><p>after</p>')).toBe('after');
     });
 
     it('a tag ends at a `>` outside a quoted attribute value — and a quote that opens no value is a character', async () => {
