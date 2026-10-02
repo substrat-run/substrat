@@ -409,6 +409,29 @@ describe('every sweep and count leaves the suspended queue alone, and still swee
     expect((await read(d, held)).state).toBe('new');
   });
 
+  it('assistant health stops listing a draft as waiting while its conversation is held, and lists it again once restored', async () => {
+    const d = await filtered();
+    const a = await admin(d);
+    const id = await kit.mail(d, { from: 'drafted@customer.example', body: 'a real question' });
+    await a.invoke('ticket0/record-answer', {
+      conversationId: id,
+      turnId: 'draft-turn-1',
+      model: 'offline/extractive',
+      body: 'Here is how.',
+      inputTokens: 1,
+      outputTokens: 1,
+      citedArticleIds: [],
+      outcome: 'drafted',
+    });
+    const waiting = async () =>
+      ((await a.invoke('ticket0/assistant-health', {})) as { waitingTotal: number }).waitingTotal;
+    expect(await waiting()).toBe(1);
+    await a.invoke('ticket0/suspend', { conversationId: id });
+    expect(await waiting()).toBe(0);
+    await a.invoke('ticket0/restore', { conversationId: id });
+    expect(await waiting()).toBe(1);
+  });
+
   it('the desk report counts the queue apart, never as backlog or arrivals', async () => {
     const { d } = await pair({});
     const report = (await (await admin(d)).invoke('ticket0/desk-metrics', {})) as {

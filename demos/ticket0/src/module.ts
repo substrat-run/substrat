@@ -4710,24 +4710,18 @@ const operations = {
   },
 
   /**
-   * All or nothing, and checked before anything is destroyed: every id is found, is the
-   * caller's to discard (the per-conversation check `ticket0/discard` makes), and is
-   * suspended — or the call refuses, naming the first that is not, and has written
-   * nothing. Then each is discarded through the one body, so each publishes its own
-   * events. A repeated id is the same conversation selected twice, and counted once.
+   * Each conversation through the one body, with the per-conversation check
+   * `ticket0/discard` makes, so each publishes its own events. All or nothing is the
+   * operation's own transaction: the first id that is not found, not the caller's, or not
+   * suspended throws, and every discard before it in this call is rolled back with it. A
+   * repeated id is the same conversation selected twice, and counted once.
    */
   'ticket0/discard-suspended': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDiscard));
     const ids = [...new Set(input.conversationIds)];
-    const conversations: ConversationRow[] = [];
     for (const id of ids) {
       assertAllowed(await ctx.check(T0_PERM.conversationDiscard, conversationRef(id)));
-      const conversation = conversationOrThrow(ctx, id);
-      heldOrThrow(conversation, 'ticket0/discard-suspended');
-      conversations.push(conversation);
-    }
-    for (const conversation of conversations) {
-      discardConversation(ctx, conversation, 'ticket0/discard-suspended');
+      discardConversation(ctx, conversationOrThrow(ctx, id), 'ticket0/discard-suspended');
     }
     return { discarded: ids };
   },
