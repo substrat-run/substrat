@@ -7,6 +7,7 @@ import {
   capabilityRecord,
   capabilityStatus,
 } from '../src/capability.js';
+import type { Instant } from '../src/ids.js';
 
 /**
  * The operator's capability read, wire and shape (#1686): one encoder, one decoder, and a
@@ -56,16 +57,17 @@ describe('capabilityRecord carries no credential', () => {
 
 describe('capabilityStatus', () => {
   const NOW = '2026-10-01T00:00:00.000Z';
+  const at = (iso: string) => iso as Instant;
   const base = { revokedAt: null, expiresAt: null, maxUses: null, uses: 0 };
 
   it('reads each standing, revoked before expired before used-up', () => {
     expect(capabilityStatus(base, NOW)).toBe('live');
-    expect(capabilityStatus({ ...base, revokedAt: NOW }, NOW)).toBe('revoked');
-    expect(capabilityStatus({ ...base, expiresAt: NOW }, NOW)).toBe('expired');
-    expect(capabilityStatus({ ...base, expiresAt: '2026-10-02T00:00:00.000Z' }, NOW)).toBe('live');
+    expect(capabilityStatus({ ...base, revokedAt: at(NOW) }, NOW)).toBe('revoked');
+    expect(capabilityStatus({ ...base, expiresAt: at(NOW) }, NOW)).toBe('expired');
+    expect(capabilityStatus({ ...base, expiresAt: at('2026-10-02T00:00:00.000Z') }, NOW)).toBe('live');
     expect(capabilityStatus({ ...base, maxUses: 2, uses: 2 }, NOW)).toBe('used-up');
     expect(capabilityStatus({ ...base, maxUses: 2, uses: 1 }, NOW)).toBe('live');
-    expect(capabilityStatus({ ...base, revokedAt: NOW, expiresAt: NOW, maxUses: 1, uses: 1 }, NOW)).toBe('revoked');
-    expect(capabilityStatus({ ...base, expiresAt: NOW, maxUses: 1, uses: 1 }, NOW)).toBe('expired');
+    expect(capabilityStatus({ ...base, revokedAt: at(NOW), expiresAt: at(NOW), maxUses: 1, uses: 1 }, NOW)).toBe('revoked');
+    expect(capabilityStatus({ ...base, expiresAt: at(NOW), maxUses: 1, uses: 1 }, NOW)).toBe('expired');
   });
 });
