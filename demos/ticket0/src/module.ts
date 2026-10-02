@@ -1480,8 +1480,10 @@ function suspicionOfRow(suspicion: string | null): SuspicionSignal[] {
  *
  * `step()` with `ticket0/suspend` is what limits it to `new`, by the lifecycle, so the
  * door cannot suspend a conversation somebody worked any more than a person can. Nothing
- * but these three columns is written: a restore that clears `quarantine` is the whole
- * undo, which is what "lossless" means here.
+ * of the conversation but these three columns is written — its messages, tags, follows
+ * and contact are untouched — so a restore that clears `quarantine` is the whole undo,
+ * which is what "lossless" means here. What it does retire is the desk's notifications
+ * about it, which are not the conversation.
  */
 function suspendConversation(
   ctx: OperationContext,
@@ -1495,6 +1497,11 @@ function suspendConversation(
       WHERE id = ?`,
     [ctx.now(), JSON.stringify(signals), conversation.id],
   );
+  // Anything the desk was told about it is retired with it (#1088): an alert pointing at
+  // a conversation nobody may now work is a task nobody can do. A restore brings none
+  // back — they described a moment that has passed — and what happens after it notifies
+  // as anything in the inbox does.
+  ctx.sql.exec('DELETE FROM ticket0_notifications WHERE conversation_id = ?', [conversation.id]);
   const row = conversationOrThrow(ctx, conversation.id);
   // The signal NAMES only — never which link or which text tripped one: that is the
   // customer's message, and a log line is read by more people than the queue is.

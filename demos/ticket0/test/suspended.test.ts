@@ -526,6 +526,39 @@ describe('every sweep and count leaves the suspended queue alone, and still swee
   });
 });
 
+/**
+ * The reviewer's repro (Codex round 1, #1973): a no-reply notice reached an agent, then
+ * the conversation was suspended, and the notice stayed on their list for a thread they
+ * could no longer work.
+ */
+describe('suspension retires what the desk was told about the conversation', () => {
+  it('takes the alert off the list, leaves an accepted conversation’s, brings none back on restore, and notifies anew', async () => {
+    const d = await filtered({ agents: 1 });
+    await kit.configure(d, { noReplyNotify: { afterHours: 1 } });
+    const a = await admin(d);
+    const agent = d.agents[0]!;
+    const held = await kit.mail(d, { from: 'later-held@customer.example', body: 'waiting' });
+    const kept = await kit.mail(d, { from: 'kept@customer.example', body: 'also waiting' });
+    kit.clock.advance(2 * 60 * 60 * 1000);
+    expect(await kit.sweep(d, 'ticket0/notify-no-reply', 'notified')).toBe(2);
+    const about = async (id: string) =>
+      (await kit.notifications(d, agent)).filter((n) => n.conversation_id === id).length;
+    expect([await about(held), await about(kept)]).toEqual([1, 1]);
+
+    await a.invoke('ticket0/suspend', { conversationId: held });
+    expect([await about(held), await about(kept)]).toEqual([0, 1]);
+
+    // Restored: the old alert does not come back…
+    await a.invoke('ticket0/restore', { conversationId: held });
+    expect(await about(held)).toBe(0);
+    // …and the next thing that happens notifies as it would for anything in the inbox.
+    await kit.mail(d, { into: held, from: 'later-held@customer.example', body: 'still waiting' });
+    kit.clock.advance(2 * 60 * 60 * 1000);
+    expect(await kit.sweep(d, 'ticket0/notify-no-reply', 'notified')).toBe(1);
+    expect(await about(held)).toBe(1);
+  });
+});
+
 describe('restore — "not spam" — is lossless', () => {
   it('puts the conversation back exactly as it was, and in the inbox', async () => {
     const d = await filtered();
