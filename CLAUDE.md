@@ -489,7 +489,11 @@ removing ONE scratch importer and leaving a second adds no offending line and pa
 gate reads the FILE. In a local checkout that means the working tree, so a studio project
 you have open goes red here before you have committed anything — expected, and the message
 says so), `lint:deps`
-(`tools/declared-deps.mjs`: an import whose package the graph does not declare),
+(`tools/declared-deps.mjs`: an import whose package the graph does not declare, and a
+copyleft licence anywhere in the runtime closure — `dependencies`, peer, optional, workspace
+and registry packages — of `@substrat-run/cli` or `@substrat-run/control-plane-client`, the
+two Apache-2.0 packages a builder's tooling installs: an AGPL dependency would leave their
+tarballs saying Apache-2.0 while `npm install` pulled the server in beside them, #971),
 `lint:generated-marks` (`tools/generated-marks.mjs`: marks 1 and 2 of the three above,
 in both directions — a file that SAYS it is generated carries the `.generated` suffix
 (a document may carry the `<!-- GENERATED … -->` marker instead), and a file NAMED
