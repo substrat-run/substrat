@@ -13,12 +13,13 @@
  *
  * - **text** (`text/*` other than HTML): decoded as the declared charset, UTF-8 otherwise.
  * - **html** (`text/html`, `application/xhtml+xml`): tags stripped, each construct ended where
- *   the HTML tokenizer ends it; comments, `script`, `style` and the other raw-text elements a
- *   browser hides, and `template` content, dropped — an unclosed one through to the end;
- *   entities decoded. **Its contract is conservative: it never indexes content a browser
- *   hides, and may under-index what it does not model** — inline SVG and MathML, `select`, a
- *   frameset — indexing nothing inside them, and nothing after one whose end it cannot be sure
- *   of (`htmlText` lists the rules).
+ *   the HTML tokenizer ends it; comments, `script`, `style`, the other raw-text elements a
+ *   browser does not render, and `template` content, dropped — an unclosed one through to the
+ *   end; entities decoded. **Its contract: it never indexes text the HTML parser keeps out of
+ *   the rendered document**, and it may under-index what it does not model — inline SVG and
+ *   MathML, `select`, a honoured frameset — indexing nothing inside them, and nothing after one
+ *   whose end it cannot be sure of (`htmlText` lists the rules). It does not evaluate the
+ *   `hidden` attribute, CSS or interactive state, so text those hide is indexed.
  * - **docx / xlsx / pptx**: an OOXML file is a zip of XML parts, so this reads the zip's
  *   central directory, inflates only the parts that carry text, and keeps the text of
  *   their `t` elements. The inflate is the web-standard `DecompressionStream('deflate-raw')`,
@@ -688,9 +689,9 @@ async function asWritten(text: string, pace: Pace): Promise<string> {
  * that ordinary) must not have its source indexed as prose. So does a tag cut off before its
  * `>`. `test/html-oracle.test.ts` holds this against parse5, a browser-grade parser.
  *
- * **The contract is conservative: never index what a browser hides; index less where unsure.**
- * Some contexts change how a browser parses in ways this scanner does not follow, and there it
- * indexes NOTHING rather than guess:
+ * **The contract: never index text the HTML parser keeps out of the rendered document's text
+ * nodes; index less where unsure.** Some contexts change how a browser parses in ways this
+ * scanner does not follow, and there it indexes NOTHING rather than guess:
  *
  * - **`select`** — the tree builder ignores almost every start tag inside one, so a `title` or
  *   `style` there switches nothing: only `script` and `template` change how it tokenizes. The
@@ -706,9 +707,15 @@ async function asWritten(text: string, pace: Pace): Promise<string> {
  *   clears it) or a template is open, it knows the frameset is ignored, and reads on.
  * - any of these opened inside a `select` — nothing more of the file.
  *
- * So those contexts may be under-indexed, and their text after them too; nothing a browser
- * hides is ever indexed. The oracle holds both halves: over-indexing fails anywhere, and
- * under-indexing is allowed only from the first such context on.
+ * So those contexts may be under-indexed, and their text after them too; text the parser keeps
+ * out of the rendered document is never indexed. The oracle holds both halves: over-indexing
+ * fails anywhere, and under-indexing is allowed only from where parse5 opens such a context.
+ *
+ * The scanner follows the PARSER, not the renderer: it does not evaluate the `hidden`
+ * attribute, CSS (inline or from a stylesheet it cannot see) or interactive state such as a
+ * closed `<details>`, so text those hide is in the document's text nodes and is indexed. That
+ * is never more than a searcher can read: attachment search is gated by the same read
+ * permission as opening the file, which holds that text anyway.
  */
 async function htmlText(html: string, pace: Pace): Promise<string> {
   const out: string[] = [];

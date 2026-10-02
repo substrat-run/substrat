@@ -259,7 +259,7 @@ describe('text and html', () => {
       expect(await html('<script/>secret()</script><p>visible</p>')).toBe('visible');
     });
 
-    it('template content is dropped, nested or not; so are the raw-text elements a browser hides', async () => {
+    it('template content is dropped, nested or not; so are the raw-text elements a browser does not render', async () => {
       expect(await html('<template><template></template>secret_template</template><p>visible</p>')).toBe('visible');
       expect(await html('<template><!-- </template> -->secret_template</template><p>visible</p>')).toBe('visible');
       expect(
@@ -286,7 +286,17 @@ describe('text and html', () => {
       expect(await html('<p>before</p><plaintext></plaintext> <b>&amp;</b>')).toBe('before\n\n</plaintext> <b>&amp;</b>');
     });
 
-    it('a context it does not model indexes NOTHING: what a browser hides there never comes out', async () => {
+    it('the parser, not the renderer: text the `hidden` attribute, CSS or a closed `<details>` hides IS indexed', async () => {
+      // Documented behaviour, not an accident: the scanner evaluates no attribute, style or
+      // interactive state — that text is in the document's text nodes, and search is gated by
+      // the same read permission as opening the file.
+      const text = await html(
+        '<div hidden>by_attribute</div><p style="display:none">by_style</p><details><summary>s</summary>closed_details</details>',
+      );
+      for (const word of ['by_attribute', 'by_style', 'closed_details']) expect(text).toContain(word);
+    });
+
+    it('a context it does not model indexes NOTHING: what the parser keeps out of the text never comes out', async () => {
       // The review's two: a `title` a select ignores, and a MathML annotation nothing renders.
       expect(await html('<select><title><template>secret_select</template></title><option>opt</option></select><p>after</p>'))
         .toBe('after');

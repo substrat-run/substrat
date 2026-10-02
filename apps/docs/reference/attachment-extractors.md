@@ -44,7 +44,7 @@ stay searchable by filename, and their content is not indexed.
 | Extractor | Reads |
 |---|---|
 | `textExtractor` | `text/*` other than HTML, and `.txt` `.md` `.csv` `.tsv` when the type says nothing |
-| `htmlExtractor` | `text/html` and `application/xhtml+xml`, as the visible text. Each construct ends where a browser's HTML tokenizer ends it, so a `script` closes only at a complete `</script>`. Comments, `script`, `style`, `template` content and the other elements a browser hides are dropped, including an unclosed one cut off at the end of a file |
+| `htmlExtractor` | `text/html` and `application/xhtml+xml`, as the text a browser's parser puts in the rendered document. Each construct ends where a browser's HTML tokenizer ends it, so a `script` closes only at a complete `</script>`. Comments, `script`, `style`, `template` content and the other elements whose content a browser does not render are dropped, including an unclosed one cut off at the end of a file |
 | `docxExtractor` | Word documents: the body, then footnotes, endnotes, headers and footers |
 | `xlsxExtractor` | Spreadsheets: shared and inline strings, never a cell's number |
 | `pptxExtractor` | Presentations: slides in order, then speaker notes |
@@ -56,9 +56,10 @@ nothing is OCR'd. A host can add its own extractor to the list, provided it meet
 
 ### What the HTML extractor guarantees
 
-It **never indexes content a browser hides**: comments, `script`, `style` and the other elements
-a browser does not render, and everything inside a `template`. Where it does not model how a
-browser parses, it indexes less instead of guessing. It may **under-index** these contexts:
+It **never indexes text the HTML parser keeps out of the rendered document**: comments, `script`,
+`style`, the other elements whose content a browser does not render, and everything inside a
+`template`. Where it does not model how a browser parses, it indexes less instead of guessing.
+It may **under-index** these contexts:
 
 - **`select`**: nothing inside a select is indexed. Indexing resumes at the `</select>` a
   browser would act on. A tag at which a browser leaves the select early (`input`, `textarea`,
@@ -66,9 +67,14 @@ browser parses, it indexes less instead of guessing. It may **under-index** thes
 - **Inline `svg` and `math`**: nothing inside is indexed. Indexing resumes after the closing
   tag only when the extractor is certain that is where a browser ends it, as for a typical
   icon. Otherwise, nothing after it is indexed either.
-- **`frameset`**: nothing after one is indexed.
+- **`frameset`**: nothing after one a browser honours is indexed.
 
 These rules are checked against parse5, a browser-grade HTML parser, in the package's tests.
+
+It follows the parser, not the renderer. It does not evaluate the `hidden` attribute, CSS (inline
+or in a stylesheet) or interactive state such as a closed `<details>`, so text hidden that way
+**is** indexed. That is never more than a searcher can read: attachment search is gated by the
+same read permission as opening the file.
 
 ## Bounds
 

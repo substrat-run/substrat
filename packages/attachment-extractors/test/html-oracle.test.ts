@@ -7,11 +7,13 @@ import { htmlExtractor } from '../src/index.js';
  *
  * parse5 implements the HTML standard's tokenizer and tree builder, so where it places a piece
  * of text is where a browser does. Each generated document interleaves tags with unique
- * markers; a marker parse5 puts in a visible text node is visible, and one it puts anywhere
- * else — inside `template`, `script`, `style` or another element a browser hides, in a
- * comment, in an attribute — is not. The property held: **the extractor never indexes a
- * marker parse5 does not show.** Everything inside `select`, `svg`, `math` and `frameset` counts
- * as hidden here, stricter than a browser, because the extractor indexes nothing there.
+ * markers; a marker parse5 puts in a rendered text node is shown, and one it puts anywhere else
+ * — inside `template`, `script`, `style` or another element whose content a browser does not
+ * render, in a comment, in an attribute — is not. The property held: **the extractor never
+ * indexes a marker parse5 does not show.** Everything inside `select`, `svg`, `math` and
+ * `frameset` counts as hidden here, stricter than a browser, because the extractor indexes
+ * nothing there. Like the extractor, this reads the parser's tree, not the renderer's: a
+ * `hidden` attribute or CSS does not hide a marker from either.
  *
  * The converse is held too, as far as the extractor's contract promises it: every marker parse5
  * shows BEFORE the first of those contexts opens must be indexed. From that opener on, the
@@ -184,7 +186,7 @@ function* sampled(count: number, seed: number): Generator<string[]> {
   }
 }
 
-describe('the HTML extractor against parse5: nothing a browser hides is ever indexed', () => {
+describe('the HTML extractor against parse5: nothing the parser keeps out of the rendered text is ever indexed', () => {
   it('the oracle sees what the reviewed cases claim (its own twin)', () => {
     const shown = visibleText(
       '<template><textarea></template>x001x</textarea></template>x002x' +
