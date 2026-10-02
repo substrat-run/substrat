@@ -103,6 +103,7 @@ export {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   TELEMETRY_PRUNE_BATCH,
+  assertRowLimit,
   EMITTED_REPORT_CAP,
   LIVE_MODE_HEADER,
   isUpgradeRequest,

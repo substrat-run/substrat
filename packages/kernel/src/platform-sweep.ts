@@ -24,7 +24,7 @@ import type {
   WantedEvent,
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
-import { backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
+import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
 import { resolveVerticalInstanceFrom } from './peer.js';
@@ -911,10 +911,22 @@ async function mapBounded<T>(
  * whose provider has no sweeper, or that is revoked, is skipped (and counted),
  * not an error.
  */
+/**
+ * The batch options that reach a SQL `LIMIT` unnormalized (#1632), checked before any phase runs
+ * — so a misconfigured pass is refused whole, rather than one phase deleting without a bound.
+ * `eventDrainBatch` and the cross-vertical budget are not here: their phases normalize an
+ * invalid value to the default by design, and say why where they do it.
+ */
+function assertSweepBatches(options: PlatformSweepOptions): void {
+  if (options.telemetryBatch !== undefined) assertRowLimit('telemetryBatch', options.telemetryBatch);
+  if (options.accessLogBatch !== undefined) assertRowLimit('accessLogBatch', options.accessLogBatch);
+}
+
 export async function runPlatformSweep(
   host: ScopeHost,
   options: PlatformSweepOptions,
 ): Promise<PlatformSweepReport> {
+  assertSweepBatches(options);
   const concurrency = options.concurrency ?? 8;
   const report: PlatformSweepReport = {
     scopesDrained: 0,
@@ -2562,6 +2574,9 @@ export function startPlatformSweeper(
   host: ScopeHost,
   options: StartPlatformSweeperOptions,
 ): PlatformSweeperHandle {
+  // At start, not on the first tick: a sweeper configured with a bad batch would otherwise
+  // report the same refusal every interval and never run a pass.
+  assertSweepBatches(options);
   const setTimer = options.setTimer ?? ((cb, ms) => setTimeout(cb, ms));
   const clearTimer = options.clearTimer ?? ((h) => clearTimeout(h));
   let stopped = false;

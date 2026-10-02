@@ -7,6 +7,7 @@ import {
   impersonationRowValues,
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
+  assertRowLimit,
   type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
@@ -542,7 +543,7 @@ function keysetTail(
   let tail = ` ORDER BY ${key} ${order}`;
   if (page?.limit !== undefined) {
     tail += ' LIMIT ?';
-    params.push(page.limit);
+    params.push(assertRowLimit('limit', page.limit));
   }
   return tail;
 }
@@ -2315,7 +2316,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY tenant_id ${order}, role_key ${order}`;
     if (filter.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(filter.limit);
+      params.push(assertRowLimit('limit', filter.limit));
     }
     return this.sql.exec(sql, ...params).toArray() as unknown as RoleRow[];
   }
@@ -3868,6 +3869,7 @@ export class ControlPlaneDO extends DurableObject {
 
   /** ONLY drained rows. Age alone is not a licence to delete evidence (K-24). */
   pruneAccessLog(limit: number): number {
+    assertRowLimit('limit', limit);
     const doomed = (
       this.sql
         .exec(
@@ -4066,7 +4068,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(query.limit);
+      params.push(assertRowLimit('limit', query.limit));
     }
     const rows = this.sql.exec(sql, ...params).toArray() as unknown as AdminLogRow[];
     return rows.map(
@@ -4214,7 +4216,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(query.limit);
+      params.push(assertRowLimit('limit', query.limit));
     }
     const rows = this.sql.exec(sql, ...params).toArray() as unknown as OpsFailureRow[];
     return rows.map((r) => ({
@@ -4302,7 +4304,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(query.limit);
+      params.push(assertRowLimit('limit', query.limit));
     }
     const rows = this.sql.exec(sql, ...params).toArray() as unknown as SweepRunRow[];
     return rows.map((r) => ({
@@ -4328,6 +4330,8 @@ export class ControlPlaneDO extends DurableObject {
   /** The fingerprint-grouped failure classes (#1233), most recently seen first. */
   /** #1632: the telemetry retentions, on the scheduled pass's clock — `telemetryRetentionStatements`. */
   pruneTelemetry(limit: number): TelemetryPruneReport {
+    // A negative LIMIT is no limit at all to SQLite (#1632): refused before any statement.
+    assertRowLimit('limit', limit);
     const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
     for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
       pruned[table] = this.sql.exec(sql, ...params).toArray().length;
@@ -4356,7 +4360,7 @@ export class ControlPlaneDO extends DurableObject {
       'SELECT * FROM _substrat_issues' +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
       ' ORDER BY last_seen DESC, fingerprint LIMIT ?';
-    params.push(query.limit ?? 100);
+    params.push(assertRowLimit('limit', query.limit ?? 100));
     const rows = this.sql.exec(sql, ...params).toArray() as unknown as IssueRow[];
     return rows.map((r) => issueOf(r));
   }
@@ -4459,7 +4463,7 @@ export class ControlPlaneDO extends DurableObject {
       ` ORDER BY id ${order}`;
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(query.limit);
+      params.push(assertRowLimit('limit', query.limit));
     }
     return this.sql.exec(sql, ...params).toArray() as unknown as ModelUsageRow[];
   }

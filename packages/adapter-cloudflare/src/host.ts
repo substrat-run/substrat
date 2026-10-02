@@ -346,6 +346,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
+  assertRowLimit,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -5914,7 +5915,7 @@ export class CloudflareScopeHost implements ScopeHost {
         this.moveImportCursorAt(actor, tenantId, scopeId, raw),
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         const record = await this.scopeRecordForRead(tenantId, scopeId);
-        const bounded = Math.min(Math.max(limit ?? 200, 1), 1000);
+        const bounded = Math.min(assertRowLimit('limit', limit ?? 200), 1000);
         // #1334: on the shared control plane the scope's outbox is in its vertical's
         // deployment, and this host's own namespace is the module-less placeholder —
         // reading it would construct an empty DO and answer "nothing to ship". The
@@ -6952,7 +6953,8 @@ export class CloudflareScopeHost implements ScopeHost {
         return drained;
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
-        const pruned = await this.cp.pruneAccessLog(limit);
+        // Checked here as well as in the directory, so the refusal keeps its code across the hop.
+        const pruned = await this.cp.pruneAccessLog(assertRowLimit('limit', limit));
         if (pruned > 0) {
           // The payload is the APPLIED state, so it belongs in `after` (contracts'
           // adminLogEntry: before = prior state, after = the applied payload) — the
@@ -7083,7 +7085,9 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         return rows.map((r) => sweepRunEntry.parse(r));
       },
-      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> => this.cp.pruneTelemetry(limit),
+      // Checked here as well as in the directory, so the refusal keeps its code across the hop.
+      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> =>
+        this.cp.pruneTelemetry(assertRowLimit('limit', limit)),
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const rows = await this.cp.listIssues({
           status: filter?.status,

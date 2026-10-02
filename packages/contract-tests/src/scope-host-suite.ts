@@ -37,6 +37,7 @@ import {
   REDACTED_FAILURE_NOTE,
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
+  startPlatformSweeper,
   ulid,
   type AuditLogFilter,
   type OperationHandler,
@@ -2990,6 +2991,54 @@ export function scopeHostContractSuite(
             expect(await host.admin.listOpsFailures(staff, { operation: fresh.op })).toHaveLength(1);
             expect(await host.admin.listIssues(staff, { operation: fresh.op })).toHaveLength(1);
             expect(await host.admin.listSweepRuns(staff, { unit: fresh.unit })).toHaveLength(1);
+          });
+
+          it('refuses a row bound that is not a positive integer, wherever one reaches a LIMIT', async () => {
+            // SQLite reads a negative LIMIT as no limit at all, so `-1` turned the bounded
+            // telemetry prune into an unbounded one; a fraction or a non-finite value fails
+            // inside SQLite on every later call. Each is refused with the option's name, and
+            // nothing is deleted on the way.
+            const expired = { op: op('bound'), unit: `${s1}:erasure/bound-${ulid()}` };
+            await fail(expired.op, 'a failure');
+            await host.admin.recordSweepRun({ kind: 'schedule', unit: expired.unit, outcome: 'failed', tenantId: t1, scopeId: s1, operation: 'erasure/run', error: 'x' });
+            const LONG_AGO = '2020-01-01T00:00:00.000Z';
+            const copy = await host.admin.exportDirectory(staff);
+            const age = (t: (typeof copy.tables)[number], match: string, matchCol: string, cols: string[]) => {
+              const m = t.columns.indexOf(matchCol);
+              const at = cols.map((c) => t.columns.indexOf(c));
+              return { ...t, rows: t.rows.map((r) => (r[m] === match ? r.map((c, i) => (at.includes(i) ? LONG_AGO : c)) : r)) };
+            };
+            await host.admin.restoreDirectory(staff, {
+              ...copy,
+              tables: copy.tables.map((t) =>
+                t.name === '_substrat_ops_failures' ? age(t, expired.op, 'operation', ['at'])
+                : t.name === '_substrat_issues' ? age(t, expired.op, 'operation', ['first_seen', 'last_seen'])
+                : t.name === '_substrat_sweep_runs' ? age(t, expired.unit, 'unit', ['at'])
+                : t,
+              ),
+            });
+            const sweep = { actor: staff, fetch: connectorTestFetch, sweepers: {}, drainRetries: false } as const;
+            const refused = (name: string) => (err: unknown) =>
+              errorCodeOf(err) === 'validation_failed' && new RegExp(`${name} must be a positive integer`).test((err as Error).message);
+            for (const bad of [-1, 0, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+              await expect(host.admin.pruneTelemetry!(staff, bad)).rejects.toSatisfy(refused('limit'));
+              await expect(host.admin.pruneAccessLog(staff, bad)).rejects.toSatisfy(refused('limit'));
+              await expect(runPlatformSweep(host, { ...sweep, telemetryBatch: bad })).rejects.toSatisfy(refused('telemetryBatch'));
+              await expect(runPlatformSweep(host, { ...sweep, accessLogBatch: bad })).rejects.toSatisfy(refused('accessLogBatch'));
+              expect(() => startPlatformSweeper(host, { ...sweep, telemetryBatch: bad, intervalMs: 60_000 })).toThrow(/telemetryBatch must be a positive integer/);
+              await expect(host.runDueJobs(t1, s1, { limit: bad })).rejects.toThrow(/limit must be a positive integer/);
+              await expect(host.admin.readUndrainedEvents(staff, t1, s1, bad)).rejects.toThrow(/limit must be a positive integer/);
+              await expect(host.admin.auditLog(staff, { limit: bad })).rejects.toThrow(/limit must be a positive integer/);
+            }
+            // Nothing went on the way: the expired rows are all still there.
+            expect(await host.admin.listOpsFailures(staff, { operation: expired.op })).toHaveLength(1);
+            expect(await host.admin.listIssues(staff, { operation: expired.op })).toHaveLength(1);
+            expect(await host.admin.listSweepRuns(staff, { unit: expired.unit })).toHaveLength(1);
+            // The positive twin: a valid bound drains them.
+            while (Object.values(await host.admin.pruneTelemetry!(staff, 1)).some((n) => n > 0));
+            expect(await host.admin.listOpsFailures(staff, { operation: expired.op })).toEqual([]);
+            expect(await host.admin.listIssues(staff, { operation: expired.op })).toEqual([]);
+            expect(await host.admin.listSweepRuns(staff, { unit: expired.unit })).toEqual([]);
           });
 
           it('rewrites a queued sweep-runs entry\'s error, and keeps the rest of the intent', async () => {

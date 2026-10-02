@@ -3957,6 +3957,19 @@ export interface TelemetryPruneReport {
   sweepRuns: number;
 }
 
+/**
+ * A caller-supplied row bound, checked before it reaches a SQL `LIMIT` (#1632). SQLite reads a
+ * negative `LIMIT` as no limit at all, so `-1` turns a bounded batch into an unbounded one; a
+ * fractional or non-finite value is refused by SQLite itself, as a failure every later call
+ * repeats. Neither is a value anyone means, so it is a configuration error, refused here with the
+ * option's name, and never silently normalized into something the caller did not ask for.
+ * Returns the value, so a call site can bind it in place.
+ */
+export function assertRowLimit(name: string, value: number): number {
+  if (Number.isInteger(value) && value > 0) return value;
+  throw substratError('validation_failed', `${name} must be a positive integer, got ${String(value)}`);
+}
+
 /** How many rows of EACH telemetry table one `pruneTelemetry` call deletes, by default. */
 export const TELEMETRY_PRUNE_BATCH = 500;
 

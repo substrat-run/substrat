@@ -238,6 +238,7 @@ import {
   ulid,
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
+  assertRowLimit,
   type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
@@ -1110,7 +1111,7 @@ function keysetTail(
   let tail = ` ORDER BY ${key} ${order}`;
   if (page?.limit !== undefined) {
     tail += ' LIMIT ?';
-    params.push(page.limit);
+    params.push(assertRowLimit('limit', page.limit));
   }
   return tail;
 }
@@ -5619,7 +5620,7 @@ export class SqliteScopeHost implements ScopeHost {
       ` ORDER BY id ${order}`;
     if (filter?.limit !== undefined) {
       sql += ' LIMIT ?';
-      params.push(filter.limit);
+      params.push(assertRowLimit('limit', filter.limit));
     }
     const rows = this.directory.prepare(sql).all(...params) as ModelUsageRow[];
     return rows.map((r) => modelUsageEntryOf(r));
@@ -6576,7 +6577,7 @@ export class SqliteScopeHost implements ScopeHost {
           ` ORDER BY tenant_id ${order}, role_key ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
-          params.push(filter.limit);
+          params.push(assertRowLimit('limit', filter.limit));
         }
         const rows = this.directory.prepare(sql).all(...params) as {
           tenant_id: string;
@@ -7812,7 +7813,7 @@ export class SqliteScopeHost implements ScopeHost {
         // rather than stalling the scope on it (#1636).
         const read = readUndrainedOutbox(
           (offset, count) => page.all(count, offset) as OutboxRow[],
-          Math.min(Math.max(limit ?? 200, 1), 1000),
+          Math.min(assertRowLimit('limit', limit ?? 200), 1000),
         );
         this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, read.events.length);
         return undrainedEventsOf(read);
@@ -9736,6 +9737,7 @@ export class SqliteScopeHost implements ScopeHost {
         return info.changes;
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
+        assertRowLimit('limit', limit);
         // ONLY drained rows. Age alone is not a licence to delete evidence.
         const info = this.directory
           .prepare(
@@ -9795,7 +9797,7 @@ export class SqliteScopeHost implements ScopeHost {
           ` ORDER BY id ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
-          params.push(filter.limit);
+          params.push(assertRowLimit('limit', filter.limit));
         }
         const rows = this.directory.prepare(sql).all(...params) as AdminLogRow[];
         // Reading the audit trail is itself audited. Who examined the record of
@@ -9949,7 +9951,7 @@ export class SqliteScopeHost implements ScopeHost {
           ` ORDER BY id ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
-          params.push(filter.limit);
+          params.push(assertRowLimit('limit', filter.limit));
         }
         const rows = this.directory.prepare(sql).all(...params) as OpsFailureRow[];
         // Rows can name tenants and scopes, so reading them is recorded like the
@@ -10051,7 +10053,7 @@ export class SqliteScopeHost implements ScopeHost {
           ` ORDER BY id ${order}`;
         if (filter?.limit !== undefined) {
           sql += ' LIMIT ?';
-          params.push(filter.limit);
+          params.push(assertRowLimit('limit', filter.limit));
         }
         const rows = this.directory.prepare(sql).all(...params) as SweepRunRow[];
         // Rows can name tenants and scopes, so reading them is recorded (K-24).
@@ -10084,6 +10086,8 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> => {
+        // A negative LIMIT is no limit at all to SQLite (#1632): refused before any statement.
+        assertRowLimit('limit', limit);
         const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
         for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
           pruned[table] = this.directory.prepare(sql).all(...params).length;
@@ -10111,7 +10115,7 @@ export class SqliteScopeHost implements ScopeHost {
           'SELECT * FROM _substrat_issues' +
           (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
           ' ORDER BY last_seen DESC, fingerprint LIMIT ?';
-        params.push(filter?.limit ?? 100);
+        params.push(assertRowLimit('limit', filter?.limit ?? 100));
         const rows = this.directory.prepare(sql).all(...params) as IssueRow[];
         // Issues aggregate fleet-wide failures; the read is recorded like the rows' own (K-24).
         this.recordAccess(actor, 'listIssues', {}, filter, rows.length);

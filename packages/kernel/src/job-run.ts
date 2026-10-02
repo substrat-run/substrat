@@ -1,5 +1,5 @@
 import { dataSubjectId, substratError, type DataSubjectId, type ModuleId } from '@substrat-run/contracts';
-import { backoffAt, resolveRetryPolicy, type ExecutorRetryPolicy, type ScopeStub } from './scope-host.js';
+import { assertRowLimit, backoffAt, resolveRetryPolicy, type ExecutorRetryPolicy, type ScopeStub } from './scope-host.js';
 
 /**
  * The fourth driver (#1577): long, resumable, coalesced work.
@@ -933,7 +933,8 @@ export async function runDueJobRuns(options: {
     errors: [],
   };
   const maxPasses = Math.max(1, options.maxPasses ?? 1);
-  const want = options.limit ?? JOB_DRIVE_LIMIT;
+  // Bound for the store's `LIMIT` (#1632): refused, not normalized, when it is not a positive integer.
+  const want = options.limit === undefined ? JOB_DRIVE_LIMIT : assertRowLimit('limit', options.limit);
 
   // Page the due read until `want` RUNNABLE runs have been gathered, or the scope
   // runs out, or the scan cap is hit. A run whose job this host does not register —
