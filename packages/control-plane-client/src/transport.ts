@@ -54,8 +54,14 @@ export interface ControlPlaneTransportOptions {
 
 /** What a refusal carried beyond its sentence, for a caller that renders its own. */
 export interface ControlPlaneErrorDetail {
-  /** The response body as text, exactly as it arrived (`''` when it could not be read). */
+  /**
+   * The response body as text, exactly as it arrived. `''` is a body that was empty;
+   * `undefined` is one that could not be read (the stream failed), which a caller that
+   * prints a status line instead — as the CLI does — tells apart.
+   */
   body?: string;
+  /** The status line's reason phrase (`Bad Gateway`). */
+  statusText?: string;
   /** The response headers. */
   headers?: Headers;
   /** The full URL requested. */
@@ -82,6 +88,7 @@ export class ControlPlaneError extends Error {
     super(message, 'cause' in detail ? { cause: detail.cause } : undefined);
     this.name = 'ControlPlaneError';
     this.body = detail.body;
+    this.statusText = detail.statusText;
     this.headers = detail.headers;
     this.url = detail.url;
     this.malformed = detail.malformed === true;
@@ -89,6 +96,7 @@ export class ControlPlaneError extends Error {
 
   /** The refusal's raw body text; `undefined` for an error the transport did not read off a response. */
   readonly body: string | undefined;
+  readonly statusText: string | undefined;
   readonly headers: Headers | undefined;
   readonly url: string | undefined;
   /** True for a 2xx answer that was not the JSON the route promises. */
@@ -181,18 +189,18 @@ export class ControlPlaneTransport {
       // published schema — so this works either way, and keeps working the day the
       // duplicate is deleted. The status line is the fallback only when the body
       // said nothing readable.
-      const text = await res.text().catch(() => '');
+      const text: string | undefined = await res.text().catch(() => undefined);
       let body: unknown = null;
       try {
-        body = JSON.parse(text);
+        body = JSON.parse(text ?? '');
       } catch {
-        // Not JSON: `problemDetail(null)` is undefined and the status line speaks.
+        // Not JSON, or unreadable: `problemDetail(null)` is undefined and the status line speaks.
       }
       throw new ControlPlaneError(
         res.status,
         problemDetail(body) ?? `${res.status} ${res.statusText}`,
         undefined,
-        { body: text, headers: res.headers, url: this.urlFor(path) },
+        { body: text, statusText: res.statusText, headers: res.headers, url: this.urlFor(path) },
       );
     }
     return res;

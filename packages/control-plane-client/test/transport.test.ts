@@ -116,6 +116,18 @@ describe('a refusal carries what it was', () => {
     expect(err).toMatchObject({ status: 500, message: '500 Internal Server Error', body: '' });
   });
 
+  it('a body the stream could not deliver is undefined — distinct from an empty one — and the reason phrase is kept', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.error(new TypeError('terminated'));
+      },
+    });
+    const { fetch } = spy(() => new Response(stream, { status: 502, statusText: 'Bad Gateway' }));
+    const err = await make(fetch).send2('/x').catch((e) => e);
+    expect(err).toMatchObject({ status: 502, message: '502 Bad Gateway', statusText: 'Bad Gateway' });
+    expect(err.body).toBeUndefined();
+  });
+
   it('an error built outside the transport has no body (the field says "not read off a response")', () => {
     const e = new ControlPlaneError(403, 'unknown tenant');
     expect(e.body).toBeUndefined();
