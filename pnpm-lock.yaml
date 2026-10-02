@@ -15,6 +15,9 @@ catalogs:
     '@types/node':
       specifier: ^22.20.4
       version: 22.20.4
+    '@vitest/ui':
+      specifier: ^3.2.7
+      version: 3.2.7
     typescript:
       specifier: ^7.0.0
       version: 7.0.2
@@ -123,7 +126,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@22.20.4)
@@ -175,13 +178,16 @@ importers:
         version: 6.4.3(@types/node@26.6.3)(tsx@4.23.15)(yaml@2.9.1)
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   apps/console:
     dependencies:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
+      '@substrat-run/control-plane-api':
+        specifier: workspace:^
+        version: link:../../packages/control-plane-api
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
@@ -212,7 +218,7 @@ importers:
         version: 6.4.3(@types/node@26.6.3)(tsx@4.23.15)(yaml@2.9.1)
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   apps/control-plane:
     dependencies:
@@ -249,7 +255,7 @@ importers:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
-        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))
+        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7)
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
@@ -261,7 +267,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -334,7 +340,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -380,7 +386,7 @@ importers:
         version: 6.4.3(@types/node@26.6.3)(tsx@4.23.15)(yaml@2.9.1)
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   apps/docs:
     devDependencies:
@@ -416,7 +422,7 @@ importers:
         version: 2.0.17(mermaid@11.17.2)(vitepress@1.6.4(@algolia/client-search@5.59.0)(@types/node@26.6.3)(@types/react@18.3.31)(fuse.js@7.5.0)(postcss@8.5.28)(qrcode@1.5.4)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(search-insights@2.17.3)(typescript@7.0.2))
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       vue:
         specifier: ^3.5.39
         version: 3.5.43(typescript@7.0.2)
@@ -441,7 +447,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -472,7 +478,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -491,7 +497,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -513,7 +519,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -535,7 +541,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -560,7 +566,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -569,10 +575,10 @@ importers:
     dependencies:
       '@better-auth/cimd':
         specifier: ^1.7.3
-        version: 1.7.6(08fae38f424f04ecc27c4195204bf321)
+        version: 1.7.6(ed12963a1c22795c357eec55dac71443)
       '@better-auth/oauth-provider':
         specifier: ^1.7.3
-        version: 1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2)))(better-call@1.4.0(zod@4.6.5))
+        version: 1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2)))(better-call@1.4.0(zod@4.6.5))
       '@hono/node-server':
         specifier: ^1.13.0
         version: 1.19.17(hono@4.13.8)
@@ -590,7 +596,7 @@ importers:
         version: link:../../packages/oidc-rp
       better-auth:
         specifier: ^1.7.3
-        version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2))
+        version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2))
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
@@ -609,7 +615,7 @@ importers:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
-        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))
+        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7)
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
@@ -625,6 +631,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4
@@ -636,7 +645,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -648,7 +657,7 @@ importers:
         version: link:../../../packages/ui
       better-auth:
         specifier: ^1.7.1
-        version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2))
+        version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2))
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -747,6 +756,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4
@@ -758,7 +770,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -839,6 +851,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4
@@ -850,7 +865,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   demos/handlebar/app:
     dependencies:
@@ -918,7 +933,7 @@ importers:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
-        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))
+        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7)
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
@@ -937,6 +952,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       concurrently:
         specifier: ^10.0.4
         version: 10.0.5
@@ -948,7 +966,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -1034,7 +1052,7 @@ importers:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
-        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))
+        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7)
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
@@ -1053,6 +1071,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4
@@ -1064,7 +1085,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -1136,6 +1157,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4
@@ -1147,7 +1171,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   demos/shop/admin:
     dependencies:
@@ -1246,7 +1270,7 @@ importers:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
-        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))
+        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7)
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
@@ -1274,6 +1298,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.4
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       ai:
         specifier: 7.0.114
         version: 7.0.114(zod@4.4.3)
@@ -1291,7 +1318,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@22.20.4)
@@ -1360,6 +1387,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.4
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
@@ -1374,7 +1404,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   demos/tock/app:
     dependencies:
@@ -1437,6 +1467,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.4
+      '@vitest/ui':
+        specifier: 'catalog:'
+        version: 3.2.7(vitest@3.2.7)
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4
@@ -1448,7 +1481,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   demos/todo/app:
     dependencies:
@@ -1501,7 +1534,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1529,7 +1562,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1557,7 +1590,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1585,7 +1618,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1610,7 +1643,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1641,7 +1674,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1669,7 +1702,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1685,7 +1718,7 @@ importers:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
-        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))
+        version: 0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7)
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
@@ -1709,7 +1742,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler:
         specifier: 'catalog:'
         version: 4.142.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)
@@ -1721,7 +1754,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/adapter-sqlite:
     dependencies:
@@ -1752,7 +1785,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/boundary-lint:
     devDependencies:
@@ -1764,7 +1797,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/builder-generator:
     dependencies:
@@ -1792,7 +1825,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/builder-workspace:
     devDependencies:
@@ -1807,7 +1840,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/cli:
     dependencies:
@@ -1832,7 +1865,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/contract-tests:
     dependencies:
@@ -1851,7 +1884,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1863,7 +1896,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -1897,7 +1930,7 @@ importers:
         version: 9.6.0
       better-auth:
         specifier: ^1.7.1
-        version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2))
+        version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2))
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
@@ -1909,7 +1942,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/create-substrat: {}
 
@@ -1945,7 +1978,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/engine-test-kit:
     dependencies:
@@ -1989,7 +2022,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/model-emit:
     dependencies:
@@ -2005,7 +2038,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -2027,7 +2060,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/model-view:
     dependencies:
@@ -2043,7 +2076,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/oidc-rp:
     dependencies:
@@ -2062,7 +2095,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/psl:
     devDependencies:
@@ -2071,7 +2104,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/template-check:
     dependencies:
@@ -2126,7 +2159,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/ui:
     dependencies:
@@ -2142,7 +2175,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/vertical-auth:
     dependencies:
@@ -2160,7 +2193,7 @@ importers:
         version: link:../psl
       better-auth:
         specifier: ^1.7.1
-        version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2))
+        version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2))
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6)
@@ -2185,7 +2218,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/vertical-host:
     dependencies:
@@ -2219,7 +2252,7 @@ importers:
         version: 7.0.2
       vitest:
         specifier: 'catalog:'
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
 packages:
 
@@ -4053,6 +4086,9 @@ packages:
   '@phosphor-icons/core@2.1.1':
     resolution: {integrity: sha512-v4ARvrip4qBCImOE5rmPUylOEK4iiED9ZyKjcvzuezqMaiRASCHKcRIuvvxL/twvLpkfnEODCOJp5dM4eZilxQ==}
 
+  '@polka/url@1.0.0-next.29':
+    resolution: {integrity: sha512-wwQAWhWSuHaag8c4q/KN/vCoeOJYshAIvMQwD4GpSb3OiZklFfvAgmj0VCBBImRpuF/aFgIRzllXlVX93Jevww==}
+
   '@poppinss/colors@4.1.6':
     resolution: {integrity: sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg==}
 
@@ -4708,6 +4744,11 @@ packages:
 
   '@vitest/spy@3.2.7':
     resolution: {integrity: sha512-Q2eQGI6d2L/hBtZ0qNuKcAGid68XK6cv1xsoaIma6PaJhHPoqcEJhYpXZ/5myCMqkNgtP6UKuBhbc0nHKnrkuQ==}
+
+  '@vitest/ui@3.2.7':
+    resolution: {integrity: sha512-eVtcpJXGhS0GjMuHROfbXLhlxooyUcuip8GNzzjDD5jzafZqzanJH4W3VGmUxHNx4fv6qQGUGJHRpGUdj+9D6Q==}
+    peerDependencies:
+      vitest: 3.2.7
 
   '@vitest/utils@3.2.7':
     resolution: {integrity: sha512-x6BDOd7dyo3PFLY3I9/HJ25X/6OurhGXk2/B9gOZNPF7XDVjeBK4k01lQE5uvDpbuheErh91qYuE1E2OEjK3Rw==}
@@ -6096,6 +6137,10 @@ packages:
     resolution: {integrity: sha512-tzzskb3bG8LvYGFF/mDTpq3jpI6Q9wc3LEmBaghu+DdCssd1FakN7Bc0hVNmEyGq1bq3RgfkCb3cmQLpNPOroA==}
     engines: {node: '>=4'}
 
+  mrmime@2.0.1:
+    resolution: {integrity: sha512-Y3wQdFg2Va6etvQ5I82yUhGdsKrcYox6p7FfL1LbK2J4V01F9TGlepTIhnK24t7koZibmg82KGglhA1XK5IsLQ==}
+    engines: {node: '>=10'}
+
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
@@ -6442,6 +6487,10 @@ packages:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
 
+  sirv@3.0.2:
+    resolution: {integrity: sha512-2wcC/oGxHis/BoHkkPwldgiPSYcpZK3JU28WoMVv55yHJgcZ8rlXvuG9iZggz+sU1d4bRgIGASwyWqjxu3FM0g==}
+    engines: {node: '>=18'}
+
   slash@3.0.0:
     resolution: {integrity: sha512-g9Q1haeby36OSStwb4ntCGGGaKsaVSjQ68fBxoQcutl5fS1vuY18H3wSt3jFyFtrkx+Kz0V1G85A4MyAdDMi2Q==}
     engines: {node: '>=8'}
@@ -6596,6 +6645,10 @@ packages:
   to-regex-range@5.0.1:
     resolution: {integrity: sha512-65P7iz6X5yEr1cwcgvQxbbIw7Uk3gOy5dIdtZ4rDveLqhrdJP+Li/Hx6tyK0NEb+2GCyneCMJiGqrADCSNk8sQ==}
     engines: {node: '>=8.0'}
+
+  totalist@3.0.1:
+    resolution: {integrity: sha512-sf4i37nQ2LBx4m3wB74y+ubopq6W/dIzXg0FDGjsYnZHVa1Da8FH853wlL2gtUhg+xJXjfk3kUZS3BRoQeoQBQ==}
+    engines: {node: '>=6'}
 
   tough-cookie@5.1.2:
     resolution: {integrity: sha512-FVDYdxtnj0G6Qm/DhNPSb8Ju59ULcup3tuJxkFb5K8Bv2pUXILbf0xZWU8PX8Ov19OXljbUyveOFwRMwkXzO+A==}
@@ -7468,11 +7521,11 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@better-auth/cimd@1.7.6(08fae38f424f04ecc27c4195204bf321)':
+  '@better-auth/cimd@1.7.6(ed12963a1c22795c357eec55dac71443)':
     dependencies:
       '@better-auth/core': 1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4)
-      '@better-auth/oauth-provider': 1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2)))(better-call@1.4.0(zod@4.6.5))
-      better-auth: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2))
+      '@better-auth/oauth-provider': 1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2)))(better-call@1.4.0(zod@4.6.5))
+      better-auth: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2))
       better-call: 1.4.0(zod@4.4.3)
 
   '@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4)':
@@ -7520,12 +7573,12 @@ snapshots:
       '@better-auth/core': 1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/oauth-provider@1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2)))(better-call@1.4.0(zod@4.6.5))':
+  '@better-auth/oauth-provider@1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2)))(better-call@1.4.0(zod@4.6.5))':
     dependencies:
       '@better-auth/core': 1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.2
-      better-auth: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2))
+      better-auth: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2))
       better-call: 1.4.0(zod@4.4.3)
       jose: 6.2.12
       zod: 4.6.5
@@ -7726,28 +7779,14 @@ snapshots:
     optionalDependencies:
       workerd: 1.20260926.1
 
-  '@cloudflare/vitest-pool-workers@0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))':
+  '@cloudflare/vitest-pool-workers@0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7)':
     dependencies:
       '@vitest/runner': 3.2.7
       '@vitest/snapshot': 3.2.7
       cjs-module-lexer: 1.4.3
       esbuild: 0.27.3
       miniflare: 4.20260310.0
-      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
-      wrangler: 4.72.0(@cloudflare/workers-types@4.20260702.1)
-    transitivePeerDependencies:
-      - '@cloudflare/workers-types'
-      - bufferutil
-      - utf-8-validate
-
-  '@cloudflare/vitest-pool-workers@0.12.21(@cloudflare/workers-types@4.20260702.1)(@vitest/runner@3.2.7)(@vitest/snapshot@3.2.7)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))':
-    dependencies:
-      '@vitest/runner': 3.2.7
-      '@vitest/snapshot': 3.2.7
-      cjs-module-lexer: 1.4.3
-      esbuild: 0.27.3
-      miniflare: 4.20260310.0
-      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       wrangler: 4.72.0(@cloudflare/workers-types@4.20260702.1)
     transitivePeerDependencies:
       - '@cloudflare/workers-types'
@@ -8745,6 +8784,8 @@ snapshots:
 
   '@phosphor-icons/core@2.1.1': {}
 
+  '@polka/url@1.0.0-next.29': {}
+
   '@poppinss/colors@4.1.6':
     dependencies:
       kleur: 4.1.5
@@ -9613,6 +9654,17 @@ snapshots:
     dependencies:
       tinyspy: 4.0.6
 
+  '@vitest/ui@3.2.7(vitest@3.2.7)':
+    dependencies:
+      '@vitest/utils': 3.2.7
+      fflate: 0.8.3
+      flatted: 3.4.4
+      pathe: 2.0.3
+      sirv: 3.0.2
+      tinyglobby: 0.2.17
+      tinyrainbow: 2.0.0
+      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+
   '@vitest/utils@3.2.7':
     dependencies:
       '@vitest/pretty-format': 3.2.7
@@ -9844,7 +9896,7 @@ snapshots:
 
   baseline-browser-mapping@2.11.26: {}
 
-  better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2)):
+  better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2)):
     dependencies:
       '@better-auth/core': 1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4)
       '@better-auth/drizzle-adapter': 1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))
@@ -9867,12 +9919,12 @@ snapshots:
       drizzle-orm: 0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6)
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
-      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       vue: 3.5.43(typescript@7.0.2)
     transitivePeerDependencies:
       - '@opentelemetry/api'
 
-  better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1))(vue@3.5.43(typescript@7.0.2)):
+  better-auth@1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2)):
     dependencies:
       '@better-auth/core': 1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4)
       '@better-auth/drizzle-adapter': 1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.0)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.3(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))
@@ -9895,7 +9947,7 @@ snapshots:
       drizzle-orm: 0.45.3(@cloudflare/workers-types@5.20260818.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6)
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
-      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
       vue: 3.5.43(typescript@7.0.2)
     transitivePeerDependencies:
       - '@opentelemetry/api'
@@ -11324,6 +11376,8 @@ snapshots:
 
   mri@1.2.0: {}
 
+  mrmime@2.0.1: {}
+
   ms@2.1.3: {}
 
   nanoid@3.3.19: {}
@@ -11779,6 +11833,12 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
+  sirv@3.0.2:
+    dependencies:
+      '@polka/url': 1.0.0-next.29
+      mrmime: 2.0.1
+      totalist: 3.0.1
+
   slash@3.0.0: {}
 
   source-map-js@1.2.1: {}
@@ -11897,6 +11957,8 @@ snapshots:
   to-regex-range@5.0.1:
     dependencies:
       is-number: 7.0.0
+
+  totalist@3.0.1: {}
 
   tough-cookie@5.1.2:
     dependencies:
@@ -12196,7 +12258,7 @@ snapshots:
       - typescript
       - universal-cookie
 
-  vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1):
+  vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.7
@@ -12224,6 +12286,7 @@ snapshots:
     optionalDependencies:
       '@types/debug': 4.1.13
       '@types/node': 22.20.4
+      '@vitest/ui': 3.2.7(vitest@3.2.7)
       jsdom: 26.1.0
     transitivePeerDependencies:
       - jiti
@@ -12239,7 +12302,7 @@ snapshots:
       - tsx
       - yaml
 
-  vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1):
+  vitest@3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1):
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.7
@@ -12267,6 +12330,7 @@ snapshots:
     optionalDependencies:
       '@types/debug': 4.1.13
       '@types/node': 26.6.3
+      '@vitest/ui': 3.2.7(vitest@3.2.7)
       jsdom: 26.1.0
     transitivePeerDependencies:
       - jiti

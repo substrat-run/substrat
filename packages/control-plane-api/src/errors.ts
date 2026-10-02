@@ -32,7 +32,7 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   SUITE asserts on (`/unknown tenant/`, `/illegal scope transition/`, `/already
  *   taken/`, `/not active/`), against both adapters. Changing one turns a contract test
  *   red, not just this mapping. Phase 5 migrates those assertions onto codes and this
- *   table goes with them — **one family at a time, and five are gone.** `unknown vertical`
+ *   table goes with them — **one family at a time, and eight are gone.** `unknown vertical`
  *   went first; `unknown version` followed, its ten throw sites across the two adapters
  *   now saying `substratError('not_found', …)` with the contract suite asserting that
  *   code rather than the sentence, so the row had nothing left to do. `deploy refused:`
@@ -47,7 +47,13 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   `internal error`. Both branches are typed now and a code cannot miss a reword.
  *   `was rejected — publish a new one` is the fifth: `admitVersion`'s refusal of a rejected
  *   version, one site per adapter, now `substratError('conflict', …)` and pinned on the
- *   code by the contract suite. That is the shape every remaining row is waiting for: type the throws, move the
+ *   code by the contract suite. The sixth to eighth are the registry's own refusals, all in
+ *   `host.ts` / `adapter-sqlite` and all `conflict`: `is owned by` (`registerVertical` —
+ *   claim-on-first-push, a slug's owner is fixed at first push), `is auto-admitted` (the
+ *   publish seam, `setVerticalListed`: prod points at a version only the AUTO admission note
+ *   vouches for, so a staff admit is what it names as the way out) and `not admitted`
+ *   (`bindScopeVersion` and `promoteVersion` refusing a version that is not admitted).
+ *   That is the shape every remaining row is waiting for: type the throws, move the
  *   suite's assertion, delete the row. A row is not removed before its throws are typed —
  *   deleting one early turns its refusal into the generic 500 below.
  *
@@ -89,21 +95,8 @@ const CODE_PATTERNS: readonly [RegExp, ErrorCode][] = [
   // Registry (#31): well-formed, but conflicts with a version's admission state or
   // ownership, or needs an unacknowledged change acknowledged (the two checkpoints).
   [/is already registered/, 'conflict'],
-  // claim-on-first-push (builder-plane.md): a slug's owner is fixed at first push.
-  // A staff re-registration under a different owner is a conflict; a builder is
-  // refused with 403 in the transport before it reaches this throw.
-  [/is owned by /, 'conflict'],
   [/is already admitted/, 'conflict'],
-  // The publish seam's refusal (marketplace-publish.md §5): prod points at a version
-  // carrying only the AUTO admission note, so no human has vouched for code that listing
-  // would expose to every tenant. It names its own way out — a staff admit of that
-  // version — and without this entry it fell through to the generic 500 below, which is
-  // how the console's List button came to answer `internal error` and the operator had
-  // no way to learn that an admit was what it wanted. Pinned by the contract suite
-  // (`/auto-admitted.*staff admit/`) against both adapters, like every pattern here.
-  [/is auto-admitted \(private self-serve\)/, 'conflict'],
   [/belongs to '/, 'conflict'],
-  [/not admitted/, 'conflict'],
   [/acknowledge it explicitly to promote/, 'conflict'],
   // The ADDRESSED resource does not exist — including the K-3 fail-closed case
   // where it exists under a DIFFERENT tenant and must read as absent.
