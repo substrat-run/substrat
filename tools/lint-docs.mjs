@@ -11,8 +11,9 @@
  *
  * This runs each, forwarding every argument to all of them, and stops at the
  * first non-zero exit with that exit code. Run one alone with `lint:docs:drift`,
- * `lint:docs:structure` or `lint:docs:surface`; the architecture union gate is
- * also runnable as `node tools/docs-union-check.mjs [--check]`.
+ * `lint:docs:structure` or `lint:docs:surface`; the architecture sketch gates are
+ * also runnable as `node tools/docs-union-check.mjs [--check]` (literal unions) and
+ * `node tools/docs-type-parity.mjs [--check]` (member presence, optionality, nullability).
  *
  * A new checkpoint joins the list here rather than getting its own CI step: CI
  * already runs `pnpm lint:docs --check`, so a member of this list cannot be
@@ -34,6 +35,7 @@ for (const script of [
   'tools/docs-structure.mjs',
   'tools/docs-surface-check.mjs',
   'tools/docs-union-check.mjs',
+  'tools/docs-type-parity.mjs',
 ]) {
   const { status, error } = spawnSync(process.execPath, [join(ROOT, script), ...args], {
     cwd: ROOT,

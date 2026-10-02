@@ -760,10 +760,11 @@ export type ExecutorHandler = (admin: HostAdmin, event: DomainEvent) => void | P
 export interface ConnectorContext {
   readonly admin: HostAdmin;
   /** The tenant's live connection for this provider, refreshed; throws if absent/expired. */
-  connection(provider: string): Promise<OpenConnection>;
-  /** Sanctioned egress: policy, timeout, and per-connection health recording. */
-  fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
+  connection(provider: string): Promise<ScopedConnectorConnection>;
 }
+// Sanctioned egress — policy, timeout, and per-connection health recording — landed on the
+// opened connection (`(await ctx.connection(p)).fetch(…)`), not on the context: the
+// credential it spends belongs to one connection, and a tenant may hold two.
 export type ConnectorHandler = (ctx: ConnectorContext, event: DomainEvent) => Promise<void>;
 ```
 

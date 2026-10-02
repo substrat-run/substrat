@@ -100,7 +100,7 @@ test('standalone and aggregate CLIs are advisory by default and refuse with --ch
   symlinkSync(join(ROOT, 'node_modules'), join(root, 'node_modules'), 'dir');
   for (const script of ['docs-union-check.mjs', 'lint-docs.mjs']) cpSync(join(ROOT, 'tools', script), join(root, 'tools', script));
   // Isolate sibling gates; run the real aggregate runner and new checker together.
-  for (const sibling of ['docs-drift.mjs', 'docs-structure.mjs', 'docs-surface-check.mjs']) writeFileSync(join(root, 'tools', sibling), 'process.exit(0);\n');
+  for (const sibling of ['docs-drift.mjs', 'docs-structure.mjs', 'docs-surface-check.mjs', 'docs-type-parity.mjs']) writeFileSync(join(root, 'tools', sibling), 'process.exit(0);\n');
   for (const script of ['docs-union-check.mjs', 'lint-docs.mjs']) {
     for (const check of [false, true]) {
       const result = spawnSync(process.execPath, [join(root, 'tools', script), ...(check ? ['--check'] : [])], { encoding: 'utf8' });

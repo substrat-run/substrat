@@ -19,9 +19,10 @@
  * Source syntax is deliberately bounded: same-file const aliases, z.object/z.enum
  * literals, nullable/nullish/optional/default/brand/readonly wrappers, and object
  * strict/strip/passthrough/superRefine wrappers. Unknown expressions fail with location
- * and mapping, rather than being evaluated or guessed. Required/optional parity,
- * nested/anonymous doc objects, inherited fields, mixed unions (ModuleId | 'vertical')
- * and nonliteral aliases are not checked. Refinement predicates are not evaluated;
+ * and mapping, rather than being evaluated or guessed. Member presence, required/optional
+ * and non-literal nullability parity are tools/docs-type-parity.mjs. Nested/anonymous doc
+ * objects, inherited fields, mixed unions (ModuleId | 'vertical') and nonliteral aliases
+ * are not checked. Refinement predicates are not evaluated;
  * superRefine preserves the enum vocabulary being described, not every accepted object.
  *
  * node tools/docs-union-check.mjs [--check] — advisory by default, refusal with --check.
@@ -34,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseTypeScript } from '@babel/parser';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const parse = (text) => parseTypeScript(text, { sourceType: 'module', plugins: ['typescript'], errorRecovery: true });
+export const parse = (text) => parseTypeScript(text, { sourceType: 'module', plugins: ['typescript'], errorRecovery: true });
 const lowerFirst = (s) => s[0].toLowerCase() + s.slice(1);
 const nameOf = (node) => node?.type === 'Identifier' ? node.name : node?.type === 'StringLiteral' ? node.value : undefined;
 const is = (node, type) => node?.type === type;
@@ -93,13 +94,13 @@ function literals(type) {
   if (is(type, 'TSNullKeyword')) return ['null'];
   fail(`unsupported sketch union member ${type?.type}; use direct string literals and null`);
 }
-function isCandidate(type) {
+export function isCandidate(type) {
   try { return literals(type).some((v) => v !== 'null'); }
   catch { return false; } // Mixed/nonliteral fields (e.g. ModuleId | 'vertical') are outside this gate.
 }
 
 // CommonMark fences may close with more delimiters than they opened with.
-function* fences(text) {
+export function* fences(text) {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const opening = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)\r?$/.exec(lines[i]);

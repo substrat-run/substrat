@@ -226,10 +226,13 @@ interface CapabilityGrant {
 
 ```ts
 interface PermissionChecker {
-  check(principal: PrincipalId, permission: PermissionKey, node: Node): Promise<Decision>;
   // An allow ALWAYS carries its proof: the tuple chain that granted access
   // (§4.2) — powering explain, "view as user" (§7.8), and the reviewable diff.
-  explain(principal: PrincipalId, node: Node): Promise<EffectivePermissions>;
+  // `entity` narrows the check to one entity and its declared parents (§4.2 rule 3).
+  check(subject: CheckSubject, permission: PermissionKey, node: Node, entity?: EntityRef): Promise<Decision>;
+  // Does the subject already hold every one of `required` at the node? The bound on
+  // role assignment (K-21): one resolution, not N checks, and it names what is missing.
+  covers(subject: CheckSubject, required: readonly PermissionKey[], node: Node): Promise<Coverage>;
 }
 ```
 
@@ -413,10 +416,15 @@ interface ScopeStub {
 // What an operation handler sees inside the scope — ambient tenancy, no IDs:
 interface OperationContext {
   sql: ScopedSql;                      // module-owned tables in this scope only
-  attachments: AttachmentApi;          // documents, comments, custom fields, timeline
   emit(event: DomainEventInput): void; // spine-bound; envelope stamped kernel-side
-  check(permission: PermissionKey): Promise<Decision>;  // ambient principal + node
+  check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;  // ambient principal + node
+  now(): Instant;                      // the only clock module code has
+  // User-initiated sharing (§4.2): entity-required, delegating, transactional
+  grant(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
+  revoke(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
 }
+// Attachment BYTES are deliberately not here: they never ride the scope's serialized
+// invoke pipe, so the host hands them out beside the stub (`host.attachments(…)`, §7.2).
 ```
 
 The adapter boundary sits exactly here (§5.7): the Cloudflare adapter backs the stub with

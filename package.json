@@ -72,6 +72,7 @@
     "lint:wrangler-config": "node tools/wrangler-config-check.mjs",
     "lint:secrets-coverage": "node tools/secrets-coverage.mjs",
     "test:docs-union": "node --test tools/docs-union-check.test.mjs",
+    "test:docs-parity": "node --test tools/docs-type-parity.test.mjs",
     "test:ci-scope": "node --test tools/ci-scope.test.mjs",
     "test:declared-deps": "node --test tools/declared-deps.test.mjs",
     "test:override-advisories": "node --test tools/override-advisories.test.mjs"
