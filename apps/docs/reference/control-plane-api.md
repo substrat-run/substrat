@@ -145,7 +145,10 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   directory behind link shares and claim links — what each may do (mode, entity, keys, operation
   allowlist, or the principal a claim link yields), who minted and revoked it, its expiry, use
   limit and use count. Newest first, live ones unless `?includeRevoked=true`, narrowed with
-  `?entityType=…&entityId=…` (both or neither), bounded by `?limit` (1–200). **Staff-only** — a
+  `?entityType=…&entityId=…` (both or neither), and keyset-paged like the other list reads:
+  `?limit` (1–200, default 50) and `?cursor`, answering `{ entries, nextCursor }`. `nextCursor`
+  is set only when more records follow (a malformed cursor is a 400), so a screen can always
+  tell a complete list from a first page. **Staff-only** — a
   builder or a tenant credential is refused 403 even for its own tenant, because a row names the
   vertical's end users — and ladder-delegated like the denial log. Records only: no secret is
   stored and no hash is ever selected or returned.
