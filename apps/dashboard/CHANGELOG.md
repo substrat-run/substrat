@@ -1,5 +1,26 @@
 # @substrat-run/dashboard
 
+## 0.39.10
+
+### Patch Changes
+
+- eba4d98: Open recorded error details from Failing badges and failure timeline markers. Show the operation, timestamp, full error message, and nearby logs even after successful schedule runs push the failure out of recent history.
+- Updated dependencies [8a32578]
+- Updated dependencies [c74c091]
+- Updated dependencies [a08c42e]
+- Updated dependencies [a128e65]
+- Updated dependencies [6416ce9]
+  - @substrat-run/kernel@0.133.0
+  - @substrat-run/adapter-cloudflare@0.133.0
+  - @substrat-run/contracts@0.133.0
+  - @substrat-run/control-plane-api@0.133.0
+  - @substrat-run/connector-fortnox@0.4.35
+  - @substrat-run/demo-callout@0.3.51
+  - @substrat-run/engine-invites@0.9.10
+  - @substrat-run/engine-invoicing@0.11.17
+  - @substrat-run/engine-protocol@0.13.18
+  - @substrat-run/engine-workorder@0.12.17
+
 ## 0.39.9
 
 ### Patch Changes

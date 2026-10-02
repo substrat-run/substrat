@@ -1,5 +1,19 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.133.0
+
+### Patch Changes
+
+- 8a32578: Allow resumable job runs to declare a data subject so erasure also redacts external results and error text without a classified event envelope. Refuse coalescing runs with different subjects; preserve legacy runs with an unknown subject through an additive schema upgrade.
+- c74c091: Add an optional expectedVersionId to scope version binding. Both adapters atomically refuse stale binding updates, including an expected unbound scope, so concurrent data moves can guard their final pointer change.
+- a128e65: Allow CP-less hosts to declare their service principal IDs for reconciliation, so service roles cannot prevent the owner-of-record from being restored when every human holder is locked out. Ticket0 supplies its durable service-account record; service authority and deliberate human handovers are preserved.
+- Updated dependencies [8a32578]
+- Updated dependencies [c74c091]
+- Updated dependencies [a08c42e]
+- Updated dependencies [a128e65]
+  - @substrat-run/kernel@0.133.0
+  - @substrat-run/contracts@0.133.0
+
 ## 0.132.1
 
 ### Patch Changes
@@ -5916,7 +5930,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

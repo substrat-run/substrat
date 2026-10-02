@@ -1,5 +1,14 @@
 # @substrat-run/dashboard-web
 
+## 0.16.10
+
+### Patch Changes
+
+- eba4d98: Open recorded error details from Failing badges and failure timeline markers. Show the operation, timestamp, full error message, and nearby logs even after successful schedule runs push the failure out of recent history.
+- Updated dependencies [a08c42e]
+  - @substrat-run/contracts@0.133.0
+  - @substrat-run/model-view@0.2.37
+
 ## 0.16.9
 
 ### Patch Changes
