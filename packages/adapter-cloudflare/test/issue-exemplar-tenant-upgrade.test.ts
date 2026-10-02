@@ -23,6 +23,7 @@ const ISSUES = [
   ['fp-two-tenants', 'two tenants said this'],
   ['fp-tenant-and-platform', 'a tenant and the platform said this'],
   ['fp-other-text', 'the exemplar'],
+  ['fp-platform-only', 'only the platform said this'],
 ] as const;
 const FAILURES = [
   ['01JFAILAAAAAAAAAAAAAAAAAA1', 'fp-one-tenant', 'one tenant said this', T1],
@@ -31,16 +32,20 @@ const FAILURES = [
   ['01JFAILAAAAAAAAAAAAAAAAAA4', 'fp-tenant-and-platform', 'a tenant and the platform said this', T1],
   ['01JFAILAAAAAAAAAAAAAAAAAA5', 'fp-tenant-and-platform', 'a tenant and the platform said this', null],
   ['01JFAILAAAAAAAAAAAAAAAAAA6', 'fp-other-text', 'not the exemplar', T1],
+  ['01JFAILAAAAAAAAAAAAAAAAAA7', 'fp-platform-only', 'only the platform said this', null],
+  ['01JFAILAAAAAAAAAAAAAAAAAA8', 'fp-platform-only', 'only the platform said this', null],
 ] as const;
+/** (owner kind, tenant) per issue: proven by one origin, or unknown. */
 const EXPECTED = {
-  'fp-one-tenant': T1,
-  'fp-no-rows': null,
-  'fp-two-tenants': null,
-  'fp-tenant-and-platform': null,
-  'fp-other-text': null,
+  'fp-one-tenant': ['tenant', T1],
+  'fp-platform-only': ['platform', null],
+  'fp-no-rows': [null, null],
+  'fp-two-tenants': [null, null],
+  'fp-tenant-and-platform': [null, null],
+  'fp-other-text': [null, null],
 };
 
-describe('#1632: a directory DO whose issues predate last_tenant_id', () => {
+describe('#1632: a directory DO whose issues predate exemplar ownership', () => {
   beforeAll(async () => {
     await warmControlPlane(env.CONTROL_PLANE);
   });
@@ -49,6 +54,7 @@ describe('#1632: a directory DO whose issues predate last_tenant_id', () => {
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`issue-tenant-${ulid()}`));
     await runInDurableObject(stub, (_instance, state) => {
       const sql = state.storage.sql;
+      sql.exec('ALTER TABLE _substrat_issues DROP COLUMN last_owner_kind');
       sql.exec('ALTER TABLE _substrat_issues DROP COLUMN last_tenant_id');
       for (const [fp, text] of ISSUES) {
         sql.exec(
@@ -70,14 +76,14 @@ describe('#1632: a directory DO whose issues predate last_tenant_id', () => {
 
   const hasColumn = (state: DurableObjectState) =>
     state.storage.sql
-      .exec("SELECT 1 FROM pragma_table_info('_substrat_issues') WHERE name = 'last_tenant_id'")
+      .exec("SELECT 1 FROM pragma_table_info('_substrat_issues') WHERE name = 'last_owner_kind'")
       .toArray().length === 1;
   const attribution = (state: DurableObjectState) =>
     Object.fromEntries(
       state.storage.sql
-        .exec('SELECT fingerprint, last_tenant_id FROM _substrat_issues')
+        .exec('SELECT fingerprint, last_owner_kind, last_tenant_id FROM _substrat_issues')
         .toArray()
-        .map((r) => [r['fingerprint'], r['last_tenant_id']]),
+        .map((r) => [r['fingerprint'], [r['last_owner_kind'], r['last_tenant_id']]]),
     );
 
   it('adds the column on construction, attributes only what one retained tenant proves, and backfills once', async () => {
@@ -88,13 +94,15 @@ describe('#1632: a directory DO whose issues predate last_tenant_id', () => {
       const upgraded = { column: hasColumn(state), attribution: attribution(state) };
       // After the column exists its writer owns it: a NULL is a fact the writer recorded,
       // and the next construction must not turn it into a tenant's.
-      state.storage.sql.exec("UPDATE _substrat_issues SET last_tenant_id = NULL WHERE fingerprint = 'fp-one-tenant'");
+      state.storage.sql.exec(
+        "UPDATE _substrat_issues SET last_tenant_id = NULL, last_owner_kind = NULL WHERE fingerprint = 'fp-one-tenant'",
+      );
       new ControlPlaneDO(state, env);
       return { staged, upgraded, again: attribution(state)['fp-one-tenant'] };
     });
     expect(seen.staged).toBe(false);
     expect(seen.upgraded.column).toBe(true);
     expect(seen.upgraded.attribution).toEqual(EXPECTED);
-    expect(seen.again).toBeNull();
+    expect(seen.again).toEqual([null, null]);
   });
 });

@@ -40,7 +40,8 @@ import {
   loadDirectoryDump,
   type ImpersonationRow,
   redactSubjectDirectoryText,
-  ISSUE_EXEMPLAR_TENANT_BACKFILL_SQL,
+  ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
+  issueExemplarOwner,
   type SubjectTextTarget,
 } from '@substrat-run/kernel';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
@@ -1004,10 +1005,12 @@ const DIRECTORY_DDL = `
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
     last_message TEXT NOT NULL,
-    -- #1632: the tenant whose ops failure last_message was copied from, written in the
-    -- same statement as the message. NULL = the platform's own row, or an issue from
-    -- before the column that no retained row attributes.
+    -- #1632: whose ops failure last_message was copied from, written in the same
+    -- statement as the message: last_owner_kind is 'tenant' (last_tenant_id names it) or
+    -- 'platform' (the platform's own row; last_tenant_id NULL). NULL kind = unknown, an
+    -- issue from before the columns that no retained row attributes.
     last_tenant_id TEXT,
+    last_owner_kind TEXT,
     last_vertical TEXT,
     last_version TEXT,
     resolved_version TEXT,
@@ -1455,10 +1458,11 @@ export class ControlPlaneDO extends DurableObject {
     // #1236: the regression's version pair, on a DO whose issues table predates it.
     this.addColumn('_substrat_issues', 'last_version TEXT');
     this.addColumn('_substrat_issues', 'resolved_version TEXT');
-    // #1632: whose exemplar `last_message` is. Backfilled once, as the column arrives, from
-    // the retained ops-failure rows that prove it; every other row stays NULL.
-    if (this.addColumn('_substrat_issues', 'last_tenant_id TEXT')) {
-      this.sql.exec(ISSUE_EXEMPLAR_TENANT_BACKFILL_SQL);
+    // #1632: whose exemplar `last_message` is. Backfilled once, as the columns arrive, from
+    // the retained ops-failure rows that prove it; every other row stays unknown.
+    this.addColumn('_substrat_issues', 'last_tenant_id TEXT');
+    if (this.addColumn('_substrat_issues', 'last_owner_kind TEXT')) {
+      this.sql.exec(ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL);
     }
     this.sql.exec(
       'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
@@ -4109,13 +4113,14 @@ export class ControlPlaneDO extends DurableObject {
     if (row.fingerprint !== null) {
       this.sql.exec(
         `INSERT INTO _substrat_issues
-           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_vertical, last_version, resolved_version, resolved_at)
-         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, NULL, NULL)
+           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
+         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
          ON CONFLICT (fingerprint) DO UPDATE SET
            seen_count = seen_count + 1,
            last_seen = excluded.last_seen,
            last_message = excluded.last_message,
            last_tenant_id = excluded.last_tenant_id,
+           last_owner_kind = excluded.last_owner_kind,
            last_vertical = COALESCE(excluded.last_vertical, last_vertical),
            last_version = COALESCE(excluded.last_version, last_version),
            origin = COALESCE(excluded.origin, origin),
@@ -4129,6 +4134,7 @@ export class ControlPlaneDO extends DurableObject {
         row.at,
         row.message,
         row.tenant_id,
+        issueExemplarOwner(row.tenant_id),
         row.vertical,
         row.version,
       );

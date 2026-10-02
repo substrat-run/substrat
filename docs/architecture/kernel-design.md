@@ -1446,12 +1446,13 @@ error still queued inside a `sweep-runs` intent (`entries[].error` only, so the 
 shape and still drains). The directory half never touches another tenant's row. An ops-failure
 or sweep row with no tenant is the platform's own, and is in reach. An issue outlives the
 ops-failure rows it groups (180 days against 90), so its writer records whose failure each
-exemplar was copied from (`_substrat_issues.last_tenant_id`, set in the same statement as
-`last_message`). The erasure rewrites an exemplar only when that column names the erasing tenant,
-and needs no ops-failure row to do it. An exemplar with no tenant is skipped: either it is the
-platform's own, or it was written before the column and no retained row could attribute it. The
-matched text can come from anyone's request, so an unattributed row is never read as the erasing
-tenant's. A redacted idempotency result becomes the
+exemplar was copied from, in the same statement as `last_message`: `last_owner_kind` is `tenant`
+(and `last_tenant_id` names it) or `platform` (the platform's own failure). The erasure reads that,
+and needs no ops-failure row. A tenant's exemplar is rewritten only for that tenant, through the
+same two links. The platform's own is rewritten on a direct id match, as its ops-failure row is.
+An exemplar whose owner is unknown, written before the columns and never attributed by a
+retained row, is skipped. The matched text can come from anyone's request, so an unattributed
+row is never read as the erasing tenant's. A redacted idempotency result becomes the
 intent tombstone, with the key, operation, fingerprint and recording time kept. A retry under
 that key is refused as unavailable, the same answer an oversized response gets. It is not
 re-executed, and it is not handed the tombstone. The directory half runs after the scope half
@@ -1524,11 +1525,10 @@ tables were, and the ninth once the free-text columns were — both #1632):
    person's name, on a row with no intent link, carries nothing the erasure can read as
    theirs. So does an idempotent response that names them without their id. A
    declared-subject column on these tables would close it, and is a migration. An issue
-   exemplar with no `last_tenant_id` is not reached either. That covers the platform's own
-   exemplars, and issues written before the column whose ops-failure rows did not prove one
-   tenant when the column was added. A directory restored from a dump taken before the column
-   arrives the same way. Those legacy rows age out with issue retention, within 180 days of
-   their last occurrence.
+   exemplar whose owner is unknown (`last_owner_kind` NULL) is not reached either. These are
+   issues written before the columns whose retained ops-failure rows did not prove a single
+   origin when the columns were added, and issues restored from a dump taken before them. They
+   age out with issue retention, within 180 days of their last occurrence.
 
 
 ## 14. Design log

@@ -2772,13 +2772,10 @@ export function scopeHostContractSuite(
             // in this tenant (or the platform's own) that names the subject's id.
             for (const k of ['linked', 'byId', 'platform']) {
               expect(after[`failure:${k}`]).toEqual({ ...(before[`failure:${k}`] as object), message: REDACTED_FAILURE_NOTE });
-            }
-            for (const k of ['linked', 'byId']) {
+              // The platform's own exemplar is attributed as the platform's, and goes on a
+              // direct id match exactly as its ops-failure row does.
               expect(after[`issue:${k}`]).toEqual({ ...(before[`issue:${k}`] as object), lastMessage: REDACTED_FAILURE_NOTE });
             }
-            // The platform's own exemplar has no tenant to vouch for it, and an erasure rewrites
-            // only an exemplar attributed to the erasing tenant (§13.1 limit 9).
-            expect(after['issue:platform']).toEqual(before['issue:platform']);
             expect(after['sweep:byId']).toEqual({ ...(before['sweep:byId'] as object), error: REDACTED_FAILURE_NOTE });
             // The twins: another subject's text, another tenant's row, a drain row about an
             // intent the erasure did not touch — and the documented residual, a sentence that
@@ -2813,12 +2810,12 @@ export function scopeHostContractSuite(
             expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
           });
 
-          /** The issues table as the directory stores it — `last_tenant_id` is not on the read shape. */
-          const exemplarTenantOf = async (operation: string) => {
+          /** Whose an exemplar is, as the directory stores it — not on the issue read shape. */
+          const exemplarOwnerOf = async (operation: string) => {
             const dump = await host.admin.exportDirectory(staff);
             const t = dump.tables.find((x) => x.name === '_substrat_issues')!;
             const row = t.rows.find((r) => r[t.columns.indexOf('operation')] === operation)!;
-            return row[t.columns.indexOf('last_tenant_id')];
+            return { kind: row[t.columns.indexOf('last_owner_kind')], tenant: row[t.columns.indexOf('last_tenant_id')] };
           };
 
           it('rewrites an issue exemplar only when its writer attributed it to the erasing tenant', async () => {
@@ -2831,10 +2828,12 @@ export function scopeHostContractSuite(
               otherExpired: op('other-expired'),
               ownExpired: op('own-expired'),
               legacy: op('legacy'),
+              legacyPlatform: op('legacy-platform'),
             };
             await fail(ops.otherExpired, `schedule threw on contact ${erased}`, t2, null);
             await fail(ops.ownExpired, `schedule threw on contact ${erased} (Anna Ek)`);
             await fail(ops.legacy, `schedule threw on contact ${erased} (Anna Ek)`);
+            await fail(ops.legacyPlatform, `digest named contact ${erased}`, null, null);
             const copy = await host.admin.exportDirectory(staff);
             const expired = new Set(Object.values(ops));
             await host.admin.restoreDirectory(staff, {
@@ -2845,10 +2844,14 @@ export function scopeHostContractSuite(
                   return { ...t, rows: t.rows.filter((r) => !expired.has(r[col] as string)) };
                 }
                 if (t.name === '_substrat_issues') {
-                  // An issue from before attribution that nothing could backfill.
+                  // Issues from before attribution that nothing could backfill: owner unknown.
                   const op = t.columns.indexOf('operation');
-                  const tenant = t.columns.indexOf('last_tenant_id');
-                  return { ...t, rows: t.rows.map((r) => (r[op] === ops.legacy ? r.map((c, i) => (i === tenant ? null : c)) : r)) };
+                  const owner = [t.columns.indexOf('last_tenant_id'), t.columns.indexOf('last_owner_kind')];
+                  const legacy = new Set([ops.legacy, ops.legacyPlatform]);
+                  return {
+                    ...t,
+                    rows: t.rows.map((r) => (legacy.has(r[op] as string) ? r.map((c, i) => (owner.includes(i) ? null : c)) : r)),
+                  };
                 }
                 return t;
               }),
@@ -2858,6 +2861,7 @@ export function scopeHostContractSuite(
               otherExpired: await issueOf(ops.otherExpired),
               ownExpired: await issueOf(ops.ownExpired),
               legacy: await issueOf(ops.legacy),
+              legacyPlatform: await issueOf(ops.legacyPlatform),
             };
 
             await host.admin.shredSubject(staff, t1, s1, erased);
@@ -2866,8 +2870,10 @@ export function scopeHostContractSuite(
             expect(await issueOf(ops.otherExpired)).toEqual(before.otherExpired);
             // This tenant's, its rows expired: the attribution is enough.
             expect(await issueOf(ops.ownExpired)).toEqual({ ...before.ownExpired, lastMessage: REDACTED_FAILURE_NOTE });
-            // Unattributed: skipped — the legacy residual (§13.1 limit 9), never a guess.
+            // Owner unknown: skipped — the legacy residual (§13.1 limit 9), never a guess, whether
+            // the text was a tenant's or the platform's.
             expect(await issueOf(ops.legacy)).toEqual(before.legacy);
+            expect(await issueOf(ops.legacyPlatform)).toEqual(before.legacyPlatform);
           });
 
           it('attributes each exemplar to the failure it copied, and a newer one takes it over', async () => {
@@ -2875,10 +2881,10 @@ export function scopeHostContractSuite(
             const shared = op('shared');
             const text = `schedule threw on contact ${erased}`;
             await fail(shared, text);
-            expect(await exemplarTenantOf(shared)).toBe(t1);
+            expect(await exemplarOwnerOf(shared)).toEqual({ kind: 'tenant', tenant: t1 });
             // The same group, a newer exemplar from another tenant: the attribution moves with it.
             await fail(shared, text, t2, null);
-            expect(await exemplarTenantOf(shared)).toBe(t2);
+            expect(await exemplarOwnerOf(shared)).toEqual({ kind: 'tenant', tenant: t2 });
             const exemplar = await issueOf(shared);
 
             await host.admin.shredSubject(staff, t1, s1, erased);
@@ -2888,9 +2894,9 @@ export function scopeHostContractSuite(
             expect(rows.find((r) => r.tenantId === t1)!.message).toBe(REDACTED_FAILURE_NOTE);
             expect(rows.find((r) => r.tenantId === t2)!.message).toBe(text);
             expect(await issueOf(shared)).toEqual(exemplar);
-            // And the platform's own failure leaves an exemplar with no tenant at all.
+            // And the platform's own failure leaves the platform's exemplar — never "unknown".
             await fail(shared, 'the platform failed', null, null);
-            expect(await exemplarTenantOf(shared)).toBeNull();
+            expect(await exemplarOwnerOf(shared)).toEqual({ kind: 'platform', tenant: null });
           });
 
           it('rewrites a queued sweep-runs entry\'s error, and keeps the rest of the intent', async () => {

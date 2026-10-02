@@ -629,18 +629,39 @@ export interface SubjectTextTarget {
 }
 
 /**
- * #1632: the one-time backfill of `_substrat_issues.last_tenant_id`, run as the column is
- * added to a directory that predates it. A row is attributed only when the retained
- * ops-failure rows carrying its exemplar (same fingerprint, same text) name exactly one
- * tenant. When they name none, more than one, or include the platform's own row, the row
- * stays NULL. Rows whose evidence already expired stay NULL too, and erasure skips a NULL
- * row, so the gap fails closed and ages out with issue retention.
+ * Whose failure an issue exemplar was copied from, as the issue upsert records it beside
+ * `last_tenant_id`: a tenant's, or the platform's own (a failure with no tenant). NULL is never
+ * written. It is reserved for an issue from before the columns that no retained row attributes,
+ * so "the platform's" and "nobody knows" stay different facts.
+ *
+ * A kind column rather than a sentinel in `last_tenant_id`, so that column stays what its name
+ * says — a tenant id or nothing — for any reader or join, and a later owner kind is a new value
+ * here instead of a second magic string.
  */
-export const ISSUE_EXEMPLAR_TENANT_BACKFILL_SQL = `UPDATE _substrat_issues
+export type IssueExemplarOwner = 'tenant' | 'platform';
+
+/** The owner kind both adapters' issue upserts write, from the failure's tenant. */
+export function issueExemplarOwner(tenantId: string | null): IssueExemplarOwner {
+  return tenantId === null ? 'platform' : 'tenant';
+}
+
+/**
+ * #1632: the one-time backfill of an issue's exemplar owner, run as the columns are added to
+ * a directory that predates them. A row is attributed only when the retained ops-failure rows
+ * carrying its exemplar (same fingerprint, same text) all have one origin: a single tenant, or
+ * only the platform. When they name none, or more than one origin, the row stays unknown
+ * (NULL), and erasure skips it. Rows whose evidence already expired stay unknown too, so the
+ * gap fails closed.
+ */
+export const ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL = `UPDATE _substrat_issues
      SET last_tenant_id = (SELECT MIN(o.tenant_id) FROM _substrat_ops_failures o
                             WHERE o.fingerprint = _substrat_issues.fingerprint
-                              AND o.message = _substrat_issues.last_message)
-   WHERE last_tenant_id IS NULL
+                              AND o.message = _substrat_issues.last_message),
+         last_owner_kind = CASE WHEN (SELECT MIN(o.tenant_id) FROM _substrat_ops_failures o
+                                       WHERE o.fingerprint = _substrat_issues.fingerprint
+                                         AND o.message = _substrat_issues.last_message) IS NULL
+                                THEN 'platform' ELSE 'tenant' END
+   WHERE last_owner_kind IS NULL
      AND (SELECT COUNT(DISTINCT COALESCE(o.tenant_id, '')) FROM _substrat_ops_failures o
            WHERE o.fingerprint = _substrat_issues.fingerprint
              AND o.message = _substrat_issues.last_message) = 1`;
@@ -654,11 +675,12 @@ export const ISSUE_EXEMPLAR_TENANT_BACKFILL_SQL = `UPDATE _substrat_issues
  *   scope half already redacted, and goes with it. A row in this tenant, or the platform's
  *   own row with no tenant, that names the subject's id goes too.
  * - `_substrat_issues.last_message` — the newest exemplar of an ops-failure group. Its
- *   writer records whose failure it copied (`last_tenant_id`, in the same statement), and an
- *   exemplar is rewritten only when that is the erasing tenant — by the same two links, and
- *   with no ops-failure row needed, since issues outlive them. An exemplar with no tenant
- *   (the platform's own, or a legacy row nothing attributed) is skipped: the matched text can
- *   come from anyone's request, so an unattributed row is never read as this tenant's.
+ *   writer records whose failure it copied (`last_owner_kind`, `last_tenant_id`, in the same
+ *   statement), and erasure reads that rather than the ops-failure rows, which issues outlive.
+ *   A tenant's exemplar is rewritten only for that tenant, by the same two links; the
+ *   platform's own on a direct id match, as its ops-failure row is. An exemplar of unknown
+ *   owner (a legacy row nothing attributed) is skipped: the matched text can come from
+ *   anyone's request, so an unattributed row is never read as this tenant's.
  * - `_substrat_sweep_runs.error` — a scheduled operation's throw, matched on the subject's
  *   id in this tenant's rows or the platform's own. There is no link to an event here.
  *
@@ -674,8 +696,10 @@ export function redactSubjectDirectoryText(sql: RedactionSql, target: SubjectTex
     [REDACTED_FAILURE_NOTE, needle, target.tenantId],
   );
   sql(
-    'UPDATE _substrat_issues SET last_message = ? WHERE last_tenant_id = ? AND instr(last_message, ?) > 0',
-    [REDACTED_FAILURE_NOTE, target.tenantId, needle],
+    `UPDATE _substrat_issues SET last_message = ?
+      WHERE instr(last_message, ?) > 0
+        AND ((last_owner_kind = 'tenant' AND last_tenant_id = ?) OR last_owner_kind = 'platform')`,
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
   );
   sql(
     `UPDATE _substrat_sweep_runs SET error = ?
@@ -702,5 +726,7 @@ export function redactSubjectDirectoryText(sql: RedactionSql, target: SubjectTex
     target.tenantId,
     target.scopeId,
   ]);
-  redactLinked('_substrat_issues', 'fingerprint', 'last_message', 'last_tenant_id = ? AND ', [target.tenantId]);
+  redactLinked('_substrat_issues', 'fingerprint', 'last_message', "last_owner_kind = 'tenant' AND last_tenant_id = ? AND ", [
+    target.tenantId,
+  ]);
 }

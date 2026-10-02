@@ -29,6 +29,7 @@ const ISSUES = [
   ['fp-two-tenants', 'two tenants said this'],
   ['fp-tenant-and-platform', 'a tenant and the platform said this'],
   ['fp-other-text', 'the exemplar'],
+  ['fp-platform-only', 'only the platform said this'],
 ] as const;
 const FAILURES = [
   ['01JFAILAAAAAAAAAAAAAAAAAA1', 'fp-one-tenant', 'one tenant said this', T1],
@@ -37,16 +38,20 @@ const FAILURES = [
   ['01JFAILAAAAAAAAAAAAAAAAAA4', 'fp-tenant-and-platform', 'a tenant and the platform said this', T1],
   ['01JFAILAAAAAAAAAAAAAAAAAA5', 'fp-tenant-and-platform', 'a tenant and the platform said this', null],
   ['01JFAILAAAAAAAAAAAAAAAAAA6', 'fp-other-text', 'not the exemplar', T1],
+  ['01JFAILAAAAAAAAAAAAAAAAAA7', 'fp-platform-only', 'only the platform said this', null],
+  ['01JFAILAAAAAAAAAAAAAAAAAA8', 'fp-platform-only', 'only the platform said this', null],
 ] as const;
+/** (owner kind, tenant) per issue: proven by one origin, or unknown. */
 const EXPECTED = {
-  'fp-one-tenant': T1,
-  'fp-no-rows': null,
-  'fp-two-tenants': null,
-  'fp-tenant-and-platform': null,
-  'fp-other-text': null,
+  'fp-one-tenant': ['tenant', T1],
+  'fp-platform-only': ['platform', null],
+  'fp-no-rows': [null, null],
+  'fp-two-tenants': [null, null],
+  'fp-tenant-and-platform': [null, null],
+  'fp-other-text': [null, null],
 };
 
-describe('#1632: a directory whose issues predate last_tenant_id', () => {
+describe('#1632: a directory whose issues predate exemplar ownership', () => {
   let dir: string;
   let file: string;
 
@@ -61,16 +66,17 @@ describe('#1632: a directory whose issues predate last_tenant_id', () => {
   const hasColumn = () =>
     read((db) =>
       (db.prepare('PRAGMA table_info(_substrat_issues)').all() as { name: string }[]).some(
-        (c) => c.name === 'last_tenant_id',
+        (c) => c.name === 'last_owner_kind',
       ),
     );
   const attribution = () =>
     read((db) =>
       Object.fromEntries(
-        (db.prepare('SELECT fingerprint, last_tenant_id FROM _substrat_issues').all() as {
+        (db.prepare('SELECT fingerprint, last_owner_kind, last_tenant_id FROM _substrat_issues').all() as {
           fingerprint: string;
+          last_owner_kind: string | null;
           last_tenant_id: string | null;
-        }[]).map((r) => [r.fingerprint, r.last_tenant_id]),
+        }[]).map((r) => [r.fingerprint, [r.last_owner_kind, r.last_tenant_id]]),
       ),
     );
 
@@ -79,6 +85,7 @@ describe('#1632: a directory whose issues predate last_tenant_id', () => {
     file = join(dir, '_directory.sqlite');
     await new SqliteScopeHost({ dir }).close();
     const db = new Database(file);
+    db.exec('ALTER TABLE _substrat_issues DROP COLUMN last_owner_kind');
     db.exec('ALTER TABLE _substrat_issues DROP COLUMN last_tenant_id');
     const issue = db.prepare(
       `INSERT INTO _substrat_issues (fingerprint, operation, status, seen_count, first_seen, last_seen, last_message)
@@ -112,9 +119,9 @@ describe('#1632: a directory whose issues predate last_tenant_id', () => {
     // After the column exists its writer owns it; a NULL is a fact the writer recorded
     // (the platform's own exemplar), and a re-run must not turn it into a tenant's.
     const db = new Database(file);
-    db.prepare("UPDATE _substrat_issues SET last_tenant_id = NULL WHERE fingerprint = 'fp-one-tenant'").run();
+    db.prepare("UPDATE _substrat_issues SET last_tenant_id = NULL, last_owner_kind = NULL WHERE fingerprint = 'fp-one-tenant'").run();
     db.close();
     await new SqliteScopeHost({ dir }).close();
-    expect(attribution()['fp-one-tenant']).toBeNull();
+    expect(attribution()['fp-one-tenant']).toEqual([null, null]);
   });
 });

@@ -279,7 +279,8 @@ export {
   redactSubjectJobRuns,
   REDACTED_FAILURE_NOTE,
   redactSubjectScopeText,
-  ISSUE_EXEMPLAR_TENANT_BACKFILL_SQL,
+  ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
+  issueExemplarOwner,
   redactSubjectDirectoryText,
   platformIntentFailureMessage,
   intentIdOfFailureMessage,
@@ -290,6 +291,7 @@ export type {
   RedactionSql,
   SubjectRedactionCounts,
   SubjectTextTarget,
+  IssueExemplarOwner,
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
