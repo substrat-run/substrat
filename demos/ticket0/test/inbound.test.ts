@@ -8,14 +8,23 @@
  *   - a redelivery lands on the same message rather than a second one;
  *   - a reply joins its thread on `In-Reply-To`, but only from that thread's contact;
  *   - an unsigned, mis-signed or stale delivery never reaches Resend or the desk;
- *   - attachments are named on the thread even though their bytes are not kept.
+ *   - attachments are named on the thread even though their bytes are not kept;
+ *   - the mail's other recipients reach the desk, from Resend's lists or from the
+ *     headers, so it can copy them in (#1086).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ScopeHost, ScopeStub } from '@substrat-run/kernel';
-import { inboundConfigFor, parseFrom, receiveInbound, type InboundConfig } from '../harness/inbound.js';
+import {
+  inboundConfigFor,
+  parseFrom,
+  receiveInbound,
+  recipientsOf,
+  splitAddressList,
+  type InboundConfig,
+} from '../harness/inbound.js';
 import { buildHost, seed, type Desk, type World } from '../src/seed.js';
 
 let dir: string;
@@ -334,6 +343,74 @@ describe('the sender', () => {
     expect(found.entries.find((c) => c.email === 'robin@customer.example')?.display_name).toBe(
       'Robin Customer',
     );
+  });
+});
+
+describe('the other recipients (#1086)', () => {
+  /** The desk's own address, which a mail addresses and the desk never copies in. */
+  async function deskAddress(): Promise<string> {
+    const admin = await host.getScope(world.substrat.admin.principal, world.substrat.tenant, world.substrat.scope);
+    return ((await admin.invoke('ticket0/get-desk', {})) as { from_address: string }).from_address;
+  }
+
+  /** The CCs on a conversation, by address, through the reads an agent has. */
+  async function ccsOf(conversationId: string): Promise<string[]> {
+    const agent = await at(world.substrat, 'agent');
+    const { participants } = (await agent.invoke('ticket0/list-participants', { conversationId })) as {
+      participants: { role: string; contact_id: string | null }[];
+    };
+    const { entries } = (await agent.invoke('ticket0/list-contacts', { limit: 200 })) as {
+      entries: { id: string; email: string | null }[];
+    };
+    return participants
+      .filter((p) => p.role === 'cc')
+      .map((p) => entries.find((c) => c.id === p.contact_id)?.email ?? '?')
+      .sort();
+  }
+
+  it('are copied in from the lists Resend reads back, names and all', async () => {
+    const { fetchImpl } = fakeResend({
+      em_cc1: {
+        from: 'lee@customer.example',
+        to: [await deskAddress(), 'Bo Lindqvist <bo@customer.example>'],
+        cc: ['"Doe, Jane" <jane@customer.example>'],
+        subject: 'For all of us',
+        text: 'Please copy my team.',
+        message_id: '<lee-1@customer.example>',
+      },
+    });
+    const result = await receive(world.substrat, fetchImpl, await delivery('em_cc1'));
+    const body = result.body as { conversationId: string };
+    expect(await ccsOf(body.conversationId)).toEqual(['bo@customer.example', 'jane@customer.example']);
+  });
+
+  it('are read from the headers when Resend lists none', async () => {
+    const { fetchImpl } = fakeResend({
+      em_cc2: {
+        from: 'mo@customer.example',
+        subject: 'Headers only',
+        text: 'Hi.',
+        message_id: '<mo-1@customer.example>',
+        headers: [
+          { name: 'To', value: `${await deskAddress()}, Ny <ny@customer.example>` },
+          { name: 'Cc', value: '"Ox, Pat" <pat-ox@customer.example>, not-an-address' },
+        ],
+      },
+    });
+    const result = await receive(world.substrat, fetchImpl, await delivery('em_cc2'));
+    const body = result.body as { conversationId: string };
+    expect(await ccsOf(body.conversationId)).toEqual(['ny@customer.example', 'pat-ox@customer.example']);
+  });
+
+  it('split on the commas between addresses, never on one inside a name', () => {
+    expect(splitAddressList('a@x.example, "Doe, Jane" <j@x.example>,<k@x.example> ')).toEqual([
+      'a@x.example',
+      '"Doe, Jane" <j@x.example>',
+      '<k@x.example>',
+    ]);
+    expect(recipientsOf(null, 'Bad, <ok@x.example>')).toEqual(['ok@x.example']);
+    expect(recipientsOf(['b@x.example'], 'ignored@x.example')).toEqual(['b@x.example']);
+    expect(recipientsOf(undefined, null)).toEqual([]);
   });
 });
 
