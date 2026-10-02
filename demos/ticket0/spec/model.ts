@@ -371,6 +371,16 @@ const CLIENT_COLUMNS = {
   timezone: z.string().nullable(),
 } as const;
 
+/**
+ * The client columns whose values arrive from OUTSIDE the desk — an inbound header, or the
+ * edge's guess at where the request came from — and so are `outsideText` (#1088). Every
+ * client column but `device`, which the host normalises into a closed enum.
+ */
+const CLIENT_OUTSIDE_TEXT = [
+  'user_agent', 'language', 'browser', 'browser_version', 'os', 'os_version',
+  'country', 'region', 'city', 'timezone',
+] as const satisfies readonly (keyof typeof CLIENT_COLUMNS)[];
+
 /** How many auto-tag rules a desk may hold. A list an admin reads, not a program. */
 export const AUTO_TAG_RULES_MAX = 20;
 /** The longest substring or tag one rule may carry. */
@@ -569,6 +579,9 @@ export const ticket0Entities = defineEntities({
     }),
     key: ['external_id'],
     erasable: ['email', 'display_name'],
+    // The host site's own id for the person — often an address — vouched for, not written
+    // here (#1088).
+    outsideText: ['external_id'],
   },
 
   /**
@@ -829,6 +842,8 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['conversation'],
     erasable: ['body_text', 'body_html'],
+    // Mail headers as they arrived: the sender's host writes both, freely (#1088).
+    outsideText: ['email_message_id', 'email_in_reply_to'],
   },
 
   /**
@@ -883,6 +898,7 @@ export const ticket0Entities = defineEntities({
       recorded_at: z.string(),
     }),
     primaryKey: ['email_message_id'],
+    outsideText: ['email_message_id'],
   },
 
   /** A canned answer. Every desk grows these; better to ship the table than to watch
@@ -951,8 +967,8 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['conversation'],
     key: ['token_hash'],
-    // The browser's raw header, as it arrived (#1088).
-    outsideText: ['user_agent'],
+    // What the browser and the edge said, as they said it (#1088).
+    outsideText: CLIENT_OUTSIDE_TEXT,
   },
 
   /**
@@ -984,7 +1000,7 @@ export const ticket0Entities = defineEntities({
       ...CLIENT_COLUMNS,
     }),
     key: ['token_hash'],
-    outsideText: ['user_agent'],
+    outsideText: CLIENT_OUTSIDE_TEXT,
   },
 
   /**
@@ -1216,8 +1232,8 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['kbSource'],
     key: ['source_id', 'url'],
-    // A remote site's document, read as fetched (#1088).
-    outsideText: ['title', 'heading_path', 'body'],
+    // A remote site's document, read as fetched, links included (#1088).
+    outsideText: ['url', 'title', 'heading_path', 'body'],
   },
 
   /**

@@ -324,6 +324,9 @@
       "erasable": [
         "display_name",
         "email"
+      ],
+      "outsideText": [
+        "external_id"
       ]
     },
     "conversation": {
@@ -864,7 +867,8 @@
       "outsideText": [
         "body",
         "heading_path",
-        "title"
+        "title",
+        "url"
       ]
     },
     "kbSource": {
@@ -1027,6 +1031,9 @@
       },
       "primaryKey": [
         "email_message_id"
+      ],
+      "outsideText": [
+        "email_message_id"
       ]
     },
     "message": {
@@ -1145,6 +1152,10 @@
       "erasable": [
         "body_html",
         "body_text"
+      ],
+      "outsideText": [
+        "email_in_reply_to",
+        "email_message_id"
       ]
     },
     "notification": {
@@ -1556,6 +1567,15 @@
         "token_hash"
       ],
       "outsideText": [
+        "browser",
+        "browser_version",
+        "city",
+        "country",
+        "language",
+        "os",
+        "os_version",
+        "region",
+        "timezone",
         "user_agent"
       ]
     },
@@ -1732,6 +1752,15 @@
         "token_hash"
       ],
       "outsideText": [
+        "browser",
+        "browser_version",
+        "city",
+        "country",
+        "language",
+        "os",
+        "os_version",
+        "region",
+        "timezone",
         "user_agent"
       ]
     }

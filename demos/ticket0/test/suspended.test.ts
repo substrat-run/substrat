@@ -1132,6 +1132,9 @@ describe('events carry no outside text', () => {
     for (const [entity, field] of [
       ['message', 'body_text'], ['aiTurn', 'error'], ['kbSource', 'last_error'], ['conversation', 'subject'],
       ['blockRule', 'value'], ['kbArticle', 'body'], ['widgetSession', 'user_agent'], ['contact', 'email'],
+      // Codex round 5: inbound headers, remote links, and the browser's and the edge's own words.
+      ['message', 'email_message_id'], ['message', 'email_in_reply_to'], ['mailDelivery', 'email_message_id'],
+      ['kbArticle', 'url'], ['contact', 'external_id'], ['widgetOpening', 'city'], ['widgetSession', 'language'],
     ] as const) {
       expect(outside(entity), `${entity}.${field}`).toContain(field);
     }
