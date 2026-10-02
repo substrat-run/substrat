@@ -406,6 +406,7 @@ import {
   type SearchIndexPlan,
   type SearchOptions,
   ATTACHMENT_TEXT_DDL,
+  assertJobRegistrable,
   attachmentSearchQuery,
   attachmentTextJob,
   enqueueAttachmentText,
@@ -5031,6 +5032,8 @@ export class SqliteScopeHost implements ScopeHost {
     handler: JobHandler,
     retry?: ExecutorRetryPolicy,
   ): void {
+    // #1575: the kernel's own jobs are dispatched before this registry is read.
+    assertJobRegistrable(moduleId, name);
     const key = `${moduleId}/${name}`;
     if (this.jobs.has(key)) throw new Error(`job '${key}' is already registered`);
     this.jobs.set(key, { handler, retry });

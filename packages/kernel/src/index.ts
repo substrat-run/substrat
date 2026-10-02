@@ -207,6 +207,7 @@ export {
   ATTACHMENT_TEXT_DDL,
   ATTACHMENT_TEXT_JOB,
   ATTACHMENT_TEXT_MODULE,
+  assertJobRegistrable,
   attachmentSearchQuery,
   attachmentTextJob,
   enqueueAttachmentText,

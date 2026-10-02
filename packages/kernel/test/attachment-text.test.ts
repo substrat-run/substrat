@@ -5,6 +5,7 @@ import {
   ATTACHMENT_TEXT_DDL,
   ATTACHMENT_TEXT_JOB,
   ATTACHMENT_TEXT_MODULE,
+  assertJobRegistrable,
   attachmentSearchQuery,
   attachmentTextJob,
   enqueueAttachmentText,
@@ -529,6 +530,14 @@ describe('readableAttachmentIds', () => {
     );
     expect(ids).toEqual(['1', '2', '4', '5']);
     expect(asked).toEqual(['x', 'boom', 'y']);
+  });
+});
+
+describe('assertJobRegistrable', () => {
+  it("refuses any job under the kernel's own module id, and nothing else", () => {
+    expect(() => assertJobRegistrable(ATTACHMENT_TEXT_MODULE, ATTACHMENT_TEXT_JOB)).toThrow(/reserved/);
+    expect(() => assertJobRegistrable(ATTACHMENT_TEXT_MODULE, 'some-later-kernel-job')).toThrow(/reserved/);
+    expect(() => assertJobRegistrable('@acme/vertical', ATTACHMENT_TEXT_JOB)).not.toThrow();
   });
 });
 

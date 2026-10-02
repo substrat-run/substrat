@@ -93,6 +93,25 @@ export function isAttachmentTextRun(run: { module_id: string; job: string }): bo
 }
 
 /**
+ * Refuse a job registered under the kernel's own module id — every adapter's `registerJob`
+ * calls this first.
+ *
+ * The kernel's jobs are each host's own: it supplies their handlers at dispatch, bound to
+ * the scope it is driving, and dispatch looks there before the registry. A handler
+ * registered under the kernel's id would therefore never run, and say nothing — the one
+ * outcome a registration must not have. The whole id is reserved, not only today's job
+ * name, so a later kernel job cannot be shadowed by a registration that predates it.
+ */
+export function assertJobRegistrable(moduleId: string, name: string): void {
+  if (moduleId === ATTACHMENT_TEXT_MODULE) {
+    throw new Error(
+      `job '${moduleId}/${name}' is reserved: '${ATTACHMENT_TEXT_MODULE}' jobs are the host's own, ` +
+        'so a handler registered under that module id would never run',
+    );
+  }
+}
+
+/**
  * The text rows and their index, as both adapters build them.
  *
  * Shared for the reason `JOB_RUN_DDL` is: `lint:spine-ddl` compares what each adapter's

@@ -26,6 +26,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  moduleId,
   permissionKey,
   platformActorId,
   principalId,
@@ -229,6 +230,16 @@ export function attachmentTextContractSuite(
         expect(await search(s, bob, 'wombat')).toEqual([]);
         const denials = await (await host.getScope(editor, t, s)).invoke<{ operation: string | null }[]>('perm/read-denials');
         expect(denials.filter((d) => d.operation === 'attachments.search')).toEqual([]);
+      });
+    });
+
+    describe('the kernel job is the host’s own', () => {
+      it('refuses a registration under the kernel’s module id — any job name — and accepts the same name elsewhere', () => {
+        const handler = () => ({ done: true });
+        expect(() => host.registerJob(ATTACHMENT_TEXT_MODULE, ATTACHMENT_TEXT_JOB, handler)).toThrow(/reserved/);
+        expect(() => host.registerJob(ATTACHMENT_TEXT_MODULE, 'a-later-kernel-job', handler)).toThrow(/reserved/);
+        // The twin: a module of its own may name a job `attachment-text`; only the module id is reserved.
+        expect(() => host.registerJob(moduleId.parse('@test/att-text-twin'), ATTACHMENT_TEXT_JOB, handler)).not.toThrow();
       });
     });
 
