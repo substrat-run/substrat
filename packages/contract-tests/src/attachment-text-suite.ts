@@ -294,13 +294,15 @@ export function attachmentTextContractSuite(
     });
 
     describe('dumps carry no text; a load re-derives it where the bytes are', () => {
-      it('an export holds no attachment text table, nor its index', async () => {
+      it('an export carries the attachment row and not one word of its extracted text', async () => {
         const s = await newScope();
         await upload(s, item('i'), 'x.txt', 'text/plain', bytes('the dugong file'));
         await extract(s);
+        expect(await search(s, editor, 'dugong')).toHaveLength(1);
         const dump = await host.admin.exportScope(staff, t, s);
         expect(dump.tables.some((tb) => tb.name === '_substrat_attachments')).toBe(true);
-        expect(dump.tables.filter((tb) => tb.name.startsWith('_substrat_search__'))).toEqual([]);
+        // Judged on the rows, not on table names: a renamed text table must still fail this.
+        expect(JSON.stringify(dump.tables.map((tb) => tb.rows))).not.toContain('dugong');
         expect(dump.tables.some((tb) => isSearchIndexTable(tb.name))).toBe(false);
       });
 
