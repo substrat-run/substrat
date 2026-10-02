@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { CapabilityRecord } from '@substrat-run/contracts';
-import { ApiError } from '../src/lib/api';
+import { capabilityStatus, type CapabilityRecord } from '@substrat-run/contracts';
 import {
   STATUS_LABEL,
   authorLine,
-  capabilitiesCardState,
   grantLine,
   operationsLine,
-  standingOf,
-  statusTone,
+  capabilityTone,
   usesLine,
 } from '../src/lib/capabilities';
 
@@ -38,23 +35,15 @@ const become = (over: Partial<CapabilityRecord> = {}): CapabilityRecord =>
   ({ mode: 'become', ...common, principal: '01J0000000000000000000SEAT', ...over }) as CapabilityRecord;
 
 describe('the console Capabilities card (#1686)', () => {
-  it('a control plane that predates the route is its own state (501), not "no capabilities"', () => {
-    expect(capabilitiesCardState(null, new ApiError(501, 'predates'))).toEqual({ kind: 'predates' });
-    // The twin: a readable scope with none is an empty, ready card.
-    expect(capabilitiesCardState([], null)).toEqual({ kind: 'ready', entries: [] });
-    expect(capabilitiesCardState(null, null)).toEqual({ kind: 'loading' });
-    expect(capabilitiesCardState(null, new ApiError(403, 'forbidden'))).toEqual({ kind: 'error', message: 'forbidden' });
-  });
-
   it('names each standing, and a used-up link is a warning rather than finished', () => {
-    expect(standingOf(act(), NOW)).toBe('live');
-    expect(standingOf(act({ revokedAt: NOW }), NOW)).toBe('revoked');
-    expect(standingOf(act({ expiresAt: NOW }), NOW)).toBe('expired');
-    expect(standingOf(act({ maxUses: 1, uses: 1 }), NOW)).toBe('used-up');
-    expect(statusTone('live')).toBe('success');
-    expect(statusTone('used-up')).toBe('warning');
-    expect(statusTone('revoked')).toBe('danger');
-    expect(statusTone('expired')).toBe('neutral');
+    expect(capabilityStatus(act(), NOW)).toBe('live');
+    expect(capabilityStatus(act({ revokedAt: NOW }), NOW)).toBe('revoked');
+    expect(capabilityStatus(act({ expiresAt: NOW }), NOW)).toBe('expired');
+    expect(capabilityStatus(act({ maxUses: 1, uses: 1 }), NOW)).toBe('used-up');
+    expect(capabilityTone('live')).toBe('success');
+    expect(capabilityTone('used-up')).toBe('warning');
+    expect(capabilityTone('revoked')).toBe('danger');
+    expect(capabilityTone('expired')).toBe('neutral');
     expect(STATUS_LABEL['used-up']).toBe('Used up');
   });
 

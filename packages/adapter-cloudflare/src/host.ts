@@ -6290,8 +6290,7 @@ export class CloudflareScopeHost implements ScopeHost {
         scopeId,
         filter?: CapabilityFilter,
       ): Promise<CapabilityRecord[]> => {
-        // Checked here as well as in the ScopeDO, so a bad bound keeps its error across the hop
-        // instead of arriving as a bare message from the stub.
+        // Parsed here too: a typed refusal thrown inside the DO arrives as a bare message.
         const parsed = capabilityFilter.parse(filter ?? {});
         const rec = await this.scopeRecordForRead(tenantId, scopeId);
         this.assertServedHere(rec, scopeId, 'listCapabilities');

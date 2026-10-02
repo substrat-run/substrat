@@ -3431,17 +3431,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
   });
 
-  // The operator's read of a scope's capabilities (#1686): who holds a link into this scope,
-  // what it may do, when it dies, how often it has been used. Records only — the query selects
-  // no hash and the record has no field for one, and the secret exists nowhere to read.
-  //
-  // **Staff and the platform service token ONLY**, and unlike the denial log a builder does
-  // NOT read its own tenant's. A capability row names the minter, the principal a `become`
-  // yields and the entity a link opens, and the people it names are the vertical's end users,
-  // not the builder's. Builders are refused by BUILDER_ROUTES (default-deny) and a tenant
-  // credential passes this path's `/tenants/<pin>` shape, so the handler refuses both by
-  // `confinedTenant` — the refusal does not rest on which list the route is absent from.
-  // Delegated like the denial log: a hosted scope's rows are in the vertical's deployment.
+  // The operator's read of a scope's capabilities (#1686). **Staff and the platform service
+  // token ONLY**, and unlike the denial log a builder does NOT read its own tenant's: a row
+  // names the vertical's end users, not the builder's. BUILDER_ROUTES and the tenant pin
+  // already default-deny it; the handler refuses by `confinedTenant` as well, so the refusal
+  // does not rest on which list the route is absent from. Delegated like the denial log.
   app.get('/tenants/:tenantId/scopes/:scopeId/capabilities', async (c) => {
     if (confinedTenant(c.get('principal')) !== null) {
       return c.json({ error: 'forbidden: the capability directory is staff-only' }, 403);

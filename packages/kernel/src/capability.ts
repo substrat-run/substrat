@@ -195,6 +195,17 @@ export function capabilityListQuery(raw?: CapabilityFilter): { sql: string; para
 }
 
 /**
+ * The directory read, decoded — the ONE function behind `ctx.capabilities.list` and
+ * `HostAdmin.listCapabilities` on both adapters, so "a reader returns records and never a
+ * hash" is held in one place: the query selects no `token_hash`, and the decode keeps only
+ * the record schema's fields.
+ */
+export function readCapabilities(sql: ScopedSql, filter?: CapabilityFilter): CapabilityRecord[] {
+  const q = capabilityListQuery(filter);
+  return sql.query<CapabilityRow>(q.sql, q.params).map(capabilityRecordOf);
+}
+
+/**
  * Is this capability USABLE — not revoked, not expired? The ONE predicate for it: the
  * permission checker, the session door and the exchange all call this, so the three can
  * never disagree about whether a revoked or expired capability still acts. Same shape as
@@ -618,10 +629,7 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
       });
     },
 
-    list(raw) {
-      const q = capabilityListQuery(raw);
-      return deps.sql.query<CapabilityRow>(q.sql, q.params).map(capabilityRecordOf);
-    },
+    list: (raw) => readCapabilities(deps.sql, raw),
   };
 }
 

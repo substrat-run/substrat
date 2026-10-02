@@ -171,6 +171,7 @@ export {
   mintCapabilitySecret,
   mintCapabilitySessionToken,
   persistedText,
+  readCapabilities,
   plausibleSessionToken,
   redactSecrets,
   redactSecretText,

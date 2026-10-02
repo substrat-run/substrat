@@ -1,15 +1,14 @@
 import { useEffect, useState } from 'react';
-import type { CapabilityRecord, Scope } from '@substrat-run/contracts';
+import { capabilityStatus, type CapabilityRecord, type Scope } from '@substrat-run/contracts';
 import { Badge, Card, Checkbox, Table } from '../components';
 import type { Api } from '../lib/api';
+import { switchCardState } from '../lib/schedules';
 import {
   STATUS_LABEL,
   authorLine,
-  capabilitiesCardState,
   grantLine,
   operationsLine,
-  standingOf,
-  statusTone,
+  capabilityTone,
   usesLine,
 } from '../lib/capabilities';
 
@@ -46,8 +45,8 @@ export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
     };
   }, [api, scope.tenantId, scope.id, revoked]);
 
-  const state = capabilitiesCardState(rows, error);
-  // The instant the page was read, not a ticking clock: a standing is a fact about this read.
+  const state = switchCardState(rows, error);
+  // Stamped at render: a standing is judged against the clock at the moment it is shown.
   const now = new Date().toISOString();
 
   return (
@@ -108,10 +107,10 @@ export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
             {
               header: 'Status',
               render: (r) => {
-                const s = standingOf(r, now);
+                const s = capabilityStatus(r, now);
                 return (
                   <span>
-                    <Badge status={statusTone(s)}>{STATUS_LABEL[s]}</Badge>
+                    <Badge status={capabilityTone(s)}>{STATUS_LABEL[s]}</Badge>
                     {r.revokedAt && r.revokedBy && (
                       <span style={{ display: 'block', fontSize: 12, color: 'var(--text-tertiary)' }}>
                         {stamp(r.revokedAt)} by {authorLine(r.revokedBy)}

@@ -214,16 +214,14 @@ import {
   CAPABILITY_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
-  capabilityListQuery,
-  capabilityRecordOf,
   capabilityTokenHash,
   createCapabilityVerbs,
   createEntityEdgeVerbs,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
   mintBecomeCapability,
-  type CapabilityRow,
   plausibleSessionToken,
+  readCapabilities,
   redactSecrets,
   redactSecretText,
   moduleLog,
@@ -7000,8 +6998,8 @@ export class SqliteScopeHost implements ScopeHost {
       },
 
       // #1686 — the operator's read of the directory `ctx.capabilities.list` reads. The
-      // denial log's discipline: `scopeReadDbFor` is the K-3 cross-check, the query is the
-      // kernel's one (no `token_hash` column in it), and the read leaves a K-24 row.
+      // denial log's discipline: `scopeReadDbFor` is the K-3 cross-check, the read is the
+      // kernel's one (`readCapabilities`: no `token_hash` column in it), and the read leaves a K-24 row.
       listCapabilities: async (
         actor,
         tenantId: TenantId,
@@ -7009,8 +7007,7 @@ export class SqliteScopeHost implements ScopeHost {
         filter?: CapabilityFilter,
       ): Promise<CapabilityRecord[]> => {
         const db = this.scopeReadDbFor(tenantId, scopeId);
-        const q = capabilityListQuery(filter);
-        const rows = (db.prepare(q.sql).all(...q.params) as CapabilityRow[]).map(capabilityRecordOf);
+        const rows = readCapabilities(spineSql(db), filter);
         this.recordAccess(actor, 'listCapabilities', { tenantId, scopeId }, filter ?? null, rows.length);
         return rows;
       },
