@@ -599,10 +599,18 @@ const FRAMESET_PROOF_SPAN = 256;
  * What those rules never see proves neither: raw text, comments, a foreign region. (A select's
  * own content is fed in all the same: its start tag has proved both facts already.) Inside a
  * template a frameset is ignored outright.
+ *
+ * A third fact runs the other way. An honoured frameset DISCARDS the body — a `title` read in
+ * the body, whose text clears nothing, goes with it — so the scanner must drop what it emitted
+ * from the point the body MAY have started: `mayHaveBody`, set on anything that might start
+ * it (any character not whitespace, `&` and NUL included, or a run too long to look through),
+ * where `body` waits for proof.
  */
 class FramesetProof {
   private body = false;
   private cleared = false;
+  /** Whether the body may have started — over-approximated, for what an honoured frameset discards. */
+  mayHaveBody = false;
 
   /** Whether a frameset met here — inside template content or not — is ignored. */
   ignores(inTemplate: boolean): boolean {
@@ -611,11 +619,21 @@ class FramesetProof {
 
   /** A run of text the HTML rules process as characters. */
   text(s: string, from: number, to: number, inTemplate: boolean): void {
-    if (this.body && this.cleared) return;
     const end = Math.min(to, from + FRAMESET_PROOF_SPAN);
+    if (!inTemplate && !this.mayHaveBody) {
+      if (to > end) this.mayHaveBody = true;
+      for (let k = from; k < end && !this.mayHaveBody; k += 1) {
+        if (!isHtmlSpace(s.charCodeAt(k))) this.mayHaveBody = true;
+      }
+    }
+    if (this.body && this.cleared) return;
     for (let k = from; k < end; k += 1) {
       const c = s.charCodeAt(k);
-      if (isHtmlSpace(c) || c === 0) continue;
+      if (isHtmlSpace(c)) continue;
+      if (c === 0) {
+        if (!inTemplate) this.body = true; // a NUL starts the body, and clears nothing
+        continue;
+      }
       // An `&` proves nothing: a character reference may decode to whitespace.
       if (c !== 38) this.character(inTemplate);
       return;
@@ -625,7 +643,12 @@ class FramesetProof {
   /** A character surely not whitespace, processed by the HTML rules. */
   character(inTemplate: boolean): void {
     this.cleared = true;
-    if (!inTemplate) this.body = true;
+    if (!inTemplate) this.startBody();
+  }
+
+  private startBody(): void {
+    this.body = true;
+    this.mayHaveBody = true;
   }
 
   /**
@@ -637,13 +660,13 @@ class FramesetProof {
       // In template content every end tag but `</template>` is ignored.
       if (inTemplate) return;
       if (name === 'br') this.cleared = true; // read as a `<br>`
-      if (name === 'br' || name === 'body' || name === 'html') this.body = true;
+      if (name === 'br' || name === 'body' || name === 'html') this.startBody();
       return;
     }
     if (CLEARS_FRAMESET_OK.has(name) || (name === 'body' && !inTemplate)) this.cleared = true;
     // An `input` clears it unless `type` is `hidden`: proof is one that names no `type` at all.
     if (name === 'input' && attributes !== null && !/type/i.test(attributes)) this.cleared = true;
-    if (!inTemplate && !HEAD_START_TAGS.has(name)) this.body = true;
+    if (!inTemplate && !HEAD_START_TAGS.has(name)) this.startBody();
   }
 }
 /** In a select inside a table, the end tags that close the select early. */
@@ -805,6 +828,11 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
   };
   const flags = { selfClosing: false };
   const frameset = new FramesetProof();
+  // Where in `out` the body may have started: an honoured frameset discards everything from here.
+  let bodyFrom = -1;
+  const markBody = () => {
+    if (bodyFrom < 0 && frameset.mayHaveBody) bodyFrom = out.length;
+  };
   let i = 0;
   while (i < n) {
     const lt = await pace.find(html, '<', i);
@@ -812,8 +840,9 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       text(i, n);
       break;
     }
-    text(i, lt);
     frameset.text(html, i, lt, hidden > 0);
+    markBody();
+    text(i, lt);
     const next = html.charCodeAt(lt + 1);
     if (next === 33 && html.startsWith('--', lt + 2)) {
       const end = await commentEnd(html, lt, pace);
@@ -830,8 +859,9 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       continue;
     }
     if (!isAsciiAlpha(next) && next !== 47) {
-      text(lt, lt + 1); // `<` before anything else is text, as a browser reads it
       frameset.character(hidden > 0);
+      markBody();
+      text(lt, lt + 1); // `<` before anything else is text, as a browser reads it
       i = lt + 1;
       continue;
     }
@@ -843,6 +873,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
     if (gt < 0) break;
     i = gt + 1;
     frameset.tag(name, closing, hidden > 0, gt - nameAt <= FRAMESET_PROOF_SPAN ? html.slice(nameAt, gt) : null);
+    markBody();
     if (selectAt >= 0 && hidden === selectAt) {
       // In the select itself: every tag but these is ignored by a browser and switches nothing.
       if (closing && name === 'select') {
@@ -885,6 +916,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
       if (selectAt >= 0) break;
       if (name === 'frameset') {
         if (frameset.ignores(hidden > 0)) continue; // a browser ignores it
+        if (bodyFrom >= 0) out.length = bodyFrom; // honoured: the body goes, and what was read in it
         break;
       }
       if (flags.selfClosing) continue; // `<svg/>` opens and closes at once

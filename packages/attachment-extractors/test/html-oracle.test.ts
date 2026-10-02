@@ -113,6 +113,15 @@ const TOKENS = [
   '</TEMPLATE >', '</SCRIPT\n>', '</TextArea/>', '</Title x=">">',
 ];
 
+/**
+ * The tokens that decide whether a frameset is honoured, and what it discards: what starts the
+ * body, what clears the frameset-ok flag, what reads text into it without clearing it.
+ */
+const FRAMESET_TOKENS = [
+  '<p>', '<title>', '</title>', '<frameset>', '<template>', '</template>', '<img>', '<body>', '</br>',
+  '<svg/>', '<select>', '</select>', '<input>', '<textarea>', '<noscript>', '</noscript>',
+];
+
 /** `x000x` … — fixed width, so no marker is a substring of another or of two side by side. */
 const marker = (i: number): string => `x${String(i).padStart(3, '0')}x`;
 
@@ -181,12 +190,12 @@ async function check(docs: Iterable<Doc>): Promise<Tally> {
   return tally;
 }
 
-function* sequences(length: number): Generator<string[]> {
+function* sequences(length: number, tokens: readonly string[] = TOKENS): Generator<string[]> {
   const idx = new Array<number>(length).fill(0);
   for (;;) {
-    yield idx.map((i) => TOKENS[i]!);
+    yield idx.map((i) => tokens[i]!);
     let k = length - 1;
-    while (k >= 0 && ++idx[k]! === TOKENS.length) idx[k--] = 0;
+    while (k >= 0 && ++idx[k]! === tokens.length) idx[k--] = 0;
     if (k < 0) return;
   }
 }
@@ -200,9 +209,9 @@ function* every(length: number): Generator<Doc> {
  * Every sequence of `length` tokens with NO leading marker, under every placement of markers in
  * the gaps between tokens — the final marker always there, so what follows is seen.
  */
-function* everyOpening(length: number): Generator<Doc> {
+function* everyOpening(length: number, from: readonly string[] = TOKENS): Generator<Doc> {
   const interior = (1 << (length - 1)) - 1; // the gaps 1 … length-1
-  for (const tokens of sequences(length)) {
+  for (const tokens of sequences(length, from)) {
     for (let mask = 0; mask <= interior; mask += 1) yield { tokens, gaps: (mask << 1) | (1 << length) };
   }
 }
@@ -260,6 +269,14 @@ describe('the HTML extractor against parse5: nothing the parser keeps out of the
     expect(tally.leaks, JSON.stringify(tally.leaks, null, 1)).toEqual([]);
     expect(tally.missed, JSON.stringify(tally.missed, null, 1)).toEqual([]);
     expect(tally.documents).toBe(4 * TOKENS.length ** 3);
+  }, 300_000);
+
+  it(`every FOUR-token document over the frameset tokens, opening on its first, markers in every placement (${8 * FRAMESET_TOKENS.length ** 4})`, async () => {
+    // Over the full token set this is 68 M documents — run once by hand, too long for every run.
+    const tally = await check(everyOpening(4, FRAMESET_TOKENS));
+    expect(tally.leaks, JSON.stringify(tally.leaks, null, 1)).toEqual([]);
+    expect(tally.missed, JSON.stringify(tally.missed, null, 1)).toEqual([]);
+    expect(tally.documents).toBe(8 * FRAMESET_TOKENS.length ** 4);
   }, 300_000);
 
   it('a seeded sample of 50 000 documents of four to eight tokens, markers placed at random', async () => {

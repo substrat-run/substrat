@@ -356,14 +356,21 @@ describe('text and html', () => {
         // An explicit `<body>` starts it and clears the flag.
         [`<title>t</title><body>${F}`, 't\n\nAFTER'],
         // A reference to whitespace proves nothing; neither, conservatively, does any `&` — a
-        // browser ignores this frameset, and the scanner indexes less rather than guess.
+        // browser ignores this frameset and shows the `&`, and the scanner indexes less rather
+        // than guess: taking the frameset as honoured, it drops what it read in the body too.
         [`<title>t</title><p></p>&#32;${F}`, 't'],
-        [`<title>t</title><p></p>&amp;${F}`, 't\n\n&'],
+        [`<title>t</title><p></p>&amp;${F}`, 't'],
         // A select's own tag starts the body and clears the flag.
         [`<title>t</title><select>x</select>${F}`, 't\n\nAFTER'],
         // An `input` clears it — unless its `type` is `hidden`, so one naming a `type` proves nothing.
         [`<title>t</title><p></p><input>${F}`, 't\n\nAFTER'],
         [`<title>t</title><p></p><input type="hidden">${F}`, 't'],
+        // An honoured frameset discards the body — and a title read there, whose text clears nothing.
+        [`<title>t</title><p><title>x</title>${F}`, 't'],
+        [`<title>t</title>\u0000<title>x</title>${F}`, 't'], // a NUL starts the body too
+        [`<title>t</title><template></template>\u0000${F}`, 't\n\nAFTER'], // …which a template's flag needed
+        // Conservatively, an `&` may have started it: a browser keeps this title (`&#32;` is a space).
+        [`<title>t</title>&#32;<title>x</title>${F}`, 't'],
         // Inside a template, end tags are ignored: `</body>` there starts nothing; outside, it does.
         [`<title>t</title><template></body></template>${F}`, 't'],
         [`<title>t</title><template></template></body>${F}`, 't\n\nAFTER'],

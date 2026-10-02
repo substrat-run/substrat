@@ -41,7 +41,8 @@ The HTML extractor **never indexes text the HTML parser keeps out of the rendere
 comments, `script`, `style`, the other elements whose content a browser does not render, and
 `template` content. Where it does not model how a browser parses, it **under-indexes** rather
 than guess. It indexes nothing inside a `select` or an inline `svg` or `math`, and nothing after
-a honoured `frameset`. After such a context it resumes only where it is certain a browser ends
+a `frameset` unless it can prove a browser ignores it (and an honoured frameset discards the
+body, so what was read in it is dropped too). After such a context it resumes only where it is certain a browser ends
 it, and otherwise indexes nothing more of the file. Its tests hold this against parse5, a
 browser-grade HTML parser.
 

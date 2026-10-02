@@ -67,7 +67,10 @@ It may **under-index** these contexts:
 - **Inline `svg` and `math`**: nothing inside is indexed. Indexing resumes after the closing
   tag only when the extractor is certain that is where a browser ends it, as for a typical
   icon. Otherwise, nothing after it is indexed either.
-- **`frameset`**: nothing after one a browser honours is indexed.
+- **`frameset`**: nothing after one is indexed, unless the extractor can prove a browser ignores
+  it. A browser ignores a frameset inside a template, or once the body has started and its
+  frameset-ok flag has been cleared. A browser that honours one discards the body, so the
+  extractor also drops what it read from the point the body may have started.
 
 These rules are checked against parse5, a browser-grade HTML parser, in the package's tests.
 
