@@ -278,10 +278,8 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
-  redactSubjectIdempotency,
-  redactSubjectSweepRunIntents,
+  redactSubjectScopeText,
   redactSubjectDirectoryText,
-  redactedIntentIds,
   type RedactionSql,
   JOB_RUN_PATCH_SQL,
   JOB_STEP_RECORD_SQL,
@@ -8792,7 +8790,7 @@ export class SqliteScopeHost implements ScopeHost {
         // invoke held its transaction open, they joined it, and its rollback put the
         // person's PII back after this verb had destroyed the key and receipted the erasure.
         const scopeSql = redactionSqlOf(db);
-        const { redacted, intentsRedacted, jobRunsRedacted, idempotencyResults, intentIds } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
+        const { redacted, intentsRedacted, jobRunsRedacted, text } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
           redacted: db
             .prepare(
               `UPDATE _substrat_outbox SET payload = NULL
@@ -8814,13 +8812,11 @@ export class SqliteScopeHost implements ScopeHost {
           // The job-run tables (#1632): a run, its cursor or a step's memo can hold a copy
           // of the same event. The kernel's walk, so the DO runs the identical SQL.
           jobRunsRedacted: redactSubjectJobRuns(scopeSql, subjectId, at),
-          // The free-text copies (#1632): a recorded idempotent response that names the
-          // subject, and a queued `sweep-runs` entry's error that does.
-          idempotencyResults: redactSubjectIdempotency(scopeSql, subjectId, at),
-          sweepRunIntents: redactSubjectSweepRunIntents(scopeSql, subjectId),
-          // Read last, so it holds this pass's intent tombstones and every earlier one's.
-          intentIds: redactedIntentIds(scopeSql, subjectId),
+          // The free-text copies (#1632), and the tombstoned intents the directory half
+          // follows. Last, so those ids include every intent tombstoned above.
+          text: redactSubjectScopeText(scopeSql, subjectId, at),
         }));
+        const { idempotencyResults, intentIds } = text;
         // The directory's failure text (#1632) — a drain failure quoting one of those
         // intents, an issue's exemplar, a sweep record's error. Before the key, for the
         // ordering reason above.

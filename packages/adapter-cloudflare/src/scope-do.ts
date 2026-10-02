@@ -74,10 +74,7 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
-  redactSubjectIdempotency,
-  redactSubjectSweepRunIntents,
-  redactedIntentIds,
-  type RedactionSql,
+  redactSubjectScopeText,
   JOB_RUN_PATCH_SQL,
   JOB_STEP_RECORD_SQL,
   DELIVERY_ERROR_REDACTION_SQL,
@@ -222,7 +219,7 @@ import {
   type LiveSubscription,
 } from './live-reads.js';
 import { OperationQueue } from './serialization.js';
-import { doScopedSql, doBuiltColumnsOf, doSpineSql } from './sql.js';
+import { doScopedSql, doBuiltColumnsOf, doRedactionSql, doSpineSql } from './sql.js';
 import {
   actorOf,
   admitPeer,
@@ -5006,23 +5003,16 @@ export function defineScopeDO(
       // A failed delivery's error text about one of those events (#1632) — keyed by event
       // id, so the outbox predicate names it. Not a copy of the event; not counted.
       this.sql.exec(DELIVERY_ERROR_REDACTION_SQL, REDACTED_DELIVERY_NOTE, REDACTED_DELIVERY_NOTE, subjectId);
-      const sql: RedactionSql = (statement, params) => this.sql.exec(statement, ...params).toArray();
-      const intents = this.redactSubjectIntents(subjectId, at);
-      // The job-run tables (#1632) — the kernel's walk, so the pure host runs the
-      // identical SQL.
-      const jobRuns = redactSubjectJobRuns(sql, subjectId, at);
-      // The free-text copies (#1632): a recorded idempotent response that names the
-      // subject, and a queued `sweep-runs` entry's error that does.
-      const idempotencyResults = redactSubjectIdempotency(sql, subjectId, at);
-      redactSubjectSweepRunIntents(sql, subjectId);
+      const sql = doRedactionSql(this.sql);
       return {
         events: doomed.length,
-        intents,
-        jobRuns,
-        idempotencyResults,
-        // Read last, so it holds this pass's intent tombstones and every earlier one's —
-        // the coordinator hands them to the directory half.
-        intentIds: redactedIntentIds(sql, subjectId),
+        intents: this.redactSubjectIntents(subjectId, at),
+        // The job-run tables (#1632) — the kernel's walk, so the pure host runs the
+        // identical SQL.
+        jobRuns: redactSubjectJobRuns(sql, subjectId, at),
+        // The free-text copies (#1632), and the tombstoned intents the coordinator hands to
+        // the directory half. Last, so those ids include every intent tombstoned above.
+        ...redactSubjectScopeText(sql, subjectId, at),
       };
     }
 

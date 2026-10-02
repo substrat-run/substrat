@@ -1,4 +1,4 @@
-import { guardSpine, type ScopedSql, type SqlValue } from '@substrat-run/kernel';
+import { guardSpine, type RedactionSql, type ScopedSql, type SqlValue } from '@substrat-run/kernel';
 
 /**
  * Adapts a Durable Object's `SqlStorage` to the kernel's `ScopedSql` contract
@@ -44,6 +44,11 @@ export function doSpineSql(sql: SqlStorage): ScopedSql {
       return { changes: cursor.rowsWritten };
     },
   };
+}
+
+/** The kernel's erasure walks over a DO's storage (#1632) — `redactionSqlOf`'s twin on the SQLite host. */
+export function doRedactionSql(sql: SqlStorage): RedactionSql {
+  return (q, params) => sql.exec(q, ...(params as SqlValue[])).toArray();
 }
 
 /**

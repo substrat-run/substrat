@@ -40,9 +40,10 @@ import {
   loadDirectoryDump,
   type ImpersonationRow,
   redactSubjectDirectoryText,
+  type SubjectTextTarget,
 } from '@substrat-run/kernel';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
-import { doBuiltColumnsOf } from './sql.js';
+import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
   OnBehalfOf,
@@ -4125,8 +4126,8 @@ export class ControlPlaneDO extends DurableObject {
    * #1632: subject erasure's directory half — the failure text this directory keeps about a
    * scope's subject. The kernel's walk, so the SQLite host runs the identical statements.
    */
-  redactSubjectText(target: { tenantId: string; scopeId: string; subjectId: string; intentIds: string[] }): void {
-    redactSubjectDirectoryText((sql, params) => this.sql.exec(sql, ...params).toArray(), target);
+  redactSubjectText(target: SubjectTextTarget): void {
+    redactSubjectDirectoryText(doRedactionSql(this.sql), target);
   }
 
   listOpsFailures(query: OpsFailureQuery): OpsFailureEntry[] {

@@ -278,9 +278,7 @@ export {
   redactedIntentPayload,
   redactSubjectJobRuns,
   REDACTED_FAILURE_NOTE,
-  redactedIntentIds,
-  redactSubjectIdempotency,
-  redactSubjectSweepRunIntents,
+  redactSubjectScopeText,
   redactSubjectDirectoryText,
   platformIntentFailureMessage,
   intentIdOfFailureMessage,
@@ -290,6 +288,7 @@ export type {
   PlatformRequestRedactionCandidate,
   RedactionSql,
   SubjectRedactionCounts,
+  SubjectTextTarget,
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';

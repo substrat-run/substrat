@@ -304,6 +304,7 @@ import {
   type LiveReadSurface,
   type SubjectRedactionCounts,
   type LegacySubjectRedactionCounts,
+  type SubjectTextTarget,
   globalFetch,
   assertRedrainWindow,
   platformRequestOf,
@@ -831,12 +832,7 @@ interface ControlPlaneStub {
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
   recordOpsFailure(row: OpsFailureRow): Promise<void>;
   /** #1632: subject erasure's directory half — `redactSubjectDirectoryText`. */
-  redactSubjectText(target: {
-    tenantId: string;
-    scopeId: string;
-    subjectId: string;
-    intentIds: string[];
-  }): Promise<void>;
+  redactSubjectText(target: SubjectTextTarget): Promise<void>;
   listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
   recordSweepRun(row: SweepRunRow): Promise<void>;
   listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;

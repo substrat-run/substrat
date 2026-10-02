@@ -159,8 +159,16 @@ export interface SubjectRedactionCounts {
 export type LegacySubjectRedactionCounts = Omit<
   SubjectRedactionCounts,
   'jobRuns' | 'idempotencyResults' | 'intentIds'
-> &
-  Partial<Pick<SubjectRedactionCounts, 'jobRuns'>>;
+> & { jobRuns?: number };
+
+/**
+ * The needle every walk in this file searches a stored text for: the subject id with the
+ * quotes JSON.stringify adds stripped, keeping the escaped body — the exact run of characters
+ * a serialized payload holds.
+ */
+function subjectNeedle(subjectId: string): string {
+  return JSON.stringify(subjectId).slice(1, -1);
+}
 
 /**
  * The candidate read: every intent whose stored payload TEXT contains the subject id.
@@ -181,9 +189,7 @@ export function platformRequestRedactionQuery(subjectId: string): {
 } {
   return {
     sql: 'SELECT id, payload FROM _substrat_platform_requests WHERE instr(payload, ?) > 0',
-    // Strip the quotes JSON.stringify adds and keep the escaped body — the exact run of
-    // characters the serialized payload holds.
-    params: [JSON.stringify(subjectId).slice(1, -1)],
+    params: [subjectNeedle(subjectId)],
   };
 }
 
@@ -376,8 +382,7 @@ export type RedactionSql = (sql: string, params: readonly (string | number | nul
  * Returns the number of distinct runs touched.
  */
 export function redactSubjectJobRuns(sql: RedactionSql, subjectId: string, at: string): number {
-  // The needle, spelled as `platformRequestRedactionQuery` spells it.
-  const needle = JSON.stringify(subjectId).slice(1, -1);
+  const needle = subjectNeedle(subjectId);
   const tombstone = redactedIntentPayload(subjectId, at);
   const runs = new Set<string>();
 
@@ -495,11 +500,6 @@ export const JOB_RUN_REDACTION_SQL = `UPDATE _substrat_job_runs
 export const REDACTED_FAILURE_NOTE =
   'redacted by subject erasure (#37) — what this failure said is gone; that it happened, and when, is not';
 
-/** The needle every free-text walk below searches for — `platformRequestRedactionQuery`'s spelling. */
-function subjectNeedle(subjectId: string): string {
-  return JSON.stringify(subjectId).slice(1, -1);
-}
-
 /**
  * The idempotency ledger's half (#1632): a recorded response that names the subject.
  *
@@ -539,11 +539,25 @@ export function redactSubjectIdempotency(sql: RedactionSql, subjectId: string, a
  * this pass's tombstones and every earlier pass's.
  */
 export function redactedIntentIds(sql: RedactionSql, subjectId: string): string[] {
-  const rows = sql(
-    'SELECT id, payload FROM _substrat_platform_requests WHERE instr(payload, ?) > 0',
-    [subjectNeedle(subjectId)],
-  ) as { id: string; payload: string }[];
+  const q = platformRequestRedactionQuery(subjectId);
+  const rows = sql(q.sql, q.params) as PlatformRequestRedactionCandidate[];
   return rows.filter((r) => isRedactedPayloadText(r.payload, subjectId)).map((r) => r.id);
+}
+
+/**
+ * The scope's free-text half (#1632), shared by both adapters so the order is one fact: a
+ * recorded idempotent response and a queued `sweep-runs` entry's error that name the subject,
+ * and THEN the intents holding its tombstone — read after every other intent write, so the ids
+ * cover this pass's tombstones and every earlier one's.
+ */
+export function redactSubjectScopeText(
+  sql: RedactionSql,
+  subjectId: string,
+  at: string,
+): Pick<SubjectRedactionCounts, 'idempotencyResults' | 'intentIds'> {
+  const idempotencyResults = redactSubjectIdempotency(sql, subjectId, at);
+  redactSubjectSweepRunIntents(sql, subjectId);
+  return { idempotencyResults, intentIds: redactedIntentIds(sql, subjectId) };
 }
 
 /**
@@ -588,6 +602,8 @@ export function redactSubjectSweepRunIntents(sql: RedactionSql, subjectId: strin
   }
 }
 
+const PLATFORM_INTENT_FAILURE_PREFIX = 'platform intent ';
+
 /**
  * How the drain words an ops failure about one intent. The reader below parses the same
  * prefix, so the directory walk and the writer cannot drift about the link between them.
@@ -596,14 +612,20 @@ export function platformIntentFailureMessage(intentId: string, text: string): st
   return `${PLATFORM_INTENT_FAILURE_PREFIX}${intentId} ${text}`;
 }
 
-const PLATFORM_INTENT_FAILURE_PREFIX = 'platform intent ';
-
 /** The intent an ops-failure message is about, or null — `platformIntentFailureMessage` read back. */
 export function intentIdOfFailureMessage(message: string): string | null {
   if (!message.startsWith(PLATFORM_INTENT_FAILURE_PREFIX)) return null;
   const rest = message.slice(PLATFORM_INTENT_FAILURE_PREFIX.length);
   const end = rest.indexOf(' ');
   return end > 0 ? rest.slice(0, end) : null;
+}
+
+/** What the directory half is handed: the erased scope's tenant, and the scope half's intent ids. */
+export interface SubjectTextTarget {
+  tenantId: string;
+  scopeId: string;
+  subjectId: string;
+  intentIds: string[];
 }
 
 /**
@@ -624,16 +646,12 @@ export function intentIdOfFailureMessage(message: string): string | null {
  * the person but not their id, on a row with no intent link, is not reached. Idempotent: the
  * note names neither an intent nor the subject.
  */
-export function redactSubjectDirectoryText(
-  sql: RedactionSql,
-  target: { tenantId: string; scopeId: string; subjectId: string; intentIds: readonly string[] },
-): void {
+export function redactSubjectDirectoryText(sql: RedactionSql, target: SubjectTextTarget): void {
   const needle = subjectNeedle(target.subjectId);
-  const note = REDACTED_FAILURE_NOTE;
   sql(
     `UPDATE _substrat_ops_failures SET message = ?
       WHERE instr(message, ?) > 0 AND (tenant_id IS NULL OR tenant_id = ?)`,
-    [note, needle, target.tenantId],
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
   );
   // An issue has no tenant of its own: its exemplar is spared when it is a row recorded for
   // another tenant. One whose row has aged out (issues outlive their evidence) is redacted.
@@ -644,37 +662,32 @@ export function redactSubjectDirectoryText(
                          WHERE o.fingerprint = _substrat_issues.fingerprint
                            AND o.message = _substrat_issues.last_message
                            AND o.tenant_id IS NOT NULL AND o.tenant_id != ?)`,
-    [note, needle, target.tenantId],
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
   );
   sql(
     `UPDATE _substrat_sweep_runs SET error = ?
       WHERE instr(error, ?) > 0 AND (tenant_id IS NULL OR tenant_id = ?)`,
-    [note, needle, target.tenantId],
+    [REDACTED_FAILURE_NOTE, needle, target.tenantId],
   );
   if (target.intentIds.length === 0) return;
   const intents = new Set(target.intentIds);
-  const linked = (message: string) => {
-    const id = intentIdOfFailureMessage(message);
-    return id !== null && intents.has(id);
+  // Rows whose text the drain wrote about one of those intents — read back by the grammar it
+  // wrote them in, so the SQL only narrows to the prefix and the id decides.
+  const redactLinked = (table: string, key: string, text: string, where: string, params: string[]) => {
+    const rows = sql(
+      `SELECT ${key} AS key, ${text} AS text FROM ${table} WHERE ${where}instr(${text}, ?) = 1`,
+      [...params, PLATFORM_INTENT_FAILURE_PREFIX],
+    ) as { key: string; text: string }[];
+    for (const row of rows) {
+      const id = intentIdOfFailureMessage(row.text);
+      if (id !== null && intents.has(id)) {
+        sql(`UPDATE ${table} SET ${text} = ? WHERE ${key} = ?`, [REDACTED_FAILURE_NOTE, row.key]);
+      }
+    }
   };
-  const prefix = PLATFORM_INTENT_FAILURE_PREFIX;
-  const failures = sql(
-    `SELECT id, message FROM _substrat_ops_failures
-      WHERE tenant_id = ? AND scope_id = ? AND instr(message, ?) = 1`,
-    [target.tenantId, target.scopeId, prefix],
-  ) as { id: string; message: string }[];
-  for (const row of failures) {
-    if (linked(row.message)) {
-      sql('UPDATE _substrat_ops_failures SET message = ? WHERE id = ?', [note, row.id]);
-    }
-  }
-  const issues = sql(
-    'SELECT fingerprint, last_message FROM _substrat_issues WHERE instr(last_message, ?) = 1',
-    [prefix],
-  ) as { fingerprint: string; last_message: string }[];
-  for (const row of issues) {
-    if (linked(row.last_message)) {
-      sql('UPDATE _substrat_issues SET last_message = ? WHERE fingerprint = ?', [note, row.fingerprint]);
-    }
-  }
+  redactLinked('_substrat_ops_failures', 'id', 'message', 'tenant_id = ? AND scope_id = ? AND ', [
+    target.tenantId,
+    target.scopeId,
+  ]);
+  redactLinked('_substrat_issues', 'fingerprint', 'last_message', '', []);
 }
