@@ -17,3 +17,6 @@ export type { ControlPlaneClientOptions, ClientProvisionScopeInput } from './cli
 export { identityTenant, identityTenantsResponse } from './identity-tenants.js';
 export type { IdentityTenant } from './identity-tenants.js';
 export { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER, TENANT_HEADER } from './headers.js';
+export { ControlPlaneBuilderClient, WALK_PAGE_LIMIT, walkPages } from './builder-client.js';
+export type { PageRequest } from './builder-client.js';
+export type * from './builder-types.js';
