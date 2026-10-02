@@ -41,6 +41,7 @@ import { printVersions } from './versions.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
+import { planeFor } from './plane.js';
 import { cliVersion, warnIfDistStale } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, rebindScopeVertical, bindScopeVersion, scopeStatus } from './scope.js';
 import { printInstalls } from './installs.js';
@@ -819,10 +820,9 @@ async function cmdHostnames(): Promise<void> {
   // The reverse of the `versions` cross-check (#399): installs bound here but zero versions
   // pushed under this slug is a lineage fork. Best-effort — never breaks the listing.
   if (rows.length > 0) {
-    const base = controlPlaneUrl.replace(/\/$/, '');
     // Only "zero or not" matters here, so one entry of the paged list answers it.
-    const versions = await fetch(`${base}/verticals/${encodeURIComponent(slug)}/versions?limit=1`, { headers: header })
-      .then((r) => (r.ok ? (r.json() as Promise<{ entries: unknown[] }>) : { entries: [] }))
+    const versions = await planeFor(controlPlaneUrl, header)
+      .listVersions(slug, { limit: 1 })
       .then((page) => page.entries ?? [])
       .catch(() => []);
     if (Array.isArray(versions) && versions.length === 0) {

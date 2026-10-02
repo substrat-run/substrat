@@ -6,21 +6,9 @@
  * directory status, the hostname the router serves it on, and when it was created.
  * Forks (snapshots/previews) are not installs and are excluded.
  */
+import type { ScopeRow } from '@substrat-run/control-plane-client';
 import { listVerticalHostnames } from './hostnames.js';
-import { readAllEntries } from './http.js';
-import { getJson } from './problem.js';
-
-interface ScopeRow {
-  id: string;
-  slug: string;
-  name: string;
-  status: string;
-  vertical: string | null;
-  verticalVersionId: string | null;
-  forkedFrom: string | null;
-  servingRef?: string | null;
-  createdAt: string;
-}
+import { planeFor, walkAll } from './plane.js';
 
 /**
  * List the tenant's installs of `slug`. The vertical match is tail-tolerant exactly
@@ -34,11 +22,8 @@ export async function printInstalls(
   tenantId: string,
   slug: string,
 ): Promise<void> {
-  const base = controlPlaneUrl.replace(/\/$/, '');
-  const scopes = await readAllEntries<ScopeRow>(
-    `${base}/scopes?tenantId=${encodeURIComponent(tenantId)}`,
-    (pageUrl) => getJson(pageUrl, header),
-  );
+  const client = planeFor(controlPlaneUrl, header);
+  const scopes = await walkAll((page) => client.listScopes(tenantId, page));
   const installs = scopes
     .filter((s) => !s.forkedFrom && (s.vertical === slug || (s.vertical ?? '').endsWith(`/${slug}`)))
     .sort((a, b) => (a.id < b.id ? 1 : -1)); // ULIDs — newest first

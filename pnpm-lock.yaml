@@ -1881,6 +1881,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
+      '@substrat-run/control-plane-client':
+        specifier: workspace:^
+        version: link:../control-plane-client
       '@substrat-run/model-view':
         specifier: workspace:^
         version: link:../model-view

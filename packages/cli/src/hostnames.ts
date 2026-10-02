@@ -11,45 +11,29 @@
  * walks the §4.2 DNS-validation lifecycle.
  */
 
-/** A DNS record the tenant must publish (contracts' dnsRecord). */
-export interface DnsRecordRow {
-  type: 'hostname' | 'txt';
-  name: string;
-  value: string;
-  status: string | null;
-}
+export type { DnsRecordRow, HostnameRow };
 
-/** One binding row as the control plane returns it (contracts' HostnameBinding). */
-export interface HostnameRow {
-  hostname: string;
-  tenantId: string;
-  scopeId: string;
-  verticalSlug: string | null;
-  surface: string;
-  status: string;
-  statusNote: string | null;
-  canonical: boolean;
-  createdAt: string;
-  customHostnameId: string | null;
-  validationRecords: DnsRecordRow[];
-}
-
-import { parseJsonBody, readAllEntries } from './http.js';
 import { parseHostname, withLabel } from '@substrat-run/contracts';
+import { walkPages, type ControlPlaneBuilderClient, type ControlPlaneError, type DnsRecordRow, type HostnameRow } from '@substrat-run/control-plane-client';
+import { planeFor, viaPlane } from './plane.js';
 
-async function request<T>(url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
-  const body = await res.text();
-  if (!res.ok) {
-    let message = body;
-    try {
-      message = (JSON.parse(body) as { error?: string }).error ?? body;
-    } catch {
-      // Not JSON — the raw body is the message.
-    }
-    throw new Error(`${res.status}: ${message}`);
+/**
+ * Every hostname call sent the JSON content type, reads included — said once here, so the
+ * client sends it too.
+ */
+const plane = (controlPlaneUrl: string, header: Record<string, string>): ControlPlaneBuilderClient =>
+  planeFor(controlPlaneUrl, header, { contentType: 'application/json' });
+
+/** A refusal reads `<status>: <the body's `error`, else the body>`. */
+function refused(e: ControlPlaneError): Error {
+  const body = e.body ?? '';
+  let message = body;
+  try {
+    message = (JSON.parse(body) as { error?: string }).error ?? body;
+  } catch {
+    // Not JSON — the raw body is the message.
   }
-  return parseJsonBody<T>(body, url);
+  return new Error(`${e.status}: ${message}`);
 }
 
 /** The tenant's bindings for one vertical — matched bare or `<tenant>/<slug>`-prefixed. */
@@ -59,11 +43,8 @@ export async function listVerticalHostnames(
   tenantId: string,
   slug: string,
 ): Promise<HostnameRow[]> {
-  const base = controlPlaneUrl.replace(/\/$/, '');
-  const rows = await readAllEntries<HostnameRow>(
-    `${base}/hostnames?tenantId=${encodeURIComponent(tenantId)}`,
-    (pageUrl) => request(pageUrl, header),
-  );
+  const client = plane(controlPlaneUrl, header);
+  const rows = await viaPlane(() => walkPages((page) => client.listHostnames(tenantId, page)), refused);
   return rows.filter((h) => h.verticalSlug === slug || (h.verticalSlug ?? '').endsWith(`/${slug}`));
 }
 
@@ -87,7 +68,7 @@ export async function bindSurfaceHostname(opts: {
   /** Disambiguates when the tenant runs several installs of the vertical. */
   scope?: string;
 }): Promise<{ hostname: string; status: string; canonical: boolean; validationRecords?: DnsRecordRow[] }> {
-  const base = opts.controlPlaneUrl.replace(/\/$/, '');
+  const client = plane(opts.controlPlaneUrl, opts.header);
   const rows = await listVerticalHostnames(opts.controlPlaneUrl, opts.header, opts.tenantId, opts.slug);
   const scopes = [...new Set(rows.map((h) => h.scopeId))];
   const scopeId = opts.scope ?? (scopes.length === 1 ? scopes[0] : undefined);
@@ -103,10 +84,10 @@ export async function bindSurfaceHostname(opts: {
   const canonical = !own.some((h) => h.surface === opts.surface);
 
   const bind = (hostname: string) =>
-    request<HostnameRow>(`${base}/hostnames`, opts.header, {
-      method: 'POST',
-      body: JSON.stringify({ hostname, tenantId: opts.tenantId, scopeId, surface: opts.surface, canonical }),
-    });
+    viaPlane(
+      () => client.bindHostname({ hostname, tenantId: opts.tenantId, scopeId, surface: opts.surface, canonical }),
+      refused,
+    );
 
   if (opts.domain) {
     // A custom domain: the control plane records the row and drives Cloudflare-for-SaaS
@@ -171,17 +152,17 @@ export async function bindScopeHostname(opts: {
   domain: string;
   canonical?: boolean;
 }): Promise<HostnameRow> {
-  const base = opts.controlPlaneUrl.replace(/\/$/, '');
-  return request<HostnameRow>(`${base}/hostnames`, opts.header, {
-    method: 'POST',
-    body: JSON.stringify({
-      hostname: opts.domain.toLowerCase(),
-      tenantId: opts.tenantId,
-      scopeId: opts.scopeId,
-      surface: opts.surface,
-      canonical: !!opts.canonical,
-    }),
-  });
+  return viaPlane(
+    () =>
+      plane(opts.controlPlaneUrl, opts.header).bindHostname({
+        hostname: opts.domain.toLowerCase(),
+        tenantId: opts.tenantId,
+        scopeId: opts.scopeId,
+        surface: opts.surface,
+        canonical: !!opts.canonical,
+      }),
+    refused,
+  );
 }
 
 /**
@@ -194,10 +175,7 @@ export async function verifyHostname(
   header: Record<string, string>,
   hostname: string,
 ): Promise<HostnameRow> {
-  const base = controlPlaneUrl.replace(/\/$/, '');
-  return request<HostnameRow>(`${base}/hostnames/${encodeURIComponent(hostname)}/verify`, header, {
-    method: 'POST',
-  });
+  return viaPlane(() => plane(controlPlaneUrl, header).verifyHostname(hostname), refused);
 }
 
 /** Unbind one hostname. Tenant-narrowed server-side: a foreign hostname is a 404. */
@@ -206,8 +184,7 @@ export async function unbindHostname(
   header: Record<string, string>,
   hostname: string,
 ): Promise<void> {
-  const base = controlPlaneUrl.replace(/\/$/, '');
-  await request(`${base}/hostnames/${encodeURIComponent(hostname)}`, header, { method: 'DELETE' });
+  await viaPlane(() => plane(controlPlaneUrl, header).unbindHostname(hostname), refused);
 }
 
 /**

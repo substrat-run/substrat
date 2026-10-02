@@ -16,24 +16,10 @@ import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, tena
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
-import { readJson } from './http.js';
+import type { DumpTable, ExportBreakAck, PulledDump } from '@substrat-run/control-plane-client';
+import { planeFor, refusalBody, viaPlane } from './plane.js';
 import { orderTablesByForeignKeys } from './dump-order.js';
 import { exportBreakListing, type ExportBreaks } from './promote.js';
-
-interface DumpTable {
-  name: string;
-  ddl: string;
-  columns: string[];
-  rows: unknown[][];
-}
-
-interface PulledDump {
-  tenantId: string;
-  scopeId: string;
-  capturedAt: string;
-  masked: boolean;
-  tables: DumpTable[];
-}
 
 interface Backup {
   tables: DumpTable[];
@@ -115,15 +101,10 @@ export async function pullScope(opts: {
   full: boolean;
   outDir: string;
 }): Promise<void> {
-  const url =
-    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
-    `/scopes/${encodeURIComponent(opts.scopeId)}/export${opts.full ? '?full=true' : ''}`;
-  const res = await fetch(url, { headers: opts.header });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(problemDetail(body) ?? `pull refused: ${res.status} ${res.statusText}`);
-  }
-  const dump = await readJson<PulledDump>(res, url);
+  const dump = await viaPlane(
+    () => planeFor(opts.controlPlaneUrl, opts.header).exportScope(opts.tenantId, opts.scopeId, opts.full),
+    (e) => new Error(problemDetail(refusalBody(e)) ?? `pull refused: ${e.status} ${e.statusText}`),
+  );
   // The WHOLE rule, checked before EITHER writer, so the node-<22.13 JSON fallback
   // cannot leave a dump on disk that a later `scope restore` would then have to
   // refuse. Names alone would not do it: `writeSqlite` returns before its own check
@@ -233,34 +214,29 @@ export async function restoreScope(opts: {
   const { tables, origin, capturedAt } = await readDump(opts.file);
   const source = origin ?? { tenantId: opts.tenantId, scopeId: opts.scopeId };
   const rows = tables.reduce((n, t) => n + t.rows.length, 0);
-  const res = await fetch(
-    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
-      `/scopes/${encodeURIComponent(opts.scopeId)}/restore`,
-    {
-      method: 'POST',
-      headers: { ...opts.header, 'content-type': 'application/json' },
-      // tenantId/scopeId in the body are PROVENANCE (where the backup came from);
-      // the URL says where it lands — same rule as the host primitive.
-      body: JSON.stringify({
+  await viaPlane(
+    () =>
+      planeFor(opts.controlPlaneUrl, opts.header).restoreScope(opts.tenantId, opts.scopeId, {
+        // tenantId/scopeId in the body are PROVENANCE (where the backup came from);
+        // the URL says where it lands — same rule as the host primitive.
         tenantId: source.tenantId,
         scopeId: source.scopeId,
         capturedAt: capturedAt ?? new Date().toISOString(),
         tables,
       }),
+    (e) => {
+      // The CP shapes an unloadable-dump failure as `{ error, detail }` (#321); surface the detail
+      // too, or the builder sees only a generic message and can't act on it (#332).
+      //
+      // Deliberately NOT on `problemDetail` (#971), which is the only read in this file that
+      // is not: here `detail` is ADDITIONAL to `error` — the loader's complaint beside the
+      // refusal — where everywhere else it is the RFC 9457 duplicate OF it. Reading one in
+      // place of the other would drop half of the only message that says what to fix.
+      const body = refusalBody(e) as { error?: string; detail?: string } | null;
+      const base = body?.error ?? `restore refused: ${e.status} ${e.statusText}`;
+      return new Error(body?.detail ? `${base} — ${body.detail}` : base);
     },
   );
-  if (!res.ok) {
-    // The CP shapes an unloadable-dump failure as `{ error, detail }` (#321); surface the detail
-    // too, or the builder sees only a generic message and can't act on it (#332).
-    //
-    // Deliberately NOT on `problemDetail` (#971), which is the only read in this file that
-    // is not: here `detail` is ADDITIONAL to `error` — the loader's complaint beside the
-    // refusal — where everywhere else it is the RFC 9457 duplicate OF it. Reading one in
-    // place of the other would drop half of the only message that says what to fix.
-    const body = (await res.json().catch(() => null)) as { error?: string; detail?: string } | null;
-    const base = body?.error ?? `restore refused: ${res.status} ${res.statusText}`;
-    throw new Error(body?.detail ? `${base} — ${body.detail}` : base);
-  }
   console.log(`✓ restored ${tables.length} tables (${rows} rows) into scope ${opts.scopeId}`);
   if (!origin) {
     console.log('  ⚠ backup origin is unknown; using the target tenant and scope as provenance.');
@@ -282,20 +258,10 @@ export async function adoptScopeServing(opts: {
   /** #1756: adopt even though what the vertical serves drops an export another app here imports. */
   ackExportBreak?: boolean;
 }): Promise<void> {
-  const res = await fetch(
-    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
-      `/scopes/${encodeURIComponent(opts.scopeId)}/adopt-serving`,
-    {
-      method: 'POST',
-      headers: { ...opts.header, 'content-type': 'application/json' },
-      body: JSON.stringify(ackBody(opts.ackExportBreak)),
-    },
+  const body = await viaPlane(
+    () => planeFor(opts.controlPlaneUrl, opts.header).adoptServing(opts.tenantId, opts.scopeId, ackBody(opts.ackExportBreak)),
+    (e) => new Error(refusalText(refusalBody(e), `adopt-serving refused: ${e.status} ${e.statusText}`)),
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(refusalText(body, `adopt-serving refused: ${res.status} ${res.statusText}`));
-  }
-  const body = await readJson<{ servingRef?: string; alreadyAdopted?: boolean; tables?: number }>(res, res.url);
   if (body.alreadyAdopted) {
     console.log(`✓ scope ${opts.scopeId} already serves from ${body.servingRef} — nothing to do.`);
   } else {
@@ -317,16 +283,10 @@ export async function provisionScope(opts: {
   tenantId: string;
   scopeId: string;
 }): Promise<void> {
-  const res = await fetch(
-    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
-      `/scopes/${encodeURIComponent(opts.scopeId)}/provision`,
-    { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
+  const body = await viaPlane(
+    () => planeFor(opts.controlPlaneUrl, opts.header).provisionScope(opts.tenantId, opts.scopeId),
+    (e) => new Error(problemDetail(refusalBody(e)) ?? `provision refused: ${e.status} ${e.statusText}`),
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(problemDetail(body) ?? `provision refused: ${res.status} ${res.statusText}`);
-  }
-  const body = await readJson<{ owner?: string; storeError?: string }>(res, res.url);
   console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
   // #828: the reconcile is done, but a declared store did not mint. Printed rather than
   // thrown — the half that ran is real and worth keeping — and named in full, because the
@@ -353,35 +313,14 @@ export async function scopeStatus(opts: {
   tenantId: string;
   scopeId: string;
 }): Promise<void> {
-  const base = `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}/scopes/${encodeURIComponent(opts.scopeId)}`;
-  const res = await fetch(base, { headers: opts.header });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(problemDetail(body) ?? `scope status refused: ${res.status} ${res.statusText}`);
-  }
-  const record = await readJson<{
-    slug: string;
-    name: string;
-    status: string;
-    vertical: string | null;
-    verticalVersionId: string | null;
-    servingRef?: string | null;
-    schemaVersion: string;
-    createdAt: string;
-  }>(res, base);
+  const client = planeFor(opts.controlPlaneUrl, opts.header);
+  const record = await viaPlane(
+    () => client.getScope(opts.tenantId, opts.scopeId),
+    (e) => new Error(problemDetail(refusalBody(e)) ?? `scope status refused: ${e.status} ${e.statusText}`),
+  );
   // Health is best-effort: it reaches into the vertical's own deployment, which can be
   // unreachable while the scope record itself still answers — show what we have.
-  const health = await fetch(`${base}/health`, { headers: opts.header })
-    .then((r) =>
-      r.ok
-        ? readJson<{
-            roleCount: number | null;
-            roleProjectionEmpty: boolean;
-            missingStores?: { binding: string; kind: string }[];
-          }>(r, `${base}/health`)
-        : null,
-    )
-    .catch(() => null);
+  const health = await client.getScopeHealth(opts.tenantId, opts.scopeId).catch(() => null);
   console.log(`scope     ${opts.scopeId}`);
   console.log(`name      ${record.name} (${record.slug})`);
   console.log(`vertical  ${record.vertical ?? '—'}`);
@@ -413,7 +352,8 @@ export async function scopeStatus(opts: {
 }
 
 /** #1756: the ack a move sends when asked, and a refusal's own words plus the apps it breaks. */
-const ackBody = (ackExportBreak?: boolean) => (ackExportBreak ? { acknowledge: { exportBreak: true } } : {});
+const ackBody = (ackExportBreak?: boolean): ExportBreakAck =>
+  ackExportBreak ? { acknowledge: { exportBreak: true } } : {};
 function refusalText(body: unknown, fallback: string): string {
   const breaks = (body as { exportBreaks?: ExportBreaks } | null)?.exportBreaks;
   return (problemDetail(body) ?? fallback) + (breaks ? exportBreakListing(breaks) : '');
@@ -438,28 +378,16 @@ export async function bindScopeVersion(opts: {
   /** #1756: bind a version that drops or re-versions an export another app in the tenant imports. */
   ackExportBreak?: boolean;
 }): Promise<void> {
-  const res = await fetch(
-    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
-      `/scopes/${encodeURIComponent(opts.scopeId)}/version`,
-    {
-      method: 'POST',
-      headers: { ...opts.header, 'content-type': 'application/json' },
-      body: JSON.stringify({
+  const record = await viaPlane(
+    () =>
+      planeFor(opts.controlPlaneUrl, opts.header).bindScopeVersion(opts.tenantId, opts.scopeId, {
         versionId: opts.versionId,
-        snapshot: opts.snapshot || undefined,
+        snapshot: opts.snapshot ? true : undefined,
         ...ackBody(opts.ackExportBreak),
       }),
-    },
-  );
-  if (!res.ok) {
     // An export-break refusal (#1756) carries the apps it would break: named here, so the
     // acknowledgement is an informed answer rather than a flag tried to see what happens.
-    const body = await res.json().catch(() => null);
-    throw new Error(refusalText(body, `bind refused: ${res.status} ${res.statusText}`));
-  }
-  const record = await readJson<{ verticalVersionId: string | null; vertical: string | null; servingRef?: string | null }>(
-    res,
-    res.url,
+    (e) => new Error(refusalText(refusalBody(e), `bind refused: ${e.status} ${e.statusText}`)),
   );
   console.log(`✓ scope ${opts.scopeId} now runs version ${record.verticalVersionId} (${record.vertical ?? '—'}).`);
   if (opts.snapshot) {
@@ -484,31 +412,16 @@ export async function rebindScopeVertical(opts: {
   /** #1756: within one lineage the rebind is an adopt, refused when it breaks an app here. */
   ackExportBreak?: boolean;
 }): Promise<void> {
-  const res = await fetch(
-    `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}` +
-      `/scopes/${encodeURIComponent(opts.scopeId)}/rebind-vertical`,
-    {
-      method: 'POST',
-      headers: { ...opts.header, 'content-type': 'application/json' },
-      body: JSON.stringify({
+  const body = await viaPlane(
+    () =>
+      planeFor(opts.controlPlaneUrl, opts.header).rebindScopeVertical(opts.tenantId, opts.scopeId, {
         vertical: opts.vertical,
-        ackMigrations: opts.ackMigrations || undefined,
-        abandonData: opts.abandonData || undefined,
+        ackMigrations: opts.ackMigrations ? true : undefined,
+        abandonData: opts.abandonData ? true : undefined,
         ...ackBody(opts.ackExportBreak),
       }),
-    },
+    (e) => new Error(refusalText(refusalBody(e), `rebind refused: ${e.status} ${e.statusText}`)),
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(refusalText(body, `rebind refused: ${res.status} ${res.statusText}`));
-  }
-  const body = await readJson<{
-    servingRef?: string;
-    versionId?: string;
-    alreadyBound?: boolean;
-    tables?: number;
-    dataAbandoned?: boolean;
-  }>(res, res.url);
   if (body.alreadyBound) {
     console.log(`✓ scope ${opts.scopeId} already bound to ${opts.vertical} (${body.servingRef}) — nothing to do.`);
   } else if (body.dataAbandoned) {
@@ -531,22 +444,15 @@ export async function adoptVerticalServing(opts: {
   slug: string;
   ackExportBreak?: boolean;
 }): Promise<void> {
-  const res = await fetch(
-    `${opts.controlPlaneUrl}/verticals/${encodeURIComponent(opts.slug)}/adopt-serving`,
-    {
-      method: 'POST',
-      headers: { ...opts.header, 'content-type': 'application/json' },
-      body: JSON.stringify(ackBody(opts.ackExportBreak)),
+  const body = await viaPlane(
+    () => planeFor(opts.controlPlaneUrl, opts.header).adoptVerticalServing(opts.slug, ackBody(opts.ackExportBreak)),
+    (e) => {
+      // A per-scope failure reports what it managed before stopping — a re-run resumes.
+      const partial = refusalBody(e) as { adopted?: string[]; alreadyAdopted?: string[] } | null;
+      const done = (partial?.adopted?.length ?? 0) + (partial?.alreadyAdopted?.length ?? 0);
+      return new Error(`${refusalText(partial, `adopt-serving refused: ${e.status}`)}${done ? ` (adopted ${done} before stopping)` : ''}`);
     },
   );
-  const body = (await res.json().catch(() => null)) as
-    | { adopted?: string[]; alreadyAdopted?: string[] }
-    | null;
-  if (!res.ok) {
-    // A per-scope failure reports what it managed before stopping — a re-run resumes.
-    const done = (body?.adopted?.length ?? 0) + (body?.alreadyAdopted?.length ?? 0);
-    throw new Error(`${refusalText(body, `adopt-serving refused: ${res.status}`)}${done ? ` (adopted ${done} before stopping)` : ''}`);
-  }
   const adopted = body?.adopted ?? [];
   const already = body?.alreadyAdopted ?? [];
   console.log(`✓ ${opts.slug}: adopted ${adopted.length} scope(s), ${already.length} already on the serving script.`);

@@ -4,7 +4,7 @@
  * endpoint is STAFF-only, so a builder is refused (the review gate); a staff/platform caller
  * flips it. Once `listed`, `availableCatalog` offers the vertical to every tenant.
  */
-import { parseJsonBody } from './http.js';
+import { planeFor, viaPlane } from './plane.js';
 
 export interface ListingOptions {
   controlPlaneUrl: string;
@@ -14,16 +14,10 @@ export interface ListingOptions {
 }
 
 export async function setListing(opts: ListingOptions): Promise<{ slug: string; listed: boolean }> {
-  const base = opts.controlPlaneUrl.replace(/\/$/, '');
-  const url = `${base}/verticals/${encodeURIComponent(opts.slug)}/listing`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { ...opts.header, 'content-type': 'application/json' },
-    body: JSON.stringify({ listed: opts.listed }),
-  });
-  const body = await res.text();
-  if (!res.ok) throw new Error(`${opts.listed ? 'publish' : 'unpublish'} failed (${res.status}): ${body.slice(0, 300)}`);
-  return parseJsonBody<{ slug: string; listed: boolean }>(body, url);
+  return viaPlane(
+    () => planeFor(opts.controlPlaneUrl, opts.header).setListing(opts.slug, opts.listed),
+    (e) => new Error(`${opts.listed ? 'publish' : 'unpublish'} failed (${e.status}): ${(e.body ?? '').slice(0, 300)}`),
+  );
 }
 
 /**
@@ -31,11 +25,8 @@ export async function setListing(opts: ListingOptions): Promise<{ slug: string; 
  * may ask; a staff operator then reviews and lists it. Owner-checked control-plane-side.
  */
 export async function requestPublish(opts: { controlPlaneUrl: string; header: Record<string, string>; slug: string }): Promise<void> {
-  const base = opts.controlPlaneUrl.replace(/\/$/, '');
-  const res = await fetch(`${base}/verticals/${encodeURIComponent(opts.slug)}/publish-request`, {
-    method: 'POST',
-    headers: { ...opts.header, 'content-type': 'application/json' },
-    body: '{}',
-  });
-  if (!res.ok) throw new Error(`publish request failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
+  await viaPlane(
+    () => planeFor(opts.controlPlaneUrl, opts.header).requestPublish(opts.slug),
+    (e) => new Error(`publish request failed (${e.status}): ${(e.body ?? '').slice(0, 300)}`),
+  );
 }

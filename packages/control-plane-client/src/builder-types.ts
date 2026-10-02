@@ -48,6 +48,7 @@ export interface DnsRecordRow {
   type: 'hostname' | 'txt';
   name: string;
   value: string;
+  status: string | null;
 }
 
 /** One hostname binding as the control plane returns it (contracts' HostnameBinding). */
@@ -154,13 +155,13 @@ export interface ExportBreakAck {
 
 export interface BindScopeVersionBody extends ExportBreakAck {
   versionId: string;
-  snapshot?: true;
+  snapshot?: true | undefined;
 }
 
 export interface RebindScopeBody extends ExportBreakAck {
   vertical: string;
-  ackMigrations?: true;
-  abandonData?: true;
+  ackMigrations?: true | undefined;
+  abandonData?: true | undefined;
 }
 
 export interface AdoptServingResult {

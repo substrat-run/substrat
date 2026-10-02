@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { webcrypto } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { readJson } from './http.js';
+import { planeFor, viaPlane } from './plane.js';
 
 /**
  * The loopback browser-login flow (`substrat login`). PKCE against the control plane's
@@ -104,16 +104,11 @@ export async function browserLogin(controlPlaneUrl: string, opts: { fresh?: bool
   openBrowser(authUrl);
 
   const codeValue = await code;
-  const tokenUrl = `${cp}/auth/cli/token`;
-  const res = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ code: codeValue, verifier }),
-  });
-  if (!res.ok) {
-    throw new Error(`token exchange failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
-  }
-  const { token } = await readJson<{ token?: string }>(res, tokenUrl);
+  // No credential: the one-time code, with its PKCE verifier, is what authenticates this call.
+  const { token } = await viaPlane(
+    () => planeFor(cp, {}).exchangeLoginCode(codeValue, verifier),
+    (e) => new Error(`token exchange failed (${e.status}): ${(e.body ?? '').slice(0, 300)}`),
+  );
   if (!token) throw new Error('token exchange returned no token');
   return token;
 }
