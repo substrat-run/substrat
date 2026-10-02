@@ -83,7 +83,16 @@ suite above is one an *adapter* runs. One more, `entityCheckConformanceSuite`, h
 **vertical or engine** to its declarations rather than an adapter to the contract, and has
 [its own section](#the-entity-check-kit) below. The complete adapter wiring — every suite,
 with the reason beside each — is
-[`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts).
+[`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts),
+except three suites each mounted in a file of its own, with a Cloudflare twin of the same
+name:
+
+| suite | SQLite fixture | Cloudflare fixture |
+|---|---|---|
+| `verticalEventsContractSuite` | [`vertical-events.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/vertical-events.test.ts) | [`vertical-events.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-cloudflare/test/vertical-events.test.ts) |
+| `scopeRepointContractSuite` | [`scope-repoint.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/scope-repoint.test.ts) | [`scope-repoint.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-cloudflare/test/scope-repoint.test.ts) |
+| `directoryRestoreSuite` | [`directory-restore-tables.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/directory-restore-tables.test.ts) | [`directory-restore-tables.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-cloudflare/test/directory-restore-tables.test.ts) |
+
 The count is deliberately not written here: it grows with every merged guarantee.
 
 ### The suites the two adapters do not share
