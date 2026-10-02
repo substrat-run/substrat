@@ -1619,17 +1619,31 @@ export async function push(
     form.set(part, new Blob([a.content], { type: a.entry.contentType }), part);
   }
 
-  // The multipart upload is the one request the typed client cannot express — its body is a
-  // form whose boundary `fetch` writes, so no content type may be set — and it needs the raw
-  // exchange: the CLI reads the answer's status, headers and text itself. It still goes through
-  // the client, for the addressing and the credential map, with the stale-CLI nudge off the
-  // answer (success or refusal) as it always was.
+  return uploadVersion(
+    opts,
+    form,
+    `${entry} (+${modules.length - 1} modules${assets.length ? `, ${assets.length} assets` : ''})`,
+  );
+}
+
+/**
+ * POST the assembled bundle to `/verticals/<slug>/deploy` and read the control plane's answer.
+ *
+ * The multipart upload is the one request the typed client cannot express — its body is a
+ * form whose boundary `fetch` writes, so no content type may be set — and it needs the raw
+ * exchange: the CLI reads the answer's status, headers and text itself. It still goes through
+ * the client, for the addressing and the credential map, with the stale-CLI nudge off the
+ * answer (success or refusal) as it always was.
+ */
+export async function uploadVersion(
+  opts: { controlPlaneUrl: string; authHeader: Record<string, string>; slug: string },
+  form: FormData,
+  what: string,
+): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
   const plane = planeFor(opts.controlPlaneUrl, opts.authHeader, { advisory: true });
   const path = `/verticals/${encodeURIComponent(opts.slug)}/deploy`;
   const url = plane.urlFor(path);
-  console.log(
-    `uploading ${entry} (+${modules.length - 1} modules${assets.length ? `, ${assets.length} assets` : ''}) → ${url}`,
-  );
+  console.log(`uploading ${what} → ${url}`);
   const res = await plane.request(path, { method: 'POST', body: form });
   const body = await res.text();
   if (!res.ok) {

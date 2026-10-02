@@ -103,10 +103,16 @@ export async function browserLogin(controlPlaneUrl: string, opts: { fresh?: bool
   console.log(`  if it doesn't open, visit:\n  ${authUrl}\n`);
   openBrowser(authUrl);
 
-  const codeValue = await code;
-  // No credential: the one-time code, with its PKCE verifier, is what authenticates this call.
+  return exchangeLoginCode(cp, await code, verifier);
+}
+
+/**
+ * Trade the one-time code (and its PKCE verifier) for a session token. No credential rides
+ * along: the code is what authenticates this call.
+ */
+export async function exchangeLoginCode(controlPlaneUrl: string, code: string, verifier: string): Promise<string> {
   const { token } = await viaPlane(
-    () => planeFor(cp, {}).exchangeLoginCode(codeValue, verifier),
+    () => planeFor(controlPlaneUrl, {}).exchangeLoginCode(code, verifier),
     (e) => new Error(`token exchange failed (${e.status}): ${(e.body ?? '').slice(0, 300)}`),
   );
   if (!token) throw new Error('token exchange returned no token');
