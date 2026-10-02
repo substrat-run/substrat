@@ -508,12 +508,12 @@ describe("the kernel's abort: a bundled parser stops promptly on a large VALID f
   const html = htmlExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 1 });
   const docx = docxExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 64 * 1024 * 1024 });
 
-  /** The turns a run yields to the event loop — each one `setTimeout(…, 0)`. */
+  /** The turns a run yields to the event loop — each one `setImmediate` here, as in Node. */
   const yieldsDuring = async (run: () => Promise<unknown>): Promise<number> => {
-    const spy = vi.spyOn(globalThis, 'setTimeout');
+    const spy = vi.spyOn(globalThis, 'setImmediate');
     try {
       await run();
-      return spy.mock.calls.filter(([, ms]) => ms === 0).length;
+      return spy.mock.calls.length;
     } finally {
       spy.mockRestore();
     }
@@ -561,6 +561,33 @@ describe("the kernel's abort: a bundled parser stops promptly on a large VALID f
       { name: 'word/header1.xml', data: enc('<w:hdr xmlns:w="w"><w:p><w:r><w:t>short header</w:t></w:r></w:p></w:hdr>') },
     ]);
     expect(indexedText(await ex(DOCX, file))).toBe('body\n\nshort header');
+  });
+
+  it('where the runtime has no setImmediate, it yields with setTimeout(…, 0) — and still every stride, still abortably', async () => {
+    // The primitive is chosen when the module loads, so load a fresh copy with it hidden.
+    const saved = globalThis.setImmediate;
+    vi.resetModules();
+    let fresh: typeof import('../src/index.js');
+    try {
+      (globalThis as { setImmediate?: unknown }).setImmediate = undefined;
+      fresh = await import('../src/index.js');
+    } finally {
+      globalThis.setImmediate = saved;
+    }
+    const plain = fresh.htmlExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 1 });
+    const page = `<p>kept</p><!--${filler}`;
+    const immediates = vi.spyOn(globalThis, 'setImmediate');
+    const timeouts = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      await plain.extract(input(enc(page), 'text/html', new AbortController().signal));
+      expect(immediates).not.toHaveBeenCalled();
+      const yields = timeouts.mock.calls.filter(([, ms]) => ms === 0).length;
+      expect(yields).toBeGreaterThanOrEqual(Math.floor((2 * page.length) / EXTRACTION_STRIDE) - 2);
+    } finally {
+      immediates.mockRestore();
+      timeouts.mockRestore();
+    }
+    expect(await plain.extract(input(enc(page), 'text/html', abortAfter(5)))).toEqual({ failed: 'the extraction was aborted' });
   });
 
   it('and an abort lands INSIDE that one construct, within a stride of the deadline', async () => {

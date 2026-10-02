@@ -253,7 +253,12 @@ export function normalizeExtractedText(text: string): string {
     .trim();
 }
 
-/** One turn of the event loop — a macrotask, so a due timer runs before what follows. */
+/**
+ * One turn of the event loop — a macrotask, so a due timer runs before what follows. A
+ * `setTimeout` on purpose, not the cheaper `setImmediate` the parsers yield with: timers run in
+ * order of when they are due, so this one cannot run before a deadline that has already
+ * passed, whichever phase of the loop the extractor returned in. It runs once per extraction.
+ */
 const nextTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 const TIMED_OUT = Symbol('timed out');

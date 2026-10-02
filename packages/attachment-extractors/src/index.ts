@@ -146,8 +146,23 @@ class MalformedInput extends Error {}
 /** The kernel's budget ran out and aborted the signal: the extraction stops where it is. */
 class ExtractionAborted extends Error {}
 
-/** One turn of the event loop — a macrotask, so the kernel's timer can run before what follows. */
-const nextTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+const runtime = globalThis as { setImmediate?: (fn: () => void) => unknown };
+
+/**
+ * One turn of the event loop, by the cheapest primitive that still lets a due timer — the
+ * kernel's deadline — run before what follows. Every yield the parsers make comes through here.
+ *
+ * `setImmediate` where the runtime has it (Node, and workerd, which has it as a global): it goes
+ * once round the loop, through the timers, without the 1 ms floor Node puts under
+ * `setTimeout(…, 0)` — the floor that made pacing a large file cost more in waiting than in
+ * parsing. `setTimeout(…, 0)` otherwise. Not `scheduler.yield()`: neither runtime has it, and
+ * where it exists its continuation is scheduled AHEAD of other tasks, which is the opposite of
+ * letting a timer in. Called through the global each time, never as a detached reference.
+ */
+const nextTurn: () => Promise<void> =
+  typeof runtime.setImmediate === 'function'
+    ? () => new Promise((resolve) => void runtime.setImmediate!(resolve))
+    : () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
  * Cooperation with the kernel's time budget (K-43): stop if the signal is aborted, and yield
