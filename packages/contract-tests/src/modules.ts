@@ -1389,6 +1389,85 @@ export const deniedScheduleMod: ModuleRegistration = {
   },
 };
 
+// -- #1654: a composed engine's own schedule, on a tenant holding only the vertical's key --
+
+/**
+ * #1654's ENGINE: a module composed by call into `composerMod`, with a SKU of its own
+ * (`composed-engine`) that the suite's tenant never holds — the shape of `engine-absence`
+ * inside meridian, whose install grants `meridian` and `protocol` but not `absence`.
+ *
+ * - `composed-engine/sweep` is its one declared schedule, checking the permission the
+ *   schedule grants. Fired through the system door, it must run without the engine's SKU.
+ * - `composed-engine/manual` checks the SAME permission but is NOT a declared schedule, so
+ *   the system principal passes its `ctx.check` and only the SKU gate can refuse it. That
+ *   is the lever proving the exception covers declared schedules and nothing else the
+ *   system door can reach.
+ */
+export const composedEngineModManifest = moduleManifest.parse({
+  id: '@test/composed-engine',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'composed-engine:sweep', description: 'the engine\'s scheduled sweep' }],
+  events: { emits: [{ type: 'composed-engine.swept', schemaVersion: 1 }], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'composed-engine',
+  schedules: [
+    { operation: 'composed-engine/sweep', cadence: { everyMinutes: 60 }, permissions: ['composed-engine:sweep'] },
+  ],
+});
+
+/** The engine's in-scope export — how the composing vertical reads it, by call (decision 28). */
+export function countComposedSweeps(ctx: Pick<OperationContext, 'sql'>): number {
+  return ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM composed_engine_sweeps')[0]!.n;
+}
+
+export const composedEngineMod: ModuleRegistration = {
+  manifest: composedEngineModManifest,
+  migrations: [{ version: '0001-init', sql: 'CREATE TABLE composed_engine_sweeps (n INTEGER NOT NULL)' }],
+  operations: {
+    'composed-engine/sweep': (async (ctx) => {
+      assertAllowed(await ctx.check('composed-engine:sweep' as PermissionKey));
+      ctx.sql.exec('INSERT INTO composed_engine_sweeps (n) VALUES (1)');
+      ctx.emit({
+        type: 'composed-engine.swept',
+        schemaVersion: 1,
+        entity: { entityType: 'composed-engine-thing', entityId: 'sweep' },
+        piiClass: 'none',
+        payload: {},
+      });
+    }) as OperationHandler<never, unknown>,
+    'composed-engine/manual': (async (ctx) => {
+      assertAllowed(await ctx.check('composed-engine:sweep' as PermissionKey));
+      ctx.sql.exec('INSERT INTO composed_engine_sweeps (n) VALUES (1)');
+    }) as OperationHandler<never, unknown>,
+  },
+};
+
+/**
+ * #1654's VERTICAL: holds the key a standard install grants (`composer`), and reads the
+ * engine's result through the engine's export inside its own operation. It declares no
+ * schedule, so its system principal holds nothing — its door is the lever proving the
+ * exception never lends one module's schedule to another module's system principal.
+ */
+export const composerModManifest = moduleManifest.parse({
+  id: '@test/composer',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [],
+  events: { emits: [], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'composer',
+});
+
+export const composerMod: ModuleRegistration = {
+  manifest: composerModManifest,
+  operations: {
+    'composer/sweeps': ((ctx) => countComposedSweeps(ctx)) as OperationHandler<never, unknown>,
+  },
+};
+
 export const flowMod: ModuleRegistration = {
   manifest: flowModManifest,
   migrations: [
@@ -2653,6 +2732,11 @@ export const contractTestModules: ModuleRegistration[] = [
   // `ctx.check` ever runs, which still counts as a failed schedule but records no
   // denial. Inert for every other suite — nothing else invokes `sched-denied/tick`.
   deniedScheduleMod,
+  // #1654: the composed engine and the vertical composing it. Inert for every other suite —
+  // only `scheduleEntitlementContractSuite` registers them on a host, so no other scope is
+  // seated their system grant or reads their table.
+  composedEngineMod,
+  composerMod,
   // #1577: the operation a resumable run's steps write through. Inert for every
   // other suite — nothing else reads `job_items`.
   jobsMod,

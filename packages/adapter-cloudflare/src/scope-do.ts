@@ -1946,6 +1946,9 @@ export function defineScopeDO(
        * where the control plane is unreachable by the sandbox contract and the projected
        * entitlements are the source of truth. A console-managed scope is gated on the
        * coordinator against the shared CP, so this is left undefined / a no-op there.
+       * Also undefined for a module's own declared schedule through the system door
+       * (#1654): the coordinator resolves the key with the kernel's `requiredEntitlementFor`,
+       * which exempts exactly that invoke, so the DO enforces whatever it is handed.
        */
       requiredEntitlement?: string,
       /**

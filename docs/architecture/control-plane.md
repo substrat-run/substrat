@@ -298,6 +298,14 @@ its operations do not resolve, exactly as if it had never been registered (the s
 as manifest `withdraws`). Granting an entitlement is a control-plane action; it is the
 point of the console.
 
+One exception, and only one: a module's **own declared schedule**, fired through the system
+door, is not gated on the module's key ([#1654](https://github.com/substrat-run/substrat/issues/1654)).
+A composed engine's schedule (meridian's `absence/expire-stale`) would otherwise fail on every
+install that holds the vertical's keys but not the engine's. Its authority is the schedule's
+`system:<moduleId>` grant, which provisioning seats and the kill switch pulls; every
+request-reachable door still demands the key. The full rule and its cost are in
+kernel-design.md §7.1, beside the loading rule.
+
 Open: whether the check sits on the hot path of every module load or is cached in scope DOs
 with event invalidation — kernel-design open question 5. Building the store is what forces
 it. Start simple (check at load, no cache); let a benchmark decide.
