@@ -59,6 +59,7 @@ import { classifyError } from '@substrat-run/vertical-host';
 import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
 import { ticket0Migrations } from '../../src/migrations.generated.js';
+import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
 
 interface Conversation {
   id: string;
@@ -1466,13 +1467,7 @@ describe('ticket0 on workerd — the suspended queue and the spam filter (#1088)
         ].map((r) => [String(r.name), String(r.sql)]),
       ),
     );
-    for (const name of [
-      'ticket0_conversations_waiting',
-      'ticket0_conversations_first_response_running',
-      'ticket0_conversations_resolution_running',
-      'ticket0_conversations_untagged',
-      'ticket0_conversations_no_reply_candidate',
-    ]) {
+    for (const name of INBOX_PARTIAL_INDEXES) {
       expect(sql[name], name).toMatch(/AND quarantine IS NULL$/);
     }
     expect(sql['ticket0_conversations_suspended']).toMatch(/WHERE quarantine = 'suspended'$/);
@@ -1481,10 +1476,7 @@ describe('ticket0 on workerd — the suspended queue and the spam filter (#1088)
   it('0021 on a large desk: every row stays in the inbox, and the time it takes is measured', async () => {
     const CONVERSATIONS = 30_000;
     const lists = MODULES.find((m) => m.manifest.id === ticket0Manifest.id)!.manifest.lists ?? [];
-    const oldLists = lists.map((l) =>
-      l.filterable ? { ...l, filterable: l.filterable.filter((f) => f !== 'quarantine') } : l,
-    );
-    const before = listIndexMigrations(ticket0Manifest.id, oldLists);
+    const before = listIndexMigrations(ticket0Manifest.id, listsBefore0021(lists));
     const now = listIndexMigrations(ticket0Manifest.id, lists);
     const changed = now.filter((m) => !before.some((b) => b.version === m.version));
     // Exactly the conversation list re-applies: the one declaration 0021 changed.

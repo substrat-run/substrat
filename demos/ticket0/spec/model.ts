@@ -197,7 +197,8 @@ export const BLOCK_REASON_MAX = 500;
  * every first-time visitor is one. `src/module.ts` (`suspicionOf`) is where they are read.
  */
 export const SUSPICION_SIGNALS = ['links', 'repeated', 'discarded-before', 'marked'] as const;
-export type SuspicionSignal = (typeof SUSPICION_SIGNALS)[number];
+export const suspicionSignal = z.enum(SUSPICION_SIGNALS);
+export type SuspicionSignal = z.infer<typeof suspicionSignal>;
 
 /**
  * Where a conversation lives (#1088): the inbox, the suspended queue, or discarded. One
@@ -205,7 +206,6 @@ export type SuspicionSignal = (typeof SUSPICION_SIGNALS)[number];
  * (`quarantine`, null being the inbox), and the reads take all three by name.
  */
 export const conversationQueue = z.enum(['inbox', 'suspended', 'discarded']);
-export type ConversationQueue = z.infer<typeof conversationQueue>;
 
 /**
  * "This conversation is in the inbox", as SQL — the ONE spelling of it (#1088).
@@ -771,8 +771,8 @@ export const ticket0Entities = defineEntities({
        * rebuild drops the kernel's list indexes with no way to have the kernel put them
        * back. The price is that the lifecycle does not draw the queue — `step()` in
        * `src/module.ts` is what refuses work on a suspended conversation — and every read
-       * that selects by state must also say which queue it means. `IN_THE_INBOX_SQL`
-       * there is the one predicate they share.
+       * that selects by state must also say which queue it means. `inTheInbox()` (above)
+       * is the one predicate they share.
        *
        * Null rather than an `inbox` value, so a row written by a version that predates
        * this column — a rollback after the migration ran — is in the inbox by
@@ -2748,7 +2748,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       contact_email: z.string().nullable(),
       contact_name: z.string().nullable(),
       suspended_at: z.string().nullable(),
-      reasons: z.array(z.enum(SUSPICION_SIGNALS)),
+      reasons: z.array(suspicionSignal),
       excerpt: z.string().nullable(),
       messages: z.number().int(),
       created_at: z.string(),

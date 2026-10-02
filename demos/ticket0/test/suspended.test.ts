@@ -19,26 +19,23 @@
  */
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import type { CountedPage, Page } from '@substrat-run/contracts';
-import type { ScopeStub } from '@substrat-run/kernel';
+import Database from 'better-sqlite3';
+import { join } from 'node:path';
+import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { platformActorId, scopeId, tenantId, type CountedPage, type Page } from '@substrat-run/contracts';
+import { ulid, type ScopeStub } from '@substrat-run/kernel';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
+import { ticket0Manifest } from '../src/manifest.js';
+import { MODULES } from '../src/provision.js';
 import { signIdentity } from '../src/seed.js';
-import { createKit, ORIGIN, type Desk } from './desk-kit.js';
+import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX } from '../spec/model.js';
+import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from './before-0021.js';
+import { createKit, ORIGIN, type ConversationRead, type Desk } from './desk-kit.js';
 
 const kit = createKit('ticket0-suspended-');
 afterAll(() => kit.dispose());
 
-interface Conversation {
-  id: string;
-  state: string;
-  subject: string;
-  assignee: string | null;
-  contact_id: string;
-  quarantine: string | null;
-  suspended_at: string | null;
-  suspicion: string | null;
-  updated_at: string;
-}
+type Conversation = ConversationRead;
 interface Held {
   id: string;
   contact_email: string | null;
@@ -68,22 +65,7 @@ async function filtered(
 }
 
 /** A new anonymous visitor says `body` — the widget's first message. */
-async function visitor(
-  d: Desk,
-  body: string,
-): Promise<{ conversationId: string; sessionId: string; token: string; suspended: boolean }> {
-  kit.clock.advance(60_000);
-  const widget = await kit.as(d, d.widget);
-  const started = (await widget.invoke('ticket0/widget-start', { origin: ORIGIN })) as {
-    sessionId: string;
-    token: string;
-  };
-  const posted = (await widget.invoke('ticket0/widget-post', { ...started, body })) as {
-    conversation_id: string;
-    suspended: boolean;
-  };
-  return { conversationId: posted.conversation_id, ...started, suspended: posted.suspended };
-}
+const visitor = (d: Desk, body: string) => kit.chat(d, body);
 
 async function say(d: Desk, session: { sessionId: string; token: string }, body: string) {
   kit.clock.advance(60_000);
@@ -103,8 +85,7 @@ async function queue(d: Desk): Promise<Held[]> {
   return ((await (await admin(d)).invoke('ticket0/list-suspended', { limit: 100 })) as Page<Held>).entries;
 }
 
-const read = async (d: Desk, id: string): Promise<Conversation> =>
-  (await (await admin(d)).invoke('ticket0/get-conversation', { conversationId: id })) as Conversation;
+const read = (d: Desk, id: string): Promise<Conversation> => kit.read(d, id);
 
 const messages = async (d: Desk, id: string): Promise<Message[]> =>
   ((await (await admin(d)).invoke('ticket0/list-messages', { conversationId: id, limit: 100 })) as Page<Message>)
@@ -132,11 +113,17 @@ describe('the filter is off until a desk switches it on', () => {
   it('refuses a bound outside the declared range at save time, and takes the bounds themselves', async () => {
     const d = await kit.freshDesk({ agents: 0 });
     const a = await admin(d);
-    for (const spamFilter of [{ maxLinks: 21 }, { maxLinks: -1 }, { repeatAfter: 0 }, { repeatAfter: 21 }, { links: 3 }]) {
+    for (const spamFilter of [
+      { maxLinks: SPAM_MAX_LINKS_MAX + 1 },
+      { maxLinks: -1 },
+      { repeatAfter: 0 },
+      { repeatAfter: SPAM_REPEAT_MAX + 1 },
+      { links: 3 },
+    ]) {
       await expect(a.invoke('ticket0/configure-desk', { settings: { spamFilter } }), JSON.stringify(spamFilter)).rejects.toThrow();
     }
-    await a.invoke('ticket0/configure-desk', { settings: { spamFilter: { maxLinks: 0, repeatAfter: 20 } } });
-    await a.invoke('ticket0/configure-desk', { settings: { spamFilter: { maxLinks: 20, repeatAfter: 1 } } });
+    await a.invoke('ticket0/configure-desk', { settings: { spamFilter: { maxLinks: 0, repeatAfter: SPAM_REPEAT_MAX } } });
+    await a.invoke('ticket0/configure-desk', { settings: { spamFilter: { maxLinks: SPAM_MAX_LINKS_MAX, repeatAfter: 1 } } });
   });
 });
 
@@ -365,7 +352,7 @@ describe('every sweep and count leaves the suspended queue alone, and still swee
   });
 
   it('service levels breach the accepted one only, and breaching-soon lists only it', async () => {
-    const { d, held, kept } = await pair({ sla: { firstResponseMinutes: { normal: 60 } } });
+    const { d, kept } = await pair({ sla: { firstResponseMinutes: { normal: 60 } } });
     const soon = (await (await admin(d)).invoke('ticket0/breaching-soon', { withinMinutes: 120 })) as {
       rows: { conversationId: string }[];
     };
@@ -376,11 +363,10 @@ describe('every sweep and count leaves the suspended queue alone, and still swee
       db.prepare('SELECT id FROM ticket0_conversations WHERE first_response_breached_at IS NOT NULL').all(),
     );
     expect(breached).toEqual([{ id: kept }]);
-    expect(held).not.toBe(kept);
   });
 
   it('no-reply notify tells the desk about the accepted one only', async () => {
-    const { d, held, kept } = await pair({ noReplyNotify: { afterHours: 1 } });
+    const { d, kept } = await pair({ noReplyNotify: { afterHours: 1 } });
     kit.clock.advance(2 * 60 * 60 * 1000);
     expect(await kit.sweep(d, 'ticket0/notify-no-reply', 'notified')).toBe(1);
     expect((await read(d, kept)).state).toBe('new');
@@ -388,7 +374,6 @@ describe('every sweep and count leaves the suspended queue alone, and still swee
       db.prepare('SELECT id FROM ticket0_conversations WHERE no_reply_notified_at IS NOT NULL').all(),
     );
     expect(told).toEqual([{ id: kept }]);
-    expect(held).not.toBe(kept);
   });
 
   it('the reaper closes the abandoned accepted one only — junk waits for a person', async () => {
@@ -611,7 +596,9 @@ describe('discard destroys the content — completely, only what is suspended, o
     const a = await admin(d);
     await expect(a.invoke('ticket0/discard-suspended', { conversationIds: [] })).rejects.toThrow();
     await expect(
-      a.invoke('ticket0/discard-suspended', { conversationIds: Array.from({ length: 101 }, (_, i) => `c${i}`) }),
+      a.invoke('ticket0/discard-suspended', {
+        conversationIds: Array.from({ length: DISCARD_BATCH_MAX + 1 }, (_, i) => `c${i}`),
+      }),
     ).rejects.toThrow();
   });
 });
@@ -694,22 +681,12 @@ describe('the widget surface never hands a held message to the assistant', () =>
  */
 describe('migration 0021 on an existing desk', () => {
   it('keeps every conversation in the inbox, and leaves exactly the indexes a fresh desk has', async () => {
-    const { SqliteScopeHost } = await import('@substrat-run/adapter-sqlite');
-    const { platformActorId, scopeId, tenantId } = await import('@substrat-run/contracts');
-    const { ulid } = await import('@substrat-run/kernel');
-    const { MODULES } = await import('../src/provision.js');
-    const { ticket0Manifest } = await import('../src/manifest.js');
-    const { default: Database } = await import('better-sqlite3');
-    const { join } = await import('node:path');
-
     const actor = platformActorId.parse(ulid());
-    const desks: { tenant: ReturnType<typeof tenantId.parse>; scope: ReturnType<typeof scopeId.parse> }[] = [];
-    const provision = async (host: InstanceType<typeof SqliteScopeHost>, i: number) => {
+    const provision = async (host: SqliteScopeHost, i: number) => {
       const desk = { tenant: tenantId.parse(ulid()), scope: scopeId.parse(ulid()) };
       await host.admin.createTenant(actor, { id: desk.tenant, slug: `migration-0021-${i}`, name: 'Migration' });
       await host.admin.grantEntitlement(actor, desk.tenant, ticket0Manifest.entitlementKey as string);
       await host.provisionScope(actor, { tenantId: desk.tenant, scopeId: desk.scope, vertical: 'ticket0' });
-      desks.push(desk);
       return desk;
     };
     const file = (d: { tenant: string; scope: string }) => join(kit.dir, `${d.tenant}__${d.scope}.sqlite`);
@@ -734,12 +711,7 @@ describe('migration 0021 on an existing desk', () => {
         m.manifest.id === ticket0Manifest.id
           ? {
               ...m,
-              manifest: {
-                ...m.manifest,
-                lists: m.manifest.lists?.map((l) =>
-                  l.filterable ? { ...l, filterable: l.filterable.filter((f) => f !== 'quarantine') } : l,
-                ),
-              },
+              manifest: { ...m.manifest, lists: listsBefore0021(m.manifest.lists ?? []) },
               migrations: (m.migrations ?? []).filter((x) => x.version <= '0020'),
             }
           : m,
@@ -774,13 +746,7 @@ describe('migration 0021 on an existing desk', () => {
     const upgraded = indexes(old);
     expect(upgraded).toEqual(indexes(fresh));
     // And the five live-work indexes carry the inbox predicate, not merely exist.
-    for (const name of [
-      'ticket0_conversations_waiting',
-      'ticket0_conversations_first_response_running',
-      'ticket0_conversations_resolution_running',
-      'ticket0_conversations_untagged',
-      'ticket0_conversations_no_reply_candidate',
-    ]) {
+    for (const name of INBOX_PARTIAL_INDEXES) {
       expect(upgraded.find((i) => i.name === name)?.sql, name).toMatch(/AND quarantine IS NULL$/);
     }
     expect(upgraded.map((i) => i.name)).toContain('ticket0_conversations_suspended');

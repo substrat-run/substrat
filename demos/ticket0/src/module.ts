@@ -86,7 +86,7 @@ import {
   SPAM_REPEAT_MIN_CHARS,
   SPAM_REPEAT_WINDOW_HOURS,
   SUSPENDED_EXCERPT_CHARS,
-  SUSPICION_SIGNALS,
+  suspicionSignal,
   type AutoTagRule,
   type DeskSetting,
   type MacroAction,
@@ -1423,12 +1423,12 @@ function closeConversation(
 // ---------------------------------------------------------------------------
 
 /** The signals a row was held for, parsed — leniently, as every stored JSON here is read. */
-function suspicionOfRow(row: Pick<ConversationRow, 'suspicion'>): SuspicionSignal[] {
-  if (row.suspicion === null) return [];
+function suspicionOfRow(suspicion: string | null): SuspicionSignal[] {
+  if (suspicion === null) return [];
   try {
-    const parsed = JSON.parse(row.suspicion) as unknown;
+    const parsed = JSON.parse(suspicion) as unknown;
     return Array.isArray(parsed)
-      ? parsed.filter((s): s is SuspicionSignal => (SUSPICION_SIGNALS as readonly unknown[]).includes(s))
+      ? parsed.filter((s): s is SuspicionSignal => suspicionSignal.safeParse(s).success)
       : [];
   } catch {
     return [];
@@ -1538,7 +1538,7 @@ function linksIn(text: string): number {
 /**
  * Why the spam filter would hold this message back — the empty list when it would not
  * (#1088). Read at the door, before the message is written and before any model is
- * asked, which is the issue's whole cost argument: junk is held for the price of three
+ * asked, which is the issue's whole cost argument: junk is held for the price of two
  * indexed reads and a regex, never an inference.
  *
  * Two questions, in this order, and the first is what keeps the false positives down:
@@ -1555,19 +1555,19 @@ function linksIn(text: string): number {
  */
 function suspicionOf(
   ctx: OperationContext,
+  filter: { maxLinks: number; repeatAfter: number },
   contact: ContactRow,
   conversationId: string,
   body: string,
 ): SuspicionSignal[] {
-  const filter = spamFilterOf(desk(ctx));
-  if (!filter) return [];
   if (contact.external_id !== null || contact.principal !== null) return [];
-  const accepted = ctx.sql.query<{ one: number }>(
-    `SELECT 1 AS one FROM ticket0_conversations
-      WHERE contact_id = ? AND id != ? AND ${inTheInbox()} LIMIT 1`,
-    [contact.id, conversationId],
+  // One walk of the contact's conversations answers both history questions.
+  const history = ctx.sql.query<{ accepted: number | null; discarded: number | null }>(
+    `SELECT MAX(id != ? AND ${inTheInbox()}) AS accepted, MAX(quarantine = 'discarded') AS discarded
+       FROM ticket0_conversations WHERE contact_id = ?`,
+    [conversationId, contact.id],
   )[0];
-  if (accepted) return [];
+  if (history?.accepted) return [];
 
   const signals: SuspicionSignal[] = [];
   if (linksIn(body) > filter.maxLinks) signals.push('links');
@@ -1584,16 +1584,11 @@ function suspicionOf(
           AND m.author_kind = 'contact'
           AND c.contact_id != ?
           AND lower(trim(m.body_text)) = lower(trim(?))`,
-      [shiftDays(ctx.now(), -SPAM_REPEAT_WINDOW_HOURS / 24), contact.id, body],
+      [shiftInstant(ctx.now(), -SPAM_REPEAT_WINDOW_HOURS * 3_600_000), contact.id, body],
     )[0];
     if (Number(others?.n ?? 0) >= filter.repeatAfter) signals.push('repeated');
   }
-  const discarded = ctx.sql.query<{ one: number }>(
-    `SELECT 1 AS one FROM ticket0_conversations
-      WHERE contact_id = ? AND quarantine = 'discarded' LIMIT 1`,
-    [contact.id],
-  )[0];
-  if (discarded) signals.push('discarded-before');
+  if (history?.discarded) signals.push('discarded-before');
   return signals;
 }
 
@@ -1606,7 +1601,10 @@ function screenAtTheDoor(
   conversation: ConversationRow,
   body: string,
 ): ConversationRow {
-  const signals = suspicionOf(ctx, contactOrThrow(ctx, conversation.contact_id), conversation.id, body);
+  // Off is the default, and costs one desk read: no contact, no history, no scan.
+  const filter = spamFilterOf(desk(ctx));
+  if (!filter) return conversation;
+  const signals = suspicionOf(ctx, filter, contactOrThrow(ctx, conversation.contact_id), conversation.id, body);
   if (signals.length === 0) return conversation;
   const row = suspendConversation(ctx, conversation, signals);
   recordFired(ctx, 'spamFilter', 1);
@@ -2218,10 +2216,13 @@ const noReplyHours = (row: DeskRow): number | null =>
  * written falls back to its default rather than to something nobody chose.
  */
 function spamFilterOf(row: DeskRow): { maxLinks: number; repeatAfter: number } | null {
-  if (asRecord(storedSettings(row).spamFilter) === null) return null;
+  const spam = asRecord(storedSettings(row).spamFilter);
+  if (spam === null) return null;
+  const bounded = (value: unknown, min: number, max: number, fallback: number): number =>
+    typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
   return {
-    maxLinks: switchNumber(row, 'spamFilter', 'maxLinks', 0, SPAM_MAX_LINKS_MAX) ?? SPAM_MAX_LINKS_DEFAULT,
-    repeatAfter: switchNumber(row, 'spamFilter', 'repeatAfter', 1, SPAM_REPEAT_MAX) ?? SPAM_REPEAT_DEFAULT,
+    maxLinks: bounded(spam.maxLinks, 0, SPAM_MAX_LINKS_MAX, SPAM_MAX_LINKS_DEFAULT),
+    repeatAfter: bounded(spam.repeatAfter, 1, SPAM_REPEAT_MAX, SPAM_REPEAT_DEFAULT),
   };
 }
 
@@ -4660,7 +4661,7 @@ const operations = {
     return pageOf(
       rows.map(({ suspicion, ...row }) => ({
         ...row,
-        reasons: suspicionOfRow({ suspicion }),
+        reasons: suspicionOfRow(suspicion),
         messages: Number(row.messages),
       })),
       limit,
@@ -5894,7 +5895,7 @@ const operations = {
     // The spam filter (#1088), for a conversation this mail OPENED — a new one or a
     // follow-up. Mail into a thread the desk already holds is not re-judged, in either
     // queue. Read before the message is written, so the repeat count is of OTHER mail.
-    const opened = binding === 'a new conversation' || landed.id !== bound.id;
+    const opened = landed.id !== bound.id || (!input.conversationId && !threaded);
     const conversation = opened ? screenAtTheDoor(ctx, landed, input.bodyText) : landed;
     ctx.log.info('mail ingested into {conversationId} as {binding}', { conversationId: conversation.id, binding });
 
@@ -6224,29 +6225,6 @@ const operations = {
     const next = step(conversation, 'ticket0/request-human');
 
     /**
-     * Held in the suspended queue (#1088): the visitor's words are written, as
-     * `widget-post` would write them, and that is all. No acknowledgement — it promises
-     * that "someone from the team will reply", which nobody has agreed to — and no
-     * notification, because a sender the filter held must not be able to page the whole
-     * desk with a button. A restore puts the conversation, and this message, in the
-     * inbox where every person sees it.
-     */
-    if (conversation.quarantine === 'suspended') {
-      const said = input.body
-        ? writeMessage(ctx, {
-            conversationId: conversation.id,
-            authorKind: 'contact',
-            authorPrincipal: null,
-            visibility: 'public',
-            bodyText: input.body,
-          })
-        : lastCustomerMessage(ctx, conversation.id);
-      settle(ctx, conversation, next);
-      if (input.body) ctx.emit(messageEvent(said, 'ticket0.message-ingested'));
-      return { ...said, notified: 0 };
-    }
-
-    /**
      * The visitor's own words, when they are not already in the thread.
      *
      * With a `body` this is the button: one call posts and escalates. Without one the
@@ -6263,6 +6241,20 @@ const operations = {
           bodyText: input.body,
         })
       : lastCustomerMessage(ctx, conversation.id);
+
+    /**
+     * Held in the suspended queue (#1088): the visitor's words are written, as
+     * `widget-post` would write them, and that is all. No acknowledgement — it promises
+     * that "someone from the team will reply", which nobody has agreed to — and no
+     * notification, because a sender the filter held must not be able to page the whole
+     * desk with a button. A restore puts the conversation, and this message, in the
+     * inbox where every person sees it.
+     */
+    if (conversation.quarantine === 'suspended') {
+      settle(ctx, conversation, next);
+      if (input.body) ctx.emit(messageEvent(asked, 'ticket0.message-ingested'));
+      return { ...asked, notified: 0 };
+    }
 
     /**
      * Ask twice, and the desk hears once. The acknowledgement and the notifications

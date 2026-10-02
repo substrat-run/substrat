@@ -15,6 +15,7 @@ import {
   ASSISTANT_HEALTH_WAITING_SQL, ASSISTANT_HEALTH_WAITING_TOTAL_SQL,
 } from '../src/health-queries.js';
 import { NO_REPLY_WAITING } from '../src/module.js';
+import { listsBefore0021 } from './before-0021.js';
 
 type Query = { sql: string; args: (string | number)[] };
 const queries = {
@@ -44,10 +45,10 @@ function explain(query: Query): string[] {
   return (db.prepare(`EXPLAIN QUERY PLAN ${query.sql}`).all(...query.args) as { detail: string }[])
     .map(row => row.detail);
 }
-const as = (old: boolean) => (q: Query) => (old ? before0021(q) : q);
-function plans(old = false) { return Object.fromEntries(Object.entries(queries).map(([name, q]) => [name, explain(as(old)(q))])); }
-function results(old = false) {
-  return Object.fromEntries(Object.entries(queries).map(([name, q]) => { const r = as(old)(q); return [name, db.prepare(r.sql).all(...r.args)]; }));
+const queriesBefore0021 = Object.fromEntries(Object.entries(queries).map(([name, q]) => [name, before0021(q)]));
+function plans(qs: Record<string, Query> = queries) { return Object.fromEntries(Object.entries(qs).map(([name, q]) => [name, explain(q)])); }
+function results(qs: Record<string, Query> = queries) {
+  return Object.fromEntries(Object.entries(qs).map(([name, q]) => [name, db.prepare(q.sql).all(...q.args)]));
 }
 function rows() {
   // Literal tables/columns are fixture facts, not derived from the emitted model.
@@ -93,11 +94,7 @@ beforeAll(async () => {
   for (const module of MODULES) previous.registerModule(module.manifest.id === ticket0Manifest.id
     ? {
         ...module,
-        manifest: {
-          ...module.manifest,
-          lists: module.manifest.lists?.map(l =>
-            l.filterable ? { ...l, filterable: l.filterable.filter(f => f !== 'quarantine') } : l),
-        },
+        manifest: { ...module.manifest, lists: listsBefore0021(module.manifest.lists ?? []) },
         migrations: (module.migrations ?? []).filter(m => m.version <= '0014'),
       }
     : module);
@@ -110,8 +107,8 @@ beforeAll(async () => {
   db = new Database(filename);
   populate();
   beforeRows = rows();
-  beforeResults = results(true);
-  beforePlans = plans(true);
+  beforeResults = results(queriesBefore0021);
+  beforePlans = plans(queriesBefore0021);
   db.close();
   const upgraded = new SqliteScopeHost({ dir });
   for (const module of MODULES) upgraded.registerModule(module);
