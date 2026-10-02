@@ -20,7 +20,7 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import Database from 'better-sqlite3';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
@@ -1150,7 +1150,16 @@ describe('events carry no outside text', () => {
     expect(offending(v1)).toEqual(['ticket0.kb-ingest-failed: kbSource.last_error']);
   });
 
-  it('emits none: no event of a seeded world or of the queue’s flows holds a marked field, by key or by value', async () => {
+  /**
+   * The runtime half, by SENTINEL (Codex round 5). A unique string is planted in every
+   * marked column the desk can be made to write, through the operations that write it,
+   * on a seeded world, and checked to be there BEFORE anything is discarded. Then the
+   * queue runs — held, restored, discarded — and every payload of every event in the
+   * outbox is searched for every sentinel, whatever key it might sit under. The model's
+   * list of marked columns is what the plantings are held to: one added tomorrow fails
+   * here until it is planted or exempted with its reason.
+   */
+  it('emits none: no event holds a planted sentinel from any marked column, under any key', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ticket0-outside-text-'));
     try {
       const host = buildHost(dir);
@@ -1159,70 +1168,163 @@ describe('events carry no outside text', () => {
       const as = (p: { principal: PrincipalId }) => host.getScope(p.principal, desk.tenant, desk.scope);
       const admin = await as(desk.admin);
       const relay = await as(desk.relay);
-      // The queue's own flows, on top of everything the seed already did: a provider's
-      // failure quoting the customer, a remote's ingest failure, a block rule, a held mail
-      // restored and another discarded.
-      await admin.invoke('ticket0/configure-desk', { settings: { spamFilter: {} } });
-      const mailIn = (from: string, subject: string, bodyText: string, n: number) =>
-        relay.invoke('ticket0/ingest-message', {
-          conversationId: null, contactEmail: from, contactName: 'Outside Person', subject, bodyText,
-          emailMessageId: `<outside-${n}@mail.example>`,
-        }) as Promise<{ conversation_id: string }>;
-      const kept = await mailIn('kept@outside.example', 'Outside subject kept 77', `${linky(4, 'kept')} outside body`, 1);
-      const junk = await mailIn('junk@outside.example', 'Outside subject junk 77', `${linky(4, 'junk')} outside body`, 2);
-      await admin.invoke('ticket0/restore', { conversationId: kept.conversation_id });
-      await (await as(desk.widget)).invoke('ticket0/record-assistant-failure', {
-        conversationId: kept.conversation_id, turnId: 'outside-turn', model: 'test/none',
-        error: 'provider quoted: outside body kept',
-      });
-      await admin.invoke('ticket0/discard', { conversationId: junk.conversation_id });
-      await admin.invoke('ticket0/add-block-rule', { kind: 'email', value: 'blocked@outside.example' });
-      const sources = (await admin.invoke('ticket0/list-kb-sources', {})) as Page<{ id: string }>;
-      if (sources.entries[0]) {
-        await admin.invoke('ticket0/record-kb-ingest-failure', {
-          sourceId: sources.entries[0].id, error: 'remote said: outside site text 77',
-        });
-      }
+      const widget = await as(desk.widget);
+      const tag = ulid().slice(-8).toLowerCase();
+      const sentinel = (column: string) => `snt${tag}${column.replace(/[^a-z]/gi, '').toLowerCase()}`;
+      const planted = new Map<string, string>();
+      const plant = (column: string, shape: (s: string) => string = (s) => s) => {
+        const value = shape(sentinel(column));
+        planted.set(column, value);
+        return value;
+      };
+      const asEmail = (s: string) => `${s}@sentinel.example`;
+      const asUrl = (s: string) => `https://sentinel.example/${s}`;
+      const asMessageId = (s: string) => `<${s}@sentinel.example>`;
+      // Not plantable, and why. Anything else the model marks must be planted below.
+      const EXEMPT: Record<string, string> = {
+        'widgetSession.country': 'a validated two-letter country code, cannot hold a sentinel',
+        'widgetOpening.country': 'a validated two-letter country code, cannot hold a sentinel',
+      };
 
-      const keyFindings: string[] = [];
-      const valueFindings: string[] = [];
-      for (const file of readdirSync(dir).filter((f) => f.endsWith('.sqlite'))) {
-        const db = new Database(join(dir, file), { readonly: true });
-        try {
-          const hasOutbox = db.prepare("SELECT 1 FROM sqlite_master WHERE name = '_substrat_outbox'").get();
-          if (!hasOutbox) continue;
-          const events = db.prepare('SELECT type, entity_type, payload FROM _substrat_outbox').all() as {
-            type: string; entity_type: string; payload: string | null;
-          }[];
-          // Every value the scope holds in a marked column, long enough to mean something.
-          const marked: string[] = [];
-          for (const [entity, def] of Object.entries(defs)) {
-            const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(def.table);
-            for (const col of outside(entity)) {
-              if (!exists) continue;
-              for (const row of db.prepare(`SELECT ${col} AS v FROM ${def.table} WHERE ${col} IS NOT NULL`).all() as { v: unknown }[]) {
-                if (typeof row.v === 'string' && row.v.length >= 12) marked.push(row.v);
-              }
-            }
-          }
-          for (const e of events) {
-            const payload = e.payload ? (JSON.parse(e.payload) as Record<string, unknown>) : {};
-            for (const key of Object.keys(payload)) {
-              if (outside(e.entity_type).includes(key)) keyFindings.push(`${e.type}: ${e.entity_type}.${key}`);
-            }
-            for (const v of marked) if (e.payload?.includes(JSON.stringify(v).slice(1, -1))) valueFindings.push(`${e.type} holds “${v.slice(0, 40)}”`);
-          }
-          // The probe is not vacuous: the scope does hold marked text, and does emit events.
-          if (file.includes(desk.scope)) {
-            expect(events.length).toBeGreaterThan(20);
-            expect(marked.some((v) => v.includes('provider quoted: outside body kept'))).toBe(true);
-          }
-        } finally {
-          db.close();
-        }
+      await admin.invoke('ticket0/configure-desk', { settings: { spamFilter: {} } });
+
+      // The widget: a vouched visitor whose browser and edge say sentinel things.
+      const client = (prefix: string) => ({
+        userAgent: plant(`${prefix}.user_agent`),
+        language: plant(`${prefix}.language`),
+        device: {
+          browser: plant(`${prefix}.browser`), browserVersion: plant(`${prefix}.browser_version`),
+          os: plant(`${prefix}.os`), osVersion: plant(`${prefix}.os_version`), kind: 'desktop' as const,
+        },
+        geo: {
+          country: 'SE', region: plant(`${prefix}.region`), city: plant(`${prefix}.city`),
+          timezone: plant(`${prefix}.timezone`), continent: 'EU',
+        },
+      });
+      const { secret } = (await admin.invoke('ticket0/rotate-verification-secret', {})) as { secret: string };
+      const externalId = plant('contact.external_id');
+      const origin = ((await widget.invoke('ticket0/widget-origins', {})) as { origins: string[] }).origins[0]!;
+      const started = (await widget.invoke('ticket0/widget-start', {
+        origin,
+        client: client('widgetSession'),
+        identity: {
+          externalId,
+          signature: await signIdentity(secret, externalId),
+          email: plant('contact.email', asEmail),
+          displayName: plant('contact.display_name'),
+        },
+      })) as { sessionId: string; token: string };
+      const posted = (await widget.invoke('ticket0/widget-post', { ...started, body: 'a widget question' })) as {
+        conversation_id: string;
+      };
+      // An opening that never speaks keeps its own client columns.
+      await widget.invoke('ticket0/widget-start', { origin, client: client('widgetOpening') });
+
+      // Mail from a stranger, every header and body field a sentinel — held by the filter.
+      const junk = (await relay.invoke('ticket0/ingest-message', {
+        conversationId: null,
+        contactEmail: `held${tag}@sentinel.example`,
+        contactName: null,
+        subject: plant('conversation.subject'),
+        bodyText: `${plant('message.body_text')} ${linky(4, tag)}`,
+        bodyHtml: `<p>${plant('message.body_html')}</p>`,
+        emailMessageId: plant('message.email_message_id', asMessageId),
+        emailInReplyTo: plant('message.email_in_reply_to', asMessageId),
+      })) as { conversation_id: string };
+      planted.set('mailDelivery.email_message_id', planted.get('message.email_message_id')!);
+
+      // The assistant's failure, quoting; a remote's failure; a fetched article; a block
+      // rule; a staff profile; a signup; a customer's rating.
+      await widget.invoke('ticket0/record-assistant-failure', {
+        conversationId: posted.conversation_id, turnId: `turn-${tag}`, model: 'test/none', error: plant('aiTurn.error'),
+      });
+      const sourceId = ((await admin.invoke('ticket0/list-kb-sources', {})) as Page<{ id: string }>).entries[0]!.id;
+      await admin.invoke('ticket0/record-kb-articles', {
+        sourceId,
+        articles: [{
+          url: plant('kbArticle.url', asUrl), title: plant('kbArticle.title'),
+          headingPath: plant('kbArticle.heading_path'), body: plant('kbArticle.body'),
+        }],
+      });
+      await admin.invoke('ticket0/record-kb-ingest-failure', { sourceId, error: plant('kbSource.last_error') });
+      await admin.invoke('ticket0/add-block-rule', { kind: 'email', value: plant('blockRule.value', asEmail) });
+      await admin.invoke('ticket0/set-agent-profile', {
+        displayName: plant('agentProfile.display_name'),
+        avatarUrl: plant('agentProfile.avatar_url', asUrl),
+        signature: plant('agentProfile.signature'),
+      });
+      const signupOrigin = ((await (await as(desk.signup)).invoke('ticket0/signup-origins', {})) as { origins: string[] }).origins[0]!;
+      await (await as(desk.signup)).invoke('ticket0/submit-signup', {
+        kind: 'waitlist', email: plant('signup.email', asEmail), note: plant('signup.note'), origin: signupOrigin,
+      });
+      const rated = (await relay.invoke('ticket0/ingest-message', {
+        conversationId: null, contactEmail: desk.customer.email, contactName: desk.customer.name,
+        subject: 'A rated question', bodyText: 'please help', emailMessageId: `<rated-${tag}@mail.example>`,
+      })) as { conversation_id: string };
+      await admin.invoke('ticket0/post-public-reply', { conversationId: rated.conversation_id, body: 'Done.' });
+      await admin.invoke('ticket0/resolve', { conversationId: rated.conversation_id });
+      await (await as(desk.customer)).invoke('ticket0/submit-csat', {
+        conversationId: rated.conversation_id, score: 5, comment: plant('csat.comment'),
+      });
+
+      const file = join(dir, `${desk.tenant}__${desk.scope}.sqlite`);
+      const read = <T,>(fn: (db: Database.Database) => T): T => {
+        const db = new Database(file, { readonly: true });
+        try { return fn(db); } finally { db.close(); }
+      };
+      // Held to the model: every marked column is planted or exempted, and every planting
+      // is really in its column before the queue runs.
+      const markedColumns = Object.entries(defs).flatMap(([entity]) => outside(entity).map((f) => `${entity}.${f}`));
+      expect(markedColumns.filter((c) => !planted.has(c) && !(c in EXEMPT)), 'marked but never planted').toEqual([]);
+      const missing = read((db) =>
+        [...planted].filter(([column, value]) => {
+          const [entity, field] = column.split('.') as [string, string];
+          return !db.prepare(`SELECT 1 FROM ${defs[entity]!.table} WHERE instr(${field}, ?) > 0`).get(value);
+        }).map(([column]) => column),
+      );
+      expect(missing, 'planted, but not in its column').toEqual([]);
+
+      // The queue runs: the junk was held; a person discards it; the widget conversation is
+      // suspended by hand and discarded too.
+      expect((await admin.invoke('ticket0/get-conversation', { conversationId: junk.conversation_id })) as { quarantine: string })
+        .toMatchObject({ quarantine: 'suspended' });
+      await admin.invoke('ticket0/discard', { conversationId: junk.conversation_id });
+      await admin.invoke('ticket0/suspend', { conversationId: posted.conversation_id });
+      await admin.invoke('ticket0/discard', { conversationId: posted.conversation_id });
+
+      const sentinels = [...planted.values()];
+      const leaks = (events: { type: string; payload: string | null }[]) =>
+        events.flatMap((e) => sentinels.filter((v) => e.payload?.includes(v)).map((v) => `${e.type} holds ${v}`));
+      const outbox = () =>
+        read((db) => db.prepare('SELECT id, type, entity_type, payload FROM _substrat_outbox').all() as {
+          id: string; type: string; entity_type: string; payload: string | null;
+        }[]);
+      const events = outbox();
+      expect(events.length).toBeGreaterThan(50);
+      expect(leaks(events)).toEqual([]);
+      // And by key, against the model, on every event.
+      const byKey = events.flatMap((e) =>
+        Object.keys(e.payload ? (JSON.parse(e.payload) as object) : {})
+          .filter((k) => outside(e.entity_type).includes(k))
+          .map((k) => `${e.type}: ${e.entity_type}.${k}`),
+      );
+      expect(byKey).toEqual([]);
+
+      // The positive twin: an event that copies discarded junk under a key no marker names
+      // — what a careless new emitter would write — is caught.
+      const db = new Database(file);
+      try {
+        db.prepare(
+          `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
+             entity_type, entity_id, pii_class, payload)
+           SELECT 'leak-${tag}', 'ticket0.careless-summary', 1, occurred_at, tenant_id, scope_id, actor,
+                  'conversation', entity_id, 'none', ?
+             FROM _substrat_outbox LIMIT 1`,
+        ).run(JSON.stringify({ id: junk.conversation_id, summary: planted.get('conversation.subject') }));
+      } finally {
+        db.close();
       }
-      expect(keyFindings).toEqual([]);
-      expect([...new Set(valueFindings)]).toEqual([]);
+      expect(leaks(outbox())).toEqual([`ticket0.careless-summary holds ${planted.get('conversation.subject')}`]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
