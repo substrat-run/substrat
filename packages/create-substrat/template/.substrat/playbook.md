@@ -289,8 +289,10 @@ export const model = emitModel(entities);
 
 These are compile errors, not lints: a `parents` naming no entity, a `permission` that is
 not declared, an `entityIdFrom` naming no field of that operation's `output`, a `payload`
-carrying a field the entity marks `erasable`, a `{var}` in an HTTP path that names no input
-field. All before a handler exists.
+carrying a field the entity marks `erasable` or `outsideText`, a `{var}` in an HTTP path that
+names no input field. All before a handler exists. Mark `outsideText` on any column whose value
+a customer, a remote system or an inbound header writes and that is not personal data (an error
+a provider returned, a subject line, a fetched document): it may sit on its row, never on an event.
 
 Field names mirror the SQL columns, snake_case included — a prettier naming here is a second
 description of the same rows. Not every table is an entity: an entity is something the
