@@ -257,6 +257,8 @@ describe('ControlPlaneClient — defaults are exactly today’s request (#971)',
       body: JSON.stringify({ id: T, slug: 'acme', name: 'Acme' }),
       headers: { [DEV_ACTOR_HEADER]: 'actor-1', 'content-type': 'application/json' },
     });
+    // `toEqual` reads an `undefined` value as absent; the key itself must not be there.
+    expect('credentials' in seen[0]!.init).toBe(false);
     expect(seen[0]!.url).toBe(`${BASE}/tenants`);
   });
 
