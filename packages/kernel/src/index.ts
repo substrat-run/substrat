@@ -90,6 +90,7 @@ export {
 export {
   assertRedrainWindow,
   attachmentBlobKey,
+  attachmentSha256,
   consumersFor,
   entitlementDenial,
   backoffAt,

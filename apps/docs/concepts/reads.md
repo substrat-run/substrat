@@ -183,6 +183,31 @@ Short terms are refused rather than answered by a scan — two characters for th
 the same minimum in your operation's input schema so a caller gets a 400 that names the
 field.
 
+### Searching inside attachments
+
+An attachment's text is indexed with no declaration. Every upload queues an extraction job,
+and once it has run the file is found by a phrase from its body:
+
+```ts
+const files = await host.attachments(principal, tenantId, scopeId);
+const hits = await files.search('indexation clause', { limit: 20 });
+```
+
+The job reads plain text, Markdown, CSV and other `text/*` files, HTML, DOCX, XLSX and PPTX.
+PDF is not extracted yet, and images are never OCR'd. Every attachment records how its
+extraction went: `pending`, `indexed`, `empty`, `unsupported` or `failed`, with a reason.
+Module code reads that record with `readAttachmentText(ctx, attachmentId)`, so a file that
+yielded nothing can say so rather than look like a search with no match. The job runs off
+the upload, so a file is not searchable in the same breath it lands. On a hosted vertical,
+the scope sweeper drives it when its `runJobs` option is on.
+
+Unlike `ctx.search`, this search **does** check permission. Each hit passes the same check
+`open` makes, the attachment target's `readPermission` on the owning entity, before the
+limit is applied. A file the caller cannot open neither appears nor takes a slot. So the
+results carry no count, score or snippet, and come newest first rather than by relevance:
+a relevance score weighs each word by how often it occurs across every file, including the
+ones the caller may not read.
+
 ## Two more surfaces, and neither is a read tier
 
 Distinct from the three read paths, a vertical's manifest can declare stores the platform

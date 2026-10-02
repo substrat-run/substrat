@@ -218,6 +218,7 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
+  attachmentSha256,
   entitlementDenial,
   foldMeterReading,
   parseValidationRecords,
@@ -3180,7 +3181,7 @@ export class CloudflareScopeHost implements ScopeHost {
           filename: input.filename,
           contentType: input.contentType,
           size: input.body.byteLength,
-          sha256: await sha256Hex(input.body),
+          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy,
           createdAt: new Date().toISOString(),
@@ -3247,7 +3248,7 @@ export class CloudflareScopeHost implements ScopeHost {
           `survived something the object did not (rewind/reap); see the #473 integrity notes`,
       );
     }
-    if ((await sha256Hex(obj.body)) !== record.sha256) {
+    if ((await attachmentSha256(obj.body)) !== record.sha256) {
       throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
     }
     return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
@@ -8586,12 +8587,6 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     return importsOfManifestJson(v.manifest_json);
   }
-}
-
-/** SHA-256 hex of an attachment's bytes — what `AttachmentRecord.sha256` holds. */
-async function sha256Hex(body: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', body);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /** A ledger row -> the wire entry, the attribution re-nested (#1054). */

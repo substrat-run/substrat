@@ -226,6 +226,7 @@ import {
   revokeCapabilityAsPlatform,
   assertReadOnlyQuery,
   attachmentBlobKey,
+  attachmentSha256,
   entitlementDenial,
   foldMeterReading,
   guardSpine,
@@ -3055,10 +3056,6 @@ export class SqliteScopeHost implements ScopeHost {
       }
       return gate;
     };
-    const sha256Hex = async (body: Uint8Array): Promise<string> => {
-      const digest = await globalThis.crypto.subtle.digest('SHA-256', body);
-      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    };
     // One attachment mutation/read = one serialized scope task, transactional exactly
     // like an operation invoke (including K-35 denial recording and prompt dispatch of
     // the events it emitted).
@@ -3151,7 +3148,7 @@ export class SqliteScopeHost implements ScopeHost {
           filename: input.filename,
           contentType: input.contentType,
           size: input.body.byteLength,
-          sha256: await sha256Hex(input.body),
+          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy: creator.id,
           createdAt: new Date().toISOString(),
@@ -3237,7 +3234,7 @@ export class SqliteScopeHost implements ScopeHost {
               `survived something the object did not (rewind/reap); see the #473 integrity notes`,
           );
         }
-        if ((await sha256Hex(obj.body)) !== record.sha256) {
+        if ((await attachmentSha256(obj.body)) !== record.sha256) {
           throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
         }
         return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };

@@ -3731,6 +3731,18 @@ export function attachmentBlobKey(scopeId: string, attachmentId: string): string
   return `scope/${scopeId}/att/${attachmentId}`;
 }
 
+declare const crypto: { subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> } };
+
+/**
+ * An attachment's integrity witness: the lowercase hex SHA-256 of its bytes (Web Crypto).
+ * One definition for the hash an upload records and every read that holds bytes to it —
+ * both adapters' `open`, and the extraction job (#1575).
+ */
+export async function attachmentSha256(body: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', body);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * The §4.3 entitlement-gate denial, worded identically wherever the gate lives — the
  * coordinator against the shared CP, a scope DO against its projection, the SQLite

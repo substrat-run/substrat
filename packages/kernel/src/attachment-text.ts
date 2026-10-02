@@ -72,7 +72,7 @@
  */
 import type { AttachmentRecord, EntityRef, ModuleId } from '@substrat-run/contracts';
 import type { JobHandler, JobRunKey } from './job-run.js';
-import type { ScopedSql, SqlValue } from './scope-host.js';
+import { attachmentSha256, type ScopedSql, type SqlValue } from './scope-host.js';
 import {
   DEFAULT_EXTRACTION_BOUNDS,
   extractAttachmentText,
@@ -447,13 +447,6 @@ export interface AttachmentTextSource {
   write(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean>;
 }
 
-declare const crypto: { subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> } };
-
-async function sha256Hex(body: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', body);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 function attachmentIdOf(payload: unknown): string {
   const id = (payload as Record<string, unknown> | null)?.[RUN_PAYLOAD_KEY];
   if (typeof id !== 'string' || id.length === 0) {
@@ -499,7 +492,7 @@ export function attachmentTextJob(
       const body = await source.bytes(record);
       if (body === null) {
         outcome = { status: 'failed', extractor: chosen.extractor, detail: 'the bytes are missing from the blob store' };
-      } else if ((await sha256Hex(body)) !== record.sha256) {
+      } else if ((await attachmentSha256(body)) !== record.sha256) {
         outcome = {
           status: 'failed',
           extractor: chosen.extractor,
