@@ -26,6 +26,7 @@ import {
   type PrincipalId,
   type ScopeDump,
   SWEEP_RUNS_KIND,
+  SCOPE_TABLE_PAGE_MAX,
   type ScopeId,
   type TenantId,
   type ModelUsageLine,
@@ -2037,6 +2038,24 @@ export function scopeHostContractSuite(
         await expect(
           host.admin.readScopeTable(staff, t1, s1, { table: 'no_such_table', limit: 50, offset: 0 }),
         ).rejects.toThrow(/unknown table/);
+      });
+
+      it('refuses a page bound SQLite would misread, and still clamps to the ceiling (#1632)', async () => {
+        // The clamp passed NaN straight through to LIMIT / OFFSET. Refused instead, with the
+        // option's name; a large but valid limit is still clamped rather than refused.
+        const read = (limit: number, offset: number) =>
+          host.admin.readScopeTable(staff, t1, s1, { table: 'marker', limit, offset });
+        const refused = (pattern: RegExp) => (err: unknown) =>
+          errorCodeOf(err) === 'validation_failed' && pattern.test((err as Error).message);
+        for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 1.5]) {
+          await expect(read(bad, 0)).rejects.toSatisfy(refused(/limit must be a positive integer/));
+        }
+        for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
+          await expect(read(1, bad)).rejects.toSatisfy(refused(/offset must be a non-negative integer/));
+        }
+        const clamped = await read(SCOPE_TABLE_PAGE_MAX + 1_000, 0);
+        expect(clamped.limit).toBe(SCOPE_TABLE_PAGE_MAX);
+        expect((await read(1, 0)).offset).toBe(0);
       });
 
       // #1524: the size behind the on-demand storage reading. The growth assertion is what
