@@ -1261,7 +1261,7 @@ interface ScopeStubRpc {
     operation: 'attachments.upload' | 'attachments.remove',
     target: { entityType: string } | { attachmentId: string },
   ): Promise<CapabilityAttachmentReply<never>>;
-  /** #1575: extracted-text search, each hit gated as `principal` (or the connection). */
+  /** #1575: extracted-text search as `principal` (or the connection), its failure as data. */
   attachmentSearch(
     term: string,
     limit: number,
@@ -1269,7 +1269,7 @@ interface ScopeStubRpc {
     tenantId: TenantId,
     scopeId: ScopeId,
     connectionId?: string,
-  ): Promise<AttachmentRecord[]>;
+  ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>>;
   /** #1575: the same search through a capability session, as an envelope. */
   capabilityAttachmentSearch(
     term: string,
@@ -3229,7 +3229,9 @@ export class CloudflareScopeHost implements ScopeHost {
           throw new Error('attachments.search is not available on a delivery-scoped surface');
         }
         searchMatchExpression(term, 'prefix');
-        return stub.attachmentSearch(term, searchLimit(options?.limit), asPrincipalId, tenantId, scopeId, connectionId);
+        return unwrapCapabilityReply(
+          await stub.attachmentSearch(term, searchLimit(options?.limit), asPrincipalId, tenantId, scopeId, connectionId),
+        );
       },
     };
   }

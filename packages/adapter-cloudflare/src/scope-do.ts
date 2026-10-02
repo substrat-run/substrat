@@ -133,12 +133,12 @@ import {
   type SearchIndexPlan,
   type SearchOptions,
   ATTACHMENT_TEXT_DDL,
-  attachmentSearchQuery,
+  attachmentRecordOfRow,
   enqueueAttachmentText,
-  readableAttachmentIds,
   reconcileAttachmentText,
   recordAttachmentText,
-  type AttachmentSearchCandidate,
+  searchAttachments,
+  type AttachmentRowShape,
   type ExtractionOutcome,
   IDEMPOTENCY_DDL,
   REFUSALS_DDL,
@@ -2811,32 +2811,8 @@ export function defineScopeDO(
     private attachmentRow(attachmentId: string): AttachmentRecord | null {
       const row = this.sql
         .exec('SELECT * FROM _substrat_attachments WHERE id = ?', attachmentId)
-        .toArray()[0] as
-        | {
-            id: string;
-            entity_type: string;
-            entity_id: string;
-            filename: string;
-            content_type: string;
-            size: number;
-            sha256: string;
-            visibility: string;
-            created_by: string;
-            created_at: string;
-          }
-        | undefined;
-      if (!row) return null;
-      return attachmentRecord.parse({
-        id: row.id,
-        entity: { entityType: row.entity_type, entityId: row.entity_id },
-        filename: row.filename,
-        contentType: row.content_type,
-        size: Number(row.size),
-        sha256: row.sha256,
-        visibility: row.visibility,
-        createdBy: row.created_by,
-        createdAt: row.created_at,
-      });
+        .toArray()[0] as unknown as AttachmentRowShape | undefined;
+      return row ? attachmentRecordOfRow(row) : null;
     }
 
     /** Record an uploaded attachment: write gate + row + `attachment.added`, one txn. */
@@ -3068,28 +3044,25 @@ export function defineScopeDO(
     // -- attachment text (#1575) ---------------------------------------------------
 
     /**
-     * Extracted-text search, newest first. Each candidate passes the check `open` makes —
-     * the target's read key on the owning entity, as this subject — before the limit, so
-     * a match the caller cannot open neither appears nor takes a slot. Refusals are not
-     * recorded as denials: nobody asked for those rows by name.
+     * Extracted-text search as `ctx`'s subject: authorized first — the check `open` makes,
+     * the target's read key on the owning entity — then matched over readable owners only
+     * (`searchAttachments`). The term and the limit are judged here again, never trusted
+     * from the coordinator.
      */
-    private async searchAttachments(ctx: OperationContext, term: string, limit: number): Promise<AttachmentRecord[]> {
-      const q = attachmentSearchQuery(searchMatchExpression(term, 'prefix'));
-      const candidates = this.sql.exec(q.sql, ...q.params).toArray() as unknown as AttachmentSearchCandidate[];
-      const ids = await readableAttachmentIds(
-        candidates,
-        async (entity) => {
-          const gate = this.attachmentTargets.get(entity.entityType);
-          // A target no registered module declares any more has no read key to pass.
-          return gate ? (await ctx.check(gate.read, entity)).allowed : false;
-        },
-        searchLimit(limit),
+    private searchAttachmentsAs(ctx: OperationContext, term: string, limit: number): Promise<AttachmentRecord[]> {
+      return searchAttachments(
+        doSpineSql(this.sql),
+        { targets: this.attachmentTargets, check: (permission, entity) => ctx.check(permission, entity) },
+        term,
+        limit,
       );
-      // Re-read by id: an attachment removed while the checks awaited is dropped, not served.
-      return ids.map((id) => this.attachmentRow(id)).filter((r): r is AttachmentRecord => r !== null);
     }
 
-    /** #1575: `ScopeAttachments.search` for a principal or a connection. */
+    /**
+     * #1575: `ScopeAttachments.search` for a principal or a connection. Its failure travels as
+     * DATA, the capability verbs' envelope, because a throw across this RPC keeps only its
+     * message — and the too-many-owners refusal's `reason` is what a UI explains it by.
+     */
     async attachmentSearch(
       term: string,
       limit: number,
@@ -3097,16 +3070,16 @@ export function defineScopeDO(
       tenantId: TenantId,
       scopeId: ScopeId,
       connectionId?: string,
-    ): Promise<AttachmentRecord[]> {
+    ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>> {
       await this.ensureMigrations();
       try {
         const ctx = this.operationContext(
           principal, tenantId, scopeId, undefined, connectionId,
           undefined, undefined, undefined, 'attachments.search',
         );
-        return await this.searchAttachments(ctx, term, limit);
+        return { value: await this.searchAttachmentsAs(ctx, term, limit) };
       } catch (err) {
-        throw toRpcError(err);
+        return { failure: toWireFailure(err) };
       }
     }
 
@@ -3242,7 +3215,7 @@ export function defineScopeDO(
     ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>> {
       await this.ensureMigrations();
       return this.asCapability(sessionHash, tenantId, scopeId, 'attachments.search', (ctx) =>
-        this.searchAttachments(ctx, term, limit),
+        this.searchAttachmentsAs(ctx, term, limit),
       );
     }
 

@@ -407,14 +407,13 @@ import {
   type SearchOptions,
   ATTACHMENT_TEXT_DDL,
   assertJobRegistrable,
-  attachmentSearchQuery,
+  attachmentRecordOfRow,
   attachmentTextJob,
   enqueueAttachmentText,
   isAttachmentTextRun,
-  readableAttachmentIds,
   reconcileAttachmentText,
   recordAttachmentText,
-  type AttachmentSearchCandidate,
+  searchAttachments,
   entityVersionQuery,
   entityVersionOf,
   assertIfMatch,
@@ -641,21 +640,6 @@ interface AttachmentRow {
   visibility: string;
   created_by: string;
   created_at: string;
-}
-
-/** The metadata fact an attachment row records — parsed, so a malformed row throws here. */
-function attachmentRecordOf(row: AttachmentRow): AttachmentRecord {
-  return attachmentRecord.parse({
-    id: row.id,
-    entity: { entityType: row.entity_type, entityId: row.entity_id },
-    filename: row.filename,
-    contentType: row.content_type,
-    size: row.size,
-    sha256: row.sha256,
-    visibility: row.visibility,
-    createdBy: row.created_by,
-    createdAt: row.created_at,
-  });
 }
 
 interface RegisteredModule {
@@ -3208,7 +3192,7 @@ export class SqliteScopeHost implements ScopeHost {
                ORDER BY id DESC`,
             )
             .all(entity.entityType, entity.entityId) as AttachmentRow[];
-          return rows.map(attachmentRecordOf);
+          return rows.map(attachmentRecordOfRow);
         }),
       open: async (attachmentId) => {
         const record = await guarded('attachments.open', async (ctx) => {
@@ -3218,13 +3202,13 @@ export class SqliteScopeHost implements ScopeHost {
           if (!row) return null;
           if (opts.admitByEvent !== undefined) {
             admitByDelivery(rt, opts.admitByEvent, row);
-            return attachmentRecordOf(row);
+            return attachmentRecordOfRow(row);
           }
           const gate = targetGate(row.entity_type);
           assertAllowed(
             await ctx.check(gate.read, { entityType: row.entity_type, entityId: row.entity_id }),
           );
-          return attachmentRecordOf(row);
+          return attachmentRecordOfRow(row);
         });
         if (!record) return null;
         const obj = await store.get(attachmentBlobKey(rt.scopeId, record.id));
@@ -3260,7 +3244,7 @@ export class SqliteScopeHost implements ScopeHost {
             await ctx.check(gate.write, { entityType: row.entity_type, entityId: row.entity_id }),
           );
           rt.db.prepare('DELETE FROM _substrat_attachments WHERE id = ?').run(attachmentId);
-          const record = attachmentRecordOf(row);
+          const record = attachmentRecordOfRow(row);
           kernelEmit(ctx, {
             type: ATTACHMENT_REMOVED,
             schemaVersion: 1,
@@ -3283,23 +3267,16 @@ export class SqliteScopeHost implements ScopeHost {
           throw new Error('attachments.search is not available on a delivery-scoped surface');
         }
         // The term is judged before the turn: a refusal costs no queue slot.
-        const match = searchMatchExpression(term, 'prefix');
-        const limit = searchLimit(options?.limit);
-        return guarded('attachments.search', async (ctx) => {
-          const q = attachmentSearchQuery(match);
-          const candidates = rt.db.prepare(q.sql).all(...q.params) as AttachmentSearchCandidate[];
-          const ids = await readableAttachmentIds(
-            candidates,
-            async (entity) => {
-              const gate = this.attachmentTargets.get(entity.entityType);
-              // A target no registered module declares any more has no read key to pass.
-              return gate ? (await ctx.check(gate.read, entity)).allowed : false;
-            },
-            limit,
-          );
-          const byId = rt.db.prepare('SELECT * FROM _substrat_attachments WHERE id = ?');
-          return ids.map((id) => attachmentRecordOf(byId.get(id) as AttachmentRow));
-        });
+        searchMatchExpression(term, 'prefix');
+        // Authorized first, as this surface's subject, then matched over readable owners only.
+        return guarded('attachments.search', (ctx) =>
+          searchAttachments(
+            spineSql(rt.db),
+            { targets: this.attachmentTargets, check: (permission, entity) => ctx.check(permission, entity) },
+            term,
+            searchLimit(options?.limit),
+          ),
+        );
       },
     };
   }
@@ -5175,7 +5152,7 @@ export class SqliteScopeHost implements ScopeHost {
           const row = rt.db.prepare('SELECT * FROM _substrat_attachments WHERE id = ?').get(attachmentId) as
             | AttachmentRow
             | undefined;
-          return row ? attachmentRecordOf(row) : null;
+          return row ? attachmentRecordOfRow(row) : null;
         }),
       bytes: async (record) => {
         const scope = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(rt.scopeId) as

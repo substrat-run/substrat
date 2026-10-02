@@ -201,12 +201,20 @@ yielded nothing can say so rather than look like a search with no match. The job
 the upload, so a file is not searchable in the same breath it lands. On a hosted vertical,
 the scope sweeper drives it when its `runJobs` option is on.
 
-Unlike `ctx.search`, this search **does** check permission. Each hit passes the same check
-`open` makes, the attachment target's `readPermission` on the owning entity, before the
-limit is applied. A file the caller cannot open neither appears nor takes a slot. So the
-results carry no count, score or snippet, and come newest first rather than by relevance:
-a relevance score weighs each word by how often it occurs across every file, including the
+Unlike `ctx.search`, this search **does** check permission. It works out which files the
+caller may open before it looks at the term, using the same check `open` makes: the
+attachment target's `readPermission` on the owning entity. It then matches only among
+those files. A file the caller cannot open neither appears nor takes a slot. So the results
+carry no count, score or snippet, and come newest first rather than by relevance: a
+relevance score weighs each word by how often it occurs across every file, including the
 ones the caller may not read.
+
+A caller who holds the read permission at the scope (an editor, a member of staff) needs
+one check per attachment type. A caller who holds it only on some entities (a customer in
+a portal, a shared link) needs one check per owner of an indexed file. That second case is
+capped at 2,000 owners. Past the cap, the search is refused with a `forbidden` error whose
+`reason` is `attachment_search_too_many_owners`, whatever the term, so a screen can explain
+that this kind of search is not available to that caller.
 
 ## Two more surfaces, and neither is a read tier
 

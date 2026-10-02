@@ -3849,13 +3849,18 @@ export interface ScopeAttachments {
    * Attachments whose EXTRACTED TEXT matches `term` (#1575), newest first, as records the
    * caller could `open`.
    *
-   * Every candidate passes the same check `open` makes — the target's `readPermission`
-   * on the owning entity, as this surface's principal — BEFORE the limit is applied, so
-   * an attachment the caller cannot open neither appears nor takes a slot. No count, no
+   * Authorized BEFORE it matches: the owners the caller may read — the check `open` makes,
+   * the target's `readPermission` on the owning entity — are decided from the scope and the
+   * caller alone, and the match runs over those owners only, so an attachment the caller
+   * cannot open neither appears nor takes a slot, however many there are. No count, no
    * score, no snippet, and newest-first rather than relevance order: each of those would
    * describe matches the caller may not see (`attachment-text.ts` says how). The term
    * grammar and the limit are `ctx.search`'s (`searchMatchExpression`, `searchLimit`);
    * a term too short to match throws `SearchTermTooShort`.
+   *
+   * A caller without scope-level read on a target type has that type's owners checked one
+   * by one, at most `ATTACHMENT_SEARCH_OWNER_MAX` of them; past that the search throws
+   * `forbidden` with reason `ATTACHMENT_SEARCH_TOO_MANY_OWNERS`, the same for every term.
    *
    * Only text that has been extracted matches: an upload is searchable once its
    * extraction job has run (`readAttachmentText` says where it is).

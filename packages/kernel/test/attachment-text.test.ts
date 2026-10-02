@@ -1,18 +1,20 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import type { AttachmentRecord } from '@substrat-run/contracts';
+import { errorCodeOf, type AttachmentRecord, type Decision, type PermissionKey } from '@substrat-run/contracts';
 import {
+  ATTACHMENT_SEARCH_OWNER_MAX,
+  ATTACHMENT_SEARCH_TOO_MANY_OWNERS,
   ATTACHMENT_TEXT_DDL,
   ATTACHMENT_TEXT_JOB,
   ATTACHMENT_TEXT_MODULE,
   assertJobRegistrable,
-  attachmentSearchQuery,
   attachmentTextJob,
   enqueueAttachmentText,
   readAttachmentText,
-  readableAttachmentIds,
   reconcileAttachmentText,
   recordAttachmentText,
+  searchAttachments,
+  type AttachmentSearchGate,
   type AttachmentTextSource,
 } from '../src/attachment-text.js';
 import {
@@ -25,7 +27,7 @@ import {
 } from '../src/attachment-extract.js';
 import { JOB_RUN_DDL, type JobPassContext } from '../src/job-run.js';
 import { attachmentSha256, type ScopedSql, type SqlValue } from '../src/scope-host.js';
-import { searchMatchExpression } from '../src/search-index.js';
+import { SearchTermTooShort, searchMatchExpression } from '../src/search-index.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -369,7 +371,7 @@ function scope() {
   const attach = (id: string, entityId = 'e1') =>
     db
       .prepare(`INSERT INTO _substrat_attachments VALUES (?, 'item', ?, 'f.txt', 'text/plain', 1, ?, 'internal', 'p', ?)`)
-      .run(id, entityId, '0'.repeat(64), id);
+      .run(id, entityId, '0'.repeat(64), '2026-10-01T00:00:00.000Z');
   const one = (q: string, ...params: (string | number)[]) =>
     db.prepare(q).get(...params) as Record<string, unknown> | undefined;
   const count = (q: string, ...params: (string | number)[]) => Number(one(q, ...params)!.n);
@@ -492,44 +494,117 @@ describe('the text rows and their index', () => {
     expect(readAttachmentText(s.ctx, 'A1')).toMatchObject({ status: 'unsupported', extractor: null, bytes: null, detail: 'no extractor' });
   });
 
-  it('the candidate read is newest first, and never a text row without its attachment', () => {
-    const s = scope();
-    for (const id of ['A1', 'A3', 'A2']) {
-      s.attach(id, `e-${id}`);
-      recordAttachmentText(s.sql, id, indexed(`quokka ${id}`), 't');
-    }
-    s.db.prepare(`INSERT INTO _substrat_search__attachment_text (attachment_id, status, body, updated_at)
-                  VALUES ('A9', 'indexed', 'quokka orphan', 't')`).run();
-    const q = attachmentSearchQuery(searchMatchExpression('quokka', 'prefix'));
-    expect(s.db.prepare(q.sql).all(...q.params)).toEqual([
-      { id: 'A3', entity_type: 'item', entity_id: 'e-A3' },
-      { id: 'A2', entity_type: 'item', entity_id: 'e-A2' },
-      { id: 'A1', entity_type: 'item', entity_id: 'e-A1' },
-    ]);
-  });
 });
 
-describe('readableAttachmentIds', () => {
-  const c = (id: string, entity: string) => ({ id, entity_type: 'item', entity_id: entity });
+describe('searchAttachments: authorize first, then match over readable owners', () => {
+  /**
+   * A gate over one target type, `item`, whose answers the test decides: `wide` at the scope,
+   * `readable` per owning entity ('throw' for an evaluator failure). `asked` records each
+   * check in order — `<scope>` or the entity id — which is what shows the work done.
+   */
+  const gate = (opts: { wide?: boolean | 'throw'; readable?: (entityId: string) => boolean | 'throw' }) => {
+    const asked: string[] = [];
+    const answer = (a: boolean | 'throw' | undefined): Decision => {
+      if (a === 'throw') throw new Error('evaluator down');
+      return (a ? { allowed: true, proof: [] } : { allowed: false }) as unknown as Decision;
+    };
+    const g: AttachmentSearchGate = {
+      targets: new Map([['item', { read: 'p:read' as PermissionKey }]]),
+      check: async (_permission, entity) => {
+        asked.push(entity ? entity.entityId : '<scope>');
+        return answer(entity ? opts.readable?.(entity.entityId) : opts.wide);
+      },
+    };
+    return { g, asked };
+  };
+  const indexAll = (s: ReturnType<typeof scope>, rows: [id: string, entityId: string, text: string][]) => {
+    for (const [id, entityId, text] of rows) {
+      s.attach(id, entityId);
+      recordAttachmentText(s.sql, id, indexed(text), 't');
+    }
+  };
+  const ids = (records: { id: string }[]) => records.map((r) => r.id);
 
-  it('gates before the limit: a refused candidate takes no slot', async () => {
-    const ids = await readableAttachmentIds([c('D', 'no'), c('A', 'yes'), c('B', 'yes')], async (e) => e.entityId === 'yes', 1);
-    expect(ids).toEqual(['A']);
+  it('a caller who reads the type at the scope is wide: one check, every match newest first', async () => {
+    const s = scope();
+    indexAll(s, [['A1', 'e1', 'quokka one'], ['A3', 'e3', 'quokka three'], ['A2', 'e2', 'quokka two']]);
+    // A text row with no attachment row is never a hit, wide or not.
+    s.db.prepare(`INSERT INTO _substrat_search__attachment_text (attachment_id, status, body, updated_at)
+                  VALUES ('A9', 'indexed', 'quokka orphan', 't')`).run();
+    const { g, asked } = gate({ wide: true });
+    expect(ids(await searchAttachments(s.sql, g, 'quokka', 20))).toEqual(['A3', 'A2', 'A1']);
+    expect(ids(await searchAttachments(s.sql, g, 'quokka', 2))).toEqual(['A3', 'A2']);
+    expect(asked).toEqual(['<scope>', '<scope>']);
+    // Records, parsed: what `open` would hand back.
+    expect((await searchAttachments(s.sql, g, 'three', 20))[0]).toMatchObject({
+      id: 'A3',
+      entity: { entityType: 'item', entityId: 'e3' },
+      createdAt: '2026-10-01T00:00:00.000Z',
+    });
   });
 
-  it('decides once per owning entity, and reads a throwing check as a refusal', async () => {
-    const asked: string[] = [];
-    const ids = await readableAttachmentIds(
-      [c('1', 'x'), c('2', 'x'), c('3', 'boom'), c('4', 'y'), c('5', 'x')],
-      async (e) => {
-        asked.push(e.entityId);
-        if (e.entityId === 'boom') throw new Error('evaluator down');
-        return true;
-      },
-      10,
-    );
-    expect(ids).toEqual(['1', '2', '4', '5']);
-    expect(asked).toEqual(['x', 'boom', 'y']);
+  it('a narrowed caller: the limit runs over readable rows, however many newer denied matches there are', async () => {
+    const s = scope();
+    const rows: [string, string, string][] = [['A0000', 'e-ok', 'quokka readable']];
+    for (let i = 1; i <= 1200; i += 1) rows.push([`A${String(i).padStart(4, '0')}`, 'e-no', 'quokka hidden']);
+    indexAll(s, rows);
+    const { g, asked } = gate({ wide: false, readable: (e) => e === 'e-ok' });
+    expect(ids(await searchAttachments(s.sql, g, 'quokka', 1))).toEqual(['A0000']);
+    // The work is one check per OWNER, in owner order — not per match, and not in match order.
+    expect(asked).toEqual(['<scope>', 'e-no', 'e-ok']);
+    // The control: the same caller in a scope without the hidden matches gets the same page.
+    const control = scope();
+    indexAll(control, [['A0000', 'e-ok', 'quokka readable']]);
+    expect(ids(await searchAttachments(control.sql, gate({ readable: (e) => e === 'e-ok' }).g, 'quokka', 1))).toEqual([
+      'A0000',
+    ]);
+  });
+
+  it('refuses past the owner cap — the same answer for every term — and never for a wide caller', async () => {
+    const s = scope();
+    const rows: [string, string, string][] = [];
+    for (let i = 0; i <= ATTACHMENT_SEARCH_OWNER_MAX; i += 1) {
+      rows.push([`A${String(i).padStart(5, '0')}`, `e${i}`, i === 0 ? 'quokka the only match' : 'filler words']);
+    }
+    indexAll(s, rows);
+    const refusalOf = async (term: string) => {
+      const err = await searchAttachments(s.sql, gate({ readable: () => true }).g, term, 20).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      return { code: errorCodeOf(err), reason: (err as { extensions?: { reason?: string } }).extensions?.reason };
+    };
+    const refused = { code: 'forbidden', reason: ATTACHMENT_SEARCH_TOO_MANY_OWNERS };
+    expect(await refusalOf('quokka')).toEqual(refused); // a term with a match
+    expect(await refusalOf('nothingmatchesthis')).toEqual(refused); // and one without
+    expect(ids(await searchAttachments(s.sql, gate({ wide: true }).g, 'quokka', 20))).toEqual(['A00000']);
+  });
+
+  it('counts only owners WITH text toward the cap — the twin of the refusal, at the cap', async () => {
+    const s = scope();
+    const rows: [string, string, string][] = [];
+    for (let i = 0; i < ATTACHMENT_SEARCH_OWNER_MAX; i += 1) rows.push([`A${String(i).padStart(5, '0')}`, `e${i}`, 'quokka']);
+    indexAll(s, rows);
+    // Past the cap in attachment rows, but these owners have no text: not counted.
+    for (let i = 0; i < 10; i += 1) s.attach(`B${i}`, `no-text-${i}`);
+    const { g } = gate({ readable: (e) => e === 'e7' });
+    expect(ids(await searchAttachments(s.sql, g, 'quokka', 20))).toEqual(['A00007']);
+  });
+
+  it('reads a check that throws as a refusal — at the scope not wide, at an owner not readable', async () => {
+    const s = scope();
+    indexAll(s, [['A1', 'boom', 'quokka a'], ['A2', 'fine', 'quokka b']]);
+    const { g } = gate({ wide: 'throw', readable: (e) => (e === 'boom' ? 'throw' : true) });
+    expect(ids(await searchAttachments(s.sql, g, 'quokka', 20))).toEqual(['A2']);
+  });
+
+  it('judges the term before any check, and answers nothing readable with no match at all', async () => {
+    const s = scope();
+    indexAll(s, [['A1', 'e1', 'quokka']]);
+    const short = gate({ wide: true });
+    await expect(searchAttachments(s.sql, short.g, 'q', 20)).rejects.toBeInstanceOf(SearchTermTooShort);
+    expect(short.asked).toEqual([]);
+    expect(await searchAttachments(s.sql, gate({ readable: () => false }).g, 'quokka', 20)).toEqual([]);
   });
 });
 

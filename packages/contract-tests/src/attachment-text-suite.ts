@@ -26,6 +26,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  errorCodeOf,
   moduleId,
   permissionKey,
   platformActorId,
@@ -38,6 +39,8 @@ import {
   type ScopeId,
 } from '@substrat-run/contracts';
 import {
+  ATTACHMENT_SEARCH_OWNER_MAX,
+  ATTACHMENT_SEARCH_TOO_MANY_OWNERS,
   ATTACHMENT_TEXT_JOB,
   ATTACHMENT_TEXT_MODULE,
   DEFAULT_EXTRACTION_BOUNDS,
@@ -55,6 +58,8 @@ const PERM_READ = permissionKey.parse('perm:read');
 const PERM_USE = permissionKey.parse('perm:use');
 const item = (id: string): EntityRef => ({ entityType: 'item', entityId: id });
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
+/** For a test that uploads and extracts thousands of files: the setup, not the search, takes the time. */
+const SETUP_HEAVY_MS = 120_000;
 
 
 export function attachmentTextContractSuite(
@@ -78,6 +83,8 @@ export function attachmentTextContractSuite(
       await host.provisionBlobStore(staff, { tenantId: t, vertical: 'docs', binding: 'ATTACHMENTS' });
       await host.admin.defineRole(staff, t, { key: 'editor', permissions: [PERM_READ, PERM_USE], source: 'vertical' });
       await host.admin.assignRole(staff, { principalId: editor, roleKey: 'editor', node: { tenantId: t, scopeId: null } });
+      // A role at the tenant that holds a DIFFERENT key on the target: never "wide" for reading.
+      await host.admin.defineRole(staff, t, { key: 'user', permissions: [PERM_USE], source: 'vertical' });
     });
 
     afterAll(async () => {
@@ -95,8 +102,8 @@ export function attachmentTextContractSuite(
       (await host.attachments(editor, t, s)).upload({ entity, filename, contentType, visibility: 'internal', body });
     /** Drive the scope's due runs until none are left. */
     const extract = async (s: ScopeId): Promise<void> => {
-      for (let i = 0; i < 10; i += 1) {
-        if ((await host.runDueJobs(t, s, { limit: 100 })).attempted === 0) return;
+      for (let i = 0; i < 100; i += 1) {
+        if ((await host.runDueJobs(t, s, { limit: 500 })).attempted === 0) return;
       }
       throw new Error('extraction runs did not settle');
     };
@@ -222,6 +229,67 @@ export function attachmentTextContractSuite(
         }
         expect(await page(withDenied, 'secret')).toEqual([]);
       });
+
+      it('leaves the one readable older match on page one past a thousand newer hidden ones — as in the control scope', async () => {
+        const s = await newScope();
+        const control = await newScope();
+        for (const scope of [s, control]) {
+          await grant(scope, bob, item('allowed'));
+          await upload(scope, item('allowed'), 'old.txt', 'text/plain', bytes('the margay ledger, readable'));
+        }
+        // Every one of these is NEWER than old.txt. A scan bound applied before the gate would
+        // have spent itself on them and handed bob nothing.
+        for (let i = 0; i < 1001; i += 1) {
+          await upload(s, item('denied'), `hidden-${i}.txt`, 'text/plain', bytes(`the margay ledger, hidden ${i}`));
+        }
+        await extract(s);
+        await extract(control);
+        for (const limit of [1, 20]) {
+          const page = (await search(s, bob, 'margay', limit)).map((r) => r.filename);
+          expect(page).toEqual(['old.txt']);
+          expect(page).toEqual((await search(control, bob, 'margay', limit)).map((r) => r.filename));
+        }
+        // The twin: the editor reads every owner, so the newest hidden ones fill its page.
+        const editors = await search(s, editor, 'margay', 20);
+        expect(editors).toHaveLength(20);
+        expect(editors.map((r) => r.filename)).not.toContain('old.txt');
+      }, SETUP_HEAVY_MS);
+
+      it('is not "wide" for a node-level grant on a different key, nor for an entity grant alone', async () => {
+        const s = await newScope();
+        const dave = principalId.parse(ulid()); // `user` at the tenant (perm:use only) + perm:read on one item
+        await host.admin.assignRole(staff, { principalId: dave, roleKey: 'user', node: { tenantId: t, scopeId: null } });
+        await grant(s, dave, item('mine'));
+        await grant(s, bob, item('mine'));
+        const mine = await upload(s, item('mine'), 'mine.txt', 'text/plain', bytes('the caracal file, mine'));
+        await upload(s, item('other'), 'other.txt', 'text/plain', bytes('the caracal file, other'));
+        await extract(s);
+        expect((await search(s, dave, 'caracal')).map((r) => r.id)).toEqual([mine.id]);
+        expect((await search(s, bob, 'caracal')).map((r) => r.id)).toEqual([mine.id]);
+        // The twin: a node-level grant on the READ key is wide.
+        expect(await search(s, editor, 'caracal')).toHaveLength(2);
+      });
+
+      it('refuses a narrowed caller past the owner cap — the same for a term with matches and one without', async () => {
+        const s = await newScope();
+        await grant(s, bob, item('o0'));
+        for (let i = 0; i <= ATTACHMENT_SEARCH_OWNER_MAX; i += 1) {
+          await upload(s, item(`o${i}`), `o${i}.txt`, 'text/plain', bytes(i === 0 ? 'the jerboa note' : 'filler only'));
+        }
+        await extract(s);
+        const refusalOf = async (term: string) => {
+          const err = await search(s, bob, term).then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+          return { code: errorCodeOf(err), reason: (err as { extensions?: { reason?: string } })?.extensions?.reason };
+        };
+        const refused = { code: 'forbidden', reason: ATTACHMENT_SEARCH_TOO_MANY_OWNERS };
+        expect(await refusalOf('jerboa')).toEqual(refused); // one match, readable by bob
+        expect(await refusalOf('nothingmatchesthis')).toEqual(refused); // no match at all
+        // The twin: a caller who reads the type at the scope is never refused.
+        expect((await search(s, editor, 'jerboa')).map((r) => r.filename)).toEqual(['o0.txt']);
+      }, SETUP_HEAVY_MS);
 
       it('records no denial for a hit it withheld — nobody asked for that row', async () => {
         const s = await newScope();

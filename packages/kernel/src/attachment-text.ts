@@ -20,7 +20,7 @@
  *    opts into `runJobs`) runs `attachmentTextJob`: read the record, read the bytes, run
  *    `extractAttachmentText`, write the outcome. Each adapter supplies the handler itself
  *    for this key, so no deployment has to register it.
- * 3. **Search** is `ScopeAttachments.search`, gated hit by hit (below).
+ * 3. **Search** is `ScopeAttachments.search`, authorized before it matches (below).
  *
  * ## Reading the bytes needs no grant, and that is deliberate
  *
@@ -32,11 +32,15 @@
  *
  * ## The search gate, and what it refuses to leak
  *
- * Every candidate is checked against its target's `readPermission` on its owning entity,
- * as the caller, BEFORE the limit is applied. So a match the caller cannot open neither
- * appears nor uses up a slot: the page a caller gets is the page they would get if that
- * attachment did not exist. Three choices follow from that, each because the alternative
- * would leak.
+ * A search AUTHORIZES FIRST, from the scope and the caller alone, and only then matches
+ * (`searchAttachments`). The owners the caller may read — the check `open` makes, the
+ * target's `readPermission` on the owning entity — are decided before the term is looked
+ * at, and handed to the query, so `ORDER BY … LIMIT` runs over readable rows only. A match
+ * the caller cannot open neither appears nor takes a slot, however many there are: the
+ * page a caller gets is the page they would get if those attachments did not exist. And
+ * because nothing is examined and then dropped, there is no scan bound whose cutoff — or
+ * whose running time — depends on hidden rows. Three more choices follow from the same
+ * rule, each because the alternative would leak.
  *
  * - **No count and no "more" marker.** Either would count matches the caller cannot see.
  * - **No score, and newest-first order instead of relevance.** FTS5's `bm25` weighs a term
@@ -47,11 +51,13 @@
  * - **No snippet.** A snippet is text from the attachment, and producing one for a denied
  *   row would be the leak itself.
  *
- * One residual, stated rather than hidden: a search examines at most
- * `ATTACHMENT_SEARCH_SCAN_MAX` matches, newest first. A caller who can read none of the
- * newest that-many matches gets fewer hits than exist further down, which tells them
- * that many newer matches exist that they cannot open. Bounded, and the price of a
- * search whose cost does not grow with what other people uploaded.
+ * The bound that remains is on authorization, not on matches: a caller without scope-level
+ * read on a target type has its owners checked one by one, at most
+ * `ATTACHMENT_SEARCH_OWNER_MAX` of them, and past that the search is refused with a stable
+ * reason (`ATTACHMENT_SEARCH_TOO_MANY_OWNERS`). Whether it refuses depends on the scope's
+ * owner count and the caller's rights — the same answer for every term. What still scales
+ * with every match is the FTS index's own read of its posting lists, which is the same work
+ * whoever asks.
  *
  * ## Where the text lives, and where it does not go
  *
@@ -70,9 +76,19 @@
  * delete), and a trigger on `_substrat_attachments` removes the text row with it, which
  * takes its index entries out through the index's own triggers.
  */
-import { utf8Length, type AttachmentRecord, type EntityRef, type ModuleId } from '@substrat-run/contracts';
+import {
+  attachmentRecord,
+  substratError,
+  utf8Length,
+  type AttachmentRecord,
+  type Decision,
+  type EntityRef,
+  type ModuleId,
+  type PermissionKey,
+} from '@substrat-run/contracts';
 import type { JobHandler } from './job-run.js';
 import { attachmentSha256, type ScopedSql } from './scope-host.js';
+import { searchLimit, searchMatchExpression } from './search-index.js';
 import {
   DEFAULT_EXTRACTION_BOUNDS,
   extractAttachmentText,
@@ -380,69 +396,172 @@ export function readAttachmentText(
 // -- search -----------------------------------------------------------------------------
 
 /**
- * Candidate matches one search examines, at most. See the header's residual: past this
- * many, newest first, nothing is looked at.
+ * The most owners a search will check one by one, for a caller without scope-level read
+ * on their type. Past it the search is REFUSED (`ATTACHMENT_SEARCH_TOO_MANY_OWNERS`), never
+ * truncated: a truncated owner set would drop readable hits silently, by an order the
+ * caller cannot see.
  */
-export const ATTACHMENT_SEARCH_SCAN_MAX = 1_000;
+export const ATTACHMENT_SEARCH_OWNER_MAX = 2_000;
 
-/** One candidate, before the gate: the attachment and the entity that owns it. */
-export interface AttachmentSearchCandidate {
+/** The `forbidden` reason a refused search carries — stable, so a UI can explain it. */
+export const ATTACHMENT_SEARCH_TOO_MANY_OWNERS = 'attachment_search_too_many_owners';
+
+/** The gate a search runs through: the declared targets, and `ctx.check` as the caller. */
+export interface AttachmentSearchGate {
+  /** The read key `open` checks, per declared target entity type. */
+  readonly targets: ReadonlyMap<string, { readonly read: PermissionKey }>;
+  /** `ctx.check`, as the surface's principal — with no entity, at the scope. */
+  check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
+}
+
+/** The term-independent half of a search: what the caller may read among owners with text. */
+interface ReadableOwners {
+  /** Entity types the caller reads at the scope level: every owner of them is readable. */
+  readonly wideTypes: string[];
+  /** The other owners the caller may read, as `[entityType, entityId]`. */
+  readonly owners: [string, string][];
+}
+
+/** A check that cannot answer is a check that refuses: an evaluator failure is never a disclosure. */
+const allows = async (decision: () => Promise<Decision>): Promise<boolean> => {
+  try {
+    return (await decision()).allowed;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Authorize FIRST, from the scope and the caller alone — never from the term or its matches.
+ *
+ * 1. Each declared target type is checked once at the SCOPE: an allow there is an allow on
+ *    every entity of the type (the evaluator grants at the node before it walks an entity,
+ *    and the walk only adds), so the type is "wide" and costs nothing more. A caller with
+ *    a role or a scope grant — staff, editors — stops here: one check per declared type.
+ * 2. For every other type, the owners that HAVE indexed text are enumerated and checked one
+ *    by one. Only a narrowed caller pays this (entity grants, a capability), and it is
+ *    bounded by `ATTACHMENT_SEARCH_OWNER_MAX`.
+ *
+ * Neither step reads a match, so what this costs and whether it refuses depend on the
+ * scope's owners and the caller's rights only: nothing about what the term would find.
+ */
+async function readableOwners(sql: Pick<ScopedSql, 'query'>, gate: AttachmentSearchGate): Promise<ReadableOwners> {
+  const wideTypes: string[] = [];
+  const narrowTypes: string[] = [];
+  for (const [entityType, target] of gate.targets) {
+    (await allows(() => gate.check(target.read)) ? wideTypes : narrowTypes).push(entityType);
+  }
+  if (narrowTypes.length === 0) return { wideTypes, owners: [] };
+  const candidates = sql.query<{ entity_type: string; entity_id: string }>(ATTACHMENT_SEARCH_OWNERS_SQL, [
+    JSON.stringify(narrowTypes),
+    ATTACHMENT_SEARCH_OWNER_MAX + 1,
+  ]);
+  if (candidates.length > ATTACHMENT_SEARCH_OWNER_MAX) {
+    throw substratError(
+      'forbidden',
+      `attachment search: this scope has more than ${ATTACHMENT_SEARCH_OWNER_MAX} owners with indexed ` +
+        'files of a type the caller holds no scope-level read on, too many to authorize one by one',
+      { reason: ATTACHMENT_SEARCH_TOO_MANY_OWNERS },
+    );
+  }
+  const owners: [string, string][] = [];
+  for (const { entity_type: entityType, entity_id: entityId } of candidates) {
+    const read = gate.targets.get(entityType)!.read;
+    if (await allows(() => gate.check(read, { entityType, entityId }))) owners.push([entityType, entityId]);
+  }
+  return { wideTypes, owners };
+}
+
+/**
+ * The owners a narrowed caller is checked over: those of the given types that HAVE text,
+ * one more than the cap so a refusal can tell "at the cap" from "past it". Walks the
+ * `(entity_type, entity_id)` index on `_substrat_attachments`. Params: types (JSON array),
+ * limit.
+ */
+export const ATTACHMENT_SEARCH_OWNERS_SQL = `SELECT DISTINCT a.entity_type, a.entity_id
+   FROM _substrat_attachments a
+   JOIN _substrat_search__attachment_text t ON t.attachment_id = a.id
+  WHERE t.body IS NOT NULL AND a.entity_type IN (SELECT value FROM json_each(?))
+  ORDER BY a.entity_type, a.entity_id
+  LIMIT ?`;
+
+/**
+ * The match, restricted to readable owners BEFORE the order and the limit. A wide type is
+ * one `IN` over the JSON array of types; a narrowed owner is a row-value `IN` over JSON
+ * pairs, which SQLite answers from an ephemeral index on the subquery rather than per
+ * pair — one bound JSON array, never a `?` per owner, since a Durable Object refuses the
+ * 101st parameter. Params: match, wide types (JSON array), owners (JSON array of
+ * `[entityType, entityId]`), limit.
+ */
+export const ATTACHMENT_SEARCH_SQL = `SELECT a.id, a.entity_type, a.entity_id, a.filename, a.content_type, a.size,
+        a.sha256, a.visibility, a.created_by, a.created_at
+   FROM _substrat_search__attachments
+   JOIN _substrat_search__attachment_text t ON t.rid = _substrat_search__attachments.rowid
+   JOIN _substrat_attachments a ON a.id = t.attachment_id
+  WHERE _substrat_search__attachments MATCH ?
+    AND (a.entity_type IN (SELECT value FROM json_each(?))
+         OR (a.entity_type, a.entity_id) IN
+            (SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?)))
+  ORDER BY a.id DESC
+  LIMIT ?`;
+
+/**
+ * Search extracted text: attachments the caller may open, newest first, at most `limit`.
+ *
+ * The readable owners are decided first (`readableOwners`) and handed to the query, so the
+ * `ORDER BY … LIMIT` runs over readable rows only: a match the caller cannot open neither
+ * appears nor takes a slot, however many there are or how new. Nothing is examined and then
+ * dropped, so there is no scan bound whose cutoff could depend on hidden rows.
+ *
+ * The term is judged before anything else, so a too-short term refuses at no cost. The FTS
+ * table is not aliased: its own name is the hidden column `MATCH` reads (`searchQuery`).
+ */
+export async function searchAttachments(
+  sql: Pick<ScopedSql, 'query'>,
+  gate: AttachmentSearchGate,
+  term: string,
+  limit: number,
+): Promise<AttachmentRecord[]> {
+  const match = searchMatchExpression(term, 'prefix');
+  const { wideTypes, owners } = await readableOwners(sql, gate);
+  if (wideTypes.length === 0 && owners.length === 0) return [];
+  return sql
+    .query<AttachmentRowShape>(ATTACHMENT_SEARCH_SQL, [
+      match,
+      JSON.stringify(wideTypes),
+      JSON.stringify(owners),
+      searchLimit(limit),
+    ])
+    .map(attachmentRecordOfRow);
+}
+
+/** One `_substrat_attachments` row, as SELECTed. */
+export interface AttachmentRowShape {
   readonly id: string;
   readonly entity_type: string;
   readonly entity_id: string;
+  readonly filename: string;
+  readonly content_type: string;
+  readonly size: number;
+  readonly sha256: string;
+  readonly visibility: string;
+  readonly created_by: string;
+  readonly created_at: string;
 }
 
-/**
- * The candidate read: matching attachments, NEWEST FIRST, ids and owning entity only.
- *
- * Joined to `_substrat_attachments`, so a text row whose attachment is gone can never be
- * a candidate even before the trigger has removed it. The FTS table is not aliased: its
- * own name is the hidden column `MATCH` reads (`searchQuery` says why).
- */
-export function attachmentSearchQuery(match: string): { sql: string; params: [string, number] } {
-  return {
-    sql:
-      `SELECT a.id AS id, a.entity_type AS entity_type, a.entity_id AS entity_id
-         FROM _substrat_search__attachments
-         JOIN _substrat_search__attachment_text t ON t.rid = _substrat_search__attachments.rowid
-         JOIN _substrat_attachments a ON a.id = t.attachment_id
-        WHERE _substrat_search__attachments MATCH ?
-        ORDER BY a.id DESC LIMIT ?`,
-    params: [match, ATTACHMENT_SEARCH_SCAN_MAX],
-  };
-}
-
-/**
- * The gate, applied before the limit: the ids, in candidate order, of the first `limit`
- * candidates `canRead` admits.
- *
- * One decision per owning ENTITY, cached for the call — ten attachments on one contract
- * cost one check. A check that throws reads as a refusal: an evaluator failure must
- * never become a disclosure. Refusals are not recorded as denials, for the reason a live
- * fan-out records none: nobody asked for these rows by name.
- */
-export async function readableAttachmentIds(
-  candidates: readonly AttachmentSearchCandidate[],
-  canRead: (entity: EntityRef) => Promise<boolean>,
-  limit: number,
-): Promise<string[]> {
-  const decided = new Map<string, boolean>();
-  const out: string[] = [];
-  for (const c of candidates) {
-    if (out.length >= limit) break;
-    const key = `${c.entity_type}\u0000${c.entity_id}`;
-    let allowed = decided.get(key);
-    if (allowed === undefined) {
-      try {
-        allowed = await canRead({ entityType: c.entity_type, entityId: c.entity_id });
-      } catch {
-        allowed = false;
-      }
-      decided.set(key, allowed);
-    }
-    if (allowed) out.push(c.id);
-  }
-  return out;
+/** The metadata fact an attachment row records — parsed, so a malformed row throws here. */
+export function attachmentRecordOfRow(row: AttachmentRowShape): AttachmentRecord {
+  return attachmentRecord.parse({
+    id: row.id,
+    entity: { entityType: row.entity_type, entityId: row.entity_id },
+    filename: row.filename,
+    contentType: row.content_type,
+    size: Number(row.size),
+    sha256: row.sha256,
+    visibility: row.visibility,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  });
 }
 
 // -- the job -------------------------------------------------------------------------
