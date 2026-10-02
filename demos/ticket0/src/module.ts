@@ -3624,10 +3624,11 @@ const operations = {
     const row = sourceOrThrow(ctx, input.sourceId);
     ctx.emit({
       type: 'ticket0.kb-ingest-failed',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: sourceRef(row.id),
       piiClass: 'none',
-      payload: { id: row.id, url: row.url, last_error: row.last_error },
+      // Not the reason: a remote site's text stays on the row, never on an event (#1088).
+      payload: { id: row.id, url: row.url },
     });
     return publicSource(row);
   },
@@ -5515,15 +5516,12 @@ const operations = {
     });
     ctx.emit({
       type: 'ticket0.assistant-failed',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: { entityType: 'aiTurn', entityId: row.id },
       piiClass: 'none',
-      payload: {
-        id: row.id,
-        conversation_id: row.conversation_id,
-        model: row.model,
-        error: row.error,
-      },
+      // Not the error, for the log line's reason above: it can quote the customer, and
+      // an event is where a discard or an erasure cannot reach (#1088).
+      payload: { id: row.id, conversation_id: row.conversation_id, model: row.model },
     });
     return row;
   },

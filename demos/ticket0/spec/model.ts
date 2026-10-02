@@ -1221,6 +1221,12 @@ export const ticket0Entities = defineEntities({
    * turn used to carry only its outcome, so the desk could see THAT the assistant had
    * not answered and nothing about why; the reason went to the dev server's stdout
    * and, on a worker, nowhere at all. Null on every other outcome.
+   *
+   * `error` is **erasable** (#1088), because "whatever threw" is a provider's text and a
+   * provider can quote the customer's message back in it. Erasable is also what keeps it
+   * off every event — the model refuses an erasable field in a payload — which is where
+   * `ticket0.assistant-failed` v1 used to carry it, out of reach of a discard or an
+   * erasure. The row keeps it for the desk that reads the card; a discard clears it.
    */
   aiTurn: {
     table: 'ticket0_ai_turns',
@@ -1239,6 +1245,7 @@ export const ticket0Entities = defineEntities({
       created_at: z.string(),
     }),
     parents: ['conversation'],
+    erasable: ['error'],
   },
 
   /**
@@ -1929,9 +1936,12 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'kbSource',
       entityIdFrom: 'id',
       type: 'ticket0.kb-ingest-failed',
-      schemaVersion: 1,
+      // v2 (#1088): `last_error` left the payload. It is whatever the remote site or the
+      // fetch said — text this desk does not write and cannot vet — and an event keeps it
+      // for good. The reason is on the source row, which `list-kb-sources` reads.
+      schemaVersion: 2,
       piiClass: 'none',
-      payload: ['id', 'url', 'last_error'],
+      payload: ['id', 'url'],
     },
   },
 
@@ -2861,10 +2871,9 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * record and erasure is the platform's own story — and because a sender whose only
    * history is discarded is exactly what `discarded-before` keys on; and the assistant's
    * turns, which are what the desk was billed for — with the provider's `error` text
-   * cleared, since it can quote the message back. Message events carry ids only, so none
-   * of them carried the text. The one event that can is `ticket0.assistant-failed`, whose
-   * payload names that same error; it is published unclassified, so a discard cannot
-   * reach the copy already in the trail.
+   * cleared, since it can quote the message back. No event carries any of it: message
+   * events carry ids only, and `ticket0.assistant-failed` dropped the error in v2. The
+   * residual is the v1 copies emitted before that, which module code cannot rewrite.
    *
    * It is a CLOSE as well, and publishes `ticket0.conversation-closed` beside its own
    * event, so a consumer counting closures does not lose these.
@@ -3473,9 +3482,12 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'aiTurn',
       entityIdFrom: 'id',
       type: 'ticket0.assistant-failed',
-      schemaVersion: 1,
+      // v2 (#1088): `error` left the payload. It is the provider's text, which can quote the
+      // customer, and an event is immutable — v1 put that text where neither a discard nor
+      // an erasure reaches it. The reason is on the turn, read back by `list-turns`.
+      schemaVersion: 2,
       piiClass: 'none',
-      payload: ['id', 'conversation_id', 'model', 'error'],
+      payload: ['id', 'conversation_id', 'model'],
     },
   },
 

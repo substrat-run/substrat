@@ -767,6 +767,39 @@ describe('discard destroys the content — completely, only what is suspended, o
     expect(health).not.toContain('4111');
   });
 
+  /**
+   * The reviewer's repro (Codex round 3, #1973): `ticket0.assistant-failed` carried the
+   * provider's error in its payload, so a quote of the customer outlived the discard in the
+   * event trail — the one copy no column update reaches. Read the trail itself, every
+   * payload of every event in the scope, after the discard.
+   */
+  it('leaves no event in the trail that says what the customer wrote or what the provider quoted', async () => {
+    const d = await filtered();
+    const WORDS = 'trail-needle-8812 my card was declined';
+    const QUOTE = 'provider refused: "trail-needle-8812 my card was declined"';
+    const chat = await visitor(d, WORDS);
+    await say(d, chat, 'trail-needle-8812 again');
+    await (await kit.as(d, d.widget)).invoke('ticket0/record-assistant-failure', {
+      conversationId: chat.conversationId,
+      turnId: 'trail-turn',
+      model: 'test/none',
+      error: QUOTE,
+    });
+    const trail = () =>
+      kit.sql(d, (db) => db.prepare('SELECT type, payload FROM _substrat_outbox').all() as { type: string; payload: string }[]);
+    // The failure was published, and published WITHOUT the text — before any discard.
+    expect(trail().filter((e) => e.type === 'ticket0.assistant-failed')).toHaveLength(1);
+    expect(trail().filter((e) => e.payload.includes('trail-needle'))).toEqual([]);
+    // The probe can see the text where it does live, so the scan is not vacuous.
+    expect(kit.sql(d, (db) => db.prepare('SELECT error FROM ticket0_ai_turns WHERE id = ?').get('trail-turn'))).toEqual({ error: QUOTE });
+
+    const a = await admin(d);
+    await a.invoke('ticket0/suspend', { conversationId: chat.conversationId });
+    await a.invoke('ticket0/discard', { conversationId: chat.conversationId });
+    expect(trail().filter((e) => e.payload.includes('trail-needle'))).toEqual([]);
+    expect(kit.sql(d, (db) => db.prepare('SELECT error FROM ticket0_ai_turns WHERE id = ?').get('trail-turn'))).toEqual({ error: null });
+  });
+
   /** CodeRabbit on #1973: every discarded row is `closed`, so the open-states default emptied the queue. */
   it('lists what was discarded in its own queue, and nowhere else', async () => {
     const d = await filtered();
@@ -1065,5 +1098,43 @@ describe('migration 0021 on an existing desk', () => {
     }
     expect(upgraded.map((i) => i.name)).toContain('ticket0_conversations_suspended');
     expect(upgraded.some((i) => /_conversation_quarantine_/.test(i.name))).toBe(true);
+  });
+});
+
+/**
+ * No event the model declares carries text a customer or a third party wrote (Codex round
+ * 3, #1973). An event is immutable and outlives every discard and every erasure, so a
+ * payload field naming one of these columns is a copy nothing can take back. Most are
+ * `erasable`, which the model already refuses in a payload at load time; the rest are not
+ * personal data in the platform's sense — a provider's error, a remote site's error, a
+ * subject line — and this is what holds them out. Desk-authored vocabulary (a saved reply,
+ * a tag, a source's label, the desk's own settings) is deliberately not on the list: it
+ * is the desk's text, and its events are fat on purpose.
+ */
+describe('events carry no outside text', () => {
+  const OUTSIDE_TEXT = [
+    'message.body_text', 'message.body_html', 'conversation.subject', 'aiTurn.error', 'kbSource.last_error',
+    'contact.email', 'contact.display_name', 'csat.comment', 'signup.email', 'signup.note', 'blockRule.value',
+    'widgetSession.user_agent', 'widgetOpening.user_agent',
+  ];
+
+  /** Every declared payload field, as `entity.field`. */
+  const declared = (ops: Record<string, unknown>) =>
+    Object.values(ops).flatMap((op) => {
+      const emits = (op as { emits?: { entity: string; type: string; payload?: readonly string[] } }).emits;
+      return emits ? (emits.payload ?? []).map((field) => ({ type: emits.type, column: `${emits.entity}.${field}` })) : [];
+    });
+
+  it('declares no payload field that names one of those columns', () => {
+    expect(declared(ticket0Operations).filter((f) => OUTSIDE_TEXT.includes(f.column))).toEqual([]);
+  });
+
+  it('would catch one: a payload naming such a column is found', () => {
+    // The positive twin of the line above, so the check cannot pass by reading nothing:
+    // kb-ingest-failed as v1 declared it, with the remote's error on the payload.
+    const v1 = { 'ticket0/record-kb-ingest-failure': { emits: { entity: 'kbSource', type: 'ticket0.kb-ingest-failed', payload: ['id', 'url', 'last_error'] } } };
+    expect(declared(v1).filter((f) => OUTSIDE_TEXT.includes(f.column))).toEqual([
+      { type: 'ticket0.kb-ingest-failed', column: 'kbSource.last_error' },
+    ]);
   });
 });

@@ -158,6 +158,9 @@
       },
       "parents": [
         "conversation"
+      ],
+      "erasable": [
+        "error"
       ]
     },
     "behaviourRun": {
