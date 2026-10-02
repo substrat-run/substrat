@@ -65,7 +65,7 @@
     "pretypecheck": "node scripts/gen-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.workerd-test.json --noEmit",
     "test": "vitest run && vitest run -c vitest.workers.config.ts",
-    "test:ui": "vitest --watch --ui --open=false --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5294}",
+    "test:ui": "vitest --watch --ui --open=false -c ../../tools/vitest/ui.config.mjs --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5294}",
     "server": "tsx src/server.ts",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "demo": "pnpm run dev",

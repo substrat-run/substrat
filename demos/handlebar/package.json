@@ -80,7 +80,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:ui": "vitest --watch --ui --open=false --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5293}",
+    "test:ui": "vitest --watch --ui --open=false -c ../../tools/vitest/ui.config.mjs --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5293}",
     "server": "tsx src/server.ts",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "demo": "pnpm run dev",
