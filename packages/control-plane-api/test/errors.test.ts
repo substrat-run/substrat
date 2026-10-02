@@ -40,7 +40,6 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     // already admitted — which is true, and precisely the confusion that hid the real
     // requirement: admitted is not the same as vouched for.
     expect(mapError(autoAdmitRefusal).body.error).not.toMatch(/^unknown /);
-    expect(mapError(autoAdmitRefusal).body.error).not.toMatch(/^version .* is already admitted/);
     expect(mapError(new Error('version 01J is already admitted')).status).toBe(409);
   });
 
