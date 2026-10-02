@@ -88,7 +88,7 @@ substrat model view . --out model.html    # place it deliberately
 
 Reads [`model.json`](/concepts/model) and writes **one** HTML file: an ER diagram of the
 entities and the `parents` edges permission flows along, then a card per entity listing its
-fields with the primary key, the natural key and the `erasable` fields marked. Declared
+fields with the primary key, the natural key and the `erasable` and `outsideText` fields marked. Declared
 lifecycles are rendered too, when the model has any. The path is printed on its own last
 line — open it in a browser, or click it in an agent's chat pane.
 

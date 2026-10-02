@@ -347,7 +347,7 @@ behind a declared filter is the part contracts could not have built.
 
 Every one of these is a compile error, not a lint:
 
-- `parents`, `primaryKey`, `key` and `erasable` name fields and entities that exist
+- `parents`, `primaryKey`, `key`, `erasable` and `outsideText` name fields and entities that exist
 - entity-pointing positions name a **pointable** entity — one identified by a single column
 - `permission` names a **declared** key — a typo becomes a *"Did you mean"* suggestion
 - an operation carries `permission` **or** `narrows: { reason }` — never both, never neither
@@ -372,10 +372,16 @@ Every one of these is a compile error, not a lint:
   bare-array list output is
 - `piiClass` is required, and anything other than `'none'` requires a `subjectId`, because an
   erasure has to be keyable
-- a `payload` cannot carry a field the entity marks `erasable` — immutable events are the one
-  place in a scope an erasure cannot reach
+- a `payload` cannot carry a field the entity marks `erasable` or `outsideText` — immutable
+  events are the one place in a scope an erasure cannot reach, and no cleanup of the row
+  reaches them either
 
-That last check resolves through `emits.entity`, so it is exact: a `name` marked erasable on
+`erasable` is the subject's personal data, what an erasure must reach. `outsideText` is text
+someone outside the module wrote that is *not* personal data, so it has no erasure to be
+reached by: a provider's or a remote site's error, a subject line a sender typed, a fetched
+document, a raw header. It may sit on its row and never ride an event.
+
+That check resolves through `emits.entity`, so it is exact: a `name` marked erasable on
 `customer` does not wrongly refuse an event about an `office` carrying its own `name`.
 
 ## Composing engines

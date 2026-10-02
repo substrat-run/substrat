@@ -40,7 +40,7 @@ export function parseModel(parsed: unknown, sourceLabel: string): EmittedModel {
     if (!entity || typeof entity !== 'object' || typeof (entity as { table?: unknown }).table !== 'string') {
       throw new Error(`${sourceLabel}: entity '${name}' declares no table — is it a model.json?`);
     }
-    for (const listed of ['parents', 'primaryKey', 'key', 'erasable'] as const) {
+    for (const listed of ['parents', 'primaryKey', 'key', 'erasable', 'outsideText'] as const) {
       const value = (entity as Record<string, unknown>)[listed];
       if (value === undefined) continue;
       if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
@@ -236,11 +236,15 @@ function renderDiagram(entities: Record<string, EmittedEntity>): string {
   );
 }
 
-/** One entity's fields, with the primary key, the natural key and the erasable fields marked. */
+/**
+ * One entity's fields, with the primary key, the natural key, the erasable fields and the
+ * outside-text fields marked — the last two being what no event may carry.
+ */
 function renderEntity(name: string, entity: EmittedEntity): string {
   const pk = new Set(primaryKeyOf(entity));
   const key = new Set(entity.key ?? []);
   const erasable = new Set(entity.erasable ?? []);
+  const outsideText = new Set(entity.outsideText ?? []);
   // `fields` is carried as opaque JSON Schema, so `required` is not shape-checked by
   // `parseModel` the way the entity-level lists are — guard it here: a malformed value
   // renders every field as optional rather than throwing from inside the renderer.
@@ -254,6 +258,9 @@ function renderEntity(name: string, entity: EmittedEntity): string {
       pk.has(field) ? '<span class="mark pk" title="primary key">PK</span>' : '',
       key.has(field) ? '<span class="mark key" title="natural key">KEY</span>' : '',
       erasable.has(field) ? '<span class="mark erasable" title="reachable by an erasure">ERASABLE</span>' : '',
+      outsideText.has(field)
+        ? '<span class="mark outside" title="written outside the module — never on an event">OUTSIDE</span>'
+        : '',
     ]
       .filter(Boolean)
       .join(' ');
@@ -340,6 +347,7 @@ td.marks { text-align: right; white-space: nowrap; }
         border: 1px solid var(--line); color: var(--dim); }
 .mark.pk { color: var(--accent); border-color: var(--accent); }
 .mark.erasable { color: var(--warn); border-color: var(--warn); }
+.mark.outside { color: var(--warn); border-style: dashed; border-color: var(--warn); }
 .states { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 .state ul { margin: 0; padding-left: 16px; }
 .empty { color: var(--dim); }

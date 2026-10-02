@@ -277,13 +277,15 @@ Approval of the design is what unlocks step 5. Until you have it, you are still 
 The design is approved. Before any handler, declare **what exists** in `spec/model.ts`:
 entities, the operations over them, and the permissions those operations check. One
 TypeScript module, and the compiler checks the joins — a `parents` naming no entity, an
-`entityIdFrom` naming no output field, a payload carrying an `erasable` field are all
-compile errors, before a line of the module exists.
+`entityIdFrom` naming no output field, a payload carrying an `erasable` or `outsideText`
+field are all compile errors, before a line of the module exists. Mark `outsideText` on any
+column whose value a customer, a remote system or an inbound header writes and that is not
+personal data (an error a provider returned, a subject line, a fetched document).
 
 Full walkthrough: [The model](https://substrat.net/concepts/model). The short version:
 
 ```ts
-export const entities = defineEntities({ … });          // table, fields, parents, primaryKey, key, erasable
+export const entities = defineEntities({ … });          // table, fields, parents, primaryKey, key, erasable, outsideText
 export const PERMISSIONS = ['thing:manage'] as const;
 export const operations = defineOperations(entities, PERMISSIONS, [engineEntities])({ … });
 export const model = emitModel(entities);
