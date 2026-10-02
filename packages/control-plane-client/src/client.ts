@@ -1,0 +1,233 @@
+import { denialQuery } from '@substrat-run/contracts';
+import type {
+  EntitlementGrant,
+  EntitlementGrantInput,
+  QueryScopeInput,
+  ReadScopeTableInput,
+  Scope,
+  ScopeId,
+  ScopeQueryResult,
+  DenialFilter,
+  DenialSummary,
+  PermissionDenial,
+  ScopeTable,
+  ScopeTablePage,
+  Tenant,
+  TenantId,
+} from '@substrat-run/contracts';
+
+import { ControlPlaneError, ControlPlaneTransport } from './transport.js';
+import { identityTenantsResponse, type IdentityTenant } from './identity-tenants.js';
+
+/**
+ * A typed HTTP client for the control-plane API — the vertical side of the
+ * connect seam (first-flow.md slice 4).
+ *
+ * A vertical that runs against a *separately deployed* shared control plane uses
+ * this to (a) register its tenant, entitlements, and scope on boot, and (b) gate
+ * each request on the directory's authoritative lifecycle — `assertScopeActive`
+ * fails closed exactly as the kernel's own `getScope` does, so a suspend in the
+ * console bites the vertical's next operation even across process and deployment
+ * boundaries.
+ *
+ * What it deliberately does NOT do: write roles or grants. Those are not on the
+ * control-plane HTTP surface (api.ts §4.5 — permission writes are the human
+ * checkpoint, D-22/D-29), so a connected vertical keeps its permission model
+ * local and treats the shared plane as the authority for tenant/scope lifecycle
+ * and entitlements only.
+ *
+ * `fetch` is injectable: pass a Worker service-binding's fetch, or the router's
+ * own `app.fetch` for an in-process test, instead of the global.
+ */
+export interface ControlPlaneClientOptions {
+  /** Base URL of the control-plane API, e.g. `https://cp.example.com` or `http://127.0.0.1:8788`. */
+  baseUrl: string;
+  /**
+   * The platform actor id stamped as the audit subject on every write — sent as the
+   * dev-only `x-platform-actor` header, and ONLY when no `serviceToken` is set. With a
+   * token the control plane resolves the subject from the token (its fixed service
+   * actor), so the header is never consulted there and is not sent (#980).
+   */
+  actor: string;
+  /**
+   * A service credential (`x-service-token`) proving the caller is an authorized
+   * vertical, not just anyone with an actor id. Required when the control plane
+   * has real auth — the dev-actor header alone does not authenticate there. When
+   * set, it is the request's only credential: `actor` is not sent.
+   */
+  serviceToken?: string;
+  /** Defaults to the global `fetch`. */
+  fetch?: typeof globalThis.fetch;
+}
+
+// The error is raised by the transport; this is the path callers (and `errors.ts`)
+// have always imported it from.
+export { ControlPlaneError };
+
+export interface ClientProvisionScopeInput {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  slug?: string;
+  kind?: string;
+  name?: string;
+  vertical?: string | null;
+  // The full storable vocabulary; the server gates which are accepted (K-32).
+  jurisdiction?: 'eu' | 'us' | 'global';
+}
+
+export class ControlPlaneClient extends ControlPlaneTransport {
+  constructor(options: ControlPlaneClientOptions) {
+    super(options);
+  }
+
+  // -- registration (idempotent, mirrors HostAdmin) --------------------------
+
+  createTenant(input: { id: TenantId; slug: string; name: string }): Promise<Tenant> {
+    return this.call('/tenants', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  grantEntitlement(
+    tenantId: TenantId,
+    key: string,
+    plan?: EntitlementGrantInput,
+  ): Promise<EntitlementGrant[]> {
+    return this.call(`/tenants/${tenantId}/entitlements/${key}`, {
+      method: 'PUT',
+      body: plan === undefined ? undefined : JSON.stringify(plan),
+    });
+  }
+
+  provisionScope(input: ClientProvisionScopeInput): Promise<Scope> {
+    return this.call('/scopes', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  /**
+   * Confirm the scope exists here, moving the directory row provisioning → active.
+   *
+   * In this (push) direction the vertical has already built the scope locally, so
+   * registering and confirming are the same moment — but they stay two calls so
+   * `provisionScope` means one thing everywhere, and so the directory is never the
+   * one deciding a scope is ready (K-31).
+   */
+  activateScope(tenantId: TenantId, scopeId: ScopeId): Promise<Scope> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/activate`, { method: 'POST' });
+  }
+
+  // -- reads used for gating -------------------------------------------------
+
+  getTenant(tenantId: TenantId): Promise<Tenant | undefined> {
+    return this.call(`/tenants/${tenantId}`, undefined, true);
+  }
+
+  getScopeRecord(tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}`, undefined, true);
+  }
+
+  listEntitlements(tenantId: TenantId): Promise<EntitlementGrant[]> {
+    return this.call(`/tenants/${tenantId}/entitlements`);
+  }
+
+  /**
+   * The tenants a login builds for, each flagged with whether it holds the `builder`
+   * entitlement — the builder studio's membership read (builder-plane.md §4). `externalId`
+   * is the login's OIDC subject. Service-token gated: an unset token is refused by the
+   * plane, never bypassed.
+   *
+   * The answer is PARSED, not asserted: a plane that renamed `entitled`, or answered an
+   * `{ error }` body with a 200, would hand a cast `entitled: undefined` — falsy, so the
+   * studio would lock the tenant out with the ordinary "not enabled" page and nothing
+   * anywhere would say the directory had changed shape. A refused parse throws instead.
+   * The message names the shape that was wrong, never the body — the body is directory
+   * facts about a person's tenants.
+   */
+  async identityTenants(externalId: string): Promise<IdentityTenant[]> {
+    const res = await this.send('/internal/builder/identity-tenants', {
+      method: 'POST',
+      body: JSON.stringify({ externalId }),
+    });
+    const parsed = identityTenantsResponse.safeParse(await res.json().catch(() => null));
+    if (!parsed.success) {
+      throw new ControlPlaneError(
+        res.status,
+        `identity-tenants returned an unexpected shape: ${parsed.error.message}`,
+      );
+    }
+    return parsed.data.tenants;
+  }
+
+  // -- read-only scope-DB introspection (§5.4 admin-query RPC) ----------------
+
+  /** Every table in the scope's own database, with row counts (Data view). */
+  listScopeTables(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeTable[]> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/tables`);
+  }
+
+  /** A bounded page of one table of the scope's database. */
+  readScopeTable(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: ReadScopeTableInput,
+  ): Promise<ScopeTablePage> {
+    const q = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) });
+    return this.call(
+      `/tenants/${tenantId}/scopes/${scopeId}/tables/${encodeURIComponent(input.table)}?${q}`,
+    );
+  }
+
+  /** One read-only SQL statement against the scope's database — the console (#219). */
+  queryScope(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: QueryScopeInput,
+  ): Promise<ScopeQueryResult> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/query`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  // -- the denial log (K-35, #867) --------------------------------------------
+
+  /**
+   * The scope's recorded permission refusals, bucketed per (actor, permission) with the
+   * window's own facts beside them — the view to open first, because the raw log's
+   * volume is attacker-influenceable and a prober can flood a newest-first page.
+   */
+  summarizeDenials(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: DenialFilter,
+  ): Promise<DenialSummary> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/denials/summary${denialQuery(filter)}`);
+  }
+
+  /** The raw rows behind a bucket, newest first. */
+  listDenials(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    filter?: DenialFilter,
+  ): Promise<PermissionDenial[]> {
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/denials${denialQuery(filter)}`);
+  }
+
+  /**
+   * The gate. Throws unless the tenant is active AND the scope exists and is
+   * active — the same fail-closed logic the kernel's `validateScopeAccess`
+   * applies locally, so a tenant-level cascade suspend bites too, not just a
+   * per-scope one. Call it before handing a request to the local scope host.
+   */
+  async assertScopeActive(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    const [tenant, scope] = await Promise.all([
+      this.getTenant(tenantId),
+      this.getScopeRecord(tenantId, scopeId),
+    ]);
+    if (!tenant) throw new ControlPlaneError(403, `unknown tenant: ${tenantId}`);
+    if (tenant.status !== 'active') {
+      throw new ControlPlaneError(403, `tenant not active (status: ${tenant.status}): ${tenantId}`);
+    }
+    if (!scope) throw new ControlPlaneError(403, `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    if (scope.status !== 'active') {
+      throw new ControlPlaneError(403, `scope not active (status: ${scope.status}): ${scopeId}`);
+    }
+  }
+}
