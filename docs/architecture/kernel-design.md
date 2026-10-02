@@ -1342,11 +1342,13 @@ externalization convention is day one; translations are not).
     it as a sanctioned pattern, gives it a page contract, bounds the fan-out, or says what
     happens when one scope in the set is suspended, mid-migration or cold. Each of those
     answers will therefore be invented per screen, differently. Two adjacent gaps belong
-    with it because they are plausibly one mechanism. First, **there is no scope-wide
-    "everything since watermark N" read**: `readTimeline`/`readHistory` are per-`EntityRef`
-    (`packages/kernel/src/timeline.ts`), and the outbox is walked scope-wide only by the
-    platform drain — so `callout/timeline` hand-rolls the walk under rule 3's projection
-    permission, and an offline mirror would have to. Second, **there is no subscribe
+    with it because they are plausibly one mechanism. First, **there was no scope-wide
+    "everything since watermark N" read** — *closed by #1582*: `readScopeTimeline` /
+    `readScopeHistory` (`packages/kernel/src/timeline.ts`) walk the outbox by event `id`
+    from a caller-held watermark, decode it as the per-entity reads do, and check nothing,
+    so the caller's check in front of them must be scope-wide. The half still open is the
+    one shared with the subscription below: a walk that visits only the events the caller
+    may read, rather than one the caller filters after the fact. Second, **there is no subscribe
     surface at all**: no WebSocket, no `text/event-stream` and no push anywhere in
     `packages/kernel`, `packages/adapter-cloudflare` or `packages/vertical-host`. The
     ScopeDO could hold hibernatable WebSockets and a vertical cannot reach the namespace

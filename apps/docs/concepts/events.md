@@ -330,6 +330,45 @@ suppress them. Seven nullables there are facts rather than gaps, and they are se
 timeline is the envelope and nothing more, so there is still no disclosure decision to make
 there.
 
+## Reading everything since a watermark
+
+A projection, an activity feed and an offline mirror all ask the same question of the
+spine: *what happened in this scope since the last event I applied?* That is
+`readScopeTimeline` / `readScopeHistory` — the two reads above with the entity unpinned,
+each entry carrying the `entity` it was about:
+
+```ts
+import { readScopeHistory } from '@substrat-run/kernel';
+
+const changesOp = async (ctx, input) => {
+  assertAllowed(await ctx.check(AUDIT.read));          // scope-wide: no entity named
+  return readScopeHistory(ctx, { ...input, entityType: 'workorder' });
+};
+```
+
+- **The cursor is the watermark, and it is the event `id`.** The walk is `ORDER BY id`,
+  exclusive of the cursor, so a page boundary inside one operation's burst of events —
+  which all share an instant — drops nothing, and resuming from the last id you applied
+  never applies an event twice. The id is safe to resume from because the scope mints its
+  ids from one monotonic writer and commits one operation at a time: no event can be
+  stored *below* an id you have already read.
+- **Keep the last applied `id`, not `nextCursor`.** `nextCursor` is `null` on a short page,
+  which means *caught up*. A mirror that stores it restarts from the beginning on its next
+  poll.
+- **`entityType`** narrows the walk to one kind of entity. It is the only filter, and it is
+  equality only.
+- Every field decodes exactly as `readTimeline` / `readHistory` decode it, so the nullables
+  above keep their meanings — a shredded event still appears, with a null payload.
+
+**It checks nothing, and here that matters most.** A per-entity read is justified by a
+per-entity check; this one returns events about *every* entity in the scope, including
+ones the caller may not read. So the check in front of it must be a **scope-wide**
+permission — one whose holder may see all of them. A caller entitled to only some entities
+can still use it and filter each entry with `ctx.check(perm, entry.entity)`, but must then
+page by the last entry *examined*, not the last one returned, because a filtered page comes
+back short. A walk that visits only what the caller may read is a different read, and not
+yet a kernel one.
+
 **A row that will not decode still comes back.** The kernel writes every outbox row, so a row
 it cannot read is one a restored dump brought in. The timeline, history and both walks return
 it beside every other entry, with a `decodeError` naming each column that did not decode. Those

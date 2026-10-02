@@ -308,6 +308,27 @@ export const historyEntry = timelineEntry.extend({
 export type HistoryEntry = z.infer<typeof historyEntry>;
 
 /**
+ * One entry of a SCOPE-WIDE walk of the spine (#1582) — a timeline entry plus the
+ * entity it is about.
+ *
+ * `timelineEntry` carries no entity because its read is per-entity and the caller
+ * named it. A walk of everything since a watermark has to say which entity each
+ * event was about, or a projection cannot route the event and a caller cannot run
+ * a per-entity check against it. A nested `EntityRef` rather than two flat columns,
+ * so `ctx.check(perm, entry.entity)` is the whole call.
+ */
+export const scopeTimelineEntry = timelineEntry.extend({ entity: entityRef });
+export type ScopeTimelineEntry = z.infer<typeof scopeTimelineEntry>;
+
+/**
+ * `historyEntry` plus the entity it is about (#1582) — the scope-wide counterpart of
+ * the per-entity history read. Every nullable keeps the meaning `historyEntry`
+ * documents; walking the scope rather than one entity changes none of them.
+ */
+export const scopeHistoryEntry = historyEntry.extend({ entity: entityRef });
+export type ScopeHistoryEntry = z.infer<typeof scopeHistoryEntry>;
+
+/**
  * Why a causal walk stopped (#1237). The whole value of the view is in telling these
  * apart, so it is a named reason rather than the absence of a next step.
  */
