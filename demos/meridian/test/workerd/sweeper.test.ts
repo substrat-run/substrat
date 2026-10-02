@@ -9,18 +9,17 @@
  *
  * This suite drives `src/worker.ts` the way the platform does — `/internal/provision`,
  * `/internal/reconcile`, `/internal/delete-scope`, with the platform secret — and runs a
- * pass of the deployment's own sweeper, the one its alarm runs. Two tenants, because what
- * the timer may do turns on what the tenant is entitled to:
+ * pass of the deployment's own sweeper, the one its alarm runs. Two tenants, one entitled
+ * beyond a standard install and one holding exactly it:
  *
  *   - one whose entitlements include `absence`: the stale leave is cancelled, and a leave
  *     that starts in the future is left alone;
  *   - one holding exactly what a dashboard install grants (package.json
- *     `substrat.entitlements`: meridian, protocol). There the schedule FIRES and FAILS —
- *     `absence/expire-stale` is the absence module's own operation, the scope enforces the
- *     projected entitlements, and a standard install is never granted `absence`. This case
- *     pins that honest outcome rather than hiding it: a hosted Meridian on a standard
- *     install does not expire stale leave yet, and the run says why. The fix is a separate
- *     decision (#1654); when it lands, this case is the one that changes.
+ *     `substrat.entitlements`: meridian, protocol), never `absence`. Until #1654 the
+ *     schedule fired and FAILED there, because the gate asked for the absence module's own
+ *     SKU. Now a module's own declared schedule, through the system door, is authorised by
+ *     its system grant, so it cancels the stale leave on a standard install too — while a
+ *     person invoking the same operation is still refused, which the next case holds.
  *
  * The reconcile and delete cases hold the roster's other two doors, and the last case the
  * contract that keeps it platform-fed: a scope RESTORED from another's dump (the PR-preview
@@ -164,36 +163,39 @@ describe('meridian on workerd — the deployment runs engine-absence\'s timer (#
     expect(await statusOf(entitled.t, entitled.s, future)).toBe('requested');
   });
 
-  it('a standard install: the schedule fires and FAILS on the entitlement, and the stale leave stays', async () => {
+  it('a standard install: the schedule fires and cancels the stale leave, without the absence SKU (#1654)', async () => {
     await provision(standard.t, standard.s, standard.keys);
     expect((await roster()).sort()).toEqual([entitled.s, standard.s].sort());
     const stale = await leaveStarting(standard.t, standard.s, '2020-01-06', '2020-01-10');
+    const future = await leaveStarting(standard.t, standard.s, '2099-01-05', '2099-01-09');
 
     const report = await sweep();
     // The entitled scope ran its daily schedule an instant ago, so it is skipped; the
-    // standard one runs it for the first time, and the scope refuses it.
-    expect(report.schedules).toEqual({ scopes: 1, fired: 0, skipped: 1, failed: 1 });
-    expect(report.errors).toEqual([
-      {
-        kind: 'schedule',
-        id: `${standard.s}:absence/expire-stale`,
-        error: expect.stringMatching(/not entitled: absence\/expire-stale .* does not hold 'absence'/),
-      },
-    ]);
-    expect(await statusOf(standard.t, standard.s, stale)).toBe('requested');
+    // standard one runs it for the first time — and the scope lets it, though the tenant
+    // holds only meridian and protocol: the engine's own declared schedule, through the
+    // system door, is authorised by its system grant, not by the engine's SKU (#1654).
+    expect(report.errors).toEqual([]);
+    expect(report.schedules).toEqual({ scopes: 1, fired: 1, skipped: 1, failed: 0 });
+    expect(await statusOf(standard.t, standard.s, stale)).toBe('cancelled');
+    expect(await statusOf(standard.t, standard.s, future)).toBe('requested');
 
-    // …and the failure is RECORDED where the platform reads a hosted scope's sweeps from:
-    // the batched sweep-runs intent the pass leaves in the scope's journal (#1232).
+    // …and the run is RECORDED where the platform reads a hosted scope's sweeps from: the
+    // batched sweep-runs intent the pass leaves in the scope's journal (#1232).
     const runs = (await host().listPlatformRequests(standard.t, standard.s))
       .filter((r) => r.kind === SWEEP_RUNS_KIND)
       .flatMap((r) => sweepRunsPayload.parse(r.payload).entries);
     expect(runs).toContainEqual(
-      expect.objectContaining({
-        kind: 'schedule',
-        operation: 'absence/expire-stale',
-        outcome: 'failed',
-        error: expect.stringMatching(/does not hold 'absence'/),
-      }),
+      expect.objectContaining({ kind: 'schedule', operation: 'absence/expire-stale', outcome: 'ok' }),
+    );
+  });
+
+  it("a standard install: a person still cannot invoke the engine's own operation — the surface did not widen", async () => {
+    // The owner holds every key meridian's roles carry, `absence:approve` among them, so
+    // this refusal is the entitlement gate and nothing else. The exception is the timer's
+    // door alone; every door a request can reach still asks for `absence`.
+    const admin = await host().getScope(owner, standard.t, standard.s);
+    await expect(admin.invoke('absence/expire-stale')).rejects.toThrow(
+      /not entitled: absence\/expire-stale .* does not hold 'absence'/,
     );
   });
 

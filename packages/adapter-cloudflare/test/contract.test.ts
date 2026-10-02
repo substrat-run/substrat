@@ -33,6 +33,7 @@ import {
   connectorTestFetch,
   permissionContractSuite,
   scheduleContractSuite,
+  scheduleEntitlementContractSuite,
   scheduleMod,
   jobRunContractSuite,
   systemSwitchContractSuite,
@@ -205,6 +206,19 @@ scheduleContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCHED_SCOPE,
     controlPlane: env.SCHED_CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1654: a composed engine's own schedule runs without the engine's SKU, and nothing else
+// the exception could reach does. The DEFAULT checker: the user-door case holds the
+// permission through a real role, so only the SKU gate can refuse it. `runDueSchedules`
+// directly, never a sweep, so the shared directory is safe here.
+scheduleEntitlementContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };

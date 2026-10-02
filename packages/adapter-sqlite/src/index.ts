@@ -230,6 +230,8 @@ import {
   attachmentBlobKey,
   attachmentSha256,
   entitlementDenial,
+  requiredEntitlementFor,
+  type OperationEntitlement,
   foldMeterReading,
   guardSpine,
   guardSqlLimits,
@@ -1508,8 +1510,9 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly listPlans = new Map<string, ListIndexPlan>();
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
-  /** operation name → its owning module's entitlementKey (§4.3 gate). */
-  private readonly operationEntitlement = new Map<string, string>();
+  /** operation name → who binds it: the owning module, its entitlementKey and its declared
+   *  schedules — the §4.3 gate's input, resolved per invoke by `requiredEntitlementFor` (#1654). */
+  private readonly operationEntitlement = new Map<string, OperationEntitlement>();
   /**
    * #893: name → the declared input schema, parsed before guards and handler.
    * Populated only by `registerModule` — a bare `defineOperation` (tests, glue)
@@ -2574,11 +2577,16 @@ export class SqliteScopeHost implements ScopeHost {
           'exclusion someone decided, of an operation that does not exist',
       );
     }
+    const entitlementBinding: OperationEntitlement = {
+      moduleId: manifest.id,
+      entitlementKey: manifest.entitlementKey,
+      scheduledOperations: new Set((manifest.schedules ?? []).map((sch) => sch.operation)),
+    };
     for (const [name, handler] of Object.entries(registration.operations ?? {})) {
       this.defineOperation(name, handler);
       // Record which SKU flag gates this operation (§4.3). Bare defineOperation
       // bindings (tests, glue) carry no manifest and stay ungated.
-      this.operationEntitlement.set(name, manifest.entitlementKey);
+      this.operationEntitlement.set(name, entitlementBinding);
       // #893: withdrawal removes the binding, so the schema follows the handler
       // rather than the name — a withdrawn operation has nothing to parse for.
       const schema = declaredInputs[name];
@@ -4566,7 +4574,17 @@ export class SqliteScopeHost implements ScopeHost {
         // only if the tenant holds its SKU flag. Checked per invoke — the simple,
         // uncached path (K-OQ5); a DO-cached variant is a later benchmark call.
         // Fails closed the same way withdrawal does: the operation is unavailable.
-        const requiredKey = this.operationEntitlement.get(operation);
+        //
+        // EXCEPTION (#1654): a module's own declared schedule, through the system door,
+        // demands no SKU — its `system:<moduleId>` grant is the switch, as it already is
+        // for permissions (#383). The kernel's `requiredEntitlementFor` holds the rule and
+        // why, and the Cloudflare coordinator runs the same predicate. Every other door
+        // (principal, connection, capability, peer, impersonation) is gated as before.
+        const requiredKey = requiredEntitlementFor(
+          operation,
+          this.operationEntitlement.get(operation),
+          authority.kind === 'system' ? authority.id : undefined,
+        );
         if (requiredKey && !this.tenantHoldsEntitlement(tenantId, requiredKey)) {
           return Promise.reject(
             substratError(

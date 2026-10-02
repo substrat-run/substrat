@@ -19,6 +19,7 @@ export { moduleLogContractSuite } from './module-log-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
+export { scheduleEntitlementContractSuite } from './schedule-entitlement-suite.js';
 export { jobRunContractSuite } from './job-run-suite.js';
 export { systemSwitchContractSuite } from './system-switch-suite.js';
 export {
@@ -68,6 +69,8 @@ export {
   PEER_CALLER,
   PEER_LISTENER,
   scheduleMod,
+  composedEngineMod,
+  composerMod,
   jobsMod,
   testMod,
   freshnessMod,
