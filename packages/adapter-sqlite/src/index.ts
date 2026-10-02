@@ -11350,16 +11350,6 @@ function cellToJson(v: unknown): unknown {
   return v;
 }
 
-/**
- * The connection module code holds. `guardSpine` is what makes "never write
- * `_substrat_*`" a mechanism rather than a lint rule (#954) — the kernel's own
- * spine writes use `rt.db` directly and never pass through here.
- */
-/**
- * The kernel's OWN spine access (#1672) — the same seam as `scopedSql` without `guardSpine`,
- * because these are the kernel's writes to `_substrat_capabilities`, which module code may
- * never make. Never handed to module code.
- */
 /** The kernel's erasure walks over one SQLite connection — a read returns its rows, a write none. */
 function redactionSqlOf(db: Database.Database): RedactionSql {
   return (sql, params) => {
@@ -11370,6 +11360,16 @@ function redactionSqlOf(db: Database.Database): RedactionSql {
   };
 }
 
+/**
+ * The connection module code holds. `guardSpine` is what makes "never write
+ * `_substrat_*`" a mechanism rather than a lint rule (#954) — the kernel's own
+ * spine writes use `rt.db` directly and never pass through here.
+ */
+/**
+ * The kernel's OWN spine access (#1672) — the same seam as `scopedSql` without `guardSpine`,
+ * because these are the kernel's writes to `_substrat_capabilities`, which module code may
+ * never make. Never handed to module code.
+ */
 function spineSql(db: Database.Database): ScopedSql {
   return {
     query: <T>(sql: string, params: readonly SqlValue[] = []): T[] =>

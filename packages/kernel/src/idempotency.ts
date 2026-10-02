@@ -155,8 +155,9 @@ export function idempotencyLookupQuery(
  *   the request it sent before is false, and the one thing that must not happen
  *   is serving the earlier request's response to it.
  * - **Unavailable.** The original response was too large to record, or a subject
- *   erasure has since redacted it (#1632). Refused rather than re-executed, which is the fail-closed direction: an error the
- *   caller can act on, instead of the duplicate work the key was sent to avoid.
+ *   erasure has since redacted it (#1632). Refused rather than re-executed, which
+ *   is the fail-closed direction: an error the caller can act on, instead of the
+ *   duplicate work the key was sent to avoid.
  */
 export function replayFor(
   key: string,
