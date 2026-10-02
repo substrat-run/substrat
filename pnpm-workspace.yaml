@@ -73,6 +73,7 @@ catalog:
   # wants workers-types ^5, pool-workers 0.9 wants ^4. It resolves itself with
   # the vitest 4 migration above.
   vitest: ^3.2.7
+  '@vitest/ui': ^3.2.7
   '@cloudflare/vitest-pool-workers': ^0.12.21
   '@cloudflare/workers-types': ^4.20250109.0
   wrangler: ^4.139.0

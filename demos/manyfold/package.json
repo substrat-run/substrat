@@ -45,6 +45,12 @@
         "dir": "app",
         "portEnv": "WEB_PORT",
         "portFrom": "app/vite.config.ts"
+      },
+      {
+        "name": "tests",
+        "run": "test:ui",
+        "portEnv": "VITEST_UI_PORT",
+        "portFrom": "package.json"
       }
     ]
   },
@@ -59,6 +65,7 @@
     "pretypecheck": "node scripts/gen-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit && tsc -p tsconfig.workerd-test.json --noEmit",
     "test": "vitest run && vitest run -c vitest.workers.config.ts",
+    "test:ui": "vitest --watch --ui --open=false -c ../../tools/vitest/ui.config.mjs --api.host=127.0.0.1 --api.port=${VITEST_UI_PORT:-5294}",
     "server": "tsx src/server.ts",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "demo": "pnpm run dev",
@@ -81,13 +88,14 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@substrat-run/contract-tests": "workspace:^",
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@scalar/api-reference": "^1.64.0",
     "@substrat-run/cli": "workspace:^",
+    "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
+    "@vitest/ui": "catalog:",
     "concurrently": "^10.0.4",
     "tsx": "^4.23.1",
     "typescript": "catalog:",
