@@ -41,7 +41,7 @@ import {
 import { ulid } from '@substrat-run/kernel';
 import { priorMessages } from '../harness/assistant.js';
 import { ticket0Manifest } from '../src/manifest.js';
-import { HANDED_TO_A_PERSON } from '../src/module.js';
+import { HANDED_TO_A_PERSON, ORPHAN_CONTACTS_DELETE } from '../src/module.js';
 import { MODULES } from '../src/provision.js';
 import { PARTICIPANTS_MAX } from '../spec/model.js';
 import { createKit, type Desk } from './desk-kit.js';
@@ -571,6 +571,32 @@ describe('merge, follow-up and discard carry or clear them', () => {
     // Somebody anything else names stays — and so does the sender, as before.
     expect(contactIdOf(d, 'known@customer.example')).toBeDefined();
     expect(contactIdOf(d, 'spammer@junk.example')).toBeDefined();
+  });
+});
+
+describe('the discard’s contact cleanup reads an index for every question', () => {
+  it('scans no table but the ids it was handed', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    await mail(d, { from: 'ana@customer.example', cc: ['bo@customer.example'] });
+    const plan = kit.sql(d, (db) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${ORPHAN_CONTACTS_DELETE}`).all('["x"]') as { detail: string }[]).map((r) => r.detail),
+    );
+    // json_each is the list handed in; every other table is a SEARCH, never a SCAN.
+    expect(plan.filter((p) => /^SCAN /.test(p) && !/json_each/.test(p))).toEqual([]);
+    for (const index of ['ticket0_messages_by_author_contact', 'ticket0_messages_by_third_party', 'ticket0_conversation_participants_by_contact']) {
+      expect(plan.some((p) => p.includes(index)), index).toBe(true);
+    }
+
+    // The twin: without the author index the same question scans every message.
+    const without = kit.sql(d, (db) => {
+      db.exec('SAVEPOINT probe; DROP INDEX ticket0_messages_by_author_contact');
+      try {
+        return (db.prepare(`EXPLAIN QUERY PLAN ${ORPHAN_CONTACTS_DELETE}`).all('["x"]') as { detail: string }[]).map((r) => r.detail);
+      } finally {
+        db.exec('ROLLBACK TO probe; RELEASE probe');
+      }
+    });
+    expect(without.some((p) => /^SCAN m\b/.test(p))).toBe(true);
   });
 });
 

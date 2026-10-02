@@ -1824,18 +1824,23 @@ function dropParticipants(ctx: OperationContext, conversationId: string): void {
   );
   ctx.sql.exec('DELETE FROM ticket0_conversation_participants WHERE conversation_id = ?', [conversationId]);
   if (people.length === 0) return;
-  ctx.sql.exec(
-    `DELETE FROM ticket0_contacts AS k
+  ctx.sql.exec(ORPHAN_CONTACTS_DELETE, [JSON.stringify(people.map((p) => p.contact_id))]);
+}
+
+/**
+ * `dropParticipants`' delete: the contacts among a JSON array of ids that nothing else here
+ * names. Exported so `test/participants.test.ts` holds its plan to an index per question —
+ * a discard of a hundred conversations runs it a hundred times, and a scan of the message
+ * table in any one of its questions would be a scan per discard. Binds `[json ids]`.
+ */
+export const ORPHAN_CONTACTS_DELETE = `DELETE FROM ticket0_contacts AS k
       WHERE k.id IN (SELECT value FROM json_each(?))
         AND k.external_id IS NULL AND k.principal IS NULL
         AND NOT EXISTS (SELECT 1 FROM ticket0_conversations c WHERE c.contact_id = k.id)
         AND NOT EXISTS (SELECT 1 FROM ticket0_conversation_participants p WHERE p.contact_id = k.id)
         AND NOT EXISTS (SELECT 1 FROM ticket0_messages m WHERE m.author_contact_id = k.id)
         AND NOT EXISTS (SELECT 1 FROM ticket0_messages m WHERE m.third_party_contact_id = k.id)
-        AND NOT EXISTS (SELECT 1 FROM ticket0_block_rules b WHERE b.kind = 'contact' AND b.value = k.id)`,
-    [JSON.stringify(people.map((p) => p.contact_id))],
-  );
-}
+        AND NOT EXISTS (SELECT 1 FROM ticket0_block_rules b WHERE b.kind = 'contact' AND b.value = k.id)`;
 
 /**
  * Destroy a suspended conversation's content — `ticket0/discard`, once per conversation
