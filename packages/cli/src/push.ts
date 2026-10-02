@@ -45,6 +45,7 @@ import {
 import { warnIfStale } from './version.js';
 import { parseJsonBody, readAllEntries } from './http.js';
 import { failureMessage } from './problem.js';
+import { exportedSweeperNamesOf, sweeperOffence, type ScheduleRef } from './schedule-sweeper.js';
 
 /**
  * Where this push runs: the generated deploy workflow runs THIS SAME CLI inside GitHub
@@ -509,6 +510,9 @@ export interface PermissionSurface {
   /** The code-side `envSpec` declaration, when the entry exports one (#1206) — already
    *  checked against any leftover package.json copy, so a drift threw before this existed. */
   readonly envSpec?: readonly EnvVarSpec[];
+  /** Every module's declared schedules (#1232), for `--check`'s sweeper check (#1646). Not
+   *  part of the `--json` artifact, which names its fields one by one. */
+  readonly schedules?: DeployManifest['schedules'];
 }
 
 /**
@@ -529,7 +533,7 @@ export interface PermissionSurface {
  * turns each into a non-zero exit, which is what makes this usable as a gate.
  */
 export async function checkPermissionSurface(dir: string): Promise<PermissionSurface> {
-  const { registry, envSpec: derived } = await deriveDeclaredSurface(dir);
+  const { registry, envSpec: derived, schedules } = await deriveDeclaredSurface(dir);
   // The envSpec drift check (#1206) runs here too, so `--check` in CI refuses exactly what a
   // push would. The duplicate-copy note is push-time chatter, not part of the check artifact.
   const envSpec = resolveDeclaredEnvSpec(derived, readVerticalMeta(dir).envSpec, () => {});
@@ -537,6 +541,7 @@ export async function checkPermissionSurface(dir: string): Promise<PermissionSur
     registry,
     digest: await permissionDigest(registry),
     ...(derived ? { envSpec: envSpec as readonly EnvVarSpec[] } : {}),
+    ...(schedules ? { schedules } : {}),
   };
 }
 
@@ -1066,6 +1071,98 @@ export function assertLayerRules(
   );
 }
 
+/**
+ * Declared schedules, and something to run them (#1646).
+ *
+ * A vertical's modules — its own, and every engine it composes — may declare recurring work
+ * (`manifest.schedules`). On a hosted deploy nothing runs it unless the worker brings its own
+ * timer: an exported `defineScopeSweeperDO` class, bound as a Durable Object. The control
+ * plane's cron reaches only its own module-less host, and a dispatch script's `triggers.crons`
+ * is not honoured, so a vertical without one deploys cleanly, provisions cleanly, and its
+ * schedules simply never fire — no error anywhere, because nothing ever tries. This repo's
+ * `lint:schedule-sweeper` refuses that for the verticals in it; an external vertical's only
+ * check is this one, on the push.
+ *
+ * The signals, and why each is the one used:
+ *
+ *   - SCHEDULES come from the same `definePermissions(...)` import the manifest's `schedules`
+ *     field is built from (`deriveDeclaredSurface`), so a schedule an ENGINE declares counts
+ *     even though the vertical's source never names it — a text search would miss exactly
+ *     that case.
+ *   - BINDINGS come from the deploy config the push is about to build with (`cfg`), in either
+ *     vocabulary — `runtimeNeeds.stores` or a hand-authored `wrangler.jsonc` — so the check
+ *     reads the bindings that will actually be uploaded.
+ *   - The EXPORT is read from the worker entry's source (`cfg.main`), following relative
+ *     re-exports. The built bundle was considered and rejected: its exports are a list of
+ *     names with no mark saying which class is a sweeper, and it cannot be imported to ask
+ *     (it imports `cloudflare:workers`) — the source's `defineScopeSweeperDO(...)` call is
+ *     the only place that fact is legible. Reading source also lets `push --check` make the
+ *     same check with no build at all.
+ *
+ * What it cannot see is whether the sweeper's roster is ever filled (`noteScope` from
+ * `onProvision`): that is runtime wiring, and the refusal's remedy names it instead.
+ *
+ * `--allow-unswept-schedules` pushes anyway and says so — for a sweeper wired in a shape this
+ * reader does not follow (built by a helper of your own, say), where refusing would be refusing
+ * a working deploy.
+ */
+export function assertSchedulesAreSwept(
+  dir: string,
+  cfg: Record<string, unknown>,
+  schedules: readonly ScheduleRef[] | undefined,
+  allow = false,
+  log: (message: string) => void = console.log,
+): void {
+  if (!schedules || schedules.length === 0) return;
+  const main = typeof cfg.main === 'string' ? cfg.main : undefined;
+  const entryPath = main ? resolve(dir, main) : undefined;
+  if (!entryPath || !existsSync(entryPath)) {
+    // The build would fail on this anyway; say what this check could not do rather than
+    // refusing a sweeper it never got to look for.
+    log(
+      `note: the worker entry ${main ? `"${main}" ` : ''}was not found — whether a sweeper runs this ` +
+        "vertical's declared schedules was NOT checked",
+    );
+    return;
+  }
+  const exportedNames = exportedSweeperNamesOf(entryPath);
+  const boundClassNames = declaredStoresOf(cfg)
+    .bindings.filter((b) => b.type === 'durable_object_namespace')
+    .map((b) => (b as { class_name?: string }).class_name)
+    .filter((c): c is string => Boolean(c));
+  const why = sweeperOffence(schedules, { exportedNames, boundClassNames });
+  if (!why) return;
+  if (allow) {
+    log(
+      `warning: --allow-unswept-schedules — this vertical ${why}
+` +
+        '  Pushing anyway, as asked: on a hosted deploy these schedules will not fire unless a sweeper you wired some other way runs them.',
+    );
+    return;
+  }
+  throw new Error(
+    [
+      `this vertical ${why}`,
+      '',
+      '  The wiring, in the worker entry (the `npm create substrat` template does exactly this):',
+      '',
+      "    import { defineScopeSweeperDO, SCOPE_SWEEPER_NAME } from '@substrat-run/adapter-cloudflare';",
+      '    export const SweeperDO = defineScopeSweeperDO<Env>({ host: hostFor });',
+      '    // …and in mountPlatformSurface, so provisioned scopes join its roster:',
+      '    onProvision: async (env, b) => {',
+      '      await env.SWEEPER.get(env.SWEEPER.idFromName(SCOPE_SWEEPER_NAME)).noteScope(b.tenantId, b.scopeId);',
+      '    },',
+      '',
+      '  plus its binding — in package.json:',
+      '',
+      '    "runtimeNeeds": { "stores": [ …, { "binding": "SWEEPER", "class": "SweeperDO" } ] }',
+      '',
+      "  (or a durable_objects binding and migration in wrangler.jsonc). If a sweeper you wired",
+      '  another way already runs these, push with --allow-unswept-schedules to say so.',
+    ].join('\n'),
+  );
+}
+
 export interface PushOptions {
   dir: string;
   slug: string;
@@ -1128,6 +1225,12 @@ export interface PushOptions {
    * that only shows up as a 404 on the live hostname, so it is refused by default.
    */
   allowUnservedUi?: boolean;
+  /**
+   * Push schedules nothing visibly runs (#1646) — the CLI's --allow-unswept-schedules. See
+   * `assertSchedulesAreSwept`: declared schedules with no exported, bound sweeper are refused
+   * by default, because they deploy cleanly and never fire.
+   */
+  allowUnsweptSchedules?: boolean;
   /**
    * Push code the layer rules never saw (#955) — the CLI's --skip-lint. See
    * `assertLayerRules`: the gate refuses on a violation, and this is the deliberate,
@@ -1221,6 +1324,19 @@ export function resolveWranglerConfig(
   return needs
     ? { cfg: wranglerConfigFor(needs), needs }
     : { cfg: readJsonc(join(dir, 'wrangler.jsonc')), needs: undefined };
+}
+
+/**
+ * The deploy config a push WOULD build with, without `resolveWranglerConfig`'s notes and
+ * refusals — for `push --check` (#1646), which asks what the bindings are and has no business
+ * refusing a tree for lacking a deploy config it is not about to build. Same precedence:
+ * `substrat.runtimeNeeds` wins over a hand-authored wrangler.jsonc.
+ */
+export function deployConfigIfAny(dir: string): Record<string, unknown> | undefined {
+  const needs = readRuntimeNeeds(dir);
+  if (needs) return wranglerConfigFor(needs);
+  const path = join(dir, 'wrangler.jsonc');
+  return existsSync(path) ? readJsonc(path) : undefined;
 }
 
 /**
@@ -1347,6 +1463,14 @@ export async function push(
   // that ships, and a drifted package.json duplicate refuses the push.
   const { registry, envSpec: derivedEnvSpec, schedules, freshness, declaredEvents, declaredEventsTruncated, migrations } =
     await deriveDeclaredSurface(opts.dir);
+
+  // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build
+  // rather than before it, because this is where the push has always read the permission
+  // entry, and a vertical's entry may import something its own build produces. Still before
+  // anything is uploaded; a vertical that wants the refusal in a second runs
+  // `substrat push --check`, which makes the same check with no build at all.
+  assertSchedulesAreSwept(opts.dir, cfg, schedules, opts.allowUnsweptSchedules);
+
   if (migrations.omitted) {
     console.warn(
       `⚠ the SQL migrations are not carried in this version's manifest (${migrations.omitted}) — ` +

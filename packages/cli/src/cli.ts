@@ -30,7 +30,9 @@ import {
   previewVersion,
   pinTenant,
   assertLayerRules,
+  assertSchedulesAreSwept,
   checkPermissionSurface,
+  deployConfigIfAny,
   formatDeclaredModel,
   formatPermissionSurface,
   readDeclaredModel,
@@ -120,7 +122,12 @@ Usage:
                                                The layer rules (boundary-lint R1–R8) run on
                                                the source before the build and a violation
                                                refuses the push; --skip-lint deploys
-                                               ungated code deliberately
+                                               ungated code deliberately.
+                                               Declared schedules (yours or a composed
+                                               engine's) with no exported, bound
+                                               defineScopeSweeperDO are refused — they
+                                               would never fire; --allow-unswept-schedules
+                                               pushes them anyway
   substrat push     [dir] --check [--json]     run the push's LOCAL gate and stop: the layer
                                                rules, the entity model this tree would ship
                                                (or a note that it would ship none), then the
@@ -199,8 +206,8 @@ Usage:
                                               onto the same scope and renews its TTL; --refresh
                                               re-forks from prod. --ttl is the GC backstop
                                               (default 72h; 'none' pins the preview until deleted).
-                                              Takes push's own overrides too: --skip-lint and
-                                              --allow-unserved-ui
+                                              Takes push's own overrides too: --skip-lint,
+                                              --allow-unserved-ui and --allow-unswept-schedules
   substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
   substrat preview ls [--slug <s>]            list a vertical's active previews
   substrat model view [dir|model.json]        render the entity model as a self-contained
@@ -367,6 +374,19 @@ async function cmdPush(): Promise<void> {
   // Every failure throws (main() prints it and exits non-zero) — that is the gate.
   if (argv.includes('--check')) {
     const surface = await checkPermissionSurface(dir);
+    // The schedule check (#1646) the push would make — `--check` is the whole local gate, so
+    // a vertical whose schedules nothing would run is refused here too. A tree with no deploy
+    // config has no bindings to judge; the push itself names that refusal.
+    const deployCfg = deployConfigIfAny(dir);
+    if (deployCfg) {
+      assertSchedulesAreSwept(
+        dir,
+        deployCfg,
+        surface.schedules,
+        argv.includes('--allow-unswept-schedules'),
+        jsonCheck ? console.error : console.log,
+      );
+    }
     // The entity model, reported exactly as the push reports it — a count when there is a
     // `model.json`, a note when there is not. It rides `--check` because that is where a
     // person already reads a summary of what this tree would ship, and because a malformed
@@ -435,6 +455,9 @@ async function cmdPush(): Promise<void> {
     // A UI the push would never serve is refused (#881); this says the app/ in the tree
     // is deliberately not part of this deploy.
     allowUnservedUi: argv.includes('--allow-unserved-ui'),
+    // Declared schedules with no sweeper to run them are refused (#1646); this says a
+    // sweeper wired some other way runs them.
+    allowUnsweptSchedules: argv.includes('--allow-unswept-schedules'),
     // The layer rules run on every push (#955); this deploys code they never saw, and
     // says so in the push's own output. `linted` is the pre-flight above, so `push()`
     // does not scan the same tree twice.
@@ -872,6 +895,8 @@ async function cmdPreview(): Promise<void> {
       // per-PR and run on every push, which makes this the path most likely to meet the
       // refusal — and until #1209 the only one where the remedy it names did nothing.
       allowUnservedUi: argv.includes('--allow-unserved-ui'),
+      // …and the same schedule check (#1646): a preview's schedules need a sweeper too.
+      allowUnsweptSchedules: argv.includes('--allow-unswept-schedules'),
       linted,
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,

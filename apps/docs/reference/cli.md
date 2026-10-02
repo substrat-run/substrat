@@ -147,6 +147,7 @@ input defaults from the project; flags override each:
 | workspace | `"substrat": { "tenant" }` in `package.json` — the **pin** | `--tenant`, `SUBSTRAT_TENANT` |
 | UI served? | refuse if `app/index.html` exists and nothing in the manifest would serve it | `--allow-unserved-ui` |
 | layer rules | refuse if [boundary-lint](/concepts/modules) finds a violation in your module code | `--skip-lint` |
+| schedules run? | refuse if a module declares `schedules` and the worker exports and binds no `defineScopeSweeperDO` | `--allow-unswept-schedules` |
 | permission surface | derived from `"substrat": { "permissions" }` and shipped in the manifest | check it without pushing: [`--check`](#push-check-the-local-gate-without-pushing) |
 
 **Push refuses a UI that nothing would serve.** A front end ships as native assets: the push
@@ -197,6 +198,20 @@ one:
   against, so it passed over your SQL without looking.
 
 `--skip-lint` pushes ungated deliberately, and prints that it did.
+
+**Push refuses schedules nothing would run.** On a hosted deploy, nothing fires a vertical's
+declared `schedules` unless its own worker brings the timer: a
+[`defineScopeSweeperDO`](/reference/adapter-cloudflare) class, exported from the worker entry
+and bound as a store (`{ "binding": "SWEEPER", "class": "SweeperDO" }`). Without it the deploy
+succeeds, provisioning succeeds, and the schedules never run, with no error anywhere. So when
+any module declares a schedule, including an engine you compose whose schedules your own
+source never names, the push looks for both halves. It needs an export bound to a
+`defineScopeSweeperDO(...)` call, read from your entry's source with relative re-exports
+followed, and a store binding of that class. It refuses when either is missing, and
+`push --check` makes the same check. The refusal prints the wiring; the `npm create substrat`
+template already has it. The check cannot see whether `onProvision` calls `noteScope`, which
+is what puts a scope on the sweeper's roster, so wire that too. If a sweeper you wired in
+some other shape already runs them, `--allow-unswept-schedules` says so and the push proceeds.
 
 #### `push --check` (the local gate, without pushing)
 
@@ -310,7 +325,7 @@ same data, but writes during a copy may be lost (see
 `--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
 they never advance the release version your repo owns. Because `create` is a push, it takes push's
-own overrides: `--skip-lint` and `--allow-unserved-ui` mean the same thing here as they do there.
+own overrides: `--skip-lint`, `--allow-unserved-ui` and `--allow-unswept-schedules` mean the same thing here as they do there.
 Full workflow — sticky-per-PR + per-build URLs,
 a long-lived test environment, the release candidate — in
 [Environments & previews](/guide/environments-and-previews).

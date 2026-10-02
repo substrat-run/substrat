@@ -51,10 +51,11 @@
  *      defineScopeSweeperDO(…) {}`, or a plain `const X = defineScopeSweeperDO(…)`
  *      re-exported by name or alias (`export { X }` / `export { X as Y }` — the alias
  *      is what workerd actually sees, so it is the alias that has to match the binding).
- *      Parsed with `@babel/parser` (`sourceType: 'module', plugins: ['typescript']`) —
- *      not TypeScript's own compiler API: TypeScript 7 exposes no standalone parser
- *      (see `tools/docs-union-check.mjs`'s header), so Babel's TypeScript parser is the
- *      one AST tool already in this repo's lockfile for exactly this job.
+ *      The reader is `@substrat-run/cli`'s (`exportedSweeperNamesOf`, Babel-parsed), shared
+ *      with `substrat push`'s own refusal of the same shape for a vertical outside this repo
+ *      (#1646) — so it also follows a relative re-export (`export { X } from './sweeper.js'`)
+ *      rather than refusing a sweeper kept in a module of its own. Built output, like
+ *      `tools/invocation-log.mjs`'s import of boundary-lint: run `pnpm build` first.
  *   2. The vertical's DEPLOY CONFIG binds a Durable Object class under one of those
  *      exported names — read from whichever vocabulary the vertical uses: a committed
  *      `wrangler.jsonc`'s `durable_objects.bindings[].class_name` (meridian, manyfold,
@@ -78,8 +79,13 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parse as parseTypeScript } from '@babel/parser';
-import type * as BabelTypes from '@babel/types';
+import {
+  exportedSweeperNames,
+  exportedSweeperNamesOf,
+  sweeperOffence,
+  type ScheduleRef,
+  type SweeperWiring,
+} from '../packages/cli/dist/schedule-sweeper.js';
 import { syncTemplate } from './template-sync.mjs';
 
 // Structural shapes only — deliberately not imported from the kernel or contracts, the
@@ -128,93 +134,16 @@ function cannot(message: string): never {
   process.exit(2);
 }
 
-export interface ScheduleRef {
-  moduleId: string;
-  operation: string;
-}
-
-const DEFINE_SWEEPER = 'defineScopeSweeperDO';
-
-/** Is this expression a call to (an import of) `defineScopeSweeperDO`, however named? */
-function isDefineSweeperCall(node: BabelTypes.Node | null | undefined, importedLocalNames: Set<string>): boolean {
-  if (!node || node.type !== 'CallExpression') return false;
-  const callee = node.callee;
-  if (callee.type === 'Identifier') return importedLocalNames.has(callee.name) || callee.name === DEFINE_SWEEPER;
-  // A namespace-imported call (`adapter.defineScopeSweeperDO(...)`) — cheap to allow, no
-  // vertical in the repo writes it this way today, but it costs nothing to recognise.
-  if (callee.type === 'MemberExpression' && !callee.computed && callee.property.type === 'Identifier') {
-    return callee.property.name === DEFINE_SWEEPER;
-  }
-  return false;
-}
+export type { ScheduleRef, SweeperWiring };
 
 /**
- * Every name `src/worker.ts` EXPORTS that is bound to a `defineScopeSweeperDO(...)` call —
- * the identifiers workerd can actually resolve a Durable Object class from. A call sitting
- * in a local `const` with no export binds nothing (the finding this predicate exists to
- * catch), so an unexported sweeper contributes nothing to this list.
- *
- * Three forms, same three the CLI accepts: `export const X = defineScopeSweeperDO(…)`,
- * `export class X extends defineScopeSweeperDO(…) {}`, and a plain `const X = …` (or
- * `class X extends …`) re-exported later in the file via `export { X }` / `export { X as
- * Y }` — the alias `Y`, not the local name `X`, is what a binding must name, because that
- * is the identifier workerd's module system actually sees. Same-file only: a sweeper class
- * DEFINED in another module and merely re-exported here (`export { X } from './other.js'`)
- * is out of scope, the way `ConfigDO`'s re-export in the reference workers already is for
- * a human reader — this tool does not follow re-export sources across files.
+ * The predicate and the export reader live in `@substrat-run/cli` (`src/schedule-sweeper.ts`),
+ * because `substrat push` makes the same check for a vertical outside this repo (#1646) and
+ * the two gates must not disagree about what "wires a sweeper" means. Re-exported under the
+ * names this tool's tests have always used.
  */
-export function parseExportedSweeperNames(source: string): string[] {
-  const ast = parseTypeScript(source, { sourceType: 'module', plugins: ['typescript'], errorRecovery: true });
-  const importedLocalNames = new Set<string>();
-  const sweeperLocals = new Set<string>();
-  const exportedNames = new Set<string>();
-
-  for (const stmt of ast.program.body) {
-    if (stmt.type === 'ImportDeclaration') {
-      for (const spec of stmt.specifiers) {
-        if (spec.type === 'ImportSpecifier') {
-          const imported = spec.imported.type === 'Identifier' ? spec.imported.name : spec.imported.value;
-          if (imported === DEFINE_SWEEPER) importedLocalNames.add(spec.local.name);
-        }
-      }
-    }
-  }
-
-  function scanDeclaration(decl: BabelTypes.Node | null | undefined, directlyExported: boolean): void {
-    if (!decl) return;
-    if (decl.type === 'VariableDeclaration') {
-      for (const d of decl.declarations) {
-        if (d.id.type === 'Identifier' && isDefineSweeperCall(d.init, importedLocalNames)) {
-          sweeperLocals.add(d.id.name);
-          if (directlyExported) exportedNames.add(d.id.name);
-        }
-      }
-    } else if (decl.type === 'ClassDeclaration') {
-      if (decl.id && isDefineSweeperCall(decl.superClass, importedLocalNames)) {
-        sweeperLocals.add(decl.id.name);
-        if (directlyExported) exportedNames.add(decl.id.name);
-      }
-    }
-  }
-
-  for (const stmt of ast.program.body) {
-    if (stmt.type === 'VariableDeclaration' || stmt.type === 'ClassDeclaration') {
-      scanDeclaration(stmt, false);
-    } else if (stmt.type === 'ExportNamedDeclaration') {
-      if (stmt.declaration) {
-        scanDeclaration(stmt.declaration, true);
-      } else if (!stmt.source && stmt.specifiers) {
-        for (const spec of stmt.specifiers) {
-          if (spec.type === 'ExportSpecifier' && spec.local.type === 'Identifier' && sweeperLocals.has(spec.local.name)) {
-            const exported = spec.exported.type === 'Identifier' ? spec.exported.name : spec.exported.value;
-            exportedNames.add(exported);
-          }
-        }
-      }
-    }
-  }
-  return [...exportedNames];
-}
+export const parseExportedSweeperNames = exportedSweeperNames;
+export const offense = sweeperOffence;
 
 /**
  * `class_name`s a committed `wrangler.jsonc` binds as a Durable Object — JSONC-tolerant
@@ -265,43 +194,6 @@ export function parseWranglerBindingClasses(text: string): string[] {
     throw new Error(`could not parse wrangler config as JSONC: ${(e as Error).message}`);
   }
   return (parsed.durable_objects?.bindings ?? []).map((b) => b.class_name).filter((c): c is string => Boolean(c));
-}
-
-export interface SweeperWiring {
-  /** Names `src/worker.ts` exports that resolve to a `defineScopeSweeperDO(...)` call. */
-  exportedNames: string[];
-  /** `class_name`/`class` values the deploy config (either vocabulary) actually binds. */
-  boundClassNames: string[];
-}
-
-/**
- * The offense in one vertical, or `null` when it is fine — the pure predicate under the
- * CLI's file discovery, parsing and dynamic import, so it can be unit-tested without a
- * build. No schedules declared means no sweeper is owed, whatever the wiring looks like.
- */
-export function offense(schedules: ScheduleRef[], wiring: SweeperWiring): string | null {
-  if (schedules.length === 0) return null;
-  const named = schedules.map((s) => `${s.moduleId} → ${s.operation}`).join(', ');
-  if (wiring.exportedNames.length === 0) {
-    return (
-      `declares schedules with no sweeper to run them (${named}). On a pushed deploy the ` +
-      `control plane's own cron reaches no module — a CP-less vertical brings its own timer. ` +
-      `Wire an EXPORTED \`defineScopeSweeperDO\` (see demos/ticket0/src/worker.ts) — a call ` +
-      `sitting in an unexported const binds nothing, because workerd resolves a Durable ` +
-      `Object class from the entry module's exports.`
-    );
-  }
-  const bound = wiring.exportedNames.filter((n) => wiring.boundClassNames.includes(n));
-  if (bound.length === 0) {
-    return (
-      `exports a sweeper (${wiring.exportedNames.join(', ')}) for schedules it declares (${named}), ` +
-      `but no deploy config binds it as a Durable Object class — checked wrangler.jsonc's ` +
-      `durable_objects.bindings and package.json's substrat.runtimeNeeds.stores, and neither ` +
-      `names ${wiring.exportedNames.join(' or ')}. The class exists in the bundle but ` +
-      `Cloudflare never instantiates it, so its alarm never runs.`
-    );
-  }
-  return null;
 }
 
 interface Deployable {
@@ -435,7 +327,7 @@ async function main() {
     }
 
     const workerPath = join(dir, 'src', 'worker.ts');
-    const exportedNames = parseExportedSweeperNames(readFileSync(workerPath, 'utf8'));
+    const exportedNames = exportedSweeperNamesOf(workerPath);
 
     const wranglerPath = join(dir, 'wrangler.jsonc');
     let boundClassNames = [...storeClasses];
