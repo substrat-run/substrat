@@ -105,4 +105,31 @@ describe('#1632: a directory DO whose issues predate exemplar ownership', () => 
     expect(seen.upgraded.attribution).toEqual(EXPECTED);
     expect(seen.again).toEqual([null, null]);
   });
+
+  it('commits the columns only with their backfill — a crash between them is re-run on the next construction', async () => {
+    // The backfill's gate is "this construction added the column". Committed separately, a
+    // column that landed before a backfill that then failed would read as migrated for good.
+    // The crash is a trigger that refuses the backfill's UPDATE, once.
+    const stub = await legacyDirectory();
+    const seen = await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "CREATE TRIGGER crash_backfill BEFORE UPDATE ON _substrat_issues BEGIN SELECT RAISE(ABORT, 'crash mid-backfill'); END",
+      );
+      let crash = '';
+      try {
+        new ControlPlaneDO(state, env);
+      } catch (err) {
+        crash = (err as Error).message;
+      }
+      const afterCrash = hasColumn(state);
+      state.storage.sql.exec('DROP TRIGGER crash_backfill');
+      new ControlPlaneDO(state, env);
+      return { crash, afterCrash, column: hasColumn(state), attribution: attribution(state) };
+    });
+    expect(seen.crash).toMatch(/crash mid-backfill/);
+    // Rolled back whole: neither column survived the failed backfill.
+    expect(seen.afterCrash).toBe(false);
+    expect(seen.column).toBe(true);
+    expect(seen.attribution).toEqual(EXPECTED);
+  });
 });

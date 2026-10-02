@@ -1459,11 +1459,16 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_issues', 'last_version TEXT');
     this.addColumn('_substrat_issues', 'resolved_version TEXT');
     // #1632: whose exemplar `last_message` is. Backfilled once, as the columns arrive, from
-    // the retained ops-failure rows that prove it; every other row stays unknown.
-    this.addColumn('_substrat_issues', 'last_tenant_id TEXT');
-    if (this.addColumn('_substrat_issues', 'last_owner_kind TEXT')) {
-      this.sql.exec(ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL);
-    }
+    // the retained ops-failure rows that prove it; every other row stays unknown. The columns
+    // and the backfill are ONE transaction: the backfill's gate is "this call added the
+    // column", so a column committed ahead of a backfill that then failed would read as
+    // migrated on every later start and leave the legacy rows unattributed for good.
+    this.ctx.storage.transactionSync(() => {
+      this.addColumn('_substrat_issues', 'last_tenant_id TEXT');
+      if (this.addColumn('_substrat_issues', 'last_owner_kind TEXT')) {
+        this.sql.exec(ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL);
+      }
+    });
     this.sql.exec(
       'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
     );

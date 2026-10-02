@@ -10424,11 +10424,16 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, '_substrat_issues', 'last_version', 'last_version TEXT');
     this.ensureColumn(this.directory, '_substrat_issues', 'resolved_version', 'resolved_version TEXT');
     // #1632: whose exemplar `last_message` is. Backfilled once, as the columns arrive, from
-    // the retained ops-failure rows that prove it; every other row stays unknown.
-    this.ensureColumn(this.directory, '_substrat_issues', 'last_tenant_id', 'last_tenant_id TEXT');
-    if (this.ensureColumn(this.directory, '_substrat_issues', 'last_owner_kind', 'last_owner_kind TEXT')) {
-      this.directory.exec(ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL);
-    }
+    // the retained ops-failure rows that prove it; every other row stays unknown. The columns
+    // and the backfill are ONE transaction: the backfill's gate is "this call added the
+    // column", so a column committed ahead of a backfill that then failed would read as
+    // migrated on every later start and leave the legacy rows unattributed for good.
+    this.directory.transaction(() => {
+      this.ensureColumn(this.directory, '_substrat_issues', 'last_tenant_id', 'last_tenant_id TEXT');
+      if (this.ensureColumn(this.directory, '_substrat_issues', 'last_owner_kind', 'last_owner_kind TEXT')) {
+        this.directory.exec(ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL);
+      }
+    })();
     this.directory.exec(
       'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
     );

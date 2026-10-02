@@ -114,6 +114,26 @@ describe('#1632: a directory whose issues predate exemplar ownership', () => {
     expect(attribution()).toEqual(EXPECTED);
   });
 
+  it('commits the columns only with their backfill — a crash between them is re-run on the next open', async () => {
+    // The backfill's gate is "this open added the column". Committed separately, a column
+    // that landed before a backfill that then failed would read as migrated for good. The
+    // crash is a trigger that refuses the backfill's UPDATE, once.
+    const db = new Database(file);
+    db.exec(
+      "CREATE TRIGGER crash_backfill BEFORE UPDATE ON _substrat_issues BEGIN SELECT RAISE(ABORT, 'crash mid-backfill'); END",
+    );
+    db.close();
+    expect(() => new SqliteScopeHost({ dir })).toThrow(/crash mid-backfill/);
+    // Rolled back whole: neither column survived the failed backfill.
+    expect(hasColumn()).toBe(false);
+    const restarted = new Database(file);
+    restarted.exec('DROP TRIGGER crash_backfill');
+    restarted.close();
+    await new SqliteScopeHost({ dir }).close();
+    expect(hasColumn()).toBe(true);
+    expect(attribution()).toEqual(EXPECTED);
+  });
+
   it('backfills once — a later open does not re-attribute', async () => {
     await new SqliteScopeHost({ dir }).close();
     // After the column exists its writer owns it; a NULL is a fact the writer recorded
