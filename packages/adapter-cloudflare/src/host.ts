@@ -5882,6 +5882,17 @@ export class CloudflareScopeHost implements ScopeHost {
           { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
         );
       },
+      recordKeptCopyResolution: async (actor, tenantId, scopeId, r) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        await this.recordAdmin(
+          actor,
+          'resolveKeptCopy',
+          { tenantId, scopeId },
+          { script: r.script, keptAt: r.keptAt, revision: r.revisionBefore },
+          { action: r.action, liveScript: r.liveScript, revision: r.revisionAfter },
+        );
+      },
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);

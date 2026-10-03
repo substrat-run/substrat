@@ -2258,6 +2258,20 @@ export interface HostAdmin {
   ): Promise<void>;
 
   /**
+   * Record a staff resolution of a kept copy (#1722, Codex #2008 r7) in the admin log. A kept
+   * copy is one a carry's wipe refused because it took a write the carry never copied; the
+   * vertical's store holds it, so the resolution itself (a discard, or a restore forward over the
+   * live store) runs there, and this is its record: which script held it, what was done, and the
+   * write revision before and after. The directory changes nothing else. Refuses an unknown scope.
+   */
+  recordKeptCopyResolution(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    resolution: KeptCopyResolution,
+  ): Promise<void>;
+
+  /**
    * When each of a CO-LOCATED scope's migrations actually ran (#1236), newest
    * first. `_substrat_migrations.applied_at` has been written since the table
    * shipped and read by nothing — every reader wanted only the frontier — so a
@@ -4281,6 +4295,22 @@ export interface OpsFailureInput {
   message: string;
   /** The upstream provider's trace reference, when the message carried one. */
   reference?: string | null;
+}
+
+/** One staff resolution of a kept copy (#1722), as `recordKeptCopyResolution` logs it. */
+export interface KeptCopyResolution {
+  /** `discard` wiped the kept copy; `restore-forward` restored it over the live store, then wiped it. */
+  action: 'discard' | 'restore-forward';
+  /** The script that held the kept copy. */
+  script: string;
+  /** The script the scope routes to, which a restore forward replaced; null for a discard. */
+  liveScript: string | null;
+  /** When the copy was kept, from its marker. */
+  keptAt: string;
+  /** The kept copy's write revision the operator acted on. */
+  revisionBefore: string | null;
+  /** The write revision of the store the resolution changed, after it. */
+  revisionAfter: string | null;
 }
 
 /** Filter for `listOpsFailures` — cursor/order/limit exactly as `AuditLogFilter`. */

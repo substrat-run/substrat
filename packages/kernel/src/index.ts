@@ -38,6 +38,7 @@ export type {
   AppliedMigration,
   OpsFailureFilter,
   OpsFailureInput,
+  KeptCopyResolution,
   IssueFilter,
   TelemetryPruneReport,
   SweepRunFilter,

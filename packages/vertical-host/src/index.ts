@@ -28,6 +28,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf } from './errors.js';
 import {
   type CarriedAway,
+  type KeptCopy,
   type LoadMarker,
   type InvokeOptions,
   type AppliedMigration,
@@ -193,7 +194,16 @@ export interface VerticalScopeHost {
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #1722: the export and the store's load stamp, read together. Optional: a host built before
    *  it answers the export alone, and the platform then has no stamp to fence a wipe on. */
-  exportScopeStampedLocal?(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string; revision: string | null }>;
+  exportScopeStampedLocal?(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
+  /** #1722: the kept-copy marker of this scope here, or null. Optional, like `wipeCarriedLocal`:
+   *  a host built before it has no kept copies, since only the fenced wipe makes one. */
+  keptCopyLocal?(scopeId: ScopeId): Promise<KeptCopy | null>;
+  /** #1722: the staff discard of a kept copy, at the write revision the operator acted on. */
+  discardKeptCopyLocal?(
+    scopeId: ScopeId,
+    revision: string | null,
+    carriedAway: CarriedAway,
+  ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
   deleteScopeLocal(scopeId: ScopeId): Promise<void>;
   migrationBookmarksLocal(
@@ -431,6 +441,15 @@ const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
   const parsed = switched ? z.array(switchedOffInUnit).safeParse(switched) : undefined;
   return parsed?.success ? { switchedOff: parsed.data } : {};
 };
+
+const discardKeptBody = z.object({
+  scopeId: scopeIdOf,
+  /** The kept copy's write revision as the operator read it; the discard is refused if it moved. */
+  revision: z.string().min(1).nullable(),
+  /** Where the scope runs now, and when, for the tombstone the discard leaves. */
+  carriedTo: z.string().min(1),
+  at: z.string().min(1),
+});
 
 const wipeCarriedBody = z.object({
   scopeId: scopeIdOf,
@@ -790,6 +809,23 @@ export function mountPlatformSurface<Env extends object>(
   // so a rollback that restored into this scope since is never destroyed. `wiped: false` is
   // that refusal. Non-terminal: the store keeps a `carried_away` tombstone and takes a later
   // restore like any scope, which `/internal/delete-scope` (a reap) would not.
+  // #1722 (Codex #2008 r7): a kept copy, one the carry's wipe refused because it took a write the
+  // carry never copied. The read says whether this scope's store here is one; the discard is the
+  // staff resolution that wipes it, fenced on the revision the operator read. Both behind the
+  // same platform gate; the control plane's staff-only route is the only caller.
+  app.get('/internal/kept-copy', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.keptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    return c.json({ kept: await host.keptCopyLocal(scopeIdOf.parse(c.req.query('scopeId'))) });
+  });
+
+  app.post('/internal/kept-copy/discard', async (c) => {
+    const body = discardKeptBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.discardKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    return c.json(await host.discardKeptCopyLocal(body.scopeId, body.revision, { to: body.carriedTo, at: body.at }));
+  });
+
   app.post('/internal/wipe-carried', async (c) => {
     const body = wipeCarriedBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);

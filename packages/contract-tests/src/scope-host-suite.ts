@@ -5502,6 +5502,40 @@ export function scopeHostContractSuite(
       expect((await host.admin.getScopeRecord(staff, t1, s))!.verticalVersionId).toBe(v1);
     });
 
+    // #1722 (Codex #2008 r7): the admin-log record of a staff resolution of a kept copy. The
+    // resolution itself runs in the vertical's store; the directory only records it, in full.
+    it('records a kept-copy resolution in the admin log, before and after, and refuses an unknown scope', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: 'demo' });
+      await host.admin.recordKeptCopyResolution(staff, t1, s, {
+        action: 'restore-forward',
+        script: 'demo-v1',
+        liveScript: 'demo-v2',
+        keptAt: '2026-10-03T12:00:00.000Z',
+        revisionBefore: '41',
+        revisionAfter: '7',
+      });
+      const [row] = await host.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: s });
+      expect(row).toMatchObject({
+        actor: staff,
+        action: 'resolveKeptCopy',
+        before: { script: 'demo-v1', keptAt: '2026-10-03T12:00:00.000Z', revision: '41' },
+        after: { action: 'restore-forward', liveScript: 'demo-v2', revision: '7' },
+      });
+      const other = scopeId.parse(ulid());
+      await expect(
+        host.admin.recordKeptCopyResolution(staff, t1, other, {
+          action: 'discard',
+          script: 'demo-v1',
+          liveScript: null,
+          keptAt: '2026-10-03T12:00:00.000Z',
+          revisionBefore: null,
+          revisionAfter: null,
+        }),
+      ).rejects.toThrow(/unknown scope/);
+      expect(await host.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: other })).toEqual([]);
+    });
+
     it('publishes a version as pending, and refuses to bind it until admitted', async () => {
       const versionId = ulid();
       await host.admin.registerVertical(staff, {

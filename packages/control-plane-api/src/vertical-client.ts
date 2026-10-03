@@ -95,7 +95,7 @@ import {
   PLATFORM_SECRET_HEADER,
   WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
-import type { LoadMarker, OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import type { KeptCopy, LoadMarker, OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
@@ -1112,6 +1112,53 @@ export class VerticalClient {
       throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${scopeId} with an unexpected shape`);
     }
     return { loadStamp: loadStamp as string | null, revision: revision as string | null };
+  }
+
+  /**
+   * The kept copy of a scope in this deployment (#1722), or null. A deployment built before the
+   * fenced wipe cannot have made one, so its "predates" answer reads as null too.
+   */
+  async keptCopy(scopeId: ScopeId): Promise<KeptCopy | null> {
+    const verb = 'kept-copy';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/kept-copy?scopeId=${encodeURIComponent(scopeId)}`, {
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (answer === UNFENCED) return null;
+    const kept = (answer as { kept?: unknown } | null)?.kept;
+    if (kept === null) return null;
+    const k = kept as Partial<KeptCopy> | undefined;
+    if (!k || typeof k.carriedTo !== 'string' || typeof k.keptAt !== 'string' || !(k.revision === null || typeof k.revision === 'string')) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${scopeId} with an unexpected shape`);
+    }
+    return { carriedTo: k.carriedTo, keptAt: k.keptAt, revision: k.revision };
+  }
+
+  /** Discard the kept copy of a scope in this deployment (#1722), at the revision the operator read. */
+  async discardKeptCopy(input: {
+    scopeId: ScopeId;
+    revision: string | null;
+    carriedTo: string;
+    at: string;
+  }): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
+    const verb = 'kept-copy-discard';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/kept-copy/discard`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (answer === UNFENCED) {
+      throw new ControlPlaneError(501, `the deployment holding scope ${input.scopeId} keeps no copies (#1722)`);
+    }
+    const a = answer as { discarded?: unknown; refused?: unknown } | null;
+    if (a?.discarded === true) return { discarded: true };
+    if (a?.refused === 'changed' || a?.refused === 'not-kept') return { refused: a.refused };
+    throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — the copy may or may not be discarded`);
   }
 
   /**

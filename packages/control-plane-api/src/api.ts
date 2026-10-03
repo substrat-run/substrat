@@ -5004,6 +5004,126 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ affected: await c.var.admin.bindingImpact(c.get('actor'), tenantId, scopeId, versionId) });
   });
 
+  // -- kept copies (#1722, Codex #2008 r7) ----------------------------------------------------
+  // A kept copy is one a carry's fenced wipe refused because it took a write the carry never
+  // copied (a request still routed to the old script before the bind). The store protects it:
+  // every load into it answers 409 until it is resolved here. The two resolutions both lose
+  // something, so each is named and acknowledged, never defaulted:
+  // - `discard` wipes the kept copy: what reached it after the carry's export is gone.
+  // - `restore-forward` restores the kept copy over the store the scope now routes to, then
+  //   wipes the kept copy: what the live store took since the copy was kept is gone.
+  // There is no merge of two scope dumps. To reconcile by hand, pull the kept copy first (the
+  // governed export reads the live route; this route's GET says where the kept copy is).
+  //
+  // Staff only, by default-deny: neither path is on BUILDER_ROUTES or TENANT_ROUTES. One scope
+  // at a time, refused unless the copy really is kept, and admin-logged with the write revision
+  // before and after (`recordKeptCopyResolution`).
+  const keptScriptQuery = z.object({ script: z.string().min(1) }).strict();
+  const resolveKeptBody = z.discriminatedUnion('action', [
+    z
+      .object({
+        script: z.string().min(1),
+        action: z.literal('discard'),
+        acknowledge: z.object({ discard: z.literal(true) }).strict(),
+      })
+      .strict(),
+    z
+      .object({
+        script: z.string().min(1),
+        action: z.literal('restore-forward'),
+        /** The moment the copy was kept, as its marker says: the live store's writes since are replaced. */
+        acknowledge: z.object({ replacesLiveWritesSince: z.string().min(1) }).strict(),
+      })
+      .strict(),
+  ]);
+  const keptHolder = async (script: string): Promise<VerticalClient> => {
+    if (!options.resolveVerticalRef) throw new ControlPlaneError(501, 'kept copies need dispatch resolution by script');
+    const holder = await options.resolveVerticalRef(script);
+    if (!holder) throw new ControlPlaneError(404, `no deployment resolves for script '${script}'`);
+    return holder;
+  };
+
+  app.get('/tenants/:tenantId/scopes/:scopeId/kept-copy', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const { script } = keptScriptQuery.parse(c.req.query());
+    const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const kept = await (await keptHolder(script)).keptCopy(scopeId);
+    return c.json({ scopeId, script, kept, routesTo: await routeOf(c, scope) });
+  });
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/kept-copy/resolve', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const body = await readJsonBody(c, resolveKeptBody);
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const holder = await keptHolder(body.script);
+    const kept = await holder.keptCopy(scopeId);
+    if (!kept) return c.json({ error: `scope ${scopeId} has no kept copy in '${body.script}'` }, 409);
+    const route = await routeOf(c, scope);
+    if (!route || route === body.script) {
+      return c.json({ error: `scope ${scopeId} routes to '${route ?? '(nothing)'}', so there is no live copy to resolve against` }, 409);
+    }
+    const at = new Date().toISOString();
+    const revisionOf = async (client: VerticalClient): Promise<string | null> => {
+      const marker = await client.loadMarker(scopeId);
+      return marker === 'unfenced' ? null : marker.revision;
+    };
+    const record = (action: 'discard' | 'restore-forward', revisionAfter: string | null) =>
+      c.var.admin.recordKeptCopyResolution(actor, tenantId, scopeId, {
+        action,
+        script: body.script,
+        liveScript: action === 'restore-forward' ? route : null,
+        keptAt: kept.keptAt,
+        revisionBefore: kept.revision,
+        revisionAfter,
+      });
+
+    if (body.action === 'discard') {
+      const out = await holder.discardKeptCopy({ scopeId, revision: kept.revision, carriedTo: route, at });
+      if ('refused' in out) {
+        return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was discarded` }, 412);
+      }
+      const revisionAfter = await revisionOf(holder);
+      await record('discard', revisionAfter);
+      return c.json({ scopeId, script: body.script, action: 'discard', revisionBefore: kept.revision, revisionAfter });
+    }
+
+    // restore-forward: the acknowledgement names what is replaced, as the marker says it.
+    if (body.acknowledge.replacesLiveWritesSince !== kept.keptAt) {
+      return c.json({
+        error:
+          `a restore forward replaces what the live store took since ${kept.keptAt}; acknowledge exactly that ` +
+          `(acknowledge.replacesLiveWritesSince: '${kept.keptAt}')`,
+      }, 409);
+    }
+    const live = await keptHolder(route);
+    // Fenced like a carry: the live store as read now, and nothing else, is what gets replaced.
+    const liveMarker = await live.loadMarker(scopeId);
+    const dump = await retryTransient(() => holder.exportScope(scopeId));
+    const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
+      scopeId,
+      exact: true,
+      loadStamp: ulid(),
+      ...(liveMarker === 'unfenced' ? {} : { expect: liveMarker }),
+    });
+    await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
+    const revisionAfter = await revisionOf(live);
+    await record('restore-forward', revisionAfter);
+    const wiped = await holder.discardKeptCopy({ scopeId, revision: kept.revision, carriedTo: route, at });
+    if ('refused' in wiped) {
+      return c.json({
+        error:
+          `restored forward into '${route}', but the kept copy in '${body.script}' changed since it was read, so it ` +
+          `stays kept: read it again and resolve it again`,
+      }, 409);
+    }
+    return c.json({ scopeId, script: body.script, action: 'restore-forward', liveScript: route, revisionBefore: kept.revision, revisionAfter });
+  });
+
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a
   // non-admitted version below the seam — that refusal is the registry's reason to
   // exist. A scope operation, so it keeps the scope route shape. `snapshot: true`
