@@ -284,9 +284,10 @@ import type {
   LifecycleFlowInput,
   LifecycleFlowResult,
   Page,
+  ScopeLifecycle,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isLifecycleWrite, lifecycleAfterLoad, readLifecycle, restoreLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -770,10 +771,11 @@ class WriteRevision {
   ) {
     const exec = (query: string, ...bindings: unknown[]) => {
       if (this.keeping && this.isWrite(query)) {
-        // Bookkeeping takes the copy-marker insert and nothing else: any other write here would
-        // be one the revision never saw, which is the hole this class exists to close.
-        if (!isCopyMarkInsert(query)) {
-          throw substratError('internal', `the bookkeeping path takes only the copy-marker insert (#1722), not: ${query.slice(0, 80)}`);
+        // Bookkeeping takes the copy-marker insert and the lifecycle delivery (#1713) and nothing
+        // else: any other write here would be one the revision never saw, which is the hole this
+        // class exists to close.
+        if (!isCopyMarkInsert(query) && !isLifecycleWrite(query)) {
+          throw substratError('internal', `the bookkeeping path takes only the copy-marker insert and the lifecycle delivery (#1722, #1713), not: ${query.slice(0, 80)}`);
         }
         return raw.exec(query, ...bindings);
       }
@@ -798,7 +800,8 @@ class WriteRevision {
    * r10). That only ever restricts what the store may run and changes no data, so it advances no
    * write revision: a backfill that marks a carry's source between its export and its wipe must
    * not read as a write the carry did not copy (that would keep the copy for nothing). Enforced,
-   * not trusted: any write in here but the marker insert (`isCopyMarkInsert`) throws. Clearing a
+   * not trusted: any write in here but the marker insert (`isCopyMarkInsert`) or the lifecycle
+   * delivery (`isLifecycleWrite`, #1713) throws. Clearing a
    * marker is NOT bookkeeping (r11): it loosens the store, so it is a write a carry fences on.
    */
   bookkeeping<T>(run: () => T): T {
@@ -4452,6 +4455,24 @@ export function defineScopeDO(
       return this.sql.exec(IS_COPY_SQL).toArray().length > 0;
     }
 
+    /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
+    lifecycle(): ScopeLifecycle | null {
+      return readLifecycle(this.switchSql());
+    }
+
+    /**
+     * Store a lifecycle the platform delivered (#1713, `writeLifecycle`): kept only when it is not
+     * older than the one held. Bookkeeping, like the copy marker: it changes what runs here, not
+     * the scope's data, so it does not advance the write revision a carry fences on.
+     */
+    setLifecycle(next: ScopeLifecycle): { applied: boolean; changed: boolean; lifecycle: ScopeLifecycle } {
+      let out!: { applied: boolean; changed: boolean; lifecycle: ScopeLifecycle };
+      this.revision.transactionSync(() => {
+        out = this.revision.bookkeeping(() => writeLifecycle(this.switchSql(), next));
+      });
+      return out;
+    }
+
     /** Mark this scope a copy (#2005, `markCopyOrigin`): the repair of a copy that predates the
      *  marker. Answers whether this call stamped it; an existing origin is left as it is. */
     markCopy(): boolean {
@@ -5178,6 +5199,8 @@ export function defineScopeDO(
       }
       const switched = await this.revision.transaction(async () => {
         const before = this.loadMarker();
+        // #1713: the lifecycle the platform delivered here, read before the drops take it.
+        const lifecycleBefore = readLifecycle(this.switchSql());
         // #1722 (Codex #2008 r7): a kept copy holds writes nothing else has. No load replaces it
         // except its own resolution, and that only at the revision the operator acted on.
         const kept = this.metaValue(KEPT_DIVERGENT_KEY);
@@ -5265,6 +5288,16 @@ export function defineScopeDO(
           // the extraction queue below, which is this scope's own work, not the source's.
           settleCopiedWork(this.switchSql(), destScopeId, sourceScopeId, now);
           if (markCopy) markCopyOrigin(this.switchSql(), now);
+          // #1713: a return keeps the newer of this store's lifecycle and the dump's, so a backup
+          // from before a suspension does not lift it; a copy keeps only its own.
+          restoreLifecycleAfterLoad(
+            this.switchSql(),
+            lifecycleAfterLoad(
+              lifecycleBefore,
+              readLifecycle(this.switchSql()),
+              markCopy === true || destScopeId === undefined || sourceScopeId !== destScopeId,
+            ),
+          );
           reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
           // Re-point the restored grants at THIS scope (after the spine exists, so a dump
           // that carried no tuples table still finds one here).

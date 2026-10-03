@@ -221,6 +221,10 @@ import {
   type VerticalCaller,
   type VerticalResolution,
   type DeclaredMigration,
+  lifecycleDelivery,
+  scopeLifecycle,
+  type LifecycleDelivery,
+  type ScopeLifecycle,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -371,6 +375,8 @@ import {
   assertRowLimit,
   assertRowOffset,
   INERT_SCOPE_REASON,
+  lifecycleReceipt,
+  lifecycleRefusal,
   isPrimaryScope,
   isPrimaryScopeRow,
 } from '@substrat-run/kernel';
@@ -479,6 +485,12 @@ const toConnection = (r: ConnectionDoRow): Connection =>
   });
 
 interface ControlPlaneStub {
+  /** #1713: hosted scopes and their directory lifecycle (`ControlPlaneDO.lifecycleTargets`). */
+  lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): Promise<
+    { tenant_id: string; scope_id: string; scope_status: string; tenant_status: string; delivered: string | null }[]
+  >;
+  /** #1713: what a scope's deployment acknowledged holding. */
+  recordLifecycleReceipt(scopeId: string, delivered: string, at: string): Promise<void>;
   createTenant(
     id: string,
     slug: string,
@@ -918,6 +930,10 @@ interface ScopeStubRpc {
   isCopy(): Promise<boolean>;
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
+  /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
+  lifecycle(): Promise<ScopeLifecycle | null>;
+  /** Store a delivered lifecycle unless a newer one is held (#1713, `writeLifecycle`). */
+  setLifecycle(next: ScopeLifecycle): Promise<LifecycleDelivery>;
   /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
   clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'carries-events' | 'changed'>;
   /**
@@ -1593,6 +1609,27 @@ export interface SystemSwitchDelegation {
  * serve one route and not the other must be able to say so per route. The audit rows for
  * both stay on this side. Set only on the shared control plane's host.
  */
+/**
+ * The lifecycle's reach into the deployment serving a scope (#1713). Suspending a scope or a
+ * tenant changes the directory, which a CP-less vertical never reads, so the platform delivers
+ * the scope's lifecycle over the same platform-secret `/internal/*` seam the switches cross
+ * (`/internal/lifecycle`), and the deployment holds the scope's work by it. Set only on the
+ * shared control plane's host.
+ */
+export interface LifecycleDelegation {
+  deliver(args: { tenantId: TenantId; scopeId: ScopeId; lifecycle: ScopeLifecycle }): Promise<LifecycleDelivery>;
+}
+
+/** What one delivery pass did (#1713): a transition's push, or one heal sweep. */
+export interface LifecycleDeliveryReport {
+  /** Scopes the pass delivered to. */
+  attempted: number;
+  /** Deliveries the deployment acknowledged, its receipt recorded. */
+  delivered: number;
+  /** Deliveries that did not land: each is an ops-failure row, and the heal sweep asks again. */
+  failed: number;
+}
+
 export interface PeerSwitchDelegation {
   switch(args: {
     tenantId: TenantId;
@@ -1780,6 +1817,12 @@ export interface CloudflareScopeHostOptions {
    * refused `unavailable` rather than switched in the placeholder namespace.
    */
   peerSwitchDelegation?: PeerSwitchDelegation;
+  /**
+   * #1713: deliver a scope's lifecycle to the deployment serving it, after every transition and
+   * on the heal sweep (`healLifecycles`). Set only on the shared control plane's host; unset, the
+   * directory still moves and nothing is delivered.
+   */
+  lifecycleDelegation?: LifecycleDelegation;
   /**
    * #1705 PR 3: route the replay lever (`moveImportCursor`) to the deployment actually serving
    * the consumer scope. Set only on the shared control plane's host, like the switches.
@@ -2017,6 +2060,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly eventDrainDelegation?: EventDrainDelegation;
   /** #1666: the schedule kill switch's reach into the deployment serving a scope. */
   private readonly systemSwitchDelegation?: SystemSwitchDelegation;
+  private readonly lifecycleDelegation?: LifecycleDelegation;
   /** #1706: the peer kill switch's reach into the deployment serving a scope. */
   private readonly peerSwitchDelegation?: PeerSwitchDelegation;
   /** #1705 PR 3: the replay lever's reach into the deployment serving a consumer scope. */
@@ -2063,6 +2107,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.connectorDelegation = options.connectorDelegation;
     this.eventDrainDelegation = options.eventDrainDelegation;
     this.systemSwitchDelegation = options.systemSwitchDelegation;
+    this.lifecycleDelegation = options.lifecycleDelegation;
     this.peerSwitchDelegation = options.peerSwitchDelegation;
     this.importCursorDelegation = options.importCursorDelegation;
     this.admin = this.buildAdmin();
@@ -2237,13 +2282,23 @@ export class CloudflareScopeHost implements ScopeHost {
       (inert ??= this.cpLess
         ? stub.isCopy()
         : this.cp.getScopeRecord(tenantId, scopeId).then((row) => !isPrimaryScopeRow(row)));
-    for (const [id, executor] of this.executors) {
+    // #1713: a CP-less scope its lifecycle holds attempts nothing and journals nothing, so every
+    // due delivery stays due for the first pass after it is live again. Asked on the first due
+    // event, like `isInert`. A host with a directory never gets here for a held scope: its
+    // doors refuse first.
+    let held: Promise<boolean> | undefined;
+    const isHeld = (): Promise<boolean> => (held ??= this.lifecycleHeld(scopeId));
+    drain: for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
       const { events, undecodable } = await stub.pendingExecutorDeliveries(deliveryId, executor.eventType);
       // #1636: an event the DO could not decode is dead-lettered for this executor at once,
       // and its handler never sees it. Terminal on the FIRST failure, unlike a handler's:
       // the decode is pure, so a retry cannot succeed. The rows behind it are delivered
       // below — the decode used to throw the whole list, on every pass.
+      if ((undecodable.length > 0 || events.length > 0) && (await isHeld())) {
+        report.lifecycleHeld = true;
+        break drain;
+      }
       for (const bad of undecodable) {
         report.attempted += 1;
         await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
@@ -2316,7 +2371,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport> {
     // Same lifecycle gate `getScope` applies (K-3): a suspended or archived scope
     // does not get its effects driven either.
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     // #1525: null, and honestly so — a sweep is not a call. An attempt this pass makes
     // records no invocation, which is what distinguishes it from the first attempt the
@@ -2390,7 +2445,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     input: StartJobRunInput,
   ): Promise<JobRun> {
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return jobRunOf(
       await startJobRun(this.jobStore(scopeId), input, ulid, () => new Date().toISOString()),
@@ -2404,7 +2459,7 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<JobDriveReport> {
     // Same lifecycle gate as `drainDue`: a suspended scope's runs wait rather than
     // advance, and an archived one's never move again.
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     // #1575: the kernel's extraction job is this host's own, bound to this scope — no
     // deployment registers it, and none can shadow it.
@@ -2438,7 +2493,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // same context build as the in-process path, so the handler cannot tell which host
     // ran it. On a CP-less host `connectorContext` throws from the null control plane:
     // fail closed, exactly the hole routing exists to avoid.
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     this.causedBy = event.id;
     try {
       await handler(
@@ -2765,6 +2820,19 @@ export class CloudflareScopeHost implements ScopeHost {
    * the repair of a copy that predates the marker, which a CP-less coordinator reads for primacy.
    * The control plane decides which scopes (its directory says they are not primary) and audits.
    */
+  /**
+   * Store the lifecycle the platform delivered for one scope in THIS deployment (#1713), behind
+   * the vertical's `/internal/lifecycle`. Kept unless the scope already holds a newer one, so a
+   * push that arrives late cannot undo a later transition. `applied` is what the platform's heal
+   * sweep records as delivered; `changed` says the gate's answer moved.
+   */
+  async setLifecycleLocal(
+    scopeId: ScopeId,
+    next: ScopeLifecycle,
+  ): Promise<LifecycleDelivery> {
+    return lifecycleDelivery.parse(await this.scopeStub(scopeId).setLifecycle(scopeLifecycle.parse(next)));
+  }
+
   async markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }> {
     assertCopyLineage(lineage);
     return { marked: await this.scopeStub(scopeId).markCopy() };
@@ -3304,7 +3372,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // gates and metadata facts live in the ScopeDO (per-scope serialization, spine event
     // in the same transaction); bytes go straight to the per-tenant R2 bucket through the
     // binding the vertical's worker resolved — never through the DO.
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
@@ -3723,7 +3791,7 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<ScopeStub> {
     // Lifecycle gates (control-plane.md §4.1/§4.2), the K-3 fail-closed path,
     // evaluated durably in the ControlPlaneDO. A throw propagates here.
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
 
     await this.migrateAndRecord(scopeId);
     return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options);
@@ -3810,7 +3878,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const record = await this.resolveImpersonation(session, tenantId, scopeId);
     // The same lifecycle gate the principal door applies: a suspended tenant
     // refuses a support session exactly as it refuses a user.
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return this.buildStub(
       tenantId,
@@ -3837,7 +3905,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!this.moduleIds.has(moduleId)) {
       throw new Error(`module not registered on this host: ${moduleId}`);
     }
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return this.buildStub(tenantId, scopeId, undefined, undefined, moduleId);
   }
@@ -3876,7 +3944,7 @@ export class CloudflareScopeHost implements ScopeHost {
     secret: string,
     options?: { mode?: 'act' | 'become' },
   ): Promise<CapabilityExchange | null> {
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const outcome = await this.scopeStub(scopeId).exchangeCapability(
       secret,
@@ -3901,7 +3969,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!plausibleSessionToken(sessionToken)) {
       throw substratError('unauthenticated', 'not a capability session token');
     }
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const hash = await capabilityTokenHash(sessionToken);
     return this.buildStub(tenantId, scopeId, undefined, undefined, undefined, options, undefined, hash);
@@ -3994,7 +4062,7 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       this.assertServedHere(record, scopeId, verb);
     }
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
   }
 
@@ -4012,7 +4080,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!plausibleSessionToken(sessionToken)) {
       throw substratError('unauthenticated', 'not a capability session token');
     }
-    await this.validateScopeAccess(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     const capabilitySession = await capabilityTokenHash(sessionToken);
@@ -4119,6 +4187,9 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!this.cpLess) {
       const rec = await this.cp.getScopeRecord(tenantId, scopeId);
       if (!rec || rec.status !== 'active') return report;
+    } else if (await this.lifecycleHeld(scopeId)) {
+      // #1713: a held scope emits nothing, so judging it stale would only raise a false alarm.
+      return report;
     }
     const stub = this.scopeStub(scopeId);
     const windows = new Map<string, number>();
@@ -4161,12 +4232,20 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!schedules || schedules.length === 0) return report;
     // Only run on a live scope of this tenant; a scope archived between the sweep's
     // enumeration and here simply has nothing due. A CP-less host has no directory
-    // to ask (#461) — it already trusts the router-asserted (tenant, scope) for the
-    // whole request path, and lifecycle for its scopes lives wherever provisioning
-    // does, so the grant check below is the only gate it can and does enforce.
+    // to ask (#461), so it reads the lifecycle the platform delivered to the scope (#1713).
     if (!this.cpLess) {
       const rec = await this.cp.getScopeRecord(tenantId, scopeId);
       if (!rec || rec.status !== 'active') return report;
+    } else if (await this.lifecycleHeld(scopeId)) {
+      // #1713: the lifecycle the platform delivered holds the scope. Every schedule is
+      // `skipped` and no cadence row moves, as under the kill switch, so a schedule that
+      // came due meanwhile fires once on the first pass after the scope is live again.
+      for (const schedule of schedules) {
+        report.skipped += 1;
+        report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+      }
+      report.lifecycleHeld = true;
+      return report;
     }
 
     const stub = this.scopeStub(scopeId);
@@ -4635,6 +4714,8 @@ export class CloudflareScopeHost implements ScopeHost {
         { status: before.status },
         { status: to, ...afterExtra },
       );
+      // #1713: after the directory moved and the move was audited, never before or instead.
+      await this.deliverLifecycles(actor, { scopeId });
     };
 
     const writeGrant = async (
@@ -6163,6 +6244,8 @@ export class CloudflareScopeHost implements ScopeHost {
       setTenantStatus: async (actor, tenantId, status: TenantStatus) => {
         const before = await this.cp.setTenantStatus(tenantId, status);
         await this.recordAdmin(actor, 'setTenantStatus', { tenantId }, { status: before }, { status });
+        // #1713: every hosted scope under the tenant holds or resumes its work by this.
+        await this.deliverLifecycles(actor, { tenantId });
       },
       setTenantName: async (actor, tenantId, name: string) => {
         const before = await this.cp.setTenantName(tenantId, name);
@@ -7598,6 +7681,105 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * THE lifecycle gate (#1713) at every door that runs a scope's work: a request's stubs and
+   * attachments, a capability or impersonation session, a peer call or delivery, a subscription,
+   * and the entry points no request asked for — the retry driver, the job runner, a schedule's
+   * system stub, a routed connector delivery.
+   *
+   * `validateScopeAccess` first, which is the directory's gate where there is a directory. A
+   * CP-less host has none, so it then reads the lifecycle the platform delivered to the scope's
+   * own storage (`/internal/lifecycle`), judged by the kernel's `lifecycleRefusal` in the
+   * directory's own words. The router refuses a suspended scope's requests first (#1730); this
+   * is the deployment's own half, and the only one a timer or a retry ever meets.
+   *
+   * The admin and diagnostic reads (dead letters, job runs, platform requests, delivered
+   * grants) keep `validateScopeAccess` alone: an operator still reads a suspended scope.
+   */
+  private async assertLive(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    await this.validateScopeAccess(tenantId, scopeId);
+    if (!this.cpLess) return;
+    const refusal = lifecycleRefusal(await this.scopeStub(scopeId).lifecycle(), { tenantId, scopeId });
+    if (refusal) throw new Error(refusal.message);
+  }
+
+  /**
+   * Deliver the directory's lifecycle to the deployments serving the matching scopes (#1713):
+   * one scope after its transition, a tenant's scopes after the tenant's, or the heal sweep's
+   * drift. Each delivery is the state as read now, so a late one cannot undo a later transition:
+   * the deployment keeps the newest `at` it has seen.
+   *
+   * Never throws. A transition is the operator's lever in an incident, and the router refuses
+   * the scope's requests as soon as the directory moves (#1730), so a deployment that cannot be
+   * reached must not refuse the lever. Each failure is an ops-failure row, no receipt is written,
+   * and the heal sweep delivers again.
+   */
+  private async deliverLifecycles(
+    actor: PlatformActorId,
+    filter: { tenantId?: TenantId; scopeId?: ScopeId; drift?: boolean; limit?: number },
+  ): Promise<LifecycleDeliveryReport> {
+    const report: LifecycleDeliveryReport = { attempted: 0, delivered: 0, failed: 0 };
+    const delegation = this.lifecycleDelegation;
+    if (!delegation || this.cpLess) return report;
+    let targets: Awaited<ReturnType<ControlPlaneStub['lifecycleTargets']>>;
+    try {
+      targets = await this.cp.lifecycleTargets(filter);
+    } catch (err) {
+      console.error('substrat: could not read the scopes to deliver a lifecycle to (#1713)', err);
+      return report;
+    }
+    for (const t of targets) {
+      report.attempted += 1;
+      const tenantId = t.tenant_id as TenantId;
+      const scopeId = t.scope_id as ScopeId;
+      try {
+        const lifecycle = scopeLifecycle.parse({ scope: t.scope_status, tenant: t.tenant_status, at: new Date().toISOString() });
+        const answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+        // The receipt is what the scope HOLDS: a newer delivery it kept instead is the truth.
+        await this.cp.recordLifecycleReceipt(scopeId, lifecycleReceipt(answer.lifecycle), new Date().toISOString());
+        report.delivered += 1;
+      } catch (err) {
+        report.failed += 1;
+        try {
+          await this.admin.recordOpsFailure({
+            actor,
+            operation: 'scope.lifecycle',
+            stage: 'deliver',
+            tenantId,
+            scopeId,
+            message:
+              `the lifecycle (scope ${t.scope_status}, tenant ${t.tenant_status}) did not reach the ` +
+              `deployment serving this scope; the heal sweep will deliver it again: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        } catch (recordErr) {
+          console.error('substrat: could not record a lifecycle delivery failure (#1713)', recordErr);
+        }
+      }
+    }
+    return report;
+  }
+
+  /**
+   * The heal sweep (#1713): deliver the lifecycle to every hosted scope whose deployment's
+   * acknowledged state differs from the directory, and again to every scope held now — which is
+   * what puts a hold back on a store a carry or a restore landed without it. Bounded per pass
+   * (`limit`), drifted scopes first. Run from the shared control plane's cron.
+   */
+  async healLifecycles(actor: PlatformActorId, opts?: { limit?: number }): Promise<LifecycleDeliveryReport> {
+    return this.deliverLifecycles(actor, { drift: true, limit: opts?.limit ?? 200 });
+  }
+
+  /**
+   * Whether a CP-less host holds this scope's work (#1713): `assertLive`'s predicate, answered
+   * rather than thrown, for the entry points that defer instead of refusing — a sweep pass, a
+   * schedule run, an executor drain. Always false on a host with a directory, whose entry
+   * points ask the directory themselves.
+   */
+  async lifecycleHeld(scopeId: ScopeId): Promise<boolean> {
+    if (!this.cpLess) return false;
+    return lifecycleRefusal(await this.scopeStub(scopeId).lifecycle()) !== null;
+  }
+
+  /**
    * K-3's cross-check on its own: the (tenant, scope) pair must exist and agree before a
    * subject-key operation touches anything. Without it a caller could reach another
    * tenant's keys by naming their scope id.
@@ -8157,16 +8339,16 @@ export class CloudflareScopeHost implements ScopeHost {
        * suspended or archiving scope could still be addressed and handed a 101 — a
        * scope that refuses every ordinary read while quietly holding an open socket.
        *
-       * Costs a CP-less vertical nothing: `validateScopeAccess` is a **no-op** on the
-       * null control plane (the router already gated lifecycle and tenancy from the
-       * shared directory), so this is the hosted-vertical shape unchanged.
+       * On a CP-less vertical, `validateScopeAccess` is a no-op on the null control
+       * plane, and `assertLive` reads the lifecycle the platform delivered to the
+       * scope's own storage instead (#1713).
        *
        * `migrateAndRecord`, not the DO's own `ensureMigrations`: the DO migrates
        * itself when the socket opens either way, but only this reports the applied
        * count to the directory — so a scope whose first contact after a deploy is a
        * subscription does not go dark in the migration fleet view.
        */
-      await this.validateScopeAccess(tenantId, scopeId);
+      await this.assertLive(tenantId, scopeId);
       await this.migrateAndRecord(scopeId);
       // Asserted, not carried through from the client: the principal is the
       // vertical's own resolution of its session, and the tenant and scope are the
