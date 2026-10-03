@@ -17,7 +17,7 @@ import { shortId } from './format';
 // wrong ("admited", "begined"). A test holds this map to the enum.
 const PAST: Record<string, string> = {
   activate: 'activated', add: 'added', admit: 'admitted', archive: 'archived', assign: 'assigned',
-  begin: 'began', bind: 'bound', create: 'created', define: 'defined', delete: 'deleted',
+  begin: 'began', bind: 'bound', clear: 'cleared', create: 'created', define: 'defined', delete: 'deleted',
   drain: 'drained', end: 'ended', grant: 'granted', import: 'imported', link: 'linked',
   mark: 'marked', mint: 'minted', move: 'moved', promote: 'promoted', provision: 'provisioned',
   prune: 'pruned', publish: 'published', put: 'put', reap: 'reaped', reassert: 'reasserted',
