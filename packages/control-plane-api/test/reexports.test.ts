@@ -40,7 +40,7 @@ describe('the client package, re-exported', () => {
     expect(DEV_ACTOR_HEADER).toBe(client.DEV_ACTOR_HEADER);
     expect(SERVICE_TOKEN_HEADER).toBe(client.SERVICE_TOKEN_HEADER);
     expect(TENANT_HEADER).toBe(client.TENANT_HEADER);
-    expect(root.DEV_ACTOR_HEADER ?? DEV_ACTOR_HEADER).toBe('x-platform-actor');
+    expect(root.DEV_ACTOR_HEADER).toBe('x-platform-actor');
   });
 
   it('keeps the server out of the browser entry (a name only the server has)', () => {

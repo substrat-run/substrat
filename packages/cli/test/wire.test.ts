@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -353,7 +353,7 @@ describe('scope tools', () => {
   it('restore prints the loader’s detail beside the refusal', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wire-restore-'));
     const file = join(dir, 'backup.dump.json');
-    (await import('node:fs')).writeFileSync(file, JSON.stringify({ tables: [] }));
+    writeFileSync(file, JSON.stringify({ tables: [] }));
     plane(json({ error: 'unloadable dump', detail: 'table x has no DDL' }, 422));
     await expect(restoreScope({ ...base, file })).rejects.toThrow('unloadable dump — table x has no DDL');
     plane(new Response('nope', { status: 500, statusText: 'Server Error' }));
