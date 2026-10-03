@@ -1594,22 +1594,6 @@ export interface SystemSwitchDelegation {
 }
 
 /**
- * The PEER kill switch's reach into the deployment actually serving a scope (#1706).
- *
- * `SystemSwitchDelegation` with the subject swapped, and it exists for the identical
- * reason: a hosted scope's `vertical:<slug>` grants — what one vertical may do when it
- * calls another's operations — live in its vertical's dispatch deployment, and the shared
- * control plane's own `SCOPE` namespace is the module-less placeholder. A switch written
- * there tombstones nothing a peer call will ever read, so the tenant would be told the peer
- * was cut off while every call it makes keeps being admitted. That is the one failure this
- * switch must never have.
- *
- * Separate from `SystemSwitchDelegation` rather than folded into it: they cross the same
- * `/internal/*` seam but answer about different subjects, and a deployment old enough to
- * serve one route and not the other must be able to say so per route. The audit rows for
- * both stay on this side. Set only on the shared control plane's host.
- */
-/**
  * The lifecycle's reach into the deployment serving a scope (#1713). Suspending a scope or a
  * tenant changes the directory, which a CP-less vertical never reads, so the platform delivers
  * the scope's lifecycle over the same platform-secret `/internal/*` seam the switches cross
@@ -1630,6 +1614,22 @@ export interface LifecycleDeliveryReport {
   failed: number;
 }
 
+/**
+ * The PEER kill switch's reach into the deployment actually serving a scope (#1706).
+ *
+ * `SystemSwitchDelegation` with the subject swapped, and it exists for the identical
+ * reason: a hosted scope's `vertical:<slug>` grants — what one vertical may do when it
+ * calls another's operations — live in its vertical's dispatch deployment, and the shared
+ * control plane's own `SCOPE` namespace is the module-less placeholder. A switch written
+ * there tombstones nothing a peer call will ever read, so the tenant would be told the peer
+ * was cut off while every call it makes keeps being admitted. That is the one failure this
+ * switch must never have.
+ *
+ * Separate from `SystemSwitchDelegation` rather than folded into it: they cross the same
+ * `/internal/*` seam but answer about different subjects, and a deployment old enough to
+ * serve one route and not the other must be able to say so per route. The audit rows for
+ * both stay on this side. Set only on the shared control plane's host.
+ */
 export interface PeerSwitchDelegation {
   switch(args: {
     tenantId: TenantId;
@@ -2061,6 +2061,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly eventDrainDelegation?: EventDrainDelegation;
   /** #1666: the schedule kill switch's reach into the deployment serving a scope. */
   private readonly systemSwitchDelegation?: SystemSwitchDelegation;
+  /** #1713: the lifecycle's reach into the deployment serving a scope. */
   private readonly lifecycleDelegation?: LifecycleDelegation;
   /** #1706: the peer kill switch's reach into the deployment serving a scope. */
   private readonly peerSwitchDelegation?: PeerSwitchDelegation;
@@ -2817,11 +2818,6 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * Mark one scope in THIS deployment a copy (#2005), behind the vertical's `/internal/mark-copy`:
-   * the repair of a copy that predates the marker, which a CP-less coordinator reads for primacy.
-   * The control plane decides which scopes (its directory says they are not primary) and audits.
-   */
-  /**
    * Store the lifecycle the platform delivered for one scope in THIS deployment (#1713), behind
    * the vertical's `/internal/lifecycle`. Kept unless the scope already holds a newer one, so a
    * push that arrives late cannot undo a later transition. `applied` is what the platform's heal
@@ -2834,6 +2830,11 @@ export class CloudflareScopeHost implements ScopeHost {
     return lifecycleDelivery.parse(await this.scopeStub(scopeId).setLifecycle(scopeLifecycle.parse(next)));
   }
 
+  /**
+   * Mark one scope in THIS deployment a copy (#2005), behind the vertical's `/internal/mark-copy`:
+   * the repair of a copy that predates the marker, which a CP-less coordinator reads for primacy.
+   * The control plane decides which scopes (its directory says they are not primary) and audits.
+   */
   async markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }> {
     assertCopyLineage(lineage);
     return { marked: await this.scopeStub(scopeId).markCopy() };
@@ -7731,7 +7732,14 @@ export class CloudflareScopeHost implements ScopeHost {
     for (const t of targets) {
       const tenantId = t.tenant_id as TenantId;
       const scopeId = t.scope_id as ScopeId;
-      const lifecycle = scopeLifecycle.parse({ scope: t.scope_status, tenant: t.tenant_status, at: new Date().toISOString() });
+      const parsed = scopeLifecycle.safeParse({ scope: t.scope_status, tenant: t.tenant_status, at: new Date().toISOString() });
+      if (!parsed.success) {
+        // A status this code does not know (a newer directory): delivering a guess could lift a hold.
+        report.failed += 1;
+        console.error(`substrat: scope ${scopeId} has a lifecycle this code cannot read (#1713)`, parsed.error);
+        continue;
+      }
+      const lifecycle = parsed.data;
       // A live scope whose deployment already runs it live has nothing to receive: no receipt
       // reads as active/active, which is what a deployment holding no lifecycle runs as. This
       // is what keeps an activation, and every transition before a deployment carries the
