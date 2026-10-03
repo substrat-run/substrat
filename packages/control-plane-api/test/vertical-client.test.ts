@@ -662,6 +662,10 @@ describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
     await expect(answering(() => Response.json({ wiped: true }), seen).wipeCarriedCopy(input)).resolves.toEqual({ wiped: true });
     await expect(answering(() => Response.json({ wiped: false })).wipeCarriedCopy(input)).resolves.toEqual({ wiped: false });
     expect(seen).toEqual([{ path: '/internal/wipe-carried', body: input }]);
+    // The revision the export read rides along when there is one.
+    const withRevision: { path: string; body: unknown }[] = [];
+    await answering(() => Response.json({ wiped: true }), withRevision).wipeCarriedCopy({ ...input, expectRevision: '7' });
+    expect(withRevision[0]!.body).toEqual({ ...input, expectRevision: '7' });
   });
 
   it.each([
@@ -773,7 +777,7 @@ it('restoreScope sends the stamp a carry leaves on its copy, and none when not g
 
 it('exportScopeStamped asks for the stamp and reads it off the export, null from a deployment that sends none (#1722)', async () => {
   const replies = [
-    new Response('[]', { status: 200, headers: { 'x-substrat-load-stamp': 'stamp-3' } }),
+    new Response('[]', { status: 200, headers: { 'x-substrat-load-stamp': 'stamp-3', 'x-substrat-write-revision': '7' } }),
     new Response('[]', { status: 200 }),
   ];
   const urls: string[] = [];
@@ -784,8 +788,8 @@ it('exportScopeStamped asks for the stamp and reads it off the export, null from
     }) as unknown as typeof fetch,
     platformSecret: 'secret',
   });
-  expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: 'stamp-3' });
-  expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: null });
+  expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: 'stamp-3', revision: '7' });
+  expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: null, revision: null });
   expect(urls.every((u) => new URL(u).searchParams.get('stamp') === '1')).toBe(true);
 });
 

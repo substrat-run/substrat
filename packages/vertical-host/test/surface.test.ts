@@ -380,6 +380,16 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await post(host, { ...body, expectLoadStamp: undefined })).status).toBe(400);
     expect((await post(host, { ...body, expectLoadStamp: null })).status).toBe(200);
     expect(host.calls.filter((c) => c === 'wipeCarriedLocal')).toHaveLength(2);
+    // The write revision the export read rides through to the host.
+    let revisionSeen: unknown = 'not called';
+    const revising = fakeHost({
+      wipeCarriedLocal: async (_s, _st, _a, revision) => {
+        revisionSeen = revision;
+        return true;
+      },
+    });
+    expect((await post(revising, { ...body, expectRevision: '42' })).status).toBe(200);
+    expect(revisionSeen).toBe('42');
     // Behind the platform gate like every sibling.
     const unsigned = await appWith(host).request('/internal/wipe-carried', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -394,11 +404,12 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
   // restore hands the stamp a carry names to the host.
   it('serves the export with its load stamp, and forwards a carry\'s stamp on restore', async () => {
     const stamped = fakeHost({
-      exportScopeStampedLocal: async () => ({ tables: [], loadStamp: 'stamp-7' }),
+      exportScopeStampedLocal: async () => ({ tables: [], loadStamp: 'stamp-7', revision: '42' }),
     });
     const res = await appWith(stamped).request(`/internal/export?scopeId=${SCOPE}&stamp=1`, { headers: authed() }, ENV);
     expect(res.status).toBe(200);
     expect(res.headers.get('x-substrat-load-stamp')).toBe('stamp-7');
+    expect(res.headers.get('x-substrat-write-revision')).toBe('42');
     expect(await res.json()).toEqual([]);
     expect(stamped.calls).toEqual([]);
     // Any other export (a pull, a snapshot) reads only: it never mints a stamp in the store.
