@@ -4428,7 +4428,7 @@ export function defineScopeDO(
      *  marker. Answers whether this call stamped it; an existing origin is left as it is. */
     markCopy(): boolean {
       let marked = false;
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         marked = markCopyOrigin(this.switchSql(), new Date().toISOString());
       });
       return marked;
@@ -4437,7 +4437,7 @@ export function defineScopeDO(
     /** Remove a mistaken copy marker (#2005, `clearCopyMarker`); a real load's mark is kept. */
     clearCopyMark(): 'cleared' | 'absent' | 'carries-events' {
       let outcome: 'cleared' | 'absent' | 'carries-events' = 'absent';
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         outcome = clearCopyMarker(this.switchSql());
       });
       return outcome;
