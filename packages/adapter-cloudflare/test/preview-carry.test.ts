@@ -426,6 +426,34 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       unfenced.clear();
     });
 
+    it('the fence: any load since the stamped export refuses the wipe, and nothing loaded lets it run', async () => {
+      const sid = scopeId.parse(ulid());
+      const v1 = hostFor('v1');
+      await v1.restoreScopeLocal(sid, notes('kept'));
+      const away = { to: 'elsewhere', at: '2026-10-03T00:00:00.000Z' };
+      // A restore that names no stamp (a governed restore, not a carry) clears the one read.
+      const { loadStamp: first } = await v1.exportScopeStampedLocal(sid);
+      await v1.restoreScopeLocal(sid, notes('restored since'));
+      expect(await v1.wipeCarriedLocal(sid, first, away)).toBe(false);
+      expect(bodiesIn(await v1.exportScopeLocal(sid))).toEqual(['restored since']);
+      // So does a carry's load, which names its own.
+      const { loadStamp: second } = await v1.exportScopeStampedLocal(sid);
+      expect(second).not.toBe(first);
+      await v1.restoreScopeLocal(sid, notes('carried in'), { loadStamp: ulid() });
+      expect(await v1.wipeCarriedLocal(sid, second, away)).toBe(false);
+      // The twin: nothing loaded since the read, so the wipe runs, and the stamp went with it.
+      const { loadStamp: third } = await v1.exportScopeStampedLocal(sid);
+      expect(await v1.exportScopeStampedLocal(sid)).toMatchObject({ loadStamp: third });
+      expect(await v1.wipeCarriedLocal(sid, third, away)).toBe(true);
+      expect(bodiesIn(await v1.exportScopeLocal(sid))).toEqual([]);
+      expect(await v1.wipeCarriedLocal(sid, third, away)).toBe(false);
+      // Never in a dump: a copy of this store carries no stamp of it.
+      await v1.restoreScopeLocal(sid, notes('again'), { loadStamp: 'carry-stamp' });
+      const dumped = await v1.exportScopeLocal(sid);
+      expect(dumpMetaValue(dumped, 'load_stamp')).toBeNull();
+      expect((await v1.exportScopeStampedLocal(sid)).loadStamp).toBe('carry-stamp');
+    });
+
     it('a push wipes the copy in the old script, and a bind back to it restores into that same store', async () => {
       const p = await fresh('gone', 'from prod', 'gone data');
       expect((await push('gone', 'v2')).status).toBe(200);
