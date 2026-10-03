@@ -205,6 +205,21 @@ test('refuses what it cannot judge: a required dependency it cannot resolve, a d
   ]);
 });
 
+test('an unresolved peer is skipped like an optional one — but a name that is also a regular dependency must resolve', () => {
+  assert.deepEqual(licenseProblems({ ...CLI, peerDependencies: { react: '*' } }, 'cli', graph({})), []);
+  assert.deepEqual(licenseProblems({ ...CLI, optionalDependencies: { fsevents: '*' } }, 'cli', graph({})), []);
+  // Declared as both a regular and a peer dependency: the regular one wins, so absence is a problem.
+  assert.deepEqual(
+    licenseProblems({ ...CLI, dependencies: { react: '*' }, peerDependencies: { react: '*' } }, 'cli', graph({})),
+    ['@substrat-run/cli → react: cannot be resolved — run `pnpm install`'],
+  );
+  // A peer that DOES resolve is still judged.
+  assert.deepEqual(
+    licenseProblems({ ...CLI, peerDependencies: { lib: '*' } }, 'cli', graph({ lib: { license: 'GPL-3.0' } })),
+    ['@substrat-run/cli → lib is GPL-3.0, which is not on the permissive allowlist'],
+  );
+});
+
 test('the guarded packages exist, are themselves permissive, and the repo as it stands holds the rule', () => {
   const root = new URL('..', import.meta.url).pathname;
   const cwd = process.cwd();

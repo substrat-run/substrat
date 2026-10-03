@@ -236,26 +236,30 @@ export function licenseProblem(license, legacyLicenses) {
 /**
  * The closure problems of one package. `read(name, fromKey)` answers
  * `{ pj, key } | null` for a dependency named from the package at `fromKey` — the CLI wires
- * it to the workspace and `node_modules`; a test wires it to a literal graph. An optional
- * dependency that cannot be resolved is skipped (esbuild's per-platform binaries are
- * installed for one platform only); a required one is a problem, because a check that
+ * it to the workspace and `node_modules`; a test wires it to a literal graph. An optional or
+ * peer dependency that cannot be resolved is skipped (esbuild's per-platform binaries are
+ * installed for one platform only; a peer is the consumer's to install); a required one is a problem, because a check that
  * silently skipped what it could not find would pass on an empty install.
  */
 export function licenseProblems(rootPj, rootKey, read) {
   const out = [];
   const seen = new Set([rootPj.name]);
   const walkDeps = (pj, key, trail) => {
-    const optional = new Set(Object.keys(pj.optionalDependencies ?? {}));
-    const names = new Set([
-      ...Object.keys(pj.dependencies ?? {}),
-      ...Object.keys(pj.peerDependencies ?? {}),
-      ...optional,
-    ]);
+    const required = new Set(Object.keys(pj.dependencies ?? {}));
+    // A peer is the CONSUMER's to provide, so it is legitimately absent from this package's own
+    // install; an optional dependency is absent on the platforms it does not target. A name
+    // that is also a regular dependency is neither: it must resolve.
+    const mayBeAbsent = new Set(
+      [...Object.keys(pj.peerDependencies ?? {}), ...Object.keys(pj.optionalDependencies ?? {})].filter(
+        (n) => !required.has(n),
+      ),
+    );
+    const names = new Set([...required, ...mayBeAbsent]);
     for (const name of names) {
       if (seen.has(name)) continue;
       const dep = read(name, key);
       if (!dep) {
-        if (!optional.has(name)) out.push(`${[...trail, name].join(' → ')}: cannot be resolved — run \`pnpm install\``);
+        if (!mayBeAbsent.has(name)) out.push(`${[...trail, name].join(' → ')}: cannot be resolved — run \`pnpm install\``);
         continue;
       }
       seen.add(name);
