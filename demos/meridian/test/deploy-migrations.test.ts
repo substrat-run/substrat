@@ -1,5 +1,8 @@
 /**
- * What adding the sweeper does to a LIVE script's Durable Object migrations (#1646).
+ * What adding the sweeper does to a LIVE script's Durable Object migrations (#1646) — and,
+ * since #1902, what the platform SUPPLYING it does: meridian no longer exports or binds a
+ * sweeper of its own, the push route decides to supply one, and the uploader adds it under
+ * the class name meridian's own used, so a serving script's namespace carries over.
  *
  * Meridian is the hand-authored-config path: its classes live in `wrangler.jsonc`, where
  * the sweeper rides a new `v2` tag beside the shipped `v1`. That tag is for a local
@@ -24,14 +27,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { declaredStoresOf, resolveWranglerConfig } from '@substrat-run/cli/dist/push.js';
-import { assertSandboxContract, createWfpUploader } from '@substrat-run/control-plane-api';
+import { declaredStoresOf, deriveDeclaredSurface, resolveWranglerConfig, sweeperClassesOf } from '@substrat-run/cli/dist/push.js';
+import { assertSandboxContract, createWfpUploader, platformSweeperDecision } from '@substrat-run/control-plane-api';
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** What `substrat push demos/meridian` declares: its bindings and its DO classes. */
 function declared() {
   return declaredStoresOf(resolveWranglerConfig(dir).cfg);
+}
+
+const entry = { entry: 'worker.js', modules: [{ name: 'worker.js', content: new Uint8Array([1]), contentType: 'application/javascript+module' }] };
+
+/** What the push route decides for meridian, from what its push declares (#1902). */
+async function decision() {
+  const cfg = resolveWranglerConfig(dir).cfg;
+  const { schedules } = await deriveDeclaredSurface(dir);
+  const sweeperClasses = sweeperClassesOf(dir, cfg);
+  return platformSweeperDecision(
+    { ...(schedules?.length ? { declaresSchedules: true } : {}), ...(sweeperClasses ? { sweeperClasses } : {}), bindings: declared().bindings },
+    entry,
+  );
 }
 
 /** The metadata the uploader would PUT, with Cloudflare stubbed out. */
@@ -45,15 +61,18 @@ async function uploadMetadata(inPlace?: { priorDoClasses: string[]; priorMigrati
     }),
   );
   const { bindings, doClasses } = declared();
+  const decided = await decision();
+  if ('refuse' in decided) throw new Error(decided.refuse);
   await createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' })(
     'meridian',
     {
       entry: 'worker.js',
       compatibilityDate: '2025-01-01',
       compatibilityFlags: ['nodejs_compat'],
-      modules: [{ name: 'worker.js', content: new Uint8Array([1]), contentType: 'application/javascript+module' }],
+      modules: entry.modules,
       doClasses,
       bindings,
+      supplySweeper: decided.supply,
     },
     inPlace,
   );
@@ -64,13 +83,19 @@ async function uploadMetadata(inPlace?: { priorDoClasses: string[]; priorMigrati
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('meridian deploy config — the sweeper as a store (#1646)', () => {
-  it('the push declares the sweeper as the vertical\'s own third class, bound as SWEEPER', () => {
+describe('meridian deploy config — the sweeper, supplied by the platform (#1646, #1902)', () => {
+  it('the push binds no sweeper of its own, keeps SweeperDO in its migration history, and is given one', async () => {
     const { bindings, doClasses } = declared();
     expect(doClasses).toEqual(['ScopeDO', 'IdentityDO', 'SweeperDO']);
-    expect(bindings).toContainEqual({ type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'SweeperDO' });
-    // The control plane's §4 check admits it: an OWN class, bound by its own script.
+    expect(bindings.map((b) => b.name)).toEqual(['SCOPE', 'AUTH']);
+    // The control plane's §4 check admits it, and its push route decides to supply the sweeper.
     expect(() => assertSandboxContract({ bindings, doClasses } as Parameters<typeof assertSandboxContract>[0])).not.toThrow();
+    expect(await decision()).toEqual({ supply: true });
+  });
+
+  it('the upload binds the supplied sweeper as SWEEPER, under the class name meridian’s own used', async () => {
+    const meta = await uploadMetadata();
+    expect(meta['bindings']).toContainEqual({ type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'SweeperDO' });
   });
 
   it('a fresh script declares all three under v1 — the wrangler.jsonc `v2` tag does not travel', async () => {
@@ -84,7 +109,7 @@ describe('meridian deploy config — the sweeper as a store (#1646)', () => {
     expect(meta['keep_bindings']).toEqual(['secret_text', 'secret_key']);
   });
 
-  it('the promote after that one sends no migration at all', async () => {
+  it('the promote after that one — or onto a script whose hand-wired SweeperDO it replaces — sends no migration at all', async () => {
     const meta = await uploadMetadata({ priorDoClasses: ['ScopeDO', 'IdentityDO', 'SweeperDO'], priorMigrationTag: 'v2' });
     expect(meta['migrations']).toBeUndefined();
   });
