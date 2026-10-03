@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
@@ -268,6 +268,91 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await dir.admin.getScopeRecord(staff, t, prod))?.verticalVersionId).toBe(version.v2);
       expect(bodiesIn(await hostOf.get(stable)!.exportScopeLocal(clean.body.scopeId))).toEqual([]);
     }
+  });
+
+  it('the fleet repair heals legacy-pinned previews on real namespaces and leaves installs and forks alone (#1724)', async () => {
+    const stable = stableDeploymentRefFor(slug);
+    hostOf.set(stable, hostFor('v3')); // the third namespace stands in for the serving script
+    const repairPass = async (body: object = {}) => {
+      const res = await api.request('/previews/repair-serving-pins', {
+        method: 'POST', headers: auth, body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as {
+        repaired: { scopeId: string; from: string; to: string }[];
+        failed: { scopeId: string; status: number; error: string }[];
+        nextCursor: string | null;
+      };
+    };
+    const pinTo = async (created: { body: { scopeId: ScopeId } }, ...bodies: string[]) => {
+      await dir.admin.setScopeServingRef(staff, t, created.body.scopeId, stable);
+      await hostOf.get(stable)!.restoreScopeLocal(created.body.scopeId, notes(...bodies));
+    };
+    const a = await push('repair-a', 'v1', { empty: true, ttlHours: null });
+    const b = await push('repair-b', 'v2', { empty: true, ttlHours: null });
+    const fork = await push('repair-fork', 'v1', { ttlHours: null });
+    const clean = await push('repair-clean', 'v1', { empty: true, ttlHours: null });
+    for (const created of [a, b, fork, clean]) expect(created.status).toBe(201);
+    await pinTo(a, 'a was adopted');
+    await pinTo(b, 'b was adopted');
+    // The install the previous test adopted onto the serving script, and a real data fork.
+    const record = (sid: ScopeId) => dir.admin.getScopeRecord(staff, t, sid);
+    expect(await record(prod)).toMatchObject({ servingRef: stable });
+    const controls = [prod, fork.body.scopeId, clean.body.scopeId] as const;
+    const recordsBefore = await Promise.all(controls.map(record));
+    const prodServed = await served('carry-acme.global.substrat.run');
+    const forkServed = await served(fork.body.hostname);
+    const cleanServed = await served(clean.body.hostname);
+
+    // Before: both route to the serving script, whatever version they are bound to.
+    expect(await served(a.body.hostname)).toEqual({ ref: stable, bodies: ['a was adopted'] });
+    expect(await served(b.body.hostname)).toEqual({ ref: stable, bodies: ['b was adopted'] });
+
+    const out = await repairPass();
+    expect(out.failed).toEqual([]);
+    expect(out.repaired.map((r) => r.scopeId)).toEqual(expect.arrayContaining([a.body.scopeId, b.body.scopeId]));
+    expect(out.repaired.every((r) => r.from === stable)).toBe(true);
+    // After: each hostname resolves to its own version's script, holding the data it served.
+    expect(await served(a.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['a was adopted'] });
+    expect(await served(b.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['b was adopted'] });
+    expect(await record(a.body.scopeId)).toMatchObject({ verticalVersionId: version.v1 });
+    expect((await record(a.body.scopeId))!.servingRef ?? null).toBeNull();
+    expect(await record(b.body.scopeId)).toMatchObject({ verticalVersionId: version.v2 });
+    expect((await record(b.body.scopeId))!.servingRef ?? null).toBeNull();
+    // The install and the forks: records and served data exactly as before.
+    expect(await Promise.all(controls.map(record))).toEqual(recordsBefore);
+    expect(await served('carry-acme.global.substrat.run')).toEqual(prodServed);
+    expect(await served(fork.body.hostname)).toEqual(forkServed);
+    expect(await served(clean.body.hostname)).toEqual(cleanServed);
+
+    // A re-run is a no-op: nothing left pinned, so nothing moves.
+    const again = await repairPass();
+    expect(again.repaired.filter((r) => r.scopeId === a.body.scopeId || r.scopeId === b.body.scopeId)).toEqual([]);
+    expect(await served(a.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['a was adopted'] });
+
+    // A carry that fails inside the target DO keeps the pin, the binding and the data.
+    const c = await push('repair-c', 'v2', { empty: true, ttlHours: null });
+    expect(c.status).toBe(201);
+    await pinTo(c, 'c was adopted');
+    const restore = hostFor('v2').restoreScopeLocal.bind(hostFor('v2'));
+    // Every attempt, not one: the carry's restore is retried in-request, and the retry must fail too.
+    const sabotage = vi.spyOn(hostFor('v2'), 'restoreScopeLocal').mockImplementation((sid, tables) =>
+      restore(sid, [...tables, { name: 'zz_bad', ddl: 'CREATE TABLE not_zz_bad (x TEXT)', columns: ['x'], rows: [] }]),
+    );
+    let failed: Awaited<ReturnType<typeof repairPass>>;
+    try {
+      failed = await repairPass();
+    } finally {
+      sabotage.mockRestore();
+    }
+    expect(failed.repaired.filter((r) => r.scopeId === c.body.scopeId)).toEqual([]);
+    expect(failed.failed).toMatchObject([{ scopeId: c.body.scopeId, error: expect.stringMatching(/refusing this dump/) }]);
+    expect(await record(c.body.scopeId)).toMatchObject({ verticalVersionId: version.v2, servingRef: stable });
+    expect(await served(c.body.hostname)).toEqual({ ref: stable, bodies: ['c was adopted'] });
+    // …and the retry lands it.
+    const retried = await repairPass();
+    expect(retried.repaired.map((r) => r.scopeId)).toContain(c.body.scopeId);
+    expect(await served(c.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['c was adopted'] });
   });
 
 });
