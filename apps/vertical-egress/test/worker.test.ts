@@ -436,6 +436,26 @@ describe("a non-primary scope reads other platform apps and writes only its own 
       expect(calls).toHaveLength(0);
     });
 
+    // A custom domain of the scope is outside the platform's base domains — and still its own.
+    it("lets a POST to the scope's own custom domain through, under the version's declared surface", async () => {
+      const internet = vi.fn(async () => new Response('own', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+      const own = { ...withSiblings([OWN, 'preview.example.com']), hosts: ['preview.example.com'] };
+      const { res } = await post('https://preview.example.com/api/write', own);
+      expect(res.status).toBe(200);
+      expect(internet).toHaveBeenCalledTimes(1);
+    });
+
+    it("twin: a custom domain that is NOT the scope's is refused as inert, declared or not", async () => {
+      const internet = vi.fn(async () => new Response('x', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+      const own = { ...withSiblings([OWN, 'preview.example.com']), hosts: ['other.example.com'] };
+      const { res } = await post('https://other.example.com/api/write', own);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'other.example.com' });
+      expect(internet).not.toHaveBeenCalled();
+    });
+
     it('a router that sends no set (the skew window) counts only the requested hostname', async () => {
       const { res } = await post(`https://${SIBLING}/api/orders`, withSiblings(undefined));
       expect(res.status).toBe(403);

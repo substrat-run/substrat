@@ -318,9 +318,12 @@ export default {
       return fetch(request);
     }
     const policy = env.OUTBOUND_POLICY;
-    if (policy?.primary === false) {
+    if (policy?.primary === false && !isOwnHost(hostname, policy)) {
       // #2005: ahead of the declared list and the unenforced pass, because whether the scope
-      // may have effects at all is a question about the scope, not about the host.
+      // may have effects at all is a question about the scope, not about the host. Its own
+      // addresses are the exception on every path — a custom domain of the scope is outside the
+      // platform's base domains, and is still the scope talking to itself; it then meets the
+      // same declared-surface policy below that the install's request would.
       meter(env, hostname, 'inert');
       return outboundRefused(
         hostname,
