@@ -392,11 +392,13 @@ return { link: `${origin}/#share=${secret}` }; // a fragment: never sent to a se
   tripwire against accidents, the operation that mints it is refused if it writes the
   secret verbatim to an event, to its own tables or to a platform intent. That catches a
   mistake; it cannot stop a module that means to leak its own secret.
-- **A link opens its own scope, never a copy of it.** A fork, a snapshot or a preview of a
-  scope starts with no capabilities, and so does a backup of one scope restored onto another:
-  a link minted on production keeps opening production and nothing else. A backup restored
-  into the scope it came from keeps its links, as does moving a scope onto a new version, so
-  a restore does not end the links that were live.
+- **A link does not open a copy of its scope.** A fork, a snapshot or a preview made by the
+  platform starts with no capabilities, so a link minted on production keeps opening
+  production and nothing else. A backup restored into the scope it came from keeps its links,
+  as does moving a scope onto a new version, so a restore does not end the links that were
+  live. Whether a restore counts as a copy is decided by where the backup says it came from:
+  one restored onto a different scope starts with none, while a file presented as the
+  target's own backup keeps whatever links it carries.
 
 ### Files through a link
 
