@@ -1,5 +1,22 @@
 # @substrat-run/vertical-host
 
+## 0.135.0
+
+### Minor Changes
+
+- 1dca2da: An operator can now read the capabilities a scope has minted. `HostAdmin.listCapabilities` returns the directory `ctx.capabilities.list` reads from inside a module, newest first: for each link share or claim link, what it may do (its entity, keys and operation allowlist, or the principal a claim link yields), who minted and revoked it, when it expires and how often it has been used. Live capabilities are listed unless you ask for `includeRevoked`, and you can narrow to one entity. The read is paged: pass the previous page's `nextCursor` as `cursor`, and `nextCursor` is set only when more records follow, so a scope with hundreds of links can be read to the end. A record never carries a secret or a hash. The control plane serves it at `GET /tenants/:t/scopes/:s/capabilities`, to staff only, and reads a hosted scope's directory through the vertical's own `/internal/capabilities`. `ControlPlaneStaffClient.listCapabilities` calls it, and the console's scope page has a Capabilities card. `capabilityStatus` in contracts names a record's standing (live, used up, expired, revoked).
+
+### Patch Changes
+
+- Updated dependencies [8267b83]
+- Updated dependencies [1dca2da]
+- Updated dependencies [3328549]
+- Updated dependencies [8c64633]
+- Updated dependencies [5d41454]
+  - @substrat-run/kernel@0.135.0
+  - @substrat-run/contracts@0.135.0
+  - @substrat-run/model-providers@0.5.25
+
 ## 0.134.0
 
 ### Patch Changes
