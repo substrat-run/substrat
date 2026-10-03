@@ -30,6 +30,7 @@ import type {
   AccessLogEntry,
   DelegatedReadRecord,
   OwnerTransferAudit,
+  CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
@@ -968,6 +969,12 @@ export interface ExecutorDrainReport {
    * the response so the router kicks an immediate drain.
    */
   routedToPlatform?: number;
+  /**
+   * Deliveries journaled as not executed because the scope is not primary — a fork, a
+   * snapshot or a preview, which cause no outbound effects (#2005, `INERT_SCOPE_REASON`).
+   * Terminal and counted apart from `deadLettered`: nothing failed, the platform declined.
+   */
+  inert?: number;
 }
 
 /**
@@ -2262,6 +2269,20 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     expiresAt: string | null,
+  ): Promise<void>;
+
+  /**
+   * Record a staff resolution of a kept copy (#1722, Codex #2008 r7) in the admin log. A kept
+   * copy is one a carry's wipe refused because it took a write the carry never copied; the
+   * vertical's store holds it, so the resolution itself (a discard, or a restore forward over the
+   * live store) runs there, and this is its record: which script held it, what was done, and the
+   * write revision before and after. The directory changes nothing else. Refuses an unknown scope.
+   */
+  recordKeptCopyResolution(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    resolution: KeptCopyResolution,
   ): Promise<void>;
 
   /**
@@ -3628,6 +3649,15 @@ export interface HostAdmin {
   recordOwnerTransfer(actor: PlatformActorId, entry: OwnerTransferAudit): Promise<void>;
 
   /**
+   * Record one change to a scope's copy marker (#2005) on the admin log — `markScopeCopy` for a
+   * `mark`, `clearScopeCopyMark` for a `clear`. The marker lives in the vertical's deployment, so
+   * the control plane writes this around its call there — `recordOwnerTransfer`'s shape: fixed
+   * actions, parsed entry, request actor, adapter-stamped `id` and `at`. Throws when the row
+   * cannot be written.
+   */
+  recordCopyMark(actor: PlatformActorId, entry: CopyMarkAudit): Promise<void>;
+
+  /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including
    * `upToId`, marking them shipped to Tier 2. Returns how many rows moved.
    *
@@ -4290,6 +4320,23 @@ export interface OpsFailureInput {
   reference?: string | null;
 }
 
+/** One staff resolution of a kept copy (#1722), as `recordKeptCopyResolution` logs it. */
+export interface KeptCopyResolution {
+  /** `discard` wiped the kept copy; `restore-forward` restored it over the live store, then wiped it;
+   *  `release` cleared the marker of a kept copy that is the live store after all. */
+  action: 'discard' | 'restore-forward' | 'release';
+  /** The script that held the kept copy. */
+  script: string;
+  /** The script the scope routes to, which a restore forward replaced; null for a discard. */
+  liveScript: string | null;
+  /** When the copy was kept, from its marker. */
+  keptAt: string;
+  /** The kept copy's write revision the operator acted on. */
+  revisionBefore: string | null;
+  /** The write revision of the store the resolution changed, after it. */
+  revisionAfter: string | null;
+}
+
 /** Filter for `listOpsFailures` — cursor/order/limit exactly as `AuditLogFilter`. */
 export interface OpsFailureFilter {
   tenantId?: TenantId;
@@ -4579,6 +4626,10 @@ export interface ScopeHost {
    * not. A failure is retried with backoff, dead-lettered at `maxAttempts`, and
    * surfaced through `drainDue`/`executorDeadLetters` — never thrown at whoever happened
    * to be holding the request.
+   *
+   * **Never on a scope that is not primary** (#2005). A fork, a snapshot or a preview causes
+   * no outbound effects, so its deliveries are journaled terminal with `INERT_SCOPE_REASON`
+   * (counted in `ExecutorDrainReport.inert`) and no handler — executor or connector — runs.
    */
   registerExecutor(
     id: string,
@@ -5250,30 +5301,13 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
 }
 
 /**
- * Set on every refusal a live-read door returns, so a client can tell "no push here,
- * poll" from "your request was wrong" without parsing a body or guessing from a status.
- *
- * Here rather than in the hosted adapter because both ends of a refusal need to spell it
- * the same way: the hosted adapter sets it on its own refusals, and a vertical's mount
- * sets it on the pure host's `501` (the ask-don't-assume recipe on `ScopeHost.liveReads`).
- * A dev server should not have to import the Cloudflare adapter to say "poll".
- */
-export const LIVE_MODE_HEADER = 'x-substrat-live';
-
-/** Why a subscription was refused — the value of `LIVE_MODE_HEADER` on a refusal. */
-export type LiveRefusal =
-  /** This host or connection cannot carry a WebSocket; the client should keep polling. */
-  | 'poll'
-  /** The request was not an upgrade at all — a programming error at the caller. */
-  | 'not-an-upgrade';
-
-/**
  * Is this request asking to be upgraded to a WebSocket?
  *
- * Here beside `LIVE_MODE_HEADER` because a vertical's live route asks it first, before
- * anything else it decides: only a WebSocket handshake is a live read, and a browser
- * always sends `Origin` on one, so everything past this check can trust that a missing
- * `Origin` did not come from a browser page. A plain GET with a cookie on it cannot.
+ * Paired with `LIVE_MODE_HEADER` (`@substrat-run/contracts`) because a vertical's live
+ * route asks it first, before anything else it decides: only a WebSocket handshake is a
+ * live read, and a browser always sends `Origin` on one, so everything past this check
+ * can trust that a missing `Origin` did not come from a browser page. A plain GET with a
+ * cookie on it cannot.
  */
 export function isUpgradeRequest(request: LiveUpgradeRequest): boolean {
   // `Upgrade` is a comma-separated protocol list (RFC 9110 §7.8), e.g. `h2c, websocket`,

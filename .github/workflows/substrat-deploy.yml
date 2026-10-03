@@ -273,7 +273,17 @@ jobs:
           fi
 
   preview_cleanup:
-    # Reap only — no repo build needed, so skip checkout/install and just run the CLI.
+    # Reaps with the CLI built from this repo, like every other job here — not
+    # `npx @substrat-run/cli`, which the generated workflow uses because a project outside
+    # this monorepo has no CLI source. Here the published package ties the reap to the
+    # registry for no reason: a broken publish breaks it (the published CLI once failed to
+    # install at all, EUNSUPPORTEDPROTOCOL on a `workspace:` dependency), and a release
+    # lagging main can lack what the deploy jobs already use.
+    #
+    # Checked out at the BASE branch, not the PR: a closed PR's merge ref may be gone, and
+    # the reap needs no PR code — only a CLI that can delete by tag. Installs and builds
+    # the CLI's closure and nothing else.
+    #
     # Not for a Dependabot PR either: it never had a preview to reap (see `preview`), and the
     # CLI has no token in that secret store either.
     if: >-
@@ -282,12 +292,24 @@ jobs:
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     concurrency: substrat-preview-${{ github.event.number }}
+    permissions:
+      contents: read
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - name: Install dependencies
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+        run: corepack enable && pnpm install --frozen-lockfile --filter "@substrat-run/cli..."
+      - name: Build the CLI
+        run: pnpm --filter "@substrat-run/cli..." run --if-present build
       - name: Reap the preview
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
-        run: npx @substrat-run/cli preview delete --slug ticket0 --tag pr-${{ github.event.number }}
+        run: node packages/cli/dist/cli.js preview delete --slug ticket0 --tag pr-${{ github.event.number }}

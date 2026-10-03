@@ -52,6 +52,7 @@ import {
   listLimitOf,
   requestFingerprint,
   substratError,
+  errorCodeOf,
   assertReplayableDump,
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
@@ -245,6 +246,7 @@ import {
   type PeerDeclarations,
   assertNoSecret,
   CAPABILITY_DDL,
+  COPY_ORIGIN_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
@@ -284,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -688,6 +690,9 @@ const KERNEL_DDL = `
   -- an exchange trades that secret for. Shared with the pure adapter from
   -- @substrat-run/kernel so the two cannot part company; the column comments are there.
   ${CAPABILITY_DDL}
+  -- #1686: where a copied scope's data came from, and the event id its own events start above.
+  -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
+  ${COPY_ORIGIN_DDL}
 `;
 
 /**
@@ -724,6 +729,136 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
   if (!write) throw new Error('kernelEmit: not an operation context this host built');
   write(event);
 }
+
+/**
+ * The scope DO's write revision (#1722): the one SQL handle this object writes through, and the
+ * one way it opens a transaction, so a writer or a transaction added later cannot slip past it.
+ * A carry's conditional restore compares the revision, so every change to the store has to move
+ * it: an UPDATE in place (a drain receipt, a redrain) as surely as an emitted event (Codex #2008
+ * r2). `suspended` is the wake's idempotent DDL, a load's drop-and-replay and a migration's own
+ * statements, which advance it themselves.
+ *
+ * **Atomic with the write (Codex #2008 r4).** The bump runs synchronously, right BEFORE the first
+ * write that needs it, on the same connection: inside a `transactionSync` or `transaction` it
+ * commits or rolls back with that transaction's writes, and outside one it joins the same
+ * coalesced batch. A bump that fails throws before the write runs, so no write lands under the old
+ * revision. Nothing is deferred to a later commit.
+ *
+ * **Once per run, not per statement** (a bump per statement cost 28.7–32.4% on a write-heavy
+ * operation, `write-revision-cost.test.ts`). After a bump, later writes skip it while they are
+ * covered by it: until the run ends (a microtask clears the flag at its first await or its end)
+ * and until a transaction boundary. Entering a transaction clears it, so each committing
+ * transaction holds a bump of its own; leaving one clears it too, so after a rollback (which took
+ * the bump with it) or a commit the next write bumps again. Clearing more often only over-counts,
+ * and over-counting only refuses a restore that could have landed.
+ */
+class WriteRevision {
+  /** Whether the current run, in the current transaction scope, already holds a bump. */
+  private covered = false;
+  /** Inside `bookkeeping`: the one path whose writes advance no revision. */
+  private keeping = false;
+  /** A statement's text is almost always a constant, so its answer is remembered (bounded). */
+  private readonly writes = new Map<string, boolean>();
+  readonly sql: SqlStorage;
+
+  constructor(
+    private readonly raw: SqlStorage,
+    private readonly storage: DurableObjectStorage,
+    private readonly suspended: () => boolean,
+    /** Why this store takes no write at all right now, or null (a `carried_away` copy, #1722). */
+    private readonly refusal: () => string | null,
+  ) {
+    const exec = (query: string, ...bindings: unknown[]) => {
+      if (this.keeping && this.isWrite(query)) {
+        // Bookkeeping takes the copy-marker insert and nothing else: any other write here would
+        // be one the revision never saw, which is the hole this class exists to close.
+        if (!isCopyMarkInsert(query)) {
+          throw substratError('internal', `the bookkeeping path takes only the copy-marker insert (#1722), not: ${query.slice(0, 80)}`);
+        }
+        return raw.exec(query, ...bindings);
+      }
+      if (!this.suspended() && this.isWrite(query)) {
+        const refused = this.refusal();
+        if (refused) throw substratError('conflict', refused);
+        if (!this.covered) this.bump();
+      }
+      return raw.exec(query, ...bindings);
+    };
+    this.sql = new Proxy(raw, {
+      get(target, prop) {
+        if (prop === 'exec') return exec;
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+  }
+
+  /**
+   * Store bookkeeping that is not the scope's data: marking the store a copy (#2005, Codex #2008
+   * r10). That only ever restricts what the store may run and changes no data, so it advances no
+   * write revision: a backfill that marks a carry's source between its export and its wipe must
+   * not read as a write the carry did not copy (that would keep the copy for nothing). Enforced,
+   * not trusted: any write in here but the marker insert (`isCopyMarkInsert`) throws. Clearing a
+   * marker is NOT bookkeeping (r11): it loosens the store, so it is a write a carry fences on.
+   */
+  bookkeeping<T>(run: () => T): T {
+    const was = this.keeping;
+    this.keeping = true;
+    try {
+      return run();
+    } finally {
+      this.keeping = was;
+    }
+  }
+
+  /** `storage.transactionSync`, at a transaction boundary. */
+  transactionSync<T>(run: () => T): T {
+    this.covered = false;
+    try {
+      return this.storage.transactionSync(run);
+    } finally {
+      this.covered = false;
+    }
+  }
+
+  /** `storage.transaction`, at a transaction boundary. */
+  async transaction<T>(run: () => Promise<T>): Promise<T> {
+    this.covered = false;
+    try {
+      return await this.storage.transaction(run);
+    } finally {
+      this.covered = false;
+    }
+  }
+
+  private bump(): void {
+    // No catch: a bump that cannot be written fails the write it was for.
+    this.raw.exec(
+      `INSERT INTO _substrat_meta (key, value) VALUES (?, '1')
+       ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`,
+      WRITE_REVISION_KEY,
+    );
+    this.covered = true;
+    queueMicrotask(() => {
+      this.covered = false;
+    });
+  }
+
+  private isWrite(query: string): boolean {
+    let known = this.writes.get(query);
+    if (known === undefined) {
+      known = isWriteStatement(query);
+      if (this.writes.size >= 512) this.writes.clear();
+      this.writes.set(query, known);
+    }
+    return known;
+  }
+}
+
+/** What a write into a wiped copy answers (#1722): the scope's data lives in another script now. */
+const CARRIED_AWAY_WRITE_REFUSAL =
+  'this copy of the scope was carried to another script and wiped (#1722); it takes no writes — ' +
+  'a request that reaches it was routed before the move';
 
 function toRpcError(err: unknown): Error {
   if (err instanceof Error) {
@@ -963,6 +1098,21 @@ export function defineScopeDO(
      * `runInDurableObject` — rather than assuming the runtime's documented behaviour.
      */
     private webSocketMessagesHandled = 0;
+    /**
+     * #1722: while true, a write does not advance the write revision. True through the wake's
+     * own idempotent DDL (which every wake re-runs, and which changes nothing) and through a
+     * load's drop-and-replay, which sets the revision itself once the store is rebuilt.
+     */
+    private revisionSuspended = true;
+    /**
+     * #1722 (Codex #2008 r7): whether this store is a copy a carry wiped (it holds the
+     * `carried_away` tombstone). Such a store takes no write: a stale request still routed here
+     * after the wipe would land a write that belongs to no live copy. A load, a rollback's
+     * restore, ends it. Read on every wake and after every load.
+     */
+    private carriedAwayCopy = false;
+    /** #1722: the write revision, and the one way this object opens a transaction. */
+    private readonly revision: WriteRevision;
 
     constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
       super(ctx, env);
@@ -971,11 +1121,23 @@ export function defineScopeDO(
       // subscriber's ping still reaches `webSocketMessage` and pins the DO in memory —
       // exactly the hibernation cost `acceptWebSocket` (below) exists to avoid.
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
-      this.sql = ctx.storage.sql;
+      // #1722: the ONE handle this object writes through and the one way it opens a transaction,
+      // so every write advances the write revision a carry's restore is fenced on, inside the
+      // transaction that commits it. Nothing else here may take the raw handle or open a
+      // transaction on `ctx.storage` itself (`carried-copy.test.ts` in the kernel holds that).
+      this.revision = new WriteRevision(
+        ctx.storage.sql,
+        ctx.storage,
+        () => this.revisionSuspended,
+        () => (this.carriedAwayCopy ? CARRIED_AWAY_WRITE_REFUSAL : null),
+      );
+      this.sql = this.revision.sql;
       for (const stmt of splitSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
       }
       this.applySpineColumnAdditions();
+      this.revisionSuspended = false;
+      this.carriedAwayCopy = this.metaValue(CARRIED_AWAY_KEY) !== null;
 
       for (const registration of modules) this.registerModule(registration);
       for (const [name, handler] of Object.entries(bareOps)) this.defineOperation(name, handler);
@@ -1277,7 +1439,7 @@ export function defineScopeDO(
         (offset, count) =>
           this.sql
             .exec(
-              `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ? OFFSET ?`,
+              `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL AND ${emittedHere()} ORDER BY id LIMIT ? OFFSET ?`,
               count,
               offset,
             )
@@ -1485,7 +1647,7 @@ export function defineScopeDO(
             const event: ImportedEvent = structuredClone({ ...fact, source });
             this.causedBy = e.id;
             try {
-              await this.ctx.storage.transaction(async () => {
+              await this.revision.transaction(async () => {
                 // As the producer's principal: real checks against the grants this vertical's
                 // `peers` gave it; its emits carry `{ vertical, scope }` and what they passed.
                 await imp.handler(this.importContext(tenantId, scopeId, peerSubject), event);
@@ -1861,7 +2023,7 @@ export function defineScopeDO(
       switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
     ): Promise<SwitchedOff[]> {
       return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => {
+        this.revision.transactionSync(() => {
           for (const t of tuples) {
             const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
             this.sql.exec(seat.sql, ...seat.params);
@@ -2300,7 +2462,7 @@ export function defineScopeDO(
         // commit together, or a throw (from either) rolls domain writes AND
         // emitted events back as one — verified across `await` in workerd.
         try {
-          await this.ctx.storage.transaction(async () => {
+          await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal,
               tenantId,
@@ -2848,7 +3010,7 @@ export function defineScopeDO(
         // the reason it is read there: that is where this call holds the DO to itself.
         const liveSince = this.liveHighWaterMark();
         try {
-          await this.ctx.storage.transaction(async () => {
+          await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal, tenantId, scopeId, undefined, connectionId,
               undefined, undefined, undefined, 'attachments.upload',
@@ -3027,7 +3189,7 @@ export function defineScopeDO(
         // #938: same mark-then-settle pair as the upload path above.
         const liveSince = this.liveHighWaterMark();
         try {
-          await this.ctx.storage.transaction(async () => {
+          await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal, tenantId, scopeId, undefined, connectionId,
               undefined, undefined, undefined, 'attachments.remove',
@@ -3115,7 +3277,7 @@ export function defineScopeDO(
     async attachmentTextRecord(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean> {
       await this.ensureMigrations();
       return this.queue.enqueue(async () =>
-        this.ctx.storage.transactionSync(() =>
+        this.revision.transactionSync(() =>
           recordAttachmentText(doSpineSql(this.sql), attachmentId, outcome, new Date().toISOString()),
         ),
       );
@@ -3324,7 +3486,7 @@ export function defineScopeDO(
       at: string,
     ): Promise<SwitchOutcome & { instance: string }> {
       const outcome = await this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
+        this.revision.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
       );
       // #1819: the instance that applied it, which the rewind hold's release rule reads.
       return { ...outcome, instance: this.instanceId };
@@ -3342,7 +3504,7 @@ export function defineScopeDO(
       // deployment whose handlers would run, never from the platform's request.
       const imports = this.crossVertical.consumes();
       return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => moveImportCursor(this.switchSql(), { ...input, imports })),
+        this.revision.transactionSync(() => moveImportCursor(this.switchSql(), { ...input, imports })),
       );
     }
 
@@ -3352,7 +3514,7 @@ export function defineScopeDO(
      */
     async switchPeer(vertical: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
       return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => switchPeer(this.switchSql(), { vertical, scopeId, to, at })),
+        this.revision.transactionSync(() => switchPeer(this.switchSql(), { vertical, scopeId, to, at })),
       );
     }
 
@@ -3525,7 +3687,7 @@ export function defineScopeDO(
      */
     switchHoldOn(scopeId: string, moduleId: string, claimIds: string[]): void {
       this.switchHoldsTable();
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         const seq = (
           this.sql
             .exec(
@@ -3565,7 +3727,7 @@ export function defineScopeDO(
     switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, token: number): void {
       this.switchHoldsTable();
       const at = new Date().toISOString();
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         for (const moduleId of moduleIds) {
           this.sql.exec(
             `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
@@ -3595,7 +3757,7 @@ export function defineScopeDO(
     switchHoldJoin(scopeId: string, moduleId: string, claimIds: string[]): void {
       this.switchHoldsTable();
       const at = new Date().toISOString();
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         for (const claimId of claimIds) {
           this.sql.exec(
             `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
@@ -3672,7 +3834,7 @@ export function defineScopeDO(
     /** Release these claims on one module, or every claim on the scope when `claimIds` is null. */
     switchHoldRelease(scopeId: string, moduleId: string | null, claimIds: string[] | null): void {
       this.switchHoldsTable();
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         if (moduleId === null || claimIds === null) {
           this.sql.exec('DELETE FROM _substrat_switch_holds WHERE scope_id = ?', scopeId);
           this.sql.exec('DELETE FROM _substrat_switch_hold_ons WHERE scope_id = ?', scopeId);
@@ -3721,7 +3883,7 @@ export function defineScopeDO(
         // and the event's `occurredAt` are one fact, and two clock reads could disagree.
         const now = instant.parse(new Date().toISOString());
         let outcome: CapabilityExchange | null = null;
-        await this.ctx.storage.transaction(async () => {
+        await this.revision.transaction(async () => {
           outcome = await exchangeCapability(
             {
               sql: doSpineSql(this.sql),
@@ -3780,7 +3942,7 @@ export function defineScopeDO(
       await this.ensureMigrations();
       return await this.queue.enqueue(
         () =>
-          this.ctx.storage.transactionSync(() =>
+          this.revision.transactionSync(() =>
             revokeCapabilityAsPlatform(doSpineSql(this.sql), id, actor, instant.parse(new Date().toISOString())),
           ) ?? null,
       );
@@ -3943,7 +4105,7 @@ export function defineScopeDO(
       // `jobRunInsert`: an `await` between them is an output-gate boundary, and the
       // point of doing this in one RPC is that there is no boundary to be evicted
       // at. Same reason `SCHEDULE_STATE_REBUILD` insists on it.
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         this.sql.exec(
           `INSERT INTO _substrat_job_runs
              (id, module_id, job, instance, payload, status, cursor, counters, attempts,
@@ -4090,7 +4252,7 @@ export function defineScopeDO(
       // `transactionSync` with both statements inline — NOT `await
       // this.jobRunPatch(...)` then the delete. The await is an output-gate
       // boundary, which is precisely the gap this method exists to close.
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         this.sql.exec(
           JOB_RUN_PATCH_SQL,
           patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
@@ -4177,7 +4339,7 @@ export function defineScopeDO(
           const key = `${moduleId}@${migration.version}`;
           if (this.applied.has(key)) continue;
           try {
-            await this.ctx.storage.transaction(async () => {
+            await this.revision.transaction(async () => {
               const already = this.sql
                 .exec(
                   'SELECT 1 FROM _substrat_migrations WHERE module_id = ? AND version = ?',
@@ -4191,8 +4353,15 @@ export function defineScopeDO(
                 // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
                 // spine guard's REFERENCES rule is applied here.
                 assertNoSpineReference(migration.sql, `migration ${key}`);
-                for (const stmt of splitSqlStatements(migration.sql)) {
-                  this.sql.exec(stmt);
+                // #1722: not counted per statement, so `total_changes()` measures the migration
+                // alone. The journal row below is a write, and advances the revision once.
+                this.revisionSuspended = true;
+                try {
+                  for (const stmt of splitSqlStatements(migration.sql)) {
+                    this.sql.exec(stmt);
+                  }
+                } finally {
+                  this.revisionSuspended = false;
                 }
                 const after = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
                 this.sql.exec(
@@ -4253,7 +4422,7 @@ export function defineScopeDO(
           `SELECT o.* FROM _substrat_outbox o
            LEFT JOIN _substrat_deliveries d
              ON d.event_id = o.id AND d.consumer_module = ?
-           WHERE o.type = ?
+           WHERE o.type = ? AND ${emittedHere('o.')}
              AND (d.event_id IS NULL
                   OR (d.next_attempt_at IS NOT NULL AND d.next_attempt_at <= ?))
            ORDER BY o.id`,
@@ -4272,6 +4441,58 @@ export function defineScopeDO(
         }
       }
       return { events, undecodable };
+    }
+
+    /**
+     * Whether this scope was loaded as a copy (#2005) — its `_substrat_copy_origin` row. A CP-less
+     * coordinator has no directory to read a scope's kind from, so this is how it holds a copy's
+     * executor deliveries inert; a coordinator with a directory asks that instead.
+     */
+    isCopy(): boolean {
+      return this.sql.exec(IS_COPY_SQL).toArray().length > 0;
+    }
+
+    /** Mark this scope a copy (#2005, `markCopyOrigin`): the repair of a copy that predates the
+     *  marker. Answers whether this call stamped it; an existing origin is left as it is. */
+    markCopy(): boolean {
+      let marked = false;
+      this.revision.transactionSync(() => {
+        marked = this.revision.bookkeeping(() => markCopyOrigin(this.switchSql(), new Date().toISOString()));
+      });
+      return marked;
+    }
+
+    /**
+     * Remove a mistaken copy marker (#2005, `clearCopyMarker`); a real load's mark is kept. A
+     * clear is a write like any other (Codex #2008 r11), never bookkeeping: it lets the store run
+     * work a copy holds inert, so it advances the write revision, and a carry that exported
+     * before it cannot wipe the repaired store. That carry's wipe keeps it instead.
+     */
+    clearCopyMark(
+      /** The store the caller means (Codex #2008 r12–r13): the platform's reconcile of the store a
+       *  carry landed names that carry's load stamp and the revision it read, so a store another
+       *  load has replaced since (a governed restore, whose copy marker is genuine) is refused,
+       *  compared here, in the clear's own transaction. Absent for staff's correction. */
+      expect?: LoadMarker,
+    ): 'cleared' | 'absent' | 'carries-events' | 'changed' {
+      return this.revision.transactionSync(() => {
+        const from = this.metaValue(WRITE_REVISION_KEY);
+        if (expect && (this.metaValue(LOAD_STAMP_KEY) !== expect.loadStamp || from !== expect.revision)) {
+          return 'changed' as const;
+        }
+        const outcome = clearCopyMarker(this.switchSql());
+        // The clear's own revisions, so a carry's refused wipe can tell that this clear, and
+        // nothing else, is what changed here since its export (`COPY_MARK_CLEARED_KEY`).
+        if (outcome === 'cleared') {
+          this.sql.exec(
+            `INSERT INTO _substrat_meta (key, value) VALUES (?, ?)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+            COPY_MARK_CLEARED_KEY,
+            JSON.stringify({ from, to: this.metaValue(WRITE_REVISION_KEY) }),
+          );
+        }
+        return outcome;
+      });
     }
 
     /**
@@ -4626,7 +4847,7 @@ export function defineScopeDO(
       let result: ScopeQueryResult | undefined;
       const rollback = new Error('read-only console rollback');
       try {
-        await this.ctx.storage.transaction(async () => {
+        await this.revision.transaction(async () => {
           const cursor = this.sql.exec(stmt);
           const columns = cursor.columnNames;
           const rows: unknown[][] = [];
@@ -4720,11 +4941,36 @@ export function defineScopeDO(
       return defs.map(({ name, sql }) => {
         // Raw positional rows, cells as-is (blobs kept as bytes, not nulled like a UI
         // read) so the dump reloads faithfully. The name is from the live schema.
-        const cursor = this.sql.exec(`SELECT * FROM "${name}"`);
+        // #1722: the load stamp and the write revision describe THIS store, so they never leave
+        // in a dump (`exportDumpStamped` hands the stamp over beside one); every load writes its own.
+        const cursor =
+          name === '_substrat_meta'
+            ? this.sql.exec(
+                `SELECT * FROM "${name}" WHERE key NOT IN (${STORE_LOCAL_META_KEYS.map(() => '?').join(', ')})`,
+                ...STORE_LOCAL_META_KEYS,
+              )
+            : this.sql.exec(`SELECT * FROM "${name}"`);
         const columns = cursor.columnNames;
         const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
         return { name, ddl: sql, columns, rows };
       });
+    }
+
+    /**
+     * `exportDump`, with the store's load stamp read in the same call (#1722): the stamp a
+     * carry's fenced wipe of this copy later expects. A store no load has stamped gets one now,
+     * so the stamp handed out is present exactly while nothing has been loaded here since. One
+     * synchronous method, so no load can land between the dump and the stamp.
+     */
+    exportDumpStamped(): { tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null } {
+      let stamp = this.loadStamp();
+      // A wiped copy takes no write, a stamp included; the carry refuses its tombstone anyway.
+      if (!stamp && !this.carriedAwayCopy) {
+        stamp = ulid();
+        this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, stamp);
+      }
+      // Read after the stamp's own write, so it is the revision the store holds as it is dumped.
+      return { tables: this.exportDump(), loadStamp: stamp, revision: this.metaValue(WRITE_REVISION_KEY) };
     }
 
     /**
@@ -4851,7 +5097,7 @@ export function defineScopeDO(
       // runtime forbids a manual BEGIN through `sql.exec`, and this body is wholly
       // synchronous, which is the one case the sync API is for (it commits at the
       // first await, and there is none). It also has to be sync because the caller is.
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         for (const stmt of splitSqlStatements(SCHEDULE_STATE_REBUILD)) this.sql.exec(stmt);
       });
     }
@@ -4863,6 +5109,10 @@ export function defineScopeDO(
         switchOff,
         sourceScopeId,
         exact,
+        loadStamp,
+        expect,
+        resolveKept,
+        markCopy,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
@@ -4872,6 +5122,20 @@ export function defineScopeDO(
         sourceScopeId?: ScopeId;
         /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
         exact?: boolean;
+        /** #1722: the stamp this load leaves (`LOAD_STAMP_KEY`) — a carry names one, so the copy
+         *  it lands can later be wiped under a fence. Without one, a load leaves no stamp. */
+        loadStamp?: string;
+        /** #1722: load only if this store still holds this load stamp (null: none) and, when
+         *  `revision` is given, this write revision (null: never written). Compared inside the
+         *  load's transaction, before the first drop; a mismatch throws `precondition_failed`
+         *  and the store is untouched. */
+        expect?: { loadStamp: string | null; revision?: string | null };
+        /** #1722: the staff resolution of a kept copy, the one load a kept copy takes. It must be
+         *  one (the marker set) at this write revision, the one the operator acted on. */
+        resolveKept?: { revision: string | null; loadStamp?: string | null };
+        /** #2005: the directory says this scope is not primary, so mark it a copy in its own
+         *  storage (`markCopyOrigin`) — a carry of a copy that predates the marker brings none. */
+        markCopy?: boolean;
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -4895,7 +5159,12 @@ export function defineScopeDO(
       // A dump written before indexes were excluded may still carry them; skipped
       // rather than failing a restore over data about to be recomputed.
       // Matched without case, as SQLite resolves a table name (#1883 review).
-      const replayable = tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
+      // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
+      const replayable = capabilitiesForLoad(
+        tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase())),
+        destScopeId,
+        sourceScopeId,
+      );
       // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
       // in the string it is given, so a `ddl` with anything appended to its CREATE
       // TABLE executed that too — with entirely plain identifiers, which is why no
@@ -4907,67 +5176,112 @@ export function defineScopeDO(
       if (exact && !sourceScopeId) {
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
       }
-      const switched = await this.ctx.storage.transaction(async () => {
-        this.sql.exec('PRAGMA defer_foreign_keys = ON');
-        // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
-        const existing = this.sql
-          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
-          .toArray() as unknown as { name: string }[];
-        // Search index tables are left alone here and rebuilt below (#827): dropping a
-        // shadow table directly is an error, and `sqlite_master` order would reach one
-        // before its virtual table.
-        for (const { name } of existing) {
-          if (isSearchIndexTable(name.toLowerCase())) continue;
-          this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+      const switched = await this.revision.transaction(async () => {
+        const before = this.loadMarker();
+        // #1722 (Codex #2008 r7): a kept copy holds writes nothing else has. No load replaces it
+        // except its own resolution, and that only at the revision the operator acted on.
+        const kept = this.metaValue(KEPT_DIVERGENT_KEY);
+        if (resolveKept) {
+          if (!kept) throw substratError('precondition_failed', 'no kept copy here to resolve; nothing was loaded');
+          if (
+            before.revision !== resolveKept.revision ||
+            (resolveKept.loadStamp !== undefined && before.loadStamp !== resolveKept.loadStamp)
+          ) {
+            throw substratError('precondition_failed', 'the kept copy changed since it was read; nothing was loaded');
+          }
+        } else if (kept) {
+          throw substratError('conflict', KEPT_COPY_REFUSAL);
         }
-        // A vertical's tables take the dump's own DDL. The spine never does (#1883): a dump
-        // that declared a column the checker compares on as COLLATE NOCASE would otherwise
-        // decide how this DO's permission checks match. Every `_substrat_*` table is built
-        // from KERNEL_DDL instead, and the dump contributes only rows, by column name
-        // (`spineRowsInsert`), a missing column taking the kernel's default.
-        for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(t.ddl);
-        // KERNEL_DDL also builds what the dump did not carry (#321). A dump captured from a
-        // WORLD that stores some `_substrat_*` tables ELSEWHERE carries only a subset — an
-        // `@substrat-run/adapter-sqlite` scope file keeps `_substrat_roles` /
-        // `_substrat_tenant_tuples` in its DIRECTORY database, so its per-scope dump omits
-        // them, and without them the very next permission check would raise a bare `no such
-        // table: _substrat_roles`. Roles land empty here and are re-projected by the
-        // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
-        // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
-        // leaves to it.
-        for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
-        this.applySpineColumnAdditions();
-        const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
-        assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
-        // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
-        // untyped column the checker never reads.
-        for (const t of replayable) {
-          if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
+        if (expect) {
+          if (before.loadStamp !== expect.loadStamp || (expect.revision !== undefined && before.revision !== expect.revision)) {
+            throw substratError('precondition_failed', 'scope store changed since it was read; nothing was loaded');
+          }
         }
-        for (const t of replayable) {
-          const insert = dumpRowsInsert(t, columnsOf);
-          for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
+        // #1722: the drops take `_substrat_meta` with them; the revision is written back below.
+        this.revisionSuspended = true;
+        try {
+          this.sql.exec('PRAGMA defer_foreign_keys = ON');
+          // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
+          const existing = this.sql
+            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
+            .toArray() as unknown as { name: string }[];
+          // Search index tables are left alone here and rebuilt below (#827): dropping a
+          // shadow table directly is an error, and `sqlite_master` order would reach one
+          // before its virtual table.
+          for (const { name } of existing) {
+            if (isSearchIndexTable(name.toLowerCase())) continue;
+            this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+          }
+          // A vertical's tables take the dump's own DDL. The spine never does (#1883): a dump
+          // that declared a column the checker compares on as COLLATE NOCASE would otherwise
+          // decide how this DO's permission checks match. Every `_substrat_*` table is built
+          // from KERNEL_DDL instead, and the dump contributes only rows, by column name
+          // (`spineRowsInsert`), a missing column taking the kernel's default.
+          for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(t.ddl);
+          // KERNEL_DDL also builds what the dump did not carry (#321). A dump captured from a
+          // WORLD that stores some `_substrat_*` tables ELSEWHERE carries only a subset — an
+          // `@substrat-run/adapter-sqlite` scope file keeps `_substrat_roles` /
+          // `_substrat_tenant_tuples` in its DIRECTORY database, so its per-scope dump omits
+          // them, and without them the very next permission check would raise a bare `no such
+          // table: _substrat_roles`. Roles land empty here and are re-projected by the
+          // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
+          // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
+          // leaves to it.
+          for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+          this.applySpineColumnAdditions();
+          const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
+          assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
+          // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
+          // untyped column the checker never reads.
+          for (const t of replayable) {
+            if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
+          }
+          for (const t of replayable) {
+            const insert = dumpRowsInsert(t, columnsOf);
+            for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
+          }
+          // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
+          // not this one. Dropped, so a restore never carries a receipt over; the repair
+          // projection that follows writes this scope's own.
+          this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+          // #1722: whatever stamp an export read here no longer describes this store, so every load
+          // replaces it: with the carry's own, or with none. And the write revision moves on from
+          // where it stood before the drops, so it never goes back.
+          if (loadStamp) {
+            this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
+          } else {
+            this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, LOAD_STAMP_KEY);
+          }
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`,
+            WRITE_REVISION_KEY,
+            String(Number(before.revision ?? 0) + 1),
+          );
+          // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
+          // text of attachments the dump did not bring back, and queue extraction for those
+          // it brought back without text — the bytes decide what that run finds.
+          const now = new Date().toISOString();
+          // #1686: nothing the source queued runs in a copy; a return leaves it all queued. BEFORE
+          // the extraction queue below, which is this scope's own work, not the source's.
+          settleCopiedWork(this.switchSql(), destScopeId, sourceScopeId, now);
+          if (markCopy) markCopyOrigin(this.switchSql(), now);
+          reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
+          // Re-point the restored grants at THIS scope (after the spine exists, so a dump
+          // that carried no tuples table still finds one here).
+          if (destScopeId) {
+            this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact }, new Date().toISOString());
+          }
+          // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
+          // the spine and the re-point. A switch that throws rolls the whole restore back, so
+          // the dump's grants never commit live without the switch that should cover them.
+          return destScopeId && switchOff
+            ? switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff })
+            : [];
+        } finally {
+          this.revisionSuspended = false;
         }
-        // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
-        // not this one. Dropped, so a restore never carries a receipt over; the repair
-        // projection that follows writes this scope's own.
-        this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
-        // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
-        // text of attachments the dump did not bring back, and queue extraction for those
-        // it brought back without text — the bytes decide what that run finds.
-        reconcileAttachmentText(doSpineSql(this.sql), ulid, new Date().toISOString());
-        // Re-point the restored grants at THIS scope (after the spine exists, so a dump
-        // that carried no tuples table still finds one here).
-        if (destScopeId) {
-          this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact }, new Date().toISOString());
-        }
-        // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
-        // the spine and the re-point. A switch that throws rolls the whole restore back, so
-        // the dump's grants never commit live without the switch that should cover them.
-        return destScopeId && switchOff
-          ? switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff })
-          : [];
       });
+      this.carriedAwayCopy = this.metaValue(CARRIED_AWAY_KEY) !== null;
       // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
       // create, so it also repairs an index a dump left stale, and the triggers it
       // recreates are what keep the restored scope in step from here. Skipped for a plan
@@ -4983,6 +5297,17 @@ export function defineScopeDO(
       for (const plan of this.searchPlans.values()) {
         if (!present.has(plan.table)) continue;
         for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
+      }
+      // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
+      // as on a wake. A copy's own events then sort above every copied one, which is what
+      // `emittedHere()` relies on. A dump whose top id is no ULID leaves the floor where it was.
+      const top = (this.sql.exec('SELECT MAX(id) AS id FROM _substrat_outbox').toArray()[0] as { id: string | null } | undefined)?.id;
+      if (top) {
+        try {
+          this.mintEventId.seedFrom(top);
+        } catch {
+          // Not a ULID: nothing this mint could have written, so there is no floor to keep.
+        }
       }
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
@@ -5016,6 +5341,192 @@ export function defineScopeDO(
       this.migrationPromise = undefined;
       this.lastFailure = null;
       return switched;
+    }
+
+    /**
+     * `importDump` with its two refusals answered as values (#1722): across this RPC a throw
+     * carries only its message, and the host has to tell "the store moved since it was read"
+     * (`changed`, 412) and "this store is a kept copy" (`kept`, 409) from a failure.
+     */
+    async importDumpChecked(
+      tables: ScopeDumpTable[],
+      destScopeId: ScopeId,
+      opts: Parameters<this['importDump']>[2],
+    ): Promise<{ refused: 'changed' | 'kept' } | { refused: false; switchedOff: SwitchedOff[] }> {
+      try {
+        return { refused: false, switchedOff: await this.importDump(tables, destScopeId, opts) };
+      } catch (e) {
+        const code = errorCodeOf(e);
+        if (code === 'precondition_failed') return { refused: 'changed' };
+        if (code === 'conflict') return { refused: 'kept' };
+        throw toRpcError(e);
+      }
+    }
+
+    /** The kept-copy marker (#1722), or null when this store is not one. */
+    keptCopy(): KeptCopy | null {
+      const raw = this.metaValue(KEPT_DIVERGENT_KEY);
+      return raw ? (JSON.parse(raw) as KeptCopy) : null;
+    }
+
+    /**
+     * Release a kept copy that is the scope's live store after all (#1722, Codex #2008 r8): a carry
+     * that protected its source when the route read elsewhere, while a rollback was about to bind
+     * it. Clears the marker only, fenced on the write revision read; the data stays as it is.
+     */
+    releaseKeptCopy(
+      revision: string | null,
+      /** The directory says this scope is not primary (#2005): the released store is marked a copy. */
+      markCopy?: boolean,
+      /** The load stamp read with `revision` (Codex #2008 r13): a store a load replaced is refused.
+       *  A kept copy refuses every load but its own resolution, so this holds by construction too. */
+      loadStamp?: string | null,
+    ): { released: true } | { refused: 'changed' | 'not-kept' } {
+      return this.revision.transactionSync(() => {
+        if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' } as const;
+        if (this.metaValue(WRITE_REVISION_KEY) !== revision) return { refused: 'changed' } as const;
+        if (loadStamp !== undefined && this.metaValue(LOAD_STAMP_KEY) !== loadStamp) return { refused: 'changed' } as const;
+        this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, KEPT_DIVERGENT_KEY);
+        if (markCopy) this.revision.bookkeeping(() => markCopyOrigin(this.switchSql(), new Date().toISOString()));
+        return { released: true } as const;
+      });
+    }
+
+    /**
+     * Discard a kept copy (#1722): the staff resolution that wipes it to the tombstone, only if it
+     * is still one at the write revision the operator acted on. The marker goes with the wipe.
+     */
+    async discardKeptCopy(
+      scopeId: ScopeId,
+      revision: string | null,
+      carriedAway: CarriedAway,
+      /** The directory says this scope is not primary (#2005): as `wipeCarried`. */
+      markCopy?: boolean,
+      /** The load stamp read with `revision` (Codex #2008 r13), as `releaseKeptCopy`. */
+      loadStamp?: string | null,
+    ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
+      if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' };
+      try {
+        await this.importDump(carriedAwayDump(carriedAway), scopeId, {
+          sourceScopeId: scopeId,
+          resolveKept: { revision, ...(loadStamp !== undefined ? { loadStamp } : {}) },
+          markCopy: markCopy === true || this.isCopy(), // #2005: as `wipeCarried`
+        });
+        return { discarded: true };
+      } catch (e) {
+        if (errorCodeOf(e) === 'precondition_failed') return { refused: 'changed' };
+        throw toRpcError(e);
+      }
+    }
+
+    /** What a carry's restore into this store expects to find unchanged (#1722): see `LoadMarker`. */
+    loadMarker(): LoadMarker {
+      return { loadStamp: this.metaValue(LOAD_STAMP_KEY), revision: this.metaValue(WRITE_REVISION_KEY) };
+    }
+
+    /** This store's load stamp (#1722), or null when no load has written one. */
+    private loadStamp(): string | null {
+      return this.metaValue(LOAD_STAMP_KEY);
+    }
+
+    private metaValue(key: string): string | null {
+      const row = this.sql.exec(`SELECT value FROM _substrat_meta WHERE key = ?`, key).toArray()[0] as
+        | { value: string }
+        | undefined;
+      return row?.value ?? null;
+    }
+
+    /**
+     * Wipe the copy a carry left in this script (#1722), only if nothing was loaded here since
+     * the carry exported it. A rollback that restored into this DO in the meantime replaced or
+     * cleared the stamp, and its restore stays. Non-terminal, unlike `destroyStorage`: the store is a load of
+     * the `carriedAway` tombstone, so a later restore into it works as on any scope. False when
+     * refused.
+     */
+    async wipeCarried(
+      scopeId: ScopeId,
+      expectLoadStamp: string | null,
+      carriedAway: CarriedAway,
+      {
+        expectRevision,
+        protectIfChanged,
+        markCopy,
+      }: {
+        /** The write revision the carry's export read; absent from a platform that read none. */
+        expectRevision?: string | null;
+        /** The caller read that the scope does not route here (Codex #2008 r8): a copy that changed
+         *  in ANY way since the export, a load included, holds something the scope's live store may
+         *  not, so it is kept rather than left an unmarked orphan. */
+        protectIfChanged?: boolean;
+        /** The directory says this scope is not primary (#2005, Codex #2008 r10): the store is a
+         *  copy whatever its own marker says, which a copy made before the marker does not carry. */
+        markCopy?: boolean;
+      } = {},
+    ): Promise<boolean> {
+      // A store marked now stays one: the copy-origin row goes on the tombstone (the wipe), or
+      // on the copy kept (a refusal), and never counts as a data write (`bookkeeping`).
+      const copy = markCopy === true || this.isCopy();
+      try {
+        await this.importDump(carriedAwayDump(carriedAway), scopeId, {
+          sourceScopeId: scopeId,
+          expect: { loadStamp: expectLoadStamp, ...(expectRevision !== undefined ? { revision: expectRevision } : {}) },
+          // #2005: a copy wiped is still a copy. The drop-and-replay takes the copy-origin row
+          // with everything else, so it is written again, or the tombstone would read as primary.
+          markCopy: copy,
+        });
+        return true;
+      } catch (e) {
+        const code = errorCodeOf(e);
+        // Only on the directory's word: the store's own marker, read before the refused load, may
+        // have been cleared by staff since (Codex #2008 r12), and marking it again would undo that.
+        if (markCopy === true) {
+          this.revision.transactionSync(() =>
+            this.revision.bookkeeping(() => markCopyOrigin(this.switchSql(), carriedAway.at)),
+          );
+        }
+        if (code === 'conflict') {
+          // Already a kept copy, and the scope has been carried away from it again (Codex #2008
+          // r9). That is recorded on the marker, which is a write: it advances the revision, so a
+          // release (staff or a carry's auto-release) that read the revision before this, when the
+          // scope still routed here, fails its compare-and-set rather than clearing the marker of
+          // a copy the scope has just left.
+          this.revision.transactionSync(() => {
+            const raw = this.metaValue(KEPT_DIVERGENT_KEY);
+            if (!raw) return;
+            const kept = { ...(JSON.parse(raw) as KeptCopy), leftAgain: { to: carriedAway.to, at: carriedAway.at } };
+            this.sql.exec(`UPDATE _substrat_meta SET value = ? WHERE key = ?`, JSON.stringify(kept), KEPT_DIVERGENT_KEY);
+          });
+          return false;
+        }
+        if (code !== 'precondition_failed') throw toRpcError(e);
+        // Refused. When nothing was LOADED here since the export (the stamp is the one read) but
+        // the store was WRITTEN (the revision moved), the copy holds a write the carry never
+        // copied: protect it in the store itself, decided again inside its own transaction.
+        this.revision.transactionSync(() => {
+          const now = this.loadMarker();
+          const writtenSince =
+            expectRevision !== undefined && now.loadStamp === expectLoadStamp && now.revision !== expectRevision;
+          const changedSince =
+            now.loadStamp !== expectLoadStamp || (expectRevision !== undefined && now.revision !== expectRevision);
+          // A wiped copy holds nothing to protect (and takes no write, the marker included).
+          if (this.carriedAwayCopy || this.metaValue(KEPT_DIVERGENT_KEY)) return;
+          if (!writtenSince && !(protectIfChanged && changedSince)) return;
+          const kept: KeptCopy = { carriedTo: carriedAway.to, keptAt: carriedAway.at, revision: now.revision };
+          this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, KEPT_DIVERGENT_KEY, JSON.stringify(kept));
+          // Codex #2008 r12: changed ONLY by a staff clear of the copy marker — the clear's own
+          // revisions span exactly the export's and the store's now — so the data is what the carry
+          // copied, and only the fresher classification is not. Recorded on the marker with the
+          // revision this keep committed at (the same run: no second bump), which the platform's
+          // discard is fenced on once it has brought the clear to where the scope runs.
+          const cleared = this.metaValue(COPY_MARK_CLEARED_KEY);
+          const span = cleared ? (JSON.parse(cleared) as { from: string | null; to: string | null }) : null;
+          if (writtenSince && span && span.from === expectRevision && span.to === now.revision) {
+            const settled: KeptCopy = { ...kept, clearedOnly: { revision: this.metaValue(WRITE_REVISION_KEY) } };
+            this.sql.exec(`UPDATE _substrat_meta SET value = ? WHERE key = ?`, JSON.stringify(settled), KEPT_DIVERGENT_KEY);
+          }
+        });
+        return false;
+      }
     }
 
     /**
@@ -5195,7 +5706,7 @@ export function defineScopeDO(
             const rows = this.sql
               .exec(
                 `SELECT * FROM _substrat_outbox o
-                 WHERE o.type = ?
+                 WHERE o.type = ? AND ${emittedHere('o.')}
                    AND NOT EXISTS (
                      SELECT 1 FROM _substrat_deliveries d
                      WHERE d.event_id = o.id AND d.consumer_module = ?
@@ -5232,7 +5743,7 @@ export function defineScopeDO(
               // emit records no operation either.
               this.causedBy = event.id;
               try {
-                await this.ctx.storage.transaction(async () => {
+                await this.revision.transaction(async () => {
                   const ctx = this.operationContext(this.systemPrincipal, tenantId, scopeId, {
                     system: mod.id,
                   });
@@ -5462,7 +5973,7 @@ export function defineScopeDO(
        * owns that stack itself. It is exactly this asymmetry that makes `RunSub`
        * closure-shaped rather than an enter/rollback/release triple.
        */
-      const runSub: RunSub = (_depth, fn) => this.ctx.storage.transaction(fn);
+      const runSub: RunSub = (_depth, fn) => this.revision.transaction(fn);
 
       // Lifted so `grant` reuses the SAME check the operation itself passes —
       // a delegation check that could differ from the operation's would be a
@@ -5989,7 +6500,7 @@ export function defineScopeDO(
       // serializes but does not roll back, and a role insert that throws part-way must not leave
       // the receipt (or a half-replaced role set) behind for `servesTenant` to trust.
       return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => {
+        this.revision.transactionSync(() => {
           // #1738: the receipt `servesTenant` reads. First writer wins: absent or equal is written,
           // a receipt for ANOTHER tenant refuses the whole projection (K-3), before a single row
           // moves, so a misdirected projection can never re-point a scope or leave its roles behind.

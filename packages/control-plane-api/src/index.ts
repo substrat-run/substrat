@@ -17,7 +17,7 @@ export {
   firstBuilderAuth,
   confinedTenant,
 } from './auth.js';
-export { relayConnectionUpsert, ConnectionRelayError } from './connection-relay.js';
+export { relayConnectionUpsert, ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 export { relayConnectUrl, ConnectUrlRelayError } from './connect-url.js';
 export type { ConnectFlowSpec, ConnectUrlRelayOptions } from './connect-url.js';
 export {
@@ -67,6 +67,7 @@ export {
   type PlatformDrainOptions,
   type ArchiveScopeDeps,
   type PlatformRequestHandler,
+  type PlatformDrainContext,
   type PlatformRequestContext,
   type PlatformRequestOutcome,
   type PlatformDrainReport,
@@ -78,6 +79,13 @@ export {
 export { reconcilePayloadFor, reconcileThenReassert } from './reconcile.js';
 export type { ReconcilePayload, ReconcileGatherAdmin } from './reconcile.js';
 export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
+// #1978: moving here from the kernel — the drain is its only reader.
+export {
+  isTerminalDispatchFailure,
+  isTerminalProviderError,
+  providerErrorStatus,
+  RETRYABLE_CLIENT_STATUSES,
+} from './provider-error.js';
 export type {
   VerticalClientOptions,
   ProvisionInstanceInput,

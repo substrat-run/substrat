@@ -11,6 +11,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox, type FetchLike } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { registerScriveConnector, scriveCallbackPath } from '@substrat-run/connector-scrive';
 import {
   EMPLOYEE_SELF,
@@ -90,6 +91,7 @@ export interface DemoWorld extends MeridianInstance {
 export function buildDemoHost(dir: string, scrive?: ScriveConfig): SqliteScopeHost {
   const host = new SqliteScopeHost({
     dir,
+    attachmentExtractors: defaultAttachmentExtractors(), // K-43: the node host's parsers
     // A `SecretBox` is what lets this host hold a connection at all, and since
     // #687 every Meridian instance holds one: `hr/issue-employment-contract`
     // seals each signatory's address to the Scrive connection's public key, so a

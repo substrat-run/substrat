@@ -55,6 +55,7 @@
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/attachment-extractors": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",

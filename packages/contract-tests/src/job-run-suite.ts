@@ -1057,5 +1057,35 @@ export function jobRunContractSuite(
       expect(untouched?.attempts).toBe(0);
       expect(untouched?.lastError).toBeNull();
     });
+
+    // #1686: a run copied mid-walk is the source's work. The copy is an active scope the
+    // drive reaches like any other, so it would otherwise walk the rest a second time.
+    it('a fork never drives a run the source had in flight; a return resumes it', async () => {
+      const s = await newScope();
+      const run = await host.startJobRun(t, s, {
+        moduleId: JOBS_MODULE,
+        job: 'walk',
+        instance: 'copied',
+        payload: { total: 4, chunk: 2 },
+      });
+      expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, advanced: 1, completed: 0 });
+      expect(await items(s)).toEqual(['item-0', 'item-1']);
+      const dump = await host.admin.exportScope(staff, t, s);
+
+      const fork = scopeId.parse(ulid());
+      await host.importScope(staff, { tenantId: t, scopeId: fork, vertical: 'jobs-vertical' }, dump);
+      expect((await host.runDueJobs(t, fork)).attempted).toBe(0);
+      expect(await items(fork)).toEqual(['item-0', 'item-1']);
+      expect(await runOf(fork, run.id)).toMatchObject({
+        status: 'failed',
+        lastError: expect.stringMatching(new RegExp(`^not carried: copied from scope ${s}`)),
+        cursor: 2,
+      });
+
+      // The twin: the same dump back in its own scope is still in flight, and finishes.
+      await host.restoreScope(staff, t, s, dump);
+      expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
+      expect(await items(s)).toEqual(['item-0', 'item-1', 'item-2', 'item-3']);
+    });
   });
 }

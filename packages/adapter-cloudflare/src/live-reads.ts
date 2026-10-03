@@ -43,11 +43,12 @@ export const LIVE_SCOPE_HEADER = 'x-substrat-live-scope';
  * establish whether they ever worked on that hostname. One header makes the fallback a
  * fact the client can log, display, and report.
  *
- * Defined in the kernel (#1859), because the pure host's `501` names it too and a
- * vertical's dev server should not import this adapter to spell it. Re-exported here so
- * `host.ts` and `scope-do.ts` keep reading every wire name from this one file.
+ * Defined in `@substrat-run/contracts` (#1859, #1978), because the pure host's `501` names
+ * it too and a vertical's dev server should not import this adapter to spell it.
+ * Re-exported here so `host.ts` and `scope-do.ts` keep reading every wire name from this
+ * one file.
  */
-export { LIVE_MODE_HEADER, type LiveRefusal } from '@substrat-run/kernel';
+export { LIVE_MODE_HEADER, type LiveRefusal } from '@substrat-run/contracts';
 
 /**
  * Cloudflare's own per-request marker for orange-to-orange routing.

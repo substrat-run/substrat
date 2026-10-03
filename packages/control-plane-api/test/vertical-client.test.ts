@@ -642,6 +642,197 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
 });
 
 /**
+ * #1722: the fenced wipe of a carried copy. Only the deployment's own proof that it cannot fence
+ * (a 404, a 501, an SPA shell) becomes `'unfenced'`, the one answer that lets the caller wipe
+ * unconditionally instead. A failure in transit may have wiped or not, so it surfaces as one.
+ */
+describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
+  const input = { scopeId: s, expectLoadStamp: 'stamp-1', carriedTo: 'v2-script', at: '2026-10-03T00:00:00.000Z' };
+  const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string, init?: RequestInit) => {
+        seen.push({ path: new URL(u).pathname, body: JSON.parse(String(init?.body)) });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('posts the stamp and the tombstone and reads the outcome, a refusal included', async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    await expect(answering(() => Response.json({ wiped: true }), seen).wipeCarriedCopy(input)).resolves.toEqual({ wiped: true });
+    await expect(answering(() => Response.json({ wiped: false })).wipeCarriedCopy(input)).resolves.toEqual({ wiped: false });
+    expect(seen).toEqual([{ path: '/internal/wipe-carried', body: input }]);
+    // The revision the export read rides along when there is one.
+    const withRevision: { path: string; body: unknown }[] = [];
+    await answering(() => Response.json({ wiped: true }), withRevision).wipeCarriedCopy({ ...input, expectRevision: '7' });
+    expect(withRevision[0]!.body).toEqual({ ...input, expectRevision: '7' });
+  });
+
+  it.each([
+    ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
+    ['a host without the method (501)', () => Response.json({ error: 'redeploy it' }, { status: 501 })],
+    ['the HTML shell an SPA fallback serves', () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })],
+  ])('%s is unfenced', async (_name, res) => {
+    await expect(answering(res).wipeCarriedCopy(input)).resolves.toBe('unfenced');
+  });
+
+  // Codex #2008 r1: a 200 whose body fails to read is NOT a deployment that predates the route.
+  // The fenced wipe may have committed before the answer was lost; reading it as unfenced would
+  // send the caller to the unconditional fallback, which the fence exists to prevent.
+  it('a 200 whose body fails to read is a failure, never unfenced', async () => {
+    const broken = () =>
+      new Response(new ReadableStream({ start: (c) => c.error(new Error('stream reset')) }), { status: 200 });
+    const err = (await answering(broken).wipeCarriedCopy(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/reading the vertical's answer to wipe-carried failed.*stream reset.*may or may not have acted/);
+  });
+
+  // Codex #2008 r2: only the shell an old deployment serves is skew. A truncated answer from a
+  // deployment that has the route may follow a wipe that committed, so it is a failure.
+  it.each([
+    ['truncated JSON', () => new Response('{"wiped":', { status: 200, headers: { 'content-type': 'application/json' } })],
+    ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ['text/html that is not a document', () => new Response('oops', { status: 200, headers: { 'content-type': 'text/html' } })],
+  ])('%s is a failure, never unfenced', async (_name, res) => {
+    const err = (await answering(res).wipeCarriedCopy(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/neither JSON nor its HTML shell/);
+  });
+
+  it('a transport failure, a 5xx and a wrong shape are failures, never unfenced', async () => {
+    const lost = new VerticalClient({
+      fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const failure = (p: Promise<unknown>) => p.then(() => null, (e: unknown) => e as ControlPlaneError);
+    expect((await failure(lost.wipeCarriedCopy(input)))?.status).toBe(502);
+    expect((await failure(answering(() => Response.json({ error: 'DO reset' }, { status: 500 })).wipeCarriedCopy(input)))?.status).toBe(500);
+    const shape = await failure(answering(() => Response.json({ ok: true })).wipeCarriedCopy(input));
+    expect(shape?.status).toBe(502);
+    expect(shape?.message).toMatch(/may or may not be wiped/);
+  });
+});
+
+describe('VerticalClient.loadMarker (#1722)', () => {
+  const client = (res: () => Response, urls: string[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string) => {
+        urls.push(u);
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('reads the marker, nulls included', async () => {
+    const urls: string[] = [];
+    await expect(client(() => Response.json({ loadStamp: 'st', revision: 'ev' }), urls).loadMarker(s)).resolves.toEqual({
+      loadStamp: 'st',
+      revision: 'ev',
+    });
+    await expect(client(() => Response.json({ loadStamp: null, revision: null })).loadMarker(s)).resolves.toEqual({
+      loadStamp: null,
+      revision: null,
+    });
+    expect(new URL(urls[0]!).pathname).toBe('/internal/load-marker');
+    expect(new URL(urls[0]!).searchParams.get('scopeId')).toBe(s);
+  });
+
+  it.each([
+    ['a 404', () => new Response('404 Not Found', { status: 404 })],
+    ['a 501', () => Response.json({ error: 'redeploy it' }, { status: 501 })],
+    ['the HTML shell', () => new Response('<!DOCTYPE html>\n<html>', { status: 200, headers: { 'content-type': 'text/html' } })],
+  ])('%s is unfenced', async (_n, res) => {
+    await expect(client(res).loadMarker(s)).resolves.toBe('unfenced');
+  });
+
+  it('a body that fails to read, a 5xx and a wrong shape are failures', async () => {
+    const failure = (res: () => Response) => client(res).loadMarker(s).then(() => null, (e: unknown) => e as ControlPlaneError);
+    const broken = () => new Response(new ReadableStream({ start: (c) => c.error(new Error('reset')) }), { status: 200 });
+    expect((await failure(broken))?.status).toBe(502);
+    expect((await failure(() => Response.json({ error: 'x' }, { status: 500 })))?.status).toBe(500);
+    expect((await failure(() => Response.json({ loadStamp: 7, revision: null })))?.status).toBe(502);
+    // Codex #2008 r2: a truncated marker would otherwise drop the fence from the restore.
+    expect((await failure(() => new Response('{"loadStamp":', { status: 200 })))?.status).toBe(502);
+  });
+});
+
+describe('VerticalClient kept copies (#1722)', () => {
+  const client = (res: () => Response, seen: unknown[] = []) =>
+    new VerticalClient({
+      fetch: (async (_u: string, init?: RequestInit) => {
+        if (init?.body) seen.push(JSON.parse(String(init.body)));
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+  const kept = { carriedTo: 'v2', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' };
+
+  it('reads a kept copy, none, and none from a deployment that predates them', async () => {
+    expect(await client(() => Response.json({ kept })).keptCopy(s)).toEqual(kept);
+    expect(await client(() => Response.json({ kept: null })).keptCopy(s)).toBeNull();
+    expect(await client(() => new Response('nope', { status: 404 })).keptCopy(s)).toBeNull();
+    const shape = await client(() => Response.json({ kept: { carriedTo: 1 } })).keptCopy(s).then(() => null, (e: unknown) => e as ControlPlaneError);
+    expect(shape?.status).toBe(502);
+  });
+
+  it('releases with the revision, and reads the refusal; a deployment that predates it is a 501', async () => {
+    const seen: unknown[] = [];
+    expect(await client(() => Response.json({ released: true }), seen).releaseKeptCopy({ scopeId: s, revision: '9' })).toEqual({ released: true });
+    expect(seen).toEqual([{ scopeId: s, revision: '9' }]);
+    expect(await client(() => Response.json({ refused: 'not-kept' })).releaseKeptCopy({ scopeId: s, revision: '9' })).toEqual({ refused: 'not-kept' });
+    const old = await client(() => new Response('nope', { status: 404 })).releaseKeptCopy({ scopeId: s, revision: '9' }).then(() => null, (e: unknown) => e as ControlPlaneError);
+    expect(old?.status).toBe(501);
+  });
+
+  it('discards with the revision, and reads the refusal; a deployment that predates it is a 501', async () => {
+    const seen: unknown[] = [];
+    const input = { scopeId: s, revision: '9', carriedTo: 'v2', at: '2026-10-03T00:00:00.000Z' };
+    expect(await client(() => Response.json({ discarded: true }), seen).discardKeptCopy(input)).toEqual({ discarded: true });
+    expect(seen).toEqual([input]);
+    expect(await client(() => Response.json({ refused: 'changed' })).discardKeptCopy(input)).toEqual({ refused: 'changed' });
+    const old = await client(() => new Response('nope', { status: 404 })).discardKeptCopy(input).then(() => null, (e: unknown) => e as ControlPlaneError);
+    expect(old?.status).toBe(501);
+  });
+});
+
+it('restoreScope sends the stamp a carry leaves on its copy, and none when not given one (#1722)', async () => {
+  const bodies: unknown[] = [];
+  const client = new VerticalClient({
+    fetch: (async (_u: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ tables: 0 });
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  await client.restoreScope(t, s, [], { loadStamp: 'stamp-9', expect: { loadStamp: null, revision: 'ev' } });
+  await client.restoreScope(t, s, []);
+  expect(bodies).toEqual([
+    { tenantId: t, scopeId: s, tables: [], loadStamp: 'stamp-9', expect: { loadStamp: null, revision: 'ev' } },
+    { tenantId: t, scopeId: s, tables: [] },
+  ]);
+});
+
+it('exportScopeStamped asks for the stamp and reads it off the export, null from a deployment that sends none (#1722)', async () => {
+  const replies = [
+    new Response('[]', { status: 200, headers: { 'x-substrat-load-stamp': 'stamp-3', 'x-substrat-write-revision': '7' } }),
+    new Response('[]', { status: 200 }),
+  ];
+  const urls: string[] = [];
+  const client = new VerticalClient({
+    fetch: (async (u: string) => {
+      urls.push(u);
+      return replies.shift();
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: 'stamp-3', revision: '7' });
+  expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: null, revision: null });
+  expect(urls.every((u) => new URL(u).searchParams.get('stamp') === '1')).toBe(true);
+});
+
+/**
  * The status read's hop (#1674) — `systemGrantsStatus`, the read half of the switch above.
  * Same skew contract, on purpose: a deployment that predates the read must answer
  * "redeploy", never a wrong `on`, exactly like `systemSwitch` does for the write.

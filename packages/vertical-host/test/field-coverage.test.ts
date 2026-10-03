@@ -16,7 +16,7 @@ import {
   FIELD_COVERAGE_BINDING,
   INVOCATION_RECORD_HEADER,
 } from '@substrat-run/contracts';
-import { INVOCATION_RECORD_KEY, withInvocationLog, type InvocationRecord } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, withInvocationLog, type InvocationRecord } from '../src/invocation-log.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { observeOutputFields, outputWalkOf } from '../src/field-coverage.js';
 

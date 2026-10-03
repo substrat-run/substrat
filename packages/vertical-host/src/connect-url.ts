@@ -1,4 +1,4 @@
-import { PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
+import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts';
 import type { ConnectUrlRelayResult } from '@substrat-run/contracts';
 
 /**

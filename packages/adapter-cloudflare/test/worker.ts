@@ -6,7 +6,7 @@
  * the exported bindings via `CloudflareScopeHost` — see contract.test.ts.
  */
 import { platformActorId } from '@substrat-run/contracts';
-import { runCrossVerticalFrom, runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
+import { runCrossVerticalFrom, runPlatformSweep, ulid, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
 import {
   boardImportMod,
   brokenMod,
@@ -44,6 +44,146 @@ function onDirectory(Base: ScopeDOClass, directory: string): ScopeDOClass {
       const own = (env as unknown as Record<string, DurableObjectNamespace | undefined>)[directory];
       if (!own) throw new Error(`test worker: no directory binding ${directory}`);
       super(ctx, { ...env, CONTROL_PLANE: own });
+    }
+  };
+}
+
+/**
+ * #1722: a write on a scope that is serving, the way a module operation leaves one: a row in
+ * the vertical's table and the event announcing it in the outbox. The preview classes carry no
+ * modules, so the carry suite writes through this instead of an `invoke`.
+ */
+function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
+  return class extends Base {
+    /** Answers the event's id. With `tenantId`, the event decodes as a `DomainEvent` (an
+     *  executor's), which the carry suite's executor check needs (r12). */
+    testWrite(scopeId: string, id: string, body: string, tenantId = 'tenant'): string {
+      // Through the object's own handle, as a module operation writes: the one that counts writes.
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      const eventId = ulid();
+      sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, body);
+      sql.exec(
+        `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor, entity_type, entity_id, pii_class)
+         VALUES (?, 'pv.noted', 1, ?, ?, ?, ?, 'note', ?, 'none')`,
+        eventId, new Date().toISOString(), tenantId, scopeId, JSON.stringify(ulid()), id,
+      );
+      return eventId;
+    }
+
+    /**
+     * #2005 × #1722 (Codex #2008 r10): a copy made before the marker — its origin row removed through
+     * the raw handle, past the write revision, as a store that never had one never moved it.
+     */
+    testForgetCopyOrigin(): void {
+      (this as unknown as { ctx: DurableObjectState }).ctx.storage.sql.exec('DELETE FROM _substrat_copy_origin');
+    }
+
+    /** The bookkeeping path asked to take any write but the marker insert, which it must refuse
+     *  (Codex #2008 r10–r11): a data write, or a clear of the marker. */
+    testBookkeepingWrite(query: string, ...bindings: unknown[]): void {
+      const self = this as unknown as { revision: { bookkeeping<T>(run: () => T): T }; sql: SqlStorage };
+      self.revision.bookkeeping(() => self.sql.exec(query, ...bindings));
+    }
+
+    /**
+     * #1722's cost probe (write-revision-cost.test.ts): `ops` operations, each its own run and its
+     * own transaction of `rows` row inserts, `rows` event inserts and `rows` updates in place,
+     * through the object's own handle, with the write revision counted or not.
+     */
+    async testWriteBatch(scopeId: string, ops: number, rows: number, counted: boolean): Promise<void> {
+      const self = this as unknown as { sql: SqlStorage; revisionSuspended: boolean };
+      const exists = self.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bench_rows'`).toArray().length > 0;
+      if (!exists) self.sql.exec('CREATE TABLE bench_rows (id TEXT PRIMARY KEY, body TEXT, n INTEGER)');
+      self.revisionSuspended = !counted;
+      try {
+        for (let o = 0; o < ops; o++) {
+          (this as unknown as { revision: { transactionSync<T>(run: () => T): T } }).revision.transactionSync(() => {
+            for (let r = 0; r < rows; r++) {
+              const id = ulid();
+              self.sql.exec('INSERT INTO bench_rows (id, body, n) VALUES (?, ?, ?)', id, 'x'.repeat(64), r);
+              self.sql.exec(
+                `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor, entity_type, entity_id, pii_class)
+                 VALUES (?, 'bench.wrote', 1, ?, 'tenant', ?, 'actor', 'row', ?, 'none')`,
+                ulid(), new Date().toISOString(), scopeId, id,
+              );
+              self.sql.exec('UPDATE bench_rows SET n = n + 1 WHERE id = ?', id);
+            }
+          });
+          // Each operation its own run, as an invoke is: the bump it queued lands here.
+          await Promise.resolve();
+        }
+      } finally {
+        self.revisionSuspended = false;
+      }
+    }
+
+    /**
+     * #1722: in one synchronous run, a transaction that writes and rolls back, then a write that
+     * lands. The bump the first write queued must still cover the second.
+     */
+    testRollbackThenWrite(id: string, body: string): void {
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      try {
+        (this as unknown as { revision: { transactionSync<T>(run: () => T): T } }).revision.transactionSync(() => {
+          sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', `${id}-rolled-back`, body);
+          throw new Error('roll back');
+        });
+      } catch {
+        // rolled back, as intended
+      }
+      sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, body);
+    }
+
+    /**
+     * #1722 (Codex #2008 r4): a write inside `transactionSync`, and the revision read straight
+     * after it with no await in between: the bump has to be in the transaction that committed,
+     * not in a later microtask. Answers [before, after].
+     */
+    testSyncTxRevision(id: string): [string | null, string | null] {
+      const self = this as unknown as {
+        sql: SqlStorage;
+        revision: { transactionSync<T>(run: () => T): T };
+        loadMarker(): { revision: string | null };
+      };
+      const before = self.loadMarker().revision;
+      self.revision.transactionSync(() => {
+        self.sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, 'in a sync transaction');
+      });
+      return [before, self.loadMarker().revision];
+    }
+
+    /** #1722: a write then a marker read in one run, outside any transaction. Answers [before, after]. */
+    testSameRunMarker(id: string): [string | null, string | null] {
+      const self = this as unknown as { sql: SqlStorage; loadMarker(): { revision: string | null } };
+      const before = self.loadMarker().revision;
+      self.sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, 'same run');
+      return [before, self.loadMarker().revision];
+    }
+
+    /**
+     * #1722 (Codex #2008 r4): a bump that cannot be written fails the write it was for. The
+     * revision's table is moved aside through the raw handle, a write is attempted through the
+     * object's own, and the table is put back. Answers whether it threw and whether the row landed.
+     */
+    testBumpFailure(id: string): { threw: boolean; landed: boolean } {
+      const raw = this.ctx.storage.sql;
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      raw.exec('ALTER TABLE _substrat_meta RENAME TO _substrat_meta_aside');
+      let threw = false;
+      try {
+        sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, 'must not land');
+      } catch {
+        threw = true;
+      } finally {
+        raw.exec('ALTER TABLE _substrat_meta_aside RENAME TO _substrat_meta');
+      }
+      const landed = (raw.exec('SELECT COUNT(*) AS n FROM pv_notes WHERE id = ?', id).toArray()[0] as { n: number }).n > 0;
+      return { threw, landed };
+    }
+
+    /** #1722's cost probe: count the write revision or not, for calls that follow. */
+    testCountWrites(counted: boolean): void {
+      (this as unknown as { revisionSuspended: boolean }).revisionSuspended = !counted;
     }
   };
 }
@@ -87,9 +227,9 @@ export const BoardScopeDO = onDirectory(defineScopeDO([boardImportMod], {}), 'VE
  * the point: the only thing that separates them is the namespace, which is the fact a
  * preview's second push used to lose its data to. See preview-carry.test.ts.
  */
-export const PreviewV1ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
-export const PreviewV2ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
-export const PreviewV3ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
+export const PreviewV1ScopeDO = withTestWrite(onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE'));
+export const PreviewV2ScopeDO = withTestWrite(onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE'));
+export const PreviewV3ScopeDO = withTestWrite(onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE'));
 
 /**
  * #1898: a module whose migration declares a foreign key to the spine, and its twin whose

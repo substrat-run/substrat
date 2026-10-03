@@ -11,7 +11,8 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, FIELD_COVERAGE_ARMED, FIELD_COVERAGE_BINDING } from '@substrat-run/contracts';
-import { INVOCATION_RECORD_KEY, PermissionDenied, type InvocationRecord } from '@substrat-run/kernel';
+import { PermissionDenied } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { mcpToolsOf, mcpToolName, MCP_PROTOCOL_VERSIONS } from '../src/mcp.js';
 

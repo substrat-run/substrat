@@ -48,7 +48,7 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { listIndexMigrations, ulid, type LiveChange } from '@substrat-run/kernel';
+import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
@@ -60,6 +60,8 @@ import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
 import { ticket0Migrations } from '../../src/migrations.generated.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
+import { DESK_TABLES, populateDesk } from '../desk-fixture.js';
+import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex, sorts, type Shape } from '../desk-read-shapes.js';
 
 interface Conversation {
   id: string;
@@ -381,7 +383,12 @@ describe('ticket0 provision is idempotent (#1653)', () => {
       ].map((r) => String(r.name));
       const out: Record<string, string[]> = {};
       for (const name of names) {
-        out[name] = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].map((r) => JSON.stringify(r)).sort();
+        // #1722: the store's own bookkeeping (its load stamp and write revision) moves with every
+        // write, an idempotent one included. It is not the scope's data, so it is not compared.
+        const rows = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].filter(
+          (r) => name !== '_substrat_meta' || !STORE_LOCAL_META_KEYS.includes(String(r.key)),
+        );
+        out[name] = rows.map((r) => JSON.stringify(r)).sort();
       }
       return out;
     });
@@ -1658,4 +1665,93 @@ describe('ticket0 on workerd — participants, forwards and migration 0022 (#108
     console.log(`#1086 migration 0022 on ${CONVERSATIONS * 4} messages: ${Math.round(result.ms)} ms`);
     expect(result.ms).toBeLessThan(30_000);
   }, 120_000);
+});
+
+/**
+ * #1554's second index pass (0023) on the runtime a hosted desk runs. The node suite
+ * (`desk-read-indexes.test.ts`) holds each shape to what the handlers send and to its index on
+ * node's SQLite; this runs the same shapes against a Durable Object's, on a large desk upgraded
+ * from 0022, and reports what the migration costs: the time it takes inside the first request
+ * after a deploy, and the write cost of the hottest table it indexes.
+ */
+describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#1554)', () => {
+  it('0023 on a large desk: every row kept, every read seeks its index, the pages unmoved, and the cost measured', async () => {
+    const CONVERSATIONS = 30_000;
+    const WRITES = 2_000;
+    const lists = MODULES.find((m) => m.manifest.id === ticket0Manifest.id)!.manifest.lists ?? [];
+    const probe = env.SCOPE.get(env.SCOPE.idFromName(`migration-0023-${ulid()}`));
+    const result = await runInDurableObject(probe, async (_i, state) => {
+      const sql = state.storage.sql;
+      // The schema a desk held before this change. 0020 is a spine repair this bare probe has
+      // no spine for, and changes no ticket0 table.
+      for (const m of ticket0Migrations.filter((x) => x.version < '0023' && x.version !== '0020')) sql.exec(m.sql);
+      for (const m of listIndexMigrations(ticket0Manifest.id, lists)) sql.exec(m.sql);
+      state.storage.transactionSync(() => populateDesk((statement, ...args) => void sql.exec(statement, ...args), CONVERSATIONS));
+
+      const plan = (shape: Shape) => [...sql.exec(`EXPLAIN QUERY PLAN ${shape.sql}`, ...shape.args)].map((r) => String(r.detail));
+      const counts = () =>
+        Object.fromEntries(DESK_TABLES.map((table) => [table, [...sql.exec(`SELECT COUNT(*) AS n FROM ${table}`)][0]!.n]));
+      /** The one error the probe throws on purpose, to roll its rows back. */
+      class RollBack extends Error {}
+      /**
+       * The hottest table this indexes, by rows written: a notification per recipient per event.
+       * Rolled back, so the desk is measured as it was. Microseconds per row.
+       */
+      const writeCost = () => {
+        let written = -1;
+        let ms = 0;
+        try {
+          state.storage.transactionSync(() => {
+            const started = performance.now();
+            for (let n = 0; n < WRITES; n++) {
+              sql.exec(
+                `INSERT INTO ticket0_notifications (id, principal, kind, conversation_id, created_at) VALUES (?, ?, 'assigned', ?, ?)`,
+                `w-${n}`, `agent-${n % 4}`, `c${String(n * 7).padStart(6, '0')}`, '2027-01-01T00:00:00.000Z',
+              );
+            }
+            ms = performance.now() - started;
+            // Counted before the rollback, off the clock: a rate over writes that did not happen
+            // is no rate. A primary-key range, so the count costs a seek, not a scan.
+            written = Number([...sql.exec("SELECT COUNT(*) AS n FROM ticket0_notifications WHERE id >= 'w-' AND id < 'w.'")][0]!.n);
+            throw new RollBack();
+          });
+        } catch (error) {
+          // Only the rollback is expected; a failed INSERT fails the test.
+          if (!(error instanceof RollBack)) throw error;
+        }
+        return { written, us: (ms * 1000) / WRITES };
+      };
+
+      const snapshot = () => ({ counts: counts(), pages: Object.values(INBOX_PAGES).map(plan), write: writeCost() });
+      const before = snapshot();
+      const started = performance.now();
+      state.storage.transactionSync(() => {
+        sql.exec(ticket0Migrations.find((m) => m.version === '0023')!.sql);
+      });
+      const ms = performance.now() - started;
+      return {
+        ms,
+        before,
+        after: snapshot(),
+        reads: Object.entries(DESK_READS).map(([name, read]) => ({ name, verdict: planUsesIndex(read, plan(read)) })),
+        suspended: plan(SUSPENDED_QUEUE),
+      };
+    });
+    // Every probe write happened before its rollback, and none of them stayed.
+    expect([result.before.write.written, result.after.write.written]).toEqual([WRITES, WRITES]);
+    expect(result.after.counts).toEqual(result.before.counts);
+    expect(result.after.counts['ticket0_conversations']).toBe(CONVERSATIONS);
+    // Every shape seeks its index on the DO's SQLite, as on node's.
+    expect(result.reads.filter((r) => r.verdict !== null)).toEqual([]);
+    expect(result.after.pages).toEqual(result.before.pages);
+    expect(result.suspended).toContainEqual(expect.stringMatching(/USING INDEX ticket0_conversations_suspended\b/));
+    expect(sorts(result.suspended)).toBe(false);
+    // Reported for the PR rather than asserted tightly: the runtime here is a laptop's workerd.
+    // The bound is the DO's default CPU limit for one request, 30 s.
+    console.log(
+      `#1554 migration 0023 on ${CONVERSATIONS} conversations: ${Math.round(result.ms)} ms; ` +
+        `notification insert ${result.before.write.us.toFixed(1)} µs/row before, ${result.after.write.us.toFixed(1)} µs/row after`,
+    );
+    expect(result.ms).toBeLessThan(30_000);
+  }, 240_000);
 });

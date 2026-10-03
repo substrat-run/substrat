@@ -77,6 +77,7 @@ import {
   publishVersionInput,
   AUTO_ADMISSION_NOTE,
   routeTarget,
+  ROUTE_SCOPE_HOSTNAMES_MAX,
   registerVerticalInput,
   vertical as verticalSchema,
   verticalChannel,
@@ -202,6 +203,7 @@ import {
   assertReplayableDump,
   delegatedReadRecord,
   ownerTransferAudit,
+  copyMarkAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
@@ -212,6 +214,7 @@ import {
   assertNoSecret,
   assertPermissionKey,
   CAPABILITY_DDL,
+  COPY_ORIGIN_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
@@ -519,7 +522,8 @@ import {
   unknownRoleError,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
-import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
+import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -880,6 +884,9 @@ const KERNEL_DDL = `
   -- an exchange trades that secret for. Spine (kernel-written), shared with the DO adapter
   -- from @substrat-run/kernel so the two cannot part company; the column comments are there.
   ${CAPABILITY_DDL}
+  -- #1686: where a copied scope's data came from, and the event id its own events start above.
+  -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
+  ${COPY_ORIGIN_DDL}
   -- #383 / #1232 / #1288: the platform sweep's per-scope gating state, holding two
   -- families of row that the kind COLUMN — not the spelling of a key — tells apart.
   -- Spine (kernel-written), never a module migration. Shared with the DO adapter from
@@ -1372,11 +1379,12 @@ function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
 }
 
 /**
- * The policy an undecodable event's executor delivery is journaled under (#1636): one
- * attempt, so the first failure is the dead letter. A decode is pure — retrying it cannot
- * succeed — and the Cloudflare coordinator records the same row with no next attempt.
+ * The policy a delivery that can never succeed is journaled under: one attempt, so the first
+ * is the dead letter, and the Cloudflare coordinator records the same row with no next
+ * attempt. An undecodable event (#1636) — a decode is pure, so a retry cannot succeed — and an
+ * inert scope's delivery (#2005) — a scope does not become primary, so a retry decides the same.
  */
-const UNDECODABLE_RETRY: Required<ExecutorRetryPolicy> = { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 };
+const TERMINAL_RETRY: Required<ExecutorRetryPolicy> = { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 };
 
 interface OutboxRow {
   id: string;
@@ -3448,6 +3456,10 @@ export class SqliteScopeHost implements ScopeHost {
       // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
       // text of attachments the dump did not bring back, and queue extraction for those
       // it brought back without text — the bytes decide what that run finds.
+      const switchSql = switchSqlOf(db);
+      // #1686: nothing the source queued runs in a copy; a return leaves it all queued. BEFORE
+      // the extraction queue below, which is this scope's own work, not the source's.
+      settleCopiedWork(switchSql, scopeId, dump.scopeId, this.clock());
       reconcileAttachmentText(spineSql(db), ulid, this.clock());
       // Re-point scope-level grants at the scope they now live in. They are written as
       // `object = scope:<scopeId>`, so a fork, a restore into a different scope, or #286's
@@ -3459,7 +3471,7 @@ export class SqliteScopeHost implements ScopeHost {
       // (subject, relation, object) is the primary key, so a moved row can meet one the dump
       // already holds here; which one survives is that function's rule too (#1882), judged
       // at this host's clock as the checker judges expiry.
-      repointScopeGrants(switchSqlOf(db), scopeId, { scopeId: dump.scopeId, exact: dump.exact }, this.clock());
+      repointScopeGrants(switchSql, scopeId, { scopeId: dump.scopeId, exact: dump.exact }, this.clock());
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);
@@ -3468,7 +3480,19 @@ export class SqliteScopeHost implements ScopeHost {
     // load was a SAVEPOINT inside it, and that invoke's rollback undid the restore after
     // this verb had audited it.
     await rt.actor.turn(() => {
-      load(dump.tables);
+      // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
+      load(capabilitiesForLoad(dump.tables, scopeId, dump.scopeId));
+      // #1335 / #1686: ids resume above the outbox the dump brought, as on a reopen, so a copy's
+      // own events sort above every copied one (`emittedHere()`). A top id that is no ULID leaves
+      // the floor where it was.
+      const top = (db.prepare('SELECT MAX(id) AS id FROM _substrat_outbox').get() as { id: string | null } | undefined)?.id;
+      if (top) {
+        try {
+          rt.mintEventId.seedFrom(top);
+        } catch {
+          // Not a ULID: nothing this mint could have written, so there is no floor to keep.
+        }
+      }
       // The frontier came in with the dump — refresh the cached applied-migration set so
       // a later bind/migrate builds on the loaded state, not the previous one.
       rt.appliedMigrations.clear();
@@ -4926,7 +4950,15 @@ export class SqliteScopeHost implements ScopeHost {
       retrying: 0,
       deadLettered: 0,
     };
+    if (this.executors.size === 0) return report;
     const now = new Date().toISOString();
+    // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
+    // outbound effects. Every executor is host code acting with platform authority — a
+    // connector with the tenant's credential, a plain executor with `HostAdmin` — so its
+    // deliveries are journaled terminal with the reason and the handler never runs.
+    // Asked on the first due event, once per pass: most passes have none.
+    let inert: boolean | undefined;
+    const isInert = (): boolean => (inert ??= !this.isPrimaryInDirectory(rt.scopeId));
     for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
       // Due = never attempted, or retrying and past its next attempt time.
@@ -4936,7 +4968,7 @@ export class SqliteScopeHost implements ScopeHost {
           `SELECT o.* FROM _substrat_outbox o
            LEFT JOIN _substrat_deliveries d
              ON d.event_id = o.id AND d.consumer_module = ?
-           WHERE o.type = ?
+           WHERE o.type = ? AND ${emittedHere('o.')}
              AND (d.event_id IS NULL
                   OR (d.next_attempt_at IS NOT NULL AND d.next_attempt_at <= ?))
            ORDER BY o.id`,
@@ -4955,8 +4987,13 @@ export class SqliteScopeHost implements ScopeHost {
           // on the FIRST failure, unlike a handler's: the decode is pure, of text already
           // in hand, so a retry cannot succeed — and only the decode is caught here, so a
           // handler's transient failure keeps its backoff below.
-          this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), UNDECODABLE_RETRY, invocationId);
+          this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), TERMINAL_RETRY, invocationId);
           report.deadLettered += 1;
+          continue;
+        }
+        if (isInert()) {
+          this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, TERMINAL_RETRY, invocationId);
+          report.inert = (report.inert ?? 0) + 1;
           continue;
         }
         this.causedBy = event.id;
@@ -5046,6 +5083,15 @@ export class SqliteScopeHost implements ScopeHost {
         invocationId,
       );
     return error !== null && exhausted;
+  }
+
+  /** Whether the directory says `scopeId` is the real install (`isPrimaryScopeRow`, #2005). */
+  private isPrimaryInDirectory(scopeId: ScopeId): boolean {
+    return isPrimaryScopeRow(
+      this.directory.prepare('SELECT kind, forked_from FROM scopes WHERE scope_id = ?').get(scopeId) as
+        | { kind: string | null; forked_from: string | null }
+        | undefined,
+    );
   }
 
   async drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport> {
@@ -5510,7 +5556,7 @@ export class SqliteScopeHost implements ScopeHost {
           const rows = rt.db
             .prepare(
               `SELECT * FROM _substrat_outbox o
-               WHERE o.type = ?
+               WHERE o.type = ? AND ${emittedHere('o.')}
                  AND NOT EXISTS (
                    SELECT 1 FROM _substrat_deliveries d
                    WHERE d.event_id = o.id AND d.consumer_module = ?
@@ -7248,7 +7294,16 @@ export class SqliteScopeHost implements ScopeHost {
                     COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
                     CASE WHEN s.serving_ref IS NOT NULL
                          THEN json_extract(sv.manifest_json, '$.outbound')
-                         ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json
+                         ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
+                    s.kind, s.forked_from,
+                    -- #2005: the scope's own addresses, bounded as the Cloudflare read bounds them.
+                    (SELECT json_group_array(sh.hostname) FROM (
+                       -- Pinned like the Cloudflare read: a range on the scope, never every
+                       -- active hostname through hostnames_status.
+                       SELECT hostname FROM hostnames INDEXED BY hostnames_scope
+                        WHERE scope_id = s.scope_id AND status = 'active'
+                        ORDER BY hostname LIMIT ${ROUTE_SCOPE_HOSTNAMES_MAX}
+                     ) sh) AS scope_hostnames_json
                FROM hostnames h
                JOIN scopes s ON s.scope_id = h.scope_id AND s.tenant_id = h.tenant_id
                JOIN tenants t ON t.tenant_id = s.tenant_id
@@ -7267,6 +7322,9 @@ export class SqliteScopeHost implements ScopeHost {
               region: string | null;
               deployment_ref: string | null;
               outbound_json: string | null;
+              kind: string | null;
+              forked_from: string | null;
+              scope_hostnames_json: string;
             }
           | undefined;
         if (!r) return undefined;
@@ -7289,6 +7347,9 @@ export class SqliteScopeHost implements ScopeHost {
           surface: r.surface,
           region: r.region,
           outboundHosts,
+          // #2005: the egress worker holds a fork or a preview to no third-party egress.
+          primary: isPrimaryScopeRow(r),
+          hostnames: JSON.parse(r.scope_hostnames_json) as string[],
         });
       },
       registerVertical: async (actor: PlatformActorId, input: RegisterVerticalInput) => {
@@ -7895,6 +7956,21 @@ export class SqliteScopeHost implements ScopeHost {
           { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
         );
       },
+      recordKeptCopyResolution: async (actor, tenantId, scopeId, r) => {
+        const scope = this.directory
+          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string } | undefined;
+        if (!scope || scope.tenant_id !== tenantId) {
+          throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        this.recordAdmin(
+          actor,
+          'resolveKeptCopy',
+          { tenantId, scopeId },
+          { script: r.script, keptAt: r.keptAt, revision: r.revisionBefore },
+          { action: r.action, liveScript: r.liveScript, revision: r.revisionAfter },
+        );
+      },
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
         const scope = this.directory
           .prepare('SELECT tenant_id, expires_at FROM scopes WHERE scope_id = ?')
@@ -7920,7 +7996,7 @@ export class SqliteScopeHost implements ScopeHost {
         // follows needs no such care: it stamps only rows that exist and are undrained.
         const db = this.scopeReadDbFor(tenantId, scopeId);
         const page = db.prepare(
-          `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ? OFFSET ?`,
+          `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL AND ${emittedHere()} ORDER BY id LIMIT ? OFFSET ?`,
         );
         // The kernel's read, shared with the DO: the envelope and the columns lifted beside
         // it (#1242, #1237) are decoded once, and a row that will not decode is stepped over
@@ -9810,6 +9886,11 @@ export class SqliteScopeHost implements ScopeHost {
       recordOwnerTransfer: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
+      },
+      /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
+      recordCopyMark: async (actor, entry) => {
+        const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
+        this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const where: string[] = [];

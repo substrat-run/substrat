@@ -111,6 +111,7 @@ import {
   type EventCauseInput,
   delegatedReadRecord,
   ownerTransferAudit,
+  copyMarkAudit,
   type EventEffectsInput,
   type EffectsTree,
   type InvocationEventsInput,
@@ -173,6 +174,7 @@ import {
   type DirectoryDump,
   type ScopeDump,
   type ScopeDumpTable,
+  type ScopeLineage,
   subjectShredReceipt,
   type SubjectShredReceipt,
   type ScopeId,
@@ -231,6 +233,10 @@ import {
   parseValidationRecords,
   resolveScopeRecord,
   ulid,
+  type CarriedAway,
+  type KeptCopy,
+  type LoadMarker,
+  KEPT_COPY_REFUSAL,
   capabilityTokenHash,
   checkBecomeInput,
   plausibleSessionToken,
@@ -364,6 +370,9 @@ import {
   unknownRoleError,
   assertRowLimit,
   assertRowOffset,
+  INERT_SCOPE_REASON,
+  isPrimaryScope,
+  isPrimaryScopeRow,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -905,6 +914,12 @@ interface ScopeStubRpc {
    * Same return contract as `migrate()`.
    */
   retryMigrations(): Promise<number | null>;
+  /** Whether the scope was loaded as a copy (#2005): what a CP-less coordinator reads for primacy. */
+  isCopy(): Promise<boolean>;
+  /** Mark the scope a copy (#2005); whether this call stamped it. */
+  markCopy(): Promise<boolean>;
+  /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
+  clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'carries-events' | 'changed'>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -1358,8 +1373,52 @@ interface ScopeStubRpc {
       sourceScopeId?: ScopeId;
       /** The platform exported the dump itself: no fallback (`RepointSource.exact`). */
       exact?: boolean;
+      /** #1722: the stamp this load leaves; without one it leaves none. */
+      loadStamp?: string;
+      /** #2005: the directory says the scope is not primary — mark it a copy. */
+      markCopy?: boolean;
     },
   ): Promise<SwitchedOff[]>;
+  /** #1722: what a carry's restore into this store expects to find unchanged. */
+  loadMarker(): Promise<LoadMarker>;
+  /** #1722: `importDump` with its refusals (`changed` under `expect`, `kept`) answered as values. */
+  importDumpChecked(
+    tables: ScopeDumpTable[],
+    destScopeId: ScopeId,
+    opts: {
+      switchOff?: { moduleIds: readonly string[]; at: string };
+      sourceScopeId?: ScopeId;
+      exact?: boolean;
+      loadStamp?: string;
+      expect?: LoadMarker;
+      markCopy?: boolean;
+    },
+  ): Promise<{ refused: 'changed' | 'kept' } | { refused: false; switchedOff: SwitchedOff[] }>;
+  /** #1722: the kept-copy marker, or null. */
+  keptCopy(): Promise<KeptCopy | null>;
+  /** #1722: discard a kept copy at the revision the operator acted on. */
+  discardKeptCopy(
+    scopeId: ScopeId,
+    revision: string | null,
+    carriedAway: CarriedAway,
+    markCopy?: boolean,
+    loadStamp?: string | null,
+  ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
+  /** #1722: `exportDump` and the store's load stamp, read in one call. */
+  exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
+  /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
+  wipeCarried(
+    scopeId: ScopeId,
+    expectLoadStamp: string | null,
+    carriedAway: CarriedAway,
+    opts?: { expectRevision?: string | null; protectIfChanged?: boolean; markCopy?: boolean },
+  ): Promise<boolean>;
+  /** #1722: clear a kept copy's marker where it is the live store, at the revision read. */
+  releaseKeptCopy(
+    revision: string | null,
+    markCopy?: boolean,
+    loadStamp?: string | null,
+  ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
   /**
@@ -1775,6 +1834,17 @@ export interface CloudflareScopeHostOptions {
 }
 
 /**
+ * Refuse to mark a scope a copy unless the request classifies it non-primary (#2005). The
+ * classification is the platform directory's; the vertical applies the same `isPrimaryScope` to
+ * it, so a primary can be marked only by a request that misstates its lineage, never by default.
+ */
+function assertCopyLineage(lineage: ScopeLineage): void {
+  if (isPrimaryScope(lineage)) {
+    throw substratError('conflict', 'mark-copy refused: the directory classifies this scope as primary, not as a copy');
+  }
+}
+
+/**
  * A control-plane stand-in for a CP-less vertical (scope-local-permissions.md Phase 3).
  * The hot path a served scope actually touches becomes trust-the-upstream:
  *   - `scopeAccessRefusal` / `setMigrationState` → no-op: the router already gated the
@@ -2155,6 +2225,18 @@ export class CloudflareScopeHost implements ScopeHost {
     };
     if (this.executors.size === 0) return report;
     const stub = this.scopeStub(scopeId);
+    // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
+    // outbound effects, so its deliveries are journaled terminal with the reason and no
+    // handler runs. Asked of the directory where there is one. A CP-less host has none, so it
+    // asks the scope's own storage whether it was loaded as a copy (`_substrat_copy_origin`,
+    // which every copy holds) — a preview and a snapshot reach a hosted vertical as restores.
+    // Asked on the first due event, once per pass: most passes have none, and the directory
+    // is one global object.
+    let inert: Promise<boolean> | undefined;
+    const isInert = (): Promise<boolean> =>
+      (inert ??= this.cpLess
+        ? stub.isCopy()
+        : this.cp.getScopeRecord(tenantId, scopeId).then((row) => !isPrimaryScopeRow(row)));
     for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
       const { events, undecodable } = await stub.pendingExecutorDeliveries(deliveryId, executor.eventType);
@@ -2169,6 +2251,12 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       for (const event of events) {
         report.attempted += 1;
+        if (await isInert()) {
+          // No next attempt, like an undecodable row: a scope does not become primary.
+          await stub.recordExecutorAttempt(event.id, deliveryId, INERT_SCOPE_REASON, null, invocationId);
+          report.inert = (report.inert ?? 0) + 1;
+          continue;
+        }
         this.causedBy = event.id;
         try {
           if (executor.kind === 'connector' && this.cpLess) {
@@ -2550,15 +2638,167 @@ export class CloudflareScopeHost implements ScopeHost {
     /** #1742: the directory's recorded-off modules, switched off on THIS scope in the replay's
      *  own event — a dump from before a switch was pulled brings its grants back live. #1869:
      *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it;
-     *  `exact` says the platform exported the dump itself, so the re-point never falls back. */
-    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
+     *  `exact` says the platform exported the dump itself, so the re-point never falls back.
+     *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, for a fenced wipe later,
+     *  and `expect`, the marker the carry read here: the load is refused if the store moved since.
+     *  #2005: `markCopy` — the directory's classification of the scope, sent when it is not
+     *  primary; the restore then marks it a copy. Refused if it classifies a primary. */
+    opts?: {
+      switchedOff?: readonly ModuleId[];
+      sourceScopeId?: ScopeId;
+      exact?: boolean;
+      loadStamp?: string;
+      expect?: LoadMarker;
+      markCopy?: ScopeLineage;
+    },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
-    const switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, {
+    if (opts?.markCopy) assertCopyLineage(opts.markCopy);
+    const load = {
       switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId,
       exact: opts?.exact,
+      loadStamp: opts?.loadStamp,
+      markCopy: opts?.markCopy !== undefined,
+    };
+    // Both refusals come back as values (a throw over the RPC carries only its message) and are
+    // thrown here, in the vertical's own isolate, so its route answers 409 or 412, not a fault.
+    const out = await this.scopeStub(scopeId).importDumpChecked(tables, scopeId, {
+      ...load,
+      ...(opts?.expect ? { expect: opts.expect } : {}),
     });
-    return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
+    if (out.refused === false) {
+      return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff: out.switchedOff } : {}) };
+    }
+    if (out.refused === 'kept') throw substratError('conflict', KEPT_COPY_REFUSAL);
+    // A retry of a load that already committed (its answer was lost on the way back) is
+    // refused by the marker that load itself moved. The store holding THIS request's stamp
+    // says so: no other load writes it. Answered as applied, without `switchedOff`, so the
+    // caller's re-assert after the bind covers the OFF positions.
+    const now = await this.scopeStub(scopeId).loadMarker();
+    if (!opts?.loadStamp || now.loadStamp !== opts.loadStamp) {
+      throw substratError('precondition_failed', 'scope store changed since the carry read it; nothing was loaded (#1722)');
+    }
+    return { tables: tables.length };
+  }
+
+  /** The kept-copy marker of this scope's store in THIS deployment (#1722), or null. */
+  async keptCopyLocal(scopeId: ScopeId): Promise<KeptCopy | null> {
+    return this.scopeStub(scopeId).keptCopy();
+  }
+
+  /**
+   * Discard the kept copy of a scope in THIS deployment (#1722), behind the vertical's
+   * `/internal/kept-copy/discard`: the staff resolution, only at the write revision the operator
+   * acted on. Answers whether it was discarded, or why not.
+   */
+  async discardKeptCopyLocal(
+    scopeId: ScopeId,
+    revision: string | null,
+    carriedAway: CarriedAway,
+    /** #2005: the directory's classification, sent when the scope is not primary. */
+    markCopy?: ScopeLineage,
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`; a replaced store is refused. */
+    loadStamp?: string | null,
+  ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
+    if (markCopy) assertCopyLineage(markCopy);
+    return this.scopeStub(scopeId).discardKeptCopy(
+      scopeId,
+      revision,
+      carriedAway,
+      markCopy !== undefined,
+      ...(loadStamp !== undefined ? [loadStamp] : []),
+    );
+  }
+
+  /**
+   * What a carry's restore into this scope's store expects to find unchanged (#1722), behind
+   * the vertical's `/internal/load-marker`. Read before the carry checks the binding again; the
+   * restore then carries it as `expect`, and is refused if the store was loaded or written since.
+   */
+  async loadMarkerLocal(scopeId: ScopeId): Promise<LoadMarker> {
+    return this.scopeStub(scopeId).loadMarker();
+  }
+
+  /**
+   * Wipe the copy a carry left in THIS deployment (#1722), behind the vertical's
+   * `/internal/wipe-carried`: only if nothing was loaded into the scope's DO since the stamp
+   * the carry read (`expectLoadStamp`, null for a store no load has stamped). Non-terminal,
+   * so a later bind back to this version can restore into it. False when refused.
+   */
+  async wipeCarriedLocal(
+    scopeId: ScopeId,
+    expectLoadStamp: string | null,
+    carriedAway: CarriedAway,
+    opts: {
+      /** #1722: the write revision the carry's export read, so a write since refuses the wipe. */
+      expectRevision?: string | null;
+      /** #1722: the scope does not route here, so a copy changed in any way since is kept. */
+      protectIfChanged?: boolean;
+      /** #2005 (Codex #2008 r10): the directory's classification, sent when the scope is not
+       *  primary — so a copy made before the marker leaves this wipe marked, tombstoned or kept. */
+      markCopy?: ScopeLineage;
+    } = {},
+  ): Promise<boolean> {
+    if (opts.markCopy) assertCopyLineage(opts.markCopy);
+    return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway, {
+      ...(opts.expectRevision !== undefined ? { expectRevision: opts.expectRevision } : {}),
+      ...(opts.protectIfChanged !== undefined ? { protectIfChanged: opts.protectIfChanged } : {}),
+      markCopy: opts.markCopy !== undefined,
+    });
+  }
+
+  /** Release a kept copy that is the live store after all (#1722), at the revision read. */
+  async releaseKeptCopyLocal(
+    scopeId: ScopeId,
+    revision: string | null,
+    /** #2005: the directory's classification, sent when the scope is not primary. */
+    markCopy?: ScopeLineage,
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`; a replaced store is refused. */
+    loadStamp?: string | null,
+  ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
+    if (markCopy) assertCopyLineage(markCopy);
+    return this.scopeStub(scopeId).releaseKeptCopy(revision, markCopy !== undefined, ...(loadStamp !== undefined ? [loadStamp] : []));
+  }
+
+  /**
+   * Mark one scope in THIS deployment a copy (#2005), behind the vertical's `/internal/mark-copy`:
+   * the repair of a copy that predates the marker, which a CP-less coordinator reads for primacy.
+   * The control plane decides which scopes (its directory says they are not primary) and audits.
+   */
+  async markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }> {
+    assertCopyLineage(lineage);
+    return { marked: await this.scopeStub(scopeId).markCopy() };
+  }
+
+  /**
+   * Remove a mistaken copy marker from one scope in THIS deployment (#2005), behind the vertical's
+   * `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS primary.
+   * Refused for a scope classified a copy, and for a marker a real load wrote (one naming copied
+   * events) — removing that would let another scope's queued work run here.
+   */
+  async clearCopyMarkLocal(
+    scopeId: ScopeId,
+    lineage: ScopeLineage,
+    /** #1722 (Codex #2008 r12–r13): the store as the caller means it, its load stamp and write
+     *  revision, compared in the clear's own transaction; refused (412) if either moved. The
+     *  platform's reconcile of a carry's destination sends it; staff send none. */
+    expect?: LoadMarker,
+  ): Promise<{ cleared: boolean }> {
+    if (!isPrimaryScope(lineage)) {
+      throw substratError('conflict', 'clear-copy-mark refused: the directory classifies this scope as a copy (a preview or a fork)');
+    }
+    const outcome = await this.scopeStub(scopeId).clearCopyMark(...(expect ? [expect] : []));
+    if (outcome === 'changed') {
+      throw substratError('precondition_failed', `clear-copy-mark refused: scope ${scopeId}'s store changed since its revision was read`);
+    }
+    if (outcome === 'carries-events') {
+      throw substratError(
+        'conflict',
+        "clear-copy-mark refused: this scope's marker was written by a load of another scope's data and names " +
+          "the events it brought in; removing it would run that scope's queued work here",
+      );
+    }
+    return { cleared: outcome === 'cleared' };
   }
 
   /**
@@ -2605,6 +2845,16 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]> {
     return this.scopeStub(scopeId).exportDump();
+  }
+
+  /**
+   * `exportScopeLocal` with the store's load stamp, read in the same DO call (#1722): what a
+   * carry's fenced wipe of the copy it leaves here expects. Behind the vertical's `/internal/export`.
+   */
+  async exportScopeStampedLocal(
+    scopeId: ScopeId,
+  ): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }> {
+    return this.scopeStub(scopeId).exportDumpStamped();
   }
 
   /** Facet this host's own scope's outbox (#1239) — the vertical-host read. */
@@ -5592,7 +5842,7 @@ export class CloudflareScopeHost implements ScopeHost {
           if (owning && owning.owner_tenant !== null && !owning.listed) {
             const bound = (
               await this.cp.listScopes({ tenantId: owning.owner_tenant, vertical: verticalSlug, status: ['active'] })
-            ).filter((s) => !s.forked_from && s.kind !== 'preview');
+            ).filter(isPrimaryScopeRow);
             for (const s of bound) {
               if (s.vertical_version_id === versionId) continue;
               const prev = s.vertical_version_id ? await this.cp.readVersion(s.vertical_version_id) : undefined;
@@ -5768,6 +6018,17 @@ export class CloudflareScopeHost implements ScopeHost {
           { tenantId, scopeId },
           { servingRef: scope.serving_ref ?? null },
           { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
+        );
+      },
+      recordKeptCopyResolution: async (actor, tenantId, scopeId, r) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        await this.recordAdmin(
+          actor,
+          'resolveKeptCopy',
+          { tenantId, scopeId },
+          { script: r.script, keptAt: r.keptAt, revision: r.revisionBefore },
+          { action: r.action, liveScript: r.liveScript, revision: r.revisionAfter },
         );
       },
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
@@ -7069,6 +7330,11 @@ export class CloudflareScopeHost implements ScopeHost {
       recordOwnerTransfer: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         await this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
+      },
+      /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
+      recordCopyMark: async (actor, entry) => {
+        const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
+        await this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const rows = await this.cp.accessLog({

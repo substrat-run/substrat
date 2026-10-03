@@ -2,8 +2,8 @@
 
 The typed HTTP client for the [control-plane API](/reference/control-plane-api). It is the
 one place a caller learns how a request to the plane is authenticated, how a refusal is
-read, and what an empty answer means — so the CLI, the staff console and a vertical's
-connect seam do not each restate it.
+read, and what an empty answer means — so the CLI, the staff console, the dashboard and a
+vertical's connect seam do not each restate it.
 
 ```sh
 pnpm add @substrat-run/control-plane-client

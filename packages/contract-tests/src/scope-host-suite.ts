@@ -32,6 +32,7 @@ import {
   type ModelUsageLine,
 } from '@substrat-run/contracts';
 import {
+  INERT_SCOPE_REASON,
   isSearchIndexTable,
   platformIntentFailureMessage,
   REDACTED_DELIVERY_NOTE,
@@ -39,6 +40,7 @@ import {
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
   startPlatformSweeper,
+  createUlid,
   ulid,
   type AuditLogFilter,
   type OperationHandler,
@@ -572,6 +574,277 @@ export function scopeHostContractSuite(
       expect(settled.status).toBe('failed');
       expect(settled.lastError).toMatch(/personal number field/);
       expect(settled.payload).toEqual({ contract: 'c1' });
+    });
+
+    /**
+     * #1686. The platform's drain walks every active scope, and a fork, a snapshot or a preview
+     * is one, so an intent copied while still pending would be executed a second time from the
+     * copy: an email sent twice, a connector delivery repeated. `listPlatformRequests` is the
+     * drain's one read, so what it returns on the copy is exactly what a drain would run.
+     */
+    describe("a copy never runs the source's pending intents (#1686)", () => {
+      let source: ScopeId;
+      let id: string;
+      const pendingAt = async (s: ScopeId) => (await host.listPlatformRequests(t1, s)).map((r) => r.id);
+      const historyAt = async (s: ScopeId) => (await host.listPlatformRequestHistory(t1, s)).find((r) => r.id === id);
+      /** The copy: the intent is not drainable there, and its journal says why. */
+      const notCarriedAt = async (copy: ScopeId) => {
+        expect(await pendingAt(copy)).not.toContain(id);
+        expect(await historyAt(copy)).toMatchObject({
+          status: 'failed',
+          failure: { origin: 'platform', code: 'precondition_failed', permission: null },
+          lastError: expect.stringMatching(new RegExp(`^not carried: copied from scope ${source}`)),
+          settledAt: expect.any(String),
+        });
+        // The twin: the source still holds it pending, for its own drain.
+        expect(await pendingAt(source)).toContain(id);
+      };
+
+      beforeAll(async () => {
+        source = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: source, jurisdiction: 'eu', vertical: 'connector-vertical' });
+        await host.admin.activateScope(staff, t1, source);
+        id = await (await host.getScope(alice, t1, source)).invoke<string>('platform/request', {
+          kind: 'provision-sibling',
+          payload: { slug: 'copied' },
+        });
+        expect(await pendingAt(source)).toContain(id);
+      });
+
+      it('a fork (importScope) settles it not-carried; the source keeps it pending', async () => {
+        const fork = scopeId.parse(ulid());
+        await host.importScope(
+          staff,
+          { tenantId: t1, scopeId: fork, jurisdiction: 'eu', vertical: 'connector-vertical' },
+          await host.admin.exportScope(staff, t1, source),
+        );
+        await notCarriedAt(fork);
+      });
+
+      it('a snapshot (snapshotScope): the same', async () => {
+        await notCarriedAt(await host.snapshotScope(staff, t1, source, { kind: 'preview' }));
+      });
+
+      it("a restore of the source's backup onto another scope: the same", async () => {
+        const other = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: other, jurisdiction: 'eu', vertical: 'connector-vertical' });
+        await host.admin.activateScope(staff, t1, other);
+        await host.restoreScope(staff, t1, other, await host.admin.exportScope(staff, t1, source));
+        await notCarriedAt(other);
+      });
+
+      it('a restore into the scope the backup came from keeps it pending, payload and all', async () => {
+        await host.restoreScope(staff, t1, source, await host.admin.exportScope(staff, t1, source));
+        const back = (await host.listPlatformRequests(t1, source)).find((r) => r.id === id);
+        expect(back).toMatchObject({ status: 'pending', payload: { slug: 'copied' }, lastError: null, settledAt: null });
+      });
+    });
+
+    /**
+     * #1686, the rest of the queue. Delivery is "no delivery row yet", so an event the source
+     * emitted and nobody reached is owed work in the copy too, and an executor retry is due work.
+     * The dump below is the source's own export with the journal set back: the consumer's row
+     * for one event removed (never delivered), one executor delivery made due for a retry, and
+     * another removed (never attempted).
+     */
+    describe('a copy never runs work the source queued (#1686)', () => {
+      type Dump = Awaited<ReturnType<ScopeHost['admin']['exportScope']>>;
+      let source: ScopeId;
+      let queued: Dump;
+      let step1: string;
+      const count = (tag: string) => effected.filter((e) => e === tag).length;
+      const logOf = async (s: ScopeId) =>
+        (await (await host.getScope(alice, t1, s)).invoke<{ event_id: string }[]>('flow/log')).map((r) => r.event_id);
+      /**
+       * The events whose executor delivery a copy journaled INERT (#2005): its own work, which
+       * reached dispatch — so `emittedHere` let it through — and was then held, because a copy
+       * causes no outbound effects. The source's work never reaches dispatch at all.
+       */
+      const inertIn = async (s: ScopeId) =>
+        (await host.executorDeadLetters(t1, s)).filter((d) => d.error === INERT_SCOPE_REASON).map((d) => d.eventId);
+      const eventIdOf = async (s: ScopeId, entityId: string) => {
+        const outbox = (await host.admin.exportScope(staff, t1, s)).tables.find((t) => t.name === '_substrat_outbox')!;
+        return String(outbox.rows.find((r) => r[outbox.columns.indexOf('entity_id')] === entityId)![outbox.columns.indexOf('id')]);
+      };
+      const activeScope = async () => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s, jurisdiction: 'eu', vertical: 'connector-vertical' });
+        await host.admin.activateScope(staff, t1, s);
+        return s;
+      };
+
+      beforeAll(async () => {
+        source = await activeScope();
+        const stub = await host.getScope(alice, t1, source);
+        await stub.invoke('flow/produce');
+        await stub.invoke('connector/request-effect', { tag: 'copy-retry' });
+        await stub.invoke('connector/request-effect', { tag: 'copy-unattempted' });
+        // The source ran all three: the consumer logged step1, the executor effected both.
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        const dump = await host.admin.exportScope(staff, t1, source);
+        const outbox = dump.tables.find((t) => t.name === '_substrat_outbox')!;
+        const col = (name: string) => outbox.columns.indexOf(name);
+        const idOf = (type: string, entityId: string) =>
+          String(outbox.rows.find((r) => r[col('type')] === type && r[col('entity_id')] === entityId)![col('id')]);
+        step1 = idOf('flow.step1', 'f1');
+        const retry = idOf('effect.requested', 'copy-retry');
+        const unattempted = idOf('effect.requested', 'copy-unattempted');
+        expect(await logOf(source)).toContain(step1);
+        queued = {
+          ...dump,
+          tables: dump.tables.map((t) => {
+            // The consumer's own record of the delivery goes with the delivery row.
+            if (t.name === 'flow_log') return { ...t, rows: [] };
+            if (t.name !== '_substrat_deliveries') return t;
+            const at = (name: string) => t.columns.indexOf(name);
+            const rows = t.rows
+              .filter((r) => !(r[at('event_id')] === step1 && r[at('consumer_module')] === '@test/flow'))
+              .filter((r) => r[at('event_id')] !== unattempted)
+              .map((r) => {
+                if (r[at('event_id')] !== retry) return r;
+                const due = [...r];
+                due[at('error')] = 'boom';
+                due[at('attempts')] = 1;
+                due[at('next_attempt_at')] = '2000-01-01T00:00:00.000Z';
+                return due;
+              });
+            return { ...t, rows };
+          }),
+        };
+      });
+
+      it('a fork: no consumer reaches the copied event and no executor runs, on dispatch or on drainDue', async () => {
+        const fork = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: fork, jurisdiction: 'eu', vertical: 'connector-vertical' }, queued);
+        const stub = await host.getScope(alice, t1, fork);
+        await stub.invoke('flow/log'); // an invocation in the copy dispatches
+        await host.drainDue(t1, fork);
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        // The consumer never ran on the copied event.
+        expect(await logOf(fork)).toEqual([]);
+        expect(await host.listPlatformRequests(t1, fork)).toEqual([]);
+        // The retry reads settled, saying why, rather than vanishing.
+        const settled = (await host.executorDeadLetters(t1, fork)).find((d) => d.executorId === 'flaky-effector');
+        expect(settled?.error).toMatch(new RegExp(`^not carried: copied from scope ${source}`));
+
+        // Nor does it ship the source's events to Tier 2 again: the drain's read is empty here,
+        // while the source's own read still holds them.
+        expect(await host.admin.readUndrainedEvents(staff, t1, fork, 200)).toHaveLength(0);
+        expect((await host.admin.readUndrainedEvents(staff, t1, source, 200)).map((e) => e.id)).toContain(step1);
+
+        // The twin: work the copy creates itself flows as it always did, to Tier 2 included.
+        await stub.invoke('flow/produce');
+        expect((await host.admin.readUndrainedEvents(staff, t1, fork, 200)).map((e) => e.type)).toContain('flow.step1');
+        const own = await logOf(fork);
+        expect(own).toHaveLength(2); // its own step1, and the step2 that consumer emitted
+        expect(own).not.toContain(step1);
+        // Its own executor work reaches dispatch too, and is held there: a fork is inert (#2005).
+        await stub.invoke('connector/request-effect', { tag: 'fork-own' });
+        expect(count('fork-own')).toBe(0);
+        expect(await inertIn(fork)).toEqual([await eventIdOf(fork, 'fork-own')]);
+      });
+
+      it("the copy's own events still sort above a copied event stamped by a clock that ran ahead", async () => {
+        // A copied event from a source whose clock was ahead: without the loader re-seeding the
+        // copy's id floor from the outbox it brought, the copy's next event would sort below the
+        // mark and be withheld as if it were the source's.
+        const ahead = createUlid()(Date.parse('2099-01-01T00:00:00.000Z'));
+        const withAhead = {
+          ...queued,
+          tables: queued.tables.map((t) => {
+            if (t.name !== '_substrat_outbox') return t;
+            const at = (name: string) => t.columns.indexOf(name);
+            const template = t.rows.find((r) => r[at('type')] === 'effect.requested')!;
+            const future = [...template];
+            future[at('id')] = ahead;
+            future[at('entity_id')] = 'copy-ahead';
+            future[at('payload')] = JSON.stringify({ tag: 'copy-ahead' });
+            return { ...t, rows: [...t.rows, future] };
+          }),
+        };
+        const fork = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: fork, jurisdiction: 'eu', vertical: 'connector-vertical' }, withAhead);
+        await (await host.getScope(alice, t1, fork)).invoke('connector/request-effect', { tag: 'fork-after-ahead' });
+        // The copy's own event reached dispatch (held inert there, #2005); the copied one did not.
+        expect(await inertIn(fork)).toEqual([await eventIdOf(fork, 'fork-after-ahead')]);
+        expect(count('fork-after-ahead')).toBe(0);
+        expect(count('copy-ahead')).toBe(0);
+      });
+
+      it('a snapshot: the same', async () => {
+        const snap = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: snap, jurisdiction: 'eu', vertical: 'connector-vertical' }, queued);
+        await host.drainDue(t1, snap);
+        await (await host.getScope(alice, t1, snap)).invoke('flow/log');
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        expect(await logOf(snap)).toEqual([]);
+      });
+
+      /** A scope's export with one executor delivery removed, so that event is owed again. */
+      const owing = async (s: ScopeId, entityId: string): Promise<Dump> => {
+        const dump = await host.admin.exportScope(staff, t1, s);
+        const outbox = dump.tables.find((t) => t.name === '_substrat_outbox')!;
+        const id = outbox.rows.find((r) => r[outbox.columns.indexOf('entity_id')] === entityId)![outbox.columns.indexOf('id')];
+        return {
+          ...dump,
+          tables: dump.tables.map((t) =>
+            t.name === '_substrat_deliveries' ? { ...t, rows: t.rows.filter((r) => r[t.columns.indexOf('event_id')] !== id) } : t,
+          ),
+        };
+      };
+
+      it("a copy of a copy runs neither source's work; the copy's own backup, returned, runs only its own", async () => {
+        const first = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: first, jurisdiction: 'eu', vertical: 'connector-vertical' }, queued);
+        await (await host.getScope(alice, t1, first)).invoke('connector/request-effect', { tag: 'first-own' });
+        // A copy's own work reaches dispatch and is held inert there (#2005), never effected.
+        const firstOwn = await eventIdOf(first, 'first-own');
+        expect(await inertIn(first)).toEqual([firstOwn]);
+        const firstsBackup = await owing(first, 'first-own');
+
+        // copy → copy: the second copy's mark is above the first copy's own events too.
+        const second = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: second, jurisdiction: 'eu', vertical: 'connector-vertical' }, firstsBackup);
+        await (await host.getScope(alice, t1, second)).invoke('flow/log');
+        await host.drainDue(t1, second);
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        // The first copy's own event is the second's INHERITED work: it never reaches dispatch.
+        expect(await inertIn(second)).toEqual([]);
+        await (await host.getScope(alice, t1, second)).invoke('connector/request-effect', { tag: 'second-own' });
+        expect(await inertIn(second)).toEqual([await eventIdOf(second, 'second-own')]);
+
+        // The first copy's backup returned to it: its own owed event runs, and the source's
+        // still do not, because the copy's origin came back with its backup.
+        await host.restoreScope(staff, t1, first, firstsBackup);
+        expect(await inertIn(first)).toEqual([]); // the backup had its delivery row removed
+        await (await host.getScope(alice, t1, first)).invoke('flow/log');
+        await host.drainDue(t1, first);
+        // Owed again and the first copy's own, so it reaches dispatch again: held inert (#2005).
+        expect(await inertIn(first)).toEqual([firstOwn]);
+        expect(count('first-own')).toBe(0);
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        expect(await logOf(first)).toEqual([]);
+      });
+
+      it('a return (the same dump restored into its own scope) runs all of it — from a dump that predates the origin table too', async () => {
+        // A backup taken before `_substrat_copy_origin` existed: the loader builds the table from
+        // the kernel's DDL, as every wake does on an existing scope, and no row means nothing here
+        // was copied.
+        const legacy = { ...queued, tables: queued.tables.filter((t) => t.name !== '_substrat_copy_origin') };
+        expect(legacy.tables.length).toBe(queued.tables.length - 1);
+        await host.restoreScope(staff, t1, source, legacy);
+        expect((await host.admin.listScopeTables(staff, t1, source)).map((t) => t.name)).toContain('_substrat_copy_origin');
+        await (await host.getScope(alice, t1, source)).invoke('flow/log');
+        await host.drainDue(t1, source);
+        expect(count('copy-retry')).toBe(2);
+        expect(count('copy-unattempted')).toBe(2);
+        expect(await logOf(source)).toContain(step1);
+      });
     });
 
     /**
@@ -3232,9 +3505,12 @@ export function scopeHostContractSuite(
           dump,
         );
 
-        // Same tables and row counts as the source (the spine came across too).
-        const src = (await host.admin.listScopeTables(staff, t1, s1))
-          .map((t) => `${t.name}:${t.rowCount}`)
+        // Same tables and row counts as the source (the spine came across too), but for the one
+        // row every copy adds: where it came from, and the mark (#1686, and #2005: an empty copy
+        // holds it too, which is how a host with no directory knows a copy).
+        const srcTables = await host.admin.listScopeTables(staff, t1, s1);
+        const src = srcTables
+          .map((t) => (t.name === '_substrat_copy_origin' ? `${t.name}:1` : `${t.name}:${t.rowCount}`))
           .sort();
         const dst = (await host.admin.listScopeTables(staff, t1, copy))
           .map((t) => `${t.name}:${t.rowCount}`)
@@ -5246,6 +5522,40 @@ export function scopeHostContractSuite(
       expect(log).toHaveLength(2); // first bind and winner; refusals record no successful move
       await host.admin.bindScopeVersion(staff, t1, s, v1); // legacy unconditional caller
       expect((await host.admin.getScopeRecord(staff, t1, s))!.verticalVersionId).toBe(v1);
+    });
+
+    // #1722 (Codex #2008 r7): the admin-log record of a staff resolution of a kept copy. The
+    // resolution itself runs in the vertical's store; the directory only records it, in full.
+    it('records a kept-copy resolution in the admin log, before and after, and refuses an unknown scope', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: 'demo' });
+      await host.admin.recordKeptCopyResolution(staff, t1, s, {
+        action: 'restore-forward',
+        script: 'demo-v1',
+        liveScript: 'demo-v2',
+        keptAt: '2026-10-03T12:00:00.000Z',
+        revisionBefore: '41',
+        revisionAfter: '7',
+      });
+      const [row] = await host.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: s });
+      expect(row).toMatchObject({
+        actor: staff,
+        action: 'resolveKeptCopy',
+        before: { script: 'demo-v1', keptAt: '2026-10-03T12:00:00.000Z', revision: '41' },
+        after: { action: 'restore-forward', liveScript: 'demo-v2', revision: '7' },
+      });
+      const other = scopeId.parse(ulid());
+      await expect(
+        host.admin.recordKeptCopyResolution(staff, t1, other, {
+          action: 'discard',
+          script: 'demo-v1',
+          liveScript: null,
+          keptAt: '2026-10-03T12:00:00.000Z',
+          revisionBefore: null,
+          revisionAfter: null,
+        }),
+      ).rejects.toThrow(/unknown scope/);
+      expect(await host.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: other })).toEqual([]);
     });
 
     it('publishes a version as pending, and refuses to bind it until admitted', async () => {

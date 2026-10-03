@@ -24,7 +24,9 @@
  * The reconcile and delete cases hold the roster's other two doors, and the last case the
  * contract that keeps it platform-fed: a scope RESTORED from another's dump (the PR-preview
  * path, a fork of production data) is never on the roster, even once routed traffic has
- * reached it — as ticket0's suite holds for a desk. No clock is moved: the DO host has none to inject, so the stale leave simply
+ * reached it — as ticket0's suite holds for a desk. The last describe holds a different
+ * deployment concern on the same worker — attachment text (#1575) — and sits at the end
+ * because the roster cases above count every scope the file has provisioned. No clock is moved: the DO host has none to inject, so the stale leave simply
  * starts in 2020.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
@@ -41,7 +43,8 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
+import { STORE_LOCAL_META_KEYS, runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
+import { ATTACHMENT_TEXT_FIXTURES } from '@substrat-run/contract-tests';
 import { VerticalClient } from '@substrat-run/control-plane-api';
 import {
   CloudflareScopeHost,
@@ -49,6 +52,7 @@ import {
   type ScopeSweepReport,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
+import { hostFor } from '../../src/worker.js';
 import { EMPLOYEE_SELF, MODULES } from '../../src/provision.js';
 
 interface Leave {
@@ -286,7 +290,12 @@ describe('meridian provision is idempotent (#1653)', () => {
       ].map((r) => String(r.name));
       const out: Record<string, string[]> = {};
       for (const name of names) {
-        out[name] = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].map((r) => JSON.stringify(r)).sort();
+        // #1722: the store's own bookkeeping (its load stamp and write revision) moves with every
+        // write, an idempotent one included. It is not the scope's data, so it is not compared.
+        const rows = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].filter(
+          (r) => name !== '_substrat_meta' || !STORE_LOCAL_META_KEYS.includes(String(r.key)),
+        );
+        out[name] = rows.map((r) => JSON.stringify(r)).sort();
       }
       return out;
     });
@@ -485,5 +494,118 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
     expect(await statusOf(t, s, stale)).toBe('cancelled');
 
     expect((await platform('/internal/delete-scope', { scopeId: s })).status).toBe(200);
+  });
+});
+
+// ── attachment text (#1575, K-43) ────────────────────────────────────────────────────
+//
+// The kernel parses no file format; the parsers are passed to the host at its composition
+// root, and for a deployed vertical that root is `hostFor` (src/worker.ts). This builds its
+// host from that function — so the wiring under test is the worker's own, not a copy — and
+// runs the extraction job the sweeper's pass would, on workerd, against the real ScopeDO's
+// SQLite (FTS5 and all). The one thing it supplies is a bucket: no deployed vertical
+// resolves a per-tenant bucket yet, so `hostFor` takes `attachmentBuckets` as a seam and an
+// in-memory R2 slice stands in. The twin is a host with no extractors, which records the
+// same upload `unsupported` and finds nothing: a pass that did not depend on the wiring
+// would pass the twin too.
+
+const DOCX = ATTACHMENT_TEXT_FIXTURES.find((f) => f.name === 'docx')!;
+
+/** An in-memory `R2Bucket` — the slice `r2TenantBlobStore` reaches through. */
+function fakeBucket() {
+  const objs = new Map<string, { body: Uint8Array; contentType?: string }>();
+  return {
+    put: async (key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }) => {
+      objs.set(key, { body: new Uint8Array(value), contentType: options?.httpMetadata?.contentType });
+    },
+    get: async (key: string) => {
+      const o = objs.get(key);
+      if (!o) return null;
+      return {
+        arrayBuffer: async () => o.body.buffer.slice(o.body.byteOffset, o.body.byteOffset + o.body.byteLength),
+        httpMetadata: o.contentType ? { contentType: o.contentType } : undefined,
+      };
+    },
+    delete: async (key: string) => {
+      objs.delete(key);
+    },
+    list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
+  };
+}
+
+/** A standard install on a fresh scope, as the platform provisions it. */
+async function provisionInstall(): Promise<{ t: TenantId; s: ScopeId }> {
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const res = await platform('/internal/provision', { tenantId: t, scopeId: s, owner, entitlements: grants(INSTALLED) });
+  expect(res.status, await res.clone().text()).toBe(201);
+  return { t, s };
+}
+
+/** An employee, and the DOCX fixture uploaded onto them through `host`. */
+async function uploadAgreement(host: CloudflareScopeHost, t: TenantId, s: ScopeId) {
+  const admin = await host.getScope(owner, t, s);
+  const employee = await admin.invoke<{ id: string }>('hr/create-employee', { number: `E-${ulid()}`, name: 'Elin' });
+  const att = await host.attachments(owner, t, s);
+  const rec = await att.upload({
+    entity: { entityType: 'employee', entityId: employee.id },
+    filename: DOCX.filename,
+    contentType: DOCX.contentType,
+    visibility: 'internal',
+    body: DOCX.body,
+  });
+  return { att, rec };
+}
+
+/** The extraction job, run as the sweeper's pass runs it. */
+async function drain(host: CloudflareScopeHost, t: TenantId, s: ScopeId): Promise<void> {
+  while ((await host.runDueJobs(t, s, { limit: 100 })).attempted > 0);
+}
+
+/** The text row, read straight from the scope's own SQLite. */
+function textRow(s: ScopeId, id: string) {
+  return runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), async (_i, state) =>
+    state.storage.sql
+      .exec<{ status: string; extractor: string | null; detail: string | null }>(
+        'SELECT status, extractor, detail FROM _substrat_search__attachment_text WHERE attachment_id = ?',
+        id,
+      )
+      .toArray()[0],
+  );
+}
+
+describe('meridian on workerd — an uploaded document is searchable by its text (#1575)', () => {
+  it("the worker's own host extracts a DOCX: pending on upload, indexed after the job, findable by a body phrase", async () => {
+    const { t, s } = await provisionInstall();
+    const bucket = fakeBucket();
+    const wired = hostFor(env, { attachmentBuckets: () => bucket });
+    const { att, rec } = await uploadAgreement(wired, t, s);
+
+    expect(await textRow(s, rec.id)).toMatchObject({ status: 'pending' });
+    expect(await att.search('indexation clause')).toEqual([]); // nothing is searchable until the job lands
+
+    await drain(wired, t, s);
+
+    expect(await textRow(s, rec.id)).toMatchObject({ status: 'indexed', extractor: 'docx' });
+    for (const phrase of ['indexation clause', 'consumer price', 'återbetalning']) {
+      expect((await att.search(phrase)).map((r) => r.id), phrase).toEqual([rec.id]);
+    }
+    expect(await att.search('serval')).toEqual([]); // a phrase from no body
+  });
+
+  it('twin: a host wired with no extractors records the same upload unsupported, and finds nothing', async () => {
+    const { t, s } = await provisionInstall();
+    const bucket = fakeBucket();
+    const bare = new CloudflareScopeHost({ scope: env.SCOPE, attachmentBuckets: () => bucket });
+    for (const m of MODULES) bare.registerModule(m);
+    const { att, rec } = await uploadAgreement(bare, t, s);
+
+    await drain(bare, t, s);
+
+    expect(await textRow(s, rec.id)).toMatchObject({
+      status: 'unsupported',
+      detail: `no extractor for content type '${DOCX.contentType}'`,
+    });
+    expect(await att.search('indexation clause')).toEqual([]);
   });
 });

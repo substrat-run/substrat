@@ -1,5 +1,6 @@
 import type {
   AttachmentRecord,
+  ScopeLineage,
   ConnectionId,
   DrainedEvent,
   EntityRef,
@@ -90,10 +91,25 @@ import {
   type ImportResult,
   type ImportState,
   substratError,
+  CONNECTOR_ATTACHMENT_RECORD_HEADER,
+  LOAD_STAMP_HEADER,
+  PLATFORM_SECRET_HEADER,
+  WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
-import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
+import type { KeptCopy, LoadMarker, OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
+
+/** `fencedAnswer`'s word for a deployment that predates the route it was asked (#1722). */
+const UNFENCED = Symbol('unfenced');
+
+/** The SPA fallback's answer to a path the deployment does not know: an HTML document, served as one. */
+function isHtmlShell(res: Response, text: string): boolean {
+  return (
+    (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html') &&
+    /^\uFEFF?\s*(<!doctype\s+html|<html[\s>])/i.test(text)
+  );
+}
 
 /**
  * The query string for both internal denial reads. The filter's own fields come from
@@ -980,6 +996,22 @@ export class VerticalClient {
   }
 
   /**
+   * `exportScope` with the store's load stamp (#1722), read by the vertical in the same call as
+   * the dump and handed over in a header: what a carry's fenced wipe of the copy it leaves
+   * expects. Null from a deployment that predates the stamp, which cannot fence a wipe either.
+   * A store nothing has stamped is stamped by this read.
+   */
+  async exportScopeStamped(
+    scopeId: ScopeId,
+  ): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }> {
+    const path = `/internal/export?scopeId=${encodeURIComponent(scopeId)}&stamp=1`;
+    const res = await this.getInternalResponse(path);
+    const loadStamp = res.headers.get(LOAD_STAMP_HEADER) || null;
+    const revision = res.headers.get(WRITE_REVISION_HEADER) || null;
+    return { tables: await this.parseInternal<ScopeDumpTable[]>('introspection', path, res), loadStamp, revision };
+  }
+
+  /**
    * The write half of `exportScope` — load a dump into one existing scope in this
    * deployment (drop-then-replay), for the governed restore/backout. The control-plane
    * route in front is the gate and the auditor, exactly as with the export.
@@ -996,8 +1028,20 @@ export class VerticalClient {
     /** #1742: the recorded-off modules, switched off on THIS scope in the restore's own event.
      *  #1869: `sourceScopeId`, the scope the tables were captured from, so the vertical re-points
      *  exactly that scope's grants, and `exact` when the platform exported them itself. A
-     *  vertical that predates the fields ignores them. */
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
+     *  vertical that predates the fields ignores them. #1722: `loadStamp`, the stamp a carry
+     *  leaves on the copy it lands, which a later fenced wipe of that copy expects, and `expect`,
+     *  the marker the carry read here (`loadMarker`): the load is refused if the store moved since.
+     *  #2005: `markCopy` — the directory's classification of this scope, sent when it is not
+     *  primary, so the vertical marks it a copy in its own storage (and refuses a primary one).
+     *  A vertical that predates the field ignores it. */
+    opts?: {
+      switchedOff?: ModuleId[];
+      sourceScopeId?: ScopeId;
+      exact?: boolean;
+      loadStamp?: string;
+      expect?: LoadMarker;
+      markCopy?: ScopeLineage;
+    },
   ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
     // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
     if (opts?.exact && !opts.sourceScopeId) {
@@ -1012,10 +1056,221 @@ export class VerticalClient {
         ...(opts?.switchedOff ? { switchedOff: opts.switchedOff } : {}),
         ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
         ...(opts?.exact ? { exact: true } : {}),
+        ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),
+        ...(opts?.expect ? { expect: opts.expect } : {}),
+        ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
       },
       'restore',
     );
     return { tables: count, ...switchedOffFrom(switchedOff) };
+  }
+
+  /**
+   * Wipe the copy a carry left in this deployment (#1722), only if nothing was loaded into the
+   * scope since `expectLoadStamp` (null: a store no load has stamped). `wiped: false` is the
+   * vertical's refusal: something was restored there since, and it stays.
+   *
+   * `'unfenced'` is a deployment that cannot compare the stamp, and the only answer that lets
+   * the caller fall back to an unconditional wipe: a 404 (built before the route), a 501 (a host
+   * without the method) or the HTML shell an SPA fallback serves (`fencedAnswer`) are the
+   * deployment's own proof that it wiped nothing. Everything else, a truncated or malformed JSON
+   * answer included, surfaces as the failure it is: the wipe may or may not have run.
+   */
+  async wipeCarriedCopy(input: {
+    scopeId: ScopeId;
+    expectLoadStamp: string | null;
+    /** The write revision read with the stamp; a write since refuses the wipe too. */
+    expectRevision?: string | null;
+    /** The caller read that the scope does not route here: a copy changed since is kept. */
+    protectIfChanged?: boolean;
+    carriedTo: string;
+    at: string;
+    /** #2005: the directory's classification, sent when the scope is not primary, so a copy
+     *  made before the marker leaves the wipe marked, tombstoned or kept. */
+    markCopy?: ScopeLineage;
+  }): Promise<{ wiped: boolean } | 'unfenced'> {
+    const verb = 'wipe-carried';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/wipe-carried`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (answer === UNFENCED) return 'unfenced';
+    const wiped = (answer as { wiped?: unknown } | null)?.wiped;
+    if (typeof wiped !== 'boolean') {
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with an unexpected shape — the copy of scope ${input.scopeId} may or may not be wiped`,
+      );
+    }
+    return { wiped };
+  }
+
+  /**
+   * What a carry's restore into this scope expects to find unchanged (#1722): the load stamp and
+   * the store's write revision. `'unfenced'` on `wipeCarriedCopy`'s terms: only the
+   * deployment's own answer that it predates the route; everything else is a failure.
+   */
+  async loadMarker(scopeId: ScopeId): Promise<LoadMarker | 'unfenced'> {
+    const verb = 'load-marker';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/load-marker?scopeId=${encodeURIComponent(scopeId)}`, {
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (answer === UNFENCED) return 'unfenced';
+    const { loadStamp, revision } = (answer ?? {}) as { loadStamp?: unknown; revision?: unknown };
+    const field = (v: unknown) => v === null || (typeof v === 'string' && v.length > 0);
+    if (!field(loadStamp) || !field(revision)) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${scopeId} with an unexpected shape`);
+    }
+    return { loadStamp: loadStamp as string | null, revision: revision as string | null };
+  }
+
+  /**
+   * The kept copy of a scope in this deployment (#1722), or null. A deployment built before the
+   * fenced wipe cannot have made one, so its "predates" answer reads as null too.
+   */
+  async keptCopy(scopeId: ScopeId): Promise<KeptCopy | null> {
+    const verb = 'kept-copy';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/kept-copy?scopeId=${encodeURIComponent(scopeId)}`, {
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (answer === UNFENCED) return null;
+    const kept = (answer as { kept?: unknown } | null)?.kept;
+    if (kept === null) return null;
+    const k = kept as Partial<KeptCopy> | undefined;
+    if (!k || typeof k.carriedTo !== 'string' || typeof k.keptAt !== 'string' || !(k.revision === null || typeof k.revision === 'string')) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${scopeId} with an unexpected shape`);
+    }
+    return {
+      carriedTo: k.carriedTo,
+      keptAt: k.keptAt,
+      revision: k.revision,
+      ...(k.leftAgain && typeof k.leftAgain.to === 'string' && typeof k.leftAgain.at === 'string'
+        ? { leftAgain: { to: k.leftAgain.to, at: k.leftAgain.at } }
+        : {}),
+      ...(k.clearedOnly && (k.clearedOnly.revision === null || typeof k.clearedOnly.revision === 'string')
+        ? { clearedOnly: { revision: k.clearedOnly.revision } }
+        : {}),
+    };
+  }
+
+  /** Release the marker of a kept copy that is the live store after all (#1722), at the revision read. */
+  async releaseKeptCopy(input: {
+    scopeId: ScopeId;
+    revision: string | null;
+    /** #2005: the directory's classification, sent when the scope is not primary. */
+    markCopy?: ScopeLineage;
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
+    loadStamp?: string | null;
+  }): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
+    const verb = 'kept-copy-release';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/kept-copy/release`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (answer === UNFENCED) {
+      throw new ControlPlaneError(501, `the deployment holding scope ${input.scopeId} keeps no copies (#1722)`);
+    }
+    const a = answer as { released?: unknown; refused?: unknown } | null;
+    if (a?.released === true) return { released: true };
+    if (a?.refused === 'changed' || a?.refused === 'not-kept') return { refused: a.refused };
+    throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — the marker may or may not be cleared`);
+  }
+
+  /** Discard the kept copy of a scope in this deployment (#1722), at the revision the operator read. */
+  async discardKeptCopy(input: {
+    scopeId: ScopeId;
+    revision: string | null;
+    carriedTo: string;
+    at: string;
+    /** #2005: the directory's classification, sent when the scope is not primary. */
+    markCopy?: ScopeLineage;
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
+    loadStamp?: string | null;
+  }): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
+    const verb = 'kept-copy-discard';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/kept-copy/discard`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (answer === UNFENCED) {
+      throw new ControlPlaneError(501, `the deployment holding scope ${input.scopeId} keeps no copies (#1722)`);
+    }
+    const a = answer as { discarded?: unknown; refused?: unknown } | null;
+    if (a?.discarded === true) return { discarded: true };
+    if (a?.refused === 'changed' || a?.refused === 'not-kept') return { refused: a.refused };
+    throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — the copy may or may not be discarded`);
+  }
+
+  /**
+   * #1722: the answer to a route a deployment built before #1722 does not have. Only an answer
+   * the deployment actually gave, and that says so, counts as that: a 404, a 501, or the HTML
+   * shell an SPA fallback serves for a path it does not know (`text/html`, a body that opens as an
+   * HTML document). Everything else is a failure, never `UNFENCED`, because the request may have
+   * landed: a transport failure, a refusal, a body that fails to read, and a body that is not
+   * valid JSON (a truncated `{"wiped":` from a deployment that DID act). A fenced wipe that
+   * committed and then lost its answer must not be followed by the unconditional fallback.
+   */
+  private async fencedAnswer(verb: string, request: () => Promise<Response>): Promise<unknown> {
+    const res = await this.reach(verb, request);
+    if (res.status === 404 || res.status === 501) return UNFENCED;
+    if (!res.ok) throw await this.refusal(verb, res);
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (e) {
+      throw new ControlPlaneError(
+        502,
+        `reading the vertical's answer to ${verb} failed (${e instanceof Error ? e.message : String(e)}) — it may or may not have acted`,
+      );
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      if (isHtmlShell(res, text)) return UNFENCED;
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with a body that is neither JSON nor its HTML shell — it may or may not have acted`,
+      );
+    }
+  }
+
+  /** Mark one scope a copy in the vertical's own storage (#2005), given the directory's
+   *  classification of it; whether this call stamped it. */
+  async markCopy(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }> {
+    return this.postInternal<{ marked: boolean }>('/internal/mark-copy', { scopeId, lineage }, 'mark-copy');
+  }
+
+  /** Remove a mistaken copy marker (#2005), given the directory's classification; whether it did. */
+  async clearCopyMark(
+    scopeId: ScopeId,
+    lineage: ScopeLineage,
+    /** #1722 (Codex #2008 r12–r13): clear only the store with this load stamp and revision; 412
+     *  otherwise. */
+    opts: { expect?: LoadMarker } = {},
+  ): Promise<{ cleared: boolean }> {
+    return this.postInternal<{ cleared: boolean }>(
+      '/internal/clear-copy-mark',
+      { scopeId, lineage, ...(opts.expect ? { expect: opts.expect } : {}) },
+      'clear-copy-mark',
+    );
   }
 
   /** Facets over one scope's outbox (#1239) — through the vertical that holds the data. */
@@ -1423,6 +1678,11 @@ export class VerticalClient {
 
   /** A platform-authenticated GET to the vertical's `/internal/*` surface. */
   private async getInternal<T>(path: string): Promise<T> {
+    return this.parseInternal<T>('introspection', path, await this.getInternalResponse(path));
+  }
+
+  /** `getInternal`'s request, answering the response itself, for a caller that reads a header too. */
+  private async getInternalResponse(path: string): Promise<Response> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const res = await this.reach('introspection', () =>
       this.options.fetch(`${base}${path}`, {
@@ -1430,6 +1690,6 @@ export class VerticalClient {
       }),
     );
     if (!res.ok) throw await this.refusal('introspection', res);
-    return this.parseInternal<T>('introspection', path, res);
+    return res;
   }
 }

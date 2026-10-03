@@ -25,7 +25,7 @@
  * address is still a map.
  */
 import { DECLARED_OUTPUT_FIELDS_MAX } from '@substrat-run/contracts';
-import type { OutputFieldsReport } from '@substrat-run/kernel';
+import type { OutputFieldsReport } from './invocation-log.js';
 import { defOf, transparentInner } from './zod-structural.js';
 
 /** How a response is walked: the names to ask about, and whether its first entry answers. */

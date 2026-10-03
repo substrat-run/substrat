@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { relayConnectionUpsert, ConnectionRelayError } from '../src/index.js';
+import { relayConnectionUpsert, ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL } from '../src/index.js';
 
 /**
  * The connection relay (connections.md §3.5.2) — a tenant admin hands a provider
@@ -296,5 +296,79 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
 
     await noBox.close();
     rmSync(boxless, { recursive: true, force: true });
+  });
+});
+
+/**
+ * #2005: previews and forks cannot change a tenant's connections. A connection is keyed on
+ * (tenant, vertical, provider), so a copy of a scope shares the install's — the relay refuses
+ * one before the probe and before the store, and the install's credential is left as it was.
+ * The same function is what a consent round's callback writes through, so this is also the
+ * write-time check that a round started before the change cannot get past.
+ */
+describe('relayConnectionUpsert — a preview or a fork cannot change a connection (#2005)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const actor = platformActorId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const install = scopeId.parse(ulid());
+  const admin = principalId.parse(ulid());
+  const copies: [string, Record<string, unknown>][] = [
+    ['a preview fork', { kind: 'preview', forkedFrom: install, forkedAt: new Date().toISOString() }],
+    ['a clean-room preview', { kind: 'preview' }],
+    ['a fork', { forkedFrom: install, forkedAt: new Date().toISOString() }],
+  ];
+  const copyIds = new Map<string, ReturnType<typeof scopeId.parse>>();
+  const request = (s: string, secret = 'INSTALL-SECRET') => ({
+    tenantId: t,
+    scopeId: s,
+    provider: 'scrive',
+    secret: { apiToken: secret },
+    grants: [],
+    createdBy: admin,
+  });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-conn-relay-inert-'));
+    host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k1', new Uint8Array(32).fill(7)) });
+    await host.admin.createTenant(staff, { id: t, slug: 'inert', name: 'Inert' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: install, vertical: 'acme-crm' });
+    for (const [name, shape] of copies) {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'acme-crm', ...shape });
+      copyIds.set(name, s);
+    }
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('twin: the install creates its connection', async () => {
+    expect((await relayConnectionUpsert(host, actor, request(install))).created).toBe(true);
+  });
+
+  for (const [name] of copies) {
+    it(`${name}: refused 403 before the probe, and the install's credential is untouched`, async () => {
+      const [before] = await host.admin.listConnections(staff, { tenantId: t, provider: 'scrive' });
+      let probed = 0;
+      const err = await relayConnectionUpsert(host, actor, request(copyIds.get(name)!, 'COPY-SECRET'), {
+        probeCandidate: async () => (probed++, undefined),
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConnectionRelayError);
+      expect(err).toMatchObject({ status: 403, message: PREVIEW_CONNECTIONS_REFUSAL });
+      expect(probed).toBe(0);
+      // No new row, no rotation: the one connection still opens to the install's secret.
+      const after = await host.admin.listConnections(staff, { tenantId: t, provider: 'scrive' });
+      expect(after).toEqual([before]);
+      const opened = await host.admin.openConnection(t, 'acme-crm', 'scrive');
+      expect(opened?.secret).toEqual({ apiToken: 'INSTALL-SECRET' });
+    });
+  }
+
+  it('the next case along: the install still rotates its own connection afterwards', async () => {
+    expect((await relayConnectionUpsert(host, actor, request(install, 'ROTATED'))).created).toBe(false);
   });
 });

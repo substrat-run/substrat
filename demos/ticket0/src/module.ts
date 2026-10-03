@@ -5135,6 +5135,10 @@ const operations = {
    * row: the sender, the signals, and the start of the first thing they wrote. One
    * statement, over the partial index migration 0021 keeps for exactly this queue.
    * `substr` cuts the excerpt in SQL so a ten-megabyte mail is not read to show a line.
+   *
+   * `INDEXED BY` because the planner otherwise prefers the kernel's list index on
+   * `quarantine` and sorts the whole queue for every page (#1554): a spam run makes that
+   * queue the long one. The partial index is already in id order.
    */
   'ticket0/list-suspended': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead));
@@ -5150,7 +5154,7 @@ const operations = {
                         ORDER BY m.id LIMIT 1) AS excerpt,
                       (SELECT COUNT(*) FROM ticket0_messages m WHERE m.conversation_id = c.id)
                         AS messages
-                 FROM ticket0_conversations c
+                 FROM ticket0_conversations c INDEXED BY ticket0_conversations_suspended
                  JOIN ticket0_contacts k ON k.id = c.contact_id
                 WHERE c.quarantine = 'suspended'`;
     if (input.cursor) {
