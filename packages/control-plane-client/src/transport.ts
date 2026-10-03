@@ -35,8 +35,10 @@ export interface ControlPlaneTransportOptions {
    * tenant it acts for). PRECEDENCE, lowest first: these, then the transport's own
    * credential (`serviceToken` / `actor`), then the content type, then the request's own
    * `init.headers`. A client that has a credential of its own ignores any credential header
-   * (`x-service-token`, `x-platform-actor`, any case) in this map, so exactly one credential
-   * leaves per request; a single call can still override anything.
+   * (`x-service-token`, `x-platform-actor`, any case) in this map, and a call that names a
+   * credential replaces the client's, so exactly one credential leaves per request — two are
+   * refused with a `TypeError` before anything is sent; a single call can still override
+   * anything else.
    */
   headers?: Record<string, string>;
   /**
@@ -103,6 +105,9 @@ export class ControlPlaneError extends Error {
   /** True for a 2xx answer that was not the JSON the route promises. */
   readonly malformed: boolean;
 }
+
+/** A request that would have carried two credentials — refused before it is sent. */
+class CredentialConflict extends TypeError {}
 
 export class ControlPlaneTransport {
   private readonly baseUrl: string;
@@ -175,7 +180,23 @@ export class ControlPlaneTransport {
     if (this.serviceToken) merged.set(SERVICE_TOKEN_HEADER, this.serviceToken);
     else if (this.actor !== null) merged.set(DEV_ACTOR_HEADER, this.actor);
     if (this.contentType !== null) merged.set('content-type', this.contentType);
-    new Headers(call).forEach((value, name) => merged.set(name, value));
+    // A call that names a credential of its own REPLACES the client's: the other credential
+    // header goes with it, so the request still carries exactly one. (Merging the call's header
+    // over the client's would send both whenever they differ in which header they use.)
+    const callHeaders = new Headers(call);
+    if (callHeaders.has(SERVICE_TOKEN_HEADER) || callHeaders.has(DEV_ACTOR_HEADER)) {
+      merged.delete(SERVICE_TOKEN_HEADER);
+      merged.delete(DEV_ACTOR_HEADER);
+    }
+    callHeaders.forEach((value, name) => merged.set(name, value));
+    // Whatever way it was assembled, two credentials never leave together: a call that names
+    // both, or an option map that carries both to a client with none of its own, is refused
+    // here, before anything is sent, rather than left for the plane to pick between.
+    if (merged.has(SERVICE_TOKEN_HEADER) && merged.has(DEV_ACTOR_HEADER)) {
+      throw new CredentialConflict(
+        `a request names two credentials (${SERVICE_TOKEN_HEADER} and ${DEV_ACTOR_HEADER}) — send exactly one`,
+      );
+    }
     return Object.fromEntries(merged.entries());
   }
 
@@ -194,6 +215,8 @@ export class ControlPlaneTransport {
     try {
       res = await this.request(path, init);
     } catch (e) {
+      // A refused request is the caller's mistake, not an unreachable plane: it never left.
+      if (e instanceof CredentialConflict) throw e;
       // A transport failure (control plane down) must fail closed, not silently
       // pass — a vertical that cannot reach the authority does not get to run.
       throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`, undefined, {

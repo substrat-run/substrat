@@ -143,20 +143,73 @@ describe('one credential per request, whatever the headers option carries', () =
 
   it('a client with NO credential of its own passes the map through untouched (the CLI’s case — the positive twin)', async () => {
     const { seen, fetch } = spy();
-    await make(fetch, { actor: null, headers: stale }).call2('/x');
-    expect(seen[0]!.headers).toEqual({
-      'x-platform-actor': 'stale-actor',
-      'x-service-token': 'stale-token',
-      'x-keep': '1',
-      'content-type': 'application/json',
-    });
+    await make(fetch, { actor: null, headers: { 'X-Service-Token': 'cli', 'x-keep': '1' } }).call2('/x');
+    expect(seen[0]!.headers).toEqual({ 'x-service-token': 'cli', 'x-keep': '1', 'content-type': 'application/json' });
   });
 
-  it('a single call can still choose its own credential — the per-call override is intact', async () => {
+  /** The credential headers of one sent request. */
+  const credentialsOf = (h: Record<string, string>) =>
+    Object.fromEntries(Object.entries(h).filter(([k]) => k === SERVICE_TOKEN_HEADER || k === DEV_ACTOR_HEADER));
+
+  it.each([
+    ['a service token, a call choosing an actor', { serviceToken: 'good' }, { 'X-Platform-Actor': 'call-actor' }, { [DEV_ACTOR_HEADER]: 'call-actor' }],
+    ['an actor, a call choosing a token', { actor: 'dev' }, { 'x-SERVICE-token': 'call-token' }, { [SERVICE_TOKEN_HEADER]: 'call-token' }],
+    ['a token, a call choosing another token', { serviceToken: 'good' }, { [SERVICE_TOKEN_HEADER]: 'call-token' }, { [SERVICE_TOKEN_HEADER]: 'call-token' }],
+    ['an actor, a call choosing another actor', { actor: 'dev' }, { [DEV_ACTOR_HEADER]: 'call-actor' }, { [DEV_ACTOR_HEADER]: 'call-actor' }],
+    ['no credential of its own, a call choosing a token', { actor: null }, { [SERVICE_TOKEN_HEADER]: 'call-token' }, { [SERVICE_TOKEN_HEADER]: 'call-token' }],
+    ['a token, a call naming none (the positive twin)', { serviceToken: 'good' }, { 'x-other': '1' }, { [SERVICE_TOKEN_HEADER]: 'good' }],
+  ] as const)('exactly one credential leaves, and a call’s own replaces the client’s: %s', async (_name, option, call, expected) => {
     const { seen, fetch } = spy();
-    await make(fetch, { serviceToken: 'good', headers: stale }).call2('/x', { headers: { 'X-Platform-Actor': 'call-actor' } });
-    expect(seen[0]!.headers[DEV_ACTOR_HEADER]).toBe('call-actor');
-    expect(seen[0]!.headers[SERVICE_TOKEN_HEADER]).toBe('good');
+    await make(fetch, { ...option, headers: stale }).call2('/x', { headers: call });
+    expect(credentialsOf(seen[0]!.headers)).toEqual(expected);
+  });
+
+  it('every combination of own credential × per-call credential sends exactly one, or none refused', async () => {
+    const own: Array<Partial<ControlPlaneTransportOptions>> = [{ actor: null }, { actor: 'dev' }, { serviceToken: 'good' }, { serviceToken: 'good', actor: 'dev' }];
+    const perCall: Array<Record<string, string>> = [
+      {},
+      { [SERVICE_TOKEN_HEADER]: 'c' },
+      { [DEV_ACTOR_HEADER]: 'c' },
+      { 'X-Service-Token': 'c' },
+      { 'X-Platform-Actor': 'c' },
+    ];
+    for (const o of own) {
+      for (const c of perCall) {
+        const { seen, fetch } = spy();
+        const ownsOne = Boolean(o.serviceToken) || (o.actor !== undefined && o.actor !== null);
+        // A map carrying both credentials is only legitimate to a client that has one of its own.
+        await make(fetch, { ...o, headers: ownsOne ? stale : { 'x-keep': '1' } }).call2('/x', { headers: c });
+        const sent = credentialsOf(seen[0]!.headers);
+        // Never two. And never none when the client or the call named one.
+        expect(Object.keys(sent).length, JSON.stringify([o, c])).toBeLessThanOrEqual(1);
+        if (ownsOne || Object.keys(c).length > 0) {
+          expect(Object.keys(sent).length, JSON.stringify([o, c])).toBe(1);
+        }
+      }
+    }
+  });
+
+  it('a call naming BOTH credentials is refused before anything is sent — not reported as an unreachable plane', async () => {
+    const { seen, fetch } = spy();
+    const err = (await make(fetch, { serviceToken: 'good' })
+      .call2('/x', { headers: { [SERVICE_TOKEN_HEADER]: 'a', 'X-Platform-Actor': 'b' } })
+      .catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err).not.toBeInstanceOf(ControlPlaneError);
+    expect(err.message).toMatch(/names two credentials/);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('an option map carrying both, on a client with no credential of its own, is refused too — and request() refuses alike', async () => {
+    const { seen, fetch } = spy();
+    const t = make(fetch, { actor: null, headers: stale });
+    await expect(t.call2('/x')).rejects.toThrow(/names two credentials/);
+    await expect(t.request('/x')).rejects.toThrow(/names two credentials/);
+    expect(seen).toHaveLength(0);
+    // The positive twin: one credential in the map is a pass-through.
+    const ok = spy();
+    await make(ok.fetch, { actor: null, headers: { 'X-Service-Token': 'cli' } }).call2('/x');
+    expect(credentialsOf(ok.seen[0]!.headers)).toEqual({ [SERVICE_TOKEN_HEADER]: 'cli' });
   });
 
   it('holds for the builder client as well', async () => {
