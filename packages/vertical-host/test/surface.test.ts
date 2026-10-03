@@ -46,6 +46,8 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
       note('redrainCountLocal', before === '2026-09-16T00:00:00.000Z' ? 11 : -1),
     loadMarkerLocal: async () => note('loadMarkerLocal', { loadStamp: 'st', revision: null }),
     keptCopyLocal: async () => note('keptCopyLocal', { carriedTo: 'v2-script', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' }),
+    releaseKeptCopyLocal: async (_s: unknown, revision?: unknown) =>
+      note('releaseKeptCopyLocal', revision === '9' ? ({ released: true } as const) : ({ refused: 'changed' } as const)),
     discardKeptCopyLocal: async (_s: unknown, revision?: unknown) =>
       note('discardKeptCopyLocal', revision === '9' ? ({ discarded: true } as const) : ({ refused: 'changed' } as const)),
     // #1722: refuses unless the stamp and the tombstone arrive verbatim.
@@ -383,16 +385,16 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await post(host, { ...body, expectLoadStamp: undefined })).status).toBe(400);
     expect((await post(host, { ...body, expectLoadStamp: null })).status).toBe(200);
     expect(host.calls.filter((c) => c === 'wipeCarriedLocal')).toHaveLength(2);
-    // The write revision the export read rides through to the host.
-    let revisionSeen: unknown = 'not called';
+    // The write revision the export read, and the protect flag, ride through to the host.
+    let seen: unknown[] = [];
     const revising = fakeHost({
-      wipeCarriedLocal: async (_s, _st, _a, revision) => {
-        revisionSeen = revision;
+      wipeCarriedLocal: async (_s, _st, _a, revision, protect) => {
+        seen = [revision, protect];
         return true;
       },
     });
-    expect((await post(revising, { ...body, expectRevision: '42' })).status).toBe(200);
-    expect(revisionSeen).toBe('42');
+    expect((await post(revising, { ...body, expectRevision: '42', protectIfChanged: true })).status).toBe(200);
+    expect(seen).toEqual(['42', true]);
     // Behind the platform gate like every sibling.
     const unsigned = await appWith(host).request('/internal/wipe-carried', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -461,9 +463,14 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await discard(host, { ...body, revision: undefined })).status).toBe(400);
     expect((await discard(host, body, { 'content-type': 'application/json' })).status).toBe(403);
     expect((await appWith(host).request('/internal/kept-copy?scopeId=' + SCOPE, {}, ENV)).status).toBe(403);
-    const older = fakeHost({ keptCopyLocal: undefined, discardKeptCopyLocal: undefined });
+    const release = (h: ReturnType<typeof fakeHost>, b: unknown) =>
+      appWith(h).request('/internal/kept-copy/release', { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(b) }, ENV);
+    expect(await (await release(host, { scopeId: SCOPE, revision: '9' })).json()).toEqual({ released: true });
+    expect(await (await release(host, { scopeId: SCOPE, revision: '8' })).json()).toEqual({ refused: 'changed' });
+    const older = fakeHost({ keptCopyLocal: undefined, discardKeptCopyLocal: undefined, releaseKeptCopyLocal: undefined });
     expect((await appWith(older).request('/internal/kept-copy?scopeId=' + SCOPE, { headers: authed() }, ENV)).status).toBe(501);
     expect((await discard(older, body)).status).toBe(501);
+    expect((await release(older, { scopeId: SCOPE, revision: '9' })).status).toBe(501);
     expect(older.calls).toHaveLength(0);
   });
 

@@ -777,6 +777,15 @@ describe('VerticalClient kept copies (#1722)', () => {
     expect(shape?.status).toBe(502);
   });
 
+  it('releases with the revision, and reads the refusal; a deployment that predates it is a 501', async () => {
+    const seen: unknown[] = [];
+    expect(await client(() => Response.json({ released: true }), seen).releaseKeptCopy({ scopeId: s, revision: '9' })).toEqual({ released: true });
+    expect(seen).toEqual([{ scopeId: s, revision: '9' }]);
+    expect(await client(() => Response.json({ refused: 'not-kept' })).releaseKeptCopy({ scopeId: s, revision: '9' })).toEqual({ refused: 'not-kept' });
+    const old = await client(() => new Response('nope', { status: 404 })).releaseKeptCopy({ scopeId: s, revision: '9' }).then(() => null, (e: unknown) => e as ControlPlaneError);
+    expect(old?.status).toBe(501);
+  });
+
   it('discards with the revision, and reads the refusal; a deployment that predates it is a 501', async () => {
     const seen: unknown[] = [];
     const input = { scopeId: s, revision: '9', carriedTo: 'v2', at: '2026-10-03T00:00:00.000Z' };
