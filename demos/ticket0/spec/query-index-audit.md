@@ -156,8 +156,8 @@ queue, state, priority or assignee. The message index is partial, so only a mail
 Message-ID pays for it.
 
 **Migration cost.** On workerd, 0023 over 30 000 conversations, 90 000 messages, 90 000
-notifications, 30 000 delivery records, 15 000 sessions and 10 000 follows took 93–104 ms
-over six runs. It
+notifications, 30 000 delivery records, 15 000 sessions and 10 000 follows took 93–107 ms
+over seven runs. It
 runs inside the first request a desk serves after the deploy.
 
 A code revert does **not** remove applied indexes. Reversal needs a new append-only

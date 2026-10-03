@@ -1686,12 +1686,12 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
       const plan = (shape: Shape) => [...sql.exec(`EXPLAIN QUERY PLAN ${shape.sql}`, ...shape.args)].map((r) => String(r.detail));
       const counts = () =>
         Object.fromEntries(DESK_TABLES.map((table) => [table, [...sql.exec(`SELECT COUNT(*) AS n FROM ${table}`)][0]!.n]));
+      /** The one error the probe throws on purpose, to roll its rows back. */
+      class RollBack extends Error {}
       /**
        * The hottest table this indexes, by rows written: a notification per recipient per event.
        * Rolled back, so the desk is measured as it was. Microseconds per row.
        */
-      /** The one error the probe throws on purpose, to roll its rows back. */
-      class RollBack extends Error {}
       const writeCost = () => {
         let written = -1;
         let ms = 0;
