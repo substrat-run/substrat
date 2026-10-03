@@ -25,6 +25,7 @@ import {
   defineScopeDO,
   defineScopeSweeperDO,
   CloudflareScopeHost,
+  type CloudflareScopeHostOptions,
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
@@ -36,7 +37,8 @@ import {
   invocationLog,
 } from '@substrat-run/kernel';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
-import { hostFor } from './host.js';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
+import { declareScriveConnector } from '@substrat-run/connector-scrive';
 import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';
 import { MERIDIAN_ENV } from './manifest.js';
 import { API, API_DOCUMENT } from './api.js';
@@ -156,6 +158,38 @@ function nodeFor(req: Request, env: Env): CompanyNode {
   if (routed) return { tenantId: routed.tenantId, scopeId: routed.scopeId };
   if (env.ALLOW_DEV_NODE === 'true') return DEV_NODE;
   throw new HTTPException(503, { message: 'no scope was asserted for this request (missing router assertion)' });
+}
+
+/**
+ * The coordinator is stateless — rebuilt per request; durable state is in the DOs.
+ * CP-less: NO control plane. Permissions evaluate from each scope's own storage; the
+ * router asserts the node, so this vertical trusts it rather than reading a directory it
+ * has no binding to. Its only durable stores are its own `SCOPE` DO class and `AUTH_DB`.
+ */
+export function hostFor(
+  env: Env,
+  /** A seam for the workerd suite, which has no per-tenant bucket to resolve (nothing here declares one yet). */
+  extra: Pick<CloudflareScopeHostOptions, 'attachmentBuckets'> = {},
+): CloudflareScopeHost {
+  // K-43: the kernel parses no file format; the parsers are passed in here, so an
+  // uploaded DOCX on an `employee` is searchable by its text. Without them every
+  // upload records `unsupported`.
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    attachmentExtractors: defaultAttachmentExtractors(),
+    ...extra,
+  });
+  for (const m of MODULES) host.registerModule(m);
+  // #574 phase 3: the SAME registration the node self-host makes (seed.ts) — but on
+  // this CP-less host the handler never runs. Registering it is what tells the host
+  // which events are connector deliveries, so the drain routes each one onto the
+  // platform-requests surface as a `connector:scrive` intent and the platform (which
+  // holds the directory, the sealed credential and the egress) dispatches it. Options
+  // like `baseUrl`/`callbackUrl` are deliberately absent: they are the DISPATCHING
+  // host's concern, configured where the handler actually executes — which is why this
+  // is `declare…` and not `register…` with an empty options bag (#990).
+  declareScriveConnector(host);
+  return host;
 }
 
 /** The tenant's identity DO stub — the sub→principal directory (and Better Auth, if chosen). */

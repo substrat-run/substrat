@@ -52,7 +52,7 @@ import {
   type ScopeSweepReport,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
-import { hostFor } from '../../src/host.js';
+import { hostFor } from '../../src/worker.js';
 import { EMPLOYEE_SELF, MODULES } from '../../src/provision.js';
 
 interface Leave {
@@ -495,7 +495,7 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
 // ── attachment text (#1575, K-43) ────────────────────────────────────────────────────
 //
 // The kernel parses no file format; the parsers are passed to the host at its composition
-// root, and for a deployed vertical that root is `hostFor` (src/host.ts). This builds its
+// root, and for a deployed vertical that root is `hostFor` (src/worker.ts). This builds its
 // host from that function — so the wiring under test is the worker's own, not a copy — and
 // runs the extraction job the sweeper's pass would, on workerd, against the real ScopeDO's
 // SQLite (FTS5 and all). The one thing it supplies is a bucket: no deployed vertical
