@@ -118,6 +118,22 @@ slots straight in, alongside `forked_from`, `forked_at`, and a read-only flag fo
 - **A fork is a dead end.** The export copies the `_substrat_*` spine too, so nothing
   downstream — connectors, cron, billing — may consume from a preview/archive scope. Enforced
   by leaving the fork's outbound side unwired.
+- **A copy keeps the source's history and none of its power** (#1686). A load into a scope
+  other than the one the dump came from is a *copy*: a fork, a snapshot, a preview, or one
+  scope's backup restored onto another. A load back into its own scope is a *return*: a
+  backup restore, a carry onto a new version, adopt, rebind. On a copy:
+  - link-share capabilities (`_substrat_capabilities`, `_substrat_capability_sessions`) load
+    empty, so a live link never opens the copy (`capabilitiesForLoad`);
+  - nothing the source queued produces an effect: pending intents and running job runs settle
+    `failed` and executor retries turn terminal, each "not carried" (`settleCopiedWork`). The
+    copy records its origin and the highest event id it brought in (`_substrat_copy_origin`),
+    and consumer dispatch, executor dispatch and the Tier-2 drain read only events above it
+    (`emittedHere`). Both loaders re-seed the event-id floor from the loaded outbox (#1335), so
+    the copy's own events always sort above that mark and flow normally.
+
+  A return changes none of it. An unknown source counts as a copy. Provenance is whatever the
+  load is told: every platform copy names its source, but a staff restore of a file presented
+  as the target's own backup is treated as a return and keeps what the file carries.
 - **The local sink crosses the trust boundary.** Server-side forks stay in the governed
   environment; pulling to a laptop does not, and that is a different risk class:
   - **Residency.** Jurisdiction pins *execution*, not just storage (K-7/K-32) — the reason
