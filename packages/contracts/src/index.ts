@@ -22,6 +22,7 @@ export * from './ids.js';
 export * from './registry.js';
 export * from './routing.js';
 export * from './invocation-record.js';
+export * from './wire-headers.js';
 export * from './hostnames.js';
 export * from './tenancy.js';
 export * from './introspection.js';

@@ -24,7 +24,7 @@ import {
   type ErrorCode,
   type PlatformRequestFailure,
 } from '@substrat-run/contracts';
-import { providerErrorStatus } from '@substrat-run/kernel';
+import { providerErrorStatus } from './provider-error.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**

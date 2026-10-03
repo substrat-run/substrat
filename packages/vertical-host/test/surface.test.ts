@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
+import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 
 const SECRET = 'sekret';

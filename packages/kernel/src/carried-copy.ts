@@ -24,8 +24,6 @@ import type { ScopeDumpTable } from '@substrat-run/contracts';
  *   wipe on every script, old ones included, because it arrives as a row of the dump.
  */
 export const LOAD_STAMP_KEY = 'load_stamp';
-/** The `/internal/export` response header the load stamp rides, beside the dump it was read with. */
-export const LOAD_STAMP_HEADER = 'x-substrat-load-stamp';
 export const CARRIED_AWAY_KEY = 'carried_away';
 
 /** Where a carried copy went, and when — the tombstone's value, as JSON. */

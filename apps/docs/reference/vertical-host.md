@@ -262,7 +262,7 @@ Register it before `mountOperations`. It decides four things, in this order:
 3. **This host can push at all.** The pure host has no `liveReads`, so the route answers
    `501` with `x-substrat-live: poll`. That is the same header the hosted adapter sets on its
    own refusals, so a client that reads it keeps polling whichever end said no. The name is
-   exported from `@substrat-run/kernel` as `LIVE_MODE_HEADER`, with its values as `LiveRefusal`.
+   exported from `@substrat-run/contracts` as `LIVE_MODE_HEADER`, with its values as `LiveRefusal`.
 4. **Who is asking.** Your `subscriber` callback, from your own session. `null` is `401`,
    never a subscription as some default principal.
 

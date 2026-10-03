@@ -90,9 +90,12 @@ import {
   type ImportResult,
   type ImportState,
   substratError,
+  CONNECTOR_ATTACHMENT_RECORD_HEADER,
+  LOAD_STAMP_HEADER,
+  PLATFORM_SECRET_HEADER,
 } from '@substrat-run/contracts';
 import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { CONNECTOR_ATTACHMENT_RECORD_HEADER, LOAD_STAMP_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
+import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**

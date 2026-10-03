@@ -62,7 +62,8 @@ rather than for the module. Its observers fire only after an invoke **commits**:
   committed an event of a type this deployment exports to another app.
 
 A hosted vertical turns each into a response header. The router reads it and asks the platform
-to act on that scope now, instead of at the next sweep. `kickFlags` wires both with one call:
+to act on that scope now, instead of at the next sweep. `kickFlags` (from
+`@substrat-run/vertical-host`) wires both with one call:
 
 ```ts
 return host.getScope(principal, tenantId, scopeId, {
