@@ -245,6 +245,7 @@ import {
   type PeerDeclarations,
   assertNoSecret,
   CAPABILITY_DDL,
+  COPY_ORIGIN_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
@@ -284,7 +285,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -688,6 +689,9 @@ const KERNEL_DDL = `
   -- an exchange trades that secret for. Shared with the pure adapter from
   -- @substrat-run/kernel so the two cannot part company; the column comments are there.
   ${CAPABILITY_DDL}
+  -- #1686: where a copied scope's data came from, and the event id its own events start above.
+  -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
+  ${COPY_ORIGIN_DDL}
 `;
 
 /**
@@ -1277,7 +1281,7 @@ export function defineScopeDO(
         (offset, count) =>
           this.sql
             .exec(
-              `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ? OFFSET ?`,
+              `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL AND ${emittedHere()} ORDER BY id LIMIT ? OFFSET ?`,
               count,
               offset,
             )
@@ -4253,7 +4257,7 @@ export function defineScopeDO(
           `SELECT o.* FROM _substrat_outbox o
            LEFT JOIN _substrat_deliveries d
              ON d.event_id = o.id AND d.consumer_module = ?
-           WHERE o.type = ?
+           WHERE o.type = ? AND ${emittedHere('o.')}
              AND (d.event_id IS NULL
                   OR (d.next_attempt_at IS NOT NULL AND d.next_attempt_at <= ?))
            ORDER BY o.id`,
@@ -4895,7 +4899,12 @@ export function defineScopeDO(
       // A dump written before indexes were excluded may still carry them; skipped
       // rather than failing a restore over data about to be recomputed.
       // Matched without case, as SQLite resolves a table name (#1883 review).
-      const replayable = tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
+      // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
+      const replayable = capabilitiesForLoad(
+        tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase())),
+        destScopeId,
+        sourceScopeId,
+      );
       // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
       // in the string it is given, so a `ddl` with anything appended to its CREATE
       // TABLE executed that too — with entirely plain identifiers, which is why no
@@ -4955,7 +4964,11 @@ export function defineScopeDO(
         // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
         // text of attachments the dump did not bring back, and queue extraction for those
         // it brought back without text — the bytes decide what that run finds.
-        reconcileAttachmentText(doSpineSql(this.sql), ulid, new Date().toISOString());
+        const now = new Date().toISOString();
+        // #1686: nothing the source queued runs in a copy; a return leaves it all queued. BEFORE
+        // the extraction queue below, which is this scope's own work, not the source's.
+        settleCopiedWork(this.switchSql(), destScopeId, sourceScopeId, now);
+        reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
         if (destScopeId) {
@@ -4983,6 +4996,17 @@ export function defineScopeDO(
       for (const plan of this.searchPlans.values()) {
         if (!present.has(plan.table)) continue;
         for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
+      }
+      // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
+      // as on a wake. A copy's own events then sort above every copied one, which is what
+      // `emittedHere()` relies on. A dump whose top id is no ULID leaves the floor where it was.
+      const top = (this.sql.exec('SELECT MAX(id) AS id FROM _substrat_outbox').toArray()[0] as { id: string | null } | undefined)?.id;
+      if (top) {
+        try {
+          this.mintEventId.seedFrom(top);
+        } catch {
+          // Not a ULID: nothing this mint could have written, so there is no floor to keep.
+        }
       }
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
@@ -5195,7 +5219,7 @@ export function defineScopeDO(
             const rows = this.sql
               .exec(
                 `SELECT * FROM _substrat_outbox o
-                 WHERE o.type = ?
+                 WHERE o.type = ? AND ${emittedHere('o.')}
                    AND NOT EXISTS (
                      SELECT 1 FROM _substrat_deliveries d
                      WHERE d.event_id = o.id AND d.consumer_module = ?

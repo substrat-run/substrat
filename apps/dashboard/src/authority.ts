@@ -51,8 +51,13 @@ import type {
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import { LIST_PAGE_MAX, denialQuery, problemDetail, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
-import { ControlPlaneError } from '@substrat-run/control-plane-api';
+import { LIST_PAGE_MAX, denialQuery, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
+import {
+  ControlPlaneError,
+  ControlPlaneTransport,
+  SERVICE_TOKEN_HEADER,
+  TENANT_HEADER,
+} from '@substrat-run/control-plane-client';
 
 // One class, owned by the package that throws it from its own client (#971).
 export { ControlPlaneError };
@@ -154,10 +159,11 @@ export interface SweepRunRead {
 export interface TenantNarrowedControlPlaneOptions {
   /** Base URL of the control-plane API, e.g. `https://cp/api`. Host is ignored over a service binding. */
   baseUrl: string;
-  /** The platform actor id stamped as `x-platform-actor` (prod resolves the real subject from the token). */
-  actor: string;
   /**
-   * The credential presented as `x-service-token`, or a provider that resolves one.
+   * The credential presented as `x-service-token` — the request's ONLY credential — or a
+   * provider that resolves one. There is no `x-platform-actor` beside it any more (#971):
+   * the plane reads the tenant token first and never consults the dev-actor header when
+   * one is presented, and the shared transport refuses a request that names both.
    *
    * A provider, because the credential this seam should present is MINTED per tenant
    * (#977) and the mint is a round trip the 90-odd call sites must not each learn
@@ -227,33 +233,34 @@ export interface PreviewRecord {
   callbackUrl?: string | null;
 }
 
+/**
+ * The shared control-plane transport (#971) with its one exchange opened to this module.
+ * Held by `TenantNarrowedControlPlane` rather than extended by it, so the seam's public
+ * surface stays exactly its own methods — no raw `request()` beside them.
+ */
+class TenantTransport extends ControlPlaneTransport {
+  exchange(path: string, init: RequestInit): Promise<Response> {
+    return this.send(path, init);
+  }
+}
+
 export class TenantNarrowedControlPlane {
-  private readonly baseUrl: string;
-  private readonly actor: string;
+  private readonly transport: TenantTransport;
   private readonly credential: (opts?: { fresh?: boolean }) => Promise<string>;
-  private readonly fetchImpl: typeof globalThis.fetch;
   /** Read-only: the pinned tenant. Every write below silently injects it. */
   readonly tenantId: TenantId;
 
   constructor(opts: TenantNarrowedControlPlaneOptions) {
-    this.baseUrl = opts.baseUrl.replace(/\/$/, '');
-    this.actor = opts.actor;
     this.credential =
       typeof opts.credential === 'string' ? () => Promise.resolve(opts.credential as string) : opts.credential;
     this.tenantId = opts.tenantId;
-    // Bind to globalThis: workerd throws "Illegal invocation" if a service-binding
-    // fetch is called with the wrong `this`. An injected fetch is used as-is.
-    this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
-  }
-
-  /** One request, with the headers this seam always carries and the credential handed in. */
-  private send(path: string, init: RequestInit, credential: string): Promise<Response> {
-    return this.fetchImpl(`${this.baseUrl}${path}`, {
-      ...init,
+    this.transport = new TenantTransport({
+      baseUrl: opts.baseUrl,
+      // No credential of the transport's own: the tenant token is resolved per CALL (it is
+      // minted, cached by the provider, and re-minted after a 401), so `call` hands it in as
+      // the request's header, and the transport sends it as the only credential there is.
+      actor: null,
       headers: {
-        'content-type': 'application/json',
-        'x-platform-actor': this.actor,
-        'x-service-token': credential,
         // The workspace this seam acts for (#417): vertical routes use this to resolve
         // a bare slug to the tenant's `<tenantSlug>/<name>` registry id — already-
         // prefixed catalog slugs pass through unchanged.
@@ -261,50 +268,50 @@ export class TenantNarrowedControlPlane {
         // It is NOT the narrowing, and never was (#977): over a tenant token the plane
         // refuses a header that disagrees with the credential, so this can only ever
         // repeat what the credential already says.
-        'x-substrat-tenant': this.tenantId,
-        ...(init.headers as Record<string, string> | undefined),
+        [TENANT_HEADER]: opts.tenantId,
       },
+      fetch: opts.fetch,
     });
   }
 
+  /**
+   * One call over the shared transport (#971), which owns how it is addressed, how a
+   * refusal is read (`problemDetail`, the status line as the fallback) and what an
+   * unreachable plane is (`ControlPlaneError` status 0). What stays here is this seam's
+   * own policy on top: the per-call credential and its one re-mint, the idempotent
+   * tolerance, and a lenient read of a 2xx. The connect `probe` (#605) arrives on the
+   * transport's own `ControlPlaneError`.
+   */
   private async call<T>(path: string, init: RequestInit & { idempotent?: boolean } = {}): Promise<T> {
-    // Only the FETCH is wrapped as "unreachable". A credential the provider cannot
-    // resolve is a different failure with its own answer (the worker's 503 naming what
-    // is unconfigured), and burying it under a transport message would lose that.
-    const attempt = async (credential: string): Promise<Response> => {
-      try {
-        return await this.send(path, init, credential);
-      } catch (e) {
-        throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`);
-      }
+    const { idempotent, ...request } = init;
+    // A credential the provider cannot resolve is thrown as it is, before anything is sent:
+    // it is a different failure with its own answer (the worker's 503 naming what is
+    // unconfigured), and burying it under a transport message would lose that.
+    const attempt = async (opts?: { fresh?: boolean }): Promise<Response> => {
+      const headers = new Headers(request.headers);
+      headers.set(SERVICE_TOKEN_HEADER, await this.credential(opts));
+      return this.transport.exchange(path, { ...request, headers });
     };
-    let res = await attempt(await this.credential());
-    // A 401 means the credential this seam holds is no longer one the plane accepts —
-    // in practice, its signing secret was rotated while this isolate held a token minted
-    // under the old one. Re-mint ONCE and try again, so a rotation is the blip it is
-    // documented to be rather than 401s until the isolate recycles. Bounded to one extra
-    // round trip: if the fresh credential is refused too, that is the answer.
-    //
-    // Safe to replay: every body on this seam is a string (or absent), never a consumed
-    // stream, and a request the plane refused at the auth middleware never reached a
-    // handler — so there is nothing half-done to repeat.
-    if (res.status === 401) res = await attempt(await this.credential({ fresh: true }));
-    if (!res.ok) {
+    let res: Response;
+    try {
+      // A 401 means the credential this seam holds is no longer one the plane accepts —
+      // in practice, its signing secret was rotated while this isolate held a token minted
+      // under the old one. Re-mint ONCE and try again, so a rotation is the blip it is
+      // documented to be rather than 401s until the isolate recycles. Bounded to one extra
+      // round trip: if the fresh credential is refused too, that is the answer.
+      //
+      // Safe to replay: every body on this seam is a string (or absent), never a consumed
+      // stream, and a request the plane refused at the auth middleware never reached a
+      // handler — so there is nothing half-done to repeat.
+      res = await attempt().catch((e: unknown) => {
+        if (e instanceof ControlPlaneError && e.status === 401) return attempt({ fresh: true });
+        throw e;
+      });
+    } catch (e) {
       // A tenant/entitlement that already exists is fine on an idempotent step
       // (re-provisioning, a retried create) — the directory already reflects it.
-      if (init.idempotent && (res.status === 409 || res.status === 422)) return undefined as T;
-      // `problemDetail` is the one reading of a failed body (#971). This call site read
-      // the deprecated `{ error }` duplicate ALONE, so a plane answering a pure RFC 9457
-      // document handed the dashboard `409 Conflict` in place of the sentence saying
-      // which name was taken. The `probe` beside it is the dashboard's own extension
-      // (#605) — the provider's answer when a connect was refused upstream — and stays
-      // read here, because no other client asks for it.
-      const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbe } | null;
-      throw new ControlPlaneError(
-        res.status,
-        problemDetail(body) ?? `${res.status} ${res.statusText}`,
-        body?.probe,
-      );
+      if (idempotent && e instanceof ControlPlaneError && (e.status === 409 || e.status === 422)) return undefined as T;
+      throw e;
     }
     return res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);
   }

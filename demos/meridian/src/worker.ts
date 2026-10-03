@@ -25,6 +25,7 @@ import {
   defineScopeDO,
   defineScopeSweeperDO,
   CloudflareScopeHost,
+  type CloudflareScopeHostOptions,
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
@@ -35,8 +36,9 @@ import {
   RouterAssertionError,
   invocationLog,
 } from '@substrat-run/kernel';
-import { declareScriveConnector } from '@substrat-run/connector-scrive';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
+import { declareScriveConnector } from '@substrat-run/connector-scrive';
 import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';
 import { MERIDIAN_ENV } from './manifest.js';
 import { API, API_DOCUMENT } from './api.js';
@@ -164,8 +166,19 @@ function nodeFor(req: Request, env: Env): CompanyNode {
  * router asserts the node, so this vertical trusts it rather than reading a directory it
  * has no binding to. Its only durable stores are its own `SCOPE` DO class and `AUTH_DB`.
  */
-function hostFor(env: Env): CloudflareScopeHost {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE });
+export function hostFor(
+  env: Env,
+  /** A seam for the workerd suite, which has no per-tenant bucket to resolve (nothing here declares one yet). */
+  extra: Pick<CloudflareScopeHostOptions, 'attachmentBuckets'> = {},
+): CloudflareScopeHost {
+  // K-43: the kernel parses no file format; the parsers are passed in here, so an
+  // uploaded DOCX on an `employee` is searchable by its text. Without them every
+  // upload records `unsupported`.
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    attachmentExtractors: defaultAttachmentExtractors(),
+    ...extra,
+  });
   for (const m of MODULES) host.registerModule(m);
   // #574 phase 3: the SAME registration the node self-host makes (seed.ts) — but on
   // this CP-less host the handler never runs. Registering it is what tells the host

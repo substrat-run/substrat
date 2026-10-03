@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { createControlPlaneApi, UNSAFE_devPlatformActorAuth } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId, type EmittedModel, type ScopeId } from '@substrat-run/contracts';
 import { manualClock, ulid, type ManualClock, type OperationHandler } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
+import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import { PROCESS_PERIODS, type ProcessMapAnswer } from '../src/process-map.js';
 
 /**
@@ -163,17 +163,16 @@ describe('the process map route (#1744)', () => {
     await host.admin.registerVertical(staff, { slug: EMPTY_SLUG, name: 'Empty', source: 'cli', ownerTenant: tenant });
     emptyScope = await install(EMPTY_SLUG, 'Empty');
 
-    const plane = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+    const plane = tenantPlane(host, staff);
     env = {
       SCOPE: {},
       CONTROL_PLANE: {},
       SESSION_SECRET: 'test-session-secret',
-      CP_SERVICE_TOKEN: 'service-token',
+      CP_SERVICE_TOKEN: SERVICE_TOKEN,
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '') + u.search;
-          if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           if (u.pathname.endsWith('/lifecycle-flow')) flowBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
           const bad = sabotage?.(u.pathname.replace(/^\/api/, ''));
           if (bad) return bad;

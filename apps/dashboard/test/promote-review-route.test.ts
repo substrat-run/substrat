@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { createControlPlaneApi, UNSAFE_devPlatformActorAuth } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
+import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import type { PromotionReview } from '../src/promotion-review.js';
 import { classifyRefusal, planPermission, promoteWithCheckpoint, type Acks, type Checkpoint, type PromoteReviewWire } from '../web/src/lib/promote-review.js';
 
@@ -75,6 +75,8 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
   let env: Record<string, unknown>;
   /** Set per test to make the plane misbehave on a path. */
   let sabotage: ((path: string) => Response | Promise<Response> | undefined) | null;
+  /** Every request handed to the plane, so teardown can wait for the ones a failed route left behind. */
+  let inFlight: Array<Response | Promise<Response>>;
 
   const subs = { owner: 'sub-owner', viewer: 'sub-viewer' } as const;
   const v = { v1: ulid(), v2: ulid(), v3: ulid(), v4: ulid(), old: ulid(), s1: ulid(), s2: ulid(), noSql: ulid() };
@@ -119,6 +121,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     sabotage = null;
+    inFlight = [];
 
     const owner = principalId.parse(ulid());
     await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'review', name: 'Review' });
@@ -143,26 +146,30 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     // Same digests as v1, and no SQL carried (an older CLI, or over the cap): the gate sees nothing.
     await publish(v.noSql, '3.2.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), null);
 
-    const plane = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+    const plane = tenantPlane(host, staff);
     env = {
       SCOPE: {},
       CONTROL_PLANE: {},
       SESSION_SECRET: 'test-session-secret',
-      CP_SERVICE_TOKEN: 'service-token',
+      CP_SERVICE_TOKEN: SERVICE_TOKEN,
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '') + u.search;
-          if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           const bad = sabotage?.(u.pathname.replace(/^\/api/, ''));
           if (bad) return bad;
-          return plane.request(path, init);
+          const answer = plane.request(path, init);
+          inFlight.push(answer);
+          return answer;
         },
       },
     };
   });
 
   afterEach(async () => {
+    // A sabotaged read fails the route while its sibling reads are still on their way to the
+    // plane; let them land before the database they read is closed under them.
+    await Promise.allSettled(inFlight);
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });

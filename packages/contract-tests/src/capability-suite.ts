@@ -943,5 +943,76 @@ export function capabilityContractSuite(
         });
       });
     });
+
+    // #1686: capability rows never cross a scope id. A link minted on production opens
+    // production, never a fork or a preview copy of it; a backup restored into the scope it
+    // came from keeps the links that were live. Every refusal on the copy is paired with the
+    // source still working, and the copy is shown to hold the rest of the data.
+    describe('forks and restores — a link never opens a copy (#1686)', () => {
+      let link: MintedCapability;
+      let token: string;
+      const listed = async (sc: ScopeId) =>
+        (await host.admin.listCapabilities(staff, t1, sc, { includeRevoked: true, limit: 200 })).entries.map((r) => r.id);
+      const refusedAt = async (sc: ScopeId) => {
+        expect(await exchange(link.secret, sc)).toBeNull();
+        const stub = await host.getCapabilityScope(token, t1, sc);
+        expect(errorCodeOf(await refusal(stub.invoke('cap/read', { entity: folder('F') })))).toBe('unauthenticated');
+        expect(await listed(sc)).toEqual([]);
+        // The copy is a working copy of everything else: the owner reads the shared folder there.
+        await expect((await as(alice, sc)).invoke('cap/read', { entity: folder('F') })).resolves.toMatchObject({
+          read: folder('F'),
+        });
+      };
+      const worksAtSource = async () => {
+        expect((await exchange(link.secret, s1))?.kind).toBe('session');
+        const stub = await host.getCapabilityScope(token, t1, s1);
+        await expect(stub.invoke('cap/read', { entity: doc('d1') })).resolves.toMatchObject({ read: doc('d1') });
+        expect(await listed(s1)).toContain(link.id);
+      };
+
+      beforeAll(async () => {
+        link = await share(alice, { entity: folder('F'), permissions: [CAP_READ], label: 'fork-share' });
+        token = await sessionOf(link.secret);
+      });
+
+      it('the dump a copy is made from carries the capability row — what the loader leaves behind is real', async () => {
+        const dumped = await host.admin.exportScope(staff, t1, s1);
+        const caps = dumped.tables.find((t) => t.name === '_substrat_capabilities');
+        expect(JSON.stringify(caps?.rows)).toContain(await capabilityTokenHash(link.secret));
+        const sessions = dumped.tables.find((t) => t.name === '_substrat_capability_sessions');
+        expect(JSON.stringify(sessions?.rows)).toContain(await capabilityTokenHash(token));
+      });
+
+      it('a fork (importScope): the secret and the session are refused there, and the fork lists nothing', async () => {
+        const fork = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: fork, vertical: 'cap-vertical' }, await host.admin.exportScope(staff, t1, s1));
+        await refusedAt(fork);
+        await worksAtSource();
+      });
+
+      it('a snapshot (snapshotScope): the same', async () => {
+        const snap = await host.snapshotScope(staff, t1, s1, { kind: 'preview' });
+        await refusedAt(snap);
+        await worksAtSource();
+      });
+
+      it("a restore of this scope's backup onto another scope: the same", async () => {
+        const other = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: other, vertical: 'cap-vertical' });
+        await host.admin.activateScope(staff, t1, other);
+        await host.restoreScope(staff, t1, other, await host.admin.exportScope(staff, t1, s1));
+        await refusedAt(other);
+        await worksAtSource();
+      });
+
+      it('a restore into the scope the backup came from keeps the link, its session and its listing', async () => {
+        const backup = await host.admin.exportScope(staff, t1, s1);
+        await host.restoreScope(staff, t1, s1, backup);
+        await worksAtSource();
+        // Its standing came back as it was: still live, the uses it had.
+        const rec = (await host.admin.listCapabilities(staff, t1, s1, { limit: 200 })).entries.find((r) => r.id === link.id);
+        expect(rec).toMatchObject({ revokedAt: null, label: 'fork-share' });
+      });
+    });
   });
 }

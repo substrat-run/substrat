@@ -115,35 +115,49 @@ slots straight in, alongside `forked_from`, `forked_at`, and a read-only flag fo
 
 ## 6. Guardrails
 
-- **A fork is a dead end: a scope that is not primary causes no outbound effects** (#2005).
-  A fork, a snapshot (`archive`) and a preview of either kind (a preview fork, or a clean-room
-  preview with no source) run their code, commit their writes and answer their reads. But
-  nothing they ask for leaves them. One predicate decides it, the kernel's `isPrimaryScope`
-  (no `forkedFrom`, and `kind` is not `preview`), read from the directory. Every outbound
-  door applies it:
+- **A fork is a dead end.** The export copies the `_substrat_*` spine too, so nothing
+  downstream (connectors, cron, billing) may consume from a preview/archive scope. Two halves,
+  enforced separately: work **inherited** from the source is never re-run by a copy (the next
+  bullet, #1686); work the copy **creates itself** is inert (#2005). A scope is inert when the
+  kernel's `isPrimaryScope` says it is not the install (it has a `forkedFrom`, or its `kind` is
+  `preview`): a fork, a snapshot (`archive`), a preview fork, or a clean-room preview with no
+  source. It still runs its code, commits its writes and answers its reads. Door by door:
 
   | Door | What a non-primary scope gets |
   |---|---|
-  | The platform-intent drain | Each intent is settled `failed`, attributed to the platform, with `INERT_SCOPE_REASON`, and no handler runs. That covers connector deliveries, provision-sibling, archive-scope, provision-tenant, set-entitlements and peer-invoke. The settle lands no ops-failure row, because it is the platform doing what it should. |
-  | In-process executors and connectors (both adapters, the emitting call's tail and `drainDue`) | Each delivery is journaled terminal with the same reason (`ExecutorDrainReport.inert`), and its handler never runs. A CP-less host has no directory to ask, and needs none: the only executor that can act there is a connector, which it routes onto the intent drain above. |
-  | The vertical egress worker | Every third-party subrequest is refused, even to a host the version declares and even on an unenforced pre-#303 manifest. The router's dispatch carries `primary` from the directory read. The platform loopback and the relay still answer. A router that predates the field sends none, and that passes as before for the skew window only. |
-  | Recurring schedules and freshness checks | Never run. The sweep filters on `isPrimaryScope`; lineage alone used to let a clean-room preview through. A CP-less vertical's own sweeper never learns a non-primary scope: its roster is filled by `/internal/provision` and `/internal/reconcile`, which the platform calls for installs only (a preview is materialized by a restore), and the reconcile phase is itself primary-only. |
-  | Peer calls, cross-vertical producer kicks, the provision reconcile, serving and upgrades | Already primary-only before #2005, by the same predicate. |
+  | The platform-intent drain | Each intent is settled `failed`, attributed to the platform, with `INERT_SCOPE_REASON`, and no handler runs: connector deliveries, provision-sibling, archive-scope, provision-tenant, set-entitlements, peer-invoke. The drain decides from the scope's kind and lineage itself, and lands no ops-failure row for it. |
+  | Executors and connectors in process (both adapters; the emitting call's tail and `drainDue`) | Each delivery is journaled terminal with the same reason (`ExecutorDrainReport.inert`), and no handler runs. A CP-less host has no directory to ask, and needs none: the only executor that can act there is a connector, which it routes onto the intent drain above. |
+  | The vertical egress worker | Every third-party subrequest is refused 403, even to a host the version declares and even on an unenforced pre-#303 manifest. The directory's route read decides `primary` and the router carries it on the dispatch. The platform loopback and the relay still answer. A router that predates the field sends none, which passes as before: fail-open for that skew window only. |
+  | The email relay, the connection relay, connect-url | Refused 403 at entry: nothing is sent, no credential is written or rotated, no consent URL is minted. A consent round's callback stores through the same connection relay, so it is refused at write time, however old the round. |
+  | Recurring schedules and freshness checks | Never run: the sweep filters on `isPrimaryScope` (lineage alone used to let a clean-room preview through). A CP-less vertical's own sweeper never learns a non-primary scope, because its roster is filled only by `/internal/provision` and `/internal/reconcile`, which the platform calls for installs (a preview is materialized by a restore). |
+  | Peer calls, cross-vertical producer kicks, the provision reconcile, serving and upgrades | Primary-only already, by the same predicate. |
 
-  Two intent kinds still land from a non-primary scope, because they **record** something that
-  already happened rather than ask for something to happen. `model-usage` is the cost of a
-  model call that already ran in the preview's own worker, so dropping it would make a
-  preview's model use unmetered, not absent. `sweep-runs` is telemetry.
+  Two intent kinds still land, because they **record** something that already happened rather
+  than ask for something to happen: `model-usage` (the model call already ran in the copy's own
+  worker, so refusing the line would make its use unmetered, not absent) and `sweep-runs`
+  (telemetry). Left alone on purpose, because none of them is an effect outside the platform:
+  the lake export (the platform's own audit store, under the copy's own scope id), resumable
+  jobs (driven only by a CP-less sweeper's roster, which holds installs; the kernel's own
+  attachment-text job is in-scope work a preview's search needs), and the migration-progress
+  count. So a copy acts on nothing outside itself: no provider call, no mail, no change to the
+  tenant's connections, no platform intent executed and no recurring work fired, with model
+  usage still metered.
+- **A copy keeps the source's history and none of its power** (#1686). A load into a scope
+  other than the one the dump came from is a *copy*: a fork, a snapshot, a preview, or one
+  scope's backup restored onto another. A load back into its own scope is a *return*: a
+  backup restore, a carry onto a new version, adopt, rebind. On a copy:
+  - link-share capabilities (`_substrat_capabilities`, `_substrat_capability_sessions`) load
+    empty, so a live link never opens the copy (`capabilitiesForLoad`);
+  - nothing the source queued produces an effect: pending intents and running job runs settle
+    `failed` and executor retries turn terminal, each "not carried" (`settleCopiedWork`). The
+    copy records its origin and the highest event id it brought in (`_substrat_copy_origin`),
+    and consumer dispatch, executor dispatch and the Tier-2 drain read only events above it
+    (`emittedHere`). Both loaders re-seed the event-id floor from the loaded outbox (#1335), so
+    the copy's own events always sort above that mark and flow normally.
 
-  Not doors, and left alone on purpose: the lake export (the platform's own audit store,
-  recorded under the copy's own scope id), resumable jobs (driven only by a CP-less
-  sweeper's roster, which holds primaries; the kernel's own attachment-text job is in-scope
-  work a preview needs for search), and the migration-progress count (a frontier, not an
-  effect). The relays a vertical calls on the control plane (email, connections) are
-  excluded from #2005 pending a platform decision.
-
-  #2003 is the complement: it settles the work the SOURCE had queued, which a copy carries
-  in, at load. This rule covers what the copy asks for itself.
+  A return changes none of it. An unknown source counts as a copy. Provenance is whatever the
+  load is told: every platform copy names its source, but a staff restore of a file presented
+  as the target's own backup is treated as a return and keeps what the file carries.
 - **The local sink crosses the trust boundary.** Server-side forks stay in the governed
   environment; pulling to a laptop does not, and that is a different risk class:
   - **Residency.** Jurisdiction pins *execution*, not just storage (K-7/K-32) — the reason

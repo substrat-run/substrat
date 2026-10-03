@@ -199,7 +199,6 @@ const MANIFEST = {
       // Must equal the App settings' webhook secret (per-PR previews, github-webhook.ts).
       GITHUB_APP_WEBHOOK_SECRET: 'GITHUB_APP_WEBHOOK_SECRET',
       EMAIL_FROM: 'DASH_EMAIL_FROM',
-      CP_ACTOR: 'DASH_CP_ACTOR',
       // The same desk secret the console holds — see the control plane's note above.
       SUPPORT_WIDGET_SECRET: 'SUPPORT_WIDGET_SECRET',
       // The Fortnox Developer Portal client pair (#1220) — platform secrets behind the
