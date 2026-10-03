@@ -1666,8 +1666,8 @@ function participantFor(
 }
 
 /**
- * The contact an address names, made when there is none — the same exact lookup an inbound
- * sender gets (`contactByEmail`), so a CC who later writes in from that address is the
+ * The contact an address names, made when there is none — the same lookup an inbound sender
+ * gets (`contactByEmail`), so a CC who later writes in from that address is the
  * contact they were copied in as. `verified_at` stays null: nobody has heard from them.
  */
 function contactForAddress(ctx: OperationContext, email: string, name?: string | null): ContactRow {
@@ -2455,17 +2455,24 @@ function contactByExternalId(ctx: OperationContext, externalId: string): Contact
  * person, to threading, to the blocklist and to who is on a conversation alike.
  *
  * A desk that ran an older version can hold two contacts whose addresses differ only in
- * case: resolution used to match exactly, so each spelling made its own. The rule for
- * those is stable rather than arbitrary: the OLDEST contact is the mailbox's, and every
- * later mail lands there. Nothing is merged or rewritten — the other rows keep their
- * history — and every check of who is on a conversation compares addresses as well as
- * ids (`standingOn`), so a second row cannot be used to put the customer on their own
- * thread twice. Over `ticket0_contacts_by_address` (migration 0022).
+ * case: resolution used to match exactly, so each spelling made its own, and a portal
+ * grant may sit on either. So the order is stable and keeps what each row already had:
+ *
+ *  1. the contact whose address is EXACTLY this one — what resolution always found, so a
+ *     person whose portal grant is on that row keeps seeing their new conversations
+ *     (Codex round 2);
+ *  2. only when no row matches exactly, the OLDEST contact for the mailbox.
+ *
+ * Nothing is merged or rewritten — the other rows keep their history — and every check of
+ * who is on a conversation compares MAILBOXES as well as ids (`standingOn`), so a second
+ * row cannot be used to put the customer on their own thread twice, whichever row a mail
+ * resolves to. Over `ticket0_contacts_by_address` (migration 0022).
  */
 function contactByEmail(ctx: OperationContext, email: string): ContactRow | undefined {
+  const exact = email.trim();
   return ctx.sql.query<ContactRow>(
-    'SELECT * FROM ticket0_contacts WHERE lower(email) = ? ORDER BY created_at, id LIMIT 1',
-    [addressKey(email)],
+    'SELECT * FROM ticket0_contacts WHERE lower(email) = ? ORDER BY email = ? DESC, created_at, id LIMIT 1',
+    [addressKey(email), exact],
   )[0];
 }
 
