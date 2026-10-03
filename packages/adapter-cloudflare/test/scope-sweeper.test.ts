@@ -294,3 +294,65 @@ describe('#1819 — the deployment sweep after a rewind to before the switch', {
     await sweeperStub().forgetScope(wasOn);
   });
 });
+
+/**
+ * #1713 through the deployment's real sweeper: a roster scope its delivered lifecycle holds is
+ * skipped whole — no schedule fires, no job is driven, no delivery attempted, and no cadence row
+ * moves — and the first pass after it is live again does the work it deferred, once.
+ */
+describe('#1713 — the deployment sweep skips a scope its lifecycle holds, then resumes it', () => {
+  const READ = permissionKey.parse('perm:read');
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const host = () => {
+    const h = new CloudflareScopeHost({
+      scope: env.LOCAL_SWEEP_SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    h.registerModule(scheduleMod);
+    return h;
+  };
+  const ticksOn = async (s: ScopeId): Promise<number> =>
+    (await (await host().getScope(owner, t, s)).invoke('sched/count')) as number;
+  const seat = async (): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await host().provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [READ], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    await sweeperStub().noteScope(t, s);
+    return s;
+  };
+
+  it('held: skipped whole and counted; live twin fires; unsuspended: fires once', async () => {
+    const held = await seat();
+    const live = await seat();
+    await host().setLifecycleLocal(held, { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z' });
+    const report = asReport(await sweeperStub().sweepNow());
+    expect(report.errors).toEqual([]);
+    expect(report.held).toBe(1);
+    expect(await ticksOn(live)).toBe(1);
+
+    await host().setLifecycleLocal(held, { scope: 'active', tenant: 'active', at: '2026-10-01T00:01:00.000Z' });
+    // Nothing fired while held: the schedule's first run is this pass, and only this one.
+    expect(await ticksOn(held)).toBe(0);
+    const resumed = asReport(await sweeperStub().sweepNow());
+    expect(resumed.held ?? 0).toBe(0);
+    expect(await ticksOn(held)).toBe(1);
+    await sweeperStub().forgetScope(held);
+    await sweeperStub().forgetScope(live);
+  });
+
+  it('a held tenant is skipped the same way', async () => {
+    const s = await seat();
+    await host().setLifecycleLocal(s, { scope: 'active', tenant: 'suspended', at: '2026-10-01T00:00:00.000Z' });
+    expect(asReport(await sweeperStub().sweepNow()).held).toBe(1);
+    await host().setLifecycleLocal(s, { scope: 'active', tenant: 'active', at: '2026-10-01T00:01:00.000Z' });
+    asReport(await sweeperStub().sweepNow());
+    expect(await ticksOn(s)).toBe(1);
+    await sweeperStub().forgetScope(s);
+  });
+});

@@ -1,8 +1,8 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, expect, it, vi } from 'vitest';
-import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost, type LifecycleDelegation } from '../src/host.js';
 import { createRouteResolver } from '../src/route-resolver.js';
 import router, { type Env } from '../../../apps/router/src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -64,4 +64,126 @@ it('gates real directory resolution and router dispatch on lifecycle, restoring 
   await served();
   await host.admin.archiveScope(actor, tenant, scope);
   await refused();
+});
+
+/**
+ * #1713's delivery half, against the real directory DO: a transition moves the directory and then
+ * delivers the scope's lifecycle to the deployment serving it, here a CP-LESS host on the same
+ * scope namespace, which is what holds the scope's own work. A tenant transition fans out to every
+ * hosted scope under it. A delivery that does not land never refuses the lever: it is an
+ * ops-failure row, and the heal sweep delivers again until a receipt matches the directory.
+ */
+describe('the platform delivers a scope lifecycle to the deployment serving it (#1713)', () => {
+  const actor = platformActorId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const deliveries: { scopeId: string; scope: string; tenant: string }[] = [];
+  let failing = false;
+  const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
+  const lifecycleDelegation: LifecycleDelegation = {
+    deliver: async ({ scopeId: s, lifecycle }) => {
+      if (failing) throw new Error('deployment unreachable');
+      deliveries.push({ scopeId: s, scope: lifecycle.scope, tenant: lifecycle.tenant });
+      return deployment().setLifecycleLocal(s, lifecycle);
+    },
+  };
+  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, lifecycleDelegation });
+  const USE = permissionKey.parse('perm:use');
+
+  const deliveredTo = (s: ScopeId) => deliveries.filter((d) => d.scopeId === s).map((d) => `${d.scope}/${d.tenant}`);
+  const tenantOf = async () => {
+    const t = tenantId.parse(ulid());
+    await platform().admin.createTenant(actor, { id: t, slug: `life-${t.toLowerCase()}`, name: 'Lifecycle' });
+    return t;
+  };
+  const hosted = async (t: TenantId, vertical: string | null = 'todo') => {
+    const s = scopeId.parse(ulid());
+    await platform().provisionScope(actor, { tenantId: t, scopeId: s, ...(vertical ? { vertical } : {}) });
+    await platform().admin.activateScope(actor, t, s);
+    await deployment().provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    // Activation is a transition too, and delivers `active/active`; the tests below count from here.
+    if (vertical) expect(deliveredTo(s)).toEqual(['active/active']);
+    deliveries.splice(0, deliveries.length, ...deliveries.filter((d) => d.scopeId !== s));
+    return s;
+  };
+  const servedHere = (t: TenantId, s: ScopeId) => deployment().getScope(owner, t, s);
+
+  it('a suspend reaches the deployment, which then refuses in the directory\'s words; unsuspend lifts it', async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.suspendScope(actor, t, s);
+    expect(deliveredTo(s)).toEqual(['suspended/active']);
+    await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+    await platform().admin.unsuspendScope(actor, t, s);
+    expect(deliveredTo(s)).toEqual(['suspended/active', 'active/active']);
+    await expect(servedHere(t, s)).resolves.toBeDefined();
+    // Converged: the receipt matches the directory, so the heal sweep has nothing for it.
+    await platform().healLifecycles(actor, { limit: 1000 });
+    expect(deliveredTo(s)).toEqual(['suspended/active', 'active/active']);
+  });
+
+  it("a tenant's transition fans out to every hosted scope under it, and to nothing else", async () => {
+    const t = await tenantOf();
+    const a = await hosted(t);
+    const b = await hosted(t);
+    const bare = await hosted(t, null); // no vertical: no deployment serves it
+    const other = await hosted(await tenantOf());
+    await platform().admin.setTenantStatus(actor, t, 'suspended');
+    expect(deliveredTo(a)).toEqual(['active/suspended']);
+    expect(deliveredTo(b)).toEqual(['active/suspended']);
+    expect(deliveredTo(bare)).toEqual([]);
+    expect(deliveredTo(other)).toEqual([]);
+    await expect(servedHere(t, a)).rejects.toThrow(`tenant not active (status: suspended): ${t}`);
+    await expect(servedHere(t, b)).rejects.toThrow(/tenant not active/);
+    await platform().admin.setTenantStatus(actor, t, 'active');
+    expect(deliveredTo(a)).toEqual(['active/suspended', 'active/active']);
+    await expect(servedHere(t, b)).resolves.toBeDefined();
+  });
+
+  it('a delivery that does not land never refuses the lever: an ops-failure row, then the heal sweep delivers', async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    failing = true;
+    try {
+      await platform().admin.suspendScope(actor, t, s); // resolves: the directory moved
+    } finally {
+      failing = false;
+    }
+    expect((await platform().admin.getScopeRecord(actor, t, s))?.status).toBe('suspended');
+    const failures = await platform().admin.listOpsFailures(actor, { scopeId: s });
+    expect(failures.map((f) => [f.operation, f.stage])).toEqual([['scope.lifecycle', 'deliver']]);
+    // The gap the sweep exists for: the deployment still runs the scope.
+    await expect(servedHere(t, s)).resolves.toBeDefined();
+
+    const healed = await platform().healLifecycles(actor, { limit: 1000 });
+    expect(healed.failed).toBe(0);
+    expect(deliveredTo(s)).toEqual(['suspended/active']);
+    await expect(servedHere(t, s)).rejects.toThrow(/scope not active \(status: suspended\)/);
+
+    // A held scope is delivered again on every pass: what puts a hold back on a store a carry or
+    // a restore landed without it.
+    await platform().healLifecycles(actor, { limit: 1000 });
+    expect(deliveredTo(s)).toEqual(['suspended/active', 'suspended/active']);
+  });
+
+  it('the next case along: a failed UNsuspend is healed too, so a scope never stays held after the directory lifts it', async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.suspendScope(actor, t, s);
+    failing = true;
+    try {
+      await platform().admin.unsuspendScope(actor, t, s);
+    } finally {
+      failing = false;
+    }
+    await expect(servedHere(t, s)).rejects.toThrow(/not active/); // fail-closed until healed
+    await platform().healLifecycles(actor, { limit: 1000 });
+    expect(deliveredTo(s)).toEqual(['suspended/active', 'active/active']);
+    await expect(servedHere(t, s)).resolves.toBeDefined();
+  });
 });
