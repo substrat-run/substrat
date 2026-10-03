@@ -492,9 +492,9 @@ says so), `lint:deps`
 (`tools/declared-deps.mjs`: an import whose package the graph does not declare, and, for
 `@substrat-run/cli` and `@substrat-run/control-plane-client` — the two Apache-2.0 packages a
 builder's tooling installs — a licence off an explicit permissive ALLOWLIST (SPDX expressions
-parsed; MPL, EPL, CDDL, UNLICENSED and anything unnamed are refused) anywhere in the runtime
+parsed by a grammar-checking parser, a malformed one refused; MPL, EPL, CDDL, UNLICENSED and anything unnamed are refused) anywhere in the runtime
 closure (`dependencies`, peer, optional; workspace and registry; every resolved instance),
-and a `src/` import of a dependency declared only for development. An AGPL dependency would
+and an import in what they SHIP — the emitted `dist` JS and types, plus the `src/` imports that survive compilation — of a dependency declared only for development. An AGPL dependency would
 leave their tarballs saying Apache-2.0 while `npm install` pulled the server in beside them,
 #971),
 `lint:generated-marks` (`tools/generated-marks.mjs`: marks 1 and 2 of the three above,
