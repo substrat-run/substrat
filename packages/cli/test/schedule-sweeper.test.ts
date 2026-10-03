@@ -258,14 +258,18 @@ describe.runIf(existsSync(fileURLToPath(new URL('../dist/push.js', import.meta.u
     const RUNNER = `
 const [pushJs, dir] = process.argv.slice(2);
 const { push } = await import(pushJs);
+// A plane from after #1902 lists its features on every answer; PLANE_FEATURES='' plays one from before.
+const features = process.env.PLANE_FEATURES ?? 'scope-sweeper';
+const headers = features ? { 'x-substrat-platform-features': features } : {};
 globalThis.fetch = async (_url, init) => {
-  process.stdout.write('\\nMANIFEST ' + init.body.get('manifest') + '\\n');
-  return new Response(JSON.stringify({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'leave' }));
+  if (init?.method === 'POST') process.stdout.write('\\nMANIFEST ' + init.body.get('manifest') + '\\n');
+  else process.stdout.write('\\nASKED ' + String(_url) + '\\n');
+  return new Response(JSON.stringify({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'leave' }), { headers });
 };
-await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.invalid', authHeader: {}, skipLint: true });
+await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.invalid', authHeader: {}, skipLint: true, allowUnsweptSchedules: process.argv.includes('--allow-unswept-schedules') });
 `;
 
-    function run(dir: string): { status: number; stdout: string; stderr: string } {
+    function run(dir: string, features?: string, ...flags: string[]): { status: number; stdout: string; stderr: string } {
       const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-push-'));
       writeFileSync(
         join(scratch, 'npx'),
@@ -273,9 +277,14 @@ await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.i
         { mode: 0o755 },
       );
       writeFileSync(join(scratch, 'run.mjs'), RUNNER);
-      const r = spawnSync(process.execPath, [join(scratch, 'run.mjs'), pushJs, dir], {
+      const r = spawnSync(process.execPath, [join(scratch, 'run.mjs'), pushJs, dir, ...flags], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${scratch}:${process.env.PATH ?? ''}`, GITHUB_ACTIONS: '' },
+        env: {
+          ...process.env,
+          PATH: `${scratch}:${process.env.PATH ?? ''}`,
+          GITHUB_ACTIONS: '',
+          ...(features !== undefined ? { PLANE_FEATURES: features } : {}),
+        },
       });
       return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     }
@@ -292,6 +301,28 @@ await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.i
       expect(manifest.schedules?.map((s) => s.operation)).toEqual(['absence/expire-stale']);
       // `[]`, never absent: the uploader reads absence as an older CLI.
       expect(manifest.sweeperClasses).toEqual([]);
+    });
+
+    it('asks the plane first, and refuses — uploading nothing — when it does not say it supplies one', () => {
+      const dir = tree({ 'package.json': pkg(STORES), 'perms.mjs': PERMS, 'src/worker.ts': 'export default {};\n', ...vertHost(true) });
+      const old = run(dir, '');
+      expect(old.status).not.toBe(0);
+      expect(old.stdout).toContain('ASKED http://cp.invalid/verticals/leave/versions?limit=1');
+      expect(old.stderr).toMatch(/does not say it supplies one.*predates #1902/s);
+      expect(old.stdout).not.toContain('MANIFEST ');
+      // A plane that lists other features, but not this one, is still silence on this one.
+      expect(run(dir, 'something-else').stdout).not.toContain('MANIFEST ');
+      // …and the deliberate way past it says so.
+      const forced = run(dir, '', '--allow-unswept-schedules');
+      expect(forced.status, forced.stderr).toBe(0);
+      expect(forced.stdout).toMatch(/warning: --allow-unswept-schedules — .*predates #1902/s);
+      expect(forced.stdout).toContain('MANIFEST ');
+    });
+
+    it('does not ask when it leaves nothing to the plane: it brings its own sweeper', () => {
+      const own = run(tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'perms.mjs': PERMS, 'src/worker.ts': SWEEPER_ENTRY }), '');
+      expect(own.status, own.stderr).toBe(0);
+      expect(own.stdout).not.toContain('ASKED ');
     });
 
     it('refuses it, uploading nothing, when the installed vertical-host is too old to run the supplied one', () => {
