@@ -3078,9 +3078,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     //    again from a fresh export, a bounded number of times, and then refused with a typed 409.
     //    What changes after this read is the source wipe's to fence (`keepOrWipeSource`).
     for (let attempt = 1; carried; attempt++) {
-      const now = await retryTransient(() => carried!.source.loadMarker(scope.id));
-      if (now === 'unfenced' || (now.loadStamp === carried.sourceStamp && now.revision === carried.sourceRevision)) break;
       const stale: Carried = carried;
+      let now: LoadMarker | 'unfenced';
+      try {
+        now = await retryTransient(() => stale.source.loadMarker(scope.id));
+      } catch (e) {
+        await dropUnboundCopy(c, scope, versionId, stale); // no bind follows
+        throw e;
+      }
+      if (now === 'unfenced' || (now.loadStamp === stale.sourceStamp && now.revision === stale.sourceRevision)) break;
       let next: Carried | null = null;
       if (attempt < CARRY_EXPORT_ATTEMPTS && opts.recarry) {
         try {
