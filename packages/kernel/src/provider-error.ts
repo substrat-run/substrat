@@ -7,7 +7,8 @@
  * over two days. That answer is not a fault to wait out — it is the provider telling the
  * CALLER its request is wrong, and attempt 101 carries the identical bytes.
  *
- * The rule lives in the kernel rather than in any one connector because both ends need it:
+ * The rule lives in one place rather than in any one connector because both ends need it
+ * (in the kernel, moving to `control-plane-api` beside the drain, #1978):
  * a connector decides what status to raise, the drain decides whether to keep the intent
  * drainable, and they must not disagree. It is deliberately STRUCTURAL — any error carrying a
  * numeric `status` — so the drain never has to import a provider's error class to classify it,

@@ -19,8 +19,9 @@ export const ROUTED_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
  *
  * The router resolves `hostname → (tenant, scope, surface)` and forwards over a
  * service binding with that resolution in headers. This is the vertical's side of
- * that contract, in the kernel because every vertical needs it and none of them
- * should be re-deriving how to trust it.
+ * that contract, shared because every vertical needs it and none of them should be
+ * re-deriving how to trust it. Moving from the kernel to `vertical-host` (#1978), which
+ * already re-exports it.
  *
  * Web-standard only and structurally typed: the base tsconfig is `ES2023` with no
  * DOM lib, deliberately, so no package assumes a browser. Taking the one method we

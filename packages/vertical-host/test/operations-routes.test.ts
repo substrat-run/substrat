@@ -9,7 +9,8 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, substratError, toProblem } from '@substrat-run/contracts';
-import { INVOCATION_RECORD_KEY, PermissionDenied, invocationStampOf, withInvocationLog, type InvocationRecord } from '@substrat-run/kernel';
+import { PermissionDenied } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, invocationStampOf, withInvocationLog, type InvocationRecord } from '../src/invocation-log.js';
 import { mountOperations } from '../src/operations-routes.js';
 
 const operations = {

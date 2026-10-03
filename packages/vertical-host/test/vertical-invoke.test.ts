@@ -22,9 +22,10 @@ import {
   principalId,
   scopeId,
   tenantId,
+  PLATFORM_SECRET_HEADER,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { PLATFORM_SECRET_HEADER, ulid } from '@substrat-run/kernel';
+import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PEER_CALLER, peerMod } from '@substrat-run/contract-tests';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';

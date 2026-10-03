@@ -1,6 +1,5 @@
 import {
   INERT_SCOPE_REASON,
-  isTerminalDispatchFailure,
   isPrimaryScope,
   platformIntentFailureMessage,
   ulid,
@@ -8,6 +7,7 @@ import {
   type OpsFailureInput,
   type ScopeHost,
 } from '@substrat-run/kernel';
+import { isTerminalDispatchFailure } from './provider-error.js';
 import {
   principalId as principalIdSchema,
   scopeId as scopeIdSchema,
