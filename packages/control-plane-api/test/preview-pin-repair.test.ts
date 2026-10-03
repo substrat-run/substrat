@@ -86,6 +86,13 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       deleteScope: async (input: { scopeId: string }) => {
         storeOf(ref).delete(input.scopeId);
       },
+      // #1722: a deployment built before the fenced wipe, so the carry's cleanup takes the
+      // tombstone load; the meta read is what the cleanup checks a destination with.
+      wipeCarriedCopy: async () => 'unfenced',
+      readScopeTable: async (sid: string) => {
+        const meta = storeOf(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
+        return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
+      },
     }) as unknown as VerticalClient;
   const table = (...ids: string[]): ScopeDumpTable[] => [
     { name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: ids.map((id) => [id]) },
@@ -245,15 +252,21 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       tenantId: t, from: SERVING, to: refOf.get(v1), tables: 1,
     });
     // Each preview's data went from the serving script into the script of the version it was
-    // bound to, and only those two scopes were touched.
+    // bound to, and only those two scopes were touched. The copy left on the serving script
+    // was then wiped (#1722), which is a load of the tombstone there.
     expect(calls.sort()).toEqual(
       [
-        `export ${SERVING} ${a.scopeId}`, `restore ${refOf.get(v1)} ${a.scopeId}`,
-        `export ${SERVING} ${b.scopeId}`, `restore ${refOf.get(v2)} ${b.scopeId}`,
+        `export ${SERVING} ${a.scopeId}`, `restore ${refOf.get(v1)} ${a.scopeId}`, `restore ${SERVING} ${a.scopeId}`,
+        `export ${SERVING} ${b.scopeId}`, `restore ${refOf.get(v2)} ${b.scopeId}`, `restore ${SERVING} ${b.scopeId}`,
       ].sort(),
     );
     expect(rowsOf(refOf.get(v1)!, a.scopeId)).toEqual([['a-row']]);
     expect(rowsOf(refOf.get(v2)!, b.scopeId)).toEqual([['b-row']]);
+    for (const p of [a, b]) {
+      expect(storeOf(SERVING).get(p.scopeId)).toEqual([
+        expect.objectContaining({ name: '_substrat_meta', rows: [['carried_away', expect.stringContaining(`"to":`)]] }),
+      ]);
+    }
     for (const [p, v] of [[a, v1], [b, v2]] as const) {
       const rec = await recordOf(p.scopeId);
       expect(rec.verticalVersionId).toBe(v); // never advanced
@@ -319,7 +332,11 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     calls.length = 0;
     const retried = await pass();
     expect(retried.repaired.map((r) => r.scopeId)).toEqual([bad.scopeId]);
-    expect(calls).toEqual([`export ${SERVING} ${bad.scopeId}`, `restore ${refOf.get(v2)} ${bad.scopeId}`]);
+    expect(calls).toEqual([
+      `export ${SERVING} ${bad.scopeId}`,
+      `restore ${refOf.get(v2)} ${bad.scopeId}`,
+      `restore ${SERVING} ${bad.scopeId}`, // #1722: the serving script's copy, wiped once the bind landed
+    ]);
     expect(rowsOf(refOf.get(v2)!, bad.scopeId)).toEqual([['bad-row'], ['after-failure']]);
     expect((await recordOf(bad.scopeId)).servingRef ?? null).toBeNull();
   });
@@ -331,6 +348,8 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       const out = await pass();
       expect(out.failed).toMatchObject([{ scopeId: stuck.scopeId, status: 500 }]);
       expect(await recordOf(stuck.scopeId)).toMatchObject({ verticalVersionId: v1, servingRef: SERVING });
+      // #1722: the bind landed but the route did not move, so the copy the route reaches stays.
+      expect(rowsOf(SERVING, stuck.scopeId)).toEqual([['stuck-row']]);
     } finally {
       clear.mockRestore();
     }
@@ -339,6 +358,9 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     expect(retried.repaired.map((r) => r.scopeId)).toEqual([stuck.scopeId]);
     expect(rowsOf(refOf.get(v1)!, stuck.scopeId)).toEqual([['stuck-row'], ['after-failed-clear']]);
     expect((await recordOf(stuck.scopeId)).servingRef ?? null).toBeNull();
+    // #1722: the copy on the serving script stayed while the pin still routed there, and goes
+    // only once the retry cleared it.
+    expect(storeOf(SERVING).get(stuck.scopeId)?.[0]?.name).toBe('_substrat_meta');
   });
 
   it('skips a preview whose bound version has no script of its own, and keeps its pin', async () => {

@@ -642,6 +642,61 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
 });
 
 /**
+ * #1722: the fenced wipe of a carried copy. Only the deployment's own proof that it cannot fence
+ * (a 404, a 501, an SPA shell) becomes `'unfenced'`, the one answer that lets the caller wipe
+ * unconditionally instead. A failure in transit may have wiped or not, so it surfaces as one.
+ */
+describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
+  const input = { scopeId: s, expectLoadStamp: 'stamp-1', carriedTo: 'v2-script', at: '2026-10-03T00:00:00.000Z' };
+  const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string, init?: RequestInit) => {
+        seen.push({ path: new URL(u).pathname, body: JSON.parse(String(init?.body)) });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('posts the stamp and the tombstone and reads the outcome, a refusal included', async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    await expect(answering(() => Response.json({ wiped: true }), seen).wipeCarriedCopy(input)).resolves.toEqual({ wiped: true });
+    await expect(answering(() => Response.json({ wiped: false })).wipeCarriedCopy(input)).resolves.toEqual({ wiped: false });
+    expect(seen).toEqual([{ path: '/internal/wipe-carried', body: input }]);
+  });
+
+  it.each([
+    ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
+    ['a host without the method (501)', () => Response.json({ error: 'redeploy it' }, { status: 501 })],
+    ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
+  ])('%s is unfenced', async (_name, res) => {
+    await expect(answering(res).wipeCarriedCopy(input)).resolves.toBe('unfenced');
+  });
+
+  it('a transport failure, a 5xx and a wrong shape are failures, never unfenced', async () => {
+    const lost = new VerticalClient({
+      fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const failure = (p: Promise<unknown>) => p.then(() => null, (e: unknown) => e as ControlPlaneError);
+    expect((await failure(lost.wipeCarriedCopy(input)))?.status).toBe(502);
+    expect((await failure(answering(() => Response.json({ error: 'DO reset' }, { status: 500 })).wipeCarriedCopy(input)))?.status).toBe(500);
+    const shape = await failure(answering(() => Response.json({ ok: true })).wipeCarriedCopy(input));
+    expect(shape?.status).toBe(502);
+    expect(shape?.message).toMatch(/may or may not be wiped/);
+  });
+});
+
+it("restoreScope reads the load stamp the vertical wrote, and none from one that predates it (#1722)", async () => {
+  const replies = [{ tables: 2, loadStamp: 'stamp-9' }, { tables: 2 }];
+  const client = new VerticalClient({
+    fetch: (async () => Response.json(replies.shift())) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  expect(await client.restoreScope(t, s, [])).toEqual({ tables: 2, loadStamp: 'stamp-9' });
+  expect(await client.restoreScope(t, s, [])).toEqual({ tables: 2 });
+});
+
+/**
  * The status read's hop (#1674) — `systemGrantsStatus`, the read half of the switch above.
  * Same skew contract, on purpose: a deployment that predates the read must answer
  * "redeploy", never a wrong `on`, exactly like `systemSwitch` does for the write.
