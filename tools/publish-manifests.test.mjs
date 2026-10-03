@@ -224,27 +224,36 @@ test('a +build range is accepted plain and inside an alias, and both are asked o
   assert.deepEqual(asked.sort(), ['@substrat-run/contracts@99+build', '@substrat-run/contracts@99+build']);
 });
 
-test('an npm: alias with a workspace: (or any non-registry) range is refused, in every runtime field', () => {
+test('a public package depends only on registry specs: git, github:, URL, tarball and non-range aliases are refused', () => {
+  const refuse = (field, dep, spec) =>
+    `@substrat-run/x@1.0.0: ${field}['${dep}'] is '${spec}' — a public package may depend only on a semver range or dist-tag`;
   for (const field of RUNTIME_FIELDS) {
+    // An https tarball on an INTERNAL dependency, and a git spec on an EXTERNAL one.
+    const tarball = 'https://example.test/contracts-0.135.0.tgz';
+    assert.deepEqual(manifestProblems(pkg({ [field]: { '@substrat-run/contracts': tarball } }), members), [
+      refuse(field, '@substrat-run/contracts', tarball),
+    ]);
+    for (const spec of ['git+https://github.com/jonschlinkert/is-number.git', 'github:jonschlinkert/is-number', 'jonschlinkert/is-number']) {
+      assert.deepEqual(manifestProblems(pkg({ [field]: { 'is-number': spec } }), members), [refuse(field, 'is-number', spec)]);
+    }
     for (const spec of ['npm:@substrat-run/contracts@workspace:^', 'npm:@substrat-run/contracts@catalog:', 'npm:left-pad@file:../x']) {
-      assert.deepEqual(manifestProblems(pkg({ [field]: { c: spec } }), members), [
-        `@substrat-run/x@1.0.0: ${field}['c'] is '${spec}' — an npm: alias must name a semver range or dist-tag`,
-      ]);
+      assert.deepEqual(manifestProblems(pkg({ [field]: { c: spec } }), members), [refuse(field, 'c', spec)]);
     }
     assert.deepEqual(manifestProblems(pkg({ [field]: { c: 'npm:@substrat-run/contracts@latest' } }), members), []);
   }
+  // A devDependency is never installed for a consumer: what it points at is its own business.
+  assert.deepEqual(manifestProblems(pkg({ devDependencies: { 'is-number': 'github:jonschlinkert/is-number' } }), members), []);
 });
 
-test('registry mode: an alias with a workspace: range is refused, and never sent to npm as a question', async () => {
-  const served = pkg({ dependencies: { c: 'npm:@substrat-run/contracts@workspace:^', '@substrat-run/contracts': 'workspace:^' } });
-  // The same check registry mode runs on what npm serves.
-  assert.equal(manifestProblems(served, members).length, 2);
+test('registry mode: a non-registry spec reaching edge resolution is a thrown invariant, never a question to npm', async () => {
+  const served = pkg({ dependencies: { c: 'npm:@substrat-run/contracts@workspace:^' } });
+  assert.equal(manifestProblems(served, members).length, 1);
   const asked = [];
-  const missing = await unresolvedEdges(served, members, async (n, r) => (asked.push(`${n}@${r}`), true), {
-    deadline: 60_000,
-    ...fakeTime(),
-  });
-  assert.deepEqual([asked, missing], [[], []]);
+  await assert.rejects(
+    unresolvedEdges(served, members, async (n, r) => (asked.push(`${n}@${r}`), true), { deadline: 60_000, ...fakeTime() }),
+    /spec 'workspace:\^' is not a registry spec — refuse it with manifestProblems first/,
+  );
+  assert.deepEqual(asked, []);
 });
 
 /** A clock that only moves when the code under test sleeps. */

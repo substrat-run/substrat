@@ -19,8 +19,10 @@
  * other half, run after a release.
  *
  * Both are the same check (`manifestProblems`): no dependency specifier npm cannot
- * resolve (`workspace:`, `catalog:`, `link:`, `file:`, `portal:`), and no runtime
- * dependency on a workspace member that is private, which npm has never been given.
+ * resolve (`workspace:`, `catalog:`, `link:`, `file:`, `portal:`); a runtime, peer or
+ * optional dependency names only a registry spec — a semver range or dist-tag, judged by
+ * node-semver as npm judges it, never git, github:, a URL or a tarball, aliases included;
+ * and none of them is a workspace member that is private, which npm has never been given.
  * The pack-time half also requires the `prepublishOnly` guard (tools/publish-guard.mjs),
  * which is what refuses `npm publish` at the moment it would happen — these checks only
  * see it afterwards.
@@ -102,11 +104,11 @@ export function manifestProblems(manifest, members) {
   for (const { field, dep, name, range } of runtimeEdges(manifest)) {
     const spec = String(manifest[field][dep]);
     if (UNPUBLISHABLE_PROTOCOLS.some((p) => spec.startsWith(p))) continue;
-    // An alias's own spec is not caught by the protocol check above —
-    // `npm:@substrat-run/contracts@workspace:^` starts with `npm:` — so it is held to the
-    // only thing npm resolves inside an alias: a range or a dist-tag.
-    if (spec.startsWith('npm:') && !isRegistrySpec(range)) {
-      problems.push(`${id}: ${field}['${dep}'] is '${spec}' — an npm: alias must name a semver range or dist-tag`);
+    // A public package installs from the registry and nowhere else: a git, github:, URL or
+    // tarball spec reaches outside it, and an alias's own spec (`npm:<name>@<spec>`, which
+    // the protocol check above cannot see into) is held to the same rule.
+    if (!isRegistrySpec(range)) {
+      problems.push(`${id}: ${field}['${dep}'] is '${spec}' — a public package may depend only on a semver range or dist-tag`);
       continue;
     }
     if (members.get(name)?.private) {
@@ -131,13 +133,13 @@ export async function unresolvedEdges(
   resolves,
   { deadline, interval = 20_000, sleep, now = Date.now, warn = () => {} } = {},
 ) {
-  // Only a spec npm resolves from the registry is asked about: npm's answer to any other is
-  // an error about the QUESTION, not the package. A workspace protocol, or an alias that is
-  // not a range, is refused by `manifestProblems`; a git or URL spec does not install from
-  // the registry, so the registry has nothing to say about it.
-  let pending = runtimeEdges(manifest).filter(
-    ({ name, range }) => members.has(name) && !members.get(name).private && isRegistrySpec(range),
-  );
+  let pending = runtimeEdges(manifest).filter(({ name }) => members.has(name) && !members.get(name).private);
+  // Every edge here must be a registry spec: `manifestProblems` refuses any other, and the
+  // caller only resolves a manifest that passed it. An invalid one reaching this point is a
+  // broken invariant, thrown — never asked of npm, whose answer would be about the QUESTION.
+  for (const { field, dep, range } of pending) {
+    if (!isRegistrySpec(range)) throw new Error(`${manifest.name}@${manifest.version}: ${field}['${dep}'] spec '${range}' is not a registry spec — refuse it with manifestProblems first`);
+  }
   for (;;) {
     const results = await Promise.all(pending.map((e) => resolves(e.name, e.range)));
     pending = pending.filter((_, i) => !results[i]);
@@ -295,7 +297,12 @@ async function main() {
         notes.push(`${name}@${version} is not on the registry yet`);
         return;
       }
-      problems.push(...manifestProblems(manifest, members));
+      const provenance = provenanceNote(manifest);
+      if (provenance) notes.push(provenance);
+      const refused = manifestProblems(manifest, members);
+      problems.push(...refused);
+      // A manifest already refused is not resolved: its specs need not be registry specs.
+      if (refused.length) return;
       // A public member it requires must be installable too — published, at a version the
       // range admits. Asked again for a bounded window, the same three minutes
       // scaffold-check waits for a publish, then refused.
@@ -308,8 +315,6 @@ async function main() {
       for (const edge of missing) {
         problems.push(`${name}@${version}: ${edge.field}['${edge.dep}'] requires ${edge.name}@${edge.range}, which npm has no version of`);
       }
-      const provenance = provenanceNote(manifest);
-      if (provenance) notes.push(provenance);
     });
   } else {
     await pool(published, 6, async ([, { path, manifest }]) => {

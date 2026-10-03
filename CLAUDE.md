@@ -553,8 +553,9 @@ no router fronts them and no request carries an asserted tenant),
 source is at most 50 bytes, the limit a Durable Object enforces and node does not, #1655),
 `lint:publish-manifests` (`tools/publish-manifests.mjs`: the package.json each public package
 SHIPS — read out of the tarball `pnpm pack` writes, not the source file, because `pnpm publish`
-rewrites `workspace:` and `catalog:` at pack time — names no specifier npm cannot resolve and no
-private member as a runtime dependency. Also runs in front of `pnpm publish -r` in `pnpm release`.
+rewrites `workspace:` and `catalog:` at pack time — names no specifier npm cannot resolve, only
+registry specs (a semver range or dist-tag; never git, a URL or a tarball) as runtime, peer and
+optional dependencies, and no private member among them. Also runs in front of `pnpm publish -r` in `pnpm release`.
 Its `--registry` half reads what npm actually serves for each current version, post-release and
 weekly (`scaffold.yml`), because `pnpm publish -r` skips a version npm already has: a broken copy
 published another way is never replaced, and no packed manifest can see it.
