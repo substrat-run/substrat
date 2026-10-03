@@ -9,6 +9,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
   FORBIDDEN_EDGES,
+  PERMISSIVE_EXCEPTIONS,
   PERMISSIVE_LICENSES,
   PERMISSIVE_ONLY,
   forbiddenEdgeProblems,
@@ -207,6 +208,39 @@ test('spdxPermissive: well-formed expressions — nesting, precedence, WITH, `+`
   ]) {
     assert.equal(spdxPermissive(no), false, no);
   }
+});
+
+test('spdxPermissive: WITH takes a simple licence on the left and an ALLOWLISTED exception on the right', () => {
+  // The three shapes that parsed but should not: another licence as the "exception", a LicenseRef, a group on the left.
+  for (const bad of [
+    'MIT WITH AGPL-3.0-only',
+    'MIT WITH LicenseRef-unknown',
+    '(MIT OR GPL-3.0) WITH LLVM-exception',
+    // Likewise: an addition ref, a document ref, an unreviewed real exception, a group however trivial.
+    'MIT WITH AdditionRef-custom',
+    'MIT WITH DocumentRef-x:AdditionRef-y',
+    'MIT WITH Classpath-exception-2.0',
+    '(MIT) WITH LLVM-exception',
+    '(Apache-2.0 AND MIT) WITH LLVM-exception',
+    // The exception never rescues a licence that was not allowed.
+    'GPL-3.0 WITH LLVM-exception',
+    'MPL-2.0 WITH LLVM-exception',
+    // …nor a broken neighbour.
+    'Apache-2.0 WITH LLVM-exception AND (',
+  ]) {
+    assert.equal(spdxPermissive(bad), false, bad);
+  }
+  // The positive twins: a reviewed exception on a permissive licence, any case, inside bigger expressions.
+  for (const ok of [
+    'Apache-2.0 WITH LLVM-exception',
+    'apache-2.0 with llvm-exception',
+    'Apache-2.0+ WITH LLVM-exception',
+    'MIT OR (Apache-2.0 WITH LLVM-exception)',
+    'Apache-2.0 WITH LLVM-exception AND MIT',
+  ]) {
+    assert.equal(spdxPermissive(ok), true, ok);
+  }
+  assert.deepEqual([...PERMISSIVE_EXCEPTIONS], ['llvm-exception']);
 });
 
 test('spdxPermissive: a LicenseRef is a licence nobody named — refused unless allowlisted by its full spelling', () => {

@@ -171,6 +171,15 @@ export const PERMISSIVE_LICENSES = new Set(
 );
 
 /**
+ * The licence EXCEPTIONS a permissive licence may carry (`Apache-2.0 WITH LLVM-exception`).
+ * An exception modifies the licence it follows, so which ones are acceptable is a review
+ * decision, one identifier at a time, exactly like the licences themselves: an unlisted id,
+ * another licence's id (`MIT WITH AGPL-3.0-only`), a `LicenseRef-*` and an `AdditionRef-*`
+ * are all refused. Only exceptions that make a permissive licence MORE permissive belong here.
+ */
+export const PERMISSIVE_EXCEPTIONS = new Set(['LLVM-exception'].map((id) => id.toLowerCase()));
+
+/**
  * The SPDX licence-expression grammar (SPDX spec, annex D), as a recursive-descent parser:
  *
  *     expression  = and-expr *( "OR" and-expr )
@@ -185,9 +194,13 @@ export const PERMISSIVE_LICENSES = new Set(
  * must — and THROWS on anything that is not in the grammar, so a caller fails closed:
  * `MIT WITH OR`, `MIT WITH (`, a dangling operator, an unbalanced parenthesis, and an
  * identifier with a character the grammar does not allow are all errors rather than guesses.
- * `X WITH exception` is judged on `X` alone: an exception never makes a copyleft licence
- * permissive. A `LicenseRef-*` is a licence nobody named in this file, so it is refused unless
- * it is allowlisted by its full spelling.
+ *
+ * `WITH` is the one place the grammar is narrower than "an expression": its left side is a
+ * SIMPLE licence (`(MIT OR GPL-3.0) WITH LLVM-exception` is not in the grammar), and its right
+ * side must be an exception on `PERMISSIVE_EXCEPTIONS` — an exception is judged, not merely
+ * parsed, so `MIT WITH AGPL-3.0-only` and `MIT WITH LicenseRef-x` are refused. A
+ * `LicenseRef-*` is a licence nobody named in this file, so it is refused unless it is
+ * allowlisted by its full spelling.
  */
 function parseSpdx(expression) {
   const tokens = String(expression).match(/\(|\)|[^\s()]+/g) ?? [];
@@ -200,6 +213,7 @@ function parseSpdx(expression) {
   const IDSTRING = /^[A-Za-z0-9.-]+$/;
   const LICENSE_REF = /^(?:DocumentRef-[A-Za-z0-9.-]+:)?LicenseRef-[A-Za-z0-9.-]+$/;
 
+  /** One operand: a parenthesized group or a single licence; `group` says which, for WITH. */
   function simple() {
     const t = tokens[at++];
     if (t === undefined) return fail('expected a licence, found the end');
@@ -207,24 +221,26 @@ function parseSpdx(expression) {
     if (t === '(') {
       const inner = or();
       if (tokens[at++] !== ')') return fail("expected ')'");
-      return inner;
+      return { value: inner, group: true };
     }
     if (isOperator(t)) return fail(`expected a licence, found '${t}'`);
-    if (LICENSE_REF.test(t)) return PERMISSIVE_LICENSES.has(t.toLowerCase());
+    if (LICENSE_REF.test(t)) return { value: PERMISSIVE_LICENSES.has(t.toLowerCase()), group: false };
     const id = t.endsWith('+') ? t.slice(0, -1) : t;
     if (!IDSTRING.test(id)) return fail(`'${t}' is not a licence identifier`);
-    return PERMISSIVE_LICENSES.has(id.toLowerCase());
+    return { value: PERMISSIVE_LICENSES.has(id.toLowerCase()), group: false };
   }
   function withException() {
-    const value = simple();
-    if (isWord(tokens[at], 'WITH')) {
-      at++;
-      const exception = tokens[at++];
-      if (exception === undefined || exception === '(' || exception === ')' || isOperator(exception) || !IDSTRING.test(exception)) {
-        return fail('expected an exception identifier after WITH');
-      }
+    const left = simple();
+    if (!isWord(tokens[at], 'WITH')) return left.value;
+    at++;
+    if (left.group) return fail('the left side of WITH must be a single licence, not a group');
+    const exception = tokens[at++];
+    if (exception === undefined || exception === '(' || exception === ')' || isOperator(exception) || !IDSTRING.test(exception)) {
+      return fail('expected an exception identifier after WITH');
     }
-    return value;
+    // Judged, not just parsed: another licence's id, a LicenseRef or an unreviewed exception is no exception.
+    if (!PERMISSIVE_EXCEPTIONS.has(exception.toLowerCase())) return fail(`'${exception}' is not an allowlisted licence exception`);
+    return left.value;
   }
   function and() {
     let value = withException();
