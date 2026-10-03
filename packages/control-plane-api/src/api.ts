@@ -3958,6 +3958,119 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ capturedAt: dump.capturedAt, tables: dump.tables.length });
   });
 
+  // -- one-time repair of previews that kept a production serving pin (#1724) --------------
+  // A preview adopted onto its vertical's serving script before #1731 still routes by
+  // `COALESCE(servingRef, deploymentRef)`, so it serves production code while its binding
+  // names the version it was pushed from. #1962 heals one on its next `scope bind`; this is
+  // the pass over the previews nobody binds again. It is the SAME act a bind runs, with the
+  // version the preview is already bound to as its target: carry the data off the serving
+  // script into that version's own script, bind it, then clear the pin. A pin that fails to
+  // clear leaves the route where the data still is, and the next pass carries again.
+  //
+  // Staff only, by default-deny: the path is on neither `BUILDER_ROUTES` nor
+  // `TENANT_ROUTES`, so a builder's push token and a tenant credential both 403 before the
+  // handler runs. (A fleet-wide walk is the wrong shape for either, even a tenant's own.)
+  //
+  // Paged and resumable like every fleet walk here: a pass reads one page of ACTIVE
+  // directory rows after `cursor` and repairs at most `limit` previews from it, answering
+  // `nextCursor` until the fleet is exhausted. Bounded by `limit` because each repair is a
+  // data move between two Durable Objects. A scope that fails is reported and the pass
+  // moves on, so one bad preview cannot hold the rest; it is still pinned, so the next walk
+  // from the start visits it again. A healed preview is no longer a candidate, which is
+  // what makes a re-run a no-op. `dryRun` lists the candidates and touches nothing.
+  const REPAIR_SCAN_PAGE = 500;
+  const repairServingPinsBody = z.object({
+    cursor: scopeIdSchema.optional(),
+    limit: z.number().int().min(1).max(100).default(25),
+    dryRun: z.boolean().default(false),
+  });
+  type PinRepairOutcome =
+    | { repaired: { from: string; to: string; tables: number } }
+    | { skipped: string };
+  const repairPreviewServingPin = async (c: ReqCtx, scope: Scope): Promise<PinRepairOutcome> => {
+    const actor = c.get('actor');
+    const versionId = scope.verticalVersionId;
+    if (!scope.vertical || !versionId) return { skipped: 'the preview is bound to no version' };
+    // Without its own script the version has nowhere to receive the data, and clearing the pin
+    // would strand it on the serving script.
+    const bound = await c.var.admin.getVersion(actor, versionId, scope.vertical);
+    if (!bound?.deploymentRef) return { skipped: `version ${versionId} has no script of its own` };
+    const carried = await carryOntoVersion(c, scope, versionId, { dropServingRef: true });
+    // `expectedVersionId`: a push that re-pointed the preview since it was listed wins, and
+    // this pass leaves the scope to it rather than binding it back.
+    await c.var.admin
+      .bindScopeVersion(actor, scope.tenantId, scope.id, versionId, { expectedVersionId: versionId })
+      .catch(relayHostRefusal);
+    await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null).catch(relayHostRefusal);
+    await c.var.admin.reassertSystemSwitches(
+      actor,
+      { tenantId: scope.tenantId, scopeId: scope.id },
+      { appliedInUnit: carried?.switchedOff },
+    );
+    return { repaired: { from: carried?.from ?? scope.servingRef!, to: bound.deploymentRef, tables: carried?.tables ?? 0 } };
+  };
+  app.post('/previews/repair-serving-pins', async (c) => {
+    if (!options.resolveVerticalVersion || !options.resolveVerticalRef) {
+      return c.json({ error: 'repairing serving pins needs dispatch resolution for both ends' }, 501);
+    }
+    const parsed = repairServingPinsBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return c.json({ error: 'body must be { cursor?: <scope id>, limit?: 1..100, dryRun?: boolean }' }, 400);
+    }
+    const { cursor, limit, dryRun } = parsed.data;
+    const actor = c.get('actor');
+    const page = await c.var.admin.listScopes(actor, { status: ['active'], cursor, limit: REPAIR_SCAN_PAGE });
+    const repaired: { tenantId: string; scopeId: string; from: string; to: string; tables: number }[] = [];
+    const candidates: { tenantId: string; scopeId: string; servingRef: string }[] = [];
+    const skipped: { tenantId: string; scopeId: string; reason: string }[] = [];
+    const failed: { tenantId: string; scopeId: string; status: number; error: string }[] = [];
+    let last: string | undefined = cursor;
+    let handled = 0;
+    let stopped = false;
+    for (const scope of page) {
+      if (scope.kind !== 'preview' || !scope.servingRef) {
+        last = scope.id;
+        continue;
+      }
+      if (handled >= limit) {
+        stopped = true;
+        break;
+      }
+      handled += 1;
+      last = scope.id;
+      const at = { tenantId: scope.tenantId, scopeId: scope.id };
+      if (dryRun) {
+        candidates.push({ ...at, servingRef: scope.servingRef });
+        continue;
+      }
+      try {
+        const outcome = await repairPreviewServingPin(c, scope);
+        if ('skipped' in outcome) skipped.push({ ...at, reason: outcome.skipped });
+        else repaired.push({ ...at, ...outcome.repaired });
+      } catch (e) {
+        const status = e instanceof ControlPlaneError ? e.status : 500;
+        const message = e instanceof Error ? e.message : String(e);
+        if (status >= 500 && status !== 501) {
+          recordFailure({
+            actor,
+            operation: 'preview.repair-serving-pin',
+            stage: 'repair',
+            tenantId: scope.tenantId,
+            scopeId: scope.id,
+            vertical: scope.vertical,
+            version: scope.verticalVersionId,
+            status,
+            message,
+          }, e);
+        }
+        failed.push({ ...at, status, error: message });
+      }
+    }
+    // Exhausted only when the page ran short: a full page may be followed by more rows.
+    const nextCursor = stopped || page.length === REPAIR_SCAN_PAGE ? (last ?? null) : null;
+    return c.json({ dryRun, repaired, candidates, skipped, failed, nextCursor });
+  });
+
   // Reap an ARCHIVED primary scope (control-plane.md §4.4): free its DO storage —
   // Cloudflare never garbage-collects a Durable Object, so a deleted app's bytes persist
   // forever otherwise — while keeping the directory row as a tombstone. A POST verb, not
