@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { createControlPlaneApi, serviceTokenAuth, tenantTokenAuth } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
+import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import type { PromotionReview } from '../src/promotion-review.js';
 import { classifyRefusal, planPermission, promoteWithCheckpoint, type Acks, type Checkpoint, type PromoteReviewWire } from '../web/src/lib/promote-review.js';
 
@@ -56,7 +56,6 @@ export const REVIEW_WIRE_AGREES: (r: PromotionReview) => PromoteReviewWire = (r)
 
 const PROVIDER = 'authhero';
 const staff = platformActorId.parse(ulid());
-const TENANT_TOKEN_SECRET = 'test-tenant-token-secret';
 const SLUG = 'acme/hr';
 
 const registryOf = (extra: string[] = []) => ({
@@ -147,19 +146,12 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     // Same digests as v1, and no SQL carried (an older CLI, or over the cap): the gate sees nothing.
     await publish(v.noSql, '3.2.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), null);
 
-    // The plane as production wires it for the dashboard (#977): the fleet-wide service token
-    // is honoured to mint the tenant token, and that token is what every other call presents.
-    const plane = createControlPlaneApi({
-      host,
-      authenticate: serviceTokenAuth('service-token', staff),
-      authenticateTenantService: tenantTokenAuth(TENANT_TOKEN_SECRET, staff),
-      tenantTokenSecret: TENANT_TOKEN_SECRET,
-    });
+    const plane = tenantPlane(host, staff);
     env = {
       SCOPE: {},
       CONTROL_PLANE: {},
       SESSION_SECRET: 'test-session-secret',
-      CP_SERVICE_TOKEN: 'service-token',
+      CP_SERVICE_TOKEN: SERVICE_TOKEN,
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));

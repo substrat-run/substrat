@@ -283,12 +283,12 @@ function controlPlaneFor(
   // Host is ignored over a service binding; the control-plane API mounts at `/api`.
   const baseUrl = 'https://control-plane/api';
   const fetchImpl = svc.fetch.bind(svc);
-  // The one call made with the fleet-wide token, over the shared transport (#971) for its
-  // addressing and credential; the refusal is read here, because what it means — a 503
-  // naming what is unconfigured — is the dashboard's own answer, not a plane sentence.
-  const fleet = new ControlPlaneTransport({ baseUrl, actor: null, serviceToken, fetch: fetchImpl });
 
   const mint = async (): Promise<string> => {
+    // The one call made with the fleet-wide token, over the shared transport (#971) for its
+    // addressing and credential; the refusal is read here, because what it means — a 503
+    // naming what is unconfigured — is the dashboard's own answer, not a plane sentence.
+    const fleet = new ControlPlaneTransport({ baseUrl, actor: null, serviceToken, fetch: fetchImpl });
     const res = await fleet.request('/tenant-tokens', {
       method: 'POST',
       body: JSON.stringify(principal ? { tenantId, principal } : { tenantId }),

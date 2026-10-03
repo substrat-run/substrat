@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { createControlPlaneApi, serviceTokenAuth, tenantTokenAuth } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId, type EmittedModel, type ScopeId } from '@substrat-run/contracts';
 import { manualClock, ulid, type ManualClock, type OperationHandler } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
+import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import { PROCESS_PERIODS, type ProcessMapAnswer } from '../src/process-map.js';
 
 /**
@@ -54,7 +54,6 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 
 const PROVIDER = 'authhero';
 const staff = platformActorId.parse(ulid());
-const TENANT_TOKEN_SECRET = 'test-tenant-token-secret';
 const SLUG = 'acme/desk';
 const EMPTY_SLUG = 'acme/empty';
 const OWNER_SUB = 'sub-owner';
@@ -164,19 +163,12 @@ describe('the process map route (#1744)', () => {
     await host.admin.registerVertical(staff, { slug: EMPTY_SLUG, name: 'Empty', source: 'cli', ownerTenant: tenant });
     emptyScope = await install(EMPTY_SLUG, 'Empty');
 
-    // The plane as production wires it for the dashboard (#977): the fleet-wide service token
-    // is honoured to mint the tenant token, and that token is what every other call presents.
-    const plane = createControlPlaneApi({
-      host,
-      authenticate: serviceTokenAuth('service-token', staff),
-      authenticateTenantService: tenantTokenAuth(TENANT_TOKEN_SECRET, staff),
-      tenantTokenSecret: TENANT_TOKEN_SECRET,
-    });
+    const plane = tenantPlane(host, staff);
     env = {
       SCOPE: {},
       CONTROL_PLANE: {},
       SESSION_SECRET: 'test-session-secret',
-      CP_SERVICE_TOKEN: 'service-token',
+      CP_SERVICE_TOKEN: SERVICE_TOKEN,
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));

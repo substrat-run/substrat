@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LIST_PAGE_MAX, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ControlPlaneError as SharedControlPlaneError } from '@substrat-run/control-plane-client';
 import { ulid } from '@substrat-run/kernel';
-import { TenantNarrowedControlPlane, ControlPlaneError } from '../src/authority.js';
+import { TenantNarrowedControlPlane, ControlPlaneError, type TenantNarrowedControlPlaneOptions } from '../src/authority.js';
 
 /**
  * What `TenantNarrowedControlPlane` puts on the wire and how it reads what comes back,
@@ -37,10 +37,11 @@ interface Sent {
   body: string | undefined;
 }
 
-type Answer = Response | Error | (() => Response);
-
 /** A plane that answers from a script, one entry per request (the last one repeats). */
-function plane(answers: Answer[] = [Response.json({})], credential?: ConstructorParameters<typeof TenantNarrowedControlPlane>[0]['credential']) {
+function plane(
+  answers: Array<Response | Error> = [Response.json({})],
+  opts: { credential?: TenantNarrowedControlPlaneOptions['credential']; baseUrl?: string } = {},
+) {
   const sent: Sent[] = [];
   const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     sent.push({
@@ -51,9 +52,9 @@ function plane(answers: Answer[] = [Response.json({})], credential?: Constructor
     });
     const a = answers[Math.min(sent.length - 1, answers.length - 1)]!;
     if (a instanceof Error) throw a;
-    return typeof a === 'function' ? a() : a.clone();
+    return a.clone();
   }) as typeof globalThis.fetch;
-  const cp = new TenantNarrowedControlPlane({ baseUrl: BASE, credential: credential ?? TOKEN, tenantId: T, fetch });
+  const cp = new TenantNarrowedControlPlane({ baseUrl: opts.baseUrl ?? BASE, credential: opts.credential ?? TOKEN, tenantId: T, fetch });
   return { cp, sent };
 }
 
@@ -128,18 +129,9 @@ describe('TenantNarrowedControlPlane on the wire (#971)', () => {
     }
 
     it('a trailing slash on the base URL is not doubled', async () => {
-      const sent: string[] = [];
-      const cp = new TenantNarrowedControlPlane({
-        baseUrl: `${BASE}/`,
-        credential: TOKEN,
-        tenantId: T,
-        fetch: (async (url: string | URL | Request) => {
-          sent.push(String(url));
-          return json([]);
-        }) as typeof globalThis.fetch,
-      });
+      const { cp, sent } = plane([json([])], { baseUrl: `${BASE}/` });
       await cp.listOrgs();
-      expect(sent).toEqual([`${BASE}/tenants/${T}/orgs`]);
+      expect(sent.map((r) => r.url)).toEqual([`${BASE}/tenants/${T}/orgs`]);
     });
 
     it('with no fetch injected, the global one is used', async () => {
@@ -161,13 +153,13 @@ describe('TenantNarrowedControlPlane on the wire (#971)', () => {
     });
 
     it('a 204 is undefined', async () => {
-      const { cp } = plane([() => new Response(null, { status: 204 })]);
+      const { cp } = plane([new Response(null, { status: 204 })]);
       expect(await cp.listOrgs()).toBeUndefined();
     });
 
     it('a 2xx whose body is empty or not JSON is undefined, never a throw', async () => {
       for (const body of ['', '<html>not json</html>']) {
-        const { cp } = plane([() => new Response(body, { status: 200 })]);
+        const { cp } = plane([new Response(body, { status: 200 })]);
         expect(await cp.listOrgs()).toBeUndefined();
       }
     });
@@ -188,7 +180,7 @@ describe('TenantNarrowedControlPlane on the wire (#971)', () => {
 
     it('falls back to the status line when the body says nothing readable', async () => {
       for (const body of ['<html>gateway</html>', '', '{}']) {
-        const { cp } = plane([() => new Response(body, { status: 502, statusText: 'Bad Gateway' })]);
+        const { cp } = plane([new Response(body, { status: 502, statusText: 'Bad Gateway' })]);
         await expect(cp.listOrgs()).rejects.toMatchObject({ status: 502, message: '502 Bad Gateway' });
       }
     });
@@ -210,8 +202,7 @@ describe('TenantNarrowedControlPlane on the wire (#971)', () => {
 
     it('is the one shared ControlPlaneError class', async () => {
       const { cp } = plane([json({ detail: 'no' }, 403)]);
-      const e = await cp.listOrgs().catch((x: unknown) => x);
-      expect(e).toBeInstanceOf(SharedControlPlaneError);
+      await expect(cp.listOrgs()).rejects.toBeInstanceOf(SharedControlPlaneError);
       expect(ControlPlaneError).toBe(SharedControlPlaneError);
     });
   });
@@ -245,27 +236,18 @@ describe('TenantNarrowedControlPlane on the wire (#971)', () => {
   });
 
   describe('the credential', () => {
-    it('re-mints once on a 401 and presents the fresh token', async () => {
+    it('re-mints once on a 401 and replays the same request with the fresh token', async () => {
       const asked: Array<boolean | undefined> = [];
-      const { cp, sent } = plane([json({ detail: 'expired' }, 401), json([])], async (opts) => {
-        asked.push(opts?.fresh);
-        return opts?.fresh ? 'stt1.fresh' : TOKEN;
-      });
-      expect(await cp.listOrgs()).toEqual([]);
-      expect(asked).toEqual([undefined, true]);
-      expect(sent.map((s) => s.headers['x-service-token'])).toEqual([TOKEN, 'stt1.fresh']);
-      expect(sent[1]!.headers).toEqual({ ...WIRE_HEADERS, 'x-service-token': 'stt1.fresh' });
-      // The replay is the same request: verb, URL and body.
-      expect(sent[1]!.url).toBe(sent[0]!.url);
-    });
-
-    it('replays the body on the re-minted attempt', async () => {
-      const { cp, sent } = plane([json({}, 401), json({})], async (o) => (o?.fresh ? 'stt1.fresh' : TOKEN));
+      const credential = async (o?: { fresh?: boolean }) => {
+        asked.push(o?.fresh);
+        return o?.fresh ? 'stt1.fresh' : TOKEN;
+      };
+      const { cp, sent } = plane([json({ detail: 'expired' }, 401), json({})], { credential });
       await cp.createOrg({ id: 'o', slug: 'o', name: 'O' });
-      expect(sent.map((s) => [s.method, s.body])).toEqual([
-        ['POST', JSON.stringify({ id: 'o', slug: 'o', name: 'O' })],
-        ['POST', JSON.stringify({ id: 'o', slug: 'o', name: 'O' })],
-      ]);
+      expect(asked).toEqual([undefined, true]);
+      expect(sent).toHaveLength(2);
+      // Verb, URL and body as the first attempt; only the credential moved.
+      expect(sent[1]).toEqual({ ...sent[0], headers: { ...WIRE_HEADERS, 'x-service-token': 'stt1.fresh' } });
     });
 
     it('a second 401 is the answer', async () => {
@@ -288,7 +270,7 @@ describe('TenantNarrowedControlPlane on the wire (#971)', () => {
 
     it("a provider that cannot resolve a credential fails with its own error, and nothing is sent", async () => {
       class NotConfigured extends Error {}
-      const { cp, sent } = plane([json([])], () => Promise.reject(new NotConfigured('no tenant credential')));
+      const { cp, sent } = plane([json([])], { credential: () => Promise.reject(new NotConfigured('no tenant credential')) });
       await expect(cp.listOrgs()).rejects.toBeInstanceOf(NotConfigured);
       expect(sent).toHaveLength(0);
     });
@@ -321,7 +303,7 @@ describe('TenantNarrowedControlPlane on the wire (#971)', () => {
     });
 
     it('an empty answer is an empty page', async () => {
-      const { cp } = plane([() => new Response(null, { status: 204 })]);
+      const { cp } = plane([new Response(null, { status: 204 })]);
       expect(await cp.listTenantHostnamesPage({})).toEqual({ entries: [], nextCursor: null });
     });
 

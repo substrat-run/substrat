@@ -287,33 +287,30 @@ export class TenantNarrowedControlPlane {
     // A credential the provider cannot resolve is thrown as it is, before anything is sent:
     // it is a different failure with its own answer (the worker's 503 naming what is
     // unconfigured), and burying it under a transport message would lose that.
-    const attempt = async (credential: string): Promise<Response> => {
+    const attempt = async (opts?: { fresh?: boolean }): Promise<Response> => {
       const headers = new Headers(request.headers);
-      headers.set(SERVICE_TOKEN_HEADER, credential);
+      headers.set(SERVICE_TOKEN_HEADER, await this.credential(opts));
       return this.transport.exchange(path, { ...request, headers });
     };
     let res: Response;
     try {
-      try {
-        res = await attempt(await this.credential());
-      } catch (e) {
-        // A 401 means the credential this seam holds is no longer one the plane accepts —
-        // in practice, its signing secret was rotated while this isolate held a token
-        // minted under the old one. Re-mint ONCE and try again, so a rotation is the blip
-        // it is documented to be rather than 401s until the isolate recycles. Bounded to
-        // one extra round trip: if the fresh credential is refused too, that is the answer.
-        //
-        // Safe to replay: every body on this seam is a string (or absent), never a consumed
-        // stream, and a request the plane refused at the auth middleware never reached a
-        // handler — so there is nothing half-done to repeat.
-        if (!(e instanceof ControlPlaneError && e.status === 401)) throw e;
-        res = await attempt(await this.credential({ fresh: true }));
-      }
+      // A 401 means the credential this seam holds is no longer one the plane accepts —
+      // in practice, its signing secret was rotated while this isolate held a token minted
+      // under the old one. Re-mint ONCE and try again, so a rotation is the blip it is
+      // documented to be rather than 401s until the isolate recycles. Bounded to one extra
+      // round trip: if the fresh credential is refused too, that is the answer.
+      //
+      // Safe to replay: every body on this seam is a string (or absent), never a consumed
+      // stream, and a request the plane refused at the auth middleware never reached a
+      // handler — so there is nothing half-done to repeat.
+      res = await attempt().catch((e: unknown) => {
+        if (e instanceof ControlPlaneError && e.status === 401) return attempt({ fresh: true });
+        throw e;
+      });
     } catch (e) {
-      if (!(e instanceof ControlPlaneError)) throw e;
       // A tenant/entitlement that already exists is fine on an idempotent step
       // (re-provisioning, a retried create) — the directory already reflects it.
-      if (idempotent && (e.status === 409 || e.status === 422)) return undefined as T;
+      if (idempotent && e instanceof ControlPlaneError && (e.status === 409 || e.status === 422)) return undefined as T;
       throw e;
     }
     return res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);

@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { createControlPlaneApi, serviceTokenAuth, tenantTokenAuth } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
+import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The `/api/deployments` write routes ask the caller's ROLE (#1595).
@@ -69,7 +69,6 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 
 const PROVIDER = 'authhero';
 const staff = platformActorId.parse(ulid());
-const TENANT_TOKEN_SECRET = 'test-tenant-token-secret';
 
 describe('the /api/deployments write routes ask the caller’s role (#1595)', () => {
   let dir: string;
@@ -110,19 +109,12 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     // The vertical the team owns: private, so every act below is self-serve for its owner.
     await host.admin.registerVertical(staff, { slug: 'acme/hr', name: 'HR', source: 'cli', ownerTenant: tenant });
 
-    // The plane as production wires it for the dashboard (#977): the fleet-wide service token
-    // is honoured to mint the tenant token, and that token is what every other call presents.
-    const plane = createControlPlaneApi({
-      host,
-      authenticate: serviceTokenAuth('service-token', staff),
-      authenticateTenantService: tenantTokenAuth(TENANT_TOKEN_SECRET, staff),
-      tenantTokenSecret: TENANT_TOKEN_SECRET,
-    });
+    const plane = tenantPlane(host, staff);
     env = {
       SCOPE: {},
       CONTROL_PLANE: {},
       SESSION_SECRET: 'test-session-secret',
-      CP_SERVICE_TOKEN: 'service-token',
+      CP_SERVICE_TOKEN: SERVICE_TOKEN,
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
