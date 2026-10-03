@@ -118,6 +118,11 @@ slots straight in, alongside `forked_from`, `forked_at`, and a read-only flag fo
 - **A fork is a dead end.** The export copies the `_substrat_*` spine too, so nothing
   downstream — connectors, cron, billing — may consume from a preview/archive scope. Enforced
   by leaving the fork's outbound side unwired.
+- **A link share never opens a fork** (#1686). Capability rows (`_substrat_capabilities`,
+  `_substrat_capability_sessions`) never cross a scope id: a load into another scope leaves
+  them behind, and a load back into the scope the dump came from (a backup restore, a carry
+  onto a new version) keeps them. `capabilitiesForLoad` is the rule both loaders apply; an
+  unknown source counts as a copy.
 - **The local sink crosses the trust boundary.** Server-side forks stay in the governed
   environment; pulling to a laptop does not, and that is a different risk class:
   - **Residency.** Jurisdiction pins *execution*, not just storage (K-7/K-32) — the reason
