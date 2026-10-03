@@ -436,6 +436,18 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await v1.restoreScopeLocal(sid, notes('restored since'));
       expect(await v1.wipeCarriedLocal(sid, first, away)).toBe(false);
       expect(bodiesIn(await v1.exportScopeLocal(sid))).toEqual(['restored since']);
+      // A dump that carries a stamp row of its own cannot forge the one read: the load drops it.
+      const { loadStamp: forged } = await v1.exportScopeStampedLocal(sid);
+      await v1.restoreScopeLocal(sid, [
+        ...notes('forged'),
+        {
+          name: '_substrat_meta',
+          ddl: 'CREATE TABLE _substrat_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+          columns: ['key', 'value'],
+          rows: [['load_stamp', forged]],
+        },
+      ]);
+      expect(await v1.wipeCarriedLocal(sid, forged, away)).toBe(false);
       // So does a carry's load, which names its own.
       const { loadStamp: second } = await v1.exportScopeStampedLocal(sid);
       expect(second).not.toBe(first);
