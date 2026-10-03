@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { JOB_RUN_DDL } from '../src/job-run.js';
 import { clearCopyMarker, COPY_ORIGIN_DDL, emittedHere, IS_COPY_SQL, markCopyOrigin, settleCopiedWork } from '../src/scope-copy.js';
 import type { SwitchSql } from '../src/system-switch.js';
 
@@ -24,12 +25,13 @@ const LEGACY_DDL = `
     copied_at TEXT NOT NULL
   );
 `;
-/** What `settleCopiedWork` settles besides the origin row: present, empty. */
+/** What `settleCopiedWork` settles besides the origin row: present, empty. The kernel exports the
+ *  job-run table's DDL; the other three are the columns the settle reads and writes. */
 const WORK_DDL = `
   CREATE TABLE _substrat_outbox (id TEXT PRIMARY KEY);
   CREATE TABLE _substrat_platform_requests (status TEXT, last_error TEXT, last_failure TEXT, settled_at TEXT);
   CREATE TABLE _substrat_deliveries (next_attempt_at TEXT, error TEXT, delivered_at TEXT);
-  CREATE TABLE _substrat_job_runs (status TEXT, last_error TEXT, next_attempt_at TEXT, updated_at TEXT, ended_at TEXT);
+  ${JOB_RUN_DDL}
 `;
 
 const store = (ddl: string): { db: DatabaseSync; sql: SwitchSql } => {
@@ -48,12 +50,17 @@ const origin = (sql: SwitchSql) => sql.all('SELECT source_scope_id, events_throu
 const isCopy = (sql: SwitchSql) => sql.all(IS_COPY_SQL).length > 0;
 /** The outbox ids `emittedHere()` lets through to dispatch. */
 const dispatchable = (sql: SwitchSql) => sql.all(`SELECT id FROM _substrat_outbox WHERE ${emittedHere()} ORDER BY id`).map((r) => r.id);
+/** A store holding one event, loaded into DEST from SOURCE: the mark set, nothing classified. */
+const loaded = (): SwitchSql => {
+  const { sql } = store(COPY_ORIGIN_DDL);
+  sql.run('INSERT INTO _substrat_outbox (id) VALUES (?)', COPIED);
+  settleCopiedWork(sql, DEST, SOURCE, NOW);
+  return sql;
+};
 
 describe('the copy-origin row holds two facts (#2009)', () => {
   it('a load into another scope id moves the events mark and classifies nothing', () => {
-    const { sql } = store(COPY_ORIGIN_DDL);
-    sql.run('INSERT INTO _substrat_outbox (id) VALUES (?)', COPIED);
-    settleCopiedWork(sql, DEST, SOURCE, NOW);
+    const sql = loaded();
     expect(origin(sql)).toEqual([{ source_scope_id: SOURCE, events_through: COPIED, is_copy: 0 }]);
     expect(isCopy(sql)).toBe(false);
     expect(dispatchable(sql)).toEqual([]);
@@ -75,9 +82,7 @@ describe('the copy-origin row holds two facts (#2009)', () => {
   });
 
   it('marking sets the classification and keeps the events mark and the source', () => {
-    const { sql } = store(COPY_ORIGIN_DDL);
-    sql.run('INSERT INTO _substrat_outbox (id) VALUES (?)', COPIED);
-    settleCopiedWork(sql, DEST, SOURCE, NOW);
+    const sql = loaded();
     expect(markCopyOrigin(sql, NOW)).toBe(true);
     expect(markCopyOrigin(sql, NOW)).toBe(false);
     expect(origin(sql)).toEqual([{ source_scope_id: SOURCE, events_through: COPIED, is_copy: 1 }]);
@@ -93,9 +98,7 @@ describe('the copy-origin row holds two facts (#2009)', () => {
   });
 
   it('clearing sets the classification only: the copied events stay held', () => {
-    const { sql } = store(COPY_ORIGIN_DDL);
-    sql.run('INSERT INTO _substrat_outbox (id) VALUES (?)', COPIED);
-    settleCopiedWork(sql, DEST, SOURCE, NOW);
+    const sql = loaded();
     markCopyOrigin(sql, NOW);
     expect(clearCopyMarker(sql)).toBe('cleared');
     expect(clearCopyMarker(sql)).toBe('absent');

@@ -8223,6 +8223,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
     let row: ProvisionScopeInput;
     let restore: (() => Promise<unknown>) | null;
+    /** #2009: the directory's classification of the row below, which every restore of it carries. */
+    const markCopyOfRow = () => {
+      const lineage = copyLineageOf({ kind: row.kind ?? '', forkedFrom: row.forkedFrom ?? null });
+      return lineage ? { markCopy: lineage } : {};
+    };
     if (source) {
       // A fresh fork. Export from where the prod data lives TODAY. The canonical
       // `admin.exportScope` first — it writes the K-24 audit entry (and the co-located
@@ -8253,14 +8258,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
       // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
       // pushes a fresh version per try) — #559 (2).
-      // #2009: a load classifies nothing by itself, so the preview says it is a copy, as every
-      // restore onto a non-primary scope does (`restoreCarryingSwitches`).
+      // #2009: a load classifies nothing by itself, so the restore carries the directory's
+      // classification of the row below, as every restore onto a non-primary scope does.
       restore = () =>
-        target.restoreScope(tenantId, previewId, tables, {
-          sourceScopeId: source.id,
-          exact: true,
-          markCopy: { kind: 'preview', forkedFrom: source.id },
-        });
+        target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true, ...markCopyOfRow() });
     } else {
       // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
       // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
@@ -8278,7 +8279,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         expiresAt: expiresAt ?? undefined,
       };
       // #2009: marked a copy on the directory's word, as the fork above.
-      restore = target ? () => target.restoreScope(tenantId, previewId, [], { markCopy: { kind: 'preview', forkedFrom: null } }) : null;
+      restore = target ? () => target.restoreScope(tenantId, previewId, [], markCopyOfRow()) : null;
     }
     try {
       // Inside the try: a host writes the directory row FIRST and then migrates, projects and

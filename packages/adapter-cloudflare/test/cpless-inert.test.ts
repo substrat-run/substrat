@@ -41,8 +41,8 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
   const act = async (s: ScopeId, host = hostFor()) => (await host.getScope(owner, t, s)).invoke('perm/authorized-emit', { permission: USE });
   /** The scope's copy-origin rows, as column → value. */
   const originOf = async (s: ScopeId) => {
-    const t = (await hostFor().exportScopeLocal(s)).find((d) => d.name === '_substrat_copy_origin');
-    return (t?.rows ?? []).map((r) => Object.fromEntries(t!.columns.map((c, i) => [c, (r as unknown[])[i]])));
+    const d = (await hostFor().exportScopeLocal(s)).find((x) => x.name === '_substrat_copy_origin');
+    return (d?.rows ?? []).map((r) => Object.fromEntries(d!.columns.map((c, i) => [c, (r as unknown[])[i]])));
   };
   const inertIn = async (s: ScopeId) =>
     (await hostFor().executorDeadLetters(t, s)).filter((d) => d.error === INERT_SCOPE_REASON).length;
@@ -59,7 +59,7 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
   });
 
   const PREVIEW = { kind: 'preview', forkedFrom: null };
-  const FORK = () => ({ kind: 'preview', forkedFrom: install });
+  const FORK = (from = install) => ({ kind: 'preview', forkedFrom: from });
   const INSTALL = { kind: 'scope', forkedFrom: null };
 
   it("a copy (a preview fork, restored from the install's export): held inert", async () => {
@@ -235,7 +235,7 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
       const dest = scopeId.parse(ulid());
       await hostFor().restoreScopeLocal(dest, await hostFor().exportScopeLocal(src.s), {
         sourceScopeId: src.s,
-        markCopy: { kind: 'preview', forkedFrom: src.s },
+        markCopy: FORK(src.s),
       });
       expect(await originOf(dest)).toEqual([expect.objectContaining({ events_through: src.id, is_copy: 1 })]);
       await act(dest);
@@ -249,7 +249,7 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
       const preview = scopeId.parse(ulid());
       await hostFor().restoreScopeLocal(preview, await hostFor().exportScopeLocal(src.s), {
         sourceScopeId: src.s,
-        markCopy: { kind: 'preview', forkedFrom: src.s },
+        markCopy: FORK(src.s),
       });
       const dest = scopeId.parse(ulid());
       await hostFor().restoreScopeLocal(dest, await hostFor().exportScopeLocal(preview), { sourceScopeId: preview });

@@ -4474,7 +4474,7 @@ export function defineScopeDO(
     clearCopyMark(
       /** The store the caller means (Codex #2008 r12–r13): the platform's reconcile of the store a
        *  carry landed names that carry's load stamp and the revision it read, so a store another
-       *  load has replaced since (a governed restore, whose copy marker is genuine) is refused,
+       *  load has replaced since (a governed restore, whose classification is its own) is refused,
        *  compared here, in the clear's own transaction. Absent for staff's correction. */
       expect?: LoadMarker,
     ): 'cleared' | 'absent' | 'changed' {
@@ -5057,9 +5057,8 @@ export function defineScopeDO(
         // every legacy row — a past run's id cannot be recovered afterwards, exactly
         // as the other #1525 columns above argued.
         'ALTER TABLE _substrat_schedule_state ADD COLUMN invocation_id TEXT',
-        // #2009: the copy classification, apart from the copied-events mark, on a scope DO
-        // whose origin row predates it. NULL is a legacy row, which meant both facts and still
-        // reads as a copy (`IS_COPY_SQL`), so no store changes behaviour by gaining the column.
+        // #2009: the copy classification on a scope DO built before it (NULL reads as a copy;
+        // see `COPY_ORIGIN_DDL`).
         'ALTER TABLE _substrat_copy_origin ADD COLUMN is_copy INTEGER',
       ]) {
         try {
