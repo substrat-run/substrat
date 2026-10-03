@@ -112,12 +112,18 @@ type RouteRule = { legacy501: boolean; lost: string };
 /** #1722's kept-copy and fenced-wipe verbs: a host without the method answers a 501. */
 const FENCED: RouteRule = { legacy501: true, lost: 'it may or may not have acted' };
 
-/** The SPA fallback's answer to a path the deployment does not know: an HTML document, served as one. */
-function isHtmlShell(res: Response, text: string): boolean {
-  return (
-    (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html') &&
-    /^\uFEFF?\s*(<!doctype\s+html|<html[\s>])/i.test(text)
-  );
+/**
+ * What a 200 whose body is not JSON says, when it is an HTML page (#2010, Codex #2014 r1). An old
+ * deployment's SPA fallback answers its own app's `index.html` for a path it does not route, and a
+ * proxy or error page in between answers HTML too. Nothing the platform controls marks the first
+ * (the page is the vertical's, served by the asset layer before any platform code runs, and the
+ * deployments in question predate any marker that could be added now), so the two cannot be told
+ * apart, and an HTML page is never read as "predates the route".
+ */
+function htmlNote(res: Response): string {
+  return (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html')
+    ? " (an HTML page: an old deployment's app shell cannot be told from an error page in between)"
+    : '';
 }
 
 /**
@@ -707,8 +713,9 @@ export class VerticalClient {
    * ONE shape is normalized to "redeploy the vertical", and only because it is the
    * deployment's own proof that it cannot have acted: a script built before the route
    * answers a **404** (the path does not exist — the route itself answers a module it holds
-   * nothing for with a 200 `held: false`, never a 404) or its **SPA shell** (the HTML document
-   * its fallback serves, `routeAnswer`). "Nothing was switched" is true of exactly those.
+   * nothing for with a 200 `held: false`, never a 404). "Nothing was switched" is true of exactly
+   * that. An HTML 200 is NOT that proof (`routeAnswer`): an old deployment's app shell cannot be
+   * told from an error page after a switch that moved.
    *
    * Everything else surfaces as the failure it is, and never claims that: a transport
    * failure (`reach` → 502 "unreachable"), a genuine 5xx from the far end, a 200 whose body
@@ -743,9 +750,9 @@ export class VerticalClient {
    * The read half of the schedule kill switch's status (#1674): every module the
    * deployment serving this scope holds or has held system authority for, and where each
    * stands. Mirrors `systemSwitch`'s seam and its skew rule exactly (`routeAnswer`): a 404
-   * or the SPA shell are the deployment's own proof it predates this read, and become a
-   * 501 that says so. A truncated or unreadable 200 (#2010) and a 200 of the wrong-shaped
-   * JSON are NOT that proof — they are a failed read, a 502, rather than a guess at
+   * is the deployment's own proof it predates this read, and becomes a 501 that says so. A
+   * truncated, unreadable or HTML 200 (#2010) and a 200 of the wrong-shaped JSON are NOT that
+   * proof — they are a failed read, a 502, rather than a guess at
    * "redeploy". The far end's own 501 (the route exists, the method doesn't) passes through
    * `refusal` verbatim, unchanged either way.
    */
@@ -772,10 +779,10 @@ export class VerticalClient {
   /**
    * The read half of the peer kill switch's status (#1706): every peer the deployment
    * serving this scope holds or has held grants for, and where each stands. Mirrors
-   * `peerSwitch`'s seam and `systemGrantsStatus`'s skew rule exactly — a 404 or the SPA
-   * shell are the deployment's own proof it predates this read and become a 501 that says
-   * to redeploy; a truncated, unreadable or wrong-shaped 200 is not that proof and surfaces
-   * as the 502 it is.
+   * `peerSwitch`'s seam and `systemGrantsStatus`'s skew rule exactly — a 404 is the
+   * deployment's own proof it predates this read and becomes a 501 that says to redeploy; a
+   * truncated, unreadable, HTML or wrong-shaped 200 is not that proof and surfaces as the 502
+   * it is.
    */
   async peerGrantsStatus(input: { scopeId: ScopeId }): Promise<PeerGrantsEntry[]> {
     const verb = 'peer-grants';
@@ -803,7 +810,7 @@ export class VerticalClient {
    * live there and nowhere the shared control plane can reach.
    *
    * The seam, the skew rule and the honesty rule are `systemSwitch`'s, for the same reasons:
-   * a **404** (no such route) or the **SPA shell** are the deployment's own proof that it
+   * a **404** (no such route) is the deployment's own proof that it
    * predates this route and therefore cannot have switched anything — the route itself
    * answers a peer the scope holds nothing for with a 200 `held: false`, never a 404.
    * Everything else, a truncated or unreadable 200 included (#2010), surfaces as the failure
@@ -841,7 +848,7 @@ export class VerticalClient {
    *
    * The skew rule is `routeAnswer`'s with `legacy501`: a deployment built before these
    * routes answers its `/internal/*` fallback — a JSON **501** on the auth-server — or a
-   * **404**, or the SPA shell. All three are the deployment's own proof it cannot have acted,
+   * **404**. Both are the deployment's own proof it cannot have acted,
    * and become a 501 that says to redeploy the auth server. The caller must never read that
    * as "the parent does not sign in here". A truncated or unreadable 200 (#2010) and a 200 of
    * the wrong shape are not that proof and surface as a 502: a mint or a retire may have run.
@@ -1021,9 +1028,9 @@ export class VerticalClient {
    *
    * `'unfenced'` is a deployment that cannot compare the stamp, and the only answer that lets
    * the caller fall back to an unconditional wipe: a 404 (built before the route), a 501 (a host
-   * without the method) or the HTML shell an SPA fallback serves (`routeAnswer`) are the
-   * deployment's own proof that it wiped nothing. Everything else, a truncated or malformed JSON
-   * answer included, surfaces as the failure it is: the wipe may or may not have run.
+   * without the method) are the deployment's own proof that it wiped nothing (`routeAnswer`).
+   * Everything else, a truncated or malformed JSON answer and any HTML page included, surfaces as
+   * the failure it is: the wipe may or may not have run.
    */
   async wipeCarriedCopy(input: {
     scopeId: ScopeId;
@@ -1169,13 +1176,13 @@ export class VerticalClient {
   }
 
   /**
-   * The ONE skew rule for a route a deployment may predate (#1722, #2010): `PREDATES` only for an
-   * answer the deployment actually gave that says it does not have the route — a 404, the HTML
-   * shell an SPA fallback serves for a path it does not know (`text/html`, a body that opens as an
-   * HTML document), and a 501 where `rule.legacy501` says the far end's own fallback answers one.
-   * Everything else is a failure, never `PREDATES`, because the request may have landed: a
-   * transport failure, a refusal, a body that fails to read, and a body that is not valid JSON (a
-   * truncated `{"held":` from a deployment that DID act). Those last two are a 502 that ends with
+   * The ONE skew rule for a route a deployment may predate (#1722, #2010): `PREDATES` only for a
+   * status that says the route is not there — a 404, and a 501 where `rule.legacy501` says the far
+   * end's own fallback answers one. No body is that proof. Everything else is a failure, never
+   * `PREDATES`, because the request may have landed: a transport failure, a refusal, a body that
+   * fails to read, and a body that is not valid JSON — a truncated `{"held":` from a deployment
+   * that DID act, or an HTML page (`htmlNote`), which an old deployment's app shell and an error
+   * page after a switch that moved both are. Those last ones are a 502 that ends with
    * `rule.lost`, the verb's own sentence for what a lost answer leaves unknown.
    */
   private async routeAnswer(verb: string, rule: RouteRule, request: () => Promise<Response>): Promise<unknown> {
@@ -1203,9 +1210,9 @@ export class VerticalClient {
   }
 
   /**
-   * A 200's body, read under #2010's rule: the JSON it carries, or `PREDATES` for the HTML shell
-   * an SPA fallback serves. A body that fails to read, or is neither, is a 502 that names
-   * `subject` and ends with `lost`, because the deployment that answered may have acted.
+   * A 200's body, read under #2010's rule: the JSON it carries. A body that fails to read, or is
+   * not JSON (an HTML page included, `htmlNote`), is a 502 that names `subject` and ends with
+   * `lost`, because the deployment that answered may have acted.
    */
   private async readAnswer(subject: string, res: Response, lost: string): Promise<unknown> {
     let text: string;
@@ -1220,8 +1227,7 @@ export class VerticalClient {
     try {
       return JSON.parse(text) as unknown;
     } catch {
-      if (isHtmlShell(res, text)) return PREDATES;
-      throw new ControlPlaneError(502, `vertical answered ${subject} with a body that is neither JSON nor its HTML shell — ${lost}`);
+      throw new ControlPlaneError(502, `vertical answered ${subject} with a body that is not JSON${htmlNote(res)} — ${lost}`);
     }
   }
 
@@ -1489,24 +1495,20 @@ export class VerticalClient {
   }
 
   /**
-   * A 200 that is the SPA shell (`isHtmlShell`) is a script that does not SERVE this route: an
-   * old worker build falls through to its SPA fallback and answers the app shell for any
-   * `/internal/*` path it predates. Surface that as the diagnosis instead of an unhandled
-   * SyntaxError → 500 (#389: a pre-#236 script has no `/internal/export`, so a carried rebind
-   * cannot dump it). Any other body that is not JSON, or that fails to read, is NOT that proof
-   * (#2010, `routeAnswer`'s rule): a truncated answer from a deployment that has the route may
-   * follow a write that ran, so it never says to redeploy.
+   * A 200 that is not JSON is a 502 that names the verb, instead of an unhandled SyntaxError →
+   * 500 (#389: a pre-#236 script has no `/internal/export`, and its SPA fallback answered the app
+   * shell). That shell cannot be told from an error page in between (`htmlNote`), and a truncated
+   * answer from a deployment that has the route may follow a write that ran (#2010), so the
+   * message says the call may or may not have acted, and names redeploying only as the remedy
+   * for the case it cannot prove.
    */
   private async parseInternal<T>(verb: string, path: string, res: Response): Promise<T> {
-    const answer = await this.readAnswer(`${verb} (${path})`, res, 'it may or may not have acted');
-    if (answer === PREDATES) {
-      throw new ControlPlaneError(
-        502,
-        `vertical answered ${verb} (${path}) with its HTML shell — its deployed script predates this ` +
-          `surface. Redeploy the vertical (or, for a rebind, use abandonData).`,
-      );
-    }
-    return answer as T;
+    return (await this.readAnswer(
+      `${verb} (${path})`,
+      res,
+      'it may or may not have acted. If this deployment answers its app for /internal/*, it predates ' +
+        'this surface: redeploy the vertical (or, for a rebind, use abandonData).',
+    )) as T;
   }
 
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
@@ -1545,8 +1547,8 @@ export class VerticalClient {
    *
    * The skew rule is `systemSwitch`'s, and here it is the whole point: an EMPTY batch is a
    * real answer (nothing new), so a deployment that cannot answer must never produce one. A
-   * 404 (the route does not exist) or the SPA shell of a script that predates the route
-   * (`routeAnswer`) is that deployment's own proof, and becomes a 501 saying to redeploy.
+   * 404 (the route does not exist) is that deployment's own proof (`routeAnswer`), and becomes a
+   * 501 saying to redeploy.
    * The far end's own 501 (the route exists, the host method does not) passes through
    * verbatim. A truncated or unreadable 200 (#2010) and a JSON 200 of the wrong shape are a
    * 502, never a guess.
@@ -1579,7 +1581,7 @@ export class VerticalClient {
    * The replay lever's far end (#1705 PR 3): move the watermark of the consumer scope this
    * deployment serves. The same skew rule, plus the write's one difference: a JSON 200 of the
    * wrong shape, or one truncated or unreadable (#2010), may follow a move that happened, so the
-   * 502 says to read the edge before pulling the lever again. A 404 or an SPA shell proves the route is absent, so nothing moved.
+   * 502 says to read the edge before pulling the lever again. A 404 proves the route is absent, so nothing moved.
    */
   async importCursorMove(input: { tenantId: TenantId; scopeId: ScopeId; at: ImportCursorMoveAt }): Promise<ImportCursorMoved> {
     return this.crossVerticalCall('import-cursor', '/internal/import-cursor', input.scopeId, importCursorMoved, input, {

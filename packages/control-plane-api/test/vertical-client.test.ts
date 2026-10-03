@@ -16,11 +16,18 @@ const s = scopeId.parse(ulid());
 
 /**
  * #2010: the answers a deployment that HAS a route can give and then lose part of — a 200
- * whose body is truncated JSON, or whose stream fails mid-read — beside the one answer that
- * proves it does not have the route: the HTML document its SPA fallback serves, as HTML.
+ * whose body is truncated JSON, or whose stream fails mid-read. And two HTML pages no client
+ * can tell apart (Codex #2014 r1): the app shell an old deployment's asset layer serves for a
+ * path it does not route, and an error page from something in between after a switch that
+ * moved. Neither proves the route is absent; only a status does.
  */
-const htmlShell = () =>
-  new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+const html = (body: string) => () =>
+  new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+const spaShell = html(
+  '<!doctype html><html lang="en"><head><meta charset="UTF-8" /><title>Desk</title>' +
+    '<script type="module" crossorigin src="/assets/index-Bx1.js"></script></head><body><div id="root"></div></body></html>',
+);
+const gatewayPage = html('<!doctype html><html><body>Gateway timeout after upstream response</body></html>');
 const truncated = (body: string) => () => new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
 const brokenStream = () =>
   new Response(new ReadableStream({ start: (c) => c.error(new Error('stream reset')) }), { status: 200 });
@@ -566,9 +573,9 @@ describe('VerticalClient — database size (#1524)', () => {
 
 /**
  * The plain `/internal/*` verbs (`postInternal` / `getInternal`) share the skew rule (#2010):
- * only the SPA shell says the deployment predates the surface. A truncated or unreadable 200
- * from one that has it may follow a write that ran — a rewind, a drain stamp — so it is a 502
- * that says it may or may not have acted, never "redeploy".
+ * a 200 that is not JSON may follow a write that ran — a rewind, a drain stamp — so it is a
+ * 502 that says it may or may not have acted. Redeploying is named only as the remedy for the
+ * case it cannot prove, and an HTML page says why it cannot (Codex #2014 r1).
  */
 describe('VerticalClient — a plain internal answer (#2010)', () => {
   const answering = (res: () => Response) =>
@@ -583,19 +590,22 @@ describe('VerticalClient — a plain internal answer (#2010)', () => {
     await expect(run(answering(() => Response.json(body)))).resolves.toEqual(name.startsWith('rewind') ? body : 8192);
   });
 
-  it.each(verbs)('%s: the SPA shell says the deployment predates the surface', async (_name, run) => {
-    const err = (await run(answering(htmlShell)).then(() => null, (e: unknown) => e)) as ControlPlaneError;
-    expect(err.status).toBe(502);
-    expect(err.message).toMatch(/with its HTML shell — its deployed script predates this surface\. Redeploy the vertical/);
+  it.each(verbs)('%s: an HTML page, the app shell or an error page alike, may or may not have acted', async (_name, run) => {
+    for (const res of [spaShell, gatewayPage]) {
+      const err = (await run(answering(res)).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+      expect(err.status).toBe(502);
+      expect(err.message).toMatch(/an HTML page: an old deployment's app shell cannot be told from an error page in between/);
+      expect(err.message).toMatch(/may or may not have acted\. If this deployment answers its app for \/internal\/\*, it predates/);
+    }
   });
 
-  it.each(verbs)('%s: a truncated or unreadable 200 may or may not have acted, never "redeploy"', async (_name, run) => {
+  it.each(verbs)('%s: a truncated or unreadable 200 may or may not have acted', async (_name, run) => {
     for (const res of [truncated('{"rewindingTo":'), brokenStream, () => new Response('<!doctype html>', { status: 200 })]) {
       const err = (await run(answering(res)).then(() => null, (e: unknown) => e)) as ControlPlaneError;
       expect(err).toBeInstanceOf(ControlPlaneError);
       expect(err.status).toBe(502);
-      expect(err.message).toMatch(/may or may not have acted$/);
-      expect(err.message).not.toMatch(/predates|Redeploy/);
+      expect(err.message).toMatch(/— it may or may not have acted\./);
+      expect(err.message).not.toMatch(/HTML page/);
     }
   });
 
@@ -607,8 +617,8 @@ describe('VerticalClient — a plain internal answer (#2010)', () => {
 
 /**
  * The schedule kill switch's hop (#1666). The caller is an operator pulling a kill
- * switch, so the shapes a deployment built BEFORE the far end existed answers — the
- * route's 404, the SPA shell its fallback serves — read as "redeploy, nothing switched",
+ * switch, so the one answer that proves a deployment was built BEFORE the far end existed —
+ * the route's 404 — reads as "redeploy, nothing switched",
  * never as a success nor as a bug in the request. Every other failure says the position is
  * unknown (#2010), and a refusal the far end means (the platform secret, 403) stays the
  * vertical's own answer.
@@ -636,7 +646,6 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
 
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
-    ['the SPA shell (200, an HTML document served as HTML)', htmlShell],
   ])('%s — the explicit legacy signal — is a 501 that says to redeploy', async (_name, res) => {
     const err = await answering(res).systemSwitch(input).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(ControlPlaneError);
@@ -651,6 +660,8 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
     ['truncated JSON', truncated('{"held":true,"changed":')],
     ['a body whose stream fails mid-read', brokenStream],
     ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ["the app shell an old deployment's asset layer serves", spaShell],
+    ['an HTML error page from something in between', gatewayPage],
     ['text/html that is not a document', () => new Response('oops', { status: 200, headers: { 'content-type': 'text/html' } })],
   ])('a 200 with %s leaves the position unknown — a 502 that says to confirm it first', async (_name, res) => {
     const err = (await answering(res).systemSwitch(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
@@ -664,6 +675,25 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
    * Everything else is a FAILURE, and never claims "Nothing was switched": the request may
    * have landed and moved the switch before the answer was lost.
    */
+  // Codex #2014 r1, reproduced through the real client: the far end MOVES the switch, and what
+  // comes back is an HTML error page from something in between. That must never read as the
+  // old deployment's app shell, "Nothing was switched", because the switch did move.
+  it('a switch that moved, answered by an HTML error page, is position-unknown — never "Nothing was switched"', async () => {
+    let position: 'on' | 'off' = 'on';
+    const client = new VerticalClient({
+      fetch: (async (_u: string, init?: RequestInit) => {
+        position = (JSON.parse(String(init?.body)) as { to: 'on' | 'off' }).to;
+        return gatewayPage();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const err = (await client.systemSwitch(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(position).toBe('off');
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/may or may not have moved\. Confirm its position/);
+    expect(err.message).not.toMatch(/Nothing was switched|redeploy/i);
+  });
+
   it('a transport failure surfaces as the 502 it is, never as "nothing was switched"', async () => {
     const client = new VerticalClient({
       fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
@@ -711,7 +741,7 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
 
 /**
  * #1722: the fenced wipe of a carried copy. Only the deployment's own proof that it cannot fence
- * (a 404, a 501, an SPA shell) becomes `'unfenced'`, the one answer that lets the caller wipe
+ * (a 404, a 501) becomes `'unfenced'`, the one answer that lets the caller wipe
  * unconditionally instead. A failure in transit may have wiped or not, so it surfaces as one.
  */
 describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
@@ -739,7 +769,6 @@ describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
     ['a host without the method (501)', () => Response.json({ error: 'redeploy it' }, { status: 501 })],
-    ['the HTML shell an SPA fallback serves', () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })],
   ])('%s is unfenced', async (_name, res) => {
     await expect(answering(res).wipeCarriedCopy(input)).resolves.toBe('unfenced');
   });
@@ -756,17 +785,20 @@ describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
     expect(err.message).toMatch(/reading the vertical's answer to wipe-carried failed.*stream reset.*may or may not have acted/);
   });
 
-  // Codex #2008 r2: only the shell an old deployment serves is skew. A truncated answer from a
-  // deployment that has the route may follow a wipe that committed, so it is a failure.
+  // Codex #2008 r2 and #2014 r1: only a status is skew. A truncated answer, or any HTML page —
+  // an old deployment's app shell cannot be told from an error page after a wipe that committed
+  // — may follow a wipe that ran, so it is a failure, never the unconditional fallback.
   it.each([
     ['truncated JSON', () => new Response('{"wiped":', { status: 200, headers: { 'content-type': 'application/json' } })],
-    ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ['a document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
     ['text/html that is not a document', () => new Response('oops', { status: 200, headers: { 'content-type': 'text/html' } })],
+    ["the app shell an old deployment's asset layer serves", spaShell],
+    ['an HTML error page from something in between', gatewayPage],
   ])('%s is a failure, never unfenced', async (_name, res) => {
     const err = (await answering(res).wipeCarriedCopy(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
     expect(err).toBeInstanceOf(ControlPlaneError);
     expect(err.status).toBe(502);
-    expect(err.message).toMatch(/neither JSON nor its HTML shell/);
+    expect(err.message).toMatch(/with a body that is not JSON.*— it may or may not have acted/);
   });
 
   it('a transport failure, a 5xx and a wrong shape are failures, never unfenced', async () => {
@@ -810,7 +842,6 @@ describe('VerticalClient.loadMarker (#1722)', () => {
   it.each([
     ['a 404', () => new Response('404 Not Found', { status: 404 })],
     ['a 501', () => Response.json({ error: 'redeploy it' }, { status: 501 })],
-    ['the HTML shell', () => new Response('<!DOCTYPE html>\n<html>', { status: 200, headers: { 'content-type': 'text/html' } })],
   ])('%s is unfenced', async (_n, res) => {
     await expect(client(res).loadMarker(s)).resolves.toBe('unfenced');
   });
@@ -823,6 +854,9 @@ describe('VerticalClient.loadMarker (#1722)', () => {
     expect((await failure(() => Response.json({ loadStamp: 7, revision: null })))?.status).toBe(502);
     // Codex #2008 r2: a truncated marker would otherwise drop the fence from the restore.
     expect((await failure(() => new Response('{"loadStamp":', { status: 200 })))?.status).toBe(502);
+    // Codex #2014 r1: an HTML page is not the deployment's proof it predates the route.
+    expect((await failure(spaShell))?.status).toBe(502);
+    expect((await failure(gatewayPage))?.status).toBe(502);
   });
 });
 
@@ -929,7 +963,6 @@ describe('VerticalClient.systemGrantsStatus (#1674)', () => {
 
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
-    ['the SPA shell (200, an HTML document served as HTML)', htmlShell],
   ])('%s — the explicit legacy signal — is a 501 that says to redeploy', async (_name, res) => {
     const err = await answering(res).systemGrantsStatus(input).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(ControlPlaneError);
@@ -941,6 +974,8 @@ describe('VerticalClient.systemGrantsStatus (#1674)', () => {
     ['truncated JSON', truncated('[{"moduleId":')],
     ['a body whose stream fails mid-read', brokenStream],
     ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ["the app shell an old deployment's asset layer serves", spaShell],
+    ['an HTML error page from something in between', gatewayPage],
   ])('a 200 with %s is a failed read (502), never "predates" (#2010)', async (_name, res) => {
     const err = (await answering(res).systemGrantsStatus(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
     expect(err).toBeInstanceOf(ControlPlaneError);
@@ -988,7 +1023,7 @@ describe('VerticalClient.systemGrantsStatus (#1674)', () => {
 /**
  * The preview-client hops (#1704) — check, mint and retire at a team auth-server. The skew rule
  * is `systemSwitch`'s plus the auth-server's own fallback: its `/internal/*` catch-all answers a
- * JSON 501, so a 501 is "predates" here too, alongside a 404 and an SPA shell. Whatever the
+ * JSON 501, so a 501 is "predates" here too, alongside a 404. Whatever the
  * cause, "predates" must never be mistaken for "the parent does not sign in here" — the caller
  * turns it into "redeploy", not into "external".
  */
@@ -1037,7 +1072,6 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
   it.each([
     ['the auth-server’s own /internal/* fallback (501)', () => Response.json({ error: 'auth-server does not implement POST /internal/preview-client' }, { status: 501 })],
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
-    ['the SPA shell (200, an HTML document served as HTML)', htmlShell],
   ])('%s is a 501 that says to redeploy the auth server — for every verb', async (_name, res) => {
     for (const [, run] of verbs) {
       const err = await run(answering(res)).then(() => null, (e: unknown) => e);
@@ -1053,6 +1087,8 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
     ['truncated JSON', truncated('{"clientId":"c1","clientSecret":')],
     ['a body whose stream fails mid-read', brokenStream],
     ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ["the app shell an old deployment's asset layer serves", spaShell],
+    ['an HTML error page from something in between', gatewayPage],
   ])('a 200 with %s is a 502 that may or may not have acted — for every verb', async (_name, res) => {
     for (const [, run] of verbs) {
       const err = (await run(answering(res)).then(() => null, (e: unknown) => e)) as ControlPlaneError;
@@ -1129,7 +1165,6 @@ describe('VerticalClient.peerSwitch (#1706)', () => {
 
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
-    ['the SPA shell (200, an HTML document served as HTML)', htmlShell],
   ])('%s — the explicit legacy signal — is a 501 that says to redeploy', async (_name, res) => {
     const err = await answering(res)
       .peerSwitch(input)
@@ -1148,6 +1183,8 @@ describe('VerticalClient.peerSwitch (#1706)', () => {
     ['truncated JSON', truncated('{"held":true,"changed":')],
     ['a body whose stream fails mid-read', brokenStream],
     ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ["the app shell an old deployment's asset layer serves", spaShell],
+    ['an HTML error page from something in between', gatewayPage],
   ])('a 200 with %s leaves the position unknown — a 502 that says to confirm it first (#2010)', async (_name, res) => {
     const err = (await answering(res).peerSwitch(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
     expect(err).toBeInstanceOf(ControlPlaneError);
@@ -1238,7 +1275,6 @@ describe('VerticalClient.peerGrantsStatus (#1706)', () => {
 
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
-    ['the SPA shell (200, an HTML document served as HTML)', htmlShell],
   ])('%s is a 501 that says to redeploy, never an empty list', async (_name, res) => {
     const err = await answering(res)
       .peerGrantsStatus({ scopeId: s })
@@ -1254,6 +1290,8 @@ describe('VerticalClient.peerGrantsStatus (#1706)', () => {
     ['truncated JSON', truncated('[{"vertical":')],
     ['a body whose stream fails mid-read', brokenStream],
     ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ["the app shell an old deployment's asset layer serves", spaShell],
+    ['an HTML error page from something in between', gatewayPage],
   ])('a 200 with %s is a failed read (502), never "predates" (#2010)', async (_name, res) => {
     const err = (await answering(res).peerGrantsStatus({ scopeId: s }).then(() => null, (e: unknown) => e)) as ControlPlaneError;
     expect(err).toBeInstanceOf(ControlPlaneError);

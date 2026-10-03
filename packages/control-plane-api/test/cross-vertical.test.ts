@@ -71,8 +71,6 @@ describe('VerticalClient — the cross-vertical verbs (#1705 PR 2)', () => {
   describe.each(Object.entries(verbs))('%s', (_name, call) => {
     it.each([
       ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
-      ['the SPA shell (200, an HTML document served as HTML)', () =>
-        new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })],
     ])('%s is a 501 that says to redeploy — never an empty answer', async (_why, res) => {
       const err = await failure(call(answering(res)));
       expect(err).toBeInstanceOf(ControlPlaneError);
@@ -103,6 +101,9 @@ describe('VerticalClient — the cross-vertical verbs (#1705 PR 2)', () => {
       ['a body whose stream fails mid-read', () =>
         new Response(new ReadableStream({ start: (c) => c.error(new Error('stream reset')) }), { status: 200 })],
       ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+      // Codex #2014 r1: an old deployment's app shell and an error page in between look alike.
+      ['an HTML page served as HTML', () =>
+        new Response('<!doctype html><html><body>Gateway timeout</body></html>', { status: 200, headers: { 'content-type': 'text/html' } })],
     ])('a 200 with %s is a 502 that may or may not have acted, never "predates"', async (_why, res) => {
       const err = await failure(call(answering(res)));
       expect(err).toBeInstanceOf(ControlPlaneError);
@@ -158,8 +159,6 @@ describe('VerticalClient.importCursorMove (#1705 PR 3)', () => {
 
   it.each([
     ['a 404', () => new Response('404 Not Found', { status: 404 })],
-    ['the SPA shell', () =>
-      new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html' } })],
   ])('%s is a 501: nothing moved', async (_why, res) => {
     const err = await failure(move(answering(res)));
     expect(err!.status).toBe(501);
@@ -171,6 +170,8 @@ describe('VerticalClient.importCursorMove (#1705 PR 3)', () => {
     ['a body whose stream fails mid-read', () =>
       new Response(new ReadableStream({ start: (c) => c.error(new Error('stream reset')) }), { status: 200 })],
     ['a 200 JSON of the wrong shape', () => new Response(JSON.stringify({ ok: true }))],
+    ['an HTML page served as HTML', () =>
+      new Response('<!doctype html><html><body>Gateway timeout</body></html>', { status: 200, headers: { 'content-type': 'text/html' } })],
   ])('%s is a 502 that says to read the edge before retrying', async (_why, res) => {
     const err = await failure(move(answering(res)));
     expect(err!.status).toBe(502);
