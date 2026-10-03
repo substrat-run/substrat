@@ -99,6 +99,57 @@ export function manifestProblems(manifest, members) {
 }
 
 /**
+ * The runtime dependencies of a served manifest that name a PUBLIC workspace member and
+ * that `resolves(name, range)` cannot satisfy. The registry is asked again until `deadline`
+ * (ms since epoch), so the lag right after a release publishes a dependency is not red, and
+ * a dependency that never ships is. Inside the window each miss is passed to `warn`; what
+ * is still missing after it is returned, and the caller refuses it. `sleep` and `now` are
+ * injectable for the test.
+ */
+export async function unresolvedEdges(
+  manifest,
+  members,
+  resolves,
+  { deadline, interval = 20_000, sleep, now = Date.now, warn = () => {} } = {},
+) {
+  let pending = runtimeEdges(manifest).filter(({ name }) => members.has(name) && !members.get(name).private);
+  for (;;) {
+    const results = await Promise.all(pending.map((e) => resolves(e.name, e.range)));
+    pending = pending.filter((_, i) => !results[i]);
+    if (!pending.length || now() + interval > deadline) return pending;
+    for (const e of pending) warn(`${manifest.name}@${manifest.version} requires ${e.name}@${e.range}, not on npm yet — asking again`);
+    await sleep(interval);
+  }
+}
+
+/**
+ * Whether npm can satisfy `name@range`, from npm's own answer to `npm view` (`stdout` and
+ * `stderr` of the run): a version printed is yes; E404 (no such package) and ETARGET (no
+ * version in range) are no. EUNSUPPORTEDPROTOCOL is a yes too: npm found the version and
+ * then choked on ITS manifest — the defect `manifestProblems` reports against that package.
+ * Anything else is a question npm did not answer, and is thrown rather than guessed.
+ */
+export function npmViewAnswer({ ok, stdout = '', stderr = '' }) {
+  if (ok) return stdout.trim() !== '';
+  if (/\bEUNSUPPORTEDPROTOCOL\b/.test(stderr)) return true;
+  if (/\b(E404|ETARGET)\b/.test(`${stdout}${stderr}`)) return false;
+  return undefined;
+}
+
+/** Whether npm can satisfy `name@range` — asked of npm itself, the resolver a consumer runs. */
+async function npmResolves(name, range) {
+  let result;
+  try {
+    result = { ok: true, ...(await run('npm', ['view', `${name}@${range}`, 'version', '--json'])) };
+  } catch (err) {
+    result = { ok: false, stdout: err.stdout, stderr: err.stderr };
+  }
+  const answer = npmViewAnswer(result);
+  if (answer === undefined) throw new Error(`npm view ${name}@${range} gave no answer:\n${result.stderr}`);
+  return answer;
+}
+
+/**
  * A public package that does not declare the publish guard as `prepublishOnly` can be
  * published with `npm publish`, which ships the unrewritten manifest (tools/publish-guard.mjs).
  */
@@ -170,6 +221,8 @@ async function main() {
 
   if (registryMode) {
     const registry = (process.env.npm_config_registry ?? 'https://registry.npmjs.org').replace(/\/$/, '');
+    const deadline = Date.now() + 3 * 60_000;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await pool(published, 8, async ([name, { version }]) => {
       const manifest = await registryManifest(name, version, registry);
       if (!manifest) {
@@ -177,6 +230,17 @@ async function main() {
         return;
       }
       problems.push(...manifestProblems(manifest, members));
+      // A public member it requires must be installable too — published, at a version the
+      // range admits. Asked again for a bounded window, the same three minutes
+      // scaffold-check waits for a publish, then refused.
+      const missing = await unresolvedEdges(manifest, members, npmResolves, {
+        deadline,
+        sleep,
+        warn: (w) => console.log(`warning: ${w}`),
+      });
+      for (const edge of missing) {
+        problems.push(`${name}@${version}: ${edge.field}['${edge.dep}'] requires ${edge.name}@${edge.range}, which npm has no version of`);
+      }
       // Every version release.yml      if (!manifest.dist?.attestations) notes.push(`${name}@${version} has no provenance attestation — published outside release.yml`);
     });
   } else {

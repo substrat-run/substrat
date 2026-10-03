@@ -15,8 +15,10 @@ import {
   guardProblem,
   installTarget,
   manifestProblems,
+  npmViewAnswer,
   packedManifest,
   pnpmMembers,
+  unresolvedEdges,
 } from './publish-manifests.mjs';
 import { PUBLISH_GUARD, publisherProblem } from './publish-guard.mjs';
 
@@ -165,3 +167,71 @@ test('refuses an alias to a private member in every runtime field; allows one to
   assert.deepEqual(manifestProblems(pkg({ devDependencies: { kit: 'npm:@substrat-run/engine-test-kit@0.1.0' } }), members), []);
 });
 
+test("npm view's answers: a version is yes, E404 and ETARGET are no, a broken manifest is a found version, anything else is no answer", () => {
+  assert.equal(npmViewAnswer({ ok: true, stdout: '"0.135.0"\n' }), true);
+  assert.equal(npmViewAnswer({ ok: true, stdout: '' }), false);
+  assert.equal(npmViewAnswer({ ok: false, stderr: 'npm error code E404\nnpm error 404 Not Found' }), false);
+  assert.equal(npmViewAnswer({ ok: false, stdout: '{"error":{"code":"ETARGET"}}' }), false);
+  assert.equal(npmViewAnswer({ ok: false, stderr: 'npm error code EUNSUPPORTEDPROTOCOL' }), true);
+  assert.equal(npmViewAnswer({ ok: false, stderr: 'npm error code ECONNRESET' }), undefined);
+});
+
+/** A clock that only moves when the code under test sleeps. */
+function fakeTime() {
+  let t = 0;
+  return { now: () => t, sleep: async (ms) => void (t += ms) };
+}
+
+const dependent = pkg({
+  dependencies: {
+    '@substrat-run/contracts': '^0.135.0',
+    c2: 'npm:@substrat-run/contracts@^0.136.0',
+    '@substrat-run/engine-test-kit': '^0.1.0',
+    zod: '^3.25.0',
+  },
+});
+
+test('registry: a required public member that resolves is fine, and only public members are asked', async () => {
+  const asked = [];
+  const missing = await unresolvedEdges(dependent, members, async (name, range) => (asked.push(`${name}@${range}`), true), {
+    deadline: 60_000,
+    ...fakeTime(),
+  });
+  assert.deepEqual(missing, []);
+  // The alias is asked by its TARGET; the private member and the registry package are not asked.
+  assert.deepEqual(asked.sort(), ['@substrat-run/contracts@^0.135.0', '@substrat-run/contracts@^0.136.0']);
+});
+
+test('registry: inside the window a missing member is a warning, and resolving later clears it', async () => {
+  const time = fakeTime();
+  const warnings = [];
+  let calls = 0;
+  const missing = await unresolvedEdges(dependent, members, async () => ++calls > 2, {
+    deadline: 180_000,
+    interval: 20_000,
+    warn: (w) => warnings.push(w),
+    ...time,
+  });
+  assert.deepEqual(missing, []);
+  assert.deepEqual(warnings, [
+    '@substrat-run/x@1.0.0 requires @substrat-run/contracts@^0.135.0, not on npm yet — asking again',
+    '@substrat-run/x@1.0.0 requires @substrat-run/contracts@^0.136.0, not on npm yet — asking again',
+  ]);
+});
+
+test('registry: after the window a member that never resolved is returned, for the caller to refuse', async () => {
+  const time = fakeTime();
+  const warnings = [];
+  const missing = await unresolvedEdges(dependent, members, async (_, range) => range !== '^0.136.0', {
+    deadline: 180_000,
+    interval: 20_000,
+    warn: (w) => warnings.push(w),
+    ...time,
+  });
+  assert.deepEqual(missing, [
+    { field: 'dependencies', dep: 'c2', name: '@substrat-run/contracts', range: '^0.136.0' },
+  ]);
+  // It waited out the window — bounded, not forever and not zero.
+  assert.equal(time.now(), 180_000);
+  assert.equal(warnings.length, 9);
+});
