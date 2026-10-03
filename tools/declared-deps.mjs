@@ -317,14 +317,18 @@ export function licenseProblems(rootPj, rootKey, read) {
 /**
  * What a permissive-only package SHIPS must import only what it ships with (#971). The
  * declared-imports check above accepts a `devDependency`, which is right for a test or a
- * tool and wrong for `src/`: the compiled JS (and the emitted `.d.ts`) reaches the importing
- * package at run time, where a dependency declared only for development is not installed.
- * It is also how the licence closure would be sidestepped — the closure walks the runtime
- * dependencies, so an AGPL package declared as a devDependency and imported from `src/` would
- * pass both checks and still be loaded by the published CLI.
+ * tool and wrong for what is published: the emitted JS (and the emitted `.d.ts`) reaches the
+ * importing package at run time, where a dependency declared only for development is not
+ * installed. It is also how the licence closure would be sidestepped — the closure walks the
+ * runtime dependencies, so an AGPL package declared as a devDependency and imported by shipped
+ * code would pass both checks and still be loaded by the published CLI.
  *
- * `files` maps a path relative to the package to its text; only `src/` and the emitted
- * `dist/` types are judged, so a test file's import of a dev-only dependency stays legal.
+ * The SHIPPED OUTPUT is the authority: every import in `dist/**\/*.js` and `dist/**\/*.d.ts`,
+ * value or type, because that is what a consumer receives — including what a source-excluded
+ * generated file emits. `src/` is judged too, but only for imports that survive compilation:
+ * `import type` / `export type` are erased and never reach the package, so a type-only import of
+ * a dev-only package is not a finding (and one that leaks into a `.d.ts` is caught there).
+ * `files` maps a path relative to the package to its text; a test or tool file is not judged.
  */
 export function shippedImportProblems(pj, files) {
   const shipped = new Set([
@@ -336,8 +340,10 @@ export function shippedImportProblems(pj, files) {
   const devOnly = new Set(Object.keys(pj.devDependencies ?? {}).filter((n) => !shipped.has(n)));
   const out = [];
   for (const [where, text] of Object.entries(files)) {
-    if (!/^(?:src|dist)[/\\]/.test(where)) continue;
-    for (const spec of specifiersIn(text)) {
+    const inDist = /^dist[/\\].*\.(?:js|mjs|cjs|d\.ts|d\.mts|d\.cts)$/.test(where);
+    const inSrc = /^src[/\\]/.test(where);
+    if (!inDist && !inSrc) continue;
+    for (const spec of specifiersIn(inSrc ? withoutTypeOnlyImports(text) : text)) {
       if (devOnly.has(spec)) {
         out.push(
           `${pj.name} ships an import of '${spec}' in ${where}, but declares it only as a devDependency — ` +
@@ -347,6 +353,29 @@ export function shippedImportProblems(pj, files) {
     }
   }
   return out;
+}
+
+/** Source with its `import type … from` / `export type … from` statements removed: they are erased. */
+function withoutTypeOnlyImports(text) {
+  return text.replace(/(^|[\n;])\s*(?:import|export)\s+type\b[^;]*?\bfrom\s*['"][^'"]+['"]/g, '$1');
+}
+
+/**
+ * The files of a package that determine what it ships: its non-generated sources and the
+ * emitted JS and type declarations, keyed by path relative to the package. A generated source
+ * is left out here because its output is read in `dist/` instead.
+ */
+export function shippedFilesOf(dir) {
+  const files = {};
+  for (const f of walk(join(dir, 'src'))) {
+    if (/\.(ts|tsx|mts)$/.test(f) && !f.endsWith('.d.ts') && !f.includes('.generated.')) {
+      files[relative(dir, f)] = readFileSync(f, 'utf8');
+    }
+  }
+  for (const f of walk(join(dir, 'dist'))) {
+    if (/\.(?:js|mjs|cjs|d\.ts|d\.mts|d\.cts)$/.test(f)) files[relative(dir, f)] = readFileSync(f, 'utf8');
+  }
+  return files;
 }
 
 /** The real resolver: workspace members by name, everything else up the `node_modules` chain. */
@@ -448,14 +477,11 @@ function main() {
     }
     const own = licenseProblem(member.pj.license, member.pj.licenses);
     if (own) problems.push(`${name} ${own}`);
-    const shipped = {};
-    for (const sub of ['src', 'dist']) {
-      for (const f of walk(join(member.key, sub))) {
-        const isSource = /\.(ts|tsx|mts)$/.test(f) && !f.endsWith('.d.ts') && !f.includes('.generated.');
-        if ((sub === 'src' && isSource) || (sub === 'dist' && f.endsWith('.d.ts'))) {
-          shipped[relative(member.key, f)] = readFileSync(f, 'utf8');
-        }
-      }
+    const shipped = shippedFilesOf(member.key);
+    // The shipped output is what is judged; with no build there is nothing to read, and a check
+    // that passed on an empty directory would pass for the wrong reason.
+    if (!Object.keys(shipped).some((f) => f.startsWith('dist/'))) {
+      problems.push(`${name}: no emitted dist/ to judge — run \`pnpm -r build\` first`);
     }
     problems.push(...shippedImportProblems(member.pj, shipped));
     for (const p of licenseProblems(member.pj, member.key, read)) problems.push(`licence closure: ${p}`);

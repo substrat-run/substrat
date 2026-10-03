@@ -15,6 +15,7 @@ import {
   licenseProblem,
   licenseProblems,
   realResolver,
+  shippedFilesOf,
   shippedImportProblems,
   spdxPermissive,
   workspaceMembers,
@@ -371,6 +372,47 @@ test('shipped source may import only what it ships with: a src import of a dev-o
   );
 });
 
+test('the shipped OUTPUT is the authority: dist JS and .d.ts are judged, and an erased `import type` in src is not a finding', () => {
+  const pj = { ...CLI, dependencies: { esbuild: '1' }, devDependencies: { vitest: '1', '@babel/types': '1' } };
+  const refused = (spec, where) =>
+    `@substrat-run/cli ships an import of '${spec}' in ${where}, but declares it only as a devDependency — the published package reaches it at run time, where it is not installed`;
+  // A source-excluded generated file emits a dist JS that imports a dev-only package: only dist shows it.
+  for (const [where, text] of [
+    ['dist/gen.js', "import { it } from 'vitest';\nexport { it };"],
+    ['dist/gen.mjs', "export * from 'vitest';"],
+    ['dist/cjs.cjs', "const v = require('vitest');"],
+    ['dist/lazy.js', "export const load = () => import('vitest');"],
+    ['dist/types.d.ts', "export declare const x: import('vitest').T;"],
+  ]) {
+    assert.deepEqual(shippedImportProblems(pj, { [where]: text }), [refused('vitest', where)], where);
+  }
+  // Erased: type-only statements in src (single- and multi-line) reach neither the JS nor the package…
+  assert.deepEqual(
+    shippedImportProblems(pj, {
+      'src/a.ts': [
+        "import type { T } from 'vitest';",
+        'import type {',
+        '  A,',
+        "  B,",
+        "} from '@babel/types';",
+        "export type { T } from 'vitest';",
+        "import { build } from 'esbuild';",
+      ].join('\n'),
+    }),
+    [],
+  );
+  // …but a value import, and an inline `type` specifier (which can survive as a side-effect import), are findings.
+  assert.deepEqual(shippedImportProblems(pj, { 'src/a.ts': "import { it } from 'vitest';" }), [refused('vitest', 'src/a.ts')]);
+  assert.deepEqual(shippedImportProblems(pj, { 'src/a.ts': "import { type T } from 'vitest';" }), [refused('vitest', 'src/a.ts')]);
+  // A type that LEAKS into the emitted declarations is caught there, which is what a consumer sees.
+  assert.deepEqual(
+    shippedImportProblems(pj, { 'src/a.ts': "import type { T } from 'vitest';", 'dist/a.d.ts': "import type { T } from 'vitest';" }),
+    [refused('vitest', 'dist/a.d.ts')],
+  );
+  // Neither dist twin: an import of a shipped dependency, and files outside src/ and dist/.
+  assert.deepEqual(shippedImportProblems(pj, { 'dist/ok.js': "import 'esbuild';", 'tools/x.mjs': "import 'vitest';" }), []);
+});
+
 test('the guarded packages exist, are themselves permissive, and the repo as it stands holds the rule', () => {
   const root = new URL('..', import.meta.url).pathname;
   const cwd = process.cwd();
@@ -383,6 +425,12 @@ test('the guarded packages exist, are themselves permissive, and the repo as it 
       assert.ok(member, `${name} is a workspace member`);
       assert.equal(licenseProblem(member.pj.license), null, name);
       assert.deepEqual(licenseProblems(member.pj, member.key, realResolver(workspace)), [], name);
+      // The scan reads the emitted JS and types, not only the sources (the positive twin: it sees them).
+      const shipped = Object.keys(shippedFilesOf(member.key));
+      assert.ok(shipped.some((f) => /^dist\/.*\.js$/.test(f)), `${name}: dist JS is scanned`);
+      assert.ok(shipped.some((f) => /^dist\/.*\.d\.ts$/.test(f)), `${name}: dist types are scanned`);
+      assert.ok(shipped.some((f) => f.startsWith('src/')), `${name}: src is scanned`);
+      assert.deepEqual(shippedImportProblems(member.pj, shippedFilesOf(member.key)), [], name);
     }
     // The positive twin on the real tree: the resolver does see the AGPL server's closure.
     const api = workspace.get('@substrat-run/control-plane-api');
