@@ -2959,7 +2959,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * 1. The bind is compare-and-set on the binding the caller read, which is the version the carry
    *    exported from. Two pushes that both read v1 cannot both bind: the second is refused (412)
    *    and never routes the preview to what it carried, which may be an export of a copy the
-   *    first one had already wiped. On a refusal, the copy this carry restored is wiped, unless
+   *    first one had already wiped. On any failed bind, the copy this carry restored is wiped, unless
    *    the scope now routes to that same script: a CI retry of the same version restores into
    *    the winner's live store, and wiping it there would lose everything.
    * 2. The pin is cleared (`clearServingRef`) only after the bind lands, so a failure in between
@@ -2985,29 +2985,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         })
         .catch(relayHostRefusal);
     } catch (e) {
-      if (carried) await dropRefusedCopy(c, scope, versionId, carried);
+      if (carried) await dropUnboundCopy(c, scope, versionId, carried);
       throw e;
     }
     if (opts.clearServingRef && scope.servingRef) {
       await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null).catch(relayHostRefusal);
     }
-    await c.var.admin.reassertSystemSwitches(
-      actor,
-      { tenantId: scope.tenantId, scopeId: scope.id },
-      { appliedInUnit: carried?.switchedOff },
-    );
-    if (carried) await settleCarriedSource(c, scope, versionId, carried);
+    try {
+      await c.var.admin.reassertSystemSwitches(
+        actor,
+        { tenantId: scope.tenantId, scopeId: scope.id },
+        { appliedInUnit: carried?.switchedOff },
+      );
+    } finally {
+      // Even when the re-assert fails: the route has moved, and a retry finds the same script
+      // on both ends, carries nothing, and so would never come back for this copy.
+      if (carried) await settleCarriedSource(c, scope, versionId, carried);
+    }
   };
 
-  /** A refused bind's restored copy, wiped unless the scope routes to that script now. Best effort. */
-  const dropRefusedCopy = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
+  /**
+   * The copy a carry restored for a bind that did not land, wiped unless the scope routes to
+   * that script now. Best effort: it never throws, and a failure is recorded.
+   */
+  const dropUnboundCopy = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
     try {
       const now = await c.var.admin.getScopeRecord(c.get('actor'), scope.tenantId, scope.id);
       const route = now ? await routeOf(c, now) : null;
       if (route === carried.to) return;
       await wipeCarriedCopy(c.get('actor'), carried.dest, scope, carried.restoredStamp, route ?? carried.from);
     } catch (e) {
-      recordCarryCleanup(c, scope, versionId, 'refused-copy', e);
+      recordCarryCleanup(c, scope, versionId, 'unbound-copy', e);
     }
   };
 
@@ -4999,10 +5007,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         await carry();
         if (migrationCrossing) {
-          // Asked again after the carry: a promote landing since the first question would
-          // otherwise leave an archive behind for a bind the host then refuses.
-          await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
-          await orchestratedSnapshot(c, tenantId, scope, {});
+          try {
+            // Asked again after the carry: a promote landing since the first question would
+            // otherwise leave an archive behind for a bind the host then refuses.
+            await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
+            await orchestratedSnapshot(c, tenantId, scope, {});
+          } catch (e) {
+            // #1722: no bind follows, so the copy the carry restored is reached by nothing.
+            if (carried) await dropUnboundCopy(c, scope, versionId, carried);
+            throw e;
+          }
         }
         await bind({ acknowledge });
       } else {

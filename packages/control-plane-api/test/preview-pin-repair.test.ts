@@ -368,6 +368,22 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     expect(storeOf(SERVING).get(stuck.scopeId)?.[0]?.name).toBe('_substrat_meta');
   });
 
+  it('a re-assert that fails after the route moved still wipes the copy left behind (#1722)', async () => {
+    const moved = await legacyPreview('legacy-reassert', v1, 'reassert-row');
+    const reassert = vi.spyOn(host.admin, 'reassertSystemSwitches').mockRejectedValueOnce(new Error('re-assert unavailable'));
+    try {
+      const out = await pass();
+      expect(out.failed).toMatchObject([{ scopeId: moved.scopeId, status: 500 }]);
+    } finally {
+      reassert.mockRestore();
+    }
+    // The bind and the pin clear landed, so no later pass visits this preview again: the copy on
+    // the serving script had to go now, or it never would.
+    expect((await recordOf(moved.scopeId)).servingRef ?? null).toBeNull();
+    expect(rowsOf(refOf.get(v1)!, moved.scopeId)).toEqual([['reassert-row']]);
+    expect(storeOf(SERVING).get(moved.scopeId)?.[0]?.name).toBe('_substrat_meta');
+  });
+
   it('skips a preview whose bound version has no script of its own, and keeps its pin', async () => {
     const orphan = await legacyPreview('legacy-orphan', v1, 'orphan-row');
     // Bound to a version with nowhere to receive the data: clearing the pin would strand it.

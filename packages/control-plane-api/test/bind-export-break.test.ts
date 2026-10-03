@@ -374,7 +374,10 @@ describe('the bind gate route (#1756)', () => {
     } finally {
       impact.mockRestore();
     }
-    expect(calls).toEqual([`export ${refOf.get(v1)}`, `restore ${refOf.get(crossing)}`]);
+    // #1722: the copy the carry restored is wiped, since no bind will route to it.
+    expect(calls).toEqual([`export ${refOf.get(v1)}`, `restore ${refOf.get(crossing)}`, `restore ${refOf.get(crossing)}`]);
+    expect(storeOf(refOf.get(crossing)!).get(s)?.[0]?.name).toBe('_substrat_meta');
+    expect(storeOf(refOf.get(v1)!).get(s)?.[0]?.rows).toEqual([['snap-row']]);
     expect(await scopesNow()).toBe(before);
     expect((await host.admin.getScopeRecord(staff, t, s))?.verticalVersionId).toBe(v1);
 
