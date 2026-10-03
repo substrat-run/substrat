@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import npa from 'npm-package-arg';
 import {
   DEP_FIELDS,
   RUNTIME_FIELDS,
@@ -332,4 +333,13 @@ test('registry: a served version without provenance is a note; one with it is no
     '@substrat-run/control-plane-client@0.1.0 has no provenance attestation — published outside release.yml',
   );
   assert.equal(provenanceNote(pkg({ dist: { attestations: { provenance: {} } } })), null);
+});
+
+test("npm-package-arg itself refuses an alias to a non-registry spec — the guarantee isRegistrySpec's alias branch backs up", () => {
+  // `isRegistrySpec` also checks an alias's subSpec type, but through this npa that branch
+  // is unreachable: npa throws first. Pinned here so an npa upgrade that stops throwing is
+  // a red test, not a silent move of the whole guarantee onto the backup branch.
+  for (const spec of ['npm:is-number@foo.tgz', 'npm:is-number@github:a/b', 'npm:is-number@https://e.test/x.tgz', 'npm:is-number@./x']) {
+    assert.throws(() => npa.resolve('dep', spec), /aliases only work for registry deps/, spec);
+  }
 });
