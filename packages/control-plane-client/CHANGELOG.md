@@ -1,5 +1,15 @@
 # @substrat-run/control-plane-client
 
+## 0.1.1
+
+### Patch Changes
+
+- 33b2d44: A refused connect's `ControlPlaneError` now carries the provider `probe` its body named (#605), read off the same parse as the sentence. The field was declared and documented but never filled, so every caller had to re-read the body for it.
+- Updated dependencies [4964eb8]
+- Updated dependencies [3ed9e9d]
+- Updated dependencies [7418e7e]
+  - @substrat-run/contracts@0.136.0
+
 ## 0.1.0
 
 ### Minor Changes

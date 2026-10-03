@@ -1,5 +1,45 @@
 # @substrat-run/control-plane
 
+## 0.14.0
+
+### Minor Changes
+
+- 7418e7e: Previews and forks are inert: a scope that is not primary causes no outbound effects (#2005).
+
+  A fork, a snapshot and a preview of either kind still run their code and commit their writes, but nothing they ask for leaves them. One predicate decides it, `isPrimaryScope`, and every outbound door applies it:
+
+  - The platform-intent drain settles a non-primary scope's own intents `failed`, attributed to the platform, with the new `INERT_SCOPE_REASON`, and runs no handler. The settle lands no ops-failure row. `model-usage` and `sweep-runs` still land, because they record something that already happened. `drainScopePlatformRequests` now takes a `PlatformDrainContext`, which requires the scope's `kind` and `forkedFrom`, and decides from them.
+  - Executor and connector dispatch, on both adapters (the emitting call's tail and `drainDue`), journals a non-primary scope's deliveries terminal with the same reason and never runs the handler. `ExecutorDrainReport` gains an optional `inert` count. A CP-less hosted vertical, which has no directory, reads the scope's own copy-origin row instead. Every copy now holds that row, an empty copy included. Every carry onto a non-primary scope marks it (`restoreScope`'s `markCopy`). The new staff route `POST /scopes/mark-copies` (`pnpm scopes:mark-copies`; paged, resumable, dry run, admin-logged as `markScopeCopy`) marks copies made before the row existed, suspended and archived ones included, through the vertical's new `/internal/mark-copy`. Reactivating a copy marks it first. Each marker request carries the directory's classification (`scopeLineage`), and the vertical refuses to mark a primary. `POST /tenants/:t/scopes/:s/clear-copy-mark` (staff, logged as `clearScopeCopyMark`) clears a mistaken mark on an install, through `/internal/clear-copy-mark`.
+  - `RouteTarget` gains `primary` (defaulted to `true` for a resolver that predates it). `RouteTarget` also gains `hostnames`, the scope's active hostnames, defaulted to `[]`. The router hands all of it, with the hostname the dispatch serves, to the egress worker. The worker refuses every third-party subrequest from a non-primary scope, and every write to another platform app, metering both as `inert`. Reads of other apps, any request to a hostname of the copy's own scope, and the relay still pass, and each of them leaves with `redirect: 'manual'`, so a redirect cannot carry a copy past the rule.
+  - The sweep's schedule and freshness phases filter on `isPrimaryScope`, so a clean-room preview no longer fires its schedules.
+  - Previews and forks cannot send email or change a tenant's connections: the email relay, the connection relay (including the route a consent round's callback stores through) and connect-url refuse a non-primary scope with a 403.
+  - `isPrimaryScopeRow` answers the same predicate over a raw directory row.
+
+### Patch Changes
+
+- 3ed9e9d: Host-side exports start moving out of the kernel (part of #1978). Every existing import keeps working: the kernel still exports each one for this release, as the same binding, and marks it `@deprecated` with its new home.
+
+  - **Header names** move to `@substrat-run/contracts`: `PLATFORM_SECRET_HEADER`, `PLATFORM_REQUEST_HEADER`, `EXPORTED_EVENTS_HEADER`, `CONNECTOR_ATTACHMENT_RECORD_HEADER`, `LIVE_MODE_HEADER` and the `LiveRefusal` type. They are importable from the package root and from a new `@substrat-run/contracts/wire-headers` subpath, which imports nothing.
+  - **`@substrat-run/vertical-host`** now exports `invocationLog`, `withInvocationLog`, `invocationStampOf`, `INVOCATION_RECORD_KEY`, `readRoutedNode`, `RouterAssertionError`, `assertPlatformCall`, `PlatformCallError`, `kickFlags`, `isUpgradeRequest` and their types. Import them from there.
+  - **`@substrat-run/adapter-cloudflare`** now exports the Analytics Engine connector-call recorder: `analyticsEngineConnectorCallRecorder`, `CONNECTOR_CALL_DATA_POINT_LAYOUT`, `connectorCallDataPoint` and `AnalyticsEngineDatasetLike`. The neutral recorder interface stays in the kernel.
+  - **`@substrat-run/control-plane-api`** now exports `isTerminalDispatchFailure`, `isTerminalProviderError`, `providerErrorStatus` and `RETRYABLE_CLIENT_STATUSES`.
+  - `invocationLevelOf` and `InvocationLevel` were already defined in `@substrat-run/contracts`. The kernel's copies of those exports are deprecated in favour of contracts.
+
+  The scaffold template and the demos now import from the new homes. Nothing a deployed vertical sends, reads or logs changes.
+
+- Updated dependencies [4fdad69]
+- Updated dependencies [4964eb8]
+- Updated dependencies [3ed9e9d]
+- Updated dependencies [0c7699d]
+- Updated dependencies [7418e7e]
+  - @substrat-run/kernel@0.136.0
+  - @substrat-run/adapter-cloudflare@0.136.0
+  - @substrat-run/control-plane-api@0.136.0
+  - @substrat-run/contracts@0.136.0
+  - @substrat-run/connector-fortnox@0.4.38
+  - @substrat-run/connector-planima@0.2.33
+  - @substrat-run/connector-scrive@0.14.42
+
 ## 0.13.53
 
 ### Patch Changes
