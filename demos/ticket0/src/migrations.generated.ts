@@ -694,4 +694,39 @@ export const ticket0Migrations: SqlMigration[] = [
 
     `,
   },
+  {
+    // index-desk-reads
+    version: '0023',
+    sql: `
+      -- Hand-written (#1554): an index for each desk read the inventory found scanning, named for
+      -- the read it serves. Write cost: one more B-tree per row on each table below, and nothing on a
+      -- conversation's every touch: no index here holds updated_at.
+
+      -- list-conversations' count, which every inbox load runs: the queue, the state set, and any one
+      -- of channel, priority and assignee, counted from this index over the live rows alone, where
+      -- it read every conversation the desk (or that channel, priority or agent) ever had.
+      CREATE INDEX ticket0_conversations_queue_filters
+        ON ticket0_conversations (quarantine, state, channel, priority, assignee);
+
+      -- my-notifications: one person's notifications in id order, not the desk's walked until theirs appear.
+      CREATE INDEX ticket0_notifications_by_principal ON ticket0_notifications (principal, id);
+
+      -- Suspend (the spam filter's, at the door), discard and merge retire or move a conversation's notifications.
+      CREATE INDEX ticket0_notifications_by_conversation ON ticket0_notifications (conversation_id);
+
+      -- widget-session reads a conversation's latest session; discard and merge delete or move its sessions.
+      CREATE INDEX ticket0_widget_sessions_by_conversation ON ticket0_widget_sessions (conversation_id, started_at, id);
+
+      -- Discard and merge rewrite a conversation's delivery records.
+      CREATE INDEX ticket0_mail_deliveries_by_conversation ON ticket0_mail_deliveries (conversation_id);
+
+      -- An inbound reply finds its thread by In-Reply-To. Partial, so a widget message or a note pays nothing.
+      CREATE INDEX ticket0_messages_by_email_message_id ON ticket0_messages (email_message_id)
+        WHERE email_message_id IS NOT NULL;
+
+      -- list-participants reads a conversation's followers; discard and merge drop them.
+      CREATE INDEX ticket0_conversation_follows_by_conversation ON ticket0_conversation_follows (conversation_id, principal);
+
+    `,
+  },
 ];
