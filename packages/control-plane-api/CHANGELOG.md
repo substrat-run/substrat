@@ -1,5 +1,26 @@
 # @substrat-run/control-plane-api
 
+## 0.135.0
+
+### Minor Changes
+
+- 1dca2da: An operator can now read the capabilities a scope has minted. `HostAdmin.listCapabilities` returns the directory `ctx.capabilities.list` reads from inside a module, newest first: for each link share or claim link, what it may do (its entity, keys and operation allowlist, or the principal a claim link yields), who minted and revoked it, when it expires and how often it has been used. Live capabilities are listed unless you ask for `includeRevoked`, and you can narrow to one entity. The read is paged: pass the previous page's `nextCursor` as `cursor`, and `nextCursor` is set only when more records follow, so a scope with hundreds of links can be read to the end. A record never carries a secret or a hash. The control plane serves it at `GET /tenants/:t/scopes/:s/capabilities`, to staff only, and reads a hosted scope's directory through the vertical's own `/internal/capabilities`. `ControlPlaneStaffClient.listCapabilities` calls it, and the console's scope page has a Capabilities card. `capabilityStatus` in contracts names a record's standing (live, used up, expired, revoked).
+- 04f105e: The control-plane client is its own Apache-2.0 package, and the CLI talks to the plane through it (part of #971).
+
+  `@substrat-run/control-plane-client` holds the transport (credential selection, the problem-document reader, `ControlPlaneError`) and `ControlPlaneClient`, reaching nothing but `fetch` and `@substrat-run/contracts`. `@substrat-run/control-plane-api` re-exports it from both entries, so every existing import keeps working; the CLI depends on the client rather than on the AGPL server package. The transport gains an optional `headers` option, `ControlPlaneError` carries the raw `body`, `statusText` and response `headers` of a refusal (and the error `fetch` threw as its `cause`), a raw `request()` hands back the `Response`, and `fetch` is resolved at call time; `ControlPlaneBuilderClient` adds typed methods for the routes the CLI calls. Nothing a deployed caller sends or reads changes, and the CLI prints the same requests and the same messages as before.
+
+### Patch Changes
+
+- Updated dependencies [8267b83]
+- Updated dependencies [1dca2da]
+- Updated dependencies [3328549]
+- Updated dependencies [04f105e]
+- Updated dependencies [8c64633]
+- Updated dependencies [5d41454]
+  - @substrat-run/kernel@0.135.0
+  - @substrat-run/contracts@0.135.0
+  - @substrat-run/control-plane-client@0.1.0
+
 ## 0.134.0
 
 ### Minor Changes

@@ -1,5 +1,23 @@
 # @substrat-run/adapter-sqlite
 
+## 0.135.0
+
+### Minor Changes
+
+- 1dca2da: An operator can now read the capabilities a scope has minted. `HostAdmin.listCapabilities` returns the directory `ctx.capabilities.list` reads from inside a module, newest first: for each link share or claim link, what it may do (its entity, keys and operation allowlist, or the principal a claim link yields), who minted and revoked it, when it expires and how often it has been used. Live capabilities are listed unless you ask for `includeRevoked`, and you can narrow to one entity. The read is paged: pass the previous page's `nextCursor` as `cursor`, and `nextCursor` is set only when more records follow, so a scope with hundreds of links can be read to the end. A record never carries a secret or a hash. The control plane serves it at `GET /tenants/:t/scopes/:s/capabilities`, to staff only, and reads a hosted scope's directory through the vertical's own `/internal/capabilities`. `ControlPlaneStaffClient.listCapabilities` calls it, and the console's scope page has a Capabilities card. `capabilityStatus` in contracts names a record's standing (live, used up, expired, revoked).
+- 8c64633: Refused lifecycle moves can now be read back row by row. `HostAdmin.listRefusals` returns a scope's recorded refusals newest first: the record, the state it was in, the operation, where that operation leads when it is legal, who tried and what kind of actor they are, the problem code (`invalid_transition`), and the call it happened in. You can narrow it by record, actor, operation, call or time window, the same way you narrow the denial log, and each read leaves an access-log entry.
+
+### Patch Changes
+
+- 3328549: A composed engine's own declared schedule now runs on an install that holds the vertical's entitlements and not the engine's. Before, the §4.3 gate asked a schedule for the SKU of the module that owns the operation, so `engine-absence`'s `absence/expire-stale` failed on every standard meridian install. Now an invoke through the system door (`getSystemScope`) of an operation that the same module binds and declares in its `schedules` needs no SKU. Its `system:<moduleId>` grant is the switch, as it already was for permissions. Every request-reachable door still needs the operation's own key, and so does a system-door invoke of any other operation. The kernel exports the rule as `requiredEntitlementFor`, with the `OperationEntitlement` type, and both adapters run it. The contract kit adds `scheduleEntitlementContractSuite` and its `composedEngineMod` / `composerMod` fixtures.
+- Updated dependencies [8267b83]
+- Updated dependencies [1dca2da]
+- Updated dependencies [3328549]
+- Updated dependencies [8c64633]
+- Updated dependencies [5d41454]
+  - @substrat-run/kernel@0.135.0
+  - @substrat-run/contracts@0.135.0
+
 ## 0.134.0
 
 ### Minor Changes
@@ -5582,7 +5600,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
