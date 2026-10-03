@@ -25,9 +25,10 @@ import type { ScopeDumpTable } from '@substrat-run/contracts';
  */
 export const LOAD_STAMP_KEY = 'load_stamp';
 /**
- * The store's write revision (#1722, Codex #2008 r2): a counter every statement that writes
- * the store advances, in the same transaction, so "nothing changed here since" covers every
- * mutation and not only the ones that append an event (a drain receipt is an UPDATE in place).
+ * The store's write revision (#1722, Codex #2008 r2 and r4): a counter every write to the store
+ * advances inside the transaction that commits it (once per run and per transaction, not per
+ * statement), so "nothing changed here since" covers every mutation and not only the ones that
+ * append an event (a drain receipt is an UPDATE in place).
  * A load carries it forward and advances it too, so it never goes back. Like the load stamp it
  * describes this store and never leaves in a dump.
  */
