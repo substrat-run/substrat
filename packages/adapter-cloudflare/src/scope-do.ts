@@ -4444,7 +4444,8 @@ export function defineScopeDO(
     }
 
     /**
-     * Whether this scope was loaded as a copy (#2005) — its `_substrat_copy_origin` row. A CP-less
+     * Whether this scope is a copy (#2005) — the classification on its `_substrat_copy_origin` row
+     * (#2009), which only the directory's word sets, not a load's events mark. A CP-less
      * coordinator has no directory to read a scope's kind from, so this is how it holds a copy's
      * executor deliveries inert; a coordinator with a directory asks that instead.
      */
@@ -4453,7 +4454,8 @@ export function defineScopeDO(
     }
 
     /** Mark this scope a copy (#2005, `markCopyOrigin`): the repair of a copy that predates the
-     *  marker. Answers whether this call stamped it; an existing origin is left as it is. */
+     *  marker. Answers whether this call stamped it; a store that already reads as a copy is left
+     *  as it is, and a load's events mark is never moved (#2009). */
     markCopy(): boolean {
       let marked = false;
       this.revision.transactionSync(() => {
@@ -4463,7 +4465,8 @@ export function defineScopeDO(
     }
 
     /**
-     * Remove a mistaken copy marker (#2005, `clearCopyMarker`); a real load's mark is kept. A
+     * Clear a mistaken copy classification (#2005, `clearCopyMarker`); a load's events mark stays,
+     * so copied work still never runs here (#2009). A
      * clear is a write like any other (Codex #2008 r11), never bookkeeping: it lets the store run
      * work a copy holds inert, so it advances the write revision, and a carry that exported
      * before it cannot wipe the repaired store. That carry's wipe keeps it instead.
@@ -4474,7 +4477,7 @@ export function defineScopeDO(
        *  load has replaced since (a governed restore, whose copy marker is genuine) is refused,
        *  compared here, in the clear's own transaction. Absent for staff's correction. */
       expect?: LoadMarker,
-    ): 'cleared' | 'absent' | 'carries-events' | 'changed' {
+    ): 'cleared' | 'absent' | 'changed' {
       return this.revision.transactionSync(() => {
         const from = this.metaValue(WRITE_REVISION_KEY);
         if (expect && (this.metaValue(LOAD_STAMP_KEY) !== expect.loadStamp || from !== expect.revision)) {
@@ -5054,6 +5057,10 @@ export function defineScopeDO(
         // every legacy row — a past run's id cannot be recovered afterwards, exactly
         // as the other #1525 columns above argued.
         'ALTER TABLE _substrat_schedule_state ADD COLUMN invocation_id TEXT',
+        // #2009: the copy classification, apart from the copied-events mark, on a scope DO
+        // whose origin row predates it. NULL is a legacy row, which meant both facts and still
+        // reads as a copy (`IS_COPY_SQL`), so no store changes behaviour by gaining the column.
+        'ALTER TABLE _substrat_copy_origin ADD COLUMN is_copy INTEGER',
       ]) {
         try {
           this.sql.exec(alter);

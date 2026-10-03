@@ -54,14 +54,27 @@ const NOT_CARRIED_FAILURE = JSON.stringify({
 } satisfies PlatformRequestFailure);
 
 /**
- * Where a scope's data came from when it is a copy: at most one row, written by the load that made
- * it one. `events_through` is the highest event id the copy brought in, or `''` when it brought
- * none. Every event at or below it was emitted in another scope; every event the copy emits itself
- * sorts above it, because a loader re-seeds the scope's event-id floor from `MAX(id)` (#1335) once
- * the rows are in. A scope that was never a copy holds no row — and every copy holds one, an empty
- * one included (a clean-room preview is a restore of nothing), which is what lets a host with no
- * directory tell a copy from an install by its own storage (#2005). Kernel-owned and shared by both adapters' `KERNEL_DDL`, so the two
- * cannot part company.
+ * Where a scope's data came from, and whether it is a copy: at most one row, which holds two
+ * facts that are set and corrected apart (#2009).
+ *
+ * - **`events_through`, the copied-events mark.** The highest event id a load brought in from
+ *   another scope, or `''` when it brought none. Every event at or below it was emitted in another
+ *   scope; every event the scope emits itself sorts above it, because a loader re-seeds the
+ *   scope's event-id floor from `MAX(id)` (#1335) once the rows are in. Written by a load into a
+ *   scope id other than the dump's (`settleCopiedWork`), and by nothing else.
+ * - **`is_copy`, the classification.** Whether the scope is a copy (a fork, a snapshot, a
+ *   preview), which a host with no control-plane directory reads for primacy and holds inert
+ *   (#2005). Written on the directory's word only (`markCopyOrigin`), never inferred from a load:
+ *   one install's backup restored onto another install is a cross-scope load, so it carries the
+ *   source's events mark, yet the directory still says primary, and its own effects must run.
+ *   Cleared by staff's correction (`clearCopyMarker`) without touching the events mark.
+ *
+ * A scope that was never loaded from another scope and never marked holds no row. A row written
+ * before the column existed holds `is_copy` NULL, and NULL reads as a copy: such a row meant both
+ * facts at once, so every legacy store keeps exactly the behaviour it had (`IS_COPY_SQL`). The
+ * column is nullable with no DEFAULT for the reason every additive spine column is (#1883,
+ * `lint:spine-ddl`), so its "default" lives in that read. Kernel-owned and shared by both
+ * adapters' `KERNEL_DDL`, so the two cannot part company.
  */
 export const COPY_ORIGIN_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_copy_origin (
@@ -69,7 +82,10 @@ export const COPY_ORIGIN_DDL = `
     id INTEGER PRIMARY KEY,
     source_scope_id TEXT,
     events_through TEXT NOT NULL,
-    copied_at TEXT NOT NULL
+    copied_at TEXT NOT NULL,
+    -- #2009: 1 a copy, 0 not one (a load's events mark only, or a cleared marker), NULL a row
+    -- from before the column, which read as a copy and still does.
+    is_copy INTEGER
   );
 `;
 
@@ -139,17 +155,24 @@ export function settleCopiedWork(
   );
   const highest = sql.all('SELECT MAX(id) AS id FROM _substrat_outbox')[0]?.id;
   // Written for an empty copy too: `''` is below every id, so `emittedHere()` passes all of the
-  // copy's own events exactly as no row would — and the row still says this scope is a copy.
-  // An origin the dump already carried with the same source and mark is kept as it was, its
-  // `copied_at` included, so re-loading a copy's own export changes nothing in it.
+  // scope's own events exactly as no row would. An origin the dump already carried with the same
+  // source and mark is kept as it was, its `copied_at` included, so re-loading the same export
+  // changes nothing in it.
+  //
+  // `is_copy` is 0 (#2009): the load moves the events mark and does not classify. Whatever the
+  // dump's row said described the scope it came FROM; whether THIS scope is a copy is the
+  // directory's to say, through `markCopyOrigin`, which the loader runs after this when the
+  // directory says so.
   sql.run(
-    `INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, ?, ?, ?)
+    `INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at, is_copy) VALUES (1, ?, ?, ?, 0)
        ON CONFLICT (id) DO UPDATE SET
          source_scope_id = excluded.source_scope_id,
          events_through = excluded.events_through,
-         copied_at = excluded.copied_at
+         copied_at = excluded.copied_at,
+         is_copy = excluded.is_copy
        WHERE _substrat_copy_origin.source_scope_id IS NOT excluded.source_scope_id
-          OR _substrat_copy_origin.events_through IS NOT excluded.events_through`,
+          OR _substrat_copy_origin.events_through IS NOT excluded.events_through
+          OR _substrat_copy_origin.is_copy IS NOT excluded.is_copy`,
     sourceScopeId ?? null,
     typeof highest === 'string' ? highest : '',
     now,
@@ -157,11 +180,12 @@ export function settleCopiedWork(
 }
 
 /**
- * Mark this scope a copy without moving its events mark (#2005), for a scope its directory says
- * is not primary whose storage holds no origin row — a copy made before every copy carried one,
- * or a same-scope carry of such a copy. `events_through` is `''`, which passes every event
- * exactly as no row does, so dispatch is unchanged; only the copy's own record of being one is
- * new. Idempotent: an existing origin is kept as it is. Answers whether this call stamped it.
+ * Mark this scope a copy (#2005), on the directory's word that it is not primary: a load the
+ * platform flags, the `mark-copies` repair, a reactivation, a carry's wipe or release. Sets the
+ * classification and nothing else (#2009): an origin row a load wrote keeps its events mark and
+ * source, and a scope with no row gets one whose events mark is `''`, which passes every event
+ * exactly as no row does, so dispatch is unchanged. Idempotent: answers whether this call changed
+ * anything, and a store that already reads as a copy (a legacy row included) is left as it is.
  */
 export function markCopyOrigin(sql: SwitchSql, now: string): boolean {
   if (sql.all(IS_COPY_SQL).length > 0) return false;
@@ -170,33 +194,35 @@ export function markCopyOrigin(sql: SwitchSql, now: string): boolean {
 }
 
 /**
- * The one statement that marks a store a copy (#2005): the origin row with no events mark, added
- * only where none exists (`OR IGNORE`). It only ever makes a store MORE restricted — a copy's
- * executors are held inert — and changes no data, which is why the scope DO lets this statement,
- * and no other, through without advancing the write revision a carry fences on (#1722,
- * `isCopyMarkInsert`). Clearing a marker is the opposite and is a write like any other.
+ * The one statement that marks a store a copy (#2005, #2009): the origin row with no events mark
+ * where none exists, or the classification set on the row that does. It only ever makes a store
+ * MORE restricted — a copy's executors are held inert — and changes no data and no events mark,
+ * which is why the scope DO lets this statement, and no other, through without advancing the
+ * write revision a carry fences on (#1722, `isCopyMarkInsert`). Clearing a marker is the opposite
+ * and is a write like any other.
  */
 export const MARK_COPY_ORIGIN_SQL =
-  "INSERT OR IGNORE INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)";
+  "INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at, is_copy) VALUES (1, NULL, '', ?, 1) " +
+  'ON CONFLICT (id) DO UPDATE SET is_copy = 1';
 
 /**
- * Remove a MISTAKEN copy marker (#2005): for a scope the directory says is primary, marked by a
- * misclassification, a race or an operator. Only a marker with no events mark goes (`''`, which
- * `markCopyOrigin` stamps): a row whose `events_through` names copied events is a real load's,
- * and removing it would let `emittedHere()` run another scope's queued work here, so it is left
- * and answered `carries-events`. `absent` when there is no row.
+ * Correct a MISTAKEN copy classification (#2005, #2009): for a scope the directory says is
+ * primary, marked by a misclassification, a race, an operator, or a row from before #2009 that
+ * a cross-scope load wrote (one install's backup restored onto another). Clears the
+ * classification only: the events mark stays, so the source's queued work is still never run
+ * here (`emittedHere()`), and the scope's own effects run again. `absent` when the store does not
+ * read as a copy.
  */
-export function clearCopyMarker(sql: SwitchSql): 'cleared' | 'absent' | 'carries-events' {
-  const row = sql.all('SELECT events_through FROM _substrat_copy_origin WHERE id = 1')[0];
-  if (!row) return 'absent';
-  if (row.events_through !== '') return 'carries-events';
-  sql.run('DELETE FROM _substrat_copy_origin WHERE id = 1');
+export function clearCopyMarker(sql: SwitchSql): 'cleared' | 'absent' {
+  if (sql.all(IS_COPY_SQL).length === 0) return 'absent';
+  sql.run('UPDATE _substrat_copy_origin SET is_copy = 0 WHERE id = 1');
   return 'cleared';
 }
 
 /**
- * Whether this scope was loaded as a copy (#2005): the copy-origin row every copy holds. The one
- * primacy fact a host with no control-plane directory can read from the scope's own storage — a
- * CP-less hosted vertical's coordinator asks it before it runs an executor.
+ * Whether this scope is a copy (#2005, #2009): the classification on its copy-origin row, with
+ * a row from before the column (NULL) read as one. The one primacy fact a host with no
+ * control-plane directory can read from the scope's own storage — a CP-less hosted vertical's
+ * coordinator asks it before it runs an executor.
  */
-export const IS_COPY_SQL = 'SELECT 1 AS copy FROM _substrat_copy_origin WHERE id = 1';
+export const IS_COPY_SQL = 'SELECT 1 AS copy FROM _substrat_copy_origin WHERE id = 1 AND COALESCE(is_copy, 1) = 1';

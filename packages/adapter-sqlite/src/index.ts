@@ -11522,6 +11522,10 @@ export class SqliteScopeHost implements ScopeHost {
     // executes, the table always already has `kind` in its key, never `invocation_id`.
     this.ensureColumn(db, '_substrat_schedule_state', 'invocation_id', 'invocation_id TEXT');
     this.ensureColumn(db, '_substrat_job_runs', 'subject_id', 'subject_id TEXT');
+    // #2009: the copy classification, apart from the copied-events mark, on a scope DB whose
+    // origin row predates it. NULL is a legacy row, which meant both facts and still reads as a
+    // copy (`IS_COPY_SQL`), so no store changes behaviour by gaining the column.
+    this.ensureColumn(db, '_substrat_copy_origin', 'is_copy', 'is_copy INTEGER');
     // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
     // that is never pruned. No index leads with invocation_id, so without this one SQLite
     // walks the PRIMARY KEY from the oldest event until it reaches the call, and reading a

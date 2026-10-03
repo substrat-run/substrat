@@ -918,8 +918,8 @@ interface ScopeStubRpc {
   isCopy(): Promise<boolean>;
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
-  /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
-  clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'carries-events' | 'changed'>;
+  /** Clear a mistaken copy classification (#2005); a load's copied-events mark is kept (#2009). */
+  clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'changed'>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -2622,7 +2622,9 @@ export class CloudflareScopeHost implements ScopeHost {
     destScopeId: ScopeId,
   ): Promise<{ tables: number }> {
     const tables = await this.scopeStub(sourceScopeId).exportDump();
-    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId, exact: true });
+    // #2009: a snapshot is a fork by construction (the control plane's row names `forkedFrom`, so
+    // the directory never calls it primary), and a load classifies nothing by itself: marked here.
+    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId, exact: true, markCopy: true });
     return { tables: tables.length };
   }
 
@@ -2771,10 +2773,11 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * Remove a mistaken copy marker from one scope in THIS deployment (#2005), behind the vertical's
-   * `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS primary.
-   * Refused for a scope classified a copy, and for a marker a real load wrote (one naming copied
-   * events) — removing that would let another scope's queued work run here.
+   * Clear a mistaken copy classification from one scope in THIS deployment (#2005), behind the
+   * vertical's `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS
+   * primary. Refused for a scope classified a copy. A load's copied-events mark is never touched
+   * (#2009), so a primary restored from another scope's backup runs its own effects again and
+   * still never runs the work it copied.
    */
   async clearCopyMarkLocal(
     scopeId: ScopeId,
@@ -2790,13 +2793,6 @@ export class CloudflareScopeHost implements ScopeHost {
     const outcome = await this.scopeStub(scopeId).clearCopyMark(...(expect ? [expect] : []));
     if (outcome === 'changed') {
       throw substratError('precondition_failed', `clear-copy-mark refused: scope ${scopeId}'s store changed since its revision was read`);
-    }
-    if (outcome === 'carries-events') {
-      throw substratError(
-        'conflict',
-        "clear-copy-mark refused: this scope's marker was written by a load of another scope's data and names " +
-          "the events it brought in; removing it would run that scope's queued work here",
-      );
     }
     return { cleared: outcome === 'cleared' };
   }
