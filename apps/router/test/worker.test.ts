@@ -22,6 +22,7 @@ interface Row {
   deployment_ref?: string | null;
   outbound_json?: string | null;
   primary?: boolean;
+  scope_hostnames?: string[];
 }
 
 const row = (over: Partial<Row> = {}): Row => ({
@@ -287,14 +288,39 @@ describe('router', () => {
       // #2005: a row from a control-plane DO that predates the field says nothing, which
       // resolves primary — the skew window `routeTarget` documents.
       primary: true,
-      // #2005: the address this dispatch serves — the one a non-primary scope may write to.
+      // #2005: the address this dispatch serves, and every address of its scope — the ones a
+      // non-primary scope may write to. A pre-field directory row carries no set.
       hostname: 'acme.example.com',
+      hostnames: [],
     });
   });
 
   // #2005: the egress worker refuses a non-primary scope's third-party subrequests, so the
   // dispatch has to say which kind of scope it is serving — ferried from the directory read,
   // which decides it (the contract suite pins that decision on both adapters).
+  it("ferries the scope's hostname set from the directory to the egress worker", async () => {
+    let options: { outbound?: Record<string, unknown> } | undefined;
+    const fsm = spyVertical();
+    const env = {
+      ROUTER_SECRET: SECRET,
+      CONTROL_PLANE: directory({
+        'acme.example.com': row({ deployment_ref: 'fsm-01ky535a', primary: false, scope_hostnames: ['acme.example.com', 'api.acme.example.com'] }),
+      }),
+      DISPATCH: {
+        get: (_name: string, _args?: unknown, opts?: { outbound?: Record<string, unknown> }) => {
+          options = opts;
+          return fsm.binding;
+        },
+      },
+    } as unknown as Env;
+    await worker.fetch(get('https://acme.example.com/api/x'), env);
+    expect(options?.outbound?.OUTBOUND_POLICY).toMatchObject({
+      primary: false,
+      hostname: 'acme.example.com',
+      hostnames: ['acme.example.com', 'api.acme.example.com'],
+    });
+  });
+
   for (const primary of [true, false]) {
     it(`ferries the directory's primary=${primary} to the egress worker`, async () => {
       let options: { outbound?: Record<string, unknown> } | undefined;

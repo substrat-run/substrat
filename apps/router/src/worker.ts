@@ -132,6 +132,8 @@ interface OutboundPolicy {
    * target is always primary.
    */
   hostname?: string;
+  /** #2005: every active hostname of that scope, from the resolve — its sibling surfaces. */
+  hostnames?: string[];
 }
 
 /** Headers the router asserts. Any inbound copy is stripped before these are set. */
@@ -170,6 +172,7 @@ function verticalFor(env: Env, target: RouteTarget, hostname: string): Fetcher |
       depth: 0,
       primary: target.primary,
       hostname,
+      hostnames: target.hostnames,
     };
     return env.DISPATCH.get(target.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
   }

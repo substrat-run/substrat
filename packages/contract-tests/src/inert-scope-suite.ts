@@ -128,6 +128,24 @@ export function inertScopeContractSuite(adapterName: string, makeFixture: () => 
           expect((await host.admin.resolveHostname(await bound(await scope(shape()))))?.primary).toBe(false);
         });
       }
+
+      // The addresses a non-primary scope may still write to: every surface of the SAME scope.
+      it("carries the scope's own hostnames — its sibling surfaces — and no other scope's", async () => {
+        const preview = await scope({ kind: 'preview' });
+        const app = await bound(preview);
+        const admin = await bound(preview);
+        const other = await bound(await scope({ kind: 'preview' }));
+        const resolved = await host.admin.resolveHostname(app);
+        expect([...(resolved?.hostnames ?? [])].sort()).toEqual([admin, app].sort());
+        expect(resolved?.hostnames).not.toContain(other);
+        // Only ACTIVE bindings count: one still validating is nobody's address yet.
+        const pending = `inert-${ulid().toLowerCase()}.example.com`;
+        await host.admin.bindHostname(staff, { hostname: pending, tenantId: t, scopeId: preview, surface: 'app', region: null, canonical: false });
+        expect((await host.admin.resolveHostname(app))?.hostnames).not.toContain(pending);
+        // A removed hostname stops counting at once — the read is per request.
+        await host.admin.unbindHostname(staff, admin);
+        expect((await host.admin.resolveHostname(app))?.hostnames).toEqual([app]);
+      });
     });
   });
 }

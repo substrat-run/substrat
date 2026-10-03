@@ -77,6 +77,7 @@ import {
   publishVersionInput,
   AUTO_ADMISSION_NOTE,
   routeTarget,
+  ROUTE_SCOPE_HOSTNAMES_MAX,
   registerVerticalInput,
   vertical as verticalSchema,
   verticalChannel,
@@ -7293,7 +7294,15 @@ export class SqliteScopeHost implements ScopeHost {
                     CASE WHEN s.serving_ref IS NOT NULL
                          THEN json_extract(sv.manifest_json, '$.outbound')
                          ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
-                    s.kind, s.forked_from
+                    s.kind, s.forked_from,
+                    -- #2005: the scope's own addresses, bounded as the Cloudflare read bounds them.
+                    (SELECT json_group_array(sh.hostname) FROM (
+                       -- Pinned like the Cloudflare read: a range on the scope, never every
+                       -- active hostname through hostnames_status.
+                       SELECT hostname FROM hostnames INDEXED BY hostnames_scope
+                        WHERE scope_id = s.scope_id AND status = 'active'
+                        ORDER BY hostname LIMIT ${ROUTE_SCOPE_HOSTNAMES_MAX}
+                     ) sh) AS scope_hostnames_json
                FROM hostnames h
                JOIN scopes s ON s.scope_id = h.scope_id AND s.tenant_id = h.tenant_id
                JOIN tenants t ON t.tenant_id = s.tenant_id
@@ -7314,6 +7323,7 @@ export class SqliteScopeHost implements ScopeHost {
               outbound_json: string | null;
               kind: string | null;
               forked_from: string | null;
+              scope_hostnames_json: string;
             }
           | undefined;
         if (!r) return undefined;
@@ -7338,6 +7348,7 @@ export class SqliteScopeHost implements ScopeHost {
           outboundHosts,
           // #2005: the egress worker holds a fork or a preview to no third-party egress.
           primary: isPrimaryScopeRow(r),
+          hostnames: JSON.parse(r.scope_hostnames_json) as string[],
         });
       },
       registerVertical: async (actor: PlatformActorId, input: RegisterVerticalInput) => {

@@ -65,7 +65,7 @@ import type {
   TenantStatus,
   VerticalResolution,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, opsFailureFingerprint, substratError } from '@substrat-run/contracts';
+import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, substratError } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -221,7 +221,40 @@ export interface RouteRow {
    *  kernel is — the router's routing entry deliberately depends on contracts alone. The
    *  egress worker holds a fork or a preview to no third-party egress on it. */
   primary: boolean;
+  /** Every active hostname of the same scope (#2005), at most `ROUTE_SCOPE_HOSTNAMES_MAX` — the
+   *  addresses a non-primary scope may write to, its sibling surfaces included. */
+  scope_hostnames: string[];
 }
+
+/**
+ * The router's per-request directory read (`readRoute`), lifted out so its plan can be asked for
+ * (#2005): the scope's hostname set is a correlated subquery on the hot path every request takes,
+ * and it must stay a range read on `hostnames_scope`, never a scan.
+ */
+export const READ_ROUTE_SQL = `SELECT h.tenant_id, h.scope_id, h.vertical_slug, h.surface, h.region,
+                COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
+                CASE WHEN s.serving_ref IS NOT NULL
+                     THEN json_extract(sv.manifest_json, '$.outbound')
+                     ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
+                CASE WHEN s.serving_ref IS NOT NULL
+                     THEN json_extract(sv.manifest_json, '$.calls')
+                     ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json,
+                s.kind, s.forked_from,
+                (SELECT json_group_array(sh.hostname) FROM (
+                   -- INDEXED BY: unpinned, the planner reads hostnames_status — every active
+                   -- hostname in the fleet, per request. A range on the scope is what it is.
+                   SELECT hostname FROM hostnames INDEXED BY hostnames_scope
+                    WHERE scope_id = s.scope_id AND status = 'active'
+                    ORDER BY hostname LIMIT ${ROUTE_SCOPE_HOSTNAMES_MAX}
+                 ) sh) AS scope_hostnames_json
+           FROM hostnames h
+           JOIN scopes s ON s.scope_id = h.scope_id AND s.tenant_id = h.tenant_id
+           JOIN tenants t ON t.tenant_id = s.tenant_id
+           LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
+           LEFT JOIN verticals vr ON vr.slug = s.vertical
+           LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
+          WHERE h.hostname = ? AND h.status = 'active'
+            AND s.status = 'active' AND t.status = 'active'`;
 
 /** One candidate instance of a vertical in a tenant (#1706), with what it dispatches as. */
 export interface PeerCandidateRow {
@@ -2528,32 +2561,23 @@ export class ControlPlaneDO extends DurableObject {
     // back just the `outbound` array as JSON text, or NULL for a pre-#303 manifest —
     // which the egress worker treats as unenforced-but-metered.
     const row = this.sql
-      .exec(
-        `SELECT h.tenant_id, h.scope_id, h.vertical_slug, h.surface, h.region,
-                COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
-                CASE WHEN s.serving_ref IS NOT NULL
-                     THEN json_extract(sv.manifest_json, '$.outbound')
-                     ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
-                CASE WHEN s.serving_ref IS NOT NULL
-                     THEN json_extract(sv.manifest_json, '$.calls')
-                     ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json,
-                s.kind, s.forked_from
-           FROM hostnames h
-           JOIN scopes s ON s.scope_id = h.scope_id AND s.tenant_id = h.tenant_id
-           JOIN tenants t ON t.tenant_id = s.tenant_id
-           LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
-           LEFT JOIN verticals vr ON vr.slug = s.vertical
-           LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
-          WHERE h.hostname = ? AND h.status = 'active'
-            AND s.status = 'active' AND t.status = 'active'`,
-        hostname,
-      )
-      .toArray()[0] as unknown as (Omit<RouteRow, 'primary'> & { kind: string; forked_from: string | null }) | undefined;
+      .exec(READ_ROUTE_SQL, hostname)
+      .toArray()[0] as unknown as
+      | (Omit<RouteRow, 'primary' | 'scope_hostnames'> & {
+          kind: string;
+          forked_from: string | null;
+          scope_hostnames_json: string;
+        })
+      | undefined;
     if (!row) return undefined;
     // #2005: the predicate runs here, once, rather than travelling as two columns for the
     // router to re-derive — every reader of the directory answers it the same way.
-    const { kind, forked_from, ...route } = row;
-    return { ...route, primary: isPrimaryScopeRow({ kind, forked_from }) };
+    const { kind, forked_from, scope_hostnames_json, ...route } = row;
+    return {
+      ...route,
+      primary: isPrimaryScopeRow({ kind, forked_from }),
+      scope_hostnames: JSON.parse(scope_hostnames_json) as string[],
+    };
   }
 
   /** Demote any current canonical for this surface — exactly one may hold it. */

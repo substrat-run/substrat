@@ -42,6 +42,9 @@ export interface RouteRowLike {
    *  from one that predates the field, which resolves `primary: true` — the skew window
    *  `routeTarget` documents. */
   primary?: boolean;
+  /** Every active hostname of the same scope (#2005); absent from a pre-field DO, which
+   *  resolves `[]` — only the requested hostname is the scope's own. */
+  scope_hostnames?: string[];
 }
 
 /** The one method this needs from the control-plane DO. */
@@ -94,6 +97,7 @@ export function toRouteTarget(row: RouteRowLike | undefined): RouteTarget | unde
     // #2005: absent only from a control-plane DO that predates the field, which the schema
     // defaults to `true` — see RouteRowLike.
     primary: row.primary,
+    hostnames: row.scope_hostnames,
   });
 }
 

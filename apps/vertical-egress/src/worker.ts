@@ -103,6 +103,11 @@ export interface OutboundPolicy {
    * only read (GET, HEAD, OPTIONS).
    */
   hostname?: string;
+  /**
+   * #2005: every active hostname of the same scope — its sibling surfaces, which are its own
+   * too. Absent (a router that predates it) means only `hostname` counts.
+   */
+  hostnames?: string[];
 }
 
 export interface Env {
@@ -164,6 +169,12 @@ export interface Env {
 
 /** The methods a non-primary scope may send to another app on the platform (#2005): reads. */
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** Whether `hostname` is one of the dispatched scope's own addresses (#2005). DNS ignores case. */
+function isOwnHost(hostname: string, policy: OutboundPolicy): boolean {
+  const h = hostname.toLowerCase();
+  return [policy.hostname, ...(policy.hostnames ?? [])].some((own) => own?.toLowerCase() === h);
+}
 
 /** The platform base domains this deployment mints under, from the shared reader (#973). */
 const baseDomains = (env: Env): string[] => parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
@@ -276,21 +287,17 @@ export default {
       return peerCall(request, env);
     }
     if (isPlatformHost(hostname, baseDomains(env))) {
-      // #2005: a fork or a preview may write to its own address only. Another app on the
-      // platform is real, so it answers a copy's reads and refuses its writes — the
-      // destination's own auth is not the boundary here, inertness is.
+      // #2005: a fork or a preview may write to its own addresses only — any surface of the
+      // same scope. Another app on the platform is real, so it answers a copy's reads and
+      // refuses its writes — the destination's own auth is not the boundary here, inertness is.
       const policy = env.OUTBOUND_POLICY;
-      if (
-        policy?.primary === false &&
-        !SAFE_METHODS.has(request.method.toUpperCase()) &&
-        hostname.toLowerCase() !== policy.hostname?.toLowerCase()
-      ) {
+      if (policy?.primary === false && !SAFE_METHODS.has(request.method.toUpperCase()) && !isOwnHost(hostname, policy)) {
         meter(env, hostname, 'inert');
         return outboundRefused(
           hostname,
           policy.slug,
           'this scope is a preview or a fork, and those cause no outbound effects: it may ' +
-            'write only to its own address, and only read from another app on the platform (#2005).',
+            'write only to its own addresses, and only read from another app on the platform (#2005).',
         );
       }
       // Same-zone: hand it to the router over the service binding so it re-enters

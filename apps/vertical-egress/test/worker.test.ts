@@ -411,4 +411,34 @@ describe("a non-primary scope reads other platform apps and writes only its own 
     expect(res.status).toBe(200);
     expect(calls[0]!.method).toBe('POST');
   });
+
+  // "Its own" is the SCOPE: a web surface POSTing to its own API surface is one app.
+  describe('every surface of the same scope is its own', () => {
+    const SIBLING = 'shop-acme--pr-7-api.global.substrat.run';
+    const withSiblings = (hostnames: string[] | undefined): OutboundPolicy => ({
+      ...policy(false),
+      ...(hostnames ? { hostnames } : {}),
+    });
+    const post = (url: string, p: OutboundPolicy, r = router()) =>
+      worker
+        .fetch(new Request(url, { method: 'POST', body: '{}' }), envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: p }))
+        .then((res) => ({ res, calls: r.calls }));
+
+    it("lets a POST to a sibling surface of the scope through", async () => {
+      const { res, calls } = await post(`https://${SIBLING}/api/orders`, withSiblings([OWN, SIBLING]));
+      expect(res.status).toBe(200);
+      expect(calls[0]!.method).toBe('POST');
+    });
+
+    it("still refuses a POST to another scope's host beside them", async () => {
+      const { res, calls } = await post('https://crm-acme.global.substrat.run/api/write', withSiblings([OWN, SIBLING]));
+      expect(res.status).toBe(403);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('a router that sends no set (the skew window) counts only the requested hostname', async () => {
+      const { res } = await post(`https://${SIBLING}/api/orders`, withSiblings(undefined));
+      expect(res.status).toBe(403);
+    });
+  });
 });
