@@ -249,10 +249,14 @@ export class ControlPlaneTransport {
       } catch {
         // Not JSON, or unreadable: `problemDetail(null)` is undefined and the status line speaks.
       }
+      // A connect the provider refused carries the provider's own answer beside the
+      // sentence (#605) — read off the same parse, so no caller re-reads the body for it.
+      const probe =
+        body !== null && typeof body === 'object' ? (body as { probe?: ConnectionProbe }).probe : undefined;
       throw new ControlPlaneError(
         res.status,
         problemDetail(body) ?? `${res.status} ${res.statusText}`,
-        undefined,
+        probe,
         { body: text, statusText: res.statusText, headers: res.headers, url: this.urlFor(path) },
       );
     }

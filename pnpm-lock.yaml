@@ -295,6 +295,9 @@ importers:
       '@substrat-run/control-plane-api':
         specifier: workspace:^
         version: link:../../packages/control-plane-api
+      '@substrat-run/control-plane-client':
+        specifier: workspace:^
+        version: link:../../packages/control-plane-client
       '@substrat-run/demo-callout':
         specifier: workspace:^
         version: link:../../demos/callout

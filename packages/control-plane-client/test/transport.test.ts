@@ -278,6 +278,22 @@ describe('a refusal carries what it was', () => {
     expect(err.body).toBeUndefined();
   });
 
+  it('the provider probe a refused connect named (#605), read off the same body', async () => {
+    const probe = { ok: false, provider: 'scrive', detail: 'No valid access credentials were provided', facts: [] };
+    const { fetch } = spy(() => Response.json({ detail: 'the provider refused the credential', probe }, { status: 422 }));
+    const err = await make(fetch).send2('/tenants/t/connections').catch((e) => e);
+    expect(err).toMatchObject({ status: 422, message: 'the provider refused the credential', probe });
+  });
+
+  it('no probe when the body names none, or is not an object (the positive twin)', async () => {
+    for (const body of [JSON.stringify({ detail: 'no' }), JSON.stringify([{ probe: 1 }]), '5', 'null', '<html>', '']) {
+      const { fetch } = spy(() => new Response(body, { status: 422 }));
+      const err = await make(fetch).send2('/x').catch((e) => e);
+      expect(err).toBeInstanceOf(ControlPlaneError);
+      expect(err.probe).toBeUndefined();
+    }
+  });
+
   it('an error built outside the transport has no body (the field says "not read off a response")', () => {
     const e = new ControlPlaneError(403, 'unknown tenant');
     expect(e.body).toBeUndefined();
