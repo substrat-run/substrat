@@ -372,6 +372,29 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     for (const sid of made) expect((await recordOf(sid)).servingRef ?? null).toBeNull();
   });
 
+  it('does not bind a preview back when a push re-pointed it since it was listed', async () => {
+    const racing = await legacyPreview('legacy-race', v1, 'race-row');
+    // The push lands between the pass reading the row and binding it: it moves the preview to
+    // v2 (carrying from the serving script, as a bind does), and only then does the pass bind.
+    const bind = host.admin.bindScopeVersion.bind(host.admin);
+    const spy = vi.spyOn(host.admin, 'bindScopeVersion').mockImplementationOnce(async (actor, tenant, sid, versionId, opts) => {
+      await bind(actor, tenant, sid, v2);
+      return bind(actor, tenant, sid, versionId, opts);
+    });
+    try {
+      const out = await pass();
+      expect(out.repaired).toEqual([]);
+      expect(out.failed).toMatchObject([{ scopeId: racing.scopeId, status: 412 }]);
+    } finally {
+      spy.mockRestore();
+    }
+    // The preview stays where the push put it, and keeps its pin for the next pass to heal.
+    expect(await recordOf(racing.scopeId)).toMatchObject({ verticalVersionId: v2, servingRef: SERVING });
+    const healed = await pass();
+    expect(healed.repaired.map((r) => r.scopeId)).toEqual([racing.scopeId]);
+    expect((await recordOf(racing.scopeId)).verticalVersionId).toBe(v2);
+  });
+
   it('refuses a malformed body before touching anything', async () => {
     const pinned = await legacyPreview('legacy-validate', v1, 'v-row');
     for (const body of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: '5' }, { cursor: 'not-a-scope-id' }, { dryRun: 'yes' }]) {
@@ -406,4 +429,23 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       expect((await recordOf(pinned.scopeId)).servingRef ?? null).toBeNull();
     });
   });
+
+  it('walks past a full page of unrelated scopes by cursor, rather than reporting the fleet done', async () => {
+    // Active scopes older than the pinned preview, enough to fill the pass's scan page, so the
+    // candidate is on the NEXT page and a pass that called an unfinished walk finished would
+    // leave it pinned for good.
+    for (let i = 0; i < 505; i += 1) {
+      const filler = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: filler, vertical: slug });
+      await host.admin.activateScope(staff, t, filler);
+    }
+    const late = await legacyPreview('legacy-late', v1, 'late-row');
+    const first = await pass();
+    expect(first.repaired).toEqual([]);
+    expect(first.nextCursor).not.toBeNull();
+    const second = await pass({ cursor: first.nextCursor! });
+    expect(second.repaired.map((r) => r.scopeId)).toEqual([late.scopeId]);
+    expect(second.nextCursor).toBeNull();
+    expect((await recordOf(late.scopeId)).servingRef ?? null).toBeNull();
+  }, 120_000);
 });

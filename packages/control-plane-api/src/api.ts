@@ -4048,7 +4048,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if ('skipped' in outcome) skipped.push({ ...at, reason: outcome.skipped });
         else repaired.push({ ...at, ...outcome.repaired });
       } catch (e) {
-        const status = e instanceof ControlPlaneError ? e.status : 500;
+        // The status the app's error boundary would have answered, so a host refusal (a push
+        // re-pointed the preview since it was listed) reads as a 409 and not as a platform fault.
+        const { status } = mapError(e);
         const message = e instanceof Error ? e.message : String(e);
         if (status >= 500 && status !== 501) {
           recordFailure({
