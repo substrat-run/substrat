@@ -47,11 +47,7 @@
  * declared.
  *
  * The declared surface bounds where a request LANDS, not only where it starts (#2011): this
- * worker never follows a redirect itself. Every request it lets out leaves with
- * `redirect: 'manual'`, the 3xx goes back to the vertical, and the vertical's own `fetch`
- * follows it as a new subrequest that comes back through here — so a declared host that
- * redirects to an undeclared one gets the refusal a direct call there would, and a redirect
- * between declared hosts works as it always did. `passThrough` has the detail.
+ * worker never follows a redirect itself, so every hop comes back through here (`passThrough`).
  *
  * Honest limits (self-serve-deploy.md §4.2): Cloudflare outbound workers do not
  * intercept subrequests made from inside Durable Objects, so a DO-originated fetch
@@ -255,14 +251,14 @@ function outboundRefused(hostname: string, slug: string | null, detail: string):
 type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: number; code: string; message: string };
 
 /** Where a subrequest ended up: the seven verdicts the meter distinguishes. `inert` is a
- *  third-party subrequest refused because the scope is not primary (#2005). `redirect` is not
- *  an eighth: it is written BESIDE the verdict that let a request out, when the destination
- *  answered 3xx and the vertical was handed it rather than this worker following (#2011). */
-type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer' | 'inert' | 'redirect';
+ *  third-party subrequest refused because the scope is not primary (#2005). */
+type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer' | 'inert';
 
 /** One datapoint per decision — append-only shape, like the router's request meter:
- *  index [slug]; blobs [hostname, verdict, tenant, redirect target host (a `redirect` only)]. */
-function meter(env: Env, hostname: string, verdict: Verdict, to?: string): void {
+ *  index [slug]; blobs [hostname, verdict, tenant]. A `redirect` is not a verdict but is written
+ *  BESIDE the one that let a request out, when the destination answered 3xx (#2011), with a
+ *  fourth blob: the host it pointed at. */
+function meter(env: Env, hostname: string, verdict: Verdict | 'redirect', to?: string): void {
   try {
     const blobs = [hostname, verdict, env.OUTBOUND_POLICY?.tenant ?? ''];
     env.ANALYTICS?.writeDataPoint({

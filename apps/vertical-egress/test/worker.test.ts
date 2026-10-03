@@ -29,6 +29,10 @@ const envWith = (over: Partial<Env> = {}): Env => ({
   ...over,
 });
 
+/** An Analytics Engine binding that collects every datapoint into `points`. */
+const meterInto = (points: unknown[]) =>
+  ({ writeDataPoint: (p: unknown) => void points.push(p) }) as unknown as AnalyticsEngineDataset;
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe('vertical egress worker', () => {
@@ -316,8 +320,6 @@ describe('a non-primary scope reaches no third party (#2005)', () => {
     hosts,
     ...(primary === undefined ? {} : { primary }),
   });
-  const meterInto = (points: unknown[]) =>
-    ({ writeDataPoint: (p: unknown) => void points.push(p) }) as unknown as AnalyticsEngineDataset;
 
   for (const [name, hosts] of [
     ['a host its version declares', ['api.scrive.com']],
@@ -515,8 +517,15 @@ describe('no allowed request is redirected past the policy (#2011, #2005)', () =
     });
   }
 
+  /** Stub the internet with `respond`, and return every request that reached it. */
+  const captureFetch = (respond: () => Response = () => new Response('ok')) => {
+    const seen: Request[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (req: Request) => (seen.push(req), respond())));
+    return seen;
+  };
+
   // Every path a request leaves by, for both kinds of scope — each one with the policy that lets
-  // it out there. `hosts: null` is the unenforced pass, which still must not follow for anyone.
+  // it out there.
   const paths = [
     ['the relay', 'https://console.substrat.net/internal/x', [true, false]],
     ['its own custom domain', 'https://preview.example.com/api/write', [true, false]],
@@ -525,11 +534,7 @@ describe('no allowed request is redirected past the policy (#2011, #2005)', () =
   for (const [name, url, primaries] of paths) {
     for (const primary of primaries) {
       it(`${name}: ${primary ? 'an install' : 'a copy'}'s request leaves with redirect manual, and the 3xx comes back`, async () => {
-        const seen: Request[] = [];
-        vi.stubGlobal(
-          'fetch',
-          vi.fn(async (req: Request) => (seen.push(req), new Response(null, { status: 307, headers: { location: EXFIL } }))),
-        );
+        const seen = captureFetch(() => new Response(null, { status: 307, headers: { location: EXFIL } }));
         const res = await worker.fetch(new Request(url, { method: 'POST', body: '{}' }), envWith({ OUTBOUND_POLICY: policy(primary) }));
         expect(res.status).toBe(307);
         expect(seen.map((r) => [r.redirect, r.method, new URL(r.url).hostname])).toEqual([['manual', 'POST', new URL(url).hostname]]);
@@ -538,16 +543,14 @@ describe('no allowed request is redirected past the policy (#2011, #2005)', () =
   }
 
   it('an unenforced version (hosts: null) leaves with redirect manual too', async () => {
-    const seen: Request[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (req: Request) => (seen.push(req), new Response('ok'))));
+    const seen = captureFetch();
     await worker.fetch(new Request('https://anything.example.org/x'), envWith({ OUTBOUND_POLICY: policy(true, null) }));
     await worker.fetch(new Request('https://anything.example.org/x'), envWith({ OUTBOUND_POLICY: undefined }));
     expect(seen.map((r) => r.redirect)).toEqual(['manual', 'manual']);
   });
 
   it('carries the body and headers through unchanged — only the redirect mode is set', async () => {
-    const seen: Request[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (req: Request) => (seen.push(req), new Response('ok'))));
+    const seen = captureFetch();
     await worker.fetch(
       new Request('https://api.scrive.com/x', { method: 'PUT', body: 'payload', headers: { authorization: 'Bearer t' } }),
       envWith({ OUTBOUND_POLICY: policy(true) }),
@@ -558,11 +561,10 @@ describe('no allowed request is redirected past the policy (#2011, #2005)', () =
   });
 
   describe('a redirect is metered beside the verdict that let the request out', () => {
-    const meterWith = (respond: () => Response) => {
+    const meterWith = (respond: () => Response, over: Partial<Env> = {}) => {
       const points: { blobs: string[] }[] = [];
-      const analytics = { writeDataPoint: (p: { blobs: string[] }) => points.push(p) } as unknown as AnalyticsEngineDataset;
-      vi.stubGlobal('fetch', vi.fn(async () => respond()));
-      return { points, env: envWith({ ANALYTICS: analytics, OUTBOUND_POLICY: policy(true) }) };
+      captureFetch(respond);
+      return { points, env: envWith({ ANALYTICS: meterInto(points), OUTBOUND_POLICY: policy(true), ...over }) };
     };
 
     it('blobs = [the host that redirected, redirect, tenant, the host it pointed at]', async () => {
@@ -575,13 +577,8 @@ describe('no allowed request is redirected past the policy (#2011, #2005)', () =
     });
 
     it('on the loopback too', async () => {
-      const points: { blobs: string[] }[] = [];
-      const analytics = { writeDataPoint: (p: { blobs: string[] }) => points.push(p) } as unknown as AnalyticsEngineDataset;
-      const r = redirectingRouter();
-      await worker.fetch(
-        new Request('https://crm-acme.global.substrat.run/api/read'),
-        envWith({ ROUTER: r.fetcher, ANALYTICS: analytics, OUTBOUND_POLICY: policy(true) }),
-      );
+      const { points, env } = meterWith(() => new Response('unused'), { ROUTER: redirectingRouter().fetcher });
+      await worker.fetch(new Request('https://crm-acme.global.substrat.run/api/read'), env);
       expect(points.map((p) => p.blobs)).toEqual([
         ['crm-acme.global.substrat.run', 'platform', '01TENANT'],
         ['crm-acme.global.substrat.run', 'redirect', '01TENANT', 'exfil.example.com'],

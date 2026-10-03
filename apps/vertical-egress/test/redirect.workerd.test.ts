@@ -74,34 +74,46 @@ beforeAll(async () => {
   bundle = out.outputFiles[0]!.text;
 });
 
-const mfs: Miniflare[] = [];
-afterAll(async () => {
-  await Promise.all(mfs.map((mf) => mf.dispose()));
+const policy = (primary: boolean): OutboundPolicy => ({
+  slug: 'acme-shop',
+  tenant: '01TENANT',
+  hosts: [DECLARED, ALSO_DECLARED],
+  primary,
+  hostname: OWN,
+  hostnames: [OWN],
 });
 
-/** A vertical whose every `fetch` goes through the egress worker, dispatched under `policy`. */
-function dispatched(policy: OutboundPolicy) {
-  const mf = new Miniflare({
-    workers: [
-      { name: 'vertical', modules: true, script: VERTICAL, compatibilityDate: '2025-01-01', outboundService: 'egress' },
-      {
-        name: 'egress',
-        modules: [{ type: 'ESModule', path: 'worker.mjs', contents: bundle }],
-        compatibilityDate: '2025-01-01',
-        bindings: {
-          PLATFORM_BASE_DOMAINS: 'substrat.run',
-          PLATFORM_CP_URL: 'https://console.substrat.net',
-          OUTBOUND_POLICY: policy as unknown as Record<string, unknown>,
-        },
-        serviceBindings: { ROUTER: web },
-        outboundService: web,
+/** One runtime, two dispatches: an install's and a copy's vertical, each behind its own egress. */
+let mf: Miniflare;
+beforeAll(() => {
+  const pair = (kind: 'install' | 'copy') => [
+    { name: kind, modules: true, script: VERTICAL, compatibilityDate: '2025-01-01', outboundService: `egress-${kind}` },
+    {
+      name: `egress-${kind}`,
+      modules: [{ type: 'ESModule' as const, path: 'worker.mjs', contents: bundle }],
+      compatibilityDate: '2025-01-01',
+      bindings: {
+        PLATFORM_BASE_DOMAINS: 'substrat.run',
+        PLATFORM_CP_URL: 'https://console.substrat.net',
+        OUTBOUND_POLICY: policy(kind === 'install') as unknown as Record<string, unknown>,
       },
-    ],
-  });
-  mfs.push(mf);
-  return async (url: string, init: { method?: string; body?: string; redirect?: 'follow' | 'manual' } = {}) => {
+      serviceBindings: { ROUTER: web },
+      outboundService: web,
+    },
+  ];
+  mf = new Miniflare({ workers: [...pair('install'), ...pair('copy')] });
+});
+afterAll(async () => {
+  await mf?.dispose();
+});
+
+/** Have the `kind` vertical make one `fetch`, and report what its runtime handed back. */
+const caller =
+  (kind: 'install' | 'copy') =>
+  async (url: string, init: { method?: string; body?: string; redirect?: 'follow' | 'manual' } = {}) => {
     hops = [];
-    const res = await mf.dispatchFetch('http://vertical/', {
+    const vertical = await mf.getWorker(kind);
+    const res = await vertical.fetch('http://vertical/', {
       method: 'POST',
       body: JSON.stringify({ url, method: init.method ?? 'GET', body: init.body, redirect: init.redirect ?? 'follow' }),
     });
@@ -114,22 +126,15 @@ function dispatched(policy: OutboundPolicy) {
       thrown?: string;
     };
   };
-}
 
-const policy = (primary: boolean): OutboundPolicy => ({
-  slug: 'acme-shop',
-  tenant: '01TENANT',
-  hosts: [DECLARED, ALSO_DECLARED],
-  primary,
-  hostname: OWN,
-  hostnames: [OWN],
-});
+/** The two non-third-party paths a request leaves by, each answering with a redirect out. */
+const BOUNCES = [
+  ['the platform loopback', 'https://crm-acme.global.substrat.run/bounce', 'GET', undefined],
+  ['the relay', 'https://console.substrat.net/internal/x', 'POST', '{}'],
+] as const;
 
 describe('an install: the declared surface bounds where a redirect lands (#2011)', () => {
-  let call: ReturnType<typeof dispatched>;
-  beforeAll(() => {
-    call = dispatched(policy(true));
-  });
+  const call = caller('install');
 
   it('a declared host redirecting to an undeclared one: the hop is refused, and never leaves', async () => {
     const res = await call(`https://${DECLARED}/start`);
@@ -159,46 +164,33 @@ describe('an install: the declared surface bounds where a redirect lands (#2011)
     expect(hops).toHaveLength(21);
   });
 
-  it('the platform loopback: another app redirecting to an undeclared host is refused on the hop', async () => {
-    const res = await call('https://crm-acme.global.substrat.run/bounce');
-    expect(res.status).toBe(403);
-    expect(JSON.parse(res.body!)).toMatchObject({ host: 'exfil.example' });
-    expect(hops).toEqual(['GET https://crm-acme.global.substrat.run/bounce']);
-  });
+  for (const [name, url, method, body] of BOUNCES) {
+    it(`${name}: a redirect to an undeclared host is refused on the hop`, async () => {
+      const res = await call(url, { method, body });
+      expect(res.status).toBe(403);
+      expect(JSON.parse(res.body!)).toMatchObject({ host: 'exfil.example' });
+      expect(hops).toEqual([`${method} ${url}${body ? ` ${body}` : ''}`]);
+    });
+  }
 
   it('twin: the loopback redirecting to a declared host lands', async () => {
     const res = await call('https://crm-acme.global.substrat.run/onward');
     expect(res).toMatchObject({ status: 200, body: 'landed', redirected: true });
     expect(hops).toEqual(['GET https://crm-acme.global.substrat.run/onward', `GET https://${ALSO_DECLARED}/landing`]);
   });
-
-  it('the relay redirecting to an undeclared host is refused on the hop', async () => {
-    const res = await call('https://console.substrat.net/internal/x', { method: 'POST', body: '{}' });
-    expect(res.status).toBe(403);
-    expect(JSON.parse(res.body!)).toMatchObject({ host: 'exfil.example' });
-    expect(hops).toEqual(['POST https://console.substrat.net/internal/x {}']);
-  });
 });
 
 describe('a copy: as #2005 left it — the redirect hop meets the inert rule', () => {
-  let call: ReturnType<typeof dispatched>;
-  beforeAll(() => {
-    call = dispatched(policy(false));
-  });
+  const call = caller('copy');
 
-  it('a read of another app that redirects to a third party is refused as inert, even to a declared host', async () => {
-    for (const path of ['bounce', 'onward']) {
-      const res = await call(`https://crm-acme.global.substrat.run/${path}`);
+  // Even a redirect to a host the version declares: a copy reaches no third party at all.
+  const copyBounces = [...BOUNCES, ['the loopback, onward to a declared host', 'https://crm-acme.global.substrat.run/onward', 'GET', undefined] as const];
+  for (const [name, url, method, body] of copyBounces) {
+    it(`${name}: the redirect hop is refused as inert`, async () => {
+      const res = await call(url, { method, body });
       expect(res.status).toBe(403);
       expect(JSON.parse(res.body!).detail).toMatch(/preview or a fork/);
-      expect(hops).toEqual([`GET https://crm-acme.global.substrat.run/${path}`]);
-    }
-  });
-
-  it('the relay redirecting out is refused as inert', async () => {
-    const res = await call('https://console.substrat.net/internal/x', { method: 'POST', body: '{}' });
-    expect(res.status).toBe(403);
-    expect(JSON.parse(res.body!).detail).toMatch(/preview or a fork/);
-    expect(hops).toEqual(['POST https://console.substrat.net/internal/x {}']);
-  });
+      expect(hops).toEqual([`${method} ${url}${body ? ` ${body}` : ''}`]);
+    });
+  }
 });
