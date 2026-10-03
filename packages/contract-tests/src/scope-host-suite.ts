@@ -32,6 +32,7 @@ import {
   type ModelUsageLine,
 } from '@substrat-run/contracts';
 import {
+  INERT_SCOPE_REASON,
   isSearchIndexTable,
   platformIntentFailureMessage,
   REDACTED_DELIVERY_NOTE,
@@ -654,6 +655,17 @@ export function scopeHostContractSuite(
       const count = (tag: string) => effected.filter((e) => e === tag).length;
       const logOf = async (s: ScopeId) =>
         (await (await host.getScope(alice, t1, s)).invoke<{ event_id: string }[]>('flow/log')).map((r) => r.event_id);
+      /**
+       * The events whose executor delivery a copy journaled INERT (#2005): its own work, which
+       * reached dispatch — so `emittedHere` let it through — and was then held, because a copy
+       * causes no outbound effects. The source's work never reaches dispatch at all.
+       */
+      const inertIn = async (s: ScopeId) =>
+        (await host.executorDeadLetters(t1, s)).filter((d) => d.error === INERT_SCOPE_REASON).map((d) => d.eventId);
+      const eventIdOf = async (s: ScopeId, entityId: string) => {
+        const outbox = (await host.admin.exportScope(staff, t1, s)).tables.find((t) => t.name === '_substrat_outbox')!;
+        return String(outbox.rows.find((r) => r[outbox.columns.indexOf('entity_id')] === entityId)![outbox.columns.indexOf('id')]);
+      };
       const activeScope = async () => {
         const s = scopeId.parse(ulid());
         await host.provisionScope(staff, { tenantId: t1, scopeId: s, jurisdiction: 'eu', vertical: 'connector-vertical' });
@@ -728,8 +740,10 @@ export function scopeHostContractSuite(
         const own = await logOf(fork);
         expect(own).toHaveLength(2); // its own step1, and the step2 that consumer emitted
         expect(own).not.toContain(step1);
+        // Its own executor work reaches dispatch too, and is held there: a fork is inert (#2005).
         await stub.invoke('connector/request-effect', { tag: 'fork-own' });
-        expect(count('fork-own')).toBe(1);
+        expect(count('fork-own')).toBe(0);
+        expect(await inertIn(fork)).toEqual([await eventIdOf(fork, 'fork-own')]);
       });
 
       it("the copy's own events still sort above a copied event stamped by a clock that ran ahead", async () => {
@@ -753,7 +767,9 @@ export function scopeHostContractSuite(
         const fork = scopeId.parse(ulid());
         await host.importScope(staff, { tenantId: t1, scopeId: fork, jurisdiction: 'eu', vertical: 'connector-vertical' }, withAhead);
         await (await host.getScope(alice, t1, fork)).invoke('connector/request-effect', { tag: 'fork-after-ahead' });
-        expect(count('fork-after-ahead')).toBe(1);
+        // The copy's own event reached dispatch (held inert there, #2005); the copied one did not.
+        expect(await inertIn(fork)).toEqual([await eventIdOf(fork, 'fork-after-ahead')]);
+        expect(count('fork-after-ahead')).toBe(0);
         expect(count('copy-ahead')).toBe(0);
       });
 
@@ -784,7 +800,9 @@ export function scopeHostContractSuite(
         const first = scopeId.parse(ulid());
         await host.importScope(staff, { tenantId: t1, scopeId: first, jurisdiction: 'eu', vertical: 'connector-vertical' }, queued);
         await (await host.getScope(alice, t1, first)).invoke('connector/request-effect', { tag: 'first-own' });
-        expect(count('first-own')).toBe(1);
+        // A copy's own work reaches dispatch and is held inert there (#2005), never effected.
+        const firstOwn = await eventIdOf(first, 'first-own');
+        expect(await inertIn(first)).toEqual([firstOwn]);
         const firstsBackup = await owing(first, 'first-own');
 
         // copy → copy: the second copy's mark is above the first copy's own events too.
@@ -792,18 +810,22 @@ export function scopeHostContractSuite(
         await host.importScope(staff, { tenantId: t1, scopeId: second, jurisdiction: 'eu', vertical: 'connector-vertical' }, firstsBackup);
         await (await host.getScope(alice, t1, second)).invoke('flow/log');
         await host.drainDue(t1, second);
-        expect(count('first-own')).toBe(1);
         expect(count('copy-retry')).toBe(1);
         expect(count('copy-unattempted')).toBe(1);
+        // The first copy's own event is the second's INHERITED work: it never reaches dispatch.
+        expect(await inertIn(second)).toEqual([]);
         await (await host.getScope(alice, t1, second)).invoke('connector/request-effect', { tag: 'second-own' });
-        expect(count('second-own')).toBe(1);
+        expect(await inertIn(second)).toEqual([await eventIdOf(second, 'second-own')]);
 
         // The first copy's backup returned to it: its own owed event runs, and the source's
         // still do not, because the copy's origin came back with its backup.
         await host.restoreScope(staff, t1, first, firstsBackup);
+        expect(await inertIn(first)).toEqual([]); // the backup had its delivery row removed
         await (await host.getScope(alice, t1, first)).invoke('flow/log');
         await host.drainDue(t1, first);
-        expect(count('first-own')).toBe(2);
+        // Owed again and the first copy's own, so it reaches dispatch again: held inert (#2005).
+        expect(await inertIn(first)).toEqual([firstOwn]);
+        expect(count('first-own')).toBe(0);
         expect(count('copy-retry')).toBe(1);
         expect(count('copy-unattempted')).toBe(1);
         expect(await logOf(first)).toEqual([]);
