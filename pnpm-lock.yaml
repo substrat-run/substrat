@@ -597,6 +597,9 @@ importers:
       '@substrat-run/oidc-rp':
         specifier: workspace:^
         version: link:../../packages/oidc-rp
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../../packages/vertical-host
       better-auth:
         specifier: ^1.7.3
         version: 1.7.6(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.3(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@3.2.7)(vue@3.5.43(typescript@7.0.2))
@@ -628,9 +631,6 @@ importers:
       '@substrat-run/vertical-auth':
         specifier: workspace:^
         version: link:../../packages/vertical-auth
-      '@substrat-run/vertical-host':
-        specifier: workspace:^
-        version: link:../../packages/vertical-host
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
@@ -731,6 +731,9 @@ importers:
       '@substrat-run/vertical-auth':
         specifier: workspace:^
         version: link:../../packages/vertical-auth
+      '@substrat-run/vertical-host':
+        specifier: workspace:*
+        version: link:../../packages/vertical-host
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
@@ -753,9 +756,6 @@ importers:
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
-      '@substrat-run/vertical-host':
-        specifier: workspace:*
-        version: link:../../packages/vertical-host
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0

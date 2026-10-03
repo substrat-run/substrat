@@ -20,6 +20,10 @@
     "./invocation-record": {
       "types": "./dist/invocation-record.d.ts",
       "default": "./dist/invocation-record.js"
+    },
+    "./wire-headers": {
+      "types": "./dist/wire-headers.d.ts",
+      "default": "./dist/wire-headers.js"
     }
   },
   "files": [

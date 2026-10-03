@@ -27,14 +27,12 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf } from './errors.js';
 import {
-  assertPlatformCall,
-  CONNECTOR_ATTACHMENT_RECORD_HEADER,
-  PlatformCallError,
   type InvokeOptions,
   type AppliedMigration,
   type SwitchedOff,
   type UndrainedEvents,
 } from '@substrat-run/kernel';
+import { assertPlatformCall, PlatformCallError } from './platform-call.js';
 import {
   z,
   PROBLEM_CONTENT_TYPE,
@@ -134,6 +132,7 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
+  CONNECTOR_ATTACHMENT_RECORD_HEADER,
 } from '@substrat-run/contracts';
 
 /**
@@ -1537,6 +1536,11 @@ export * from './capability-exchange.js';
 export * from './peer-client.js';
 // #1859: the live-read route — the Origin gate and the pure host's 501, once.
 export * from './live.js';
+// #1978: moving here from the kernel — the request log, the router assertion and the
+// platform-call check every deployed vertical mounts.
+export * from './invocation-log.js';
+export * from './routed-node.js';
+export * from './platform-call.js';
 export {
   classifyError,
   isPlatformFault,

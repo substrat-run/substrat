@@ -28,13 +28,13 @@ import {
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
-import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import {
   kickFlags,
+  mountPlatformSurface,
   readRoutedNode,
   RouterAssertionError,
   invocationLog,
-} from '@substrat-run/kernel';
+} from '@substrat-run/vertical-host';
 import { declareScriveConnector } from '@substrat-run/connector-scrive';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';

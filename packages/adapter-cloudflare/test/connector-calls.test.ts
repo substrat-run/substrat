@@ -1,13 +1,18 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, it } from 'vitest';
 import { connectionId, platformActorId, scopeId, tenantId, type DomainEvent } from '@substrat-run/contracts';
+import * as kernel from '@substrat-run/kernel';
 import {
-  analyticsEngineConnectorCallRecorder,
   ulid,
   webCryptoSecretBox,
   type ConnectorCallRecorder,
   type FetchLike,
 } from '@substrat-run/kernel';
+import * as contracts from '@substrat-run/contracts';
+import * as adapter from '../src/index.js';
+import * as connectorCalls from '../src/connector-calls.js';
+import { analyticsEngineConnectorCallRecorder } from '../src/connector-calls.js';
+import * as liveReads from '../src/live-reads.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -109,5 +114,37 @@ describe('connector calls into the recorder, hosted (#1691)', () => {
     expect(await w.call('/fail')).toBe('resolved');
     expect(recorder.dropped).toBe(2);
     expect((await w.health()).lastError).toBe('HTTP 500 from scrive');
+  });
+});
+
+/**
+ * #1978: the hosted recorder is moving here from the kernel, which keeps the neutral half.
+ * For one release the kernel still exports it, and an import from either package must be the
+ * ONE binding — a copy of `CONNECTOR_CALL_DATA_POINT_LAYOUT` could drift from the reader that
+ * indexes into it by ordinal.
+ */
+describe('exports moving here from the kernel (#1978)', () => {
+  const NAMES = ['analyticsEngineConnectorCallRecorder', 'CONNECTOR_CALL_DATA_POINT_LAYOUT', 'connectorCallDataPoint'];
+
+  it('forwards exactly the moved names', () => {
+    expect(Object.keys(connectorCalls).sort()).toEqual([...NAMES].sort());
+  });
+
+  it("each one is the kernel's binding, from the module and from the package index", () => {
+    for (const name of NAMES) {
+      const kernelBinding = (kernel as Record<string, unknown>)[name];
+      expect(kernelBinding, name).toBeDefined();
+      expect((connectorCalls as Record<string, unknown>)[name], name).toBe(kernelBinding);
+      expect((adapter as Record<string, unknown>)[name], name).toBe(kernelBinding);
+    }
+  });
+
+  it('the moved type is the kernel type', () => {
+    expectTypeOf<adapter.AnalyticsEngineDatasetLike>().toEqualTypeOf<kernel.AnalyticsEngineDatasetLike>();
+  });
+
+  it("the live-read wire names are contracts' bindings, and the upgrade test still the kernel's", () => {
+    expect(liveReads.LIVE_MODE_HEADER).toBe(contracts.LIVE_MODE_HEADER);
+    expect(liveReads.isUpgradeRequest).toBe(kernel.isUpgradeRequest);
   });
 });

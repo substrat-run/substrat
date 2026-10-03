@@ -47,14 +47,14 @@ import {
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
+import type { ScopeStub } from '@substrat-run/kernel';
 import {
   kickFlags,
+  mountPlatformSurface,
   readRoutedNode,
   RouterAssertionError,
-  type ScopeStub,
   invocationLog,
-} from '@substrat-run/kernel';
-import { mountPlatformSurface } from '@substrat-run/vertical-host';
+} from '@substrat-run/vertical-host';
 import { MODULES, OWNER_ROLE_KEY, ROLES } from './provision.js';
 import { SHOP_ENV } from './manifest.js';
 import { mountApi } from './routes.js';

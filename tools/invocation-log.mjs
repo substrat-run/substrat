@@ -162,7 +162,7 @@ if (offenders.length > 0) {
   console.error("    app.use('*', invocationLog<Env>({");
   console.error('      routerSecret: (env) => env.ROUTER_SECRET,');
   console.error("      allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',");
-  console.error('    }));   // from \'@substrat-run/kernel\'');
+  console.error('    }));   // from \'@substrat-run/vertical-host\'');
   for (const o of offenders) console.error(`  ${o}`);
   process.exit(1);
 }

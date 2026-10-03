@@ -41,7 +41,8 @@ import {
   FIELD_COVERAGE_ARMED,
   FIELD_COVERAGE_BINDING,
 } from '@substrat-run/contracts';
-import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord, type ScopeStub } from '@substrat-run/kernel';
+import type { ScopeStub } from '@substrat-run/kernel';
+import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
 import { defOf, transparentInner } from './zod-structural.js';

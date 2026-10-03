@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { invocationLog } from '@substrat-run/kernel';
+import { invocationLog } from '@substrat-run/vertical-host';
 import { createWfpUploader } from '../src/wfp.js';
 import type { VerticalBundle } from '../src/deploy.js';
 import { PLATFORM_ENTRY_MODULE, platformEntrySkipReason, withPlatformEntry } from '../src/platform-entry.js';

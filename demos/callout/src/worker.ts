@@ -33,7 +33,7 @@ import {
   readRoutedNode,
   RouterAssertionError,
   invocationLog,
-} from '@substrat-run/kernel';
+} from '@substrat-run/vertical-host';
 import { ROLES } from './provision.js';
 import { CALLOUT_ENV } from './manifest.js';
 import { workorderModule } from '@substrat-run/engine-workorder';

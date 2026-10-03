@@ -19,8 +19,14 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { principalId, scopeId, tenantId, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { mountPlatformSurface } from '@substrat-run/vertical-host';
-import { kickFlags, readRoutedNode, RouterAssertionError, type ScopeStub, invocationLog } from '@substrat-run/kernel';
+import {
+  kickFlags,
+  mountPlatformSurface,
+  readRoutedNode,
+  RouterAssertionError,
+  invocationLog,
+} from '@substrat-run/vertical-host';
+import type { ScopeStub } from '@substrat-run/kernel';
 import {
   AuthConfigError,
   IdentityDO,
