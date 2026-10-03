@@ -82,7 +82,9 @@ export const emittedHere = (alias = ''): string =>
 
 /**
  * On a copy, nothing that originated in the source produces an effect in the destination. Run
- * inside the load's transaction, after the rows are in. The history stays: every row is still
+ * inside the load's transaction, after the rows are in and BEFORE the loader queues any work of
+ * its own (the attachment-text re-extraction is a job run), or that work is settled with the
+ * source's. The history stays: every row is still
  * there and reads as what happened at the source; only its power to cause something here goes.
  *
  * The platform's drain walks every active scope, and a fork, a snapshot or a preview is one, so

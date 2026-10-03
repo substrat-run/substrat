@@ -767,8 +767,56 @@ export function scopeHostContractSuite(
         expect(await logOf(snap)).toEqual([]);
       });
 
-      it('a return (the same dump restored into its own scope) runs all of it', async () => {
-        await host.restoreScope(staff, t1, source, queued);
+      /** A scope's export with one executor delivery removed, so that event is owed again. */
+      const owing = async (s: ScopeId, entityId: string): Promise<Dump> => {
+        const dump = await host.admin.exportScope(staff, t1, s);
+        const outbox = dump.tables.find((t) => t.name === '_substrat_outbox')!;
+        const id = outbox.rows.find((r) => r[outbox.columns.indexOf('entity_id')] === entityId)![outbox.columns.indexOf('id')];
+        return {
+          ...dump,
+          tables: dump.tables.map((t) =>
+            t.name === '_substrat_deliveries' ? { ...t, rows: t.rows.filter((r) => r[t.columns.indexOf('event_id')] !== id) } : t,
+          ),
+        };
+      };
+
+      it("a copy of a copy runs neither source's work; the copy's own backup, returned, runs only its own", async () => {
+        const first = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: first, jurisdiction: 'eu', vertical: 'connector-vertical' }, queued);
+        await (await host.getScope(alice, t1, first)).invoke('connector/request-effect', { tag: 'first-own' });
+        expect(count('first-own')).toBe(1);
+        const firstsBackup = await owing(first, 'first-own');
+
+        // copy → copy: the second copy's mark is above the first copy's own events too.
+        const second = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: second, jurisdiction: 'eu', vertical: 'connector-vertical' }, firstsBackup);
+        await (await host.getScope(alice, t1, second)).invoke('flow/log');
+        await host.drainDue(t1, second);
+        expect(count('first-own')).toBe(1);
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        await (await host.getScope(alice, t1, second)).invoke('connector/request-effect', { tag: 'second-own' });
+        expect(count('second-own')).toBe(1);
+
+        // The first copy's backup returned to it: its own owed event runs, and the source's
+        // still do not, because the copy's origin came back with its backup.
+        await host.restoreScope(staff, t1, first, firstsBackup);
+        await (await host.getScope(alice, t1, first)).invoke('flow/log');
+        await host.drainDue(t1, first);
+        expect(count('first-own')).toBe(2);
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        expect(await logOf(first)).toEqual([]);
+      });
+
+      it('a return (the same dump restored into its own scope) runs all of it — from a dump that predates the origin table too', async () => {
+        // A backup taken before `_substrat_copy_origin` existed: the loader builds the table from
+        // the kernel's DDL, as every wake does on an existing scope, and no row means nothing here
+        // was copied.
+        const legacy = { ...queued, tables: queued.tables.filter((t) => t.name !== '_substrat_copy_origin') };
+        expect(legacy.tables.length).toBe(queued.tables.length - 1);
+        await host.restoreScope(staff, t1, source, legacy);
+        expect((await host.admin.listScopeTables(staff, t1, source)).map((t) => t.name)).toContain('_substrat_copy_origin');
         await (await host.getScope(alice, t1, source)).invoke('flow/log');
         await host.drainDue(t1, source);
         expect(count('copy-retry')).toBe(2);
@@ -3435,9 +3483,12 @@ export function scopeHostContractSuite(
           dump,
         );
 
-        // Same tables and row counts as the source (the spine came across too).
-        const src = (await host.admin.listScopeTables(staff, t1, s1))
-          .map((t) => `${t.name}:${t.rowCount}`)
+        // Same tables and row counts as the source (the spine came across too), but for the one
+        // row a copy adds when it brought events in: where it came from, and the mark (#1686).
+        const srcTables = await host.admin.listScopeTables(staff, t1, s1);
+        const copiedEvents = (srcTables.find((t) => t.name === '_substrat_outbox')?.rowCount ?? 0) > 0;
+        const src = srcTables
+          .map((t) => (t.name === '_substrat_copy_origin' ? `${t.name}:${copiedEvents ? 1 : 0}` : `${t.name}:${t.rowCount}`))
           .sort();
         const dst = (await host.admin.listScopeTables(staff, t1, copy))
           .map((t) => `${t.name}:${t.rowCount}`)

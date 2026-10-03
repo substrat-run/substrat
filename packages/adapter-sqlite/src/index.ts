@@ -3452,6 +3452,10 @@ export class SqliteScopeHost implements ScopeHost {
       // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
       // text of attachments the dump did not bring back, and queue extraction for those
       // it brought back without text — the bytes decide what that run finds.
+      const switchSql = switchSqlOf(db);
+      // #1686: nothing the source queued runs in a copy; a return leaves it all queued. BEFORE
+      // the extraction queue below, which is this scope's own work, not the source's.
+      settleCopiedWork(switchSql, scopeId, dump.scopeId, this.clock());
       reconcileAttachmentText(spineSql(db), ulid, this.clock());
       // Re-point scope-level grants at the scope they now live in. They are written as
       // `object = scope:<scopeId>`, so a fork, a restore into a different scope, or #286's
@@ -3463,10 +3467,7 @@ export class SqliteScopeHost implements ScopeHost {
       // (subject, relation, object) is the primary key, so a moved row can meet one the dump
       // already holds here; which one survives is that function's rule too (#1882), judged
       // at this host's clock as the checker judges expiry.
-      const switchSql = switchSqlOf(db);
       repointScopeGrants(switchSql, scopeId, { scopeId: dump.scopeId, exact: dump.exact }, this.clock());
-      // #1686: nothing the source queued runs in a copy; a return leaves it all queued.
-      settleCopiedWork(switchSql, scopeId, dump.scopeId, this.clock());
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);

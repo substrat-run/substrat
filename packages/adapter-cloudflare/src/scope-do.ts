@@ -4965,9 +4965,10 @@ export function defineScopeDO(
         // text of attachments the dump did not bring back, and queue extraction for those
         // it brought back without text — the bytes decide what that run finds.
         const now = new Date().toISOString();
-        reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
-        // #1686: nothing the source queued runs in a copy; a return leaves it all queued.
+        // #1686: nothing the source queued runs in a copy; a return leaves it all queued. BEFORE
+        // the extraction queue below, which is this scope's own work, not the source's.
         settleCopiedWork(this.switchSql(), destScopeId, sourceScopeId, now);
+        reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
         if (destScopeId) {
