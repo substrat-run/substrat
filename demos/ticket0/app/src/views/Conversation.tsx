@@ -4,7 +4,8 @@
  * This one screen carries all three of the handoff's product constraints, so each is
  * marked where it lives:
  *
- *   1. public vs internal — `Composer`, which restyles its ENTIRE surface by mode;
+ *   1. public vs internal vs forward — `Composer`, which restyles its ENTIRE surface by
+ *      mode; a forward (#1086) goes to one third party and never to the customer;
  *   2. agents never see cost — `Rail`, where the usage card is absent rather than
  *      disabled, and absent because the API refused, not because a flag said so;
  *   3. the assistant is staff — `MessageRow` treats it like a person, and only its
@@ -23,7 +24,7 @@ import {
   type Ticket0Client,
 } from '../api.js';
 import { agentName, agents, assignableStaff } from '../agents.js';
-import { contacts, isAnonymous, nameOf } from '../contacts.js';
+import { contactsWith, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
 import { PACE } from '../pace.js';
 import { latestOnly } from '../sequence.js';
@@ -61,6 +62,9 @@ type DeskTag = Awaited<ReturnType<typeof api.listTags>>['tags'][number];
 /** The rating the customer left, read back by the people it is about. */
 type Csat = Awaited<ReturnType<typeof api.getCsat>>['csat'];
 
+/** Who is on the conversation (#1086): ids and roles, named through the directories. */
+type Participant = Awaited<ReturnType<typeof api.listParticipants>>['participants'][number];
+
 export function ConversationView({
   id,
   caps,
@@ -83,6 +87,9 @@ export function ConversationView({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [who, setWho] = useState<Contact | undefined>(undefined);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  /** The contact directory, so a CC's or a third party's id has a name (#1086). */
+  const [people, setPeople] = useState<Map<string, Contact>>(new Map());
   /**
    * The desk's staff — what turns a ULID into a name. The owner picker is offered
    * `assignableStaff` of it, which is the same map minus the assistant.
@@ -94,7 +101,7 @@ export function ConversationView({
   const load = useCallback(async () => {
     const isLatest = reads();
     try {
-      const [c, m, t, tg, vocab, rating] = await Promise.all([
+      const [c, m, t, tg, vocab, rating, on] = await Promise.all([
         api.getConversation({ conversationId: id }),
         api.listMessages({ conversationId: id }),
         api.listTurns({ conversationId: id }),
@@ -103,12 +110,22 @@ export function ConversationView({
         // The staff half of `submit-csat`. Null for an unrated conversation, which
         // is most of them — the card is simply absent rather than empty.
         api.getCsat({ conversationId: id }),
+        api.listParticipants({ conversationId: id }),
       ]);
       if (!isLatest()) return;
       setConv(c);
-      const person = (await contacts()).get(c.contact_id);
+      // Everyone this conversation names, resolved even when the directory's page missed
+      // them: the customer, every participant, and whoever wrote or was forwarded to.
+      const directory = await contactsWith([
+        c.contact_id,
+        ...on.participants.map((p) => p.contact_id),
+        ...m.entries.flatMap((x) => [x.author_contact_id, x.third_party_contact_id]),
+      ]);
       if (!isLatest()) return;
-      setWho(person);
+      setWho(directory.get(c.contact_id));
+      // A copy: the directory is one shared, growing Map, and React compares by reference.
+      setPeople(new Map(directory));
+      setParticipants(on.participants);
       setMessages(m.entries as MessageWithCitations[]);
       setTurns(t.entries as Turn[]);
       setTags(tg.tags);
@@ -196,7 +213,7 @@ export function ConversationView({
               {error}
             </div>
           ) : null}
-          <Thread messages={messages} turnFor={turnFor} conv={conv} busy={busy} act={act} />
+          <Thread messages={messages} turnFor={turnFor} conv={conv} busy={busy} act={act} people={people} />
           <Composer conv={conv} busy={busy} act={act} session={session} staff={staff} />
         </div>
         <Rail
@@ -208,6 +225,8 @@ export function ConversationView({
           tags={tags}
           vocabulary={vocabulary}
           csat={csat}
+          participants={participants}
+          people={people}
           busy={busy}
           act={act}
           go={go}
@@ -298,12 +317,14 @@ function Thread({
   conv,
   busy,
   act,
+  people,
 }: {
   messages: MessageWithCitations[];
   turnFor: (id: string) => Turn | undefined;
   conv: Conversation;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
+  people: Map<string, Contact>;
 }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -329,19 +350,15 @@ function Thread({
         const turn = turnFor(m.id);
         // Artboard 08: the resolution and the reply that undid it are events in the
         // timeline, not states you have to infer from a badge that already moved on.
-        // The FIRST contact message after the resolution is the one that reopened it.
-        // Marking every later one too would draw the same event over and over.
+        // The FIRST customer message after the resolution is the one that reopened it.
+        // Marking every later one too would draw the same event over and over. Public
+        // only: a third party's answer on a side thread (#1086) is not the customer.
+        const customer = (e: MessageWithCitations) => e.author_kind === 'contact' && e.visibility === 'public';
         const reopened =
           conv.resolved_at &&
-          m.author_kind === 'contact' &&
+          customer(m) &&
           new Date(m.created_at) > new Date(conv.resolved_at) &&
-          !messages
-            .slice(0, i)
-            .some(
-              (e) =>
-                e.author_kind === 'contact' &&
-                new Date(e.created_at) > new Date(conv.resolved_at!),
-            );
+          !messages.slice(0, i).some((e) => customer(e) && new Date(e.created_at) > new Date(conv.resolved_at!));
         return (
           <div key={m.id} style={{ display: 'contents' }}>
             {reopened && i > 0 ? (
@@ -352,7 +369,7 @@ function Thread({
             ) : turn && turn.outcome === 'drafted' && m.visibility === 'internal' ? (
               <DraftCard message={m} turn={turn} busy={busy} act={act} conv={conv} />
             ) : (
-              <MessageRow message={m} />
+              <MessageRow message={m} people={people} />
             )}
           </div>
         );
@@ -369,6 +386,69 @@ function Thread({
   );
 }
 
+/**
+ * How each audience looks (#1086), in the thread and in the composer — one palette, so the
+ * amber that means "the customer will never see this" and the slate that means "one third
+ * party sees this" cannot drift apart between the two places that draw them.
+ */
+type Audience = 'public' | 'internal' | 'forward';
+const AUDIENCE: Record<
+  Audience,
+  {
+    bubble: string;
+    bubbleBorder: string;
+    text: string;
+    label: string;
+    labelColour: string;
+    surfaceBorder: string;
+    stripe: string;
+    caret: string;
+    placeholder: string;
+    button: string;
+    send: string;
+  }
+> = {
+  public: {
+    bubble: 'var(--surface)',
+    bubbleBorder: 'var(--hairline)',
+    text: 'var(--text)',
+    label: '○ PUBLIC — the customer receives this by email',
+    labelColour: 'var(--secondary-2)',
+    surfaceBorder: '1px solid var(--frame)',
+    stripe: 'none',
+    caret: 'var(--text)',
+    placeholder: 'Reply to the customer…',
+    button: 'btn btn-primary',
+    send: 'Send reply',
+  },
+  internal: {
+    bubble: 'var(--internal-bg)',
+    bubbleBorder: 'var(--internal-border-soft)',
+    text: 'var(--internal-text-3)',
+    label: '● INTERNAL — the customer will never see this',
+    labelColour: 'var(--internal-text)',
+    surfaceBorder: '1.5px solid var(--internal-border)',
+    stripe: 'inset 3px 0 0 var(--internal-stripe)',
+    caret: 'var(--internal-stripe)',
+    placeholder: 'A note for colleagues…',
+    button: 'btn btn-internal',
+    send: 'Add internal note',
+  },
+  forward: {
+    bubble: 'var(--forward-bg)',
+    bubbleBorder: 'var(--forward-border-soft)',
+    text: 'var(--forward-text-3)',
+    label: '◆ FORWARD — only this address receives it; the customer never sees it',
+    labelColour: 'var(--forward-text)',
+    surfaceBorder: '1.5px solid var(--forward-border)',
+    stripe: 'inset 3px 0 0 var(--forward-stripe)',
+    caret: 'var(--forward-stripe)',
+    placeholder: 'What to ask them — nothing else is sent…',
+    button: 'btn btn-forward',
+    send: 'Forward',
+  },
+};
+
 const AUTHOR: Record<string, string> = {
   contact: 'Customer',
   agent: 'Support',
@@ -380,15 +460,46 @@ const AUTHOR: Record<string, string> = {
  * Constraint 3: the assistant gets the same avatar, the same name line, the same
  * meta treatment as a human. No robot chrome anywhere.
  */
-function MessageRow({ message }: { message: MessageWithCitations }) {
+function MessageRow({ message, people }: { message: MessageWithCitations; people: Map<string, Contact> }) {
   const internal = message.visibility === 'internal';
+  // A side thread with one third party (#1086): never the customer's, and drawn so.
+  const forward = message.visibility === 'forward';
+  const third = message.third_party_contact_id ? people.get(message.third_party_contact_id) : undefined;
+  const thirdName = third ? nameOf(third) : 'a third party';
+  // Which contact wrote it — a CC's reply is theirs, not the requester's.
+  const wrote = message.author_contact_id ? people.get(message.author_contact_id) : undefined;
+  const author =
+    message.author_kind !== 'contact'
+      ? AUTHOR[message.author_kind] ?? '?'
+      : forward
+        ? thirdName
+        : wrote
+          ? nameOf(wrote)
+          : AUTHOR.contact!;
+  const tone = AUDIENCE[message.visibility];
   return (
     <div style={{ display: 'flex', gap: 10 }}>
-      <Avatar name={AUTHOR[message.author_kind] ?? '?'} size={26} anonymous={message.author_kind === 'contact'} />
+      <Avatar name={author} size={26} anonymous={message.author_kind === 'contact' && !forward} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
-          <span style={{ font: "600 12px 'Geist', sans-serif" }}>{AUTHOR[message.author_kind]}</span>
+          <span style={{ font: "600 12px 'Geist', sans-serif" }}>{author}</span>
           <span className="t-small">· {clock(message.created_at)}</span>
+          {forward ? (
+            <span
+              className="mono"
+              style={{
+                font: "600 10px 'Geist Mono', monospace",
+                letterSpacing: '.06em',
+                color: 'var(--forward-text)',
+                background: 'var(--forward-tab)',
+                border: '1px solid var(--forward-border-soft)',
+                borderRadius: 4,
+                padding: '1px 6px',
+              }}
+            >
+              {message.author_kind === 'contact' ? 'FROM THIRD PARTY' : `FORWARDED TO ${thirdName.toUpperCase()}`}
+            </span>
+          ) : null}
           {internal ? (
             <span
               className="mono"
@@ -408,13 +519,13 @@ function MessageRow({ message }: { message: MessageWithCitations }) {
         </div>
         <div
           style={{
-            background: internal ? 'var(--internal-bg)' : 'var(--surface)',
-            border: `1px solid ${internal ? 'var(--internal-border-soft)' : 'var(--hairline)'}`,
+            background: tone.bubble,
+            border: `1px solid ${tone.bubbleBorder}`,
             borderRadius: 8,
             padding: '10px 13px',
             font: "400 13px/1.65 'Geist', sans-serif",
             whiteSpace: 'pre-wrap',
-            color: internal ? 'var(--internal-text-3)' : 'var(--text)',
+            color: tone.text,
           }}
         >
           {message.body_text}
@@ -441,9 +552,20 @@ function MessageRow({ message }: { message: MessageWithCitations }) {
             ))}
           </div>
         ) : null}
-        {!internal && message.author_kind !== 'contact' ? (
+        {message.visibility === 'public' && message.author_kind !== 'contact' ? (
           <div className="t-small" style={{ marginTop: 5 }}>
             public · {message.delivered_at ? 'delivered by email' : 'shown in widget'}
+          </div>
+        ) : null}
+        {forward && message.author_kind !== 'contact' ? (
+          <div className="t-small" style={{ marginTop: 5 }}>
+            forward ·{' '}
+            {message.delivered_at
+              ? 'delivered by email'
+              : message.withdrawn_at
+                ? 'withdrawn — never sent'
+                : 'waiting to be sent'}{' '}
+            · the customer never sees this
           </div>
         ) : null}
       </div>
@@ -713,7 +835,15 @@ function Composer({
   session: Session;
   staff: Map<string, AgentProfile>;
 }) {
-  const [internal, setInternal] = useState(false);
+  /**
+   * Who the next send is for: the customer (`public`), colleagues (`internal`), or one
+   * third party (`forward`, #1086) — whose address is `to`, and who alone receives it.
+   */
+  const [mode, setMode] = useState<'public' | 'internal' | 'forward'>('public');
+  const internal = mode === 'internal';
+  const forward = mode === 'forward';
+  const look = AUDIENCE[mode];
+  const [to, setTo] = useState('');
   const [text, setText] = useState('');
   const [picker, setPicker] = useState(false);
   /**
@@ -734,8 +864,13 @@ function Composer({
   const send = () => {
     const body = text.trim();
     if (!body) return;
+    if (forward && !to.trim()) return;
     void act(async () => {
-      if (macro) {
+      if (forward) {
+        // A forward runs no macro: a macro's reply is the customer's or a note, and its
+        // actions are work on the customer's thread, not a question to somebody else.
+        await api.forwardMessage({ conversationId: conv.id, to: to.trim(), body });
+      } else if (macro) {
         await api.applySavedReply({
           conversationId: conv.id,
           savedReplyId: macro.id,
@@ -758,7 +893,7 @@ function Composer({
     // so it takes Tab away from focus movement inside the composer deliberately.
     if (e.key === 'Tab') {
       e.preventDefault();
-      setInternal((v) => !v);
+      setMode((m) => (m === 'public' ? 'internal' : 'public'));
       return;
     }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -800,23 +935,40 @@ function Composer({
             font: "600 10px 'Geist Mono', monospace",
             letterSpacing: '.07em',
             textTransform: 'uppercase',
-            color: internal ? 'var(--internal-text)' : 'var(--secondary-2)',
+            color: look.labelColour,
             marginBottom: 7,
           }}
         >
-          {internal
-            ? '● INTERNAL — the customer will never see this'
-            : '○ PUBLIC — the customer receives this by email'}
+          {look.label}
         </div>
+        {forward ? (
+          <input
+            type="email"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            placeholder="supplier@example.com"
+            aria-label="Forward to"
+            style={{
+              width: '100%',
+              marginBottom: 7,
+              border: '1px solid var(--forward-border)',
+              borderRadius: 6,
+              background: 'var(--surface)',
+              font: "400 12px 'Geist Mono', monospace",
+              color: 'inherit',
+              padding: '5px 8px',
+            }}
+          />
+        ) : null}
 
         <div
           style={{
             position: 'relative',
             borderRadius: 6,
             // Constraint 1: the ENTIRE surface changes, not a corner of it.
-            background: internal ? 'var(--internal-bg)' : 'var(--surface)',
-            border: internal ? '1.5px solid var(--internal-border)' : '1px solid var(--frame)',
-            boxShadow: internal ? 'inset 3px 0 0 var(--internal-stripe)' : 'none',
+            background: look.bubble,
+            border: look.surfaceBorder,
+            boxShadow: look.stripe,
           }}
         >
           <textarea
@@ -825,7 +977,7 @@ function Composer({
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
             rows={3}
-            placeholder={internal ? 'A note for colleagues…' : `Reply to the customer…`}
+            placeholder={look.placeholder}
             style={{
               width: '100%',
               resize: 'vertical',
@@ -834,8 +986,8 @@ function Composer({
               background: 'transparent',
               padding: '10px 12px',
               font: "400 13px/1.6 'Geist', sans-serif",
-              color: internal ? 'var(--internal-text-3)' : 'var(--text)',
-              caretColor: internal ? 'var(--internal-stripe)' : 'var(--text)',
+              color: look.text,
+              caretColor: look.caret,
             }}
           />
         </div>
@@ -846,15 +998,23 @@ function Composer({
           </span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
             <button
-              className={internal ? 'btn btn-internal' : 'btn btn-primary'}
-              disabled={busy || !text.trim()}
+              className="btn btn-ghost"
+              disabled={busy || conv.state === 'closed'}
+              title="Ask a third party about this conversation — their answer lands here, and the customer sees neither"
+              onClick={() => setMode((m) => (m === 'forward' ? 'public' : 'forward'))}
+            >
+              {forward ? 'Cancel forward' : 'Forward…'}
+            </button>
+            <button
+              className={look.button}
+              disabled={busy || !text.trim() || (forward && !to.trim())}
               onClick={send}
             >
-              {internal ? 'Add internal note' : 'Send reply'}
+              {look.send}
             </button>
           </div>
         </div>
-        {macro ? (
+        {macro && !forward ? (
           <div className="t-small" style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
             <span>
               Sending also runs “{macro.title}”: {macro.actions.map((a) => describeAction(a, staff)).join(' · ')}.
@@ -1310,6 +1470,8 @@ function Rail({
   tags,
   vocabulary,
   csat,
+  participants,
+  people,
   busy,
   act,
   go,
@@ -1322,6 +1484,8 @@ function Rail({
   tags: ConversationTag[];
   vocabulary: DeskTag[];
   csat: Csat;
+  participants: Participant[];
+  people: Map<string, Contact>;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
   go: (v: View) => void;
@@ -1424,6 +1588,8 @@ function Rail({
 
       {visitor ? <VisitorCard session={visitor} /> : null}
 
+      <PeoplePanel conv={conv} participants={participants} people={people} staff={staff} busy={busy} act={act} />
+
       {/* Tagging has existed since the first release and nothing ever read the table
           back, so this panel said "None yet" whatever the conversation carried
           (#1084). It now shows the tags, takes one off, and offers the desk's own
@@ -1498,6 +1664,126 @@ function Rail({
         </button>
       </div>
     </aside>
+  );
+}
+
+/* ── People on the conversation (#1086) ────────────────────────────────── */
+
+/**
+ * Everyone on the conversation besides its customer: the CCs copied on every reply, the
+ * third parties asked something on a side thread, and the colleagues following it.
+ *
+ * Names come from the directories the app already reads — the contact list for a CC or a
+ * third party, the staff list for a follower — and an id that neither resolves stays an id
+ * rather than a guess. A CC is added here by address; a third party is added by the
+ * composer's Forward, which is the only reason to put one on. Taking either off is the ×.
+ * A conversation in the suspended queue takes no new people, and the server says so if
+ * this screen is out of date.
+ */
+function PeoplePanel({
+  conv,
+  participants,
+  people,
+  staff,
+  busy,
+  act,
+}: {
+  conv: Conversation;
+  participants: Participant[];
+  people: Map<string, Contact>;
+  staff: Map<string, AgentProfile>;
+  busy: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState('');
+  const held = conv.quarantine === 'suspended';
+  const label = (p: Participant) =>
+    p.principal
+      ? agentName(staff, p.principal) ?? p.principal.slice(-8)
+      : p.contact_id
+        ? people.get(p.contact_id)?.email ?? nameOf(people.get(p.contact_id))
+        : '?';
+  const group = (role: Participant['role'], title: string) => {
+    const rows = participants.filter((p) => p.role === role);
+    if (rows.length === 0) return null;
+    return (
+      <div style={{ marginBottom: 6 }}>
+        <div className="t-small" style={{ marginBottom: 3 }}>
+          {title}
+        </div>
+        {rows.map((p) => (
+          <div
+            key={`${p.role}:${p.contact_id ?? p.principal}`}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, font: "400 12px 'Geist Mono', monospace" }}
+          >
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{label(p)}</span>
+            {p.contact_id ? (
+              <button
+                type="button"
+                aria-label={`Take ${label(p)} off this conversation`}
+                title={`Take ${label(p)} off this conversation`}
+                disabled={busy}
+                onClick={() =>
+                  void act(() => api.removeParticipant({ conversationId: conv.id, contactId: p.contact_id! }))
+                }
+                style={{
+                  marginLeft: 'auto',
+                  border: 'none',
+                  background: 'none',
+                  padding: '0 3px',
+                  color: 'var(--muted)',
+                  cursor: busy ? 'default' : 'pointer',
+                }}
+              >
+                ×
+              </button>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    );
+  };
+  const add = () => {
+    const email = draft.trim();
+    if (!email) return;
+    setDraft('');
+    void act(() => api.addParticipant({ conversationId: conv.id, email }));
+  };
+  return (
+    <div>
+      <div className="micro" style={{ marginBottom: 8 }}>
+        People
+      </div>
+      {group('cc', 'Copied in — receives every reply')}
+      {group('third-party', 'Third parties — forwards only, never the customer’s thread')}
+      {group('follower', 'Following')}
+      {participants.every((p) => p.role === 'requester') ? (
+        <div className="t-small" style={{ marginBottom: 8 }}>
+          Nobody else yet
+        </div>
+      ) : null}
+      <input
+        type="email"
+        value={draft}
+        disabled={busy || held}
+        placeholder="Copy someone in, then Enter…"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          add();
+        }}
+        style={{
+          width: '100%',
+          border: '1px solid var(--frame)',
+          borderRadius: 6,
+          background: 'var(--surface)',
+          font: "400 12px 'Geist Mono', monospace",
+          color: 'inherit',
+          padding: '3px 6px',
+        }}
+      />
+    </div>
   );
 }
 

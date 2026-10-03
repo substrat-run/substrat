@@ -143,6 +143,9 @@ export async function verifyWebhookSignature(input: {
 /** What `GET /emails/receiving/{id}` answers with — the part of it this reads. */
 interface ReceivedEmail {
   from?: string | null;
+  /** The mail's recipients, when Resend lists them — otherwise the headers are read. */
+  to?: string[] | string | null;
+  cc?: string[] | string | null;
   subject?: string | null;
   text?: string | null;
   html?: string | null;
@@ -186,6 +189,38 @@ export function parseFrom(from: string | null | undefined): { email: string; nam
   const email = (angled ? angled[2]! : from).trim();
   const name = angled ? angled[1]!.trim() || null : null;
   return address.safeParse(email).success ? { email, name } : null;
+}
+
+/**
+ * One address header's list, split into its addresses: `a@b, "Doe, Jane" <c@d>` is two.
+ * A comma inside quotes or angle brackets is part of a name, not a separator.
+ */
+export function splitAddressList(header: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  let quoted = false;
+  let angled = false;
+  for (const ch of header) {
+    if (ch === '"') quoted = !quoted;
+    else if (ch === '<' && !quoted) angled = true;
+    else if (ch === '>' && !quoted) angled = false;
+    if (ch === ',' && !quoted && !angled) {
+      out.push(current);
+      current = '';
+    } else current += ch;
+  }
+  out.push(current);
+  return out.map((part) => part.trim()).filter(Boolean);
+}
+
+/**
+ * The bare addresses a recipient field names (#1086), whichever shape it came in: Resend's
+ * list, or the raw header. Anything that is not an address is left out here, and
+ * `ingest-message` judges what is left — who is the desk, who is already on the thread.
+ */
+export function recipientsOf(listed: string[] | string | null | undefined, header: string | null): string[] {
+  const raw = Array.isArray(listed) ? listed : splitAddressList(listed ?? header ?? '');
+  return raw.map((entry) => parseFrom(entry)?.email).filter((email): email is string => email !== undefined);
 }
 
 /** Angle brackets, the shape an `In-Reply-To` carries and `ingest-message` matches exactly. */
@@ -282,6 +317,10 @@ export async function receiveInbound(options: {
       // stable across redeliveries and so still keeps the ingest idempotent.
       emailMessageId: email.message_id ? bracketed(email.message_id) : `resend:${emailId}`,
       emailInReplyTo: headerOf(email, 'in-reply-to'),
+      // Who else it was addressed to (#1086): the desk copies them in when the sender is
+      // on the customer's thread. Whether one of them is the desk itself is the desk's call.
+      to: recipientsOf(email.to, headerOf(email, 'to')),
+      cc: recipientsOf(email.cc, headerOf(email, 'cc')),
       ...(attachments.length > 0 ? { attachments } : {}),
     });
   } catch (error) {

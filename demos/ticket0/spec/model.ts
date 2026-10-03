@@ -248,6 +248,32 @@ export const SUSPENDED_EXCERPT_CHARS = 280;
 /** How many conversations one bulk discard takes. A screenful, not a script. */
 export const DISCARD_BATCH_MAX = 100;
 
+/**
+ * Who a message is for (#1086) — the one vocabulary every reader of `message.visibility`
+ * shares.
+ *
+ *  - `public` — the customer's thread: the requester, every CC, and the desk.
+ *  - `internal` — the desk talking to itself: a note, a draft, a system remark.
+ *  - `forward` — the desk and ONE third party it asked something (a supplier, a
+ *    colleague at another company): what the desk forwarded, and what came back. Never
+ *    the customer's, and never on any customer-facing read.
+ *
+ * Every customer-facing read names `public` positively (`visibility = 'public'`), never
+ * `!= 'internal'`, so a value added here is excluded from them by construction. That is
+ * the property this enum leans on, and `test/participants.test.ts` drives a forward
+ * through every one of those reads.
+ */
+export const messageVisibility = z.enum(['public', 'internal', 'forward']);
+
+/**
+ * How many CCs and third parties one conversation may carry (#1086).
+ *
+ * A thread a person can read the recipients of, not a mailing list. Inbound mail beyond it
+ * keeps the first ones and says how many it left (`ingest-message` never refuses a mail
+ * over its recipient list); a person adding one more is refused.
+ */
+export const PARTICIPANTS_MAX = 20;
+
 export const DESK_METRICS_AGENTS = 25;
 
 /** The window `ticket0/desk-metrics` reports when the caller names neither end. */
@@ -808,7 +834,10 @@ export const ticket0Entities = defineEntities({
    * `visibility` is the single most consequential column in this app: it is the
    * difference between a note to a colleague and an email to a customer. It is an
    * enum rather than a boolean so that reading a row makes the answer obvious
-   * rather than requiring the reader to remember which way round `internal` went.
+   * rather than requiring the reader to remember which way round `internal` went —
+   * and it is what let a third audience arrive (`forward`, #1086) without any reader
+   * having to learn that a boolean now meant three things. `messageVisibility` above
+   * says what each value means.
    *
    * The bodies are **erasable**, and that has a consequence worth stating out loud:
    * no event can carry them. So the outbound-email event carries ids only, and the
@@ -823,12 +852,33 @@ export const ticket0Entities = defineEntities({
       conversation_id: z.string(),
       author_kind: z.enum(['contact', 'agent', 'assistant', 'system']),
       author_principal: z.string().nullable(),
-      visibility: z.enum(['public', 'internal']),
+      visibility: messageVisibility,
       body_text: z.string(),
       body_html: z.string().nullable(),
       email_message_id: z.string().nullable(),
       email_in_reply_to: z.string().nullable(),
       delivered_at: z.string().nullable(),
+      /**
+       * Which contact wrote it, for a message a contact wrote (#1086). A conversation has
+       * more than one person on it now, and without this a CC's reply reads as the
+       * requester's. Null for every message the desk wrote and for every row older than
+       * the column, which is the requester's by construction (they were the only one).
+       */
+      author_contact_id: z.string().nullable(),
+      /**
+       * The third party a `forward` message went to or came from (#1086), and null on
+       * every other message. What the relay addresses a forward to, and what draws the
+       * side thread with one supplier apart from the side thread with another.
+       */
+      third_party_contact_id: z.string().nullable(),
+      /**
+       * When an unsent forward was withdrawn, because its third party was taken off the
+       * conversation before the relay sent it (#1086). Null on every other message. Set
+       * once and never cleared: a forward withdrawn is never sent, even if the same person
+       * is put back on — putting them back is a new decision, and a new forward says what
+       * it is for.
+       */
+      withdrawn_at: z.string().nullable(),
       /**
        * The knowledge-base articles this message was sent with, as JSON ids.
        *
@@ -869,6 +919,43 @@ export const ticket0Entities = defineEntities({
       conversation_id: z.string(),
     }),
     primaryKey: ['principal', 'conversation_id'],
+  },
+
+  /**
+   * Somebody else on a conversation besides the person who started it (#1086): a CC, or
+   * a third party the desk forwarded a question to.
+   *
+   * A participant IS a contact. The address lives once, on `ticket0_contacts.email`, which
+   * is already erasable — so it is reached by an erasure and refused on every event by the
+   * same declaration that guards the requester's, and this row holds ids only. The
+   * requester is not here: that is `conversation.contact_id`, and a second copy of it is
+   * the kind that comes to disagree. Followers are not here either: they are staff, and
+   * #1563's ledger (`conversationFollow`) and grant already say who they are.
+   *
+   *  - `cc` — on the customer's thread. Copied on every public reply to an email
+   *    conversation, and able to read the thread's public messages in the portal when
+   *    they sign in. Captured from an inbound mail's To and Cc, or added by a person.
+   *  - `third-party` — on a side thread with the desk only (`forward` messages). Never
+   *    copied on the customer's mail, never shown the customer's thread anywhere.
+   *
+   * One row per person per conversation (`key`): somebody is on the customer's thread or
+   * on a side thread, never both, because an address that received the forward and the
+   * reply would be a forward the customer can read.
+   *
+   * `added_by` is the principal who put them there, and null when the mail did.
+   */
+  conversationParticipant: {
+    table: 'ticket0_conversation_participants',
+    fields: z.object({
+      id: z.string(),
+      conversation_id: z.string(),
+      contact_id: z.string(),
+      role: z.enum(['cc', 'third-party']),
+      added_by: z.string().nullable(),
+      created_at: z.string(),
+    }),
+    parents: ['conversation', 'contact'],
+    key: ['conversation_id', 'contact_id'],
   },
 
   /**
@@ -1447,6 +1534,17 @@ export const TICKET0_PERMISSIONS = [
   'conversation:read-own',
   'conversation:draft',
   'conversation:reply-public',
+  /**
+   * Put another address on a conversation (#1086): copy someone in on the customer's
+   * thread, take them off again, or forward a question to a third party.
+   *
+   * Its own key, because none of the others means it and one of them would have meant it
+   * wrongly. `reply-public` sends to the person who wrote in; this decides who ELSE the
+   * desk's mail reaches. The autonomous assistant holds the first and must not hold this
+   * one — under one key it could add a CC and then mail the thread to any address it
+   * liked. Held by the two human staff roles and no service.
+   */
+  'conversation:forward',
   'conversation:assign',
   'conversation:resolve',
   'conversation:merge',
@@ -1532,6 +1630,35 @@ const deskPublic = ticket0Entities.deskSettings.fields.omit({
 const savedReplyPublic = ticket0Entities.savedReply.fields
   .omit({ actions: true })
   .extend({ actions: macroActions });
+
+/**
+ * A message as a CUSTOMER reads it — the widget's thread and the portal's — declared once
+ * for `kbSourcePublic`'s reason: "every customer read drops these" is the property.
+ *
+ * Who at the desk wrote it (`author_principal`) is staff bookkeeping. Which contact wrote
+ * it and which third party a forward was with (#1086) are ids of OTHER people on the
+ * thread, which a CC reading the portal has no use for and the requester did not choose to
+ * share. Both reads return public messages only, so `third_party_contact_id` is always
+ * null on them anyway; it is dropped so the shape says so rather than a query.
+ *
+ * `customerMessageRow` is the row half, and `publicThread` in `src/module.ts` strips each
+ * row by parsing it through this — so the list of what a customer never sees is written
+ * once, here.
+ */
+export const customerMessageRow = ticket0Entities.message.fields.omit({
+  author_principal: true,
+  author_contact_id: true,
+  third_party_contact_id: true,
+  withdrawn_at: true,
+});
+const customerMessage = customerMessageRow.extend({ citations: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      url: z.string(),
+      headingPath: z.string(),
+    }),
+  ) });
 
 export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMISSIONS)({
   // ─── The desk ────────────────────────────────────────────────────────────────
@@ -2119,6 +2246,22 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     // Newest first: the person who wrote most recently is the one being looked for.
     paged: { sortKey: 'id', order: 'desc' },
     http: { method: 'GET', path: '/contacts/search' },
+  },
+
+  /**
+   * One person, by id — what turns a contact id on a screen into an address (#1086).
+   *
+   * The directory (`list-contacts`) is a PAGE, and the people a conversation names are
+   * not on any particular one of it: a CC copied in a minute ago is the newest contact the
+   * desk has. Behind the same key as the directory, because it answers the same question
+   * about one row.
+   */
+  'ticket0/get-contact': {
+    summary: 'One person who has asked something, or is copied in on it',
+    permission: 'contact:read',
+    input: z.object({ contactId: z.string() }),
+    output: ticket0Entities.contact.fields,
+    http: { method: 'GET', path: '/contacts/{contactId}' },
   },
 
   'ticket0/list-contacts': {
@@ -2892,7 +3035,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * What goes: every message (the customer's words, the desk's notes and any draft, and
    * the internal note that names an attachment the mail carried — the desk stores no
    * attachment bytes), its tags, and its widget sessions, so the visitor's token stops
-   * working. The subject is blanked, since on mail it is the sender's words too.
+   * working. Its CCs and third parties go too (#1086), and so does any contact the junk
+   * alone brought in to be one: a mail's recipient list is the sender's text, and a
+   * contact nothing else here names was only ever a line in it. The subject is blanked,
+   * since on mail it is the sender's words too.
    *
    * What stays, and why: the conversation row, `closed` and `quarantine = 'discarded'`, so
    * every id and event that names it still resolves; the contact, because it is a person
@@ -3060,11 +3206,11 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * you may still need to show a colleague, and a machine that refused there would be
    * answering a question nobody asked it.
    *
-   * **What this does NOT do**, both halves needing the side table this slice does not
-   * add: nothing can LIST who follows a conversation, and the inbox
-   * (`ticket0/list-conversations`) is gated on scope-wide `conversation:read`, which
-   * an entity-narrowed grant deliberately does not satisfy — so a follower is not
-   * shown the thread in any list and opens it by link. See #1086.
+   * **What this does NOT do**: the inbox (`ticket0/list-conversations`) is gated on
+   * scope-wide `conversation:read`, which an entity-narrowed grant deliberately does
+   * not satisfy — so a follower is not shown the thread in any list and opens it by
+   * link. Who follows a conversation is listed by `ticket0/list-participants` (#1086),
+   * from the ledger #1941 added beside the grants.
    *
    * Nothing to do with `conversation.follows`, which names the conversation a
    * follow-UP continues.
@@ -3133,6 +3279,155 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       schemaVersion: 1,
       piiClass: 'none',
       payload: ['conversation_id', 'follower'],
+    },
+  },
+
+  // ─── Participants (#1086) ────────────────────────────────────────────────────
+  //
+  // Who else is on a conversation: the CCs on the customer's thread, the third parties on
+  // a side thread, and the colleagues following it. The requester is the conversation's
+  // own `contact_id`. Adding and removing people is `conversation:forward`, the key that
+  // decides who the desk's mail reaches; reading the list is the read of the thread.
+
+  /**
+   * Everyone on a conversation, in one list: the requester, every CC, every third party
+   * and every follower — four roles from three places, read together so a screen does not
+   * have to know where each one lives.
+   *
+   * IDS ONLY: a contact id, or a follower's principal. No address and no name. Who a
+   * contact is stays behind `contact:read` — the directory the app already resolves names
+   * through — so a follower or the assistant, who may read the thread, learns that a
+   * second person is on it and not that person's address.
+   *
+   * Unpaged, for `list-conversation-tags`' reason: `PARTICIPANTS_MAX` bounds the rows, and
+   * a desk does not put a crowd on one conversation.
+   */
+  'ticket0/list-participants': {
+    summary: 'Who is on a conversation',
+    permission: { key: 'conversation:read', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({
+      participants: z.array(
+        z.object({
+          role: z.enum(['requester', 'cc', 'third-party', 'follower']),
+          contact_id: z.string().nullable(),
+          principal: z.string().nullable(),
+          added_by: z.string().nullable(),
+          created_at: z.string().nullable(),
+        }),
+      ),
+    }),
+    http: { method: 'GET', path: '/conversations/{conversationId}/participants' },
+  },
+
+  /**
+   * Copy somebody in on the customer's thread.
+   *
+   * From now on every public reply on an email conversation goes to them as well as to the
+   * requester, and a CC who signs in to the portal reads the thread's public messages —
+   * the ones from before they were added too, which is what being put on a thread means.
+   * Nothing internal and nothing forwarded reaches them on either path.
+   *
+   * The address resolves to a contact the way an inbound sender's does (exactly), and one
+   * is created when there is none. Refused for the requester (already on it), for a third
+   * party on this conversation (somebody is on the customer's thread or a side thread,
+   * never both), for the desk's own address (its replies would come back to it as mail),
+   * for a sender the desk blocks, and past `PARTICIPANTS_MAX`. Adding somebody already a
+   * CC answers with their row and writes nothing.
+   */
+  'ticket0/add-participant': {
+    summary: 'Copy someone in on a conversation',
+    permission: { key: 'conversation:forward', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({
+      conversationId: z.string(),
+      // Trimmed first: a pasted address with a space either side is still that mailbox.
+      email: z.string().trim().email(),
+      name: z.string().min(1).nullable().optional(),
+    }),
+    output: ticket0Entities.conversationParticipant.fields,
+    http: { method: 'POST', path: '/conversations/{conversationId}/participants' },
+    emits: {
+      entity: 'conversation',
+      entityIdFrom: 'conversation_id',
+      type: 'ticket0.participant-added',
+      schemaVersion: 1,
+      // A contact id and a role, never the address: that is the contact's, and erasable.
+      piiClass: 'none',
+      payload: ['id', 'conversation_id', 'contact_id', 'role', 'added_by'],
+    },
+  },
+
+  /**
+   * Take a CC or a third party off a conversation.
+   *
+   * Effective at once, because nothing about it is a grant to take back: the portal and
+   * the relay both read the participant row, and without it a CC reads nothing in the
+   * portal and receives nothing more, and a third party is mailed nothing more — a forward
+   * still waiting to go to them is not sent. Their mail after that is a stranger's and
+   * opens a conversation of its own.
+   *
+   * Asks nothing about the person it removes, for `unfollow-conversation`'s reason: a
+   * refusal to remove leaves access standing. Removing somebody who is not on it is a
+   * no-op that says so (`removed: false`). The requester cannot be removed — they are the
+   * conversation — and asking is a `validation_failed`.
+   */
+  'ticket0/remove-participant': {
+    summary: 'Take someone off a conversation',
+    permission: { key: 'conversation:forward', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string(), contactId: z.string().min(1) }),
+    output: z.object({
+      conversation_id: z.string(),
+      contact_id: z.string(),
+      removed: z.boolean(),
+    }),
+    http: { method: 'DELETE', path: '/conversations/{conversationId}/participants/{contactId}' },
+    emits: {
+      entity: 'conversation',
+      entityIdFrom: 'conversation_id',
+      type: 'ticket0.participant-removed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['conversation_id', 'contact_id'],
+    },
+  },
+
+  /**
+   * Ask a third party something about this conversation, by mail, and keep the answer on
+   * it — Zendesk's side conversations, Freshdesk's forward.
+   *
+   * The message is `forward`: the desk and that one third party see it, the customer never
+   * does — not in the widget, not in the portal, not on their mail. The third party
+   * becomes a `third-party` participant, and their reply, threaded back by its
+   * `In-Reply-To`, lands on this conversation as `forward` too. The relay mails it to them
+   * alone, with no CC.
+   *
+   * `body` is what they receive, so it is what the agent chose to tell them: nothing of
+   * the thread is attached or quoted by the desk.
+   *
+   * Refused for the requester and for a CC (each is on the customer's thread, and a
+   * forward to them is a reply the customer can read), for the desk's own address, and
+   * on a conversation in the suspended queue or closed.
+   */
+  'ticket0/forward-message': {
+    summary: 'Forward a question about this conversation to a third party',
+    permission: { key: 'conversation:forward', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({
+      conversationId: z.string(),
+      to: z.string().trim().email(),
+      name: z.string().min(1).nullable().optional(),
+      body: z.string().min(1),
+      bodyHtml: z.string().nullable().optional(),
+    }),
+    output: ticket0Entities.message.fields,
+    http: { method: 'POST', path: '/conversations/{conversationId}/forwards' },
+    emits: {
+      entity: 'message',
+      entityIdFrom: 'id',
+      type: 'ticket0.forward-requested',
+      schemaVersion: 1,
+      // Ids only, as `reply-requested`: the relay reads the body back at send time.
+      piiClass: 'none',
+      payload: ['id', 'conversation_id', 'visibility', 'third_party_contact_id'],
     },
   },
 
@@ -3860,6 +4155,21 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       bodyHtml: z.string().nullable().optional(),
       emailMessageId: z.string(),
       emailInReplyTo: z.string().nullable().optional(),
+      /**
+       * Who else the mail was addressed to (#1086) — its To and its Cc, as the headers
+       * said them. Everyone in them but the sender, the requester and the desk itself
+       * becomes a CC on the conversation, when the mail came from somebody on the
+       * customer's thread.
+       *
+       * Plain strings, and that is deliberate for the reason `attachments` gives: a
+       * recipient list is the SENDER's text, and a `.email()` here would refuse the whole
+       * mail — body and all — over one malformed address in a header nobody at the desk
+       * wrote. The handler keeps the addresses that are addresses and drops the rest, and
+       * keeps at most `PARTICIPANTS_MAX`. Optional, so every caller that predates it is
+       * unchanged.
+       */
+      to: z.array(z.string()).optional(),
+      cc: z.array(z.string()).optional(),
       attachments: z
         .array(
           z.object({
@@ -3938,6 +4248,15 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       conversationId: z.string(),
       subject: z.string(),
       toEmail: z.string().nullable(),
+      /**
+       * Who the mail is copied to (#1086): every CC on the conversation for a public reply,
+       * and NOBODY for a forward — a third party is asked on their own, and a CC there
+       * would put the side thread in front of the customer's side. Contacts whose address
+       * was erased are not here, because there is nothing left to send to.
+       */
+      ccEmails: z.array(z.string()),
+      /** A reply to the customer's thread, or a forward to a third party (#1086). */
+      visibility: messageVisibility.exclude(['internal']),
       fromAddress: z.string(),
       agentName: z.string().nullable(),
       bodyText: z.string().nullable(),
@@ -4193,16 +4512,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     summary: 'The public messages in this session’s conversation',
     permission: 'conversation:widget',
     input: z.object({ sessionId: z.string(), token: z.string() }),
-    output: ticket0Entities.message.fields
-      .omit({ author_principal: true })
-      .extend({ citations: z.array(
-        z.object({
-          id: z.string(),
-          title: z.string(),
-          url: z.string(),
-          headingPath: z.string(),
-        }),
-      ) }),
+    output: customerMessage,
     paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/widget/sessions/{sessionId}/messages' },
   },
@@ -4210,16 +4520,23 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   // ─── The portal ──────────────────────────────────────────────────────────────
 
   /**
-   * A signed-in customer's own conversations.
+   * A signed-in customer's own conversations — the ones they started, and the ones they
+   * are copied in on (#1086).
    *
    * Nobody holds `conversation:read-own` scope-wide, so this is a per-row proof walk
    * rather than a `WHERE contact_id = ?`. The distinction matters: a WHERE clause is
    * a promise the author remembered to keep, and the walk is one the kernel keeps.
+   *
+   * A CC is proved the same way, one step over: the caller's own grant, checked by the
+   * kernel on the CC's CONTACT, plus a `cc` row naming that contact on the conversation.
+   * Nothing new is granted to anybody, so taking a CC off is the delete of that row and
+   * takes effect at once. A third party is never proved this way: a side thread does not
+   * put anybody on the customer's.
    */
   'ticket0/my-conversations': {
     summary: 'Your own conversations',
     narrows: {
-      reason: 'Returns only conversations belonging to the calling contact',
+      reason: 'Returns only conversations belonging to the calling contact, or that it is copied in on',
       checks: ['conversation:read-own'],
     },
     output: ticket0Entities.conversation.fields,
@@ -4227,6 +4544,11 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: { method: 'GET', path: '/me/conversations' },
   },
 
+  /**
+   * The public messages on a conversation the caller started or is copied in on — the
+   * same two proofs `my-conversations` makes, so the list and the thread cannot disagree
+   * about which conversations are the caller's. Public only: no note, and no forward.
+   */
   'ticket0/my-messages': {
     summary: 'The public messages on one of your conversations',
     permission: {
@@ -4235,16 +4557,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       idFrom: 'conversationId',
     },
     input: z.object({ conversationId: z.string() }),
-    output: ticket0Entities.message.fields
-      .omit({ author_principal: true })
-      .extend({ citations: z.array(
-        z.object({
-          id: z.string(),
-          title: z.string(),
-          url: z.string(),
-          headingPath: z.string(),
-        }),
-      ) }),
+    output: customerMessage,
     paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/me/conversations/{conversationId}/messages' },
   },
@@ -4616,6 +4929,9 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/suspend',
           'ticket0/restore',
           'ticket0/post-note',
+          // A side thread is desk work like a note (#1086): it moves nothing, and is
+          // refused only where nothing may be worked — closed, and the suspended queue.
+          'ticket0/forward-message',
           'ticket0/record-answer',
           'ticket0/record-assistant-failure',
           'ticket0/ingest-message',
@@ -4636,6 +4952,7 @@ export const ticket0Lifecycles = defineLifecycles(
         allow: [
           'ticket0/post-public-reply',
           'ticket0/post-note',
+          'ticket0/forward-message',
           'ticket0/record-answer',
           'ticket0/record-assistant-failure',
           'ticket0/ingest-message',
@@ -4660,6 +4977,9 @@ export const ticket0Lifecycles = defineLifecycles(
         },
         allow: [
           'ticket0/post-note',
+          // Snoozed is how a desk waits on a supplier, so it is the state a forward is
+          // most often sent from; their reply wakes it (`ingest-message` above).
+          'ticket0/forward-message',
           'ticket0/tag-conversation',
           'ticket0/untag-conversation',
           'ticket0/assign',
@@ -4680,6 +5000,7 @@ export const ticket0Lifecycles = defineLifecycles(
         },
         allow: [
           'ticket0/post-note',
+          'ticket0/forward-message',
           'ticket0/tag-conversation',
           'ticket0/untag-conversation',
           'ticket0/set-priority',

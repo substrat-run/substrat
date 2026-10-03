@@ -57,6 +57,13 @@ export const conformance = declareEntityChecks({
     // pair if it is the same somebody.
     'ticket0/follow-conversation': CONFORMANCE_FOLLOWER,
     'ticket0/unfollow-conversation': CONFORMANCE_FOLLOWER,
+    // #1086's participant doors. The addresses are the kit's own and name nobody; the
+    // contact `remove-participant` names is nobody too, which it answers with
+    // `removed: false` — the pair proves the ENTITY check, and
+    // `test/participants.test.ts` drives every real case and refusal.
+    'ticket0/add-participant': { email: 'cc@conformance.example' },
+    'ticket0/remove-participant': { contactId: 'conformance-nobody' },
+    'ticket0/forward-message': { to: 'third-party@conformance.example', body: 'A question from the conformance kit' },
     'ticket0/set-priority': { priority: 'urgent' },
     'ticket0/snooze': { until: '2030-01-01T00:00:00.000Z' },
     'ticket0/tag-conversation': { tag: 'conformance' },

@@ -321,15 +321,16 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
   it('refuses every operation that works a conversation, and the list is the model’s whole list', async () => {
     // Reads of one conversation. A held conversation is the desk's to look at.
     const READS = ['get-conversation', 'list-messages', 'widget-session', 'get-csat', 'list-conversation-tags',
-      'render-saved-reply', 'list-turns', 'usage-summary', 'my-messages', 'widget-thread'];
+      'render-saved-reply', 'list-turns', 'usage-summary', 'my-messages', 'widget-thread', 'list-participants'];
     // The ways out of the queue; the customer's own doors (`widget-post` and `request-human`
     // are held to it in 'keeps a held thread held…' and 'shows the visitor their own
     // words…'); and the writes that only ever narrow access or record a fact: an unfollow,
-    // the delivery of a mail the provider already took (refusing it would only make the
-    // relay send again), and reading a notification, which a held conversation no longer
-    // has ('suspension retires what the desk was told…').
+    // taking a CC or a third party off (#1086, the same argument), the delivery of a mail
+    // the provider already took (refusing it would only make the relay send again), and
+    // reading a notification, which a held conversation no longer has ('suspension
+    // retires what the desk was told…').
     const ALLOWED = ['suspend', 'restore', 'discard', 'discard-suspended', 'ingest-message', 'widget-post',
-      'request-human', 'unfollow-conversation', 'record-delivery', 'mark-notification-read'];
+      'request-human', 'unfollow-conversation', 'remove-participant', 'record-delivery', 'mark-notification-read'];
     // `submit-csat` is the customer's, legal only on a RESOLVED conversation, which a held
     // one never is — refused by the lifecycle before the queue, and not invoked here.
     const LIFECYCLE_ONLY = ['submit-csat'];
@@ -349,7 +350,7 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
       'list-block-rules', 'add-block-rule', 'remove-block-rule', 'set-agent-profile', 'list-agents',
       'set-agent-offboarded', 'add-kb-source', 'list-kb-sources', 'ingest-kb-source', 'record-kb-articles',
       'record-kb-ingest-failure', 'mint-kb-refresh-token', 'revoke-kb-refresh-token', 'redeem-kb-refresh-token',
-      'search-kb', 'search-contacts', 'list-contacts', 'list-tags', 'list-saved-replies', 'create-saved-reply',
+      'search-kb', 'search-contacts', 'list-contacts', 'get-contact', 'list-tags', 'list-saved-replies', 'create-saved-reply',
       'get-saved-reply', 'update-saved-reply', 'delete-saved-reply', 'set-usage-rate', 'close-usage-period',
       'widget-origins', 'assistant-mode', 'widget-start', 'signup-origins', 'submit-signup', 'confirm-signup',
       'unsubscribe-signup', 'list-signups', 'signup-counts'];
@@ -374,6 +375,9 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
       'tag-conversation': ['admin', { tag: 'x' }],
       'untag-conversation': ['admin', { tag: 'x' }],
       'follow-conversation': ['admin', { follower: guest }],
+      // #1086: copying somebody in on junk, or forwarding it, is the desk mailing it on.
+      'add-participant': ['admin', { email: 'colleague@customer.example' }],
+      'forward-message': ['admin', { to: 'supplier@vendor.example', body: 'Do you know this sender?' }],
       'apply-saved-reply': ['admin', { savedReplyId: reply.id }],
       'record-answer': ['admin', {
         turnId: 'audit-turn', model: 'offline/extractive', body: 'draft', inputTokens: 0, outputTokens: 0,

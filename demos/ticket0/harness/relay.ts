@@ -45,6 +45,10 @@ export interface OutboundMessage {
   conversationId: string;
   subject: string;
   toEmail: string | null;
+  /** Copied on the mail: every CC for a public reply, nobody for a forward (#1086). */
+  ccEmails: string[];
+  /** A reply on the customer's thread, or a forward to a third party (#1086). */
+  visibility: 'public' | 'forward';
   fromAddress: string;
   agentName: string | null;
   bodyText: string | null;
@@ -295,7 +299,10 @@ export function resendSender(options: {
         body: JSON.stringify({
           from,
           to: [message.toEmail],
-          subject: message.subject,
+          // The desk decided who is copied (`read-outbound`): a forward carries none.
+          ...(message.ccEmails.length > 0 ? { cc: message.ccEmails } : {}),
+          // A forward says what it is in the one line a third party reads first.
+          subject: message.visibility === 'forward' ? `Fwd: ${message.subject}` : message.subject,
           ...(message.bodyText ? { text: message.bodyText } : {}),
           ...(message.bodyHtml ? { html: message.bodyHtml } : {}),
           ...(Object.keys(headers).length > 0 ? { headers } : {}),

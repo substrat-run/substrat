@@ -55,6 +55,12 @@ either **public** (the customer sees it) or **internal** (only staff do). That s
 is load-bearing: it is the difference between a note to a colleague and an email to a
 customer, and getting it wrong is the worst bug this product can have.
 
+A third value arrived later (#1086): **forward**, a side thread between the desk and ONE
+third party it asked something — a supplier's answer kept on the conversation without ever
+becoming something the customer reads. And a conversation has more than one person on it:
+its customer, the **CCs** copied on the customer's thread, the **third parties** on a side
+thread, and the colleagues **following** it.
+
 The lifecycle:
 
 ```
@@ -364,8 +370,10 @@ to argue about shape.
   snooze-until, priority, when it was first replied to, when resolved, what it merged into,
   timestamps.
 - **`message`** — conversation, who wrote it and in what capacity (contact, agent,
-  assistant, system), the body in text and HTML, **public or internal**, and the email
-  headers that stitch it into an email thread.
+  assistant, system), the body in text and HTML, **public, internal or forward** (#1086), and
+  the email headers that stitch it into an email thread.
+- **`conversation_participant`** (#1086) — a CC or a third party on a conversation, by
+  contact. The customer is the conversation's own contact; followers are staff grants.
 - **`conversation_tag`** — free tags, the way every desk grows them.
 - **`saved_reply`** — canned answers. Title, body, who wrote it.
 - **`csat`** — one score and comment per conversation, once resolved.

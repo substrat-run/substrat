@@ -654,6 +654,60 @@
         "conversation_id"
       ]
     },
+    "conversationParticipant": {
+      "table": "ticket0_conversation_participants",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "contact_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "cc",
+              "third-party"
+            ]
+          },
+          "added_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "contact_id",
+          "role",
+          "added_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "contact",
+        "conversation"
+      ],
+      "key": [
+        "contact_id",
+        "conversation_id"
+      ]
+    },
     "conversationTag": {
       "table": "ticket0_conversation_tags",
       "fields": {
@@ -1070,7 +1124,8 @@
             "type": "string",
             "enum": [
               "public",
-              "internal"
+              "internal",
+              "forward"
             ]
           },
           "body_text": {
@@ -1116,6 +1171,36 @@
               }
             ]
           },
+          "author_contact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "third_party_contact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "withdrawn_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cited_article_ids": {
             "anyOf": [
               {
@@ -1141,6 +1226,9 @@
           "email_message_id",
           "email_in_reply_to",
           "delivered_at",
+          "author_contact_id",
+          "third_party_contact_id",
+          "withdrawn_at",
           "cited_article_ids",
           "created_at"
         ],
@@ -1784,6 +1872,7 @@
             "ticket0/resolve": "resolved"
           },
           "allow": [
+            "ticket0/forward-message",
             "ticket0/ingest-message",
             "ticket0/merge",
             "ticket0/post-note",
@@ -1806,6 +1895,7 @@
           },
           "allow": [
             "ticket0/assign",
+            "ticket0/forward-message",
             "ticket0/ingest-message",
             "ticket0/merge",
             "ticket0/post-note",
@@ -1829,6 +1919,7 @@
             "ticket0/widget-post": "open"
           },
           "allow": [
+            "ticket0/forward-message",
             "ticket0/post-note",
             "ticket0/set-priority",
             "ticket0/submit-csat",
@@ -1848,6 +1939,7 @@
           },
           "allow": [
             "ticket0/assign",
+            "ticket0/forward-message",
             "ticket0/post-note",
             "ticket0/set-priority",
             "ticket0/tag-conversation",

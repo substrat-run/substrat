@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-92 operations · 34 narrowed checks · 34 conformance pairs driven
+97 operations · 38 narrowed checks · 38 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,20 +37,23 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**34 pairs driven** across 34 of this package's 34 narrowed checks.
+**38 pairs driven** across 38 of this package's 38 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
+| `ticket0/add-participant` | `conversation:forward` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/apply-saved-reply` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/assign` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/close` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/discard` | `conversation:discard` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/follow-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/forward-message` | `conversation:forward` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-conversation` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-csat` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/ingest-kb-source` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/list-conversation-tags` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-messages` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/list-participants` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-turns` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/merge` | `conversation:merge` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/mint-kb-refresh-token` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
@@ -62,6 +65,7 @@ against B, and requires a permission denial specifically.
 | `ticket0/record-kb-articles` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/record-kb-ingest-failure` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/redeem-kb-refresh-token` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
+| `ticket0/remove-participant` | `conversation:forward` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/render-saved-reply` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/resolve` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/restore` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
@@ -120,7 +124,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 57 | `ticket0/add-block-rule`, `ticket0/add-kb-source`, `ticket0/assign-round-robin`, `ticket0/assistant-health`, `ticket0/assistant-mode`, `ticket0/auto-close`, `ticket0/auto-tag`, `ticket0/breaching-soon`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/confirm-signup`, `ticket0/create-saved-reply`, `ticket0/delete-saved-reply`, `ticket0/desk-metrics`, `ticket0/discard-suspended`, `ticket0/escalate-sla-breaches`, `ticket0/get-desk`, `ticket0/get-saved-reply`, `ticket0/ingest-message`, `ticket0/list-agents`, `ticket0/list-behaviour-runs`, `ticket0/list-block-rules`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-conversations-by-tag`, `ticket0/list-kb-sources`, `ticket0/list-pending-outbound`, `ticket0/list-saved-replies`, `ticket0/list-signups`, `ticket0/list-suspended`, `ticket0/list-tags`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/notify-no-reply`, `ticket0/read-outbound`, `ticket0/reap-abandoned`, `ticket0/record-delivery`, `ticket0/remove-block-rule`, `ticket0/request-human`, `ticket0/rotate-verification-secret`, `ticket0/search-contacts`, `ticket0/search-conversations`, `ticket0/search-kb`, `ticket0/set-agent-offboarded`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/signup-counts`, `ticket0/signup-origins`, `ticket0/submit-signup`, `ticket0/unsubscribe-signup`, `ticket0/update-saved-reply`, `ticket0/usage-summary`, `ticket0/wake-snoozed`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread` |
+| Node-level check | 58 | `ticket0/add-block-rule`, `ticket0/add-kb-source`, `ticket0/assign-round-robin`, `ticket0/assistant-health`, `ticket0/assistant-mode`, `ticket0/auto-close`, `ticket0/auto-tag`, `ticket0/breaching-soon`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/confirm-signup`, `ticket0/create-saved-reply`, `ticket0/delete-saved-reply`, `ticket0/desk-metrics`, `ticket0/discard-suspended`, `ticket0/escalate-sla-breaches`, `ticket0/get-contact`, `ticket0/get-desk`, `ticket0/get-saved-reply`, `ticket0/ingest-message`, `ticket0/list-agents`, `ticket0/list-behaviour-runs`, `ticket0/list-block-rules`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-conversations-by-tag`, `ticket0/list-kb-sources`, `ticket0/list-pending-outbound`, `ticket0/list-saved-replies`, `ticket0/list-signups`, `ticket0/list-suspended`, `ticket0/list-tags`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/notify-no-reply`, `ticket0/read-outbound`, `ticket0/reap-abandoned`, `ticket0/record-delivery`, `ticket0/remove-block-rule`, `ticket0/request-human`, `ticket0/rotate-verification-secret`, `ticket0/search-contacts`, `ticket0/search-conversations`, `ticket0/search-kb`, `ticket0/set-agent-offboarded`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/signup-counts`, `ticket0/signup-origins`, `ticket0/submit-signup`, `ticket0/unsubscribe-signup`, `ticket0/update-saved-reply`, `ticket0/usage-summary`, `ticket0/wake-snoozed`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread` |
 | Per-entity proof walk (`narrows`) | 1 | `ticket0/my-conversations` |
 
 ## 5. Not covered by this artifact

@@ -678,7 +678,9 @@ const HISTORY_PAGES = 3;
 interface HistoryRow {
   readonly id: string;
   readonly author_kind: 'contact' | 'agent' | 'assistant' | 'system';
-  readonly visibility: 'public' | 'internal';
+  // `forward` is a side thread with a third party (#1086), never the customer's, and the
+  // `public` test below is what keeps it out of the transcript like every note.
+  readonly visibility: 'public' | 'internal' | 'forward';
   readonly body_text: string | null;
   readonly created_at: string;
 }

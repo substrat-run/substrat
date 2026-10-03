@@ -253,9 +253,25 @@ Receiving mail is the other half (#934): a Resend inbound webhook pointed at
 `POST /api/email/inbound` on the desk's hostname. It needs `RESEND_WEBHOOK_SECRET` beside
 `RESEND_API_KEY` and answers 404 until both are set. The signature is verified, the email
 is re-read from Resend by id, and the re-read is what `ticket0/ingest-message` records.
-Attachments are named in an internal note rather than stored. Not yet done: threading a
-reply onto its conversation (each mail opens its own), and a live check against a real
-Resend account.
+Attachments are named in an internal note rather than stored. Not yet done: a live check
+against a real Resend account.
+
+### More than one person on a conversation (#1086)
+
+A mail's To and Cc are the desk's **CCs**: everyone in them but the sender, the customer and
+the desk's own `from_address` is copied in, when the mail came from the customer or a CC
+(capped at `PARTICIPANTS_MAX`). Every public reply on an email conversation then goes to the
+customer with every CC copied, a CC's own reply lands on the same thread, and a CC who signs
+in to the portal reads the thread's public messages. A person adds or removes one from the
+conversation's rail.
+
+**Forward** asks a third party — a supplier, another team — something about the
+conversation, by mail. That message and their answer are a third visibility, `forward`: the
+desk reads them on the thread, and no read a customer can reach returns them (not the
+widget, not the portal, not the mail, not the assistant's transcript). Their answer threads
+back on `In-Reply-To`; one that arrives after the conversation closed opens a conversation
+of its own, never the customer's follow-up. Putting an address on a conversation is
+`conversation:forward`, held by the human staff roles and by neither assistant.
 
 Note what this is **not**: `packages/adapter-email`, which sends platform mail from
 `substrat.run` (invites, signup confirmations) on the platform's onboarded sender. A
@@ -292,7 +308,9 @@ product rather than styling are each marked in the code where they live:
 
 1. **public vs internal** — `app/src/views/Conversation.tsx`, `Composer`: internal mode
    restyles the entire surface (amber field, 1.5px border, inset stripe, amber caret,
-   persistent label naming the customer). ⇥ toggles, ⌘↵ sends.
+   persistent label naming the customer). ⇥ toggles, ⌘↵ sends. **Forward…** is the third
+   mode (#1086), slate rather than amber and with its own To field, for the one audience
+   that is neither the customer nor the desk.
 2. **agents never see cost** — the usage card is *absent*, not disabled, and absent
    because the API refused. Signed in as Anna there is no `$` figure on the page at all.
 3. **the assistant is staff** — same avatar and meta treatment as a human. Only its

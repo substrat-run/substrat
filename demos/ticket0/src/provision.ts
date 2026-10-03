@@ -32,6 +32,9 @@ const AGENT_PERMISSIONS = [
   T0_PERM.conversationRead,
   T0_PERM.conversationDraft,
   T0_PERM.conversationReplyPublic,
+  // Who ELSE the desk's mail reaches (#1086). A person's decision: neither assistant role
+  // holds it, so an assistant trusted to answer the customer still cannot widen who hears.
+  T0_PERM.conversationForward,
   T0_PERM.conversationAssign,
   T0_PERM.conversationResolve,
   T0_PERM.contactRead,
