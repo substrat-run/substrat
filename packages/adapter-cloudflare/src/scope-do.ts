@@ -286,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyOriginWrite, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -770,10 +770,10 @@ class WriteRevision {
   ) {
     const exec = (query: string, ...bindings: unknown[]) => {
       if (this.keeping && this.isWrite(query)) {
-        // Bookkeeping takes the copy-origin marker and nothing else: a data write here would be
-        // a write the revision never saw, which is the hole this class exists to close.
-        if (!isCopyOriginWrite(query)) {
-          throw substratError('internal', `the bookkeeping path takes only copy-origin writes (#1722), not: ${query.slice(0, 80)}`);
+        // Bookkeeping takes the copy-marker insert and nothing else: any other write here would
+        // be one the revision never saw, which is the hole this class exists to close.
+        if (!isCopyMarkInsert(query)) {
+          throw substratError('internal', `the bookkeeping path takes only the copy-marker insert (#1722), not: ${query.slice(0, 80)}`);
         }
         return raw.exec(query, ...bindings);
       }
@@ -794,11 +794,12 @@ class WriteRevision {
   }
 
   /**
-   * Store bookkeeping that is not the scope's data: the copy-origin marker (#2005, Codex #2008
-   * r10). Marking a store a copy says what the store IS, so it advances no write revision: a
-   * backfill that marks a carry's source between its export and its wipe must not read as a
-   * write the carry did not copy (that would keep the copy for nothing). Enforced, not trusted:
-   * any write in here that is not a copy-origin write (`isCopyOriginWrite`) throws.
+   * Store bookkeeping that is not the scope's data: marking the store a copy (#2005, Codex #2008
+   * r10). That only ever restricts what the store may run and changes no data, so it advances no
+   * write revision: a backfill that marks a carry's source between its export and its wipe must
+   * not read as a write the carry did not copy (that would keep the copy for nothing). Enforced,
+   * not trusted: any write in here but the marker insert (`isCopyMarkInsert`) throws. Clearing a
+   * marker is NOT bookkeeping (r11): it loosens the store, so it is a write a carry fences on.
    */
   bookkeeping<T>(run: () => T): T {
     const was = this.keeping;
@@ -4461,11 +4462,16 @@ export function defineScopeDO(
       return marked;
     }
 
-    /** Remove a mistaken copy marker (#2005, `clearCopyMarker`); a real load's mark is kept. */
+    /**
+     * Remove a mistaken copy marker (#2005, `clearCopyMarker`); a real load's mark is kept. A
+     * clear is a write like any other (Codex #2008 r11), never bookkeeping: it lets the store run
+     * work a copy holds inert, so it advances the write revision, and a carry that exported
+     * before it cannot wipe the repaired store. That carry's wipe keeps it instead.
+     */
     clearCopyMark(): 'cleared' | 'absent' | 'carries-events' {
       let outcome: 'cleared' | 'absent' | 'carries-events' = 'absent';
       this.revision.transactionSync(() => {
-        outcome = this.revision.bookkeeping(() => clearCopyMarker(this.switchSql()));
+        outcome = clearCopyMarker(this.switchSql());
       });
       return outcome;
     }

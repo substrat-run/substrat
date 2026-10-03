@@ -1,4 +1,5 @@
 import type { ScopeDumpTable } from '@substrat-run/contracts';
+import { MARK_COPY_ORIGIN_SQL } from './scope-copy.js';
 
 /**
  * The copy a carry leaves behind (#1722), as two `_substrat_meta` keys.
@@ -108,23 +109,16 @@ export function isWriteStatement(sql: string): boolean {
 }
 
 /**
- * Whether one SQL string is copy-origin bookkeeping (#2005 × #1722, Codex #2008 r10): every
- * statement in it writes `_substrat_copy_origin` and nothing else. Marking a store a copy says
- * what the store IS, not what the scope holds, so it advances no write revision: a backfill that
- * marks a carry's source between its export and its wipe must not make the source read as having
- * taken a write the carry did not copy. This is the whole of what the scope DO lets through its
- * bookkeeping path; any other write there throws.
+ * Whether one SQL string is the copy-marker insert and nothing else (#2005 × #1722, Codex #2008
+ * r10–r11): `MARK_COPY_ORIGIN_SQL`, whitespace aside. That statement only ever makes a store more
+ * restricted (a copy holds its executors inert) and changes no data, so a backfill marking a
+ * carry's source between its export and its wipe must not read as a write the carry missed. It is
+ * the whole of what the scope DO's bookkeeping path takes. Anything else that touches the origin
+ * row — an UPDATE, a DELETE, a REPLACE, an insert of another shape — can loosen what the store
+ * may run, so it is a write like any other and advances the revision.
  */
-export function isCopyOriginWrite(sql: string): boolean {
-  let any = false;
-  for (const raw of sql.split(';')) {
-    const stmt = raw.replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
-    if (!stmt) continue;
-    const target = /^(?:INSERT(?:\s+OR\s+[A-Z]+)?\s+INTO|DELETE\s+FROM|UPDATE(?:\s+OR\s+[A-Z]+)?)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?/i.exec(stmt)?.[1];
-    if (target?.toLowerCase() !== '_substrat_copy_origin') return false;
-    any = true;
-  }
-  return any;
+export function isCopyMarkInsert(sql: string): boolean {
+  return sql.trim().replace(/\s+/g, ' ') === MARK_COPY_ORIGIN_SQL;
 }
 
 /** Where a carried copy went, and when — the tombstone's value, as JSON. */

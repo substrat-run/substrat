@@ -165,12 +165,19 @@ export function settleCopiedWork(
  */
 export function markCopyOrigin(sql: SwitchSql, now: string): boolean {
   if (sql.all(IS_COPY_SQL).length > 0) return false;
-  sql.run(
-    "INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
-    now,
-  );
+  sql.run(MARK_COPY_ORIGIN_SQL, now);
   return true;
 }
+
+/**
+ * The one statement that marks a store a copy (#2005): the origin row with no events mark, added
+ * only where none exists (`OR IGNORE`). It only ever makes a store MORE restricted — a copy's
+ * executors are held inert — and changes no data, which is why the scope DO lets this statement,
+ * and no other, through without advancing the write revision a carry fences on (#1722,
+ * `isCopyMarkInsert`). Clearing a marker is the opposite and is a write like any other.
+ */
+export const MARK_COPY_ORIGIN_SQL =
+  "INSERT OR IGNORE INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)";
 
 /**
  * Remove a MISTAKEN copy marker (#2005): for a scope the directory says is primary, marked by a

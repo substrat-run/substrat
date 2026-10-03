@@ -6,7 +6,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isCopyOriginWrite, isWriteStatement } from '../src/carried-copy.js';
+import { isCopyMarkInsert, isWriteStatement } from '../src/carried-copy.js';
+import { MARK_COPY_ORIGIN_SQL } from '../src/scope-copy.js';
 
 describe('isWriteStatement (#1722)', () => {
   it.each([
@@ -52,25 +53,30 @@ describe('isWriteStatement (#1722)', () => {
   });
 });
 
-describe('isCopyOriginWrite (#2005 × #1722)', () => {
+describe('isCopyMarkInsert (#2005 × #1722)', () => {
   it.each([
-    "INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
-    'DELETE FROM _substrat_copy_origin WHERE id = 1',
-    'insert or replace into "_substrat_copy_origin" (id) values (1)',
-    'UPDATE _substrat_copy_origin SET copied_at = ?',
+    MARK_COPY_ORIGIN_SQL,
+    `  ${MARK_COPY_ORIGIN_SQL.replace(/ /g, '\n  ')}  `,
   ])('is bookkeeping: %j', (sql) => {
-    expect(isCopyOriginWrite(sql)).toBe(true);
+    expect(isCopyMarkInsert(sql)).toBe(true);
   });
 
+  // Codex #2008 r11: anything else that touches the marker can loosen what the store may run,
+  // so it is a write the carry fences on.
   it.each([
+    'DELETE FROM _substrat_copy_origin WHERE id = 1',
+    'DELETE FROM _substrat_copy_origin',
+    'UPDATE _substrat_copy_origin SET copied_at = ?',
+    "UPDATE _substrat_copy_origin SET events_through = '' WHERE id = 1",
+    "INSERT OR REPLACE INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
+    "INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
+    "INSERT OR IGNORE INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, ?, ?, ?)",
+    `${MARK_COPY_ORIGIN_SQL}; DELETE FROM pv_notes`,
     'INSERT INTO pv_notes (id) VALUES (1)',
-    'UPDATE _substrat_outbox SET drained_at = ?',
-    'DELETE FROM _substrat_copy_origin_shadow',
-    'DELETE FROM _substrat_copy_origin; DELETE FROM pv_notes',
     'SELECT 1 FROM _substrat_copy_origin',
     '',
   ])('is not: %j', (sql) => {
-    expect(isCopyOriginWrite(sql)).toBe(false);
+    expect(isCopyMarkInsert(sql)).toBe(false);
   });
 });
 

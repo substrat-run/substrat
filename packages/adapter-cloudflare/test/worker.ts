@@ -77,10 +77,11 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
       (this as unknown as { ctx: DurableObjectState }).ctx.storage.sql.exec('DELETE FROM _substrat_copy_origin');
     }
 
-    /** The bookkeeping path asked to take a data write, which it must refuse (Codex #2008 r10). */
-    testBookkeepingDataWrite(id: string): void {
+    /** The bookkeeping path asked to take any write but the marker insert, which it must refuse
+     *  (Codex #2008 r10–r11): a data write, or a clear of the marker. */
+    testBookkeepingWrite(query: string, ...bindings: unknown[]): void {
       const self = this as unknown as { revision: { bookkeeping<T>(run: () => T): T }; sql: SqlStorage };
-      self.revision.bookkeeping(() => self.sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, 'unrevised'));
+      self.revision.bookkeeping(() => self.sql.exec(query, ...bindings));
     }
 
     /**

@@ -142,6 +142,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
         relay(() => host.snapshotScopeLocal(input.sourceScopeId, input.newScopeId)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
+      clearCopyMark: (sid: ScopeId, lineage: ScopeLineage) => relay(() => host.clearCopyMarkLocal(sid, lineage)),
     } as unknown as VerticalClient;
   };
 
@@ -963,7 +964,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         isCopy(): Promise<boolean>;
         markCopy(): Promise<boolean>;
         testForgetCopyOrigin(): Promise<void>;
-        testBookkeepingDataWrite(id: string): Promise<void>;
+        testBookkeepingWrite(query: string, ...bindings: unknown[]): Promise<void>;
       };
       const v1stub = (sid: ScopeId) => env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(sid)) as unknown as CopyStub;
       /** A preview whose v1 copy predates the marker: no origin row, and no write revision moved. */
@@ -1029,12 +1030,49 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         expect(await v1stub(p.scopeId).isCopy()).toBe(true);
       });
 
-      it('the bookkeeping path refuses a data write, which would otherwise move no revision', async () => {
-        const p = await fresh('bookkeeping-refuses', 'data');
+      it('the bookkeeping path refuses a data write, and a clear of the marker, which would otherwise move no revision', async () => {
+        const p = await legacy('bookkeeping-refuses');
+        expect(await v1stub(p.scopeId).markCopy()).toBe(true);
         const before = await hostFor('v1').loadMarkerLocal(p.scopeId);
-        await expect(v1stub(p.scopeId).testBookkeepingDataWrite('n-unrevised')).rejects.toThrow(/takes only copy-origin writes/);
-        expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['data']);
+        await expect(
+          v1stub(p.scopeId).testBookkeepingWrite('INSERT INTO pv_notes (id, body) VALUES (?, ?)', 'n-unrevised', 'unrevised'),
+        ).rejects.toThrow(/takes only the copy-marker insert/);
+        await expect(v1stub(p.scopeId).testBookkeepingWrite('DELETE FROM _substrat_copy_origin WHERE id = 1')).rejects.toThrow(
+          /takes only the copy-marker insert/,
+        );
+        expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['legacy data']);
+        expect(await v1stub(p.scopeId).isCopy()).toBe(true);
         expect(await hostFor('v1').loadMarkerLocal(p.scopeId)).toEqual(before);
+      });
+
+      // Codex #2008 r11: clearing a primary's mistaken marker loosens the store (its executors may
+      // run), so it is a write. A carry that exported before the clear finds its source changed and
+      // keeps it, recorded, rather than wiping the repaired store and serving the stale marker.
+      it("a staff clear of a primary's mistaken marker between the export and the wipe survives the carry", async () => {
+        const install = scopeId.parse(ulid());
+        await dir.provisionScope(staff, { tenantId: t, scopeId: install, vertical: slug });
+        await dir.admin.activateScope(staff, t, install);
+        await dir.admin.bindScopeVersion(staff, t, install, version.v1);
+        await hostFor('v1').restoreScopeLocal(install, notes('install data'));
+        // The mistake staff will repair: a marker with no events mark on a primary's store.
+        await v1stub(install).testForgetCopyOrigin();
+        expect(await v1stub(install).markCopy()).toBe(true);
+        const held = holdFirst((ref, s) => ref === refOf.get(version.v2) && s === install);
+        hooks.marker = held.hook; // after the export, before the restore and the wipe
+        const bound = bindTo(install, 'v2');
+        await held.reached;
+        const cleared = await api.request(`/tenants/${t}/scopes/${install}/clear-copy-mark`, { method: 'POST', headers: auth });
+        expect(cleared.status).toBe(200);
+        expect(await cleared.json()).toEqual({ cleared: true });
+        held.release();
+        expect((await bound).status).toBe(200);
+        // The repaired store is kept, unmarked, with its data, and the carry says so.
+        expect(await hostFor('v1').keptCopyLocal(install)).not.toBeNull();
+        expect(await tombstoneIn('v1', install)).toBeNull();
+        expect(await v1stub(install).isCopy()).toBe(false);
+        expect(bodiesIn(await hostFor('v1').exportScopeLocal(install))).toEqual(['install data']);
+        const kept = (await dir.admin.listOpsFailures(staff, { scopeId: install })).find((f) => f.stage === 'source-copy-kept');
+        expect(kept).toMatchObject({ operation: 'scope.carry', status: 409 });
       });
     });
 
