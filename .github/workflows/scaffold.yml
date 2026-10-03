@@ -45,6 +45,30 @@ jobs:
       # changesets are pending — and gets everything else from the registry.
       - run: node tools/scaffold-check.mjs --from=${{ inputs.from || 'registry' }}
 
+  # What npm SERVES for each public package's current version, held to the same rule CI
+  # holds the packed manifest to: every dependency resolves from npm. The PR-time check
+  # reads `pnpm pack`, and `pnpm publish -r` skips a version the registry already has —
+  # so a copy that reached npm another way is invisible to both, and is never replaced.
+  # `@substrat-run/control-plane-client@0.1.0` was one: published with
+  # `"@substrat-run/contracts": "workspace:^"`, which made `npx @substrat-run/cli` fail
+  # for everyone with EUNSUPPORTEDPROTOCOL. A version not on npm yet is a note, so the
+  # publish lag right after a release is not red. Separate job, same reasoning as below.
+  published-manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      # pnpm enumerates the workspace members from the checkout; no install, as above.
+      - run: node tools/publish-manifests.mjs --registry
+
   # The other registry consumer (#983): `examples/external-vertical` depends on
   # `@substrat-run/*` at literal semver ranges and is not a workspace member, so no PR
   # gate resolves it and its pins rot silently — #1347 found them a release behind and
