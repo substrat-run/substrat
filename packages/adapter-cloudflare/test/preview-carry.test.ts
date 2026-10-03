@@ -616,6 +616,27 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(dumpMetaValue(await v1.exportScopeLocal(sid), WRITE_REVISION_KEY)).toBeNull();
     });
 
+    it('the revision advances once per synchronous run: a later run in the same call, and a write after a rollback, both count', async () => {
+      const sid = scopeId.parse(ulid());
+      const v1 = hostFor('v1');
+      await v1.restoreScopeLocal(sid, notes('base'));
+      const stub = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(sid)) as unknown as {
+        testWriteBatch(s: string, ops: number, rows: number, counted: boolean): Promise<void>;
+        testRollbackThenWrite(id: string, body: string): Promise<void>;
+      };
+      const rev = async () => Number((await v1.loadMarkerLocal(sid)).revision);
+      const start = await rev();
+      // Three operations, each its own run in one call: three bumps, not one.
+      await stub.testWriteBatch(sid, 3, 2, true);
+      expect(await rev()).toBe(start + 3);
+      // A rolled-back transaction and then a landed write, in one run: still counted.
+      const before = await v1.loadMarkerLocal(sid);
+      await stub.testRollbackThenWrite('n-after', 'after the rollback');
+      expect(await rev()).toBeGreaterThan(Number(before.revision));
+      expect(bodiesIn(await v1.exportScopeLocal(sid))).toEqual(['base', 'after the rollback']);
+      await expect(v1.restoreScopeLocal(sid, notes('stale'), { expect: before })).rejects.toThrow(/changed since the carry read it/);
+    });
+
     it('a push wipes the copy in the old script, and a bind back to it restores into that same store', async () => {
       const p = await fresh('gone', 'from prod', 'gone data');
       expect((await push('gone', 'v2')).status).toBe(200);

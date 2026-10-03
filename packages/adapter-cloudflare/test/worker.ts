@@ -100,6 +100,23 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
       }
     }
 
+    /**
+     * #1722: in one synchronous run, a transaction that writes and rolls back, then a write that
+     * lands. The bump the first write queued must still cover the second.
+     */
+    testRollbackThenWrite(id: string, body: string): void {
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      try {
+        this.ctx.storage.transactionSync(() => {
+          sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', `${id}-rolled-back`, body);
+          throw new Error('roll back');
+        });
+      } catch {
+        // rolled back, as intended
+      }
+      sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, body);
+    }
+
     /** #1722's cost probe: count the write revision or not, for calls that follow. */
     testCountWrites(counted: boolean): void {
       (this as unknown as { revisionSuspended: boolean }).revisionSuspended = !counted;
