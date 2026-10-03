@@ -149,8 +149,10 @@ code even while its bound version stays unchanged. A directory version or dashbo
 cannot prove what that URL runs. A preview push or `scope bind` now carries the preview's data
 from the serving script to the bound version's script before clearing the pin. Binding the
 currently bound version is enough to repair a long-lived preview without advancing it. Previews
-that are never pushed or bound still need a one-time inventory and repair pass (#1724), and old
-script retention and erasure remain #1722. Do not clear a pin without carrying its data.
+that are never pushed or bound are repaired by a one-time platform pass that does the same thing
+for each (#1724): it carries the data, binds the version the preview already has, and only then
+clears the pin, so a preview that fails is left pinned with its data and retried on the next run.
+Old script retention and erasure remain #1722. Do not clear a pin without carrying its data.
 :::
 
 ## Sticky-per-PR **and** per-build URLs
