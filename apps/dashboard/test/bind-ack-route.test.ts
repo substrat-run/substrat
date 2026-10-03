@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { createControlPlaneApi, UNSAFE_devPlatformActorAuth } from '@substrat-run/control-plane-api';
+import { createControlPlaneApi, serviceTokenAuth, tenantTokenAuth } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
@@ -54,6 +54,7 @@ const PRODUCER = 'acme/ledger';
 const CONSUMER = 'acme/desk';
 const TYPE = 'ledger.entry-made';
 const staff = platformActorId.parse(ulid());
+const TENANT_TOKEN_SECRET = 'test-tenant-token-secret';
 const OWNER_SUB = 'sub-owner';
 
 describe('an Update or a Bind refused for what it would break (#1756)', () => {
@@ -94,7 +95,11 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
     await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: OWNER_SUB, principal: owner, tenantId: tenant, scopeId: dashScope });
 
-    for (const slug of [PRODUCER, CONSUMER]) await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+    // The team's own verticals, as a team's are: a tenant credential reads a vertical its tenant
+    // owns (or one listed in the catalog), and an unowned, unlisted one is invisible to it.
+    for (const slug of [PRODUCER, CONSUMER]) {
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: tenant });
+    }
     const exportRow = { type: TYPE, schemaVersion: 1, readPermission: 'ledger:read', declaredBy: ['@test/ledger'] };
     await publish(PRODUCER, v.exporting, registry({ exports: [exportRow] }));
     await publish(PRODUCER, v.dropping, registry({}));
@@ -107,7 +112,14 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     const dash = await host.getScope(owner, tenant, dashScope);
     await dash.invoke('dashboard/provision-app', { appScopeId: appScope, verticalSlug: PRODUCER, name: 'Ledger' });
 
-    const plane = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+    // The plane as production wires it for the dashboard (#977): the fleet-wide service token
+    // is honoured to mint the tenant token, and that token is what every other call presents.
+    const plane = createControlPlaneApi({
+      host,
+      authenticate: serviceTokenAuth('service-token', staff),
+      authenticateTenantService: tenantTokenAuth(TENANT_TOKEN_SECRET, staff),
+      tenantTokenSecret: TENANT_TOKEN_SECRET,
+    });
     env = {
       SCOPE: {},
       CONTROL_PLANE: {},
@@ -117,7 +129,6 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '') + u.search;
-          if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           return plane.request(path, init);
         },
       },

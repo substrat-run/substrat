@@ -1,4 +1,5 @@
 import { resolveObservabilityWindow, TENANT_METRICS_LIMIT } from '@substrat-run/control-plane-api';
+import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 /**
  * The Dashboard — the tenant-facing self-service surface, as a Cloudflare Worker.
  * See docs/architecture/dashboard.md. Sign up → your own tenant is bootstrapped →
@@ -131,8 +132,6 @@ interface Env extends OidcEnv, EmailIdentifierEnv {
   CONTROL_PLANE_SVC?: Fetcher;
   /** Shared service credential the control plane resolves to its service actor. Required. */
   CP_SERVICE_TOKEN?: string;
-  /** The platform actor id stamped on shared-plane writes (a fixed dashboard actor). */
-  CP_ACTOR?: string;
   /**
    * Cloudflare Email Service `send_email` binding — invite + transactional mail.
    * Absent ⇒ the in-memory mock (local dev has no sending domain), so an invite
@@ -284,11 +283,14 @@ function controlPlaneFor(
   // Host is ignored over a service binding; the control-plane API mounts at `/api`.
   const baseUrl = 'https://control-plane/api';
   const fetchImpl = svc.fetch.bind(svc);
+  // The one call made with the fleet-wide token, over the shared transport (#971) for its
+  // addressing and credential; the refusal is read here, because what it means — a 503
+  // naming what is unconfigured — is the dashboard's own answer, not a plane sentence.
+  const fleet = new ControlPlaneTransport({ baseUrl, actor: null, serviceToken, fetch: fetchImpl });
 
   const mint = async (): Promise<string> => {
-    const res = await fetchImpl(`${baseUrl}/tenant-tokens`, {
+    const res = await fleet.request('/tenant-tokens', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-service-token': serviceToken },
       body: JSON.stringify(principal ? { tenantId, principal } : { tenantId }),
     });
     if (!res.ok) {
@@ -304,7 +306,6 @@ function controlPlaneFor(
 
   return new TenantNarrowedControlPlane({
     baseUrl,
-    actor: env.CP_ACTOR ?? DASHBOARD_CP_ACTOR,
     credential: (opts) => {
       // `fresh` is the seam asking after a 401: whatever is cached is no longer one the
       // plane accepts (the signing secret was rotated under this isolate), so drop it

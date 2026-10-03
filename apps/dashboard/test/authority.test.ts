@@ -36,7 +36,6 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     }) as unknown as typeof globalThis.fetch;
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
-      actor: '01JZ000000000000000000TEST',
       credential: 'secret-token',
       tenantId: T,
       fetch,
@@ -179,7 +178,6 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     }) as unknown as typeof globalThis.fetch;
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
-      actor: '01JZ000000000000000000TEST',
       credential: 'secret-token',
       tenantId: T,
       fetch,
@@ -216,7 +214,6 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       new Response(JSON.stringify(page), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof globalThis.fetch;
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
-      actor: '01JZ000000000000000000TEST',
       credential: 'secret-token',
       tenantId: T,
       fetch,
@@ -306,7 +303,6 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     }) as unknown as typeof globalThis.fetch;
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
-      actor: '01JZ000000000000000000TEST',
       credential: 'secret-token',
       tenantId: T,
       fetch,
@@ -444,7 +440,6 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     }) as unknown as typeof globalThis.fetch;
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
-      actor: '01JZ000000000000000000TEST',
       credential: 'secret-token',
       tenantId: T,
       fetch,
@@ -702,7 +697,6 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       }) as unknown as typeof globalThis.fetch;
       const cp = new TenantNarrowedControlPlane({
         baseUrl: 'https://cp/api',
-        actor: '01JZ000000000000000000TEST',
         credential: 'secret-token',
         tenantId: T,
         fetch,
@@ -797,7 +791,6 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       }) as unknown as typeof globalThis.fetch;
       const cp = new TenantNarrowedControlPlane({
         baseUrl: 'https://cp/api',
-        actor: '01JZ000000000000000000TEST',
         credential: 'secret-token',
         tenantId: T,
         fetch,
@@ -893,7 +886,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
         });
       }) as unknown as typeof globalThis.fetch;
       const cp = new TenantNarrowedControlPlane({
-        baseUrl: 'https://cp/api', actor: '01JZ000000000000000000TEST', credential, tenantId: T, fetch,
+        baseUrl: 'https://cp/api', credential, tenantId: T, fetch,
       });
       return { cp, tokens };
     };

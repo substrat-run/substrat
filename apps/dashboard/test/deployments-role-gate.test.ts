@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { createControlPlaneApi, UNSAFE_devPlatformActorAuth } from '@substrat-run/control-plane-api';
+import { createControlPlaneApi, serviceTokenAuth, tenantTokenAuth } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
@@ -69,6 +69,7 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 
 const PROVIDER = 'authhero';
 const staff = platformActorId.parse(ulid());
+const TENANT_TOKEN_SECRET = 'test-tenant-token-secret';
 
 describe('the /api/deployments write routes ask the caller’s role (#1595)', () => {
   let dir: string;
@@ -109,7 +110,14 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     // The vertical the team owns: private, so every act below is self-serve for its owner.
     await host.admin.registerVertical(staff, { slug: 'acme/hr', name: 'HR', source: 'cli', ownerTenant: tenant });
 
-    const plane = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+    // The plane as production wires it for the dashboard (#977): the fleet-wide service token
+    // is honoured to mint the tenant token, and that token is what every other call presents.
+    const plane = createControlPlaneApi({
+      host,
+      authenticate: serviceTokenAuth('service-token', staff),
+      authenticateTenantService: tenantTokenAuth(TENANT_TOKEN_SECRET, staff),
+      tenantTokenSecret: TENANT_TOKEN_SECRET,
+    });
     env = {
       SCOPE: {},
       CONTROL_PLANE: {},
@@ -121,7 +129,6 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
           const method = init?.method ?? 'GET';
           const path = u.pathname.replace(/^\/api/, '') + u.search;
           planeCalls.push(`${method} ${path}`);
-          if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           if ((method === 'POST' || method === 'DELETE') && path.endsWith('/peer-grants')) {
             effects.push(`${method} ${path}`);
             return Response.json({ changed: true });
