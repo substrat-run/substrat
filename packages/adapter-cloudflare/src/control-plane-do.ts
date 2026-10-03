@@ -624,6 +624,16 @@ export interface AdminEntryInput {
  * Keeping the copies and gating them, rather than moving the DDL into the kernel, is the
  * recorded answer to #969; `docs/architecture/kernel-design.md` §8 says why.
  */
+/** #1713: one hosted scope, its directory lifecycle, and what its deployment last acknowledged. */
+export interface LifecycleTargetRow {
+  tenant_id: string;
+  scope_id: string;
+  scope_status: string;
+  tenant_status: string;
+  /** `lifecycleReceipt` of the acknowledged state, or null when none was. */
+  delivered: string | null;
+}
+
 const DIRECTORY_DDL = `
   -- The ';' in this comment is a deliberate tripwire; the DDL must go through
   -- splitSqlStatements, and a naive split(';') fails the directory at construction.
@@ -4143,13 +4153,7 @@ export class ControlPlaneDO extends DurableObject {
    * scope every pass is what puts a hold back on a store a carry or a restore landed without it,
    * and held scopes are few. Drifted rows first, so held ones never starve them.
    */
-  lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): {
-    tenant_id: string;
-    scope_id: string;
-    scope_status: string;
-    tenant_status: string;
-    delivered: string | null;
-  }[] {
+  lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): LifecycleTargetRow[] {
     const where = [
       's.vertical IS NOT NULL',
       "s.status NOT IN ('provisioning', 'reaped')",
@@ -4165,7 +4169,7 @@ export class ControlPlaneDO extends DurableObject {
       params.push(filter.scopeId);
     }
     const drifted = "COALESCE(r.delivered, 'active/active') <> s.status || '/' || t.status";
-    if (filter.drift) where.push(`(${drifted} OR s.status <> 'active' AND s.status <> 'archived' OR t.status <> 'active')`);
+    if (filter.drift) where.push(`(${drifted} OR s.status NOT IN ('active', 'archived') OR t.status <> 'active')`);
     params.push(filter.limit ?? 1000);
     return this.sql
       .exec(
@@ -4178,13 +4182,7 @@ export class ControlPlaneDO extends DurableObject {
           LIMIT ?`,
         ...params,
       )
-      .toArray() as unknown as {
-      tenant_id: string;
-      scope_id: string;
-      scope_status: string;
-      tenant_status: string;
-      delivered: string | null;
-    }[];
+      .toArray() as unknown as LifecycleTargetRow[];
   }
 
   /** #1713: record what a scope's deployment acknowledged holding (`lifecycleReceipt`). */

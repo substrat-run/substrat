@@ -7,7 +7,7 @@ import {
   lifecycleReceipt,
   lifecycleRefusal,
   readLifecycle,
-  restoreLifecycleAfterLoad,
+  settleLifecycleAfterLoad,
   writeLifecycle,
   WRITE_LIFECYCLE_SQL,
   type SwitchSql,
@@ -43,12 +43,8 @@ describe('scope lifecycle (#1713)', () => {
     });
     it('judges the tenant first, then the scope, as scopeAccessRefusal does', () => {
       const ids = { tenantId: 'T', scopeId: 'S' };
-      expect(lifecycleRefusal(life('suspended', 'suspended', 0), ids)).toEqual({
-        message: 'tenant not active (status: suspended): T',
-      });
-      expect(lifecycleRefusal(life('suspended', 'active', 0), ids)).toEqual({
-        message: 'scope not active (status: suspended): S',
-      });
+      expect(lifecycleRefusal(life('suspended', 'suspended', 0), ids)).toBe('tenant not active (status: suspended): T');
+      expect(lifecycleRefusal(life('suspended', 'active', 0), ids)).toBe('scope not active (status: suspended): S');
     });
     it.each(['suspended', 'archiving', 'archived', 'provisioning', 'reaped'] as const)('holds a %s scope', (scope) => {
       expect(lifecycleRefusal(life(scope, 'active', 0))).not.toBeNull();
@@ -117,12 +113,13 @@ describe('scope lifecycle (#1713)', () => {
       expect(lifecycleAfterLoad(null, newer, true)).toBeNull();
       expect(lifecycleAfterLoad(older, newer, true)).toEqual(older);
     });
-    it('restoreLifecycleAfterLoad puts exactly that row back, or none', () => {
+    it('settleLifecycleAfterLoad puts the merged row in place, or removes it', () => {
       const sql = fresh();
-      writeLifecycle(sql, older);
-      restoreLifecycleAfterLoad(sql, newer);
+      writeLifecycle(sql, newer); // what the dump brought
+      settleLifecycleAfterLoad(sql, older, false);
       expect(readLifecycle(sql)).toEqual(newer);
-      restoreLifecycleAfterLoad(sql, null);
+      writeLifecycle(sql, newer);
+      settleLifecycleAfterLoad(sql, null, true); // a copy with no row of its own
       expect(sql.all('SELECT * FROM _substrat_meta')).toEqual([]);
     });
   });

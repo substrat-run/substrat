@@ -1,4 +1,4 @@
-import { scopeLifecycle, type ScopeLifecycle } from '@substrat-run/contracts';
+import { scopeLifecycle, type LifecycleDelivery, type ScopeLifecycle } from '@substrat-run/contracts';
 import type { SwitchSql } from './system-switch.js';
 
 /**
@@ -31,11 +31,6 @@ export const WRITE_LIFECYCLE_SQL = `INSERT OR REPLACE INTO _substrat_meta (key, 
 /** Whether a statement is `WRITE_LIFECYCLE_SQL`, whitespace aside. */
 export const isLifecycleWrite = (sql: string): boolean => sql.trim().replace(/\s+/g, ' ') === WRITE_LIFECYCLE_SQL;
 
-/** The refusal a held scope answers, worded exactly as the directory's own gate words it. */
-export interface LifecycleRefusal {
-  message: string;
-}
-
 /** The stored lifecycle, or null when none was delivered. A row that does not parse reads as none. */
 export function readLifecycle(sql: SwitchSql): ScopeLifecycle | null {
   const row = sql.all('SELECT value FROM _substrat_meta WHERE key = ?', SCOPE_LIFECYCLE_KEY)[0];
@@ -61,10 +56,7 @@ const supersedes = (next: ScopeLifecycle, current: ScopeLifecycle | null): boole
  * Store a delivered lifecycle, unless the store already holds a newer one. `applied` says whether
  * this delivery is now the stored state, and `changed` whether the gate's answer moved with it.
  */
-export function writeLifecycle(
-  sql: SwitchSql,
-  next: ScopeLifecycle,
-): { applied: boolean; changed: boolean; lifecycle: ScopeLifecycle } {
+export function writeLifecycle(sql: SwitchSql, next: ScopeLifecycle): LifecycleDelivery {
   const current = readLifecycle(sql);
   if (!supersedes(next, current)) return { applied: false, changed: false, lifecycle: current! };
   sql.run(WRITE_LIFECYCLE_SQL, JSON.stringify(next));
@@ -85,16 +77,18 @@ export function lifecycleAfterLoad(
   return supersedes(dumped, before) ? dumped : before;
 }
 
-/** Put `lifecycleAfterLoad`'s answer in place, after a load replaced `_substrat_meta` wholesale. */
-export function restoreLifecycleAfterLoad(sql: SwitchSql, keep: ScopeLifecycle | null): void {
-  sql.run('DELETE FROM _substrat_meta WHERE key = ?', SCOPE_LIFECYCLE_KEY);
-  if (keep) {
-    sql.run('INSERT INTO _substrat_meta (key, value) VALUES (?, ?)', SCOPE_LIFECYCLE_KEY, JSON.stringify(keep));
-  }
+/**
+ * Settle the row after a load replaced `_substrat_meta` wholesale (#1713): `lifecycleAfterLoad` of
+ * the row read before the load (`before`) and the one the dump brought, put in place or removed.
+ */
+export function settleLifecycleAfterLoad(sql: SwitchSql, before: ScopeLifecycle | null, copy: boolean): void {
+  const keep = lifecycleAfterLoad(before, readLifecycle(sql), copy);
+  if (keep) sql.run(WRITE_LIFECYCLE_SQL, JSON.stringify(keep));
+  else sql.run('DELETE FROM _substrat_meta WHERE key = ?', SCOPE_LIFECYCLE_KEY);
 }
 
 /**
- * THE lifecycle gate (#1713): null when the scope may run, or why it may not. Both halves must be
+ * THE lifecycle gate (#1713): null when the scope may run, or the refusal's message. Both halves must be
  * `active`, the tenant judged first, exactly as the directory's `scopeAccessRefusal` judges them,
  * so a CP-less deployment and a CP-backed one refuse the same scope in the same words. No stored
  * lifecycle passes.
@@ -102,14 +96,10 @@ export function restoreLifecycleAfterLoad(sql: SwitchSql, keep: ScopeLifecycle |
 export function lifecycleRefusal(
   state: ScopeLifecycle | null,
   ids?: { tenantId: string; scopeId: string },
-): LifecycleRefusal | null {
+): string | null {
   if (!state) return null;
-  if (state.tenant !== 'active') {
-    return { message: `tenant not active (status: ${state.tenant})${ids ? `: ${ids.tenantId}` : ''}` };
-  }
-  if (state.scope !== 'active') {
-    return { message: `scope not active (status: ${state.scope})${ids ? `: ${ids.scopeId}` : ''}` };
-  }
+  if (state.tenant !== 'active') return `tenant not active (status: ${state.tenant})${ids ? `: ${ids.tenantId}` : ''}`;
+  if (state.scope !== 'active') return `scope not active (status: ${state.scope})${ids ? `: ${ids.scopeId}` : ''}`;
   return null;
 }
 

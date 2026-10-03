@@ -416,6 +416,7 @@ import type {
   VerticalRow,
   VersionRow,
   VersionListRow,
+  LifecycleTargetRow,
 } from './control-plane-do.js';
 
 /**
@@ -486,9 +487,7 @@ const toConnection = (r: ConnectionDoRow): Connection =>
 
 interface ControlPlaneStub {
   /** #1713: hosted scopes and their directory lifecycle (`ControlPlaneDO.lifecycleTargets`). */
-  lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): Promise<
-    { tenant_id: string; scope_id: string; scope_status: string; tenant_status: string; delivered: string | null }[]
-  >;
+  lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): Promise<LifecycleTargetRow[]>;
   /** #1713: what a scope's deployment acknowledged holding. */
   recordLifecycleReceipt(scopeId: string, delivered: string, at: string): Promise<void>;
   createTenant(
@@ -1604,6 +1603,9 @@ export interface LifecycleDelegation {
   deliver(args: { tenantId: TenantId; scopeId: ScopeId; lifecycle: ScopeLifecycle }): Promise<LifecycleDelivery>;
 }
 
+/** The receipt of a live scope, and what no receipt reads as (#1713). */
+const LIVE_RECEIPT = lifecycleReceipt({ scope: 'active', tenant: 'active' });
+
 /** What one delivery pass did (#1713): a transition's push, or one heal sweep. */
 export interface LifecycleDeliveryReport {
   /** Scopes the pass delivered to. */
@@ -2286,8 +2288,9 @@ export class CloudflareScopeHost implements ScopeHost {
         : this.cp.getScopeRecord(tenantId, scopeId).then((row) => !isPrimaryScopeRow(row)));
     // #1713: a CP-less scope its lifecycle holds attempts nothing and journals nothing, so every
     // due delivery stays due for the first pass after it is live again. Asked on the first due
-    // event, like `isInert`. A host with a directory never gets here for a held scope: its
-    // doors refuse first.
+    // event, like `isInert`. Every caller passed `assertLive` already, so this is for the scope
+    // suspended between that gate and the drain: a request in flight, whose write commits while
+    // its effect waits. A host with a directory answers false without a read.
     let held: Promise<boolean> | undefined;
     const isHeld = (): Promise<boolean> => (held ??= this.lifecycleHeld(scopeId));
     drain: for (const [id, executor] of this.executors) {
@@ -7699,9 +7702,14 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private async assertLive(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     await this.validateScopeAccess(tenantId, scopeId);
-    if (!this.cpLess) return;
-    const refusal = lifecycleRefusal(await this.scopeStub(scopeId).lifecycle(), { tenantId, scopeId });
-    if (refusal) throw new Error(refusal.message);
+    const refusal = await this.cpLessRefusal(scopeId, { tenantId, scopeId });
+    if (refusal) throw new Error(refusal);
+  }
+
+  /** The delivered lifecycle's refusal on a CP-less host (#1713); always null with a directory. */
+  private async cpLessRefusal(scopeId: ScopeId, ids?: { tenantId: TenantId; scopeId: ScopeId }): Promise<string | null> {
+    if (!this.cpLess) return null;
+    return lifecycleRefusal(await this.scopeStub(scopeId).lifecycle(), ids);
   }
 
   /**
@@ -7722,7 +7730,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const report: LifecycleDeliveryReport = { attempted: 0, delivered: 0, failed: 0 };
     const delegation = this.lifecycleDelegation;
     if (!delegation || this.cpLess) return report;
-    let targets: Awaited<ReturnType<ControlPlaneStub['lifecycleTargets']>>;
+    let targets: LifecycleTargetRow[];
     try {
       targets = await this.cp.lifecycleTargets(filter);
     } catch (err) {
@@ -7744,9 +7752,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // reads as active/active, which is what a deployment holding no lifecycle runs as. This
       // is what keeps an activation, and every transition before a deployment carries the
       // route, from posting a delivery that changes nothing. A HOLD is always delivered.
-      if ((t.delivered ?? lifecycleReceipt({ scope: 'active', tenant: 'active' })) === lifecycleReceipt(lifecycle) && lifecycleRefusal(lifecycle) === null) {
-        continue;
-      }
+      if (lifecycleRefusal(lifecycle) === null && (t.delivered ?? LIVE_RECEIPT) === LIVE_RECEIPT) continue;
       report.attempted += 1;
       try {
         const answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
@@ -7791,8 +7797,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * points ask the directory themselves.
    */
   async lifecycleHeld(scopeId: ScopeId): Promise<boolean> {
-    if (!this.cpLess) return false;
-    return lifecycleRefusal(await this.scopeStub(scopeId).lifecycle()) !== null;
+    return (await this.cpLessRefusal(scopeId)) !== null;
   }
 
   /**

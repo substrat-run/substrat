@@ -694,22 +694,6 @@ export class VerticalClient {
   }
 
   /**
-   * Move one module's schedule kill switch in the deployment serving the scope (#1666) —
-   * the far end of `revokeFromSystem` / `restoreToSystem` for a hosted scope, whose
-   * `system:<module>` grants live there and nowhere the platform can reach.
-   *
-   * ONE shape is normalized to "redeploy the vertical", and only because it is the
-   * deployment's own proof that it cannot have acted: a script built before the route
-   * answers a **404** (the path does not exist — the route itself answers a module it holds
-   * nothing for with a 200 `held: false`, never a 404) or its **SPA shell** (a 200 that is
-   * not JSON). "Nothing was switched" is true of exactly those.
-   *
-   * Everything else surfaces as the failure it is, and never claims that: a transport
-   * failure (`reach` → 502 "unreachable"), a genuine 5xx from the far end, and a 200 JSON of
-   * the wrong shape. The request may have landed and the switch may have moved before the
-   * answer was lost, so the only honest instruction is to confirm the position first.
-   */
-  /**
    * Deliver one scope's lifecycle to the deployment serving it (#1713). Throws on anything but
    * a parsed answer, a deployment built before the route (404/501) included, so the caller
    * records no receipt and the heal sweep asks again.
@@ -741,6 +725,22 @@ export class VerticalClient {
     return parsed.data;
   }
 
+  /**
+   * Move one module's schedule kill switch in the deployment serving the scope (#1666) —
+   * the far end of `revokeFromSystem` / `restoreToSystem` for a hosted scope, whose
+   * `system:<module>` grants live there and nowhere the platform can reach.
+   *
+   * ONE shape is normalized to "redeploy the vertical", and only because it is the
+   * deployment's own proof that it cannot have acted: a script built before the route
+   * answers a **404** (the path does not exist — the route itself answers a module it holds
+   * nothing for with a 200 `held: false`, never a 404) or its **SPA shell** (a 200 that is
+   * not JSON). "Nothing was switched" is true of exactly those.
+   *
+   * Everything else surfaces as the failure it is, and never claims that: a transport
+   * failure (`reach` → 502 "unreachable"), a genuine 5xx from the far end, and a 200 JSON of
+   * the wrong shape. The request may have landed and the switch may have moved before the
+   * answer was lost, so the only honest instruction is to confirm the position first.
+   */
   async systemSwitch(input: { scopeId: ScopeId; moduleId: ModuleId; to: 'on' | 'off' }): Promise<SystemSwitchOutcome> {
     const verb = 'system-switch';
     const predates = (): ControlPlaneError =>

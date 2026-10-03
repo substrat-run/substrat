@@ -284,10 +284,11 @@ import type {
   LifecycleFlowInput,
   LifecycleFlowResult,
   Page,
+  LifecycleDelivery,
   ScopeLifecycle,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isLifecycleWrite, lifecycleAfterLoad, readLifecycle, restoreLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4465,8 +4466,8 @@ export function defineScopeDO(
      * older than the one held. Bookkeeping, like the copy marker: it changes what runs here, not
      * the scope's data, so it does not advance the write revision a carry fences on.
      */
-    setLifecycle(next: ScopeLifecycle): { applied: boolean; changed: boolean; lifecycle: ScopeLifecycle } {
-      let out!: { applied: boolean; changed: boolean; lifecycle: ScopeLifecycle };
+    setLifecycle(next: ScopeLifecycle): LifecycleDelivery {
+      let out!: LifecycleDelivery;
       this.revision.transactionSync(() => {
         out = this.revision.bookkeeping(() => writeLifecycle(this.switchSql(), next));
       });
@@ -5290,14 +5291,7 @@ export function defineScopeDO(
           if (markCopy) markCopyOrigin(this.switchSql(), now);
           // #1713: a return keeps the newer of this store's lifecycle and the dump's, so a backup
           // from before a suspension does not lift it; a copy keeps only its own.
-          restoreLifecycleAfterLoad(
-            this.switchSql(),
-            lifecycleAfterLoad(
-              lifecycleBefore,
-              readLifecycle(this.switchSql()),
-              markCopy === true || destScopeId === undefined || sourceScopeId !== destScopeId,
-            ),
-          );
+          settleLifecycleAfterLoad(this.switchSql(), lifecycleBefore, markCopy === true || isCopyLoad(destScopeId, sourceScopeId));
           reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
           // Re-point the restored grants at THIS scope (after the spine exists, so a dump
           // that carried no tuples table still finds one here).
