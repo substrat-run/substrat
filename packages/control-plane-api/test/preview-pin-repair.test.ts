@@ -413,12 +413,17 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
     // Malformed JSON must not fall back to the defaults, which are a REAL pass.
-    for (const raw of ['{', '{"dryRun": true', 'dryRun=true', '[]', 'null', '"x"', '5']) {
+    for (const raw of ['{', '{"dryRun": true', 'dryRun=true', '[]', 'null', '"x"', '5', ' ', '\n', ' \t\n ', '\uFEFF', '\uFEFF \n']) {
       const res = await repairRaw(asStaff, raw);
       expect(res.status, raw).toBe(400);
     }
     expect(calls).toEqual([]);
     expect((await recordOf(pinned.scopeId)).servingRef).toBe(SERVING);
+
+    // A BOM in front of JSON is still JSON.
+    const bom = await repairRaw(asStaff, '\uFEFF{"dryRun": true}');
+    expect(bom.status).toBe(200);
+    expect(((await bom.json()) as Pass).candidates.map((c) => c.scopeId)).toEqual([pinned.scopeId]);
 
     // A genuinely empty body, or none, is the defaults: a real pass.
     const empty = await repairRaw(asStaff, '');

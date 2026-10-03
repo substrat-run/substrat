@@ -780,16 +780,30 @@ const reapScopeBody = z
 
 /**
  * Read the JSON body of a route whose default is an ACT (a reap, a bulk adoption, a fleet
- * repair), under one grammar: an empty body is the documented defaults (`{}` through the
- * schema), JSON that does not parse is a 400, and the schema decides the rest. The old
- * `await c.req.json().catch(() => ({}))` turned a malformed body into the defaults, so a body
- * of `{"backup": false` ran the action it was cut short of describing. A schema that guards an
- * act is `.strict()`, so a misspelt key is refused rather than dropped.
+ * repair), under one grammar. The old `await c.req.json().catch(() => ({}))` turned a body
+ * that did not parse into the defaults, so a body of `{"backup": true` (cut short on the wire)
+ * ran the action it was cut short of describing.
+ *
+ * **Only a ZERO-LENGTH body takes the defaults.** Any other body must hold a JSON value, or it
+ * is a 400. That is deliberately not "an empty-looking body": a body of whitespace, or of a
+ * byte-order mark and nothing else, is a request that did not arrive intact, and reading it as
+ * "no body" would run the default act on it (a tenant reap of ` \t\n ` reaped with no backup).
+ * So the check is on the BYTES, before any decoding or trimming, and a leading BOM is stripped
+ * only so that JSON following it can parse. Do not "simplify" this to `text.trim() === ''`.
+ *
+ * The schema decides the rest. One that guards an act is `.strict()`, so a misspelt key is
+ * refused rather than dropped.
  */
-async function readJsonBody<S extends z.ZodType>(c: { req: { text(): Promise<string> } }, schema: S): Promise<z.output<S>> {
-  const text = (await c.req.text()).trim();
+async function readJsonBody<S extends z.ZodType>(
+  c: { req: { arrayBuffer(): Promise<ArrayBuffer> } },
+  schema: S,
+): Promise<z.output<S>> {
+  const bytes = await c.req.arrayBuffer();
   let raw: unknown = {};
-  if (text !== '') {
+  if (bytes.byteLength > 0) {
+    // `ignoreBOM: true` KEEPS the mark in the string; the default decoder would drop it and
+    // let a BOM-only body decode to '' and look empty.
+    const text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes).replace(/^\uFEFF/, '');
     try {
       raw = JSON.parse(text);
     } catch {

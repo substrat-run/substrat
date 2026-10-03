@@ -48,7 +48,9 @@ describe('a route whose default is an act reads its body strictly (#1724)', () =
 
   const post = (path: string, body?: string) => app.request(path, { method: 'POST', headers: auth, body });
   // Cut short on the wire, not JSON at all, JSON that is not an object, and the wrong types.
-  const unreadable = ['{', '{"backup": true', 'backup=true', '[]', 'null', '"x"', '5'];
+  // Whitespace-only and BOM-only bodies are bodies that did not arrive intact, NOT "no body": only a
+  // zero-length one takes the defaults.
+  const unreadable = ['{', '{"backup": true', 'backup=true', '[]', 'null', '"x"', '5', ' ', '\n', ' \t\n ', '\uFEFF', '\uFEFF \n'];
   const statusOf = async (tenant: string, sid: string) => (await host.admin.getScopeRecord(staff, tenant as typeof t, scopeId.parse(sid)))?.status;
 
   const archived = async (tenant: typeof t) => {
@@ -141,7 +143,7 @@ describe('a route whose default is an act reads its body strictly (#1724)', () =
 
     it('refuses a body it cannot read, and no scope is exported, restored or re-pointed', async () => {
       calls.length = 0;
-      for (const raw of ['{', '{"acknowledge": {"exportBreak": true', '[]', 'null', '5']) {
+      for (const raw of ['{', '{"acknowledge": {"exportBreak": true', '[]', 'null', '5', ' ', ' \t\n ', '\uFEFF']) {
         expect((await post(`/verticals/${slug}/adopt-serving`, raw)).status, raw).toBe(400);
       }
       for (const body of [{ acknowledge: true }, { acknowledge: 'yes' }, { acknowledged: { exportBreak: true } }, { extra: 1 }]) {
