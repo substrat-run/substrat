@@ -1069,6 +1069,8 @@ export class VerticalClient {
     expectLoadStamp: string | null;
     /** The write revision read with the stamp; a write since refuses the wipe too. */
     expectRevision?: string | null;
+    /** The caller read that the scope does not route here: a copy changed since is kept. */
+    protectIfChanged?: boolean;
     carriedTo: string;
     at: string;
   }): Promise<{ wiped: boolean } | 'unfenced'> {
@@ -1134,6 +1136,29 @@ export class VerticalClient {
       throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${scopeId} with an unexpected shape`);
     }
     return { carriedTo: k.carriedTo, keptAt: k.keptAt, revision: k.revision };
+  }
+
+  /** Release the marker of a kept copy that is the live store after all (#1722), at the revision read. */
+  async releaseKeptCopy(input: {
+    scopeId: ScopeId;
+    revision: string | null;
+  }): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
+    const verb = 'kept-copy-release';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/kept-copy/release`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (answer === UNFENCED) {
+      throw new ControlPlaneError(501, `the deployment holding scope ${input.scopeId} keeps no copies (#1722)`);
+    }
+    const a = answer as { released?: unknown; refused?: unknown } | null;
+    if (a?.released === true) return { released: true };
+    if (a?.refused === 'changed' || a?.refused === 'not-kept') return { refused: a.refused };
+    throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — the marker may or may not be cleared`);
   }
 
   /** Discard the kept copy of a scope in this deployment (#1722), at the revision the operator read. */

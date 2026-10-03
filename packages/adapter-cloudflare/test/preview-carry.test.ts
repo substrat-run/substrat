@@ -101,6 +101,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           return out;
         }),
       keptCopy: async (sid: ScopeId) => (unfenced.has(ref) ? null : relay(() => host.keptCopyLocal(sid))),
+      releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null }) =>
+        relay(() => host.releaseKeptCopyLocal(input.scopeId, input.revision)),
       discardKeptCopy: (input: { scopeId: ScopeId; revision: string | null; carriedTo: string; at: string }) =>
         relay(() => host.discardKeptCopyLocal(input.scopeId, input.revision, { to: input.carriedTo, at: input.at })),
       loadMarker: async (sid: ScopeId) => {
@@ -116,6 +118,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         scopeId: ScopeId;
         expectLoadStamp: string | null;
         expectRevision?: string | null;
+        protectIfChanged?: boolean;
         carriedTo: string;
         at: string;
       }) =>
@@ -129,6 +132,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
                   input.expectLoadStamp,
                   { to: input.carriedTo, at: input.at },
                   input.expectRevision,
+                  input.protectIfChanged,
                 ),
               };
             }),
@@ -773,6 +777,72 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['carried'] });
     });
 
+    // Codex #2008 r8: a move that lands while a restore-forward runs. The kept copy goes only once
+    // its data is in the store the scope still routes to; otherwise it stays kept, and the late
+    // write is never left in an unmarked orphan.
+    it('a bind that completes before the resolution reads the live store refuses it, and the kept copy stays', async () => {
+      const p = await keptByLateWrite('kept-race-a');
+      const v1ref = refOf.get(version.v1)!;
+      const { kept } = (await (await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy?script=${v1ref}`, { headers: auth })).json()) as {
+        kept: { keptAt: string };
+      };
+      // Held as it reads v2's marker; meanwhile a bind v2 → v3 lands whole, wiping v2.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.marker = held.hook;
+      const resolving = resolve(p.scopeId, { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: kept.keptAt } });
+      await held.reached;
+      expect((await bindTo(p.scopeId, 'v3')).status).toBe(200);
+      held.release();
+      const refused = await resolving;
+      expect(refused.status).toBe(409);
+      expect(((await refused.json()) as { error: string }).error).toMatch(/re-pointed while the kept copy was being restored forward/);
+      // The late write is still in v1, still kept; v2 is the tombstone the bind left.
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['carried', 'written after the export']);
+      expect(await hostFor('v1').keptCopyLocal(p.scopeId)).not.toBeNull();
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v3), bodies: ['carried'] });
+    });
+
+    it("a bind that exported before the resolution's restore and binds after it keeps what the restore put in its source", async () => {
+      const p = await keptByLateWrite('kept-race-b');
+      const v1ref = refOf.get(version.v1)!;
+      const { kept } = (await (await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy?script=${v1ref}`, { headers: auth })).json()) as {
+        kept: { keptAt: string };
+      };
+      // The bind v2 → v3 has exported v2 (without the late write) and is held before restoring.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v3) && sid === p.scopeId);
+      hooks.marker = held.hook;
+      const binding = bindTo(p.scopeId, 'v3');
+      await held.reached;
+      // The resolution runs whole meanwhile: restores v1 into v2, finds the binding unchanged, discards v1.
+      expect((await resolve(p.scopeId, { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: kept.keptAt } })).status).toBe(200);
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+      // The bind lands. Its source, v2, changed after its export, and it is kept, holding the write.
+      held.release();
+      expect((await binding).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v3), bodies: ['carried'] });
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual(['carried', 'written after the export']);
+      expect(await hostFor('v2').keptCopyLocal(p.scopeId)).not.toBeNull();
+    });
+
+    it('a kept copy that is the live store is released, acknowledged and logged', async () => {
+      const p = await fresh('kept-live', 'live data');
+      const v1ref = refOf.get(version.v1)!;
+      // Marked kept while live: what a carry's protection leaves when a rollback binds right after.
+      const live = hostFor('v1');
+      expect(await live.wipeCarriedLocal(p.scopeId, 'not-the-stamp', { to: 'elsewhere', at: '2026-10-03T00:00:00.000Z' }, undefined, true)).toBe(false);
+      expect(await live.keptCopyLocal(p.scopeId)).not.toBeNull();
+      // Only `release` resolves a kept copy the scope routes to.
+      expect((await resolve(p.scopeId, { script: v1ref, action: 'discard', acknowledge: { discard: true } })).status).toBe(409);
+      expect((await resolve(p.scopeId, { script: v1ref, action: 'release', acknowledge: { release: true } })).status).toBe(200);
+      expect(await live.keptCopyLocal(p.scopeId)).toBeNull();
+      expect(await served(p.hostname)).toEqual({ ref: v1ref, bodies: ['live data'] });
+      const [logged] = await dir.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: p.scopeId });
+      expect(logged).toMatchObject({ after: { action: 'release' } });
+      // Nothing left to release.
+      expect((await resolve(p.scopeId, { script: v1ref, action: 'release', acknowledge: { release: true } })).status).toBe(409);
+    });
+
     // Codex #2008 r7: a copy the carry wiped takes no write, so a stale request still routed to
     // it lands nowhere. A rollback's restore makes it a live store again, and it takes writes.
     it('a wiped copy refuses writes until a restore makes it live again', async () => {
@@ -899,9 +969,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['rb data'] });
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
       expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
-      // A's refused wipe hit the live store again, which is not a kept copy to recover.
+      // A's refused wipe hit the live store again, which is not a kept copy to recover: the marker
+      // its protection set while R had not yet bound comes off once A reads the route there.
       const failures = await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId });
       expect(failures.filter((f) => f.stage === 'source-copy-kept')).toEqual([]);
+      expect(await hostFor('v1').keptCopyLocal(p.scopeId)).toBeNull();
     });
 
     it('on a script that cannot fence the wipe, a rollback that lands first keeps the old script', async () => {

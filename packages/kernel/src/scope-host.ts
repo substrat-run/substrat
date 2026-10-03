@@ -4299,8 +4299,9 @@ export interface OpsFailureInput {
 
 /** One staff resolution of a kept copy (#1722), as `recordKeptCopyResolution` logs it. */
 export interface KeptCopyResolution {
-  /** `discard` wiped the kept copy; `restore-forward` restored it over the live store, then wiped it. */
-  action: 'discard' | 'restore-forward';
+  /** `discard` wiped the kept copy; `restore-forward` restored it over the live store, then wiped it;
+   *  `release` cleared the marker of a kept copy that is the live store after all. */
+  action: 'discard' | 'restore-forward' | 'release';
   /** The script that held the kept copy. */
   script: string;
   /** The script the scope routes to, which a restore forward replaced; null for a discard. */

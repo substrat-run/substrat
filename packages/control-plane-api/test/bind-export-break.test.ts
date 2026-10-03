@@ -79,6 +79,7 @@ describe('the bind gate route (#1756)', () => {
       // wipe (a tombstone load through the restore verb), and the meta read the cleanup checks.
       wipeCarriedCopy: async () => 'unfenced',
       loadMarker: async () => 'unfenced',
+      keptCopy: async () => null,
       readScopeTable: async (sid: string) => {
         const m = storeOf(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: m?.columns ?? ['key', 'value'], rows: m?.rows ?? [] };
@@ -468,6 +469,7 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
       // wipe (a tombstone load through the restore verb), and the meta read the cleanup checks.
       wipeCarriedCopy: async () => 'unfenced',
       loadMarker: async () => 'unfenced',
+      keptCopy: async () => null,
       readScopeTable: async (sid: string) => {
         const m = ensure(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: m?.columns ?? ['key', 'value'], rows: m?.rows ?? [] };

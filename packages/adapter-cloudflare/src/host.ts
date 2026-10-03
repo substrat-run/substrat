@@ -1391,7 +1391,15 @@ interface ScopeStubRpc {
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
   exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
   /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
-  wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway, expectRevision?: string | null): Promise<boolean>;
+  wipeCarried(
+    scopeId: ScopeId,
+    expectLoadStamp: string | null,
+    carriedAway: CarriedAway,
+    expectRevision?: string | null,
+    protectIfChanged?: boolean,
+  ): Promise<boolean>;
+  /** #1722: clear a kept copy's marker where it is the live store, at the revision read. */
+  releaseKeptCopy(revision: string | null): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
   /**
@@ -2659,8 +2667,18 @@ export class CloudflareScopeHost implements ScopeHost {
     carriedAway: CarriedAway,
     /** #1722: the write revision the carry's export read, so a write since refuses the wipe. */
     expectRevision?: string | null,
+    /** #1722: the scope does not route here, so a copy changed in any way since is kept. */
+    protectIfChanged?: boolean,
   ): Promise<boolean> {
-    return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway, expectRevision);
+    return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway, expectRevision, protectIfChanged);
+  }
+
+  /** Release a kept copy that is the live store after all (#1722), at the revision read. */
+  async releaseKeptCopyLocal(
+    scopeId: ScopeId,
+    revision: string | null,
+  ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
+    return this.scopeStub(scopeId).releaseKeptCopy(revision);
   }
 
   /**

@@ -189,7 +189,10 @@ export interface VerticalScopeHost {
     expectLoadStamp: string | null,
     carriedAway: CarriedAway,
     expectRevision?: string | null,
+    protectIfChanged?: boolean,
   ): Promise<boolean>;
+  /** #1722: clear the marker of a kept copy that is the live store after all, at the revision read. */
+  releaseKeptCopyLocal?(scopeId: ScopeId, revision: string | null): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #1722: the export and the store's load stamp, read together. Optional: a host built before
@@ -458,6 +461,8 @@ const wipeCarriedBody = z.object({
   /** The write revision the carry read with it; null for a store never written. A platform that
    *  predates the field sends none, and the wipe is fenced on the stamp alone. */
   expectRevision: z.string().min(1).nullable().optional(),
+  /** The scope does not route here: a copy changed in any way since the export is kept. */
+  protectIfChanged: z.boolean().optional(),
   /** The script the data went to, and when, for the tombstone. */
   carriedTo: z.string().min(1),
   at: z.string().min(1),
@@ -819,6 +824,13 @@ export function mountPlatformSurface<Env extends object>(
     return c.json({ kept: await host.keptCopyLocal(scopeIdOf.parse(c.req.query('scopeId'))) });
   });
 
+  app.post('/internal/kept-copy/release', async (c) => {
+    const body = z.object({ scopeId: scopeIdOf, revision: z.string().min(1).nullable() }).parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.releaseKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    return c.json(await host.releaseKeptCopyLocal(body.scopeId, body.revision));
+  });
+
   app.post('/internal/kept-copy/discard', async (c) => {
     const body = discardKeptBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
@@ -838,6 +850,7 @@ export function mountPlatformSurface<Env extends object>(
         body.expectLoadStamp,
         { to: body.carriedTo, at: body.at },
         body.expectRevision,
+        body.protectIfChanged,
       ),
     });
   });

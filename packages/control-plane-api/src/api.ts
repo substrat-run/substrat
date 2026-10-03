@@ -2933,6 +2933,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     scope: Scope,
     expect: { loadStamp: string | null; revision?: string | null },
     carriedTo: string,
+    /** The scope was read routing elsewhere: a copy changed in any way since is kept (#1722 r8). */
+    protectIfChanged = false,
   ): Promise<boolean> => {
     const at = new Date().toISOString();
     const fenced = await retryTransient(() =>
@@ -2940,6 +2942,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         scopeId: scope.id,
         expectLoadStamp: expect.loadStamp,
         ...(expect.revision !== undefined ? { expectRevision: expect.revision } : {}),
+        ...(protectIfChanged ? { protectIfChanged: true } : {}),
         carriedTo,
         at,
       }),
@@ -3054,6 +3057,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
+   * Clear the kept-copy marker of a store the scope routes to (#1722, Codex #2008 r8). A carry
+   * keeps a changed source when it reads the route elsewhere; a rollback binding it a moment later
+   * makes that store live, and a live store holds nothing divergent. Fenced on the revision read
+   * now; re-reads the route first, so it never releases a copy the scope has left.
+   */
+  const releaseIfLive = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    carried: Carried,
+    holder: VerticalClient,
+    script: string,
+  ): Promise<void> => {
+    if (!(await holder.keptCopy(scope.id))) return;
+    if ((await currentRoute(c, scope, versionId, carried)) !== script) return;
+    const marker = await holder.loadMarker(scope.id);
+    if (marker === 'unfenced') return;
+    await holder.releaseKeptCopy({ scopeId: scope.id, revision: marker.revision });
+  };
+
+  /**
    * The source wipe, fenced on what the export read. Refused means the copy changed after the
    * export: a write from a request still routed there before the bind, which the carry never
    * copied. The copy is then kept, holding that write, and recorded so it can be recovered.
@@ -3065,9 +3089,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     carried: Carried,
     expect: { loadStamp: string | null; revision: string | null },
   ): Promise<void> => {
-    if (await wipeCarriedCopy(carried.source, scope, expect, carried.to)) return;
-    // A rollback that restored into it since made it the live store again: nothing to report.
-    if ((await currentRoute(c, scope, versionId, carried)) === carried.from) return;
+    // The caller read the route elsewhere, so a copy that changed in any way since the export (a
+    // load as much as a write: a staff restore-forward into it racing this carry, Codex #2008 r8)
+    // is kept in the store rather than left an unmarked orphan.
+    if (await wipeCarriedCopy(carried.source, scope, expect, carried.to, true)) return;
+    // A rollback that restored into it since made it the live store again: it is no kept copy, and
+    // a marker this refusal set while the rollback had not yet bound comes off.
+    if ((await currentRoute(c, scope, versionId, carried)) === carried.from) {
+      await releaseIfLive(c, scope, versionId, carried, carried.source, carried.from);
+      return;
+    }
     recordCarryCleanup(
       c,
       scope,
@@ -3100,6 +3131,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       const route = await currentRoute(c, scope, versionId, carried);
       if (route === carried.from) return;
+      // The store this carry landed in is live; a kept marker another carry set while racing it
+      // does not belong on it (#1722 r8).
+      if (route === carried.to) await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
       if (route === carried.to && (await isCarriedAway(carried.dest, scope))) {
         const { tables: dump, loadStamp: stamp, revision } = await retryTransient(() =>
           carried.source.exportScopeStamped(scope.id),
@@ -5031,6 +5065,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     z
       .object({
         script: z.string().min(1),
+        action: z.literal('release'),
+        acknowledge: z.object({ release: z.literal(true) }).strict(),
+      })
+      .strict(),
+    z
+      .object({
+        script: z.string().min(1),
         action: z.literal('restore-forward'),
         /** The moment the copy was kept, as its marker says: the live store's writes since are replaced. */
         acknowledge: z.object({ replacesLiveWritesSince: z.string().min(1) }).strict(),
@@ -5100,8 +5141,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const kept = await holder.keptCopy(scopeId);
     if (!kept) return c.json({ error: `scope ${scopeId} has no kept copy in '${body.script}'` }, 409);
     const route = await routeOf(c, scope);
-    if (!route || route === body.script) {
-      return c.json({ error: `scope ${scopeId} routes to '${route ?? '(nothing)'}', so there is no live copy to resolve against` }, 409);
+    // `release` is for a kept copy the scope routes to (a rollback bound it after a carry kept
+    // it); the other two act on a kept copy the scope has left, against the store it runs on.
+    if (body.action === 'release' ? route !== body.script : !route || route === body.script) {
+      return c.json({
+        error:
+          body.action === 'release'
+            ? `scope ${scopeId} routes to '${route ?? '(nothing)'}', not to the kept copy in '${body.script}'; release is for a kept copy that is live`
+            : `scope ${scopeId} routes to '${route ?? '(nothing)'}', so there is no live copy to resolve against`,
+      }, 409);
     }
     const at = new Date().toISOString();
     const revisionOf = async (client: VerticalClient): Promise<string | null> => {
@@ -5112,7 +5160,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // write that reaches it after this read refuses the wipe. (The marker's own `revision` is the
     // one it was kept at; writing the marker, and any later write, moved it on.)
     const revisionBefore = await revisionOf(holder);
-    const record = (action: 'discard' | 'restore-forward', revisionAfter: string | null) =>
+    const record = (action: 'discard' | 'restore-forward' | 'release', revisionAfter: string | null) =>
       c.var.admin.recordKeptCopyResolution(actor, tenantId, scopeId, {
         action,
         script: body.script,
@@ -5122,8 +5170,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         revisionAfter,
       });
 
+    if (body.action === 'release') {
+      const out = await holder.releaseKeptCopy({ scopeId, revision: revisionBefore });
+      if ('refused' in out) {
+        return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was released` }, 412);
+      }
+      await record('release', revisionBefore);
+      return c.json({ scopeId, script: body.script, action: 'release', revisionBefore });
+    }
+
     if (body.action === 'discard') {
-      const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route, at });
+      const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route!, at });
       if ('refused' in out) {
         return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was discarded` }, 412);
       }
@@ -5140,20 +5197,50 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `(acknowledge.replacesLiveWritesSince: '${kept.keptAt}')`,
       }, 409);
     }
-    const live = await keptHolder(route);
-    // Fenced like a carry: the live store as read now, and nothing else, is what gets replaced.
+    // Fenced on the binding through the whole resolution (Codex #2008 r8): the kept copy goes only
+    // once its data is in the store the scope still routes to. Every refusal below leaves it kept.
+    const liveScript = route!;
+    const live = await keptHolder(liveScript);
+    const bindingHeld = async (): Promise<boolean> => {
+      const now = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+      return (
+        Boolean(now) &&
+        (now!.verticalVersionId ?? null) === (scope.verticalVersionId ?? null) &&
+        (now!.servingRef ?? null) === (scope.servingRef ?? null)
+      );
+    };
+    const moved = () =>
+      c.json({
+        error:
+          `scope ${scopeId} was re-pointed while the kept copy was being restored forward, so nothing was resolved ` +
+          `and the kept copy in '${body.script}' stays kept; read it again and resolve it again`,
+      }, 409);
+    // The live store as read now, and nothing else, is what gets replaced. The binding read again
+    // after the marker ties the marker to the live store: a move that landed before this read
+    // (its wipe minting a tombstone here) changed the binding, and is refused.
     const liveMarker = await live.loadMarker(scopeId);
+    if (liveMarker === 'unfenced') {
+      return c.json({ error: `the deployment serving scope ${scopeId} ('${liveScript}') predates the fence (#1722); re-push it, then resolve` }, 409);
+    }
+    if (!(await bindingHeld())) return moved();
+    if ((await isCarriedAway(live, scope)) || (await live.keptCopy(scopeId))) {
+      return c.json({ error: `the store scope ${scopeId} routes to in '${liveScript}' is not a live store (wiped or kept); nothing was resolved` }, 409);
+    }
     const dump = await retryTransient(() => holder.exportScope(scopeId));
     const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
       scopeId,
       exact: true,
       loadStamp: ulid(),
-      ...(liveMarker === 'unfenced' ? {} : { expect: liveMarker }),
+      expect: liveMarker,
     });
     await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
+    // Still routed there once the data landed? If not, the move that re-pointed the scope keeps
+    // what this restore put in that store (its source wipe protects a copy changed since its
+    // export), and the kept copy here stays kept too: nothing is lost, nothing is discarded.
+    if (!(await bindingHeld())) return moved();
     const revisionAfter = await revisionOf(live);
     await record('restore-forward', revisionAfter);
-    const wiped = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route, at });
+    const wiped = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: liveScript, at });
     if ('refused' in wiped) {
       return c.json({
         error:
@@ -5161,7 +5248,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `stays kept: read it again and resolve it again`,
       }, 409);
     }
-    return c.json({ scopeId, script: body.script, action: 'restore-forward', liveScript: route, revisionBefore, revisionAfter });
+    return c.json({ scopeId, script: body.script, action: 'restore-forward', liveScript, revisionBefore, revisionAfter });
   });
 
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a

@@ -5282,6 +5282,20 @@ export function defineScopeDO(
     }
 
     /**
+     * Release a kept copy that is the scope's live store after all (#1722, Codex #2008 r8): a carry
+     * that protected its source when the route read elsewhere, while a rollback was about to bind
+     * it. Clears the marker only, fenced on the write revision read; the data stays as it is.
+     */
+    releaseKeptCopy(revision: string | null): { released: true } | { refused: 'changed' | 'not-kept' } {
+      return this.revision.transactionSync(() => {
+        if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' } as const;
+        if (this.metaValue(WRITE_REVISION_KEY) !== revision) return { refused: 'changed' } as const;
+        this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, KEPT_DIVERGENT_KEY);
+        return { released: true } as const;
+      });
+    }
+
+    /**
      * Discard a kept copy (#1722): the staff resolution that wipes it to the tombstone, only if it
      * is still one at the write revision the operator acted on. The marker goes with the wipe.
      */
@@ -5330,6 +5344,10 @@ export function defineScopeDO(
       carriedAway: CarriedAway,
       /** The write revision the carry's export read; absent from a platform that read none. */
       expectRevision?: string | null,
+      /** The caller read that the scope does not route here (Codex #2008 r8): a copy that changed
+       *  in ANY way since the export, a load included, holds something the scope's live store may
+       *  not, so it is kept rather than left an unmarked orphan. */
+      protectIfChanged?: boolean,
     ): Promise<boolean> {
       try {
         await this.importDump(carriedAwayDump(carriedAway), scopeId, {
@@ -5349,7 +5367,11 @@ export function defineScopeDO(
           const now = this.loadMarker();
           const writtenSince =
             expectRevision !== undefined && now.loadStamp === expectLoadStamp && now.revision !== expectRevision;
-          if (!writtenSince || this.metaValue(KEPT_DIVERGENT_KEY)) return;
+          const changedSince =
+            now.loadStamp !== expectLoadStamp || (expectRevision !== undefined && now.revision !== expectRevision);
+          // A wiped copy holds nothing to protect (and takes no write, the marker included).
+          if (this.carriedAwayCopy || this.metaValue(KEPT_DIVERGENT_KEY)) return;
+          if (!writtenSince && !(protectIfChanged && changedSince)) return;
           const kept: KeptCopy = { carriedTo: carriedAway.to, keptAt: carriedAway.at, revision: now.revision };
           this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, KEPT_DIVERGENT_KEY, JSON.stringify(kept));
         });

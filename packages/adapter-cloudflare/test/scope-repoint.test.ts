@@ -243,13 +243,29 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
           }),
         ),
       loadMarker: (sid: ScopeId) => relay(() => host.loadMarkerLocal(sid)),
+      keptCopy: (sid: ScopeId) => relay(() => host.keptCopyLocal(sid)),
+      releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null }) =>
+        relay(() => host.releaseKeptCopyLocal(input.scopeId, input.revision)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
       // #1722: what a carry's cleanup calls once the bind lands.
       readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
         relay(() => host.introspectScopeTable(sid, input)),
-      wipeCarriedCopy: (input: { scopeId: ScopeId; expectLoadStamp: string | null; carriedTo: string; at: string }) =>
+      wipeCarriedCopy: (input: {
+        scopeId: ScopeId;
+        expectLoadStamp: string | null;
+        expectRevision?: string | null;
+        protectIfChanged?: boolean;
+        carriedTo: string;
+        at: string;
+      }) =>
         relay(async () => ({
-          wiped: await host.wipeCarriedLocal(input.scopeId, input.expectLoadStamp, { to: input.carriedTo, at: input.at }),
+          wiped: await host.wipeCarriedLocal(
+            input.scopeId,
+            input.expectLoadStamp,
+            { to: input.carriedTo, at: input.at },
+            input.expectRevision,
+            input.protectIfChanged,
+          ),
         })),
     } as unknown as VerticalClient;
   };
