@@ -147,7 +147,7 @@ input defaults from the project; flags override each:
 | workspace | `"substrat": { "tenant" }` in `package.json` — the **pin** | `--tenant`, `SUBSTRAT_TENANT` |
 | UI served? | refuse if `app/index.html` exists and nothing in the manifest would serve it | `--allow-unserved-ui` |
 | layer rules | refuse if [boundary-lint](/concepts/modules) finds a violation in your module code | `--skip-lint` |
-| schedules run? | refuse if a module declares `schedules` and the worker exports and binds no `defineScopeSweeperDO` | `--allow-unswept-schedules` |
+| schedules run? | refuse if a module declares `schedules` and they would still go unrun: your own `defineScopeSweeperDO` unbound, the platform's `SWEEPER`/`SweeperDO` names taken, or a `@substrat-run/vertical-host` too old for the platform's sweeper | `--allow-unswept-schedules` |
 | permission surface | derived from `"substrat": { "permissions" }` and shipped in the manifest | check it without pushing: [`--check`](#push-check-the-local-gate-without-pushing) |
 
 **Push refuses a UI that nothing would serve.** A front end ships as native assets: the push
@@ -199,19 +199,32 @@ one:
 
 `--skip-lint` pushes ungated deliberately, and prints that it did.
 
-**Push refuses schedules nothing would run.** On a hosted deploy, nothing fires a vertical's
-declared `schedules` unless its own worker brings the timer: a
-[`defineScopeSweeperDO`](/reference/adapter-cloudflare) class, exported from the worker entry
-and bound as a store (`{ "binding": "SWEEPER", "class": "SweeperDO" }`). Without it the deploy
-succeeds, provisioning succeeds, and the schedules never run, with no error anywhere. So when
-any module declares a schedule, including an engine you compose whose schedules your own
-source never names, the push looks for both halves. It needs an export bound to a
-`defineScopeSweeperDO(...)` call, read from your entry's source with relative re-exports
-followed, and a store binding of that class. It refuses when either is missing, and
-`push --check` makes the same check. The refusal prints the wiring; the `npm create substrat`
-template already has it. The check cannot see whether `onProvision` calls `noteScope`, which
-is what puts a scope on the sweeper's roster, so wire that too. If a sweeper you wired in
-some other shape already runs them, `--allow-unswept-schedules` says so and the push proceeds.
+**The platform runs your schedules.** On a hosted deploy, a vertical's declared `schedules`
+need a timer inside its own deployment: a
+[`defineScopeSweeperDO`](/reference/adapter-cloudflare) class, bound as a Durable Object.
+You no longer write one. When any module declares a schedule, including an engine you compose
+whose schedules your own source never names, and your worker entry exports no sweeper, the
+platform adds one at upload: the class `SweeperDO`, bound as `SWEEPER`.
+`mountPlatformSurface` gives it your worker's scope host, and adds each scope it provisions or
+reconciles to the sweeper's list (the roster), and removes each scope it deletes. Upgrade
+`@substrat-run/vertical-host` if it predates this; the push says so.
+
+A worker that exports its own `defineScopeSweeperDO` keeps it. The push reads the export from
+your entry's source, following relative re-exports, and sends its name with the version, and
+the platform adds nothing. Keep the class bound as a store
+(`{ "binding": "SWEEPER", "class": "SweeperDO" }`) and call `noteScope` from `onProvision`, as
+before.
+
+To move from your own sweeper to the platform's, delete the export, its store and the two
+hooks. The platform's sweeper has the same class name, so a deployed vertical keeps its
+sweeper's state, its scope list and its scheduled alarm. A vertical that wired its own under
+another class name should keep it: switching would be a class rename, which no upload performs.
+
+The push refuses only where the schedules would still never run: an exported sweeper no store
+binds, a `SWEEPER` binding or `SweeperDO` class used for something else, or a vertical-host
+too old to hand the platform's sweeper its host. `push --check` makes the same check. If a
+sweeper you wired in some other shape already runs them, `--allow-unswept-schedules` says so
+and the push proceeds.
 
 #### `push --check` (the local gate, without pushing)
 

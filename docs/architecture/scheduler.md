@@ -178,10 +178,50 @@ stays platform-fed.
 The split this leaves is clean: a CP-less deployment owns its **scope-local** recurring work
 (retries, schedules); the **directory-owned** phases — connector sweeps, snapshot GC, reaps,
 migration reconciliation — stay with the platform, which has the directory and the
-`/internal` surface to orchestrate them. The create-substrat template wires the sweeper by
-default (`SWEEPER` store + the three route calls), and so do the two hosted demos that declare
-schedules, `demos/ticket0` and `demos/meridian` (#1646). Each of those runs its deployed
-worker in workerd (`test/workerd/sweeper.test.ts`), and each suite holds the same five
+`/internal` surface to orchestrate them.
+
+**The platform supplies the sweeper (#1902).** Wiring it was a rule every vertical had to
+remember, with silence as the failure — the same shape #1893 removed for `invocationLog`. So
+the uploader now does it: when a version declares `schedules` and its entry exports no
+`defineScopeSweeperDO` class, `withPlatformEntry` (control-plane-api `platform-entry.ts`) adds
+the platform's sweeper module — prebuilt from `defineScopeSweeperDO` into
+`platform-entry.generated.ts` by `tools/platform-entry-emit.mts`, `--check`-gated — re-exports
+its class from the platform entry, and adds the class to the upload's Durable Object classes and
+its binding, so the migration the uploader already derives declares it. Three decisions shape
+it:
+
+- **Whose host.** The pass needs the vertical's own host — its modules, and its host options:
+  a host rebuilt from the modules alone would drain a declared connector's events as if none
+  were declared. Every deployed vertical already hands that host to `mountPlatformSurface` as
+  `hostFor`, so vertical-host registers it on `globalThis` under `Symbol.for`
+  (`scope-sweep-host.ts`) and the platform's sweeper reads it there; the same surface notes and
+  forgets scopes on provision, reconcile and delete-scope when the upload set
+  `SUBSTRAT_SCOPE_SWEEPER` (the platform's var, reserved by the `SUBSTRAT_` prefix). The roster
+  stays platform-fed, so forks stay off it as before.
+- **When.** From the push's DECLARATION, never the bundle's bytes: the CLI reads the entry's
+  exported sweeper classes from source and sends them as `sweeperClasses`. `[]` gets the
+  platform's; a name keeps the vertical's own (refused, 422, if no binding names it); and the
+  platform's names bound to something else are refused rather than clobbered. A push from a
+  CLI that predates the field falls back to the convention — `SWEEPER` bound to `SweeperDO` is
+  the vertical's own, neither bound means none — and refuses the half-matches it cannot tell
+  apart. Promote and backout re-decide from the retained manifest.
+- **Which names.** `SweeperDO` bound as `SWEEPER`, the names the template and both demos used
+  by hand. A vertical that drops its own therefore keeps the same namespace on its serving
+  script: same singleton, same roster, its alarm still set, and an empty in-place migration
+  delta. Any other name would be a class rename, which the uploader does not write — so a
+  vertical whose own sweeper has another name keeps it.
+
+`lint:schedule-sweeper` and the push gate changed meaning with it: they no longer refuse "no
+sweeper", only wiring that would still leave schedules unrun — an own sweeper nothing binds, the
+platform's names taken, a vertical-host too old to register the host. What is still owed: the
+platform supplies a sweeper only for `schedules`, so a vertical relying on executor retries or
+resumable jobs and declaring no schedule keeps its own. And a version pushed before this ships
+gets the platform's sweeper only on its next upload (push, promote, backout).
+
+The two hosted demos that declare schedules, `demos/ticket0` and `demos/meridian`, no longer
+wire one, and neither does the create-substrat template (#1646, #1902). Each demo runs its
+deployed worker in workerd (`test/workerd/sweeper.test.ts`) AS UPLOADED — the platform's entry
+and sweeper in front, via `tools/workerd-as-uploaded.mjs` — and each suite holds the same five
 things for its own vertical: provision notes the scope, a real pass produces a due
 schedule's effect and leaves a not-yet-due twin alone, reconcile notes a scope provisioned
 before the sweeper, a copy restored from a scope's dump and then reached by routed traffic

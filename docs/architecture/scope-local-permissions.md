@@ -178,7 +178,8 @@ still a control-plane act.)
    by `runPlatformSweep` (no directory) and cannot be reached by the platform's scope stubs,
    so `defineScopeSweeperDO` (adapter-cloudflare) keeps a scope roster fed by
    `/internal/provision`/`/internal/reconcile` and alarm-drives each scope's `drainDue` +
-   `runDueSchedules` locally — see scheduler.md §3.3.
+   `runDueSchedules` locally — see scheduler.md §3.3. Since #1902 the platform supplies that
+   sweeper at upload to a vertical that declares schedules and wires none.
 
 ## 9. Open questions
 
