@@ -139,7 +139,11 @@ that bind lands does it wipe the copy it left behind. The wipe empties the scope
 the old deployment rather than reaping it, so a later bind back to that version can copy
 the data in again. Where the old deployment supports it, the wipe is also conditional:
 it runs only if nothing has been restored into that store since the copy was read, so a
-rollback that lands during the cleanup keeps its data.
+rollback that lands during the cleanup keeps its data. The copy into the new deployment is
+conditional the same way: it is refused if that store was loaded, or took a write, since the
+move read it, so a move that has fallen behind never overwrites a store that is already being
+served. The cleanup is best effort. A move that fails between its copy and its wipe can still
+leave a copy behind, and nothing reconciles those yet.
 
 ## Storage shapes
 

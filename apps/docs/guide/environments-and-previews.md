@@ -87,9 +87,12 @@ routing stays on the same script or the incoming version is co-located. When a c
   deleted, so binding the preview back to that version later copies the data into it again.
 - **Two pushes to the same preview at once cannot both switch it.** When a retried CI job runs next
   to a new push, the one that finishes second is refused (`412`), its copy is discarded, and
-  re-running it moves the data from wherever the first one left the preview.
+  re-running it moves the data from wherever the first one left the preview. A push that has
+  fallen behind never copies over the version the preview is already being served from.
 
-Copies left in earlier versions by pushes made before the wipe existed are not removed yet
+The wipe is best effort. A push that fails after it copied the data, but before the switch or the
+wipe completes, can still leave a copy behind. Those copies, and the ones left in earlier versions
+by pushes made before the wipe existed, are not removed yet
 ([#1722](https://github.com/substrat-run/substrat/issues/1722)).
 :::
 
