@@ -138,9 +138,10 @@ export async function unresolvedEdges(
   resolves,
   { deadline, interval = 20_000, sleep, now = Date.now, warn = () => {} } = {},
 ) {
-  // Only a spec npm resolves from the registry is asked about. Anything else never reaches
-  // npm: a protocol or an alias that is not a range is refused by `manifestProblems`, and
-  // the registry's answer to an invalid spec is an error about the QUESTION, not the package.
+  // Only a spec npm resolves from the registry is asked about: npm's answer to any other is
+  // an error about the QUESTION, not the package. A workspace protocol, or an alias that is
+  // not a range, is refused by `manifestProblems`; a git or URL spec does not install from
+  // the registry, so the registry has nothing to say about it.
   let pending = runtimeEdges(manifest).filter(
     ({ name, range }) => members.has(name) && !members.get(name).private && isRegistrySpec(range),
   );
