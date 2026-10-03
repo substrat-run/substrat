@@ -149,14 +149,15 @@ CREATE INDEX ticket0_conversation_follows_by_conversation ON ticket0_conversatio
 
 **Write cost.** Each insert maintains one more B-tree on each table above, and two on
 notifications. On workerd, inserting notifications (the most-written table here: one per
-recipient per event) went from 4.5–5.0 to 6.5–7.5 µs a row, over three runs. The conversation index holds no
+recipient per event) went from 4.0–4.5 to 6.0–6.5 µs a row over three runs, timing the 2 000
+inserts alone. The probe requires every insert to land before its rollback. The conversation index holds no
 `updated_at`, so the touch every message makes is not taxed. It is maintained on a change of
 queue, state, priority or assignee. The message index is partial, so only a mail with a
 Message-ID pays for it.
 
 **Migration cost.** On workerd, 0023 over 30 000 conversations, 90 000 messages, 90 000
-notifications, 30 000 delivery records, 15 000 sessions and 10 000 follows took 93–102 ms
-over three runs. It
+notifications, 30 000 delivery records, 15 000 sessions and 10 000 follows took 93–104 ms
+over six runs. It
 runs inside the first request a desk serves after the deploy.
 
 A code revert does **not** remove applied indexes. Reversal needs a new append-only
@@ -175,4 +176,3 @@ A code revert does **not** remove applied indexes. Reversal needs a new append-o
     brings its sort back.
 - `test/workerd/sweeper.test.ts` runs the same shapes on a Durable Object after 0023 on the
   large desk, with the timing and write cost above.
-

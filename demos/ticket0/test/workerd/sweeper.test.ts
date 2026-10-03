@@ -1690,25 +1690,34 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
        * The hottest table this indexes, by rows written: a notification per recipient per event.
        * Rolled back, so the desk is measured as it was. Microseconds per row.
        */
+      /** The one error the probe throws on purpose, to roll its rows back. */
+      class RollBack extends Error {}
       const writeCost = () => {
-        const started = performance.now();
+        let written = -1;
+        let ms = 0;
         try {
           state.storage.transactionSync(() => {
+            const started = performance.now();
             for (let n = 0; n < WRITES; n++) {
               sql.exec(
                 `INSERT INTO ticket0_notifications (id, principal, kind, conversation_id, created_at) VALUES (?, ?, 'assigned', ?, ?)`,
                 `w-${n}`, `agent-${n % 4}`, `c${String(n * 7).padStart(6, '0')}`, '2027-01-01T00:00:00.000Z',
               );
             }
-            throw new Error('roll back');
+            ms = performance.now() - started;
+            // Counted before the rollback, off the clock: a rate over writes that did not happen
+            // is no rate. A primary-key range, so the count costs a seek, not a scan.
+            written = Number([...sql.exec("SELECT COUNT(*) AS n FROM ticket0_notifications WHERE id >= 'w-' AND id < 'w.'")][0]!.n);
+            throw new RollBack();
           });
-        } catch {
-          // The measurement is the point; the rows are not.
+        } catch (error) {
+          // Only the rollback is expected; a failed INSERT fails the test.
+          if (!(error instanceof RollBack)) throw error;
         }
-        return ((performance.now() - started) * 1000) / WRITES;
+        return { written, us: (ms * 1000) / WRITES };
       };
 
-      const snapshot = () => ({ counts: counts(), pages: Object.values(INBOX_PAGES).map(plan), writeUs: writeCost() });
+      const snapshot = () => ({ counts: counts(), pages: Object.values(INBOX_PAGES).map(plan), write: writeCost() });
       const before = snapshot();
       const started = performance.now();
       state.storage.transactionSync(() => {
@@ -1723,6 +1732,8 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
         suspended: plan(SUSPENDED_QUEUE),
       };
     });
+    // Every probe write happened before its rollback, and none of them stayed.
+    expect([result.before.write.written, result.after.write.written]).toEqual([WRITES, WRITES]);
     expect(result.after.counts).toEqual(result.before.counts);
     expect(result.after.counts['ticket0_conversations']).toBe(CONVERSATIONS);
     // Every shape seeks its index on the DO's SQLite, as on node's.
@@ -1734,7 +1745,7 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
     // The bound is the DO's default CPU limit for one request, 30 s.
     console.log(
       `#1554 migration 0023 on ${CONVERSATIONS} conversations: ${Math.round(result.ms)} ms; ` +
-        `notification insert ${result.before.writeUs.toFixed(1)} µs/row before, ${result.after.writeUs.toFixed(1)} µs/row after`,
+        `notification insert ${result.before.write.us.toFixed(1)} µs/row before, ${result.after.write.us.toFixed(1)} µs/row after`,
     );
     expect(result.ms).toBeLessThan(30_000);
   }, 240_000);
