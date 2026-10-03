@@ -919,7 +919,7 @@ interface ScopeStubRpc {
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
   /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
-  clearCopyMark(expectRevision?: string | null): Promise<'cleared' | 'absent' | 'carries-events' | 'changed'>;
+  clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'carries-events' | 'changed'>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -1402,6 +1402,7 @@ interface ScopeStubRpc {
     revision: string | null,
     carriedAway: CarriedAway,
     markCopy?: boolean,
+    loadStamp?: string | null,
   ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
   exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
@@ -1416,6 +1417,7 @@ interface ScopeStubRpc {
   releaseKeptCopy(
     revision: string | null,
     markCopy?: boolean,
+    loadStamp?: string | null,
   ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
@@ -2695,9 +2697,17 @@ export class CloudflareScopeHost implements ScopeHost {
     carriedAway: CarriedAway,
     /** #2005: the directory's classification, sent when the scope is not primary. */
     markCopy?: ScopeLineage,
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`; a replaced store is refused. */
+    loadStamp?: string | null,
   ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
     if (markCopy) assertCopyLineage(markCopy);
-    return this.scopeStub(scopeId).discardKeptCopy(scopeId, revision, carriedAway, markCopy !== undefined);
+    return this.scopeStub(scopeId).discardKeptCopy(
+      scopeId,
+      revision,
+      carriedAway,
+      markCopy !== undefined,
+      ...(loadStamp !== undefined ? [loadStamp] : []),
+    );
   }
 
   /**
@@ -2743,9 +2753,11 @@ export class CloudflareScopeHost implements ScopeHost {
     revision: string | null,
     /** #2005: the directory's classification, sent when the scope is not primary. */
     markCopy?: ScopeLineage,
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`; a replaced store is refused. */
+    loadStamp?: string | null,
   ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
     if (markCopy) assertCopyLineage(markCopy);
-    return this.scopeStub(scopeId).releaseKeptCopy(revision, markCopy !== undefined);
+    return this.scopeStub(scopeId).releaseKeptCopy(revision, markCopy !== undefined, ...(loadStamp !== undefined ? [loadStamp] : []));
   }
 
   /**
@@ -2767,14 +2779,15 @@ export class CloudflareScopeHost implements ScopeHost {
   async clearCopyMarkLocal(
     scopeId: ScopeId,
     lineage: ScopeLineage,
-    /** #1722 (Codex #2008 r12): the store's write revision as the caller read it; refused (412) if
-     *  it moved. The platform's reconcile of a carry's destination sends it; staff send none. */
-    expectRevision?: string | null,
+    /** #1722 (Codex #2008 r12–r13): the store as the caller means it, its load stamp and write
+     *  revision, compared in the clear's own transaction; refused (412) if either moved. The
+     *  platform's reconcile of a carry's destination sends it; staff send none. */
+    expect?: LoadMarker,
   ): Promise<{ cleared: boolean }> {
     if (!isPrimaryScope(lineage)) {
       throw substratError('conflict', 'clear-copy-mark refused: the directory classifies this scope as a copy (a preview or a fork)');
     }
-    const outcome = await this.scopeStub(scopeId).clearCopyMark(...(expectRevision !== undefined ? [expectRevision] : []));
+    const outcome = await this.scopeStub(scopeId).clearCopyMark(...(expect ? [expect] : []));
     if (outcome === 'changed') {
       throw substratError('precondition_failed', `clear-copy-mark refused: scope ${scopeId}'s store changed since its revision was read`);
     }

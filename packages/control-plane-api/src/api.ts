@@ -3163,36 +3163,50 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const marker = await holder.loadMarker(scope.id);
     if (marker === 'unfenced') return;
     const markCopy = copyLineageOf(scope);
-    await holder.releaseKeptCopy({ scopeId: scope.id, revision: marker.revision, ...(markCopy ? { markCopy } : {}) });
+    await holder.releaseKeptCopy({
+      scopeId: scope.id,
+      revision: marker.revision,
+      loadStamp: marker.loadStamp, // Codex #2008 r13: the store read, not only its revision
+      ...(markCopy ? { markCopy } : {}),
+    });
   };
 
   /**
    * A source kept ONLY because staff cleared its copy marker after the carry's export (Codex #2008
    * r12; the store records that itself, `KeptCopy.clearedOnly`). Its data is what the carry
    * copied; the fresher decision is the clear, so it is brought to the store the scope runs on:
-   * the destination's marker is cleared, fenced on the destination's revision read after the
-   * binding is confirmed, and only then is the source discarded, fenced on the revision it was
-   * kept at. True when both landed. Anything else (a write since, a move, a refusal) leaves the
-   * source kept, and the caller records it as any kept copy.
+   * the destination's marker is cleared, and only then is the source discarded. True when both
+   * landed. Anything else (a write since, a move, a refusal) leaves the source kept, and the caller
+   * records it as any kept copy.
+   *
+   * Every step is fenced on THIS carry, not on whatever the stores hold now (Codex #2008 r13). The
+   * destination must still hold this carry's load (its `restoredStamp`): a governed restore that
+   * replaced it since brings a copy marker that is genuine, and clearing it would let another
+   * scope's copy run its executors. That stamp and the revision read are compared inside the clear's
+   * own transaction, so nothing can land between the check and the clear. The binding is read again
+   * right before the discard, and the discard is fenced on the source's stamp and kept revision.
    */
   const bringClearForward = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<boolean> => {
     if (!isPrimaryScope(scope)) return false; // only staff clear, and only a primary's marker
     const kept = await carried.source.keptCopy(scope.id);
     if (!kept?.clearedOnly) return false;
     const destMarker = await carried.dest.loadMarker(scope.id);
-    if (destMarker === 'unfenced') return false;
+    if (destMarker === 'unfenced' || destMarker.loadStamp !== carried.restoredStamp) return false;
     if ((await currentRoute(c, scope, versionId, carried)) !== carried.to) return false;
     try {
       await carried.dest.clearCopyMark(scope.id, { kind: scope.kind, forkedFrom: scope.forkedFrom }, {
-        expectRevision: destMarker.revision,
+        expect: { loadStamp: carried.restoredStamp, revision: destMarker.revision },
       });
     } catch (e) {
       if (e instanceof ControlPlaneError && (e.status === 412 || e.status === 409)) return false;
       throw e;
     }
+    if ((await currentRoute(c, scope, versionId, carried)) !== carried.to) return false;
     const discarded = await carried.source.discardKeptCopy({
       scopeId: scope.id,
       revision: kept.clearedOnly.revision,
+      // Clear-only means nothing was loaded there since the export: the stamp the carry read.
+      loadStamp: carried.sourceStamp,
       carriedTo: carried.to,
       at: new Date().toISOString(),
     });
@@ -5459,7 +5473,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // The kept copy as it stands now, which is what this resolution acts on and is fenced on: a
     // write that reaches it after this read refuses the wipe. (The marker's own `revision` is the
     // one it was kept at; writing the marker, and any later write, moved it on.)
-    const revisionBefore = await revisionOf(holder);
+    const before = await holder.loadMarker(scopeId);
+    const revisionBefore = before === 'unfenced' ? null : before.revision;
+    // Codex #2008 r13: and the load stamp with it, so the release or discard refuses a store a load
+    // has replaced since this read (a kept copy refuses every load but its own resolution, so this
+    // is the same fence stated where the act is, not a new one).
+    const stampFence = before === 'unfenced' ? {} : { loadStamp: before.loadStamp };
     // #2005 (Codex #2008 r10): whatever the resolution leaves in that store, it is a copy when
     // the directory says the scope is not primary, marker or no marker.
     const lineage = copyLineageOf(scope);
@@ -5475,7 +5494,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       });
 
     if (body.action === 'release') {
-      const out = await holder.releaseKeptCopy({ scopeId, revision: revisionBefore, ...markCopy });
+      const out = await holder.releaseKeptCopy({ scopeId, revision: revisionBefore, ...markCopy, ...stampFence });
       if ('refused' in out) {
         return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was released` }, 412);
       }
@@ -5484,7 +5503,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
 
     if (body.action === 'discard') {
-      const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route!, at, ...markCopy });
+      const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route!, at, ...markCopy, ...stampFence });
       if ('refused' in out) {
         return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was discarded` }, 412);
       }
@@ -5544,7 +5563,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!(await bindingHeld())) return moved();
     const revisionAfter = await revisionOf(live);
     await record('restore-forward', revisionAfter);
-    const wiped = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: liveScript, at, ...markCopy });
+    const wiped = await holder.discardKeptCopy({
+      scopeId,
+      revision: revisionBefore,
+      carriedTo: liveScript,
+      at,
+      ...markCopy,
+      ...stampFence,
+    });
     if ('refused' in wiped) {
       return c.json({
         error:

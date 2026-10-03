@@ -1169,6 +1169,8 @@ export class VerticalClient {
     revision: string | null;
     /** #2005: the directory's classification, sent when the scope is not primary. */
     markCopy?: ScopeLineage;
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
+    loadStamp?: string | null;
   }): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
     const verb = 'kept-copy-release';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
@@ -1196,6 +1198,8 @@ export class VerticalClient {
     at: string;
     /** #2005: the directory's classification, sent when the scope is not primary. */
     markCopy?: ScopeLineage;
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
+    loadStamp?: string | null;
   }): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
     const verb = 'kept-copy-discard';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
@@ -1258,12 +1262,13 @@ export class VerticalClient {
   async clearCopyMark(
     scopeId: ScopeId,
     lineage: ScopeLineage,
-    /** #1722 (Codex #2008 r12): clear only the store whose write revision this is; 412 otherwise. */
-    opts: { expectRevision?: string | null } = {},
+    /** #1722 (Codex #2008 r12–r13): clear only the store with this load stamp and revision; 412
+     *  otherwise. */
+    opts: { expect?: LoadMarker } = {},
   ): Promise<{ cleared: boolean }> {
     return this.postInternal<{ cleared: boolean }>(
       '/internal/clear-copy-mark',
-      { scopeId, lineage, ...(opts.expectRevision !== undefined ? { expectRevision: opts.expectRevision } : {}) },
+      { scopeId, lineage, ...(opts.expect ? { expect: opts.expect } : {}) },
       'clear-copy-mark',
     );
   }

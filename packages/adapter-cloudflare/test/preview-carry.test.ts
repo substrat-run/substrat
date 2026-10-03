@@ -49,7 +49,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // `marker` runs before a `loadMarker` read and `markerRead` after it: a carry reads the
   // destination's marker after its export, and the source's again right before its bind (r12).
   const hooks: {
-    export?: Hook; marker?: Hook; markerRead?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook;
+    export?: Hook; marker?: Hook; markerRead?: Hook; kept?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook;
   } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
@@ -117,15 +117,22 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           await hooks.restored?.(ref, sid, tables);
           return out;
         }),
-      keptCopy: async (sid: ScopeId) => (unfenced.has(ref) ? null : relay(() => host.keptCopyLocal(sid))),
-      releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null; markCopy?: ScopeLineage }) =>
+      keptCopy: async (sid: ScopeId) => {
+        await hooks.kept?.(ref, sid);
+        return unfenced.has(ref) ? null : relay(() => host.keptCopyLocal(sid));
+      },
+      releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null; markCopy?: ScopeLineage; loadStamp?: string | null }) =>
         relay(async () => {
           await hooks.release?.(ref, input.scopeId);
-          return host.releaseKeptCopyLocal(input.scopeId, input.revision, input.markCopy);
+          return host.releaseKeptCopyLocal(input.scopeId, input.revision, input.markCopy, input.loadStamp);
         }),
-      discardKeptCopy: (input: { scopeId: ScopeId; revision: string | null; carriedTo: string; at: string; markCopy?: ScopeLineage }) =>
+      discardKeptCopy: (input: {
+        scopeId: ScopeId; revision: string | null; carriedTo: string; at: string; markCopy?: ScopeLineage; loadStamp?: string | null;
+      }) =>
         relay(() =>
-          host.discardKeptCopyLocal(input.scopeId, input.revision, { to: input.carriedTo, at: input.at }, input.markCopy),
+          host.discardKeptCopyLocal(
+            input.scopeId, input.revision, { to: input.carriedTo, at: input.at }, input.markCopy, input.loadStamp,
+          ),
         ),
       loadMarker: async (sid: ScopeId) => {
         await hooks.marker?.(ref, sid);
@@ -159,8 +166,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
         relay(() => host.snapshotScopeLocal(input.sourceScopeId, input.newScopeId)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
-      clearCopyMark: (sid: ScopeId, lineage: ScopeLineage, opts: { expectRevision?: string | null } = {}) =>
-        relay(() => host.clearCopyMarkLocal(sid, lineage, ...(opts.expectRevision !== undefined ? [opts.expectRevision] : []))),
+      clearCopyMark: (sid: ScopeId, lineage: ScopeLineage, opts: { expect?: { loadStamp: string | null; revision: string | null } } = {}) =>
+        relay(() => host.clearCopyMarkLocal(sid, lineage, ...(opts.expect ? [opts.expect] : []))),
     } as unknown as VerticalClient;
   };
 
@@ -1194,6 +1201,67 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           expect(await tombstoneIn('v1', install)).not.toBeNull();
           expect(await hostFor('v1').keptCopyLocal(install)).toBeNull();
           expect(await keptFailures(install)).toEqual([]);
+        });
+
+        // Codex #2008 r13: the clear brought forward is this carry's, so it is fenced on this
+        // carry's load of v2. A governed restore that replaced v2 since brings a GENUINE copy
+        // marker (a copy of another scope), which must survive, inert, and v1 stays kept.
+        /** A governed restore into `install`'s v2 store of ANOTHER scope's data, empty outbox. */
+        const foreignRestoreIntoV2 = async (install: ScopeId) => {
+          const other = scopeId.parse(ulid());
+          await hostFor('v2').restoreScopeLocal(other, notes('foreign data'));
+          await hostFor('v2').restoreScopeLocal(install, await hostFor('v2').exportScopeLocal(other), { sourceScopeId: other });
+          expect(await v2stub(install).isCopy()).toBe(true);
+        };
+        const clearedThenReplaced = async (land: (t2: TenantId, install: ScopeId) => void) => {
+          const { t2, install } = await mistaken();
+          land(t2, install);
+          const held = holdFirst((ref, s) => ref === refOf.get(version.v1) && s === install);
+          const landing = hooks.markerRead; // a `land` that hooks the same read runs beside the hold
+          hooks.markerRead = async (ref, s, tables) => {
+            await held.hook(ref, s, tables); // the re-check of the source; the clear lands after it
+            await landing?.(ref, s, tables);
+          };
+          const bound = bindV2(t2, install);
+          await held.reached;
+          await clear(t2, install);
+          held.release();
+          expect((await bound).status).toBe(200);
+          // The foreign copy keeps its genuine marker, and its executors stay inert.
+          expect(await v2stub(install).isCopy()).toBe(true);
+          expect(bodiesIn(await hostFor('v2').exportScopeLocal(install))).toContain('foreign data');
+          expect(await runsExecutorsOnV2(t2, install)).toBe(false);
+          // v1 still holds the clear and the data, kept and recorded, for staff.
+          expect(await hostFor('v1').keptCopyLocal(install)).toMatchObject({ clearedOnly: expect.anything() });
+          expect(await tombstoneIn('v1', install)).toBeNull();
+          expect(bodiesIn(await hostFor('v1').exportScopeLocal(install))).toEqual(['install data']);
+          expect(await keptFailures(install)).toHaveLength(1);
+        };
+
+        it('a governed restore that replaced v2 before the platform reads it: the foreign copy stays marked, v1 stays kept', async () => {
+          await clearedThenReplaced((_t2, install) => {
+            // As the platform turns to bring the clear forward: it reads v1's kept marker first.
+            let done = false;
+            hooks.kept = async (ref, s) => {
+              if (done || ref !== refOf.get(version.v1) || s !== install) return;
+              done = true;
+              await foreignRestoreIntoV2(install);
+            };
+          });
+        });
+
+        it("a governed restore between the platform's read of v2 and its clear: refused in the clear's own transaction", async () => {
+          await clearedThenReplaced((t2, install) => {
+            // Right after the platform's read of v2's marker once the bind has landed, so only the
+            // stamp compared inside the clear can tell (the read itself saw this carry's load).
+            let done = false;
+            hooks.markerRead = async (ref, s) => {
+              if (done || ref !== refOf.get(version.v2) || s !== install) return;
+              if ((await dir.admin.getScopeRecord(staff, t2, install))?.verticalVersionId !== version.v2) return;
+              done = true;
+              await foreignRestoreIntoV2(install);
+            };
+          });
         });
 
         it('a data write as well as the clear after the re-check: the source is kept with the write, and recorded', async () => {

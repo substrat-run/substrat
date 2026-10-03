@@ -4469,13 +4469,17 @@ export function defineScopeDO(
      * before it cannot wipe the repaired store. That carry's wipe keeps it instead.
      */
     clearCopyMark(
-      /** The write revision the caller read (Codex #2008 r12): the platform's reconcile of the store
-       *  a carry landed, so it clears only the marker of the store it checked. Absent for staff. */
-      expectRevision?: string | null,
+      /** The store the caller means (Codex #2008 r12–r13): the platform's reconcile of the store a
+       *  carry landed names that carry's load stamp and the revision it read, so a store another
+       *  load has replaced since (a governed restore, whose copy marker is genuine) is refused,
+       *  compared here, in the clear's own transaction. Absent for staff's correction. */
+      expect?: LoadMarker,
     ): 'cleared' | 'absent' | 'carries-events' | 'changed' {
       return this.revision.transactionSync(() => {
         const from = this.metaValue(WRITE_REVISION_KEY);
-        if (expectRevision !== undefined && from !== expectRevision) return 'changed' as const;
+        if (expect && (this.metaValue(LOAD_STAMP_KEY) !== expect.loadStamp || from !== expect.revision)) {
+          return 'changed' as const;
+        }
         const outcome = clearCopyMarker(this.switchSql());
         // The clear's own revisions, so a carry's refused wipe can tell that this clear, and
         // nothing else, is what changed here since its export (`COPY_MARK_CLEARED_KEY`).
@@ -5128,7 +5132,7 @@ export function defineScopeDO(
         expect?: { loadStamp: string | null; revision?: string | null };
         /** #1722: the staff resolution of a kept copy, the one load a kept copy takes. It must be
          *  one (the marker set) at this write revision, the one the operator acted on. */
-        resolveKept?: { revision: string | null };
+        resolveKept?: { revision: string | null; loadStamp?: string | null };
         /** #2005: the directory says this scope is not primary, so mark it a copy in its own
          *  storage (`markCopyOrigin`) — a carry of a copy that predates the marker brings none. */
         markCopy?: boolean;
@@ -5179,7 +5183,10 @@ export function defineScopeDO(
         const kept = this.metaValue(KEPT_DIVERGENT_KEY);
         if (resolveKept) {
           if (!kept) throw substratError('precondition_failed', 'no kept copy here to resolve; nothing was loaded');
-          if (before.revision !== resolveKept.revision) {
+          if (
+            before.revision !== resolveKept.revision ||
+            (resolveKept.loadStamp !== undefined && before.loadStamp !== resolveKept.loadStamp)
+          ) {
             throw substratError('precondition_failed', 'the kept copy changed since it was read; nothing was loaded');
           }
         } else if (kept) {
@@ -5371,10 +5378,14 @@ export function defineScopeDO(
       revision: string | null,
       /** The directory says this scope is not primary (#2005): the released store is marked a copy. */
       markCopy?: boolean,
+      /** The load stamp read with `revision` (Codex #2008 r13): a store a load replaced is refused.
+       *  A kept copy refuses every load but its own resolution, so this holds by construction too. */
+      loadStamp?: string | null,
     ): { released: true } | { refused: 'changed' | 'not-kept' } {
       return this.revision.transactionSync(() => {
         if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' } as const;
         if (this.metaValue(WRITE_REVISION_KEY) !== revision) return { refused: 'changed' } as const;
+        if (loadStamp !== undefined && this.metaValue(LOAD_STAMP_KEY) !== loadStamp) return { refused: 'changed' } as const;
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, KEPT_DIVERGENT_KEY);
         if (markCopy) this.revision.bookkeeping(() => markCopyOrigin(this.switchSql(), new Date().toISOString()));
         return { released: true } as const;
@@ -5391,12 +5402,14 @@ export function defineScopeDO(
       carriedAway: CarriedAway,
       /** The directory says this scope is not primary (#2005): as `wipeCarried`. */
       markCopy?: boolean,
+      /** The load stamp read with `revision` (Codex #2008 r13), as `releaseKeptCopy`. */
+      loadStamp?: string | null,
     ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
       if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' };
       try {
         await this.importDump(carriedAwayDump(carriedAway), scopeId, {
           sourceScopeId: scopeId,
-          resolveKept: { revision },
+          resolveKept: { revision, ...(loadStamp !== undefined ? { loadStamp } : {}) },
           markCopy: markCopy === true || this.isCopy(), // #2005: as `wipeCarried`
         });
         return { discarded: true };

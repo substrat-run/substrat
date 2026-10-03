@@ -190,7 +190,7 @@ export interface VerticalScopeHost {
   markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }>;
   /** #2005: remove a mistaken copy marker, given the directory's classification, which must be
    *  primary. */
-  clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage, expectRevision?: string | null): Promise<{ cleared: boolean }>;
+  clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage, expect?: LoadMarker): Promise<{ cleared: boolean }>;
   /** #1722: what a carry's restore into this store expects to find unchanged. Optional, like
    *  `wipeCarriedLocal`; the route answers 501 without it, and the platform then cannot fence. */
   loadMarkerLocal?(scopeId: ScopeId): Promise<LoadMarker>;
@@ -212,6 +212,8 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
     revision: string | null,
     markCopy?: ScopeLineage,
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
+    loadStamp?: string | null,
   ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
@@ -227,6 +229,8 @@ export interface VerticalScopeHost {
     revision: string | null,
     carriedAway: CarriedAway,
     markCopy?: ScopeLineage,
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
+    loadStamp?: string | null,
   ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
   deleteScopeLocal(scopeId: ScopeId): Promise<void>;
@@ -475,6 +479,8 @@ const discardKeptBody = z.object({
   at: z.string().min(1),
   /** #2005: the directory's classification, sent when the scope is not primary. */
   markCopy: scopeLineage.optional(),
+  /** #1722 (Codex #2008 r13): the load stamp read with `revision`; absent from an older platform. */
+  loadStamp: z.string().min(1).nullable().optional(),
 });
 
 const wipeCarriedBody = z.object({
@@ -852,11 +858,24 @@ export function mountPlatformSurface<Env extends object>(
 
   app.post('/internal/kept-copy/release', async (c) => {
     const body = z
-      .object({ scopeId: scopeIdOf, revision: z.string().min(1).nullable(), markCopy: scopeLineage.optional() })
+      .object({
+        scopeId: scopeIdOf,
+        revision: z.string().min(1).nullable(),
+        markCopy: scopeLineage.optional(),
+        // #1722 (Codex #2008 r13): the load stamp read with `revision`; absent from an older platform.
+        loadStamp: z.string().min(1).nullable().optional(),
+      })
       .parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.releaseKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
-    return c.json(await host.releaseKeptCopyLocal(body.scopeId, body.revision, body.markCopy));
+    return c.json(
+      await host.releaseKeptCopyLocal(
+        body.scopeId,
+        body.revision,
+        body.markCopy,
+        ...(body.loadStamp !== undefined ? [body.loadStamp] : []),
+      ),
+    );
   });
 
   app.post('/internal/kept-copy/discard', async (c) => {
@@ -864,7 +883,13 @@ export function mountPlatformSurface<Env extends object>(
     const host = deps.hostFor(c.env);
     if (!host.discardKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
     return c.json(
-      await host.discardKeptCopyLocal(body.scopeId, body.revision, { to: body.carriedTo, at: body.at }, body.markCopy),
+      await host.discardKeptCopyLocal(
+        body.scopeId,
+        body.revision,
+        { to: body.carriedTo, at: body.at },
+        body.markCopy,
+        ...(body.loadStamp !== undefined ? [body.loadStamp] : []),
+      ),
     );
   });
 
@@ -908,15 +933,17 @@ export function mountPlatformSurface<Env extends object>(
       .object({
         scopeId: scopeIdOf,
         lineage: scopeLineage,
-        // #1722 (Codex #2008 r12): the platform's reconcile of a carry's destination clears only
-        // the store it read; a 412 when that store changed since. Staff's correction sends none.
-        expectRevision: z.string().min(1).nullable().optional(),
+        // #1722 (Codex #2008 r12–r13): the platform's reconcile of a carry's destination clears
+        // only the store that carry loaded (its stamp) as it read it (the revision); a 412 when
+        // either moved. Staff's correction sends none.
+        expect: z
+          .object({ loadStamp: z.string().min(1).nullable(), revision: z.string().min(1).nullable() })
+          .strict()
+          .optional(),
       })
       .parse(await c.req.json());
     return c.json(
-      await deps
-        .hostFor(c.env)
-        .clearCopyMarkLocal(body.scopeId, body.lineage, ...(body.expectRevision !== undefined ? [body.expectRevision] : [])),
+      await deps.hostFor(c.env).clearCopyMarkLocal(body.scopeId, body.lineage, ...(body.expect ? [body.expect] : [])),
     );
   });
 
