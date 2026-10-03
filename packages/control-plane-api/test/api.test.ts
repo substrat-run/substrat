@@ -4598,6 +4598,8 @@ describe('control-plane API — deploy', () => {
       bindings: { type: string; name: string; id?: string }[];
       compatibilityFlags: string[];
       versionId?: string;
+      declaresSchedules?: boolean;
+      sweeperClasses?: string[];
     };
   }[] = [];
 
@@ -4651,6 +4653,21 @@ describe('control-plane API — deploy', () => {
     expect(deployed.at(-1)!.bundle.versionId).toBe(version.id);
     const verticals = (await (await app.request('/verticals', { headers: auth })).json()).entries;
     expect(verticals).toContainEqual(expect.objectContaining({ slug: 'fsm', source: 'cli' }));
+  });
+
+  it('hands the uploader the sweeper facts the push declared (#1902)', async () => {
+    const schedules = [{ moduleId: 'fsm', operation: 'fsm/tick', cadence: { everyMinutes: 5 } }];
+    expect((await push('fsm-sweep', form(manifest({ schedules, sweeperClasses: [] })))).status).toBe(201);
+    expect(deployed.at(-1)!.bundle).toMatchObject({ declaresSchedules: true, sweeperClasses: [] });
+    expect((await push('fsm-sweep', form(manifest({ version: '0.1.1', schedules, sweeperClasses: ['SweeperDO'] })))).status).toBe(201);
+    expect(deployed.at(-1)!.bundle.sweeperClasses).toEqual(['SweeperDO']);
+    // An older CLI's push: absent stays absent, never `[]` — the uploader reads the two differently.
+    expect((await push('fsm-sweep', form(manifest({ version: '0.1.2', schedules })))).status).toBe(201);
+    expect(deployed.at(-1)!.bundle.declaresSchedules).toBe(true);
+    expect('sweeperClasses' in deployed.at(-1)!.bundle).toBe(false);
+    // No schedules, nothing owed.
+    expect((await push('fsm-sweep', form(manifest({ version: '0.1.3', schedules: [], sweeperClasses: [] })))).status).toBe(201);
+    expect('declaresSchedules' in deployed.at(-1)!.bundle).toBe(false);
   });
 
   it('records the push origin the CLI reports, and tolerates a malformed one', async () => {
@@ -6512,6 +6529,8 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       files: { path: string; hash: string; content?: Uint8Array }[];
       recoverContent?: (a: { path: string; hash: string }) => Promise<Uint8Array | undefined>;
     };
+    declaresSchedules?: boolean;
+    sweeperClasses?: string[];
   }[] = [];
   // Every asset read-back the serve asked the host for (#578), so a test can assert
   // WHICH script the bytes are recovered from (the version's archive, never the stable).
@@ -6547,7 +6566,12 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       platformBaseDomains: ['global.substrat.run'],
       deployVertical: async (ref, bundle) => {
         if (ref === failServeRef) throw new Error('WfP upload failed (500): namespace unreachable');
-        uploads.push({ ref, assets: bundle.assets as never });
+        uploads.push({
+          ref,
+          assets: bundle.assets as never,
+          declaresSchedules: bundle.declaresSchedules,
+          sweeperClasses: bundle.sweeperClasses,
+        });
         ensure(ref); // registering a script creates its (empty) storage namespace
       },
       fetchVerticalModules: async () => [
@@ -6637,6 +6661,21 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect(scripts.get(deploymentRefFor(slug, v2))?.has(sc)).toBeFalsy();
     // v1's script is left intact (data-first: the adopt copies, it does not move).
     expect(scripts.get(deploymentRefFor(slug, v1))?.get(sc)).toEqual([customers]);
+  });
+
+  it('a promote makes the push’s sweeper decision again, from the retained manifest (#1902)', async () => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'sweep-co', name: 'sweep-co' });
+    const schedules = [{ moduleId: 'crm', operation: 'crm/tick', cadence: { everyMinutes: 5 } }];
+    const pushed = await (await push('sweep-co', manifest({ schedules, sweeperClasses: [] }))).json();
+    expect(uploads.at(-1)).toMatchObject({ ref: pushed.deploymentRef, declaresSchedules: true, sweeperClasses: [] });
+    expect((await promote(pushed.verticalSlug, pushed.id)).status).toBe(200);
+    // The serving upload: the same facts, or the stable script would lose the sweeper the archive has.
+    expect(uploads.at(-1)).toMatchObject({
+      ref: stableDeploymentRefFor(pushed.verticalSlug),
+      declaresSchedules: true,
+      sweeperClasses: [],
+    });
   });
 
   it('a promote re-attaches the version’s static assets from the retained manifest (#340)', async () => {
