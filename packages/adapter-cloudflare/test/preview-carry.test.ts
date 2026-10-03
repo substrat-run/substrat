@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
-import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, WRITE_REVISION_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
   createControlPlaneApi,
@@ -596,6 +596,24 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const dumped = await v1.exportScopeLocal(sid);
       expect(dumpMetaValue(dumped, LOAD_STAMP_KEY)).toBeNull();
       expect((await v1.exportScopeStampedLocal(sid)).loadStamp).toBe('carry-stamp');
+    });
+
+    it('the write revision only moves forward: two plain loads in a row never leave the same marker', async () => {
+      const sid = scopeId.parse(ulid());
+      const v1 = hostFor('v1');
+      await v1.restoreScopeLocal(sid, notes('first'));
+      const first = await v1.loadMarkerLocal(sid);
+      expect(first.loadStamp).toBeNull();
+      await v1.restoreScopeLocal(sid, notes('second'));
+      const second = await v1.loadMarkerLocal(sid);
+      expect(second).not.toEqual(first);
+      // So a restore that read the first marker cannot land over the second load.
+      await expect(v1.restoreScopeLocal(sid, notes('stale'), { expect: first })).rejects.toThrow(/changed since the carry read it/);
+      expect(bodiesIn(await v1.exportScopeLocal(sid))).toEqual(['second']);
+      // A read is not a write: reading the marker again leaves it where it was.
+      expect(await v1.loadMarkerLocal(sid)).toEqual(second);
+      // Never in a dump, so a copy of this store does not carry its revision.
+      expect(dumpMetaValue(await v1.exportScopeLocal(sid), WRITE_REVISION_KEY)).toBeNull();
     });
 
     it('a push wipes the copy in the old script, and a bind back to it restores into that same store', async () => {
