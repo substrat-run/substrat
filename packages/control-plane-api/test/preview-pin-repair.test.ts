@@ -9,9 +9,11 @@ import {
   ControlPlaneError,
   createControlPlaneApi,
   firstBuilderAuth,
+  firstPlatformActorAuth,
   mintPushToken,
   pushActorFor,
   pushTokenBuilderAuth,
+  serviceTokenAuth,
   tenantTokenAuth,
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
@@ -449,6 +451,28 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       expect(ok.status).toBe(200);
       expect(((await ok.json()) as Pass).repaired.map((r) => r.scopeId)).toEqual([pinned.scopeId]);
       expect((await recordOf(pinned.scopeId)).servingRef ?? null).toBeNull();
+    });
+
+    it('is reachable through the production service-token auth, and only with the right token', async () => {
+      // The composition the deployed control plane uses, not the dev actor header.
+      const svc = createControlPlaneApi({
+        ...baseOptions(),
+        authenticate: firstPlatformActorAuth(serviceTokenAuth('svc-secret', serviceActor)),
+      });
+      const call = (headers: Record<string, string>) =>
+        svc.request(REPAIR, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' });
+      const pinned = await legacyPreview('legacy-service', v1, 'svc-row');
+      expect((await call({ [SERVICE_TOKEN_HEADER]: 'wrong-secret' })).status).toBe(401);
+      expect((await call({ [DEV_ACTOR_HEADER]: staff })).status).toBe(401); // the dev header is not a credential here
+      expect((await recordOf(pinned.scopeId)).servingRef).toBe(SERVING);
+
+      const ok = await call({ [SERVICE_TOKEN_HEADER]: 'svc-secret' });
+      expect(ok.status).toBe(200);
+      expect(((await ok.json()) as Pass).repaired.map((r) => r.scopeId)).toEqual([pinned.scopeId]);
+      expect((await recordOf(pinned.scopeId)).servingRef ?? null).toBeNull();
+      // The admin log names the service actor, not staff.
+      const clear = (await host.admin.auditLog(staff, { scopeId: scopeId.parse(pinned.scopeId), action: 'setScopeServingRef' })).at(-1)!;
+      expect(clear.actor).toBe(serviceActor);
     });
   });
 
