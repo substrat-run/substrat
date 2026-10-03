@@ -4960,9 +4960,10 @@ export function defineScopeDO(
         // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
         // text of attachments the dump did not bring back, and queue extraction for those
         // it brought back without text — the bytes decide what that run finds.
-        reconcileAttachmentText(doSpineSql(this.sql), ulid, new Date().toISOString());
+        const now = new Date().toISOString();
+        reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
         // #1686: a copy never runs the source's pending intents; a return leaves them pending.
-        settleCopiedIntents(this.switchSql(), destScopeId, sourceScopeId, new Date().toISOString());
+        settleCopiedIntents(this.switchSql(), destScopeId, sourceScopeId, now);
         // Re-point the restored grants at THIS scope (after the spine exists, so a dump
         // that carried no tuples table still finds one here).
         if (destScopeId) {

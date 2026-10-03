@@ -591,9 +591,9 @@ export function scopeHostContractSuite(
         expect(await historyAt(copy)).toMatchObject({
           status: 'failed',
           failure: { origin: 'platform', code: 'precondition_failed', permission: null },
+          lastError: expect.stringMatching(new RegExp(`^not carried: copied from scope ${source}`)),
+          settledAt: expect.any(String),
         });
-        expect((await historyAt(copy))?.lastError).toMatch(new RegExp(`^not carried: copied from scope ${source}`));
-        expect((await historyAt(copy))?.settledAt).not.toBeNull();
         // The twin: the source still holds it pending, for its own drain.
         expect(await pendingAt(source)).toContain(id);
       };

@@ -3459,9 +3459,10 @@ export class SqliteScopeHost implements ScopeHost {
       // (subject, relation, object) is the primary key, so a moved row can meet one the dump
       // already holds here; which one survives is that function's rule too (#1882), judged
       // at this host's clock as the checker judges expiry.
-      repointScopeGrants(switchSqlOf(db), scopeId, { scopeId: dump.scopeId, exact: dump.exact }, this.clock());
+      const switchSql = switchSqlOf(db);
+      repointScopeGrants(switchSql, scopeId, { scopeId: dump.scopeId, exact: dump.exact }, this.clock());
       // #1686: a copy never runs the source's pending intents; a return leaves them pending.
-      settleCopiedIntents(switchSqlOf(db), scopeId, dump.scopeId, this.clock());
+      settleCopiedIntents(switchSql, scopeId, dump.scopeId, this.clock());
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);

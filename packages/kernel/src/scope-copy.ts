@@ -1,3 +1,5 @@
+import type { PlatformRequestFailure } from '@substrat-run/contracts';
+import { CAPABILITY_TABLE_NAMES } from './capability.js';
 import type { SwitchSql } from './system-switch.js';
 
 /**
@@ -18,8 +20,8 @@ import type { SwitchSql } from './system-switch.js';
 const isCopy = (destScopeId: string | undefined, sourceScopeId: string | undefined): boolean =>
   destScopeId === undefined || sourceScopeId !== destScopeId;
 
-/** The two capability tables, lowercased, as `capabilitiesForLoad` matches a dump's names. */
-const CAPABILITY_TABLES: ReadonlySet<string> = new Set(['_substrat_capabilities', '_substrat_capability_sessions']);
+/** The capability tables, as `capabilitiesForLoad` matches a dump's (lowercased) names. */
+const CAPABILITY_TABLES: ReadonlySet<string> = new Set(CAPABILITY_TABLE_NAMES);
 
 /**
  * A dump's tables as a load into `destScopeId` takes them: **capability rows never cross a scope
@@ -31,11 +33,11 @@ const CAPABILITY_TABLES: ReadonlySet<string> = new Set(['_substrat_capabilities'
  * case, as SQLite resolves a table name.
  */
 export function capabilitiesForLoad<T extends { name: string; rows: readonly unknown[] }>(
-  tables: readonly T[],
+  tables: T[],
   destScopeId: string | undefined,
   sourceScopeId: string | undefined,
 ): T[] {
-  if (!isCopy(destScopeId, sourceScopeId)) return [...tables];
+  if (!isCopy(destScopeId, sourceScopeId)) return tables;
   return tables.map((t) => (CAPABILITY_TABLES.has(t.name.toLowerCase()) ? { ...t, rows: [] } : t));
 }
 
@@ -43,6 +45,13 @@ export function capabilitiesForLoad<T extends { name: string; rows: readonly unk
 const notCarried = (sourceScopeId: string | undefined): string =>
   `not carried: copied from ${sourceScopeId ? `scope ${sourceScopeId}` : 'another scope'} before it ran; ` +
   'it runs in the scope that asked for it, never in a copy';
+
+/** A copied intent's failure: the platform's own refusal, never the provider's answer. */
+const NOT_CARRIED_FAILURE = JSON.stringify({
+  origin: 'platform',
+  code: 'precondition_failed',
+  permission: null,
+} satisfies PlatformRequestFailure);
 
 /**
  * Settle every intent a copy brought in still `pending`, as `failed` with a "not carried" reason
@@ -69,7 +78,7 @@ export function settleCopiedIntents(
         SET status = 'failed', last_error = ?, last_failure = ?, settled_at = ?
       WHERE status = 'pending'`,
     notCarried(sourceScopeId),
-    JSON.stringify({ origin: 'platform', code: 'precondition_failed', permission: null }),
+    NOT_CARRIED_FAILURE,
     now,
   );
 }
