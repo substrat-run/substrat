@@ -92,15 +92,55 @@ test('names the kernel and both adapters, and the repo as it stands has no forbi
 const graph = (pkgs) => (name) => (pkgs[name] ? { pj: { name, ...pkgs[name] }, key: name } : null);
 const CLI = { name: '@substrat-run/cli', license: 'Apache-2.0' };
 
-test('licenseProblem: refuses the copyleft family and a missing licence, allows the permissive ones', () => {
-  for (const bad of ['AGPL-3.0-only', 'AGPL-3.0-or-later', 'GPL-3.0', 'LGPL-2.1', 'SSPL-1.0', 'BUSL-1.1', '(MIT OR GPL-3.0)']) {
+test('licenseProblem: an allowlist — refuses the copyleft family AND every licence it was never told about', () => {
+  for (const bad of [
+    'AGPL-3.0-only',
+    'AGPL-3.0-or-later',
+    'GPL-3.0',
+    'LGPL-2.1',
+    'SSPL-1.0',
+    'BUSL-1.1',
+    // File-level copyleft a GPL-shaped pattern never caught.
+    'MPL-2.0',
+    'EPL-2.0',
+    'CDDL-1.0',
+    // Not a licence at all, or not one we can read.
+    'UNLICENSED',
+    'SEE LICENSE IN LICENSE.md',
+    'Some-Brand-New-Licence-1.0',
+    'MIT OR',
+    '(MIT',
+    'MIT AND AND ISC',
+  ]) {
     assert.ok(licenseProblem(bad), bad);
   }
   assert.equal(licenseProblem(undefined), 'declares no licence');
   assert.equal(licenseProblem('  '), 'declares no licence');
-  for (const ok of ['Apache-2.0', 'MIT', 'ISC', 'BSD-3-Clause', '(MIT OR Apache-2.0)', '0BSD', 'Unlicense']) {
+  assert.match(licenseProblem('MPL-2.0'), /^is MPL-2\.0, which is not on the permissive allowlist$/);
+  for (const ok of ['Apache-2.0', 'MIT', 'ISC', 'BSD-3-Clause', '0BSD', 'Unlicense', 'apache-2.0', 'MIT-0', 'Zlib']) {
     assert.equal(licenseProblem(ok), null, ok);
   }
+});
+
+test('licenseProblem: SPDX expressions — OR passes on either side, AND needs both, AND binds tighter, WITH never rescues', () => {
+  // OR: the consumer may pick the permissive side.
+  assert.equal(licenseProblem('(MIT OR Apache-2.0)'), null);
+  assert.equal(licenseProblem('MIT OR GPL-3.0'), null);
+  assert.equal(licenseProblem('GPL-3.0 OR MPL-2.0'), 'is GPL-3.0 OR MPL-2.0, which is not on the permissive allowlist');
+  // AND: every side applies.
+  assert.equal(licenseProblem('MIT AND ISC'), null);
+  assert.ok(licenseProblem('MIT AND GPL-3.0'));
+  assert.ok(licenseProblem('(MIT OR Apache-2.0) AND MPL-2.0'));
+  // AND binds tighter than OR: `MIT OR (ISC AND GPL)` is permissive, `(MIT OR ISC) AND GPL` is not.
+  assert.equal(licenseProblem('MIT OR ISC AND GPL-3.0'), null);
+  assert.ok(licenseProblem('GPL-3.0 AND MIT OR MPL-2.0'));
+  // WITH: judged on the licence it qualifies, so an exception does not launder copyleft.
+  assert.ok(licenseProblem('GPL-2.0 WITH Classpath-exception-2.0'));
+  assert.equal(licenseProblem('Apache-2.0 WITH LLVM-exception'), null);
+  // The legacy `licenses` array: alternatives.
+  assert.equal(licenseProblem(undefined, [{ type: 'MIT' }, { type: 'GPL-3.0' }]), null);
+  assert.ok(licenseProblem(undefined, [{ type: 'GPL-3.0' }, { type: 'MPL-2.0' }]));
+  assert.equal(licenseProblem({ type: 'MIT' }), null);
 });
 
 test('refuses an AGPL package as a direct runtime dependency, whichever field declares it', () => {
@@ -108,7 +148,7 @@ test('refuses an AGPL package as a direct runtime dependency, whichever field de
     const read = graph({ '@substrat-run/control-plane-api': { license: 'AGPL-3.0-only' } });
     assert.deepEqual(
       licenseProblems({ ...CLI, [field]: { '@substrat-run/control-plane-api': 'workspace:^' } }, 'cli', read),
-      ['@substrat-run/cli → @substrat-run/control-plane-api is AGPL-3.0-only'],
+      ['@substrat-run/cli → @substrat-run/control-plane-api is AGPL-3.0-only, which is not on the permissive allowlist'],
       field,
     );
   }
@@ -122,8 +162,17 @@ test('refuses it through a permissive package, naming the path — the closure, 
   });
   assert.deepEqual(
     licenseProblems({ ...CLI, dependencies: { '@substrat-run/control-plane-client': '*' } }, 'cli', read),
-    ['@substrat-run/cli → @substrat-run/control-plane-client → hono → @substrat-run/kernel is AGPL-3.0-only'],
+    ['@substrat-run/cli → @substrat-run/control-plane-client → hono → @substrat-run/kernel is AGPL-3.0-only, which is not on the permissive allowlist'],
   );
+});
+
+test('refuses a dependency whose licence the allowlist has never heard of (MPL-2.0, EPL-2.0, CDDL-1.0, UNLICENSED), by name and path', () => {
+  for (const license of ['MPL-2.0', 'EPL-2.0', 'CDDL-1.0', 'UNLICENSED']) {
+    const read = graph({ lib: { license } });
+    assert.deepEqual(licenseProblems({ ...CLI, dependencies: { lib: '1' } }, 'cli', read), [
+      `@substrat-run/cli → lib is ${license}, which is not on the permissive allowlist`,
+    ]);
+  }
 });
 
 test('allows the twins: a devDependency, a permissive closure, a cycle, and an unresolved optional one', () => {

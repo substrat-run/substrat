@@ -130,7 +130,7 @@ export function forbiddenEdgeProblems(pj, files, forbidden = FORBIDDEN_EDGES) {
 }
 
 /**
- * Packages whose RUNTIME dependency closure must hold no copyleft licence (#971).
+ * Packages whose RUNTIME dependency closure must hold only permissive licences (#971).
  *
  * `@substrat-run/cli` and `@substrat-run/control-plane-client` are Apache-2.0 on purpose
  * (LICENSING.md): the tools a builder runs against their own code must never
@@ -143,15 +143,94 @@ export function forbiddenEdgeProblems(pj, files, forbidden = FORBIDDEN_EDGES) {
  */
 export const PERMISSIVE_ONLY = ['@substrat-run/cli', '@substrat-run/control-plane-client'];
 
-/** SPDX ids (and their loose spellings) that bind a dependent: any GPL family, SSPL, BUSL. */
-const COPYLEFT = /(?:^|[^a-z])(?:a|l)?gpl|sspl|busl|business source/i;
+/**
+ * The licences a permissive-only closure may contain — an ALLOWLIST, not a denylist of the
+ * copyleft ones it happens to know. A denylist passes whatever it has not heard of: MPL-2.0,
+ * EPL-2.0 and CDDL-1.0 are file-level copyleft that none of a GPL-shaped pattern catches, and
+ * a licence nobody named yet is by construction not on it. Everything not listed here is
+ * refused, including `UNLICENSED`, `SEE LICENSE IN …` and a field that is absent; widening
+ * the list is a decision a review reads, one identifier at a time. SPDX ids compare
+ * case-insensitively.
+ */
+export const PERMISSIVE_LICENSES = new Set(
+  [
+    'MIT',
+    'MIT-0',
+    'ISC',
+    'BSD-2-Clause',
+    'BSD-3-Clause',
+    'Apache-2.0',
+    '0BSD',
+    'Unlicense',
+    'CC0-1.0',
+    'BlueOak-1.0.0',
+    'Zlib',
+    'Python-2.0',
+    'CC-BY-4.0',
+  ].map((id) => id.toLowerCase()),
+);
 
-/** Why a `license` field is not acceptable in a permissive-only closure, or `null`. */
-export function licenseProblem(license) {
-  const text = typeof license === 'string' ? license : license && typeof license === 'object' ? license.type : undefined;
+/**
+ * Whether an SPDX licence expression is wholly permissive: `A OR B` passes when either side
+ * does (the consumer may choose it), `A AND B` only when both do, `AND` binds tighter than
+ * `OR`, parentheses group, and `X WITH exception` is judged on `X` alone (an exception never
+ * makes a copyleft licence permissive). Anything that does not parse is refused.
+ */
+export function spdxPermissive(expression) {
+  const tokens = String(expression).match(/\(|\)|[^\s()]+/g) ?? [];
+  let at = 0;
+  const peek = () => tokens[at];
+  const word = (w) => peek()?.toUpperCase() === w;
+  const primary = () => {
+    const t = tokens[at++];
+    if (t === undefined || t === ')') return null;
+    if (t === '(') {
+      const inner = or();
+      if (inner === null || tokens[at++] !== ')') return null;
+      return inner;
+    }
+    if (/^(?:AND|OR|WITH)$/i.test(t)) return null;
+    const allowed = PERMISSIVE_LICENSES.has(t.replace(/\+$/, '').toLowerCase());
+    if (word('WITH')) {
+      at++;
+      if (tokens[at++] === undefined) return null;
+    }
+    return allowed;
+  };
+  const and = () => {
+    let left = primary();
+    while (left !== null && word('AND')) {
+      at++;
+      const right = primary();
+      left = right === null ? null : left && right;
+    }
+    return left;
+  };
+  function or() {
+    let left = and();
+    while (left !== null && word('OR')) {
+      at++;
+      const right = and();
+      left = right === null ? null : left || right;
+    }
+    return left;
+  }
+  const verdict = or();
+  return verdict === true && at === tokens.length;
+}
+
+/**
+ * Why a package's licence is not acceptable in a permissive-only closure, or `null`. Reads
+ * the `license` field (an SPDX string, or the legacy `{ type }` object) and, failing that,
+ * the legacy `licenses` array, whose entries are alternatives.
+ */
+export function licenseProblem(license, legacyLicenses) {
+  let text = typeof license === 'string' ? license : license && typeof license === 'object' ? license.type : undefined;
+  if (!text && Array.isArray(legacyLicenses)) {
+    text = legacyLicenses.map((l) => (typeof l === 'string' ? l : l?.type)).filter(Boolean).join(' OR ') || undefined;
+  }
   if (!text || !String(text).trim()) return 'declares no licence';
-  if (COPYLEFT.test(String(text))) return `is ${text}`;
-  return null;
+  return spdxPermissive(text) ? null : `is ${text}, which is not on the permissive allowlist`;
 }
 
 /**
@@ -180,7 +259,7 @@ export function licenseProblems(rootPj, rootKey, read) {
         continue;
       }
       seen.add(name);
-      const why = licenseProblem(dep.pj.license);
+      const why = licenseProblem(dep.pj.license, dep.pj.licenses);
       if (why) out.push(`${[...trail, name].join(' → ')} ${why}`);
       walkDeps(dep.pj, dep.key, [...trail, name]);
     }
@@ -286,24 +365,24 @@ function main() {
       problems.push(`${name}: listed in PERMISSIVE_ONLY but no workspace member has that name`);
       continue;
     }
-    const own = licenseProblem(member.pj.license);
+    const own = licenseProblem(member.pj.license, member.pj.licenses);
     if (own) problems.push(`${name} ${own}`);
     for (const p of licenseProblems(member.pj, member.key, read)) problems.push(`licence closure: ${p}`);
   }
 
   if (problems.length > 0) {
-    console.error('declared-deps: a package references modules it never declared, an edge K-43 forbids, or a permissive-only package depends on copyleft\n');
+    console.error('declared-deps: a package references modules it never declared, an edge K-43 forbids, or a permissive-only package reaches a licence off the allowlist\n');
     for (const p of problems.sort()) console.error(`  ✕ ${p}`);
     console.error(
       `\n${problems.length} problem(s). A published package must declare what its types and code\n` +
         'reference — anything else is relying on another package hoisting it — and a permissive-only\n' +
-        'package (PERMISSIVE_ONLY) must not reach a copyleft licence through any runtime dependency.',
+        'package (PERMISSIVE_ONLY) must reach only allowlisted permissive licences through its runtime dependencies.',
     );
     process.exit(1);
   }
 
   console.log(
-    `declared-deps: ${checkedPackages} packages declare everything they reference, no forbidden edge exists, and ${PERMISSIVE_ONLY.length} permissive-only closures hold no copyleft`,
+    `declared-deps: ${checkedPackages} packages declare everything they reference, no forbidden edge exists, and ${PERMISSIVE_ONLY.length} permissive-only closures hold only allowlisted licences`,
   );
 }
 
