@@ -1049,19 +1049,31 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       // run), so it is a write. A carry that exported before the clear finds its source changed and
       // keeps it, recorded, rather than wiping the repaired store and serving the stale marker.
       it("a staff clear of a primary's mistaken marker between the export and the wipe survives the carry", async () => {
+        // Its own tenant: a second install in the owner's would make every later preview push
+        // ambiguous about which install it forks.
+        const t2 = tenantId.parse(ulid());
+        await dir.admin.createTenant(staff, { id: t2, slug: `carry-${t2.toLowerCase()}`, name: 'Clear Co' });
         const install = scopeId.parse(ulid());
-        await dir.provisionScope(staff, { tenantId: t, scopeId: install, vertical: slug });
-        await dir.admin.activateScope(staff, t, install);
-        await dir.admin.bindScopeVersion(staff, t, install, version.v1);
+        await dir.provisionScope(staff, { tenantId: t2, scopeId: install, vertical: slug });
+        await dir.admin.activateScope(staff, t2, install);
+        await dir.admin.bindScopeVersion(staff, t2, install, version.v1);
+        // Routed by its bound version, so the bind below carries rather than re-pointing a pin. (An
+        // install made after an earlier test promoted prod is born on the serving script; the
+        // per-version route is the backout `setScopeServingRef(null)` documents.)
+        await dir.admin.setScopeServingRef(staff, t2, install, null);
+        const rec = await dir.admin.getScopeRecord(staff, t2, install);
+        expect([rec?.servingRef ?? null, rec?.verticalVersionId]).toEqual([null, version.v1]);
         await hostFor('v1').restoreScopeLocal(install, notes('install data'));
         // The mistake staff will repair: a marker with no events mark on a primary's store.
         await v1stub(install).testForgetCopyOrigin();
         expect(await v1stub(install).markCopy()).toBe(true);
         const held = holdFirst((ref, s) => ref === refOf.get(version.v2) && s === install);
         hooks.marker = held.hook; // after the export, before the restore and the wipe
-        const bound = bindTo(install, 'v2');
+        const bound = api.request(`/tenants/${t2}/scopes/${install}/version`, {
+          method: 'POST', headers: auth, body: JSON.stringify({ versionId: version.v2 }),
+        });
         await held.reached;
-        const cleared = await api.request(`/tenants/${t}/scopes/${install}/clear-copy-mark`, { method: 'POST', headers: auth });
+        const cleared = await api.request(`/tenants/${t2}/scopes/${install}/clear-copy-mark`, { method: 'POST', headers: auth });
         expect(cleared.status).toBe(200);
         expect(await cleared.json()).toEqual({ cleared: true });
         held.release();
