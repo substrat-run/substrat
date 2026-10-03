@@ -283,6 +283,7 @@ jobs:
     # Checked out at the BASE branch, not the PR: a closed PR's merge ref may be gone, and
     # the reap needs no PR code — only a CLI that can delete by tag. Installs and builds
     # the CLI's closure and nothing else.
+    #
     # Not for a Dependabot PR either: it never had a preview to reap (see `preview`), and the
     # CLI has no token in that secret store either.
     if: >-
