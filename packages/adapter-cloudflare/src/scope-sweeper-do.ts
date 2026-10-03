@@ -179,7 +179,11 @@ export interface ScopeSweeperDo {
  * while the roster is non-empty, so a deployment with no scopes costs nothing —
  * `noteScope` (re)arms when the first scope arrives.
  *
- * Wire-up (the create-substrat template is the reference):
+ * A pushed vertical rarely calls this itself any more (#1902): the uploader supplies a
+ * sweeper built from it — `SweeperDO` bound as `SWEEPER`, its host the one the vertical's
+ * `mountPlatformSurface` registers — to a version that declares schedules and exports none.
+ * Wire one by hand to change what the platform's does (`runJobs`, `startJobs`, a different
+ * interval), or for a deployment not pushed through the platform:
  *
  * ```ts
  * export const SweeperDO = defineScopeSweeperDO<Env>({

@@ -19,6 +19,7 @@ import { armRewind, holdsStub, landRewind } from './pitr-emulation.js';
 import { warmDurableObject, warmSwitchHolds } from './do-warmup.js';
 import {
   SCOPE_SWEEPER_NAME,
+  SWEEPER_ID,
   type ScopeSweepOutcome,
   type ScopeSweepReport,
 } from '../src/scope-sweeper-do.js';
@@ -292,5 +293,30 @@ describe('#1819 — the deployment sweep after a rewind to before the switch', {
     expect(await ticksOn(wasOff)).toBe(0);
     await sweeperStub().forgetScope(wasOff);
     await sweeperStub().forgetScope(wasOn);
+  });
+});
+
+/**
+ * #1902: the sweeper checks ids with a pattern rather than the contracts schemas, because the
+ * platform bundles this file into the sweeper it supplies to every upload that needs one, and
+ * zod would come with the schemas. The pattern is held to the schemas here, so the two cannot
+ * part company — and the refusal it gives is still a refusal, with the roster untouched.
+ */
+describe('#1902 — the sweeper’s id check, without contracts at run time', () => {
+  const samples = [ulid(), ulid().toLowerCase(), '', 'not-a-ulid', `${ulid()}0`, ulid().slice(1), 'I'.repeat(26), 'O'.repeat(26), '0'.repeat(26)];
+
+  it('accepts exactly what the tenantId and scopeId schemas accept', () => {
+    for (const s of samples) {
+      expect(SWEEPER_ID.test(s), s).toBe(tenantId.safeParse(s).success);
+      expect(SWEEPER_ID.test(s), s).toBe(scopeId.safeParse(s).success);
+    }
+  });
+
+  it('refuses a malformed id over RPC and leaves the roster as it was', async () => {
+    const before = await runInDurableObject(sweeperStub(), async (_i, state) => (await state.storage.list({ prefix: 'scope:' })).size);
+    await expect(sweeperStub().noteScope('nope' as TenantId, scopeId.parse(ulid()))).rejects.toThrow(/tenantId must be a ULID/);
+    await expect(sweeperStub().forgetScope('nope' as ScopeId)).rejects.toThrow(/scopeId must be a ULID/);
+    const after = await runInDurableObject(sweeperStub(), async (_i, state) => (await state.storage.list({ prefix: 'scope:' })).size);
+    expect(after).toBe(before);
   });
 });
