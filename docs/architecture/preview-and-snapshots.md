@@ -116,8 +116,34 @@ slots straight in, alongside `forked_from`, `forked_at`, and a read-only flag fo
 ## 6. Guardrails
 
 - **A fork is a dead end.** The export copies the `_substrat_*` spine too, so nothing
-  downstream — connectors, cron, billing — may consume from a preview/archive scope. Enforced
-  by leaving the fork's outbound side unwired.
+  downstream (connectors, cron, billing) may consume from a preview/archive scope. Two halves,
+  enforced separately: work **inherited** from the source is never re-run by a copy (the next
+  bullet, #1686); work the copy **creates itself** is inert (#2005). A scope is inert when the
+  kernel's `isPrimaryScope` says it is not the install (it has a `forkedFrom`, or its `kind` is
+  `preview`): a fork, a snapshot (`archive`), a preview fork, or a clean-room preview with no
+  source. It still runs its code, commits its writes and answers its reads. Door by door:
+
+  | Door | What a non-primary scope gets |
+  |---|---|
+  | The platform-intent drain | Each intent is settled `failed`, attributed to the platform, with `INERT_SCOPE_REASON`, and no handler runs: connector deliveries, provision-sibling, archive-scope, provision-tenant, set-entitlements, peer-invoke. The drain decides from the scope's kind and lineage itself, and lands no ops-failure row for it. |
+  | Executors and connectors in process (both adapters; the emitting call's tail and `drainDue`) | Each delivery is journaled terminal with the same reason (`ExecutorDrainReport.inert`), and no handler runs. A host with a directory asks it. A CP-less hosted vertical has none, so it asks the scope's own storage: every copy is loaded as a restore and records its origin (`_substrat_copy_origin`, a clean-room preview's restore of nothing included). That is #1686's definition of a copy, so one scope's backup restored onto another counts as one there too. A copy made before every copy carried that row holds none, so the control plane marks it: every carry onto a scope its directory says is not primary asks the vertical to stamp the row (preview reuse is such a carry), and `POST /scopes/mark-copies` (staff only, paged, resumable, admin-logged as `markScopeCopy`, with a dry run; `pnpm scopes:mark-copies` walks it) stamps the rest, suspended and archived ones included. Activate, unsuspend and unarchive stamp a copy before it comes back to life, and refuse when a hosted copy's marker cannot be written. A hosted copy whose deployment does not resolve is failed work; a co-located one is skipped, since its host reads the directory. Every marker request carries the directory's classification of the scope, and the vertical refuses to mark one classified primary. A mistaken mark on an install is cleared, one scope at a time, by `POST /tenants/:t/scopes/:s/clear-copy-mark` (staff only, logged as `clearScopeCopyMark`). That is refused for a scope the directory calls a copy, and for a marker a real load wrote, which names copied events. A CP-less host's connectors are routed onto the intent drain above in any case. |
+  | The vertical egress worker | Every third-party subrequest is refused 403, even to a host the version declares and even on an unenforced pre-#303 manifest. Model calls to a third-party provider are such subrequests. Another app on the platform answers only reads (GET, HEAD, OPTIONS); a write to it is refused the same way. The copy's own addresses (every hostname of its scope: its other surfaces and its custom domains) are treated as the primary would treat them: platform-base loopback is allowed without a declaration, and an external custom domain still requires one. The relay still answers. Everything a copy is allowed leaves with `redirect: 'manual'`: a redirect the egress worker followed would be its own, unpoliced subrequest, so the 3xx goes back to the copy's code, and its next request meets the rule again. Another app's custom domain is outside the platform's base domains, and egress cannot tell it from a third party without a lookup, so a copy's request there is refused like a third party's, reads included: the conservative side of the rule. The directory's route read decides `primary` and lists the scope's active hostnames (at most `ROUTE_SCOPE_HOSTNAMES_MAX`, read through `hostnames_scope`), and the router carries both, with the dispatched hostname, on the dispatch. A router that predates the field sends none, which passes as before: fail-open for that skew window only. |
+  | The email relay, the connection relay, connect-url | Refused 403 at entry: nothing is sent, no credential is written or rotated, no consent URL is minted. A consent round's callback stores through the same connection relay, so it is refused at write time, however old the round. |
+  | Recurring schedules and freshness checks | Never run: the sweep filters on `isPrimaryScope` (lineage alone used to let a clean-room preview through). A CP-less vertical's own sweeper never learns a non-primary scope, because its roster is filled only by `/internal/provision` and `/internal/reconcile`, which the platform calls for installs (a preview is materialized by a restore). |
+  | Peer calls, cross-vertical producer kicks, the provision reconcile, serving and upgrades | Primary-only already, by the same predicate. |
+
+  Two intent kinds still land, because they **record** something that already happened rather
+  than ask for something to happen. One is `model-usage`: inference on the platform's own model
+  binding (`env.AI`) is allowed in a copy, because it changes nothing outside the platform, and it
+  is metered like any other. Refusing the usage line would make it unmetered, not absent. The
+  other is `sweep-runs`, which is telemetry. Left alone on purpose, because none of them is an
+  effect outside the platform: the lake export (the platform's own audit store, under the copy's
+  own scope id), resumable jobs (driven only by a CP-less sweeper's roster, which holds installs;
+  the kernel's own attachment-text job is in-scope work a preview's search needs), and the
+  migration-progress count. So a copy changes no state outside itself: no third-party call, no
+  write to another app, no mail, no change to the tenant's connections, no platform intent
+  executed and no recurring work fired, while its inference on the platform's own models runs
+  and is metered.
 - **A copy keeps the source's history and none of its power** (#1686). A load into a scope
   other than the one the dump came from is a *copy*: a fork, a snapshot, a preview, or one
   scope's backup restored onto another. A load back into its own scope is a *return*: a

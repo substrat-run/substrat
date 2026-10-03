@@ -107,6 +107,13 @@ the copy is handled as personal data either way.
 - **Not a second production.** A copy receives no traffic, runs no integrations or scheduled
   work, and expires. It contains real data, so the same access rules apply — but nothing you
   do in it touches the live app.
+  Your code still runs in a copy, and its writes still commit. What it asks the platform to do
+  in the outside world does not happen. A connector delivery or another platform request is
+  recorded as not executed, with the reason "this scope is a preview or a fork". A `fetch` to
+  a third-party host is refused with a 403, even for a host your app declares. Another app on
+  the platform answers its reads but refuses its writes. Previews and forks cannot send email
+  or change a tenant's connections. Inference on the platform's own models still runs in a
+  copy, and is metered like any other.
 
 ## Where you meet it
 

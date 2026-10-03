@@ -525,6 +525,25 @@ export function isPrimaryScope(scope: Pick<Scope, 'forkedFrom' | 'kind'>): boole
   return !scope.forkedFrom && scope.kind !== 'preview';
 }
 
+/**
+ * `isPrimaryScope` over a raw directory row, in the snake_case both adapters store (#2005) —
+ * so a reader holding a row asks the same one rule rather than restating it. No row is not
+ * primary: the answer that runs effects with platform authority is the one to be proven.
+ */
+export function isPrimaryScopeRow(row: { kind: string | null; forked_from: string | null } | undefined): boolean {
+  return row !== undefined && isPrimaryScope({ kind: row.kind ?? '', forkedFrom: row.forked_from as Scope['forkedFrom'] });
+}
+
+/**
+ * Why an effect a NON-primary scope asked for was settled without running (#2005). A fork,
+ * a snapshot and a preview of either kind are inert: they cause no outbound effects, so
+ * whatever they queue — a platform intent, an executor or connector delivery — is journaled
+ * as not executed, with this reason, rather than left pending forever or run off a copy.
+ * One string for every door, so a reader who has seen it once recognizes it everywhere.
+ */
+export const INERT_SCOPE_REASON =
+  'not executed: this scope is a preview or a fork, and those cause no outbound effects';
+
 /** What a vertical's stable serving script runs (#286) — `Vertical.servingRef`/`servingVersionId`. */
 export interface ServingPointer {
   ref: string;
@@ -1174,11 +1193,10 @@ export async function runPlatformSweep(
     const registrations = host.registeredSchedules().filter((r) => r.schedules.length > 0);
     if (registrations.length > 0) {
       const schedules: ScheduleSweepReport = { scopes: 0, fired: 0, skipped: 0, failed: 0 };
-      // Primaries only — a fork/snapshot (forkedFrom set) is a preview or test copy;
-      // firing its schedules would run real recurring side effects off a throwaway.
-      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
-        (s) => s.forkedFrom === null,
-      );
+      // Primaries only (`isPrimaryScope`, #2005) — a fork, a snapshot or a preview of either
+      // kind is a copy or a throwaway; firing its schedules would run real recurring side
+      // effects off it. Lineage alone (`forkedFrom === null`) let a clean-room preview through.
+      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(isPrimaryScope);
       await mapBounded(scopes, concurrency, async (s) => {
         if (failedThisPass.has(s.id)) return;
         let touched = false;
@@ -1236,9 +1254,8 @@ export async function runPlatformSweep(
   ) {
     const freshRegs = host.registeredFreshness().filter((r) => r.freshness.length > 0);
     if (freshRegs.length > 0) {
-      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
-        (s) => s.forkedFrom === null,
-      );
+      // The same primaries the schedule phase fires on (#2005).
+      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(isPrimaryScope);
       await mapBounded(scopes, concurrency, async (s) => {
         if (failedThisPass.has(s.id)) return;
         // ONCE per scope, not once per module: the evaluator aggregates every

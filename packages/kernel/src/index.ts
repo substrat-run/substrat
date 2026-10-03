@@ -381,7 +381,7 @@ export type {
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
-export { COPY_ORIGIN_DDL, capabilitiesForLoad, emittedHere, settleCopiedWork } from './scope-copy.js';
+export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, IS_COPY_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 export { LEGACY_SCOPE_ROWS_BACKFILL, assertDirectoryTablesBuilt, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, spineColumnAdditions, spineRowsInsert, type KernelColumnsOf } from './spine-restore.js';
 export {
   SYSTEM_SWITCH_OFF_PREDICATE,
@@ -596,6 +596,8 @@ export type {
 // every receipt writer and the sweep answer both questions the same way.
 export {
   isPrimaryScope,
+  isPrimaryScopeRow,
+  INERT_SCOPE_REASON,
   runningVersionOf,
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,

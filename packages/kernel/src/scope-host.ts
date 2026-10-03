@@ -30,6 +30,7 @@ import type {
   AccessLogEntry,
   DelegatedReadRecord,
   OwnerTransferAudit,
+  CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
@@ -961,6 +962,12 @@ export interface ExecutorDrainReport {
    * the response so the router kicks an immediate drain.
    */
   routedToPlatform?: number;
+  /**
+   * Deliveries journaled as not executed because the scope is not primary — a fork, a
+   * snapshot or a preview, which cause no outbound effects (#2005, `INERT_SCOPE_REASON`).
+   * Terminal and counted apart from `deadLettered`: nothing failed, the platform declined.
+   */
+  inert?: number;
 }
 
 /**
@@ -3621,6 +3628,15 @@ export interface HostAdmin {
   recordOwnerTransfer(actor: PlatformActorId, entry: OwnerTransferAudit): Promise<void>;
 
   /**
+   * Record one change to a scope's copy marker (#2005) on the admin log — `markScopeCopy` for a
+   * `mark`, `clearScopeCopyMark` for a `clear`. The marker lives in the vertical's deployment, so
+   * the control plane writes this around its call there — `recordOwnerTransfer`'s shape: fixed
+   * actions, parsed entry, request actor, adapter-stamped `id` and `at`. Throws when the row
+   * cannot be written.
+   */
+  recordCopyMark(actor: PlatformActorId, entry: CopyMarkAudit): Promise<void>;
+
+  /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including
    * `upToId`, marking them shipped to Tier 2. Returns how many rows moved.
    *
@@ -4572,6 +4588,10 @@ export interface ScopeHost {
    * not. A failure is retried with backoff, dead-lettered at `maxAttempts`, and
    * surfaced through `drainDue`/`executorDeadLetters` — never thrown at whoever happened
    * to be holding the request.
+   *
+   * **Never on a scope that is not primary** (#2005). A fork, a snapshot or a preview causes
+   * no outbound effects, so its deliveries are journaled terminal with `INERT_SCOPE_REASON`
+   * (counted in `ExecutorDrainReport.inert`) and no handler — executor or connector — runs.
    */
   registerExecutor(
     id: string,

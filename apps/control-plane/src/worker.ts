@@ -106,6 +106,7 @@ import {
   sweepRunsHandler,
   connectorDispatchHandler,
   type ManagedTenantDeps,
+  type PlatformDrainContext,
   type PlatformDrainReport,
   type DeployVerticalFn,
   type FetchVerticalAssetFn,
@@ -1392,6 +1393,9 @@ export function timedDrain<A extends unknown[], R>(
   };
 }
 
+/** What a preview or a fork is told when it asks the email relay to send (#2005). */
+export const PREVIEW_EMAIL_REFUSAL = 'previews and forks cannot send email: this scope is a preview or a fork';
+
 /** What a scope's drain reports when it never reached a queue at all (#1840). */
 export type ScopeDrainReport = PlatformDrainReport & { unreachable?: boolean };
 
@@ -1412,6 +1416,24 @@ export async function drainTarget<R extends { vertical: string | null }, C>(
   return { rec, vertical: rec.vertical, client };
 }
 
+/**
+ * The drain's context for one scope, from its directory record and nothing else: who it is,
+ * the version it is bound to, and its kind and lineage — from which the drain decides whether
+ * the scope is the real install, and settles a preview's or a fork's own intents inert (#2005).
+ */
+export function drainContextOf(
+  rec: Pick<Scope, 'tenantId' | 'id' | 'verticalVersionId' | 'kind' | 'forkedFrom'>,
+  vertical: string,
+): PlatformDrainContext {
+  return {
+    tenantId: rec.tenantId,
+    scopeId: rec.id,
+    vertical,
+    versionId: rec.verticalVersionId ?? null,
+    scope: { kind: rec.kind, forkedFrom: rec.forkedFrom },
+  };
+}
+
 async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDrainReport> {
   const host = hostFor(env);
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
@@ -1430,7 +1452,7 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
   };
   return drainScopePlatformRequests(
     client,
-    { tenantId: t, scopeId: s, vertical, versionId: rec.verticalVersionId ?? null },
+    drainContextOf(rec, vertical),
     {
       [PROVISION_SIBLING_KIND]: provisionSiblingHandler({
         host,
@@ -2000,6 +2022,8 @@ export default {
       const host = hostFor(c.env);
       const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
       if (!rec?.vertical) return c.json({ error: 'scope has no vertical bound' }, 404);
+      // #2005: a preview or a fork causes no outbound effects, and mail is one. Nothing is sent.
+      if (!isPrimaryScope(rec)) return c.json({ error: PREVIEW_EMAIL_REFUSAL }, 403);
       const registered = (await host.admin.listVerticals(SWEEP_ACTOR)).find((v) => v.slug === rec.vertical);
       if (!registered?.emailSender) {
         return c.json(

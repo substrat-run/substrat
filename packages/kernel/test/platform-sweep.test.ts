@@ -1064,13 +1064,20 @@ describe('runPlatformSweep — migration reconciliation (§5.3, #49)', () => {
 
 describe('runPlatformSweep — recurring schedules (#383)', () => {
   const SCHED_MOD = '@test/sched';
-  type SchedScope = { id: ReturnType<typeof sid>; forkedFrom: string | null };
+  type SchedScope = { id: ReturnType<typeof sid>; forkedFrom: string | null; kind?: string };
   function schedHost(opts: {
     scopes: SchedScope[];
     run: ScopeHost['runDueSchedules'];
     schedules?: { moduleId: string; schedules: { operation: string }[] }[];
+    freshness?: (moduleId: string, tenantId: string, scopeId: string) => Promise<{ checks: [] }>;
   }): ScopeHost {
     return {
+      ...(opts.freshness
+        ? {
+            registeredFreshness: () => [{ moduleId: SCHED_MOD, freshness: [{ eventType: 'x', withinMinutes: 60 }] }],
+            checkFreshness: opts.freshness,
+          }
+        : {}),
       admin: {
         listScopes: async () =>
           opts.scopes.map((s) => ({ ...s, tenantId: T, status: 'active' })),
@@ -1150,6 +1157,32 @@ describe('runPlatformSweep — recurring schedules (#383)', () => {
     });
     const report = await runPlatformSweep(host, opts());
     expect(calls).toHaveLength(1); // the primary only
+    expect(report.schedules).toEqual({ scopes: 1, fired: 1, skipped: 0, failed: 0 });
+  });
+
+  // #2005: lineage alone let a clean-room preview through — `kind: 'preview'` with no source.
+  it('never fires a schedule, or checks freshness, on a clean-room preview (no forkedFrom)', async () => {
+    const primary = sid();
+    const calls: string[] = [];
+    const checked: string[] = [];
+    const host = schedHost({
+      scopes: [
+        { id: primary, forkedFrom: null, kind: 'app' },
+        { id: sid(), forkedFrom: null, kind: 'preview' },
+      ],
+      run: async (_m, _t, s) => {
+        calls.push(s);
+        return { fired: 1, skipped: 0, failed: 0, errors: [] };
+      },
+      freshness: async (_m, _t, s) => {
+        checked.push(s);
+        return { checks: [] };
+      },
+    });
+    const report = await runPlatformSweep(host, opts());
+    // Twin: the primary beside it fires and is checked, so the filter is not simply empty.
+    expect(calls).toEqual([primary]);
+    expect(checked).toEqual([primary]);
     expect(report.schedules).toEqual({ scopes: 1, fired: 1, skipped: 0, failed: 0 });
   });
 

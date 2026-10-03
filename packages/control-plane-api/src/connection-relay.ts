@@ -1,4 +1,4 @@
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { isPrimaryScope, ulid, type ScopeHost } from '@substrat-run/kernel';
 import {
   connectionId,
   connectionRelayRequest,
@@ -40,7 +40,7 @@ export class ConnectionRelayError extends Error {
      * 500 (what an unrecognised throw collapses to) sent an operator looking for a bug
      * in the credential or the relay, when the plane knew at boot that it had no key.
      */
-    readonly status: 400 | 404 | 409 | 422 | 503,
+    readonly status: 400 | 403 | 404 | 409 | 422 | 503,
     /** The provider's own answer, when the refusal came from a pre-flight probe (#605). */
     readonly probe?: ConnectionProbe,
   ) {
@@ -66,6 +66,10 @@ export type ConnectionCandidateProbe = (
   provider: string,
   secret: Record<string, string>,
 ) => Promise<ConnectionProbe | undefined>;
+
+/** What a preview or a fork is told when it asks to change a connection (#2005). */
+export const PREVIEW_CONNECTIONS_REFUSAL =
+  "previews and forks cannot change a tenant's connections: this scope is a preview or a fork";
 
 export async function relayConnectionUpsert(
   host: ScopeHost,
@@ -102,6 +106,13 @@ export async function relayConnectionUpsert(
   const rec = await host.admin.getScopeRecord(actor, input.tenantId, input.scopeId);
   if (!rec?.vertical) {
     throw new ConnectionRelayError('scope has no vertical bound', 404);
+  }
+  // #2005: a connection is the TENANT's, keyed on (tenant, vertical, provider), so a preview
+  // or a fork shares it with the install. Refused before the probe and the store, on every
+  // path in — this relay, the dashboard's door, and a consent round's callback, which lands
+  // here and so is judged against the scope's record at write time, however old the round.
+  if (!isPrimaryScope(rec)) {
+    throw new ConnectionRelayError(PREVIEW_CONNECTIONS_REFUSAL, 403);
   }
   const vertical = rec.vertical;
 

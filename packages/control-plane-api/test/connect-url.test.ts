@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, verifyConnectState, webCryptoSecretBox } from '@substrat-run/kernel';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { relayConnectUrl, ConnectUrlRelayError } from '../src/index.js';
+import { relayConnectUrl, ConnectUrlRelayError, PREVIEW_CONNECTIONS_REFUSAL } from '../src/index.js';
 
 /**
  * The connect-url relay (connections.md §3.5.3) — a vertical starts a provider consent
@@ -201,4 +201,61 @@ describe('relayConnectUrl — /internal/connections/connect-url logic', () => {
     expect(err).toBeInstanceOf(ConnectUrlRelayError);
     expect(err.status).toBe(400);
   });
+});
+
+/** #2005: previews and forks cannot change a tenant's connections — so no round starts. */
+describe('relayConnectUrl — no consent round for a preview or a fork (#2005)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const actor = platformActorId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const install = scopeId.parse(ulid());
+  const admin = principalId.parse(ulid());
+  const options = {
+    connectOrigin: 'https://app.substrat.net',
+    platformSecret: 'platform-secret-value-32-bytes-min',
+    flows: { fortnox: { startPath: '/api/integrations/fortnox/connect' } },
+  };
+  const copies: [string, Record<string, unknown>][] = [
+    ['a preview fork', { kind: 'preview', forkedFrom: install, forkedAt: new Date().toISOString() }],
+    ['a clean-room preview', { kind: 'preview' }],
+    ['a fork', { forkedFrom: install, forkedAt: new Date().toISOString() }],
+  ];
+  const copyIds = new Map<string, ReturnType<typeof scopeId.parse>>();
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-connect-url-inert-'));
+    host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k1', new Uint8Array(32).fill(7)) });
+    await host.admin.createTenant(staff, { id: t, slug: 'inert', name: 'Inert' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: install, vertical: 'bureau-books' });
+    for (const [name, shape] of copies) {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'bureau-books', ...shape });
+      copyIds.set(name, s);
+    }
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('twin: the install gets a URL', async () => {
+    const r = await relayConnectUrl(host, actor, { tenantId: t, scopeId: install, provider: 'fortnox', createdBy: admin }, options);
+    expect(r.url).toMatch(/^https:\/\/app\.substrat\.net\//);
+  });
+
+  for (const [name] of copies) {
+    it(`${name}: refused 403, and no URL is minted`, async () => {
+      const err = await relayConnectUrl(
+        host,
+        actor,
+        { tenantId: t, scopeId: copyIds.get(name)!, provider: 'fortnox', createdBy: admin },
+        options,
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConnectUrlRelayError);
+      expect(err).toMatchObject({ status: 403, message: PREVIEW_CONNECTIONS_REFUSAL });
+    });
+  }
 });
