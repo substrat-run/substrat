@@ -14,6 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   MODULES,
   portalPerms,
@@ -30,7 +31,7 @@ import { SC_PERM } from './manifest.js';
 import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 export function buildDemoHost(dir: string): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir }); // default checker: the tuple engine
+  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors() }); // default checker: the tuple engine
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

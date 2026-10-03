@@ -47,6 +47,7 @@ import {
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   kickFlags,
   readRoutedNode,
@@ -146,7 +147,7 @@ function nodeFor(req: Request, env: Env): Node {
 }
 
 function hostFor(env: Env): CloudflareScopeHost {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, attachmentExtractors: defaultAttachmentExtractors() });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }
