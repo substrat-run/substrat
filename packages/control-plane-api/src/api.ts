@@ -109,16 +109,21 @@ import type {
   Scope,
   ScopeDump,
   ScopeId,
+  ScopeLineage,
   ServiceDimensions,
   SwitchedOffInUnit,
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { CrossVerticalOptions, HostAdmin, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
+import type { CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import {
   BIND_EXPORT_BREAK_REFUSAL,
+  CARRIED_AWAY_KEY,
   bindExportBreakRefusal,
+  carriedAwayDump,
+  dumpMetaValue,
+  metaValueIn,
   crossVerticalHealth,
   exportBreakRefusal,
   isBindExportBreakRefusal,
@@ -528,6 +533,14 @@ type Vars = {
 type ReqCtx = { get: (k: 'actor') => PlatformActorId; var: { host: ScopeHost; admin: HostAdmin } };
 
 /**
+ * The directory's classification of a scope that is not primary (#2005), which a verb sends so
+ * the store it writes is marked a copy whatever its own marker says; undefined for a primary one.
+ */
+function copyLineageOf(scope: Pick<Scope, 'kind' | 'forkedFrom'>): ScopeLineage | undefined {
+  return isPrimaryScope(scope) ? undefined : { kind: scope.kind, forkedFrom: scope.forkedFrom };
+}
+
+/**
  * "This principal is confined to a tenant, and this is not that tenant."
  *
  * The question every `/tenants/:tenantId/…` route asks before it answers. Spelled in
@@ -548,6 +561,28 @@ function outsideTenant(p: Principal, tenantId: TenantId): boolean {
 class ExportBreakRefused extends ControlPlaneError {
   constructor(readonly breaks: ExportBreak[]) {
     super(409, bindExportBreakRefusal(breaks));
+  }
+}
+
+/**
+ * A carry whose source store kept changing between its export and its bind (#1722, Codex #2008
+ * r12): every re-carry from a fresh export found the source changed again before it could bind.
+ * Nothing was bound and the destination's copy was dropped, so the caller retries the bind. Typed,
+ * so a client tells it from the other 409s: `carrySourceChanged` names the two scripts and how many
+ * exports were tried.
+ */
+class CarrySourceChanged extends ControlPlaneError {
+  constructor(
+    readonly scopeId: ScopeId,
+    readonly from: string,
+    readonly to: string,
+    readonly attempts: number,
+  ) {
+    super(
+      409,
+      `scope ${scopeId}'s store in '${from}' changed while it was being carried to '${to}', on each of ` +
+        `${attempts} exports, so nothing was bound (#1722). Retry the bind.`,
+    );
   }
 }
 
@@ -1569,6 +1604,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return problem(c, { status: 400, body: toProblem(err, c.req.path) });
     }
     if (err instanceof ExportBreakRefused) return c.json(exportBreakBody(err), 409);
+    if (err instanceof CarrySourceChanged) {
+      return c.json({ error: err.message, carrySourceChanged: { scopeId: err.scopeId, from: err.from, to: err.to, attempts: err.attempts } }, 409);
+    }
     const { status, body } = mapError(err);
     // A 5xx is the PLATFORM failing — an unmapped throw, or a downstream vertical's
     // own 5xx passing through (a DO storage fault during a preview restore is the
@@ -2518,20 +2556,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     scopeId: ScopeId,
     tables: Parameters<VerticalClient['restoreScope']>[2],
     /** #1869: the scope `tables` were captured from — `scopeId` itself unless the copy moves —
-     *  and `exact` when the platform exported them itself rather than a caller supplying them. */
-    source: { scopeId: ScopeId; exact: boolean },
+     *  and `exact` when the platform exported them itself rather than a caller supplying them.
+     *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, and `expect`, the marker
+     *  the carry read from `dest`, so a store that moved since is never overwritten. */
+    source: { scopeId: ScopeId; exact: boolean; loadStamp?: string; expect?: LoadMarker },
   ): ReturnType<VerticalClient['restoreScope']> => {
     // #2005: every carry, reuse, adopt and governed restore lands here. When the directory says
     // the destination is not primary, the vertical marks it a copy in its own storage — a carry
     // of a copy made before every copy carried the marker brings none, and a CP-less host reads
     // the marker for primacy. Idempotent there; an install is never marked.
     const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
-    const markCopy = rec !== undefined && !isPrimaryScope(rec) ? { kind: rec.kind, forkedFrom: rec.forkedFrom } : undefined;
+    const markCopy = rec ? copyLineageOf(rec) : undefined;
     return retryTransient(async () =>
       dest.restoreScope(tenantId, scopeId, tables, {
         ...(await switchCarryFor(host.admin, actor, { tenantId, scopeId })),
         sourceScopeId: source.scopeId,
         exact: source.exact,
+        loadStamp: source.loadStamp,
+        expect: source.expect,
         ...(markCopy ? { markCopy } : {}),
       }),
     );
@@ -2758,6 +2800,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
   };
 
+  /** The script a scope's requests reach: its serving pin, else its bound version's own script. */
+  const routeOf = async (c: ReqCtx, scope: Scope): Promise<string | null> => {
+    if (scope.servingRef) return scope.servingRef;
+    if (!scope.vertical || !scope.verticalVersionId) return null;
+    return (await c.var.admin.getVersion(c.get('actor'), scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null;
+  };
+
+  /** How many exports a carry tries before its source holds still long enough to bind (#1722 r12). */
+  const CARRY_EXPORT_ATTEMPTS = 3;
+
+  /** A carry that landed (#1710): where the data went, and what `bindAfterCarry` settles with (#1722). */
+  type Carried = {
+    from: string;
+    to: string;
+    tables: number;
+    switchedOff?: SwitchedOffInUnit[];
+    /** The two ends, as resolved for the carry. */
+    source: VerticalClient;
+    dest: VerticalClient;
+    /** The source store's load stamp and write revision, read with the export: what its fenced
+     *  wipe expects, so a write that reached it since keeps the copy rather than erasing it. */
+    sourceStamp: string | null;
+    sourceRevision: string | null;
+    /** The stamp the restore left on `dest` (a deployment that predates it keeps none, and cannot fence). */
+    restoredStamp: string;
+  };
+
   /**
    * Carry a scope's data onto the script a version bind is about to route it to (#1710).
    * The caller binds only after this returns.
@@ -2785,11 +2854,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * over any partial copy. A retry after a bind that landed finds the same script on both
    * ends and carries nothing.
    *
+   * #1722: the export is checked before anything is restored. The scope is read again, and a
+   * binding or pin that moved since the caller read it is refused (412): another carry bound
+   * away from this script, which may already have wiped it, and an export from a wiped DO comes
+   * back as an empty store. A dump that carries the `carried_away` tombstone is refused the same
+   * way. The caller binds with `bindAfterCarry`, which wipes the source copy once the bind
+   * lands, so neither check can pass on an export from a copy that is about to go.
+   *
+   * The restore is conditional too. Before the check above, the carry reads the destination's
+   * `LoadMarker` (load stamp and write revision), and the restore is refused inside its own
+   * transaction if the store moved since. So a carry held before its restore cannot overwrite
+   * a store that another carry into the same script has loaded, or that went live under that
+   * carry's bind and took a write: a CI retry of the same version. A deployment built before
+   * #1722 cannot read a marker, and there the binding re-read is all that guards the restore.
+   * Its window: a bind that lands between that re-read and the restore, followed by a write.
+   *
    * What it does not do:
    * - Carry writes that land on the source between the export and the bind. Those are lost.
-   * - Delete the source copy. That copy is unreachable once the caller binds, and it stays
-   *   in the old script, because nothing reaps it yet (#1722). Deleting it here would race
-   *   a concurrent push that is still exporting from it.
    * - Cross lineages. A version of another vertical reads as absent here, and moving a scope
    *   between lineages is `rebindScopeOntoVertical`'s job, behind its migration gate.
    */
@@ -2798,7 +2879,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     scope: Scope,
     versionId: string,
     opts: { dropServingRef?: boolean } = {},
-  ): Promise<{ from: string; to: string; tables: number; switchedOff?: SwitchedOffInUnit[] } | null> => {
+  ): Promise<Carried | null> => {
     const resolveVersion = options.resolveVerticalVersion;
     if (!scope.vertical) return null;
     const actor = c.get('actor');
@@ -2814,10 +2895,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     if (!resolveVersion || (scope.servingRef && !opts.dropServingRef)) return null;
     const to = incoming.deploymentRef ?? null;
-    const bound = scope.verticalVersionId
-      ? await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical)
-      : undefined;
-    const from = scope.servingRef ?? bound?.deploymentRef ?? null;
+    const from = await routeOf(c, scope);
     if (!to || !from || from === to) return null;
     // Resolve each end at exactly the script named above. No fallback to the prod channel:
     // a guessed source would be exported, found empty, and carried as if it were the data.
@@ -2837,13 +2915,386 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `so the version was not bound (#1710)`,
       );
     }
-    const dump = await retryTransient(() => source.exportScope(scope.id));
-    // #1742: the recorded OFF positions ride the restore, as on adopt and rebind.
+    const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
+      source.exportScopeStamped(scope.id),
+    );
+    // What the destination holds now, read before the binding is checked again. The restore
+    // sends it back and is refused if the store moved since: another carry into the same script
+    // loaded it, or it went live under another carry's bind and took a write. That is a CI retry
+    // of the same version, held before its restore while the first run bound and served.
+    const destMarker = await retryTransient(() => dest.loadMarker(scope.id));
+    const now = await c.var.admin.getScopeRecord(actor, scope.tenantId, scope.id);
+    if (
+      !now ||
+      (now.verticalVersionId ?? null) !== (scope.verticalVersionId ?? null) ||
+      (now.servingRef ?? null) !== (scope.servingRef ?? null)
+    ) {
+      throw new ControlPlaneError(
+        412,
+        `scope ${scope.id} was re-pointed while its data was being copied out of '${from}', so nothing was ` +
+          `moved or bound (#1722). Reload the scope and retry.`,
+      );
+    }
+    if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
+      throw new ControlPlaneError(
+        412,
+        `the copy of scope ${scope.id} in '${from}' was already carried to another script and wiped, so nothing ` +
+          `was moved or bound (#1722). Reload the scope and retry.`,
+      );
+    }
+    // #1742: the recorded OFF positions ride the restore, as on adopt and rebind. #1722: so does
+    // a stamp of this carry's own, which a refused bind's wipe of the copy expects.
+    const restoredStamp = ulid();
     const restored = await restoreCarryingSwitches(actor, dest, scope.tenantId, scope.id, dump, {
       scopeId: scope.id,
       exact: true,
+      loadStamp: restoredStamp,
+      ...(destMarker === 'unfenced' ? {} : { expect: destMarker }),
     });
-    return { from, to, tables: restored.tables, switchedOff: restored.switchedOff };
+    return {
+      from,
+      to,
+      tables: restored.tables,
+      switchedOff: restored.switchedOff,
+      source,
+      dest,
+      sourceStamp,
+      sourceRevision,
+      restoredStamp,
+    };
+  };
+
+  /**
+   * Wipe one copy of a scope that no route reaches (#1722), without reaping it. Fenced where the
+   * deployment can fence it: the wipe runs only if nothing was loaded into that DO since
+   * `expectLoadStamp`, compared inside the wipe's own transaction, and `false` means something
+   * was (a rollback restored there), so the copy stays. A deployment built before the fence
+   * answers `'unfenced'`, and the wipe is then an unconditional load of the tombstone through
+   * the restore verb every deployment has. The caller re-reads the route first; that re-read is
+   * all that guards an unfenced wipe.
+   */
+  const wipeCarriedCopy = async (
+    holder: VerticalClient,
+    scope: Scope,
+    expect: { loadStamp: string | null; revision?: string | null },
+    carriedTo: string,
+    /** The scope was read routing elsewhere: a copy changed in any way since is kept (#1722 r8). */
+    protectIfChanged = false,
+  ): Promise<boolean> => {
+    const at = new Date().toISOString();
+    // #2005 (Codex #2008 r10): the directory's word that the scope is not primary goes with the
+    // wipe, on both paths, so a copy made before the marker leaves it marked — tombstoned or kept.
+    const markCopy = copyLineageOf(scope);
+    const fenced = await retryTransient(() =>
+      holder.wipeCarriedCopy({
+        scopeId: scope.id,
+        expectLoadStamp: expect.loadStamp,
+        ...(expect.revision !== undefined ? { expectRevision: expect.revision } : {}),
+        ...(protectIfChanged ? { protectIfChanged: true } : {}),
+        carriedTo,
+        at,
+        ...(markCopy ? { markCopy } : {}),
+      }),
+    );
+    if (fenced !== 'unfenced') return fenced.wiped;
+    await retryTransient(() =>
+      holder.restoreScope(scope.tenantId, scope.id, carriedAwayDump({ to: carriedTo, at }), {
+        sourceScopeId: scope.id,
+        exact: true,
+        // #2005: as every restore onto a non-primary scope, so the wiped copy stays a copy.
+        ...(markCopy ? { markCopy } : {}),
+      }),
+    );
+    return true;
+  };
+
+  /**
+   * Where the scope routes now, read again after a carry's bind (null for a scope gone from the
+   * directory). Bound to the carry's own version and unpinned, that is the carry's destination,
+   * which needs no version read.
+   */
+  const currentRoute = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<string | null> => {
+    const now = await c.var.admin.getScopeRecord(c.get('actor'), scope.tenantId, scope.id);
+    if (!now) return null;
+    if (!now.servingRef && now.verticalVersionId === versionId) return carried.to;
+    return routeOf(c, now);
+  };
+
+  /** Whether the scope's store in `holder` is a wiped copy: it holds the `carried_away` tombstone. */
+  const isCarriedAway = async (holder: VerticalClient, scope: Scope): Promise<boolean> => {
+    const page = await holder.readScopeTable(scope.id, { table: '_substrat_meta', limit: 100, offset: 0 });
+    return metaValueIn(page.rows, page.columns, CARRIED_AWAY_KEY) !== null;
+  };
+
+  const recordCarryCleanup = (c: ReqCtx, scope: Scope, versionId: string, stage: string, e: unknown): void => {
+    const { status } = mapError(e);
+    recordFailure({
+      actor: c.get('actor'),
+      operation: 'scope.carry',
+      stage,
+      tenantId: scope.tenantId,
+      scopeId: scope.id,
+      vertical: scope.vertical ?? null,
+      version: versionId,
+      status,
+      message: e instanceof Error ? e.message : String(e),
+    }, e);
+  };
+
+  /**
+   * Bind a scope onto `versionId` after `carryOntoVersion` (#1722), and settle the copies. The
+   * one tail every carry caller runs: a preview push, `scope bind`, and the serving-pin repair.
+   *
+   * 1. The bind is compare-and-set on the binding the caller read, which is the version the carry
+   *    exported from. Two pushes that both read v1 cannot both bind: the second is refused (412)
+   *    and never routes the preview to what it carried, which may be an export of a copy the
+   *    first one had already wiped. On any failed bind, the copy this carry restored is wiped, unless
+   *    the scope now routes to that same script: a CI retry of the same version restores into
+   *    the winner's live store, and wiping it there would lose everything.
+   * 2. The pin is cleared (`clearServingRef`) only after the bind lands, so a failure in between
+   *    leaves the route where the data still is, and a retry carries again.
+   * 3. The recorded OFF positions are re-asserted where the scope now routes (#1674).
+   * 4. The copy left in the old script is wiped (`settleCarriedSource`). A failure there is
+   *    recorded and never fails the bind, which has landed: the copy then stays, as before #1722.
+   */
+  const bindAfterCarry = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    carried: Carried | null,
+    opts: {
+      acknowledge?: BindAcknowledgement;
+      snapshot?: boolean;
+      clearServingRef?: boolean;
+      /** The same carry again, from a fresh export (#1722 r12): what step 0 runs when the source
+       *  changed after this one's export. Without it, a changed source refuses the bind. */
+      recarry?: () => Promise<Carried | null>;
+    } = {},
+  ): Promise<void> => {
+    const actor = c.get('actor');
+    // 0. The source, read again right before the bind (Codex #2008 r12). A store that changed since
+    //    the export (a write, a load, or a staff clear of its copy marker) holds something the
+    //    destination does not, so binding now would serve the stale export. The carry is run
+    //    again from a fresh export, a bounded number of times, and then refused with a typed 409.
+    //    What changes after this read is the source wipe's to fence (`keepOrWipeSource`).
+    for (let attempt = 1; carried; attempt++) {
+      const stale: Carried = carried;
+      let now: LoadMarker | 'unfenced';
+      try {
+        now = await retryTransient(() => stale.source.loadMarker(scope.id));
+      } catch (e) {
+        await dropUnboundCopy(c, scope, versionId, stale); // no bind follows
+        throw e;
+      }
+      if (now === 'unfenced' || (now.loadStamp === stale.sourceStamp && now.revision === stale.sourceRevision)) break;
+      let next: Carried | null = null;
+      if (attempt < CARRY_EXPORT_ATTEMPTS && opts.recarry) {
+        try {
+          next = await opts.recarry();
+        } catch (e) {
+          await dropUnboundCopy(c, scope, versionId, stale);
+          throw e;
+        }
+      }
+      if (!next) {
+        await dropUnboundCopy(c, scope, versionId, stale);
+        throw new CarrySourceChanged(scope.id, stale.from, stale.to, attempt);
+      }
+      carried = next;
+    }
+    try {
+      await c.var.admin
+        .bindScopeVersion(actor, scope.tenantId, scope.id, versionId, {
+          acknowledge: opts.acknowledge,
+          ...(opts.snapshot ? { snapshot: true } : {}),
+          expectedVersionId: scope.verticalVersionId ?? null,
+        })
+        .catch(relayHostRefusal);
+    } catch (e) {
+      if (carried) await dropUnboundCopy(c, scope, versionId, carried);
+      throw e;
+    }
+    if (opts.clearServingRef && scope.servingRef) {
+      await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null).catch(relayHostRefusal);
+    }
+    try {
+      await c.var.admin.reassertSystemSwitches(
+        actor,
+        { tenantId: scope.tenantId, scopeId: scope.id },
+        { appliedInUnit: carried?.switchedOff },
+      );
+    } finally {
+      // Even when the re-assert fails: the route has moved, and a retry finds the same script
+      // on both ends, carries nothing, and so would never come back for this copy.
+      if (carried) await settleCarriedSource(c, scope, versionId, carried);
+    }
+  };
+
+  /**
+   * The copy a carry restored for a bind that did not land, wiped unless the scope routes to
+   * that script now. Best effort: it never throws, and a failure is recorded.
+   */
+  const dropUnboundCopy = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
+    try {
+      const route = await currentRoute(c, scope, versionId, carried);
+      if (route === carried.to) return;
+      await wipeCarriedCopy(carried.dest, scope, { loadStamp: carried.restoredStamp }, route ?? carried.from);
+    } catch (e) {
+      recordCarryCleanup(c, scope, versionId, 'unbound-copy', e);
+    }
+  };
+
+  /**
+   * Clear the kept-copy marker of a store the scope routes to (#1722, Codex #2008 r8). A carry
+   * keeps a changed source when it reads the route elsewhere; a rollback binding it a moment later
+   * makes that store live, and a live store holds nothing divergent. Fenced on the revision read
+   * now; re-reads the route first, so it never releases a copy the scope has left.
+   */
+  const releaseIfLive = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    carried: Carried,
+    holder: VerticalClient,
+    script: string,
+  ): Promise<void> => {
+    if (!(await holder.keptCopy(scope.id))) return;
+    if ((await currentRoute(c, scope, versionId, carried)) !== script) return;
+    const marker = await holder.loadMarker(scope.id);
+    if (marker === 'unfenced') return;
+    const markCopy = copyLineageOf(scope);
+    await holder.releaseKeptCopy({
+      scopeId: scope.id,
+      revision: marker.revision,
+      loadStamp: marker.loadStamp, // Codex #2008 r13: the store read, not only its revision
+      ...(markCopy ? { markCopy } : {}),
+    });
+  };
+
+  /**
+   * A source kept ONLY because staff cleared its copy marker after the carry's export (Codex #2008
+   * r12; the store records that itself, `KeptCopy.clearedOnly`). Its data is what the carry
+   * copied; the fresher decision is the clear, so it is brought to the store the scope runs on:
+   * the destination's marker is cleared, and only then is the source discarded. True when both
+   * landed. Anything else (a write since, a move, a refusal) leaves the source kept, and the caller
+   * records it as any kept copy.
+   *
+   * Every step is fenced on THIS carry, not on whatever the stores hold now (Codex #2008 r13). The
+   * destination must still hold this carry's load (its `restoredStamp`): a governed restore that
+   * replaced it since brings a copy marker that is genuine, and clearing it would let another
+   * scope's copy run its executors. That stamp and the revision read are compared inside the clear's
+   * own transaction, so nothing can land between the check and the clear. The binding is read again
+   * right before the discard, and the discard is fenced on the source's stamp and kept revision.
+   */
+  const bringClearForward = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<boolean> => {
+    if (!isPrimaryScope(scope)) return false; // only staff clear, and only a primary's marker
+    const kept = await carried.source.keptCopy(scope.id);
+    if (!kept?.clearedOnly) return false;
+    const destMarker = await carried.dest.loadMarker(scope.id);
+    if (destMarker === 'unfenced' || destMarker.loadStamp !== carried.restoredStamp) return false;
+    if ((await currentRoute(c, scope, versionId, carried)) !== carried.to) return false;
+    try {
+      await carried.dest.clearCopyMark(scope.id, { kind: scope.kind, forkedFrom: scope.forkedFrom }, {
+        expect: { loadStamp: carried.restoredStamp, revision: destMarker.revision },
+      });
+    } catch (e) {
+      if (e instanceof ControlPlaneError && (e.status === 412 || e.status === 409)) return false;
+      throw e;
+    }
+    if ((await currentRoute(c, scope, versionId, carried)) !== carried.to) return false;
+    const discarded = await carried.source.discardKeptCopy({
+      scopeId: scope.id,
+      revision: kept.clearedOnly.revision,
+      // Clear-only means nothing was loaded there since the export: the stamp the carry read.
+      loadStamp: carried.sourceStamp,
+      carriedTo: carried.to,
+      at: new Date().toISOString(),
+    });
+    return 'discarded' in discarded;
+  };
+
+  /**
+   * The source wipe, fenced on what the export read. Refused means the copy changed after the
+   * export: a write from a request still routed there before the bind, which the carry never
+   * copied. The copy is then kept, holding that write, and recorded so it can be recovered.
+   */
+  const keepOrWipeSource = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    carried: Carried,
+    expect: { loadStamp: string | null; revision: string | null },
+  ): Promise<void> => {
+    // The caller read the route elsewhere, so a copy that changed in any way since the export (a
+    // load as much as a write: a staff restore-forward into it racing this carry, Codex #2008 r8)
+    // is kept in the store rather than left an unmarked orphan.
+    if (await wipeCarriedCopy(carried.source, scope, expect, carried.to, true)) return;
+    // A rollback that restored into it since made it the live store again: it is no kept copy, and
+    // a marker this refusal set while the rollback had not yet bound comes off.
+    const route = await currentRoute(c, scope, versionId, carried);
+    if (route === carried.from) {
+      await releaseIfLive(c, scope, versionId, carried, carried.source, carried.from);
+      return;
+    }
+    if (route === carried.to && (await bringClearForward(c, scope, versionId, carried))) return;
+    recordCarryCleanup(
+      c,
+      scope,
+      versionId,
+      'source-copy-kept',
+      new ControlPlaneError(
+        409,
+        `scope ${scope.id}'s copy in '${carried.from}' changed after it was carried to '${carried.to}', so it was ` +
+          `kept: it holds what reached it in between, which the carry did not copy (#1722)`,
+      ),
+    );
+  };
+
+  /**
+   * Wipe the copy a landed carry left in its source script (#1722), once nothing routes there.
+   *
+   * The route is read again first. A scope that routes to the source again was bound back to it
+   * (a rollback that has landed), and its copy stays. A scope that routes to this carry's
+   * destination has its store checked for the `carried_away` tombstone first: an unfenced wipe
+   * from an earlier carry out of this script can overtake this carry's restore when this carry
+   * IS the rollback, and then the source, which nothing has wiped yet, is carried again before
+   * it goes. The fenced wipe in a deployment that has it makes the overtaking impossible.
+   *
+   * Left open, for a script built before the fence only: an unfenced wipe whose request reaches
+   * the old script after a rollback's bind and this check, both, still destroys the rollback's
+   * restore. Narrow, and recorded here rather than claimed closed.
+   */
+  const settleCarriedSource = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
+    const actor = c.get('actor');
+    try {
+      const route = await currentRoute(c, scope, versionId, carried);
+      if (route === carried.from) return;
+      // The store this carry landed in is live; a kept marker another carry set while racing it
+      // does not belong on it (#1722 r8).
+      if (route === carried.to) await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
+      if (route === carried.to && (await isCarriedAway(carried.dest, scope))) {
+        const { tables: dump, loadStamp: stamp, revision } = await retryTransient(() =>
+          carried.source.exportScopeStamped(scope.id),
+        );
+        if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
+          throw new ControlPlaneError(500, `both copies of scope ${scope.id} hold the carried_away tombstone; nothing was wiped`);
+        }
+        await restoreCarryingSwitches(actor, carried.dest, scope.tenantId, scope.id, dump, {
+          scopeId: scope.id,
+          exact: true,
+          loadStamp: ulid(),
+        });
+        if (await isCarriedAway(carried.dest, scope)) {
+          throw new ControlPlaneError(500, `scope ${scope.id}'s store in '${carried.to}' was wiped again; its source copy stays`);
+        }
+        // Re-carried, so the fence expects what the re-export read.
+        await keepOrWipeSource(c, scope, versionId, carried, { loadStamp: stamp, revision });
+        return;
+      }
+      await keepOrWipeSource(c, scope, versionId, carried, { loadStamp: carried.sourceStamp, revision: carried.sourceRevision });
+    } catch (e) {
+      recordCarryCleanup(c, scope, versionId, 'source-copy', e);
+    }
   };
 
   app.get('/tenants/:tenantId/scopes/:scopeId/tables', async (c) => {
@@ -4086,21 +4537,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // would strand it on the serving script.
     const bound = await c.var.admin.getVersion(actor, versionId, scope.vertical);
     if (!bound?.deploymentRef) return { skipped: `version ${versionId} has no script of its own` };
-    // The same carry → bind → clear-pin → reassert sequence as `POST …/scopes/:scopeId/version`
-    // runs for a legacy preview (`repairPreviewPin` there). Keep the two in step: #1722 folds
-    // them into one helper.
-    const carried = await carryOntoVersion(c, scope, versionId, { dropServingRef: true });
-    // `expectedVersionId`: a push that re-pointed the preview since it was listed wins, and
-    // this pass leaves the scope to it rather than binding it back.
-    await c.var.admin
-      .bindScopeVersion(actor, scope.tenantId, scope.id, versionId, { expectedVersionId: versionId })
-      .catch(relayHostRefusal);
-    await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null).catch(relayHostRefusal);
-    await c.var.admin.reassertSystemSwitches(
-      actor,
-      { tenantId: scope.tenantId, scopeId: scope.id },
-      { appliedInUnit: carried?.switchedOff },
-    );
+    // The carry and the tail a legacy preview's `scope bind` runs too. The bind expects the
+    // version this pass read, so a push that re-pointed the preview since it was listed wins.
+    const recarry = () => carryOntoVersion(c, scope, versionId, { dropServingRef: true });
+    const carried = await recarry();
+    await bindAfterCarry(c, scope, versionId, carried, { clearServingRef: true, recarry });
     return { repaired: { from: carried?.from ?? scope.servingRef!, to: bound.deploymentRef, tables: carried?.tables ?? 0 } };
   };
   app.post('/previews/repair-serving-pins', async (c) => {
@@ -4911,6 +5352,235 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ affected: await c.var.admin.bindingImpact(c.get('actor'), tenantId, scopeId, versionId) });
   });
 
+  // -- kept copies (#1722, Codex #2008 r7) ----------------------------------------------------
+  // A kept copy is one a carry's fenced wipe refused because it took a write the carry never
+  // copied (a request still routed to the old script before the bind). The store protects it:
+  // every load into it answers 409 until it is resolved here. The two resolutions both lose
+  // something, so each is named and acknowledged, never defaulted:
+  // - `discard` wipes the kept copy: what reached it after the carry's export is gone.
+  // - `restore-forward` restores the kept copy over the store the scope now routes to, then
+  //   wipes the kept copy: what the live store took since the copy was kept is gone.
+  // There is no merge of two scope dumps. To reconcile by hand, pull the kept copy with
+  // `GET …/kept-copy/export` and the live store with the governed export (`GET …/export`, which
+  // reads the scope's route), re-apply what matters, then discard.
+  //
+  // Staff only, by default-deny: neither path is on BUILDER_ROUTES or TENANT_ROUTES. One scope
+  // at a time, refused unless the copy really is kept, and admin-logged with the write revision
+  // before and after (`recordKeptCopyResolution`).
+  const keptScriptQuery = z.object({ script: z.string().min(1) }).strict();
+  const resolveKeptBody = z.discriminatedUnion('action', [
+    z
+      .object({
+        script: z.string().min(1),
+        action: z.literal('discard'),
+        acknowledge: z.object({ discard: z.literal(true) }).strict(),
+      })
+      .strict(),
+    z
+      .object({
+        script: z.string().min(1),
+        action: z.literal('release'),
+        acknowledge: z.object({ release: z.literal(true) }).strict(),
+      })
+      .strict(),
+    z
+      .object({
+        script: z.string().min(1),
+        action: z.literal('restore-forward'),
+        /** The moment the copy was kept, as its marker says: the live store's writes since are replaced. */
+        acknowledge: z.object({ replacesLiveWritesSince: z.string().min(1) }).strict(),
+      })
+      .strict(),
+  ]);
+  const keptHolder = async (script: string): Promise<VerticalClient> => {
+    if (!options.resolveVerticalRef) throw new ControlPlaneError(501, 'kept copies need dispatch resolution by script');
+    const holder = await options.resolveVerticalRef(script);
+    if (!holder) throw new ControlPlaneError(404, `no deployment resolves for script '${script}'`);
+    return holder;
+  };
+
+  app.get('/tenants/:tenantId/scopes/:scopeId/kept-copy', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const { script } = keptScriptQuery.parse(c.req.query());
+    const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const kept = await (await keptHolder(script)).keptCopy(scopeId);
+    return c.json({ scopeId, script, kept, routesTo: await routeOf(c, scope) });
+  });
+
+  // The kept copy's own dump, for reconciling by hand before a discard: the governed export's
+  // rules exactly (`GET …/export` above). Refused outside `global` residency, masked unless
+  // `full=true`, and K-24 access-logged through the same canonical `exportScope`. It reads the
+  // script named, refused unless the copy there is kept, so it never becomes a way to pull a
+  // live store past that route.
+  const keptExportQuery = z
+    .object({ script: z.string().min(1), full: z.enum(['true', 'false']).optional() })
+    .strict();
+  app.get('/tenants/:tenantId/scopes/:scopeId/kept-copy/export', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const { script, full } = keptExportQuery.parse(c.req.query());
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (scope.jurisdiction !== 'global') {
+      return c.json(
+        {
+          error:
+            `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
+            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`,
+        },
+        403,
+      );
+    }
+    const holder = await keptHolder(script);
+    const kept = await holder.keptCopy(scopeId);
+    if (!kept) return c.json({ error: `scope ${scopeId} has no kept copy in '${script}'` }, 409);
+    const dump = await c.var.admin.exportScope(actor, tenantId, scopeId);
+    const tables = await holder.exportScope(scopeId);
+    if (full === 'true') return c.json({ ...dump, tables, masked: false, script, kept });
+    const mask = await createPseudonymizer(options.maskSalt ?? crypto.randomUUID());
+    return c.json({ ...dump, tables: await maskDump(tables, mask), masked: true, script, kept });
+  });
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/kept-copy/resolve', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const body = await readJsonBody(c, resolveKeptBody);
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const holder = await keptHolder(body.script);
+    const kept = await holder.keptCopy(scopeId);
+    if (!kept) return c.json({ error: `scope ${scopeId} has no kept copy in '${body.script}'` }, 409);
+    const route = await routeOf(c, scope);
+    // `release` is for a kept copy the scope routes to (a rollback bound it after a carry kept
+    // it); the other two act on a kept copy the scope has left, against the store it runs on.
+    if (body.action === 'release' ? route !== body.script : !route || route === body.script) {
+      return c.json({
+        error:
+          body.action === 'release'
+            ? `scope ${scopeId} routes to '${route ?? '(nothing)'}', not to the kept copy in '${body.script}'; release is for a kept copy that is live`
+            : `scope ${scopeId} routes to '${route ?? '(nothing)'}', so there is no live copy to resolve against`,
+      }, 409);
+    }
+    const at = new Date().toISOString();
+    const revisionOf = async (client: VerticalClient): Promise<string | null> => {
+      const marker = await client.loadMarker(scopeId);
+      return marker === 'unfenced' ? null : marker.revision;
+    };
+    // The kept copy as it stands now, which is what this resolution acts on and is fenced on: a
+    // write that reaches it after this read refuses the wipe. (The marker's own `revision` is the
+    // one it was kept at; writing the marker, and any later write, moved it on.)
+    const before = await holder.loadMarker(scopeId);
+    const revisionBefore = before === 'unfenced' ? null : before.revision;
+    // Codex #2008 r13: and the load stamp with it, so the release or discard refuses a store a load
+    // has replaced since this read (a kept copy refuses every load but its own resolution, so this
+    // is the same fence stated where the act is, not a new one).
+    const stampFence = before === 'unfenced' ? {} : { loadStamp: before.loadStamp };
+    // #2005 (Codex #2008 r10): whatever the resolution leaves in that store, it is a copy when
+    // the directory says the scope is not primary, marker or no marker.
+    const lineage = copyLineageOf(scope);
+    const markCopy = lineage ? { markCopy: lineage } : {};
+    const record = (action: 'discard' | 'restore-forward' | 'release', revisionAfter: string | null) =>
+      c.var.admin.recordKeptCopyResolution(actor, tenantId, scopeId, {
+        action,
+        script: body.script,
+        liveScript: action === 'restore-forward' ? route : null,
+        keptAt: kept.keptAt,
+        revisionBefore,
+        revisionAfter,
+      });
+
+    if (body.action === 'release') {
+      const out = await holder.releaseKeptCopy({ scopeId, revision: revisionBefore, ...markCopy, ...stampFence });
+      if ('refused' in out) {
+        return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was released` }, 412);
+      }
+      await record('release', revisionBefore);
+      return c.json({ scopeId, script: body.script, action: 'release', revisionBefore });
+    }
+
+    if (body.action === 'discard') {
+      const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route!, at, ...markCopy, ...stampFence });
+      if ('refused' in out) {
+        return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was discarded` }, 412);
+      }
+      const revisionAfter = await revisionOf(holder);
+      await record('discard', revisionAfter);
+      return c.json({ scopeId, script: body.script, action: 'discard', revisionBefore, revisionAfter });
+    }
+
+    // restore-forward: the acknowledgement names what is replaced, as the marker says it.
+    if (body.acknowledge.replacesLiveWritesSince !== kept.keptAt) {
+      return c.json({
+        error:
+          `a restore forward replaces what the live store took since ${kept.keptAt}; acknowledge exactly that ` +
+          `(acknowledge.replacesLiveWritesSince: '${kept.keptAt}')`,
+      }, 409);
+    }
+    // Fenced on the binding through the whole resolution (Codex #2008 r8): the kept copy goes only
+    // once its data is in the store the scope still routes to. Every refusal below leaves it kept.
+    const liveScript = route!;
+    const live = await keptHolder(liveScript);
+    const bindingHeld = async (): Promise<boolean> => {
+      const now = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+      return (
+        Boolean(now) &&
+        (now!.verticalVersionId ?? null) === (scope.verticalVersionId ?? null) &&
+        (now!.servingRef ?? null) === (scope.servingRef ?? null)
+      );
+    };
+    const moved = () =>
+      c.json({
+        error:
+          `scope ${scopeId} was re-pointed while the kept copy was being restored forward, so nothing was resolved ` +
+          `and the kept copy in '${body.script}' stays kept; read it again and resolve it again`,
+      }, 409);
+    // The live store as read now, and nothing else, is what gets replaced. The binding read again
+    // after the marker ties the marker to the live store: a move that landed before this read
+    // (its wipe minting a tombstone here) changed the binding, and is refused.
+    const liveMarker = await live.loadMarker(scopeId);
+    if (liveMarker === 'unfenced') {
+      return c.json({ error: `the deployment serving scope ${scopeId} ('${liveScript}') predates the fence (#1722); re-push it, then resolve` }, 409);
+    }
+    if (!(await bindingHeld())) return moved();
+    if ((await isCarriedAway(live, scope)) || (await live.keptCopy(scopeId))) {
+      return c.json({ error: `the store scope ${scopeId} routes to in '${liveScript}' is not a live store (wiped or kept); nothing was resolved` }, 409);
+    }
+    const dump = await retryTransient(() => holder.exportScope(scopeId));
+    const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
+      scopeId,
+      exact: true,
+      loadStamp: ulid(),
+      expect: liveMarker,
+    });
+    await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
+    // Still routed there once the data landed? If not, the move that re-pointed the scope keeps
+    // what this restore put in that store (its source wipe protects a copy changed since its
+    // export), and the kept copy here stays kept too: nothing is lost, nothing is discarded.
+    if (!(await bindingHeld())) return moved();
+    const revisionAfter = await revisionOf(live);
+    await record('restore-forward', revisionAfter);
+    const wiped = await holder.discardKeptCopy({
+      scopeId,
+      revision: revisionBefore,
+      carriedTo: liveScript,
+      at,
+      ...markCopy,
+      ...stampFence,
+    });
+    if ('refused' in wiped) {
+      return c.json({
+        error:
+          `restored forward into '${route}', but the kept copy in '${body.script}' changed since it was read, so it ` +
+          `stays kept: read it again and resolve it again`,
+      }, 409);
+    }
+    return c.json({ scopeId, script: body.script, action: 'restore-forward', liveScript, revisionBefore, revisionAfter });
+  });
+
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a
   // non-admitted version below the seam — that refusal is the registry's reason to
   // exist. A scope operation, so it keeps the scope route shape. `snapshot: true`
@@ -4931,8 +5601,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { versionId, snapshot, acknowledge } = bindScopeVersionBody.parse(await c.req.json());
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    // The fleet pass `repairPreviewServingPin` (POST /previews/repair-serving-pins) repeats this
-    // sequence for every legacy preview at once. Keep the two in step: #1722 folds them into one helper.
     const repairPreviewPin = scope?.kind === 'preview' && Boolean(scope.servingRef);
     // #1756: the apps in this tenant the bind would break, asked BEFORE the carry and the
     // snapshot below, which move data. The host refuses too, whoever calls, but by then a
@@ -4947,23 +5615,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const carry = async (): Promise<void> => {
       if (scope) carried = await carryOntoVersion(c, scope, versionId, { dropServingRef: repairPreviewPin });
     };
-    // #1674: after the bind, the scope may route to a different store (the carry's
-    // destination); put the directory's recorded OFF positions back there. #1742: the carry
-    // already did so in the restore's own event; what it reports is audited here.
-    const reassert = async (): Promise<void> => {
-      if (scope) {
-        await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: carried?.switchedOff });
-      }
-    };
     // The host's own refusal, should the impact have changed since it was read above (a
-    // promote landing in between): relayed as the same 409, never as a 500.
-    const bind = async (opts: Parameters<typeof c.var.admin.bindScopeVersion>[4]): Promise<void> => {
-      await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, versionId, opts).catch(relayHostRefusal);
-      // Keep the old route until the bind succeeds. If clearing the pin fails, a retry
-      // carries again from the still-serving script before it changes the route.
-      if (repairPreviewPin) {
-        await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, null).catch(relayHostRefusal);
+    // promote landing in between): relayed as the same 409, never as a 500. A known scope
+    // binds through the carry tail (#1722): compare-and-set on the binding read above, the pin
+    // cleared after it, the OFF positions re-asserted where it now routes (#1674), and the copy
+    // the carry left in the old script wiped.
+    const bind = async (opts: { acknowledge?: BindAcknowledgement; snapshot?: boolean }): Promise<void> => {
+      if (!scope) {
+        await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, versionId, opts).catch(relayHostRefusal);
+        return;
       }
+      await bindAfterCarry(c, scope, versionId, carried, {
+        ...opts,
+        clearServingRef: repairPreviewPin,
+        recarry: () => carryOntoVersion(c, scope, versionId, { dropServingRef: repairPreviewPin }),
+      });
     };
     if (snapshot) {
       if (!scope) {
@@ -4985,22 +5651,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         await carry();
         if (migrationCrossing) {
-          // Asked again after the carry: a promote landing since the first question would
-          // otherwise leave an archive behind for a bind the host then refuses.
-          await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
-          await orchestratedSnapshot(c, tenantId, scope, {});
+          try {
+            // Asked again after the carry: a promote landing since the first question would
+            // otherwise leave an archive behind for a bind the host then refuses.
+            await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
+            await orchestratedSnapshot(c, tenantId, scope, {});
+          } catch (e) {
+            // #1722: no bind follows, so the copy the carry restored is reached by nothing.
+            if (carried) await dropUnboundCopy(c, scope, versionId, carried);
+            throw e;
+          }
         }
         await bind({ acknowledge });
       } else {
         await carry();
         await bind({ acknowledge, snapshot: true });
       }
-      await reassert();
       return c.json(await c.var.admin.getScopeRecord(actor, tenantId, scopeId));
     }
     await carry();
     await bind({ acknowledge });
-    await reassert();
     return c.json(await c.var.admin.getScopeRecord(actor, tenantId, scopeId));
   });
 
@@ -7474,16 +8144,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         throw e;
       }
-      // Heal a preview provisioned before #527: clear any inherited serving_ref so routing
-      // follows the bound version (its per-version script), not the prod serving script.
-      if (existing.servingRef) await c.var.admin.setScopeServingRef(actor, tenantId, existing.id, null);
-      await c.var.admin.bindScopeVersion(actor, tenantId, existing.id, opts.versionId);
-      // #1674: re-assert any recorded OFF in the script the preview now routes to.
-      await c.var.admin.reassertSystemSwitches(
-        actor,
-        { tenantId, scopeId: existing.id },
-        { appliedInUnit: carried?.switchedOff },
-      );
+      // The carry tail (#1722): the bind expects the version the carry exported from, so of two
+      // pushes that read the same binding only one lands. Then a preview provisioned before
+      // #527 has its inherited serving_ref cleared, so routing follows the bound version (its
+      // per-version script) and not the prod serving script; the OFF positions are re-asserted
+      // there (#1674); and the copy left in the old script is wiped.
+      await bindAfterCarry(c, existing, opts.versionId, carried, {
+        clearServingRef: true,
+        recarry: () => carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true }),
+      });
       // Renew (or clear) the preview's GC deadline so a reused preview does not silently die.
       await c.var.admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, existing.id, opts.tag, surface);

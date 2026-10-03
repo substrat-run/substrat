@@ -53,8 +53,18 @@ describe('wire header names, moved to contracts (#1978)', () => {
     ]);
   });
 
-  it('every wire header is tagged as moving to contracts', () => {
-    for (const name of WIRE_HEADERS) expect(TO_CONTRACTS, name).toContain(name);
+  it('every wire header the kernel still exports is tagged as moving to contracts', () => {
+    const moved = WIRE_HEADERS.filter((name) => kernelExports[name] !== undefined);
+    expect(moved.length).toBeGreaterThan(0);
+    for (const name of moved) expect(TO_CONTRACTS, name).toContain(name);
+  });
+
+  // A header added after the move is born in contracts and never had a kernel binding (#1722).
+  it('a header born after the move has no kernel binding', () => {
+    for (const name of ['LOAD_STAMP_HEADER', 'WRITE_REVISION_HEADER']) {
+      expect((wireHeaders as Record<string, unknown>)[name], name).toBeDefined();
+      expect(kernelExports[name], name).toBeUndefined();
+    }
   });
 
   it.each(TO_CONTRACTS)("the kernel's %s is the contracts binding", (name) => {
@@ -88,6 +98,8 @@ describe('wire header names, moved to contracts (#1978)', () => {
       EXPORTED_EVENTS_HEADER: 'x-substrat-exported-events',
       CONNECTOR_ATTACHMENT_RECORD_HEADER: 'x-substrat-attachment',
       LIVE_MODE_HEADER: 'x-substrat-live',
+      LOAD_STAMP_HEADER: 'x-substrat-load-stamp',
+      WRITE_REVISION_HEADER: 'x-substrat-write-revision',
     });
   });
 });

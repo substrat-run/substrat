@@ -7956,6 +7956,21 @@ export class SqliteScopeHost implements ScopeHost {
           { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
         );
       },
+      recordKeptCopyResolution: async (actor, tenantId, scopeId, r) => {
+        const scope = this.directory
+          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string } | undefined;
+        if (!scope || scope.tenant_id !== tenantId) {
+          throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        this.recordAdmin(
+          actor,
+          'resolveKeptCopy',
+          { tenantId, scopeId },
+          { script: r.script, keptAt: r.keptAt, revision: r.revisionBefore },
+          { action: r.action, liveScript: r.liveScript, revision: r.revisionAfter },
+        );
+      },
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
         const scope = this.directory
           .prepare('SELECT tenant_id, expires_at FROM scopes WHERE scope_id = ?')

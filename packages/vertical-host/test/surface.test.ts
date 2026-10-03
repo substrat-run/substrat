@@ -46,6 +46,18 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     // reply that came from the reopen above is recognisable as the wrong verb.
     redrainCountLocal: async (_s: unknown, before?: unknown) =>
       note('redrainCountLocal', before === '2026-09-16T00:00:00.000Z' ? 11 : -1),
+    loadMarkerLocal: async () => note('loadMarkerLocal', { loadStamp: 'st', revision: null }),
+    keptCopyLocal: async () => note('keptCopyLocal', { carriedTo: 'v2-script', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' }),
+    releaseKeptCopyLocal: async (_s: unknown, revision?: unknown) =>
+      note('releaseKeptCopyLocal', revision === '9' ? ({ released: true } as const) : ({ refused: 'changed' } as const)),
+    discardKeptCopyLocal: async (_s: unknown, revision?: unknown) =>
+      note('discardKeptCopyLocal', revision === '9' ? ({ discarded: true } as const) : ({ refused: 'changed' } as const)),
+    // #1722: refuses unless the stamp and the tombstone arrive verbatim.
+    wipeCarriedLocal: async (_s: unknown, stamp?: unknown, away?: unknown) =>
+      note(
+        'wipeCarriedLocal',
+        stamp === 'stamp-1' && JSON.stringify(away) === JSON.stringify({ to: 'v2-script', at: '2026-10-03T00:00:00.000Z' }),
+      ),
     entityHistoryLocal: async (_s: unknown, input?: unknown) =>
       note('entityHistoryLocal', { entries: [input], nextCursor: null }) as never,
     facetEventsLocal: async (_s: unknown, input?: unknown) =>
@@ -353,6 +365,130 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const older = fakeHost({ redrainCountLocal: undefined });
     const refused = await post(older, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z' });
     expect(refused.status).toBe(501);
+    expect(older.calls).toHaveLength(0);
+  });
+
+  // #1722: the fenced wipe of a carried copy. Its own route, so a deployment built before it
+  // answers 404 rather than stripping a field and wiping unconditionally; a host without the
+  // method answers 501. Both read as "cannot fence" on the platform's side.
+  it('serves the fenced wipe with the stamp carried through, and 501s on a host that cannot fence', async () => {
+    const post = (h: ReturnType<typeof fakeHost>, body: unknown) =>
+      appWith(h).request('/internal/wipe-carried', {
+        method: 'POST',
+        headers: { ...authed(), 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }, ENV);
+    const body = { scopeId: SCOPE, expectLoadStamp: 'stamp-1', carriedTo: 'v2-script', at: '2026-10-03T00:00:00.000Z' };
+    const host = fakeHost();
+    const ok = await post(host, body);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ wiped: true });
+    // A stamp is required, even if it is null: an absent one would read as "wipe whatever is there".
+    expect((await post(host, { ...body, expectLoadStamp: undefined })).status).toBe(400);
+    expect((await post(host, { ...body, expectLoadStamp: null })).status).toBe(200);
+    expect(host.calls.filter((c) => c === 'wipeCarriedLocal')).toHaveLength(2);
+    // The write revision the export read, the protect flag and the directory's classification
+    // (#2005, Codex #2008 r10) ride through to the host.
+    let seen: unknown;
+    const revising = fakeHost({
+      wipeCarriedLocal: async (_s, _st, _a, opts) => {
+        seen = opts;
+        return true;
+      },
+    });
+    const lineage = { kind: 'preview', forkedFrom: null };
+    expect((await post(revising, { ...body, expectRevision: '42', protectIfChanged: true, markCopy: lineage })).status).toBe(200);
+    expect(seen).toEqual({ expectRevision: '42', protectIfChanged: true, markCopy: lineage });
+    expect((await post(revising, body)).status).toBe(200);
+    expect(seen).toEqual({});
+    expect((await post(revising, { ...body, markCopy: { kind: 'preview' } })).status).toBe(400);
+    // Behind the platform gate like every sibling.
+    const unsigned = await appWith(host).request('/internal/wipe-carried', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }, ENV);
+    expect(unsigned.status).toBe(403);
+    const older = fakeHost({ wipeCarriedLocal: undefined });
+    expect((await post(older, body)).status).toBe(501);
+    expect(older.calls).toHaveLength(0);
+  });
+
+  // #1722: the load stamp rides the export as a header, beside the unchanged table list, and a
+  // restore hands the stamp a carry names to the host.
+  it('serves the export with its load stamp, and forwards a carry\'s stamp on restore', async () => {
+    const stamped = fakeHost({
+      exportScopeStampedLocal: async () => ({ tables: [], loadStamp: 'stamp-7', revision: '42' }),
+    });
+    const res = await appWith(stamped).request(`/internal/export?scopeId=${SCOPE}&stamp=1`, { headers: authed() }, ENV);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-substrat-load-stamp')).toBe('stamp-7');
+    expect(res.headers.get('x-substrat-write-revision')).toBe('42');
+    expect(await res.json()).toEqual([]);
+    expect(stamped.calls).toEqual([]);
+    // Any other export (a pull, a snapshot) reads only: it never mints a stamp in the store.
+    const plain = await appWith(stamped).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(plain.headers.get('x-substrat-load-stamp')).toBeNull();
+    expect(stamped.calls).toEqual(['exportScopeLocal']);
+    // A host without the stamped read answers the bare export, with no stamp to fence on.
+    const older = await appWith(fakeHost()).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(older.headers.get('x-substrat-load-stamp')).toBeNull();
+
+    let opts: unknown;
+    const restoring = fakeHost({
+      restoreScopeLocal: async (_s, _t, o) => {
+        opts = o;
+        return { tables: 0 };
+      },
+    });
+    const restore = await appWith(restoring).request('/internal/restore', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ scopeId: SCOPE, tables: [], loadStamp: 'stamp-8' }),
+    }, ENV);
+    expect(restore.status).toBe(200);
+    expect(opts).toMatchObject({ loadStamp: 'stamp-8' });
+
+    // The marker a carry's restore expects, sent back as `expect`.
+    const fenced = await appWith(restoring).request('/internal/restore', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ scopeId: SCOPE, tables: [], expect: { loadStamp: null, revision: 'ev-9' } }),
+    }, ENV);
+    expect(fenced.status).toBe(200);
+    expect(opts).toMatchObject({ expect: { loadStamp: null, revision: 'ev-9' } });
+  });
+
+  it('serves the kept-copy read and discard behind the gate, and 501s on a host that keeps no copies (#1722)', async () => {
+    const host = fakeHost();
+    const read = await appWith(host).request('/internal/kept-copy?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ kept: { carriedTo: 'v2-script', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' } });
+    const discard = (h: ReturnType<typeof fakeHost>, body: unknown, headers: Record<string, string> = authed({ 'content-type': 'application/json' })) =>
+      appWith(h).request('/internal/kept-copy/discard', { method: 'POST', headers, body: JSON.stringify(body) }, ENV);
+    const body = { scopeId: SCOPE, revision: '9', carriedTo: 'v2-script', at: '2026-10-03T00:00:00.000Z' };
+    expect(await (await discard(host, body)).json()).toEqual({ discarded: true });
+    expect(await (await discard(host, { ...body, revision: '8' })).json()).toEqual({ refused: 'changed' });
+    expect((await discard(host, { ...body, revision: undefined })).status).toBe(400);
+    expect((await discard(host, body, { 'content-type': 'application/json' })).status).toBe(403);
+    expect((await appWith(host).request('/internal/kept-copy?scopeId=' + SCOPE, {}, ENV)).status).toBe(403);
+    const release = (h: ReturnType<typeof fakeHost>, b: unknown) =>
+      appWith(h).request('/internal/kept-copy/release', { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(b) }, ENV);
+    expect(await (await release(host, { scopeId: SCOPE, revision: '9' })).json()).toEqual({ released: true });
+    expect(await (await release(host, { scopeId: SCOPE, revision: '8' })).json()).toEqual({ refused: 'changed' });
+    const older = fakeHost({ keptCopyLocal: undefined, discardKeptCopyLocal: undefined, releaseKeptCopyLocal: undefined });
+    expect((await appWith(older).request('/internal/kept-copy?scopeId=' + SCOPE, { headers: authed() }, ENV)).status).toBe(501);
+    expect((await discard(older, body)).status).toBe(501);
+    expect((await release(older, { scopeId: SCOPE, revision: '9' })).status).toBe(501);
+    expect(older.calls).toHaveLength(0);
+  });
+
+  it('serves the load marker behind the gate, and 501s on a host that cannot fence a restore (#1722)', async () => {
+    const host = fakeHost();
+    const ok = await appWith(host).request('/internal/load-marker?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ loadStamp: 'st', revision: null });
+    expect((await appWith(host).request('/internal/load-marker?scopeId=' + SCOPE, {}, ENV)).status).toBe(403);
+    const older = fakeHost({ loadMarkerLocal: undefined });
+    expect((await appWith(older).request('/internal/load-marker?scopeId=' + SCOPE, { headers: authed() }, ENV)).status).toBe(501);
     expect(older.calls).toHaveLength(0);
   });
 

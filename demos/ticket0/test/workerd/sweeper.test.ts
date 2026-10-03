@@ -48,7 +48,7 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { listIndexMigrations, ulid, type LiveChange } from '@substrat-run/kernel';
+import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
@@ -383,7 +383,12 @@ describe('ticket0 provision is idempotent (#1653)', () => {
       ].map((r) => String(r.name));
       const out: Record<string, string[]> = {};
       for (const name of names) {
-        out[name] = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].map((r) => JSON.stringify(r)).sort();
+        // #1722: the store's own bookkeeping (its load stamp and write revision) moves with every
+        // write, an idempotent one included. It is not the scope's data, so it is not compared.
+        const rows = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].filter(
+          (r) => name !== '_substrat_meta' || !STORE_LOCAL_META_KEYS.includes(String(r.key)),
+        );
+        out[name] = rows.map((r) => JSON.stringify(r)).sort();
       }
       return out;
     });

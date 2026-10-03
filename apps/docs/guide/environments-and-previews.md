@@ -83,7 +83,23 @@ routing stays on the same script or the incoming version is co-located. When a c
 - **A failed copy changes nothing.** The preview stays on the previous version with its data, and
   re-running the push tries again.
 
-The previous version keeps its copy of the data after the switch; nothing deletes it yet ([#1722](https://github.com/substrat-run/substrat/issues/1722)).
+- **The previous version's copy is wiped once the switch lands.** It is emptied rather than
+  deleted, so binding the preview back to that version later copies the data into it again.
+- **Two pushes to the same preview at once cannot both switch it.** When a retried CI job runs next
+  to a new push, the one that finishes second is refused (`412`), its copy is discarded, and
+  re-running it moves the data from wherever the first one left the preview. A push that has
+  fallen behind never copies over the version the preview is already being served from.
+
+If a write reaches the previous version's copy while the push runs (a request that was already on
+its way there), that copy is kept instead of wiped, because it holds something the new version does
+not. A later bind back to that version is then refused until platform staff resolve the kept copy.
+They either discard it, or restore it forward over the live preview, which replaces what the
+preview took since.
+
+The wipe is best effort. A push that fails after it copied the data, but before the switch or the
+wipe completes, can still leave a copy behind. Those copies, and the ones left in earlier versions
+by pushes made before the wipe existed, are not removed yet
+([#1722](https://github.com/substrat-run/substrat/issues/1722)).
 :::
 
 Every preview carries a TTL (`--ttl 72h` by default) so an abandoned one is garbage-collected even
@@ -152,7 +168,8 @@ currently bound version is enough to repair a long-lived preview without advanci
 that are never pushed or bound are repaired by a one-time platform pass that does the same thing
 for each (#1724): it carries the data, binds the version the preview already has, and only then
 clears the pin, so a preview that fails is left pinned with its data and retried on the next run.
-Old script retention and erasure remain #1722. Do not clear a pin without carrying its data.
+Once a preview's pin is cleared, its copy on the serving script is wiped. Do not clear a pin
+without carrying its data.
 :::
 
 ## Sticky-per-PR **and** per-build URLs

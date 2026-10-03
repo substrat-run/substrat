@@ -22,7 +22,7 @@ const PAST: Record<string, string> = {
   mark: 'marked', mint: 'minted', move: 'moved', promote: 'promoted', provision: 'provisioned',
   prune: 'pruned', publish: 'published', put: 'put', reap: 'reaped', reassert: 'reasserted',
   redrain: 'redrained', register: 'registered', reject: 'rejected', remove: 'removed',
-  request: 'requested', reset: 'reset', restore: 'restored', revoke: 'revoked', rewind: 'rewound',
+  request: 'requested', reset: 'reset', resolve: 'resolved', restore: 'restored', revoke: 'revoked', rewind: 'rewound',
   set: 'set', shred: 'shredded', suspend: 'suspended', transfer: 'transferred', unarchive: 'unarchived',
   unassign: 'unassigned', unbind: 'unbound', unlink: 'unlinked', unsuspend: 'unsuspended', update: 'updated',
 };

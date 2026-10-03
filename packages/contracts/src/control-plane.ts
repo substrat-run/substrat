@@ -81,6 +81,7 @@ export const adminAction = z.enum([
   'setVerticalServing',
   'setScopeServingRef',
   'setScopeExpiresAt', // preview-and-snapshots.md §9 — push a fork's GC deadline forward on reuse, or pin it (null)
+  'resolveKeptCopy', // #1722 — a staff resolution of a copy a carry kept for a write it never copied: discarded or restored forward
   'bindHostname', // K-26 — the hostname map
   'setHostnameStatus', // #31 step 2 — where the two human checkpoints fire
   'setHostnameIssuance', // #305 §4.7 — a Cloudflare-for-SaaS issuance step (create/poll) result

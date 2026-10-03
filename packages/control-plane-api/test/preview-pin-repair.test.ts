@@ -59,6 +59,8 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
   let v3: string; // a version with no script of its own
   let prod: ReturnType<typeof scopeId.parse>; // the production install previews fork from
   let failRestoreInto: string | null = null;
+  // #1722: a fenced wipe whose answer is lost in transit (Codex #2008 r1).
+  let wipeAnswerLost = false;
 
   const refOf = new Map<string, string>(); // versionId → its script
   const scripts = new Map<string, Map<string, ScopeDumpTable[]>>(); // script → scope → dump
@@ -73,6 +75,11 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
         calls.push(`export ${ref} ${sid}`);
         return storeOf(ref).get(sid) ?? [];
       },
+      // A deployment built before the load stamp (#1722) answers none.
+      exportScopeStamped: async (sid: string) => {
+        calls.push(`export ${ref} ${sid}`);
+        return { tables: storeOf(ref).get(sid) ?? [], loadStamp: null };
+      },
       restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
         calls.push(`restore ${ref} ${sid}`);
         if (failRestoreInto === ref) throw new ControlPlaneError(503, `storage blip in ${ref}`);
@@ -85,6 +92,19 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       },
       deleteScope: async (input: { scopeId: string }) => {
         storeOf(ref).delete(input.scopeId);
+      },
+      // #1722: a deployment built before the fenced wipe, so the carry's cleanup takes the
+      // tombstone load; the meta read is what the cleanup checks a destination with.
+      wipeCarriedCopy: async () => {
+        if (wipeAnswerLost) throw new ControlPlaneError(502, "reading the vertical's answer to wipe-carried failed (reset)");
+        return 'unfenced';
+      },
+      loadMarker: async () => 'unfenced',
+      // A deployment built before the fenced wipe holds no kept copies.
+      keptCopy: async () => null,
+      readScopeTable: async (sid: string) => {
+        const meta = storeOf(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
+        return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
       },
     }) as unknown as VerticalClient;
   const table = (...ids: string[]): ScopeDumpTable[] => [
@@ -245,15 +265,21 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       tenantId: t, from: SERVING, to: refOf.get(v1), tables: 1,
     });
     // Each preview's data went from the serving script into the script of the version it was
-    // bound to, and only those two scopes were touched.
+    // bound to, and only those two scopes were touched. The copy left on the serving script
+    // was then wiped (#1722), which is a load of the tombstone there.
     expect(calls.sort()).toEqual(
       [
-        `export ${SERVING} ${a.scopeId}`, `restore ${refOf.get(v1)} ${a.scopeId}`,
-        `export ${SERVING} ${b.scopeId}`, `restore ${refOf.get(v2)} ${b.scopeId}`,
+        `export ${SERVING} ${a.scopeId}`, `restore ${refOf.get(v1)} ${a.scopeId}`, `restore ${SERVING} ${a.scopeId}`,
+        `export ${SERVING} ${b.scopeId}`, `restore ${refOf.get(v2)} ${b.scopeId}`, `restore ${SERVING} ${b.scopeId}`,
       ].sort(),
     );
     expect(rowsOf(refOf.get(v1)!, a.scopeId)).toEqual([['a-row']]);
     expect(rowsOf(refOf.get(v2)!, b.scopeId)).toEqual([['b-row']]);
+    for (const p of [a, b]) {
+      expect(storeOf(SERVING).get(p.scopeId)).toEqual([
+        expect.objectContaining({ name: '_substrat_meta', rows: [['carried_away', expect.stringContaining(`"to":`)]] }),
+      ]);
+    }
     for (const [p, v] of [[a, v1], [b, v2]] as const) {
       const rec = await recordOf(p.scopeId);
       expect(rec.verticalVersionId).toBe(v); // never advanced
@@ -319,7 +345,11 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     calls.length = 0;
     const retried = await pass();
     expect(retried.repaired.map((r) => r.scopeId)).toEqual([bad.scopeId]);
-    expect(calls).toEqual([`export ${SERVING} ${bad.scopeId}`, `restore ${refOf.get(v2)} ${bad.scopeId}`]);
+    expect(calls).toEqual([
+      `export ${SERVING} ${bad.scopeId}`,
+      `restore ${refOf.get(v2)} ${bad.scopeId}`,
+      `restore ${SERVING} ${bad.scopeId}`, // #1722: the serving script's copy, wiped once the bind landed
+    ]);
     expect(rowsOf(refOf.get(v2)!, bad.scopeId)).toEqual([['bad-row'], ['after-failure']]);
     expect((await recordOf(bad.scopeId)).servingRef ?? null).toBeNull();
   });
@@ -331,6 +361,8 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       const out = await pass();
       expect(out.failed).toMatchObject([{ scopeId: stuck.scopeId, status: 500 }]);
       expect(await recordOf(stuck.scopeId)).toMatchObject({ verticalVersionId: v1, servingRef: SERVING });
+      // #1722: the bind landed but the route did not move, so the copy the route reaches stays.
+      expect(rowsOf(SERVING, stuck.scopeId)).toEqual([['stuck-row']]);
     } finally {
       clear.mockRestore();
     }
@@ -339,6 +371,45 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     expect(retried.repaired.map((r) => r.scopeId)).toEqual([stuck.scopeId]);
     expect(rowsOf(refOf.get(v1)!, stuck.scopeId)).toEqual([['stuck-row'], ['after-failed-clear']]);
     expect((await recordOf(stuck.scopeId)).servingRef ?? null).toBeNull();
+    // #1722: the copy on the serving script stayed while the pin still routed there, and goes
+    // only once the retry cleared it.
+    expect(storeOf(SERVING).get(stuck.scopeId)?.[0]?.name).toBe('_substrat_meta');
+  });
+
+  it('a re-assert that fails after the route moved still wipes the copy left behind (#1722)', async () => {
+    const moved = await legacyPreview('legacy-reassert', v1, 'reassert-row');
+    const reassert = vi.spyOn(host.admin, 'reassertSystemSwitches').mockRejectedValueOnce(new Error('re-assert unavailable'));
+    try {
+      const out = await pass();
+      expect(out.failed).toMatchObject([{ scopeId: moved.scopeId, status: 500 }]);
+    } finally {
+      reassert.mockRestore();
+    }
+    // The bind and the pin clear landed, so no later pass visits this preview again: the copy on
+    // the serving script had to go now, or it never would.
+    expect((await recordOf(moved.scopeId)).servingRef ?? null).toBeNull();
+    expect(rowsOf(refOf.get(v1)!, moved.scopeId)).toEqual([['reassert-row']]);
+    expect(storeOf(SERVING).get(moved.scopeId)?.[0]?.name).toBe('_substrat_meta');
+  });
+
+  it('a fenced wipe whose answer is lost never falls back to the unconditional wipe, and is recorded (#1722)', async () => {
+    const lost = await legacyPreview('legacy-lost-answer', v1, 'lost-row');
+    wipeAnswerLost = true;
+    calls.length = 0;
+    try {
+      const out = await pass();
+      expect(out.repaired.map((r) => r.scopeId)).toContain(lost.scopeId);
+    } finally {
+      wipeAnswerLost = false;
+    }
+    // The carry and the bind landed; the cleanup did not load a tombstone over the serving copy.
+    expect(calls).toEqual([`export ${SERVING} ${lost.scopeId}`, `restore ${refOf.get(v1)} ${lost.scopeId}`]);
+    expect(rowsOf(SERVING, lost.scopeId)).toEqual([['lost-row']]);
+    await new Promise((r) => setTimeout(r, 20)); // the recorder is fire-and-forget
+    const recorded = (await host.admin.listOpsFailures(staff, { scopeId: scopeId.parse(lost.scopeId) })).find(
+      (f) => f.stage === 'source-copy',
+    );
+    expect(recorded).toMatchObject({ operation: 'scope.carry', status: 502 });
   });
 
   it('skips a preview whose bound version has no script of its own, and keeps its pin', async () => {
@@ -456,6 +527,39 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       expect(ok.status).toBe(200);
       expect(((await ok.json()) as Pass).repaired.map((r) => r.scopeId)).toEqual([pinned.scopeId]);
       expect((await recordOf(pinned.scopeId)).servingRef ?? null).toBeNull();
+    });
+
+    // #1722: the kept-copy routes resolve data a carry left behind, so they are staff only too.
+    it('the kept-copy read and resolution are staff only, take a strict body, and refuse a copy that is not kept', async () => {
+      const sid = (await legacyPreview('kept-denied', v1, 'row')).scopeId;
+      const read = (headers: Record<string, string>) =>
+        app.request(`/tenants/${t}/scopes/${sid}/kept-copy?script=${SERVING}`, { headers });
+      const resolveAs = (headers: Record<string, string>, body: unknown) =>
+        app.request(`/tenants/${t}/scopes/${sid}/kept-copy/resolve`, { method: 'POST', headers, body: JSON.stringify(body) });
+      const discard = { script: SERVING, action: 'discard', acknowledge: { discard: true } };
+      const exportAs = (headers: Record<string, string>) =>
+        app.request(`/tenants/${t}/scopes/${sid}/kept-copy/export?script=${SERVING}&full=true`, { headers });
+      for (const who of [asBuilder, asTenant, asOtherTenant]) {
+        expect((await read(who)).status).toBe(403);
+        expect((await resolveAs(who, discard)).status).toBe(403);
+        expect((await exportAs(who)).status).toBe(403);
+      }
+      expect((await exportAs({})).status).toBe(401);
+      // Staff, where nothing is kept: no dump, and no access-log entry for one.
+      const pulls = async () => (await host.admin.accessLog(staff, { tenantId: t, method: 'exportScope' })).length;
+      const pulled = await pulls();
+      expect((await exportAs(asStaff)).status).toBe(409);
+      expect(await pulls()).toBe(pulled);
+      expect((await resolveAs({ 'content-type': 'application/json' }, discard)).status).toBe(401);
+      // Staff: a strict body, and nothing to resolve where no copy is kept.
+      expect((await resolveAs(asStaff, { ...discard, extra: 1 })).status).toBe(400);
+      expect((await resolveAs(asStaff, { ...discard, acknowledge: {} })).status).toBe(400);
+      expect((await read(asStaff)).status).toBe(200);
+      expect(await (await read(asStaff)).json()).toMatchObject({ kept: null });
+      expect((await resolveAs(asStaff, discard)).status).toBe(409);
+      expect(await host.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: scopeId.parse(sid) })).toEqual([]);
+      // Leave no pinned preview for the passes the next tests count.
+      await host.admin.setScopeServingRef(staff, t, scopeId.parse(sid), null);
     });
 
     it('is reachable through the production service-token auth, and only with the right token', async () => {

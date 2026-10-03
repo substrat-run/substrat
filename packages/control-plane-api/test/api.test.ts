@@ -1853,6 +1853,19 @@ describe('control-plane API', () => {
           calls.push(`export ${ref} ${sid}`);
           return storeOf(ref).get(sid) ?? [];
         },
+        exportScopeStamped: async (sid: string) => {
+          calls.push(`export ${ref} ${sid}`);
+          return { tables: storeOf(ref).get(sid) ?? [], loadStamp: null };
+        },
+        // #1722: a deployment built before the fenced wipe — no stamp on its export, an unfenced
+        // wipe (a tombstone load through the restore verb), and the meta read the cleanup checks.
+        wipeCarriedCopy: async () => 'unfenced',
+        loadMarker: async () => 'unfenced',
+        keptCopy: async () => null,
+        readScopeTable: async (sid: string) => {
+          const m = storeOf(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
+          return { table: '_substrat_meta', columns: m?.columns ?? ['key', 'value'], rows: m?.rows ?? [] };
+        },
         restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
           calls.push(`restore ${ref} ${sid}`);
           if (failRestoreInto === ref) throw new ControlPlaneError(503, `storage blip in ${ref}`);
@@ -1940,13 +1953,20 @@ describe('control-plane API', () => {
       expect(second.status).toBe(200);
       expect(second.body).toMatchObject({ scopeId: preview, reused: true });
       // Out of the script the router resolved it to, into v2's own, and bound only then.
-      expect(calls).toEqual([`export ${refOf.get(v1)} ${preview}`, `restore ${refOf.get(v2)} ${preview}`]);
+      // …and the copy left in v1's script wiped once the bind landed (#1722).
+      expect(calls).toEqual([
+        `export ${refOf.get(v1)} ${preview}`,
+        `restore ${refOf.get(v2)} ${preview}`,
+        `restore ${refOf.get(v1)} ${preview}`,
+      ]);
       expect(rows(v2, preview)).toEqual([['prod-row'], ['review-row']]);
       expect((await boundOf(preview)).verticalVersionId).toBe(v2);
       // The loss window is said where the person pushing reads it.
       expect(second.body.notes.find((n) => n.startsWith('Data:'))).toMatch(/may be lost/);
-      // The old copy is left where it was: nothing reaps it yet (#1722).
-      expect(rows(v1, preview)).toEqual([['prod-row'], ['review-row']]);
+      // The old copy is wiped, to the tombstone naming where the data went (#1722).
+      expect(storeOf(refOf.get(v1)!).get(preview)).toEqual([
+        expect.objectContaining({ name: '_substrat_meta', rows: [['carried_away', expect.stringContaining(refOf.get(v2)!)]] }),
+      ]);
     });
 
     it('a retried push of the same version carries nothing, so it cannot clobber the copy', async () => {
@@ -1986,7 +2006,11 @@ describe('control-plane API', () => {
       calls.length = 0;
       const retried = await push('pr-1', v3);
       expect(retried.status).toBe(200);
-      expect(calls).toEqual([`export ${refOf.get(v2)} ${preview}`, `restore ${refOf.get(v3)} ${preview}`]);
+      expect(calls).toEqual([
+        `export ${refOf.get(v2)} ${preview}`,
+        `restore ${refOf.get(v3)} ${preview}`,
+        `restore ${refOf.get(v2)} ${preview}`,
+      ]);
       expect(rows(v3, preview)).toEqual([['prod-row'], ['review-row'], ['after-push']]);
       expect((await boundOf(preview)).verticalVersionId).toBe(v3);
     });
@@ -2032,6 +2056,7 @@ describe('control-plane API', () => {
         `export ${refOf.get(v1)} ${testEnv}`,
         `restore ${refOf.get(v5)} ${testEnv}`,
         `snapshot ${refOf.get(v1)} ${testEnv}`,
+        `restore ${refOf.get(v1)} ${testEnv}`, // #1722: the source copy, wiped after the bind
       ]);
       expect(rows(v5, testEnv)).toEqual([['prod-row'], ['qa-row']]);
       expect(((await res.json()) as { verticalVersionId: string }).verticalVersionId).toBe(v5);
@@ -2064,7 +2089,7 @@ describe('control-plane API', () => {
       calls.length = 0;
       const repaired = await dj(`/tenants/${tH}/scopes/${legacy}/version`, 'POST', { versionId: v2 });
       expect(repaired.status).toBe(200);
-      expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
+      expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`, `restore carry-vert ${legacy}`]);
       expect(rows(v2, legacy)).toEqual([['serving-script-row']]);
       const bound = await boundOf(legacy);
       expect(bound.verticalVersionId).toBe(v2);
@@ -2085,6 +2110,7 @@ describe('control-plane API', () => {
       expect(calls).toEqual([
         `export carry-vert ${same.body.scopeId}`,
         `restore ${refOf.get(v1)} ${same.body.scopeId}`,
+        `restore carry-vert ${same.body.scopeId}`, // #1722: the serving script's copy, wiped
       ]);
       expect(rows(v1, same.body.scopeId)).toEqual([['same-version-row']]);
       expect((await boundOf(same.body.scopeId)).servingRef ?? null).toBeNull();
@@ -2116,7 +2142,7 @@ describe('control-plane API', () => {
         const retried = await dj(`/tenants/${tH}/scopes/${legacy}/version`, 'POST', { versionId: v2 });
         expect(retried.status).toBe(200);
         expect(clear).toHaveBeenCalledTimes(2);
-        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
+        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`, `restore carry-vert ${legacy}`]);
         expect(rows(v2, legacy)).toEqual([['serving-row'], ['after-failed-clear']]);
         const bound = await boundOf(legacy);
         expect(bound.verticalVersionId).toBe(v2);

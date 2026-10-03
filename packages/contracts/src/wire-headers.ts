@@ -64,3 +64,19 @@ export type LiveRefusal =
   | 'poll'
   /** The request was not an upgrade at all — a programming error at the caller. */
   | 'not-an-upgrade';
+
+/**
+ * The RESPONSE header on `/internal/export` carrying the scope store's load stamp, read in the
+ * same call as the dump it rides beside (#1722). A carry's fenced wipe of the copy it leaves
+ * behind expects exactly this stamp, so the wipe is refused when anything was loaded into the
+ * store since. The stamp itself never travels inside a dump.
+ */
+export const LOAD_STAMP_HEADER = 'x-substrat-load-stamp';
+
+/**
+ * The RESPONSE header on `/internal/export` carrying the scope store's write revision, read in
+ * the same call as the dump and the load stamp (#1722). The carry's fenced wipe of the copy it
+ * leaves expects it too, so a write that reached the old copy after the export (a request still
+ * routed there before the bind) refuses the wipe and the copy is kept for recovery.
+ */
+export const WRITE_REVISION_HEADER = 'x-substrat-write-revision';

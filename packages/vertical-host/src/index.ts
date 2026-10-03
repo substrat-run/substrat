@@ -27,6 +27,9 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf } from './errors.js';
 import {
+  type CarriedAway,
+  type KeptCopy,
+  type LoadMarker,
   type InvokeOptions,
   type AppliedMigration,
   type SwitchedOff,
@@ -135,6 +138,8 @@ import {
   type ImportResult,
   type ImportState,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
+  LOAD_STAMP_HEADER,
+  WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
 
 /**
@@ -167,16 +172,66 @@ export interface VerticalScopeHost {
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; markCopy?: ScopeLineage },
+    /** #1722: `opts.loadStamp`, the stamp a carry leaves on the copy it lands, and `opts.expect`,
+     *  the marker the carry read: the load is refused if the store moved since. A host built
+     *  before them has no `loadMarkerLocal` either, so the platform never sends `expect` there.
+     *  #2005: `opts.markCopy`, the directory's classification when the scope is not primary. */
+    opts?: {
+      switchedOff?: ModuleId[];
+      sourceScopeId?: ScopeId;
+      exact?: boolean;
+      loadStamp?: string;
+      expect?: LoadMarker;
+      markCopy?: ScopeLineage;
+    },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   /** #2005: mark one scope a copy in its own storage, given the directory's classification of it,
    *  which must be non-primary — the repair of a copy that predates the marker. */
   markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }>;
   /** #2005: remove a mistaken copy marker, given the directory's classification, which must be
    *  primary. */
-  clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ cleared: boolean }>;
+  clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage, expect?: LoadMarker): Promise<{ cleared: boolean }>;
+  /** #1722: what a carry's restore into this store expects to find unchanged. Optional, like
+   *  `wipeCarriedLocal`; the route answers 501 without it, and the platform then cannot fence. */
+  loadMarkerLocal?(scopeId: ScopeId): Promise<LoadMarker>;
+  /**
+   * #1722: wipe the copy a carry left in this deployment, only if nothing was loaded into the
+   * scope since the stamp the carry read. Optional, like `redrainCountLocal`: a host built
+   * before it satisfies this interface without it, and the route answers 501, which the
+   * platform reads as "this script cannot fence the wipe" and falls back to an unconditional one.
+   */
+  wipeCarriedLocal?(
+    scopeId: ScopeId,
+    expectLoadStamp: string | null,
+    carriedAway: CarriedAway,
+    opts?: { expectRevision?: string | null; protectIfChanged?: boolean; markCopy?: ScopeLineage },
+  ): Promise<boolean>;
+  /** #1722: clear the marker of a kept copy that is the live store after all, at the revision read.
+   *  #2005: `markCopy`, the directory's classification when the scope is not primary. */
+  releaseKeptCopyLocal?(
+    scopeId: ScopeId,
+    revision: string | null,
+    markCopy?: ScopeLineage,
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
+    loadStamp?: string | null,
+  ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
+  /** #1722: the export and the store's load stamp, read together. Optional: a host built before
+   *  it answers the export alone, and the platform then has no stamp to fence a wipe on. */
+  exportScopeStampedLocal?(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
+  /** #1722: the kept-copy marker of this scope here, or null. Optional, like `wipeCarriedLocal`:
+   *  a host built before it has no kept copies, since only the fenced wipe makes one. */
+  keptCopyLocal?(scopeId: ScopeId): Promise<KeptCopy | null>;
+  /** #1722: the staff discard of a kept copy, at the write revision the operator acted on. */
+  discardKeptCopyLocal?(
+    scopeId: ScopeId,
+    revision: string | null,
+    carriedAway: CarriedAway,
+    markCopy?: ScopeLineage,
+    /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
+    loadStamp?: string | null,
+  ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
   deleteScopeLocal(scopeId: ScopeId): Promise<void>;
   migrationBookmarksLocal(
@@ -415,6 +470,36 @@ const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
   return parsed?.success ? { switchedOff: parsed.data } : {};
 };
 
+const discardKeptBody = z.object({
+  scopeId: scopeIdOf,
+  /** The kept copy's write revision as the operator read it; the discard is refused if it moved. */
+  revision: z.string().min(1).nullable(),
+  /** Where the scope runs now, and when, for the tombstone the discard leaves. */
+  carriedTo: z.string().min(1),
+  at: z.string().min(1),
+  /** #2005: the directory's classification, sent when the scope is not primary. */
+  markCopy: scopeLineage.optional(),
+  /** #1722 (Codex #2008 r13): the load stamp read with `revision`; absent from an older platform. */
+  loadStamp: z.string().min(1).nullable().optional(),
+});
+
+const wipeCarriedBody = z.object({
+  scopeId: scopeIdOf,
+  /** The stamp the carry read from its export; null for a store no load has stamped. */
+  expectLoadStamp: z.string().min(1).nullable(),
+  /** The write revision the carry read with it; null for a store never written. A platform that
+   *  predates the field sends none, and the wipe is fenced on the stamp alone. */
+  expectRevision: z.string().min(1).nullable().optional(),
+  /** The scope does not route here: a copy changed in any way since the export is kept. */
+  protectIfChanged: z.boolean().optional(),
+  /** The script the data went to, and when, for the tombstone. */
+  carriedTo: z.string().min(1),
+  at: z.string().min(1),
+  /** #2005 (Codex #2008 r10): the directory's classification, sent when the scope is not primary,
+   *  so a copy made before the marker is marked by the wipe, whether it tombstones or keeps it. */
+  markCopy: scopeLineage.optional(),
+});
+
 const restoreBody = z.object({
   tenantId: tenantIdOf.optional(),
   scopeId: scopeIdOf,
@@ -426,6 +511,10 @@ const restoreBody = z.object({
   /** #1869: the platform exported these tables itself, so `sourceScopeId` is a fact and the
    *  re-point never falls back. Absent for a dump a caller supplied. */
   exact: z.boolean().optional(),
+  /** #1722: the stamp a carry leaves on the copy it lands, so a later wipe of it can be fenced. */
+  loadStamp: z.string().min(1).optional(),
+  /** #1722: the marker the carry read from this store; the load is refused if the store moved since. */
+  expect: z.object({ loadStamp: z.string().min(1).nullable(), revision: z.string().min(1).nullable() }).optional(),
   /** #2005: the platform directory's classification of this scope, sent when it is not primary,
    *  so the restore marks it a copy in its own storage (and refuses if it classifies a primary).
    *  Absent from a platform that predates it: nothing is marked. */
@@ -710,9 +799,20 @@ export function mountPlatformSurface<Env extends object>(
 
   // The full dump behind a governed `scope pull` (preview-and-snapshots.md §8): the one
   // /internal verb that deliberately moves scope bytes out; the control plane is the gate.
-  app.get('/internal/export', async (c) =>
-    c.json(await deps.hostFor(c.env).exportScopeLocal(scopeIdOf.parse(c.req.query('scopeId')))),
-  );
+  // #1722: `stamp=1` is a carry's export. The store's load stamp then rides a header, read with
+  // the dump in one DO call (and minted when the store has none, which is a write: only a carry
+  // asks for it), so the body stays the bare table list every platform reads.
+  app.get('/internal/export', async (c) => {
+    const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (c.req.query('stamp') !== '1' || !host.exportScopeStampedLocal) {
+      return c.json(await host.exportScopeLocal(scopeId));
+    }
+    const { tables, loadStamp, revision } = await host.exportScopeStampedLocal(scopeId);
+    if (loadStamp) c.header(LOAD_STAMP_HEADER, loadStamp);
+    if (revision) c.header(WRITE_REVISION_HEADER, revision);
+    return c.json(tables);
+  });
 
   // The write half (§8): load a dump into one scope, replacing its data — the governed
   // restore/backout, and the data hop of adopt-serving (#286). After the import the
@@ -726,10 +826,96 @@ export function mountPlatformSurface<Env extends object>(
       switchedOff: body.switchedOff,
       sourceScopeId: body.sourceScopeId,
       exact: body.exact,
+      loadStamp: body.loadStamp,
+      expect: body.expect,
       markCopy: body.markCopy,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
+  });
+
+  // #1722: what a carry's restore into this scope expects to find unchanged (the load stamp and
+  // the store's write revision). Read before the carry checks the binding again; the restore
+  // then sends it back as `expect`, so a store the winning carry loaded, or that took a write
+  // since it went live, is never overwritten. Metadata only: no scope bytes cross.
+  app.get('/internal/load-marker', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.loadMarkerLocal) {
+      return c.json({ error: 'this deployment cannot fence a carry\'s restore (#1722) — redeploy it' }, 501);
+    }
+    return c.json(await host.loadMarkerLocal(scopeIdOf.parse(c.req.query('scopeId'))));
+  });
+
+  // #1722 (Codex #2008 r7): a kept copy, one the carry's wipe refused because it took a write the
+  // carry never copied. The read says whether this scope's store here is one; the discard is the
+  // staff resolution that wipes it, fenced on the revision the operator read. Both behind the
+  // same platform gate; the control plane's staff-only route is the only caller.
+  app.get('/internal/kept-copy', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.keptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    return c.json({ kept: await host.keptCopyLocal(scopeIdOf.parse(c.req.query('scopeId'))) });
+  });
+
+  app.post('/internal/kept-copy/release', async (c) => {
+    const body = z
+      .object({
+        scopeId: scopeIdOf,
+        revision: z.string().min(1).nullable(),
+        markCopy: scopeLineage.optional(),
+        // #1722 (Codex #2008 r13): the load stamp read with `revision`; absent from an older platform.
+        loadStamp: z.string().min(1).nullable().optional(),
+      })
+      .parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.releaseKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    return c.json(
+      await host.releaseKeptCopyLocal(
+        body.scopeId,
+        body.revision,
+        body.markCopy,
+        ...(body.loadStamp !== undefined ? [body.loadStamp] : []),
+      ),
+    );
+  });
+
+  app.post('/internal/kept-copy/discard', async (c) => {
+    const body = discardKeptBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.discardKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    return c.json(
+      await host.discardKeptCopyLocal(
+        body.scopeId,
+        body.revision,
+        { to: body.carriedTo, at: body.at },
+        body.markCopy,
+        ...(body.loadStamp !== undefined ? [body.loadStamp] : []),
+      ),
+    );
+  });
+
+  // #1722: wipe the copy a carry left here, after the scope's route moved to another script.
+  // Conditional on the load stamp the carry read, compared inside the wipe's own transaction,
+  // so a rollback that restored into this scope since is never destroyed. `wiped: false` is
+  // that refusal. Non-terminal: the store keeps a `carried_away` tombstone and takes a later
+  // restore like any scope, which `/internal/delete-scope` (a reap) would not.
+  app.post('/internal/wipe-carried', async (c) => {
+    const body = wipeCarriedBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.wipeCarriedLocal) {
+      return c.json({ error: 'this deployment cannot fence a carried copy\'s wipe (#1722) — redeploy it' }, 501);
+    }
+    return c.json({
+      wiped: await host.wipeCarriedLocal(
+        body.scopeId,
+        body.expectLoadStamp,
+        { to: body.carriedTo, at: body.at },
+        {
+          ...(body.expectRevision !== undefined ? { expectRevision: body.expectRevision } : {}),
+          ...(body.protectIfChanged !== undefined ? { protectIfChanged: body.protectIfChanged } : {}),
+          ...(body.markCopy ? { markCopy: body.markCopy } : {}),
+        },
+      ),
+    });
   });
 
   // #2005: mark one scope a copy in its own storage, for a copy made before every copy carried
@@ -743,8 +929,22 @@ export function mountPlatformSurface<Env extends object>(
   // #2005: staff's correction of a MISTAKEN mark, for a scope the directory says IS primary. The
   // host refuses a scope classified a copy, and a marker a real load wrote.
   app.post('/internal/clear-copy-mark', async (c) => {
-    const body = z.object({ scopeId: scopeIdOf, lineage: scopeLineage }).parse(await c.req.json());
-    return c.json(await deps.hostFor(c.env).clearCopyMarkLocal(body.scopeId, body.lineage));
+    const body = z
+      .object({
+        scopeId: scopeIdOf,
+        lineage: scopeLineage,
+        // #1722 (Codex #2008 r12–r13): the platform's reconcile of a carry's destination clears
+        // only the store that carry loaded (its stamp) as it read it (the revision); a 412 when
+        // either moved. Staff's correction sends none.
+        expect: z
+          .object({ loadStamp: z.string().min(1).nullable(), revision: z.string().min(1).nullable() })
+          .strict()
+          .optional(),
+      })
+      .parse(await c.req.json());
+    return c.json(
+      await deps.hostFor(c.env).clearCopyMarkLocal(body.scopeId, body.lineage, ...(body.expect ? [body.expect] : [])),
+    );
   });
 
   // #1239: facets over this scope's own outbox — narrow, group, count. Counts and
