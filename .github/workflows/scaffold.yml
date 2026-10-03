@@ -47,8 +47,9 @@ jobs:
 
   # What npm SERVES for each public package's current version resolves from npm — the half
   # no pack-time check can see, since `pnpm publish -r` skips a version the registry already
-  # has (tools/publish-manifests.mjs says why). A version not on npm yet is a note, so the
-  # publish lag right after a release is not red. Separate job, same reasoning as below.
+  # has (tools/publish-manifests.mjs says why). A current version not on npm yet is a note;
+  # a public member that a served manifest REQUIRES and npm cannot install is a warning for
+  # three minutes of publish lag, then red. Separate job, same reasoning as below.
   published-manifests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
