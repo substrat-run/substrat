@@ -90,6 +90,12 @@ routing stays on the same script or the incoming version is co-located. When a c
   re-running it moves the data from wherever the first one left the preview. A push that has
   fallen behind never copies over the version the preview is already being served from.
 
+If a write reaches the previous version's copy while the push runs (a request that was already on
+its way there), that copy is kept instead of wiped, because it holds something the new version does
+not. A later bind back to that version is then refused until platform staff resolve the kept copy.
+They either discard it, or restore it forward over the live preview, which replaces what the
+preview took since.
+
 The wipe is best effort. A push that fails after it copied the data, but before the switch or the
 wipe completes, can still leave a copy behind. Those copies, and the ones left in earlier versions
 by pushes made before the wipe existed, are not removed yet
