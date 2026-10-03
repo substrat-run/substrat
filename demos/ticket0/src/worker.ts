@@ -58,16 +58,15 @@ import {
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
+import { globalFetch, ulid, type ScopeStub } from '@substrat-run/kernel';
 import {
-  globalFetch,
   kickFlags,
+  mountLiveReads,
+  mountPlatformSurface,
   readRoutedNode,
   RouterAssertionError,
-  ulid,
-  type ScopeStub,
   invocationLog,
-} from '@substrat-run/kernel';
-import { mountLiveReads, mountPlatformSurface } from '@substrat-run/vertical-host';
+} from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import {

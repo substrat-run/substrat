@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  assertPlatformCall,
   EXPORTED_EVENTS_HEADER,
-  kickFlags,
   PLATFORM_REQUEST_HEADER,
   PLATFORM_SECRET_HEADER,
-  PlatformCallError,
-} from '../src/platform-call.js';
+} from '@substrat-run/contracts/wire-headers';
+import { assertPlatformCall, kickFlags, PlatformCallError } from '../src/platform-call.js';
 
 /**
  * The vertical's side of K-31. An open provisioning endpoint lets a stranger mint

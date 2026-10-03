@@ -44,7 +44,7 @@ import {
   assertPlatformCall,
   PlatformCallError,
   invocationLog,
-} from '@substrat-run/kernel';
+} from '@substrat-run/vertical-host';
 import type { AuthServerStub, PreviewClientOutcome } from './do-contract.js';
 import { serveAsset } from './assets.js';
 

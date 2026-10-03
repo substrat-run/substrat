@@ -42,8 +42,6 @@ import {
   PlatformCallError,
   webCryptoSecretBox,
   globalFetch,
-  analyticsEngineConnectorCallRecorder,
-  type AnalyticsEngineDatasetLike,
   type CrossVerticalOptions,
   type PlatformSweepReport,
   type ScopeHost,
@@ -65,6 +63,8 @@ import {
   type PeerSwitchDelegation,
   type ImportCursorDelegation,
   type SystemSwitchDelegation,
+  analyticsEngineConnectorCallRecorder,
+  type AnalyticsEngineDatasetLike,
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,

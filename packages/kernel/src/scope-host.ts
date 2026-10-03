@@ -5243,30 +5243,13 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
 }
 
 /**
- * Set on every refusal a live-read door returns, so a client can tell "no push here,
- * poll" from "your request was wrong" without parsing a body or guessing from a status.
- *
- * Here rather than in the hosted adapter because both ends of a refusal need to spell it
- * the same way: the hosted adapter sets it on its own refusals, and a vertical's mount
- * sets it on the pure host's `501` (the ask-don't-assume recipe on `ScopeHost.liveReads`).
- * A dev server should not have to import the Cloudflare adapter to say "poll".
- */
-export const LIVE_MODE_HEADER = 'x-substrat-live';
-
-/** Why a subscription was refused — the value of `LIVE_MODE_HEADER` on a refusal. */
-export type LiveRefusal =
-  /** This host or connection cannot carry a WebSocket; the client should keep polling. */
-  | 'poll'
-  /** The request was not an upgrade at all — a programming error at the caller. */
-  | 'not-an-upgrade';
-
-/**
  * Is this request asking to be upgraded to a WebSocket?
  *
- * Here beside `LIVE_MODE_HEADER` because a vertical's live route asks it first, before
- * anything else it decides: only a WebSocket handshake is a live read, and a browser
- * always sends `Origin` on one, so everything past this check can trust that a missing
- * `Origin` did not come from a browser page. A plain GET with a cookie on it cannot.
+ * Paired with `LIVE_MODE_HEADER` (`@substrat-run/contracts`) because a vertical's live
+ * route asks it first, before anything else it decides: only a WebSocket handshake is a
+ * live read, and a browser always sends `Origin` on one, so everything past this check
+ * can trust that a missing `Origin` did not come from a browser page. A plain GET with a
+ * cookie on it cannot.
  */
 export function isUpgradeRequest(request: LiveUpgradeRequest): boolean {
   // `Upgrade` is a comma-separated protocol list (RFC 9110 §7.8), e.g. `h2c, websocket`,
