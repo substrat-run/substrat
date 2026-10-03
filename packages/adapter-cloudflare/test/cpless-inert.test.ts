@@ -78,6 +78,8 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
       await seat(s);
       return s;
     };
+    const PREVIEW = { kind: 'preview', forkedFrom: null };
+    const INSTALL = { kind: 'scope', forkedFrom: null };
     const originOf = async (s: ScopeId) =>
       (await hostFor().exportScopeLocal(s)).find((t) => t.name === '_substrat_copy_origin')?.rows ?? [];
 
@@ -89,7 +91,7 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
 
     it('a carry the platform flags (markCopy) stamps it, and its executors are then inert', async () => {
       const s = await legacy();
-      await hostFor().restoreScopeLocal(s, await hostFor().exportScopeLocal(s), { sourceScopeId: s, exact: true, markCopy: true });
+      await hostFor().restoreScopeLocal(s, await hostFor().exportScopeLocal(s), { sourceScopeId: s, exact: true, markCopy: PREVIEW });
       await act(s);
       expect(ran).not.toContain(s);
       expect(await inertIn(s)).toBe(1);
@@ -105,10 +107,43 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
 
     it('the repair verb stamps once, answers whether it did, and then holds it inert', async () => {
       const s = await legacy();
-      expect(await hostFor().markCopyLocal(s)).toEqual({ marked: true });
-      expect(await hostFor().markCopyLocal(s)).toEqual({ marked: false });
+      expect(await hostFor().markCopyLocal(s, PREVIEW)).toEqual({ marked: true });
+      expect(await hostFor().markCopyLocal(s, PREVIEW)).toEqual({ marked: false });
       await act(s);
       expect(ran).not.toContain(s);
+    });
+
+    it('refuses to mark a scope its classification says is primary — by restore or by the verb', async () => {
+      const s = await legacy();
+      await expect(hostFor().markCopyLocal(s, INSTALL)).rejects.toThrow(/primary/);
+      await expect(
+        hostFor().restoreScopeLocal(s, await hostFor().exportScopeLocal(s), { sourceScopeId: s, exact: true, markCopy: INSTALL }),
+      ).rejects.toThrow(/primary/);
+      expect(await originOf(s)).toEqual([]);
+      await act(s);
+      expect(ran).toContain(s);
+    });
+
+    it("clears a primary's mistaken mark, and its executors run again", async () => {
+      const s = await legacy();
+      await hostFor().markCopyLocal(s, PREVIEW);
+      expect(await hostFor().clearCopyMarkLocal(s, INSTALL)).toEqual({ cleared: true });
+      expect(await hostFor().clearCopyMarkLocal(s, INSTALL)).toEqual({ cleared: false });
+      await act(s);
+      expect(ran).toContain(s);
+    });
+
+    it('refuses to clear a scope classified a copy, and a marker a real load wrote', async () => {
+      const s = await legacy();
+      await hostFor().markCopyLocal(s, PREVIEW);
+      await expect(hostFor().clearCopyMarkLocal(s, PREVIEW)).rejects.toThrow(/copy/);
+      // A real load of another scope's data names the events it brought in: removing that
+      // marker would run the source's queued work here.
+      const copy = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(install), { sourceScopeId: install });
+      const before = await originOf(copy);
+      await expect(hostFor().clearCopyMarkLocal(copy, INSTALL)).rejects.toThrow(/another scope/);
+      expect(await originOf(copy)).toEqual(before);
     });
 
     it("the next case along: an existing origin is kept as it is — its mark and source", async () => {
@@ -116,8 +151,8 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
       await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(install), { sourceScopeId: install });
       const before = await originOf(copy);
       expect(before).toHaveLength(1);
-      expect(await hostFor().markCopyLocal(copy)).toEqual({ marked: false });
-      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(copy), { sourceScopeId: copy, exact: true, markCopy: true });
+      expect(await hostFor().markCopyLocal(copy, PREVIEW)).toEqual({ marked: false });
+      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(copy), { sourceScopeId: copy, exact: true, markCopy: PREVIEW });
       expect(await originOf(copy)).toEqual(before);
     });
   });

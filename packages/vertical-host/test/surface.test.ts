@@ -28,6 +28,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     provisionScopeLocal: async () => note('provisionScopeLocal', undefined),
     restoreScopeLocal: async () => note('restoreScopeLocal', { tables: 3 }),
     markCopyLocal: async () => note('markCopyLocal', { marked: true }),
+    clearCopyMarkLocal: async () => note('clearCopyMarkLocal', { cleared: true }),
     projectRolesLocal: async () => note('projectRolesLocal', undefined),
     exportScopeLocal: async () => note('exportScopeLocal', []),
     snapshotScopeLocal: async () => note('snapshotScopeLocal', { tables: 3 }),
@@ -2036,8 +2037,10 @@ describe('marking a copy (#2005)', () => {
     body: unknown,
     headers: Record<string, string> = authed({ 'content-type': 'application/json' }),
   ) => appWith(host).request(path, { method: 'POST', headers, body: JSON.stringify(body) }, ENV);
+  const PREVIEW = { kind: 'preview', forkedFrom: null };
+  const INSTALL = { kind: 'scope', forkedFrom: null };
 
-  it('the restore hands the flag to the host, and a body without it hands none', async () => {
+  it("the restore hands the directory's classification to the host, and a body without it hands none", async () => {
     const seen: unknown[] = [];
     const host = fakeHost({
       restoreScopeLocal: async (_s, _t, opts) => {
@@ -2045,29 +2048,34 @@ describe('marking a copy (#2005)', () => {
         return { tables: 0 };
       },
     });
-    expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], markCopy: true })).status).toBe(200);
+    expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], markCopy: PREVIEW })).status).toBe(200);
     expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [] })).status).toBe(200);
-    expect(seen).toEqual([true, undefined]);
+    expect(seen).toEqual([PREVIEW, undefined]);
+    // The old boolean shape carries no classification, so it is refused rather than guessed.
+    expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], markCopy: true })).status).toBe(400);
   });
 
-  it("the verb marks the request's scope and answers whether it did", async () => {
-    const asked: string[] = [];
-    const host = fakeHost({
-      markCopyLocal: async (scopeId) => {
-        asked.push(scopeId);
-        return { marked: false };
-      },
+  for (const [path, verb] of [['/internal/mark-copy', 'markCopyLocal'], ['/internal/clear-copy-mark', 'clearCopyMarkLocal']] as const) {
+    it(`${path} hands the host the request's scope and classification, and answers what it did`, async () => {
+      const asked: unknown[] = [];
+      const host = fakeHost({
+        [verb]: async (scopeId: string, lineage: unknown) => {
+          asked.push([scopeId, lineage]);
+          return verb === 'markCopyLocal' ? { marked: false } : { cleared: false };
+        },
+      } as Partial<VerticalScopeHost>);
+      const lineage = verb === 'markCopyLocal' ? PREVIEW : INSTALL;
+      const res = await post(host, path, { scopeId: SCOPE, lineage });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(verb === 'markCopyLocal' ? { marked: false } : { cleared: false });
+      expect(asked).toEqual([[SCOPE, lineage]]);
     });
-    const res = await post(host, '/internal/mark-copy', { scopeId: SCOPE });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ marked: false });
-    expect(asked).toEqual([SCOPE]);
-  });
 
-  it('refuses a body naming no scope, and a caller without the platform secret, before the host', async () => {
-    const host = fakeHost();
-    expect((await post(host, '/internal/mark-copy', {})).status).toBe(400);
-    expect((await post(host, '/internal/mark-copy', { scopeId: SCOPE }, { 'content-type': 'application/json' })).status).toBe(403);
-    expect(host.calls).not.toContain('markCopyLocal');
-  });
+    it(`${path} refuses a body with no classification, and a caller without the platform secret`, async () => {
+      const host = fakeHost();
+      expect((await post(host, path, { scopeId: SCOPE })).status).toBe(400);
+      expect((await post(host, path, { scopeId: SCOPE, lineage: PREVIEW }, { 'content-type': 'application/json' })).status).toBe(403);
+      expect(host.calls).not.toContain(verb);
+    });
+  }
 });

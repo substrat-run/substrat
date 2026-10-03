@@ -3628,10 +3628,11 @@ export interface HostAdmin {
   recordOwnerTransfer(actor: PlatformActorId, entry: OwnerTransferAudit): Promise<void>;
 
   /**
-   * Record one scope the copy-marker repair visited (#2005) on the admin log, as `markScopeCopy`.
-   * The marker lives in the vertical's deployment, so the control plane writes this around its
-   * call there — `recordOwnerTransfer`'s shape: fixed action, parsed entry, request actor,
-   * adapter-stamped `id` and `at`. Throws when the row cannot be written.
+   * Record one change to a scope's copy marker (#2005) on the admin log — `markScopeCopy` for a
+   * `mark`, `clearScopeCopyMark` for a `clear`. The marker lives in the vertical's deployment, so
+   * the control plane writes this around its call there — `recordOwnerTransfer`'s shape: fixed
+   * actions, parsed entry, request actor, adapter-stamped `id` and `at`. Throws when the row
+   * cannot be written.
    */
   recordCopyMark(actor: PlatformActorId, entry: CopyMarkAudit): Promise<void>;
 

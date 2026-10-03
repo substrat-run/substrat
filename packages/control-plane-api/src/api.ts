@@ -2526,13 +2526,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // of a copy made before every copy carried the marker brings none, and a CP-less host reads
     // the marker for primacy. Idempotent there; an install is never marked.
     const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
-    const markCopy = rec !== undefined && !isPrimaryScope(rec);
+    const markCopy = rec !== undefined && !isPrimaryScope(rec) ? { kind: rec.kind, forkedFrom: rec.forkedFrom } : undefined;
     return retryTransient(async () =>
       dest.restoreScope(tenantId, scopeId, tables, {
         ...(await switchCarryFor(host.admin, actor, { tenantId, scopeId })),
         sourceScopeId: source.scopeId,
         exact: source.exact,
-        ...(markCopy ? { markCopy: true } : {}),
+        ...(markCopy ? { markCopy } : {}),
       }),
     );
   };
@@ -4122,6 +4122,34 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ dryRun, repaired, candidates, skipped, failed, nextCursor });
   });
 
+  /**
+   * Mark one scope a copy in the vertical that holds it (#2005), if its directory record says it
+   * is not primary, and log it — the one step behind the repair below:
+   *
+   * - a primary is never marked (`skip`), and the vertical refuses one anyway;
+   * - a scope bound to no vertical runs no module code, so nothing reads a marker (`skip`);
+   * - a scope no deployment resolves for is left as it is (`skip`).
+   */
+  type CopyMarkStep =
+    | { done: 'marked' | 'already' }
+    | { skip: string }
+    | { fail: { status: number; error: string } };
+  const markScopeIfCopy = async (c: ReqCtx, scope: Scope): Promise<CopyMarkStep> => {
+    const actor = c.get('actor');
+    if (isPrimaryScope(scope)) return { skip: 'primary: an install is never marked' };
+    if (!scope.vertical) return { skip: 'bound to no vertical: no module code runs, so nothing reads the marker' };
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return { skip: 'no deployment holds this scope' };
+    const { marked } = await vertical.markCopy(scope.id, { kind: scope.kind, forkedFrom: scope.forkedFrom });
+    await c.var.admin.recordCopyMark(actor, {
+      action: 'mark',
+      tenantId: scope.tenantId,
+      scopeId: scope.id,
+      outcome: marked ? 'marked' : 'already',
+    });
+    return { done: marked ? 'marked' : 'already' };
+  };
+
   // -- one-time repair: mark every existing copy as one, in its own storage (#2005) --------
   // A CP-less hosted vertical has no directory, so it reads a scope's own copy-origin row to
   // hold a preview's or a fork's executors inert. Every copy carries that row since #2005, and
@@ -4172,14 +4200,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         continue;
       }
       try {
-        const vertical = await verticalForScope(c, scope);
-        if (!vertical) {
-          skipped.push({ ...at, reason: 'no deployment holds this scope' });
-          continue;
-        }
-        const { marked: stamped } = await vertical.markCopy(scope.id);
-        await c.var.admin.recordCopyMark(actor, { ...at, outcome: stamped ? 'marked' : 'already' });
-        (stamped ? marked : already).push(at);
+        const step = await markScopeIfCopy(c, scope);
+        if ('skip' in step) skipped.push({ ...at, reason: step.skip });
+        else if ('fail' in step) failed.push({ ...at, ...step.fail });
+        else (step.done === 'marked' ? marked : already).push(at);
       } catch (e) {
         const { status } = mapError(e);
         failed.push({ ...at, status, error: e instanceof Error ? e.message : String(e) });
@@ -4187,6 +4211,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const nextCursor = stopped || page.length === REPAIR_SCAN_PAGE ? (last ?? null) : null;
     return c.json({ dryRun, marked, already, candidates, skipped, failed, nextCursor });
+  });
+
+  // The correction for a MISTAKEN copy marker (#2005): a scope the directory says IS primary,
+  // marked by a misclassification, a race or an operator, whose executors a CP-less host would
+  // otherwise hold inert for good. One scope at a time, staff only by default-deny (the path is on
+  // neither allowlist), logged as `clearScopeCopyMark`. Refused for a scope the directory calls a
+  // copy, and, by the vertical, for a marker a real load wrote: that one names the events it
+  // brought in, and removing it would run another scope's queued work here.
+  app.post('/tenants/:tenantId/scopes/:scopeId/clear-copy-mark', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!isPrimaryScope(scope)) {
+      return c.json({ error: 'clear-copy-mark refused: the directory says this scope is a copy (a preview or a fork)' }, 409);
+    }
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501);
+    const { cleared } = await vertical.clearCopyMark(scopeId, { kind: scope.kind, forkedFrom: scope.forkedFrom });
+    await c.var.admin.recordCopyMark(actor, { action: 'clear', tenantId, scopeId, outcome: cleared ? 'cleared' : 'absent' });
+    return c.json({ cleared });
   });
 
   // Reap an ARCHIVED primary scope (control-plane.md §4.4): free its DO storage —

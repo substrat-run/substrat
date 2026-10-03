@@ -36,6 +36,8 @@ import { assertPlatformCall, PlatformCallError } from './platform-call.js';
 import {
   z,
   PROBLEM_CONTENT_TYPE,
+  scopeLineage,
+  type ScopeLineage,
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
   principalId as principalIdOf,
@@ -165,10 +167,14 @@ export interface VerticalScopeHost {
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; markCopy?: boolean },
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; markCopy?: ScopeLineage },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
-  /** #2005: mark one scope a copy in its own storage — the repair of a copy that predates the marker. */
-  markCopyLocal(scopeId: ScopeId): Promise<{ marked: boolean }>;
+  /** #2005: mark one scope a copy in its own storage, given the directory's classification of it,
+   *  which must be non-primary — the repair of a copy that predates the marker. */
+  markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }>;
+  /** #2005: remove a mistaken copy marker, given the directory's classification, which must be
+   *  primary. */
+  clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ cleared: boolean }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
@@ -420,9 +426,10 @@ const restoreBody = z.object({
   /** #1869: the platform exported these tables itself, so `sourceScopeId` is a fact and the
    *  re-point never falls back. Absent for a dump a caller supplied. */
   exact: z.boolean().optional(),
-  /** #2005: the platform's directory says this scope is not primary, so the restore marks it a
-   *  copy in its own storage. Absent from a platform that predates it: nothing is marked. */
-  markCopy: z.boolean().optional(),
+  /** #2005: the platform directory's classification of this scope, sent when it is not primary,
+   *  so the restore marks it a copy in its own storage (and refuses if it classifies a primary).
+   *  Absent from a platform that predates it: nothing is marked. */
+  markCopy: scopeLineage.optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -729,8 +736,15 @@ export function mountPlatformSurface<Env extends object>(
   // the marker. The platform decides which (its directory says the scope is not primary) and
   // audits; this end only stamps, idempotently, and says whether it did.
   app.post('/internal/mark-copy', async (c) => {
-    const body = z.object({ scopeId: scopeIdOf }).parse(await c.req.json());
-    return c.json(await deps.hostFor(c.env).markCopyLocal(body.scopeId));
+    const body = z.object({ scopeId: scopeIdOf, lineage: scopeLineage }).parse(await c.req.json());
+    return c.json(await deps.hostFor(c.env).markCopyLocal(body.scopeId, body.lineage));
+  });
+
+  // #2005: staff's correction of a MISTAKEN mark, for a scope the directory says IS primary. The
+  // host refuses a scope classified a copy, and a marker a real load wrote.
+  app.post('/internal/clear-copy-mark', async (c) => {
+    const body = z.object({ scopeId: scopeIdOf, lineage: scopeLineage }).parse(await c.req.json());
+    return c.json(await deps.hostFor(c.env).clearCopyMarkLocal(body.scopeId, body.lineage));
   });
 
   // #1239: facets over this scope's own outbox — narrow, group, count. Counts and

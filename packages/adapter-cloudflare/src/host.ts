@@ -174,6 +174,7 @@ import {
   type DirectoryDump,
   type ScopeDump,
   type ScopeDumpTable,
+  type ScopeLineage,
   subjectShredReceipt,
   type SubjectShredReceipt,
   type ScopeId,
@@ -366,6 +367,7 @@ import {
   assertRowLimit,
   assertRowOffset,
   INERT_SCOPE_REASON,
+  isPrimaryScope,
   isPrimaryScopeRow,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
@@ -912,6 +914,8 @@ interface ScopeStubRpc {
   isCopy(): Promise<boolean>;
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
+  /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
+  clearCopyMark(): Promise<'cleared' | 'absent' | 'carries-events'>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -1784,6 +1788,17 @@ export interface CloudflareScopeHostOptions {
 }
 
 /**
+ * Refuse to mark a scope a copy unless the request classifies it non-primary (#2005). The
+ * classification is the platform directory's; the vertical applies the same `isPrimaryScope` to
+ * it, so a primary can be marked only by a request that misstates its lineage, never by default.
+ */
+function assertCopyLineage(lineage: ScopeLineage): void {
+  if (isPrimaryScope(lineage)) {
+    throw substratError('conflict', 'mark-copy refused: the directory classifies this scope as primary, not as a copy');
+  }
+}
+
+/**
  * A control-plane stand-in for a CP-less vertical (scope-local-permissions.md Phase 3).
  * The hot path a served scope actually touches becomes trust-the-upstream:
  *   - `scopeAccessRefusal` / `setMigrationState` → no-op: the router already gated the
@@ -2578,14 +2593,16 @@ export class CloudflareScopeHost implements ScopeHost {
      *  own event — a dump from before a switch was pulled brings its grants back live. #1869:
      *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it;
      *  `exact` says the platform exported the dump itself, so the re-point never falls back. */
-    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; markCopy?: boolean },
+    /** #2005: `markCopy` — the directory's classification of the scope, sent when it is not
+     *  primary; the restore then marks it a copy. Refused if it classifies a primary. */
+    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; markCopy?: ScopeLineage },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
+    if (opts?.markCopy) assertCopyLineage(opts.markCopy);
     const switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, {
       switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId,
       exact: opts?.exact,
-      // #2005: the control plane's directory says the scope is not primary — mark it a copy.
-      markCopy: opts?.markCopy,
+      markCopy: opts?.markCopy !== undefined,
     });
     return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
   }
@@ -2595,8 +2612,30 @@ export class CloudflareScopeHost implements ScopeHost {
    * the repair of a copy that predates the marker, which a CP-less coordinator reads for primacy.
    * The control plane decides which scopes (its directory says they are not primary) and audits.
    */
-  async markCopyLocal(scopeId: ScopeId): Promise<{ marked: boolean }> {
+  async markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }> {
+    assertCopyLineage(lineage);
     return { marked: await this.scopeStub(scopeId).markCopy() };
+  }
+
+  /**
+   * Remove a mistaken copy marker from one scope in THIS deployment (#2005), behind the vertical's
+   * `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS primary.
+   * Refused for a scope classified a copy, and for a marker a real load wrote (one naming copied
+   * events) — removing that would let another scope's queued work run here.
+   */
+  async clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ cleared: boolean }> {
+    if (!isPrimaryScope(lineage)) {
+      throw substratError('conflict', 'clear-copy-mark refused: the directory classifies this scope as a copy (a preview or a fork)');
+    }
+    const outcome = await this.scopeStub(scopeId).clearCopyMark();
+    if (outcome === 'carries-events') {
+      throw substratError(
+        'conflict',
+        "clear-copy-mark refused: this scope's marker was written by a load of another scope's data and names " +
+          "the events it brought in; removing it would run that scope's queued work here",
+      );
+    }
+    return { cleared: outcome === 'cleared' };
   }
 
   /**
@@ -7108,10 +7147,10 @@ export class CloudflareScopeHost implements ScopeHost {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         await this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
       },
-      /** #2005: one scope the copy-marker repair visited, written around the vertical's stamp. */
+      /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {
-        const { tenantId, scopeId, ...after } = copyMarkAudit.parse(entry);
-        await this.recordAdmin(actor, 'markScopeCopy', { tenantId, scopeId }, null, after);
+        const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
+        await this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const rows = await this.cp.accessLog({

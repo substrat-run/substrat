@@ -173,6 +173,21 @@ export function markCopyOrigin(sql: SwitchSql, now: string): boolean {
 }
 
 /**
+ * Remove a MISTAKEN copy marker (#2005): for a scope the directory says is primary, marked by a
+ * misclassification, a race or an operator. Only a marker with no events mark goes (`''`, which
+ * `markCopyOrigin` stamps): a row whose `events_through` names copied events is a real load's,
+ * and removing it would let `emittedHere()` run another scope's queued work here, so it is left
+ * and answered `carries-events`. `absent` when there is no row.
+ */
+export function clearCopyMarker(sql: SwitchSql): 'cleared' | 'absent' | 'carries-events' {
+  const row = sql.all('SELECT events_through FROM _substrat_copy_origin WHERE id = 1')[0];
+  if (!row) return 'absent';
+  if (row.events_through !== '') return 'carries-events';
+  sql.run('DELETE FROM _substrat_copy_origin WHERE id = 1');
+  return 'cleared';
+}
+
+/**
  * Whether this scope was loaded as a copy (#2005): the copy-origin row every copy holds. The one
  * primacy fact a host with no control-plane directory can read from the scope's own storage — a
  * CP-less hosted vertical's coordinator asks it before it runs an executor.

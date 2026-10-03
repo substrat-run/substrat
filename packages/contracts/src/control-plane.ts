@@ -199,19 +199,46 @@ export const adminAction = z.enum([
   // host with no directory reads it. A one-time repair of copies that predate the marker; the
   // row names the scope and whether this pass stamped it or found it already stamped.
   'markScopeCopy',
+  // #2005 — the correction for a mistaken mark: a scope the directory says IS primary, its copy
+  // marker removed by staff, one scope at a time. Refused for a scope the directory calls a copy.
+  'clearScopeCopyMark',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 
-/** One scope the copy-marker repair visited (#2005), as its `markScopeCopy` admin-log row. */
-export const copyMarkAudit = z
-  .object({
-    tenantId,
-    scopeId,
-    /** `marked`: this pass stamped it. `already`: it carried the marker before the pass. */
-    outcome: z.enum(['marked', 'already']),
-  })
-  .strict();
+/**
+ * One change to a scope's copy marker (#2005), as its admin-log row: a `mark` (`markScopeCopy`)
+ * by the repair or a reactivation, or a staff `clear` (`clearScopeCopyMark`) of a mistaken one.
+ */
+export const copyMarkAudit = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('mark'),
+      tenantId,
+      scopeId,
+      /** `marked`: this call stamped it. `already`: it carried the marker before. */
+      outcome: z.enum(['marked', 'already']),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('clear'),
+      tenantId,
+      scopeId,
+      /** `cleared`: this call removed it. `absent`: there was none to remove. */
+      outcome: z.enum(['cleared', 'absent']),
+    })
+    .strict(),
+]);
 export type CopyMarkAudit = z.infer<typeof copyMarkAudit>;
+
+/**
+ * A scope's kind and lineage as the platform's directory records them (#2005) — what every
+ * request to change a scope's copy marker carries, so the vertical that holds the scope applies
+ * the same `isPrimaryScope` rule before it touches the marker: it marks only a scope classified
+ * non-primary, and clears only one classified primary.
+ */
+export const scopeLineage = z.object({ kind: z.string(), forkedFrom: scopeId.nullable() }).strict();
+export type ScopeLineage = z.infer<typeof scopeLineage>;
 
 /**
  * What a `shredSubject` did (#37) — the receipt a DSAR response is written from.

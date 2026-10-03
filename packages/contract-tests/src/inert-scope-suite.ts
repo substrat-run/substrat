@@ -114,10 +114,15 @@ export function inertScopeContractSuite(adapterName: string, makeFixture: () => 
     // The copy-marker repair writes its outcome around the vertical's stamp (#2005).
     it('records a copy-marker repair outcome on the admin log, and refuses one it cannot parse', async () => {
       const s = await scope({ kind: 'preview' });
-      await host.admin.recordCopyMark(staff, { tenantId: t, scopeId: s, outcome: 'marked' });
+      await host.admin.recordCopyMark(staff, { action: 'mark', tenantId: t, scopeId: s, outcome: 'marked' });
       const [row] = await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'markScopeCopy' });
       expect(row).toMatchObject({ action: 'markScopeCopy', actor: staff, tenantId: t, scopeId: s, after: { outcome: 'marked' } });
-      await expect(host.admin.recordCopyMark(staff, { tenantId: t, scopeId: s, outcome: 'maybe' } as never)).rejects.toThrow();
+      // The correction is its own action, so the log tells a mark from its undoing.
+      await host.admin.recordCopyMark(staff, { action: 'clear', tenantId: t, scopeId: s, outcome: 'cleared' });
+      const [cleared] = await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'clearScopeCopyMark' });
+      expect(cleared).toMatchObject({ action: 'clearScopeCopyMark', actor: staff, after: { outcome: 'cleared' } });
+      await expect(host.admin.recordCopyMark(staff, { action: 'mark', tenantId: t, scopeId: s, outcome: 'maybe' } as never)).rejects.toThrow();
+      await expect(host.admin.recordCopyMark(staff, { action: 'clear', tenantId: t, scopeId: s, outcome: 'marked' } as never)).rejects.toThrow();
     });
 
     describe('the route read tells the egress worker what kind of scope a hostname serves', () => {

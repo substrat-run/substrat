@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid } from '@substrat-run/kernel';
+import { isPrimaryScope, ulid } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import {
   ControlPlaneError,
@@ -56,23 +56,32 @@ describe('marking copies as copies, in their own storage (#2005)', () => {
   /** Every restore's options, and every mark, as the deployment saw them. */
   const restores: { scopeId: string; markCopy: boolean }[] = [];
   const markedIn = new Set<string>();
+  type Lineage = { kind: string; forkedFrom: string | null };
   const markCalls: string[] = [];
   let refuseMark: string | null = null;
   const deployment = (ref: string): VerticalClient =>
     ({
       exportScope: async (sid: string) => storeOf(ref).get(sid) ?? [],
-      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[], opts?: { markCopy?: boolean }) => {
-        restores.push({ scopeId: sid, markCopy: opts?.markCopy === true });
+      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[], opts?: { markCopy?: Lineage }) => {
+        // The vertical's own guard: a classification of a primary is refused, as the host does.
+        if (opts?.markCopy && isPrimaryScope(opts.markCopy)) throw new ControlPlaneError(409, 'mark-copy refused: primary');
+        restores.push({ scopeId: sid, markCopy: opts?.markCopy !== undefined });
         if (opts?.markCopy) markedIn.add(sid);
         storeOf(ref).set(sid, tables);
         return { tables: tables.length };
       },
-      markCopy: async (sid: string) => {
+      markCopy: async (sid: string, lineage: Lineage) => {
         markCalls.push(sid);
+        if (isPrimaryScope(lineage)) throw new ControlPlaneError(409, 'mark-copy refused: primary');
         if (refuseMark === sid) throw new ControlPlaneError(404, 'this vertical predates /internal/mark-copy');
         const fresh = !markedIn.has(sid);
         markedIn.add(sid);
         return { marked: fresh };
+      },
+      clearCopyMark: async (sid: string, lineage: Lineage) => {
+        if (!isPrimaryScope(lineage)) throw new ControlPlaneError(409, 'clear-copy-mark refused: a copy');
+        const had = markedIn.delete(sid);
+        return { cleared: had };
       },
       snapshotScope: async (input: { sourceScopeId: string; newScopeId: string }) => {
         storeOf(ref).set(input.newScopeId, storeOf(ref).get(input.sourceScopeId) ?? []);
@@ -250,6 +259,31 @@ describe('marking copies as copies, in their own storage (#2005)', () => {
     it('refuses a body it cannot parse rather than running a real pass', async () => {
       const res = await app.request(MARK, { method: 'POST', headers: asStaff, body: JSON.stringify({ dryrun: true }) });
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe("clearing a mistaken mark (round 3)", () => {
+    const clear = (s: string) => app.request(`/tenants/${t}/scopes/${s}/clear-copy-mark`, { method: 'POST', headers: asStaff });
+
+    it("clears a primary's mistaken mark, and logs it", async () => {
+      markedIn.add(install); // a misclassification, a race, an operator
+      const res = await clear(install);
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(await res.json()).toEqual({ cleared: true });
+      expect(markedIn.has(install)).toBe(false);
+      const log = await host.admin.auditLog(staff, { tenantId: t, scopeId: install, action: 'clearScopeCopyMark' });
+      expect(log.at(-1)?.after).toMatchObject({ outcome: 'cleared' });
+    });
+
+    it('refuses to clear a real copy', async () => {
+      const res = await clear(snapshot);
+      expect(res.status).toBe(409);
+      expect(markedIn.has(snapshot)).toBe(true);
+    });
+
+    it('is staff only', async () => {
+      const res = await app.request(`/tenants/${t}/scopes/${install}/clear-copy-mark`, { method: 'POST', headers: asTenant });
+      expect(res.status).toBe(403);
     });
   });
 });

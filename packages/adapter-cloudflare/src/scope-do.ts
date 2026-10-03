@@ -285,7 +285,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4295,6 +4295,15 @@ export function defineScopeDO(
         marked = markCopyOrigin(this.switchSql(), new Date().toISOString());
       });
       return marked;
+    }
+
+    /** Remove a mistaken copy marker (#2005, `clearCopyMarker`); a real load's mark is kept. */
+    clearCopyMark(): 'cleared' | 'absent' | 'carries-events' {
+      let outcome: 'cleared' | 'absent' | 'carries-events' = 'absent';
+      this.ctx.storage.transactionSync(() => {
+        outcome = clearCopyMarker(this.switchSql());
+      });
+      return outcome;
     }
 
     /**

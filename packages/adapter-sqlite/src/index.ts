@@ -9872,10 +9872,10 @@ export class SqliteScopeHost implements ScopeHost {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
       },
-      /** #2005: one scope the copy-marker repair visited, written around the vertical's stamp. */
+      /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {
-        const { tenantId, scopeId, ...after } = copyMarkAudit.parse(entry);
-        this.recordAdmin(actor, 'markScopeCopy', { tenantId, scopeId }, null, after);
+        const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
+        this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const where: string[] = [];
