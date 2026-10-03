@@ -27,7 +27,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
-    "serve": "tsx src/cli.ts"
+    "serve": "tsx src/cli.ts",
+    "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

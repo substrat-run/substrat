@@ -5,16 +5,19 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   DEP_FIELDS,
   RUNTIME_FIELDS,
+  guardProblem,
   UNPUBLISHABLE_PROTOCOLS,
   manifestProblems,
   packedManifest,
   pnpmMembers,
 } from './publish-manifests.mjs';
+import { PUBLISH_GUARD, publisherProblem } from './publish-guard.mjs';
 
 const members = new Map([
   ['@substrat-run/contracts', { private: false }],
@@ -99,4 +102,44 @@ test('workspace members come from pnpm, with their private flag', () => {
   assert.equal(workspace.get('@substrat-run/control-plane-client')?.private, false);
   assert.equal(workspace.get('@substrat-run/engine-test-kit')?.private, true);
   assert.ok([...workspace.values()].every((m) => !m.path.includes('/.builder/')));
+});
+
+test('the publish guard: pnpm passes, npm and an unknown client are refused', () => {
+  for (const pnpm of [
+    '/home/runner/setup-pnpm/node_modules/.bin/pnpm',
+    '/usr/local/lib/node_modules/corepack/shims/../../pnpm/bin/pnpm.cjs',
+    '/opt/pnpm/bin/pnpm.js',
+  ]) {
+    assert.equal(publisherProblem(pnpm), null, pnpm);
+  }
+  assert.match(publisherProblem('/usr/lib/node_modules/npm/bin/npm-cli.js'), /^refusing to publish with npm-cli\.js/);
+  assert.match(publisherProblem('/usr/lib/node_modules/yarn/bin/yarn.js'), /^refusing to publish with yarn\.js/);
+  assert.match(publisherProblem(undefined), /^refusing to publish with an unknown client/);
+  // The binary's own name, not a directory that happens to say pnpm.
+  assert.notEqual(publisherProblem('/home/me/pnpm/npm/bin/npm-cli.js'), null);
+});
+
+test('every public package declares the guard, and one that does not is refused', () => {
+  assert.equal(guardProblem(pkg({ scripts: { prepublishOnly: PUBLISH_GUARD } })), null);
+  for (const scripts of [undefined, {}, { prepublishOnly: 'tsc' }]) {
+    assert.match(guardProblem(pkg({ scripts })), /^@substrat-run\/x@1\.0\.0: scripts\.prepublishOnly must be/);
+  }
+  for (const [name, m] of workspace) {
+    if (m.private) continue;
+    const pj = JSON.parse(readFileSync(join(m.path, 'package.json'), 'utf8'));
+    assert.equal(guardProblem(pj), null, name);
+  }
+});
+
+test('against the producers: `npm publish` is refused by the guard, `pnpm publish` gets past it', () => {
+  // --dry-run on both: the lifecycle runs, nothing reaches the registry. npm runs with
+  // pnpm's environment inherited — as under `pnpm test` — which must not let it through.
+  const dir = join(root, 'packages/control-plane-client');
+  const env = { ...process.env, npm_config_user_agent: 'pnpm/10.10.0 npm/? node/v24.0.0' };
+  const npm = spawnSync('npm', ['publish', '--dry-run'], { cwd: dir, encoding: 'utf8', env });
+  assert.notEqual(npm.status, 0);
+  assert.match(npm.stderr, /refusing to publish with npm-cli\.js/);
+  const pnpm = spawnSync('pnpm', ['publish', '--dry-run', '--no-git-checks'], { cwd: dir, encoding: 'utf8' });
+  assert.doesNotMatch(`${pnpm.stdout}${pnpm.stderr}`, /refusing to publish/);
+  assert.equal(pnpm.status, 0, pnpm.stderr);
 });

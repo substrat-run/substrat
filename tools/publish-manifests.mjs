@@ -21,6 +21,9 @@
  * Both are the same check (`manifestProblems`): no dependency specifier npm cannot
  * resolve (`workspace:`, `catalog:`, `link:`, `file:`, `portal:`), and no runtime
  * dependency on a workspace member that is private, which npm has never been given.
+ * The pack-time half also requires the `prepublishOnly` guard (tools/publish-guard.mjs),
+ * which is what refuses `npm publish` at the moment it would happen — these checks only
+ * see it afterwards.
  *
  * Why it exists: `@substrat-run/control-plane-client@0.1.0` reached npm with
  * `"@substrat-run/contracts": "workspace:^"` in `dependencies`. It carries no provenance
@@ -28,8 +31,8 @@
  * by `pnpm publish -r`, and `npx @substrat-run/cli` failed for everyone with
  * EUNSUPPORTEDPROTOCOL. A package's FIRST version is published by hand (npm's trusted
  * publisher is configured on a package that already exists), so this is the path to hold:
- * publish that first version with `pnpm publish` from the package directory, never
- * `npm publish`, and run `--registry` afterwards.
+ * publish that first version with `pnpm publish` from the package directory — the guard
+ * refuses `npm publish` — and run `--registry` afterwards.
  */
 import { execFileSync, execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
@@ -37,6 +40,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { PUBLISH_GUARD } from './publish-guard.mjs';
 
 /** Specifier protocols that mean something inside a workspace and nothing on npm. */
 export const UNPUBLISHABLE_PROTOCOLS = ['workspace:', 'catalog:', 'link:', 'file:', 'portal:'];
@@ -72,6 +76,15 @@ export function manifestProblems(manifest, members) {
 }
 
 /**
+ * A public package that does not declare the publish guard as `prepublishOnly` can be
+ * published with `npm publish`, which ships the unrewritten manifest (tools/publish-guard.mjs).
+ */
+export function guardProblem(manifest) {
+  if (manifest.scripts?.prepublishOnly === PUBLISH_GUARD) return null;
+  return `${manifest.name}@${manifest.version}: scripts.prepublishOnly must be '${PUBLISH_GUARD}' — without it \`npm publish\` ships workspace: specifiers`;
+}
+
+/**
  * Every workspace member, as pnpm itself enumerates them — minus the gitignored builder
  * studio scratch projects, which are members locally and never published (#769).
  */
@@ -84,7 +97,7 @@ export function pnpmMembers(root = process.cwd()) {
     if (relative(root, path).startsWith('.builder')) continue;
     const pj = JSON.parse(readFileSync(join(path, 'package.json'), 'utf8'));
     if (!pj.name) continue;
-    members.set(pj.name, { path, version: pj.version, private: pj.private === true });
+    members.set(pj.name, { path, version: pj.version, private: pj.private === true, manifest: pj });
   }
   return members;
 }
@@ -148,8 +161,12 @@ async function main() {
       if (!manifest.dist?.attestations) notes.push(`${name}@${version} has no provenance attestation — published outside release.yml`);
     });
   } else {
-    await pool(published, 6, async ([, { path }]) => {
+    await pool(published, 6, async ([, { path, manifest }]) => {
       problems.push(...manifestProblems(await packedManifest(path), members));
+      // Read from the SOURCE manifest: `pnpm pack` strips `prepublishOnly` from the copy it
+      // ships, and the hook only ever runs in this checkout anyway.
+      const guard = guardProblem(manifest);
+      if (guard) problems.push(guard);
     });
   }
 
