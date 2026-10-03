@@ -453,7 +453,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const read = await appWith(host).request('/internal/kept-copy?scopeId=' + SCOPE, { headers: authed() }, ENV);
     expect(read.status).toBe(200);
     expect(await read.json()).toEqual({ kept: { carriedTo: 'v2-script', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' } });
-    const discard = (h: ReturnType<typeof fakeHost>, body: unknown, headers = authed({ 'content-type': 'application/json' })) =>
+    const discard = (h: ReturnType<typeof fakeHost>, body: unknown, headers: Record<string, string> = authed({ 'content-type': 'application/json' })) =>
       appWith(h).request('/internal/kept-copy/discard', { method: 'POST', headers, body: JSON.stringify(body) }, ENV);
     const body = { scopeId: SCOPE, revision: '9', carriedTo: 'v2-script', at: '2026-10-03T00:00:00.000Z' };
     expect(await (await discard(host, body)).json()).toEqual({ discarded: true });
