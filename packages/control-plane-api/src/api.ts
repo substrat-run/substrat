@@ -533,14 +533,6 @@ type Vars = {
 type ReqCtx = { get: (k: 'actor') => PlatformActorId; var: { host: ScopeHost; admin: HostAdmin } };
 
 /**
- * "This principal is confined to a tenant, and this is not that tenant."
- *
- * The question every `/tenants/:tenantId/…` route asks before it answers. Spelled in
- * terms of CONFINEMENT rather than of a principal kind, because a route that asks
- * `kind === 'builder'` answers fleet-wide for every other confined credential — which
- * is the shape #977 found the dashboard's in.
- */
-/**
  * The directory's classification of a scope that is not primary (#2005), which a verb sends so
  * the store it writes is marked a copy whatever its own marker says; undefined for a primary one.
  */
@@ -548,6 +540,14 @@ function copyLineageOf(scope: Pick<Scope, 'kind' | 'forkedFrom'>): ScopeLineage 
   return isPrimaryScope(scope) ? undefined : { kind: scope.kind, forkedFrom: scope.forkedFrom };
 }
 
+/**
+ * "This principal is confined to a tenant, and this is not that tenant."
+ *
+ * The question every `/tenants/:tenantId/…` route asks before it answers. Spelled in
+ * terms of CONFINEMENT rather than of a principal kind, because a route that asks
+ * `kind === 'builder'` answers fleet-wide for every other confined credential — which
+ * is the shape #977 found the dashboard's in.
+ */
 function outsideTenant(p: Principal, tenantId: TenantId): boolean {
   const pin = confinedTenant(p);
   return pin !== null && pin !== tenantId;
