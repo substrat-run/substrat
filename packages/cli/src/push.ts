@@ -315,7 +315,8 @@ export interface DeclaredSurface {
   /** True when the surface above hit its cap and is a sample — see the manifest field. */
   readonly declaredEventsTruncated: boolean;
   /** Every module's SQL migrations (#1677) — see {@link flattenDeclaredMigrations}. */
-  readonly migrations: ReturnType<typeof flattenDeclaredMigrations>;  /** True when any module declares an attachment target (#1995): the push then declares the
+  readonly migrations: ReturnType<typeof flattenDeclaredMigrations>;
+  /** True when any module declares an attachment target (#1995): the push then declares the
    *  platform's attachment blob store itself — see `withAttachmentBlobStore`. */
   readonly declaresAttachments: boolean;
 }

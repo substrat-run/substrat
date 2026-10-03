@@ -100,12 +100,10 @@ export function tenantStoreBindingName(binding: string, tenantId: string): strin
 
 /**
  * The ONE encoding behind {@link tenantStoreBindingName} and {@link blobStoreBindingName}
- * (#1995). Both halves are checked rather than assumed, because the name is a capability:
- * a worker holds every installed tenant's binding side by side, so whatever it is asked to
- * look up is what it reaches. A ULID has no `_`, so `<BINDING>__<ULID>` splits exactly one
- * way and no tenant id can spell another tenant's name — but only if the id IS a ULID; a
- * caller that passed `A__<other tenant>` or `../x` through an unchecked join would read a
- * different binding than the one it named. Refused here, once, for every caller.
+ * (#1995). Both halves are checked rather than assumed: a ULID has no `_`, so
+ * `<BINDING>__<ULID>` splits exactly one way and names exactly one tenant — but only if the
+ * id IS a ULID. An unchecked join of `X__<another id>` would name a different binding than
+ * the tenant it claims to be. Refused here, once, for every caller.
  */
 function perTenantBindingName(binding: string, tenant: string): string {
   if (!BINDING_NAME.test(binding)) {

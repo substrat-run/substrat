@@ -1936,10 +1936,8 @@ export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
 
 /**
  * The attachment bucket a host resolves when it was handed no resolver (#1995): the
- * platform's per-tenant binding, read off this script's own env. The name is built by the
- * one shared encoding, which refuses anything but a ULID tenant — so the only binding this
- * can reach is the one named for the tenant the caller already validated against the scope,
- * however many tenants' buckets sit beside it on the script.
+ * platform's per-tenant binding, read off this script's own env, named by the one shared
+ * encoding (`blobStoreBindingName`) for the tenant the caller passed in.
  */
 function ambientAttachmentBucket(tenantId: string): unknown {
   return (ambientEnv as unknown as Record<string, unknown>)[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)] ?? null;
@@ -1998,7 +1996,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly tenantStores?: D1TenantStores;
   /** The live R2 client for per-tenant blob stores (#473); undefined ⇒ refuse loudly. */
   private readonly blobStores?: R2BlobStores;
-  /** Worker-side attachment-bucket resolver (#473); undefined ⇒ attachments() refuses. */
+  /** Worker-side attachment-bucket resolver (#473); the ambient per-tenant binding unless overridden (#1995). */
   private readonly attachmentBuckets: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
