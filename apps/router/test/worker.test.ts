@@ -287,6 +287,8 @@ describe('router', () => {
       // #2005: a row from a control-plane DO that predates the field says nothing, which
       // resolves primary — the skew window `routeTarget` documents.
       primary: true,
+      // #2005: the address this dispatch serves — the one a non-primary scope may write to.
+      hostname: 'acme.example.com',
     });
   });
 

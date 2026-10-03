@@ -97,6 +97,12 @@ export interface OutboundPolicy {
    * enforced. The platform loopback and the relay are not third parties and still pass.
    */
   primary?: boolean;
+  /**
+   * #2005: the hostname the dispatch serves, set by the router beside `primary` — the scope's
+   * own address. A non-primary scope may write to it; to every other platform host it may
+   * only read (GET, HEAD, OPTIONS).
+   */
+  hostname?: string;
 }
 
 export interface Env {
@@ -155,6 +161,9 @@ export interface Env {
    */
   ANALYTICS?: AnalyticsEngineDataset;
 }
+
+/** The methods a non-primary scope may send to another app on the platform (#2005): reads. */
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** The platform base domains this deployment mints under, from the shared reader (#973). */
 const baseDomains = (env: Env): string[] => parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
@@ -267,6 +276,23 @@ export default {
       return peerCall(request, env);
     }
     if (isPlatformHost(hostname, baseDomains(env))) {
+      // #2005: a fork or a preview may write to its own address only. Another app on the
+      // platform is real, so it answers a copy's reads and refuses its writes — the
+      // destination's own auth is not the boundary here, inertness is.
+      const policy = env.OUTBOUND_POLICY;
+      if (
+        policy?.primary === false &&
+        !SAFE_METHODS.has(request.method.toUpperCase()) &&
+        hostname.toLowerCase() !== policy.hostname?.toLowerCase()
+      ) {
+        meter(env, hostname, 'inert');
+        return outboundRefused(
+          hostname,
+          policy.slug,
+          'this scope is a preview or a fork, and those cause no outbound effects: it may ' +
+            'write only to its own address, and only read from another app on the platform (#2005).',
+        );
+      }
       // Same-zone: hand it to the router over the service binding so it re-enters
       // resolution+dispatch instead of dying at the edge (522). The router strips any
       // inbound `x-substrat-*` and re-asserts the destination's node itself, so the

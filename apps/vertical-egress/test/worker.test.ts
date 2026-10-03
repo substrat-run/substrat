@@ -364,3 +364,51 @@ describe('a non-primary scope reaches no third party (#2005)', () => {
     expect(internet).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * #2005, the loopback half: another app on the platform is real, so a fork or a preview may READ
+ * from it and may not WRITE to it. Its own address is its own, and takes any method.
+ */
+describe("a non-primary scope reads other platform apps and writes only its own (#2005)", () => {
+  const OWN = 'shop-acme--pr-7.global.substrat.run';
+  const policy = (primary: boolean): OutboundPolicy => ({
+    slug: 'acme-shop',
+    tenant: '01TENANT',
+    hosts: [],
+    primary,
+    hostname: OWN,
+  });
+  const send = (url: string, method: string, primary: boolean, r = router()) =>
+    worker
+      .fetch(new Request(url, { method, ...(method === 'GET' || method === 'HEAD' ? {} : { body: '{}' }) }), envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(primary) }))
+      .then((res) => ({ res, calls: r.calls }));
+
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    it(`refuses a ${method} to another platform app, before the router sees it`, async () => {
+      const { res, calls } = await send('https://crm-acme.global.substrat.run/api/write', method, false);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'crm-acme.global.substrat.run' });
+      expect(calls).toHaveLength(0);
+    });
+  }
+
+  for (const method of ['GET', 'HEAD', 'OPTIONS']) {
+    it(`lets a ${method} to another platform app through`, async () => {
+      const { res, calls } = await send('https://crm-acme.global.substrat.run/api/read', method, false);
+      expect(res.status).toBe(200);
+      expect(calls).toHaveLength(1);
+    });
+  }
+
+  it('lets a POST to its own address through — its own address is its own', async () => {
+    const { res, calls } = await send(`https://${OWN.toUpperCase()}/api/write`, 'POST', false);
+    expect(res.status).toBe(200);
+    expect(calls[0]!.method).toBe('POST');
+  });
+
+  it('twin: a primary scope POSTs to another platform app', async () => {
+    const { res, calls } = await send('https://crm-acme.global.substrat.run/api/write', 'POST', true);
+    expect(res.status).toBe(200);
+    expect(calls[0]!.method).toBe('POST');
+  });
+});
