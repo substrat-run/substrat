@@ -1890,9 +1890,10 @@ function assertCopyLineage(lineage: ScopeLineage): void {
 /**
  * A control-plane stand-in for a CP-less vertical (scope-local-permissions.md Phase 3).
  * The hot path a served scope actually touches becomes trust-the-upstream:
- *   - `scopeAccessRefusal` / `setMigrationState` → no-op: the router already gated the
- *     scope's lifecycle + tenancy from the shared directory, so the vertical trusts the
- *     asserted node rather than re-reading a directory it does not have.
+ *   - `scopeAccessRefusal` / `setMigrationState` → no-op: the router gates the scope's
+ *     lifecycle + tenancy from the shared directory, and the vertical trusts the asserted
+ *     node rather than re-reading a directory it does not have. Its own half of the
+ *     lifecycle gate reads the scope's storage instead (`assertLive`, #1713).
  *   - `tenantHoldsEntitlement` → true: the SKU was enforced on the shared control plane
  *     at provision (before `provisionInstance`), so a scope that EXISTS here was granted
  *     it upstream — a single-vertical deployment holds its own entitlements by construction.
@@ -7728,11 +7729,18 @@ export class CloudflareScopeHost implements ScopeHost {
       return report;
     }
     for (const t of targets) {
-      report.attempted += 1;
       const tenantId = t.tenant_id as TenantId;
       const scopeId = t.scope_id as ScopeId;
+      const lifecycle = scopeLifecycle.parse({ scope: t.scope_status, tenant: t.tenant_status, at: new Date().toISOString() });
+      // A live scope whose deployment already runs it live has nothing to receive: no receipt
+      // reads as active/active, which is what a deployment holding no lifecycle runs as. This
+      // is what keeps an activation, and every transition before a deployment carries the
+      // route, from posting a delivery that changes nothing. A HOLD is always delivered.
+      if ((t.delivered ?? lifecycleReceipt({ scope: 'active', tenant: 'active' })) === lifecycleReceipt(lifecycle) && lifecycleRefusal(lifecycle) === null) {
+        continue;
+      }
+      report.attempted += 1;
       try {
-        const lifecycle = scopeLifecycle.parse({ scope: t.scope_status, tenant: t.tenant_status, at: new Date().toISOString() });
         const answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
         // The receipt is what the scope HOLDS: a newer delivery it kept instead is the truth.
         await this.cp.recordLifecycleReceipt(scopeId, lifecycleReceipt(answer.lifecycle), new Date().toISOString());

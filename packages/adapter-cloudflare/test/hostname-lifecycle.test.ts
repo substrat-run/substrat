@@ -106,9 +106,9 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
       ownerRoleKey: 'office-admin',
     });
-    // Activation is a transition too, and delivers `active/active`; the tests below count from here.
-    if (vertical) expect(deliveredTo(s)).toEqual(['active/active']);
-    deliveries.splice(0, deliveries.length, ...deliveries.filter((d) => d.scopeId !== s));
+    // Activation is a transition too, but a live scope its deployment already runs live has
+    // nothing to receive, so nothing is posted (a deployment without the route logs nothing).
+    expect(deliveredTo(s)).toEqual([]);
     return s;
   };
   const servedHere = (t: TenantId, s: ScopeId) => deployment().getScope(owner, t, s);
