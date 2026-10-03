@@ -8,7 +8,6 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import semver from 'semver';
 import {
   DEP_FIELDS,
   RUNTIME_FIELDS,
@@ -201,20 +200,28 @@ test('a transient answer is asked once more; a second transient, or no answer, t
   await assert.rejects(withOneRetry(answers(undefined, true), 'q', { sleep }), /q: no answer from the registry \(unexpected error\)/);
 });
 
-test('registry specs: agrees with node-semver on ranges, and accepts dist-tags only by their own grammar', () => {
-  const ranges = [
-    '^0.135.0', '0.135.0', '~1.2.3', '>=5', '>= 5 <7', '1.x', '*', '', 'x', '^1.0.0-beta.1', '1.2.3+build.5',
-    '1.2.3 - 2.0.0', '^1 || ^2', 'v1.2.3', '~>1.2', '<=1.2.3 >0.1',
-    'workspace:^', 'workspace:*', 'catalog:', 'file:../x', 'link:../x', 'portal:../x', 'github:a/b',
-    'https://example.test/x.tgz', '^1.2.3.4', '01.2.3', '>>1', '1.2.3 -', '^', 'npm:x@1',
-  ];
-  for (const r of ranges) {
-    const valid = semver.validRange(r) !== null;
-    // A dist-tag-shaped word is accepted as a tag even where semver says "not a range".
-    const tagShaped = /^[A-Za-z][A-Za-z0-9._-]*$/.test(r);
-    assert.equal(isRegistrySpec(r), valid || tagShaped, `'${r}': node-semver says ${valid}`);
-  }
-  for (const tag of ['latest', 'next', 'beta-2', 'rc.1']) assert.equal(isRegistrySpec(tag), true, tag);
+test('registry specs, pinned: npm-package-arg\'s rule, through node-semver', () => {
+  // Regression table. `99+build` and `7+build` are valid node-semver ranges a hand-written
+  // grammar once refused; they are the reason this delegates to node-semver.
+  const table = {
+    '^0.135.0': true, '0.135.0': true, '~1.2.3': true, '>=5': true, '>= 5 <7': true, '1.x': true, '*': true,
+    '': true, '^1.0.0-beta.1': true, '1.2.3+build.5': true, '99+build': true, '7+build': true,
+    '1.2.3 - 2.0.0': true, '^1 || ^2': true, 'v1.2.3': true, '~>1.2': true,
+    latest: true, next: true, 'beta-2': true, 'rc.1': true,
+    'workspace:^': false, 'workspace:*': false, 'catalog:': false, 'file:../x': false, 'link:../x': false,
+    'portal:../x': false, 'github:a/b': false, 'a/b': false, 'git+https://github.com/a/b.git': false,
+    'git+ssh://git@github.com/a/b.git#v1': false, 'https://example.test/x-1.0.0.tgz': false, '../x': false,
+    'npm:x@1': false,
+  };
+  for (const [spec, expected] of Object.entries(table)) assert.equal(isRegistrySpec(spec), expected, `'${spec}'`);
+});
+
+test('a +build range is accepted plain and inside an alias, and both are asked of npm', async () => {
+  const served = pkg({ dependencies: { '@substrat-run/contracts': '99+build', n: 'npm:is-number@7+build', c: 'npm:@substrat-run/contracts@99+build' } });
+  assert.deepEqual(manifestProblems(served, members), []);
+  const asked = [];
+  await unresolvedEdges(served, members, async (n, r) => (asked.push(`${n}@${r}`), true), { deadline: 60_000, ...fakeTime() });
+  assert.deepEqual(asked.sort(), ['@substrat-run/contracts@99+build', '@substrat-run/contracts@99+build']);
 });
 
 test('an npm: alias with a workspace: (or any non-registry) range is refused, in every runtime field', () => {

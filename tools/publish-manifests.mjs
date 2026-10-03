@@ -40,6 +40,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import semver from 'semver';
 import { PUBLISH_GUARD } from './publish-guard.mjs';
 
 const run = promisify(execFile);
@@ -66,22 +67,14 @@ export function installTarget(dep, spec) {
   return at > 0 ? { name: rest.slice(0, at), range: rest.slice(at + 1) } : { name: rest, range: 'latest' };
 }
 
-// node-semver's range grammar (https://github.com/npm/node-semver#range-grammar), plus the `v`
-// prefix and the space after an operator that it also accepts. Hand-written so the registry
-// job needs no install; the test pins it against node-semver itself.
-const NR = '(?:0|[1-9]\\d*)';
-const XR = `(?:[xX*]|${NR})`;
-const IDENTS = '[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*';
-const PARTIAL = `v?${XR}(?:\\.${XR}(?:\\.${XR}(?:-${IDENTS})?(?:\\+${IDENTS})?)?)?`;
-const SIMPLE = `(?:(?:<=|>=|<|>|=|~>?|\\^)\\s*)?${PARTIAL}`;
-const RANGE = `(?:${PARTIAL}\\s+-\\s+${PARTIAL}|${SIMPLE}(?:\\s+${SIMPLE})*)?`;
-const RANGE_SET = new RegExp(`^\\s*${RANGE}\\s*(?:\\|\\|\\s*${RANGE}\\s*)*$`);
-/** A dist-tag: what npm-package-arg calls a tag once a spec is not a range — letters first, no protocol. */
-const DIST_TAG = /^[A-Za-z][A-Za-z0-9._-]*$/;
-
-/** Whether npm resolves `spec` from the registry: a semver range (versions included) or a dist-tag. */
+/**
+ * Whether npm resolves `spec` from the registry — npm-package-arg's own rule for a registry
+ * spec: a version or range by node-semver (loose, as npm parses it), otherwise a dist-tag,
+ * which is any name `encodeURIComponent` leaves alone. Everything else — a workspace
+ * protocol, git, github:, a URL or tarball, file:, link: — is not a registry spec.
+ */
 export function isRegistrySpec(spec) {
-  return RANGE_SET.test(spec) || DIST_TAG.test(spec);
+  return semver.validRange(spec, true) !== null || (spec !== '' && encodeURIComponent(spec) === spec);
 }
 
 /** Each runtime dependency of `manifest`, with the package it actually installs. */
