@@ -1,6 +1,14 @@
 /**
- * A deployable vertical that declares schedules wires `defineScopeSweeperDO`, or those
- * schedules never fire.
+ * A deployable vertical that declares schedules has a sweeper to run them on a hosted deploy.
+ *
+ * #1902 changed what that asks of a vertical. The uploader now supplies the sweeper —
+ * `SweeperDO` bound as `SWEEPER`, from the platform's generated module — to a vertical whose
+ * entry exports none, and `mountPlatformSurface` hands it the vertical's host and keeps its
+ * roster. So "no sweeper" is no longer the offence. What still is (`sweeperOffence` in
+ * `@substrat-run/cli`): an own sweeper nothing binds, the platform's names bound to something
+ * else (the upload would refuse), and a `@substrat-run/vertical-host` too old to register the
+ * host — which in this workspace means an unbuilt one. The history below is why the gate
+ * exists at all; its two halves now hold an OWN sweeper, and a vertical with none passes.
  *
  * #1646: the only platform timer is the control plane's 15-minute cron, and it iterates
  * `host.registeredSchedules()` on the CONTROL PLANE'S OWN host — which registers no
@@ -73,7 +81,7 @@
  * rather than asking this gate to close it.
  *
  * Exit codes follow permission-diff's: 0 = fine, 1 = a deployable vertical would ship
- * schedules with nothing to run them, 2 = the tool could not do its job (never a silent
+ * schedules its wiring leaves unrun, 2 = the tool could not do its job (never a silent
  * pass over nothing).
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';

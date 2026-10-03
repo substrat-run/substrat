@@ -5,13 +5,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DeployManifest } from '@substrat-run/contracts';
-import { assertSchedulesAreSwept, deployConfigIfAny } from '../src/push.js';
-import { exportedSweeperNames, exportedSweeperNamesOf, sweeperOffence } from '../src/schedule-sweeper.js';
+import { assertSchedulesAreSwept, deployConfigIfAny, sweeperClassesOf } from '../src/push.js';
+import {
+  exportedSweeperNames,
+  exportedSweeperNamesOf,
+  platformCanSupplySweeper,
+  sweeperOffence,
+} from '../src/schedule-sweeper.js';
 
 /**
- * Declared schedules need a sweeper to run them on a hosted deploy (#1646). This repo's
- * `lint:schedule-sweeper` holds that for the verticals in it; `substrat push` is the only check
- * an external vertical passes through, so it refuses the same shape.
+ * Declared schedules need a sweeper to run them on a hosted deploy (#1646). Since #1902 the
+ * platform supplies one at upload to a vertical that exports none, so what `substrat push`
+ * refuses is the wiring that would still leave them unrun: an own sweeper nothing binds, the
+ * platform's names taken, a vertical-host too old to hand the supplied sweeper its host. This
+ * repo's `lint:schedule-sweeper` holds the same for the verticals in it.
  */
 
 const SWEEPER_ENTRY = [
@@ -38,6 +45,20 @@ function pkg(stores: { binding: string; class: string }[], extra: Record<string,
     version: '1.0.0',
     substrat: { permissions: 'perms.mjs', runtimeNeeds: { entry: 'src/worker.ts', stores }, ...extra },
   });
+}
+
+/**
+ * An installed `@substrat-run/vertical-host`, as `npm install` lays it out: `current` ships the
+ * registry the platform's sweeper reads its host from (`dist/scope-sweep-host.js`), and an
+ * older one does not.
+ */
+function vertHost(current: boolean): Record<string, string> {
+  const at = 'node_modules/@substrat-run/vertical-host';
+  return {
+    [`${at}/package.json`]: JSON.stringify({ name: '@substrat-run/vertical-host', type: 'module', exports: { '.': { default: './dist/index.js' } } }),
+    [`${at}/dist/index.js`]: 'export {};\n',
+    ...(current ? { [`${at}/dist/scope-sweep-host.js`]: 'export {};\n' } : {}),
+  };
 }
 
 const STORES = [{ binding: 'SCOPE', class: 'ScopeDO' }];
@@ -120,8 +141,14 @@ describe('assertSchedulesAreSwept', () => {
     expect(() => assertSchedulesAreSwept(dir, deployConfigIfAny(dir)!, undefined, false, quiet)).not.toThrow();
   });
 
-  it('refuses an engine-declared schedule with no sweeper, naming the module, the schedule and the remedy', () => {
-    const dir = tree({ 'package.json': pkg(STORES), 'src/worker.ts': 'export default {};\n' });
+  it('passes an engine-declared schedule with no sweeper — the platform supplies one (#1902)', () => {
+    const dir = tree({ 'package.json': pkg(STORES), 'src/worker.ts': 'export default {};\n', ...vertHost(true) });
+    expect(() => assertSchedulesAreSwept(dir, deployConfigIfAny(dir)!, ENGINE_SCHEDULE, false, quiet)).not.toThrow();
+    expect(sweeperClassesOf(dir, deployConfigIfAny(dir)!)).toEqual([]);
+  });
+
+  it('refuses it when the installed vertical-host predates the host the supplied sweeper runs, naming the remedy', () => {
+    const dir = tree({ 'package.json': pkg(STORES), 'src/worker.ts': 'export default {};\n', ...vertHost(false) });
     let message = '';
     try {
       assertSchedulesAreSwept(dir, deployConfigIfAny(dir)!, ENGINE_SCHEDULE, false, quiet);
@@ -129,9 +156,24 @@ describe('assertSchedulesAreSwept', () => {
       message = (e as Error).message;
     }
     expect(message).toContain('@substrat-run/engine-absence → absence/expire-stale');
-    expect(message).toContain('defineScopeSweeperDO');
-    expect(message).toContain('noteScope');
+    expect(message).toContain('Update @substrat-run/vertical-host');
     expect(message).toContain('--allow-unswept-schedules');
+  });
+
+  it('refuses a vertical with no sweeper that binds the platform’s names to something else', () => {
+    const taken = tree({
+      'package.json': pkg([...STORES, { binding: 'SWEEPER', class: 'Other' }]),
+      'src/worker.ts': 'export default {};\n',
+      ...vertHost(true),
+    });
+    expect(() => assertSchedulesAreSwept(taken, deployConfigIfAny(taken)!, ENGINE_SCHEDULE, false, quiet)).toThrow(
+      /already uses the binding 'SWEEPER'.*drop its binding/s,
+    );
+    // The shape a vertical that deleted its own sweeper but not its store is left in.
+    const leftover = tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'src/worker.ts': 'export default {};\n', ...vertHost(true) });
+    expect(() => assertSchedulesAreSwept(leftover, deployConfigIfAny(leftover)!, ENGINE_SCHEDULE, false, quiet)).toThrow(
+      /drop its binding — the platform adds its own/,
+    );
   });
 
   it('refuses an exported sweeper no store binds — it would never be instantiated', () => {
@@ -141,9 +183,11 @@ describe('assertSchedulesAreSwept', () => {
     );
   });
 
-  it('passes an exported sweeper bound in runtimeNeeds.stores', () => {
-    const dir = tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'src/worker.ts': SWEEPER_ENTRY });
+  it('passes an exported sweeper bound in runtimeNeeds.stores, and declares it as the vertical’s own', () => {
+    // An old vertical-host does not matter here: the platform supplies nothing to this one.
+    const dir = tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'src/worker.ts': SWEEPER_ENTRY, ...vertHost(false) });
     expect(() => assertSchedulesAreSwept(dir, deployConfigIfAny(dir)!, ENGINE_SCHEDULE, false, quiet)).not.toThrow();
+    expect(sweeperClassesOf(dir, deployConfigIfAny(dir)!)).toEqual(['SweeperDO']);
   });
 
   it('passes an exported sweeper bound in a hand-authored wrangler.jsonc', () => {
@@ -161,7 +205,7 @@ describe('assertSchedulesAreSwept', () => {
   });
 
   it('--allow-unswept-schedules pushes anyway, and says so', () => {
-    const dir = tree({ 'package.json': pkg(STORES), 'src/worker.ts': 'export default {};\n' });
+    const dir = tree({ 'package.json': pkg(STORES), 'src/worker.ts': 'export default {};\n', ...vertHost(false) });
     const logs: string[] = [];
     expect(() =>
       assertSchedulesAreSwept(dir, deployConfigIfAny(dir)!, ENGINE_SCHEDULE, true, (m) => logs.push(m)),
@@ -170,10 +214,22 @@ describe('assertSchedulesAreSwept', () => {
   });
 
   it('agrees with the predicate the repo lint uses', () => {
+    const op = [{ moduleId: 'm', operation: 'm/op' }];
     expect(sweeperOffence([], { exportedNames: [], boundClassNames: [] })).toBeNull();
-    expect(sweeperOffence([{ moduleId: 'm', operation: 'm/op' }], { exportedNames: [], boundClassNames: [] })).toMatch(
-      /m → m\/op/,
-    );
+    // Unknown (no vertical-host resolves) is not a refusal; known-too-old is.
+    expect(sweeperOffence(op, { exportedNames: [], boundClassNames: [] })).toBeNull();
+    expect(sweeperOffence(op, { exportedNames: [], boundClassNames: [], platformCanSupply: false })).toMatch(/m → m\/op/);
+  });
+
+  it('reads an installed vertical-host for the registry, and says nothing when none resolves', () => {
+    expect(platformCanSupplySweeper(tree({ 'package.json': '{}', ...vertHost(true) }))).toBe(true);
+    expect(platformCanSupplySweeper(tree({ 'package.json': '{}', ...vertHost(false) }))).toBe(false);
+    expect(platformCanSupplySweeper(tree({ 'package.json': '{}' }))).toBeUndefined();
+  });
+
+  it('declares nothing it could not read: no entry, no sweeperClasses', () => {
+    const dir = tree({ 'package.json': pkg(STORES) });
+    expect(sweeperClassesOf(dir, deployConfigIfAny(dir)!)).toBeUndefined();
   });
 });
 
@@ -184,7 +240,7 @@ describe('assertSchedulesAreSwept', () => {
  * so "refused before anything is uploaded" is a fact the test reads.
  */
 describe.runIf(existsSync(fileURLToPath(new URL('../dist/push.js', import.meta.url))))(
-  'push() — refused before anything is uploaded (#1646)',
+  'push() — refused before anything is uploaded (#1646), and the sweeper it declares (#1902)',
   () => {
     const pushJs = fileURLToPath(new URL('../dist/push.js', import.meta.url));
     const PERMS = `export const permissions = ${JSON.stringify({
@@ -224,19 +280,33 @@ await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.i
       return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     }
 
-    it('refuses a composed engine’s schedule with no sweeper, and uploads nothing', () => {
-      const r = run(tree({ 'package.json': pkg(STORES), 'perms.mjs': PERMS, 'src/worker.ts': 'export default {};\n' }));
+    const manifestOf = (r: { stdout: string }) => {
+      const line = r.stdout.split('\n').find((l) => l.startsWith('MANIFEST '))!;
+      return JSON.parse(line.slice('MANIFEST '.length)) as DeployManifest;
+    };
+
+    it('uploads a composed engine’s schedule with no sweeper, declaring none of its own', () => {
+      const r = run(tree({ 'package.json': pkg(STORES), 'perms.mjs': PERMS, 'src/worker.ts': 'export default {};\n', ...vertHost(true) }));
+      expect(r.status, r.stderr).toBe(0);
+      const manifest = manifestOf(r);
+      expect(manifest.schedules?.map((s) => s.operation)).toEqual(['absence/expire-stale']);
+      // `[]`, never absent: the uploader reads absence as an older CLI.
+      expect(manifest.sweeperClasses).toEqual([]);
+    });
+
+    it('refuses it, uploading nothing, when the installed vertical-host is too old to run the supplied one', () => {
+      const r = run(tree({ 'package.json': pkg(STORES), 'perms.mjs': PERMS, 'src/worker.ts': 'export default {};\n', ...vertHost(false) }));
       expect(r.status).not.toBe(0);
       expect(r.stderr).toContain('absence/expire-stale');
       expect(r.stdout).not.toContain('MANIFEST ');
     });
 
-    it('its twin, with an exported and bound sweeper, uploads the schedule', () => {
+    it('its twin, with an exported and bound sweeper, uploads the schedule and names its own sweeper', () => {
       const r = run(tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'perms.mjs': PERMS, 'src/worker.ts': SWEEPER_ENTRY }));
       expect(r.status, r.stderr).toBe(0);
-      const line = r.stdout.split('\n').find((l) => l.startsWith('MANIFEST '))!;
-      const manifest = JSON.parse(line.slice('MANIFEST '.length)) as DeployManifest;
+      const manifest = manifestOf(r);
       expect(manifest.schedules?.map((s) => s.operation)).toEqual(['absence/expire-stale']);
+      expect(manifest.sweeperClasses).toEqual(['SweeperDO']);
     });
   },
 );
@@ -269,18 +339,19 @@ describe.runIf(existsSync(fileURLToPath(new URL('../dist/cli.js', import.meta.ur
       return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     }
 
-    it('refuses schedules with no sweeper', () => {
-      const r = check(tree({ 'package.json': pkg(STORES), 'perms.mjs': PERMS, 'src/worker.ts': 'export default {};\n' }));
+    const bare = (current: boolean) =>
+      tree({ 'package.json': pkg(STORES), 'perms.mjs': PERMS, 'src/worker.ts': 'export default {};\n', ...vertHost(current) });
+
+    it('passes schedules with no sweeper on a current vertical-host, and refuses them on an old one', () => {
+      expect(check(bare(true)).status).toBe(0);
+      const r = check(bare(false));
       expect(r.status).not.toBe(0);
       expect(r.stderr).toContain('leave → leave/remind');
     });
 
-    it('passes them with one, and --allow-unswept-schedules passes the bare tree with a warning', () => {
+    it('passes them with one, and --allow-unswept-schedules passes the refused tree with a warning', () => {
       expect(check(tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'perms.mjs': PERMS, 'src/worker.ts': SWEEPER_ENTRY })).status).toBe(0);
-      const r = check(
-        tree({ 'package.json': pkg(STORES), 'perms.mjs': PERMS, 'src/worker.ts': 'export default {};\n' }),
-        '--allow-unswept-schedules',
-      );
+      const r = check(bare(false), '--allow-unswept-schedules');
       expect(r.status).toBe(0);
       expect(r.stdout).toContain('warning: --allow-unswept-schedules');
     });

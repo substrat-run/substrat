@@ -36,7 +36,6 @@
  * `onProvision`). That is runtime wiring; the platform's sweeper has none to forget.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { parse } from '@babel/parser';
 
@@ -235,14 +234,24 @@ export function exportedSweeperNamesOf(entryPath: string): string[] {
  * nothing rather than refusing on a layout it cannot read.
  */
 export function platformCanSupplySweeper(dir: string): boolean | undefined {
-  let main: string;
-  try {
-    main = createRequire(resolve(dir, 'package.json')).resolve('@substrat-run/vertical-host');
-  } catch {
-    return undefined;
+  // Walked by hand, the way Node looks for a package next to a file, and NOT with
+  // `createRequire`: that also searches NODE_PATH, which a package manager's bin shim points at
+  // its own store, so a push run through `pnpm exec` would read some other copy's answer.
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    const pkgDir = resolve(at, 'node_modules', '@substrat-run', 'vertical-host');
+    const pkgJson = resolve(pkgDir, 'package.json');
+    if (existsSync(pkgJson)) {
+      const pkg = JSON.parse(readFileSync(pkgJson, 'utf8')) as {
+        main?: string;
+        exports?: { '.'?: { default?: string } | string };
+      };
+      const dot = pkg.exports?.['.'];
+      const main = (typeof dot === 'string' ? dot : dot?.default) ?? pkg.main ?? 'index.js';
+      // The registry ships as its own module beside the package's entry (`scope-sweep-host.ts`).
+      return existsSync(resolve(dirname(resolve(pkgDir, main)), 'scope-sweep-host.js'));
+    }
+    if (dirname(at) === at) return undefined;
   }
-  // The registry ships as its own module beside the package's entry (`scope-sweep-host.ts`).
-  return existsSync(resolve(dirname(main), 'scope-sweep-host.js'));
 }
 
 /** The class and binding the platform's sweeper takes (`platformSweeperPlan` in control-plane-api). */
