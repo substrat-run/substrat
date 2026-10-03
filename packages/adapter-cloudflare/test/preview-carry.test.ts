@@ -899,6 +899,23 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await hostFor('v2').keptCopyLocal(p.scopeId)).not.toBeNull();
     });
 
+    // Codex #2008 r13: a release or discard names the store it read (stamp and revision), not only
+    // its revision. A kept copy refuses every load but its own resolution, so the stamp cannot move
+    // under one; this pins that the act itself compares it too.
+    it('a release or discard of a kept copy is refused for a load stamp other than the one read', async () => {
+      const p = await fresh('kept-stamp', 'kept data');
+      const v1 = hostFor('v1');
+      expect(await v1.wipeCarriedLocal(p.scopeId, 'not-the-stamp', { to: 'x', at: '2026-10-03T00:00:00.000Z' }, { protectIfChanged: true })).toBe(false);
+      const read = await v1.loadMarkerLocal(p.scopeId);
+      const away = { to: 'elsewhere', at: '2026-10-03T00:00:00.000Z' };
+      expect(await v1.releaseKeptCopyLocal(p.scopeId, read.revision, undefined, 'another-load')).toEqual({ refused: 'changed' });
+      expect(await v1.discardKeptCopyLocal(p.scopeId, read.revision, away, undefined, 'another-load')).toEqual({ refused: 'changed' });
+      expect(await v1.keptCopyLocal(p.scopeId)).not.toBeNull();
+      expect(await v1.loadMarkerLocal(p.scopeId)).toEqual(read);
+      // The stamp it does hold passes.
+      expect(await v1.releaseKeptCopyLocal(p.scopeId, read.revision, undefined, read.loadStamp)).toEqual({ released: true });
+    });
+
     it('a kept copy that is the live store is released, acknowledged and logged', async () => {
       const p = await fresh('kept-live', 'live data');
       const v1ref = refOf.get(version.v1)!;
