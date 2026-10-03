@@ -124,18 +124,21 @@ describe('connector calls into the recorder, hosted (#1691)', () => {
  * indexes into it by ordinal.
  */
 describe('exports moving here from the kernel (#1978)', () => {
+  // The names the kernel tags `@deprecated Import from \`@substrat-run/adapter-cloudflare\``.
+  // This suite runs in workerd and cannot read the kernel's source, so the kernel's own
+  // `wire-headers-move.test.ts` pins its tags to this same list.
   const NAMES = ['analyticsEngineConnectorCallRecorder', 'CONNECTOR_CALL_DATA_POINT_LAYOUT', 'connectorCallDataPoint'];
 
-  it('forwards exactly the moved names', () => {
-    expect(Object.keys(connectorCalls).sort()).toEqual([...NAMES].sort());
+  it.each(NAMES)("exposes %s as the kernel's binding", (name) => {
+    const kernelBinding = (kernel as Record<string, unknown>)[name];
+    expect(kernelBinding).toBeDefined();
+    expect((adapter as Record<string, unknown>)[name]).toBe(kernelBinding);
   });
 
-  it("each one is the kernel's binding, from the module and from the package index", () => {
-    for (const name of NAMES) {
-      const kernelBinding = (kernel as Record<string, unknown>)[name];
-      expect(kernelBinding, name).toBeDefined();
-      expect((connectorCalls as Record<string, unknown>)[name], name).toBe(kernelBinding);
-      expect((adapter as Record<string, unknown>)[name], name).toBe(kernelBinding);
+  it('the forwarding module holds only kernel bindings, each one a moved name', () => {
+    for (const [name, binding] of Object.entries(connectorCalls)) {
+      expect(NAMES, name).toContain(name);
+      expect(binding, name).toBe((kernel as Record<string, unknown>)[name]);
     }
   });
 
@@ -143,8 +146,7 @@ describe('exports moving here from the kernel (#1978)', () => {
     expectTypeOf<adapter.AnalyticsEngineDatasetLike>().toEqualTypeOf<kernel.AnalyticsEngineDatasetLike>();
   });
 
-  it("the live-read wire names are contracts' bindings, and the upgrade test still the kernel's", () => {
+  it("the live-mode header is contracts' binding", () => {
     expect(liveReads.LIVE_MODE_HEADER).toBe(contracts.LIVE_MODE_HEADER);
-    expect(liveReads.isUpgradeRequest).toBe(kernel.isUpgradeRequest);
   });
 });

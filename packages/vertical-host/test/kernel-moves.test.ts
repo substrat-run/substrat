@@ -4,7 +4,13 @@
  * an import from either package must be the ONE binding — not a copy that could drift,
  * and not a second `RouterAssertionError` class that an `instanceof` from the other import
  * would miss.
+ *
+ * Which names moved is read from the kernel's own index: every export it tags
+ * `@deprecated Import from \`@substrat-run/vertical-host\`` must be exported here, as that
+ * binding. A name tagged there and forgotten here fails, with no list to keep in step.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import * as kernel from '@substrat-run/kernel';
 import * as host from '../src/index.js';
@@ -12,33 +18,38 @@ import * as invocationLogModule from '../src/invocation-log.js';
 import * as routedNodeModule from '../src/routed-node.js';
 import * as platformCallModule from '../src/platform-call.js';
 
-const MOVED = {
-  'invocation-log': {
-    module: invocationLogModule,
-    names: ['invocationLog', 'INVOCATION_RECORD_KEY', 'invocationStampOf', 'withInvocationLog'],
-  },
-  'routed-node': { module: routedNodeModule, names: ['readRoutedNode', 'RouterAssertionError'] },
-  'platform-call': { module: platformCallModule, names: ['assertPlatformCall', 'PlatformCallError', 'kickFlags'] },
-} as const;
+/** The kernel index's exports tagged as moving to `pkg`. */
+function movingTo(pkg: string): string[] {
+  const index = readFileSync(join(import.meta.dirname, '../../kernel/src/index.ts'), 'utf8');
+  const tagged = /@deprecated Import from `([^`]+)`[^*]*\*\/\s*(?:type\s+)?(\w+)/g;
+  return [...index.matchAll(tagged)].filter(([, to]) => to === pkg).map(([, , name]) => name!);
+}
+
+const MOVED = movingTo('@substrat-run/vertical-host');
+const kernelExports = kernel as Record<string, unknown>;
+// A type has no runtime binding; the type half is checked by `expectTypeOf` below.
+const VALUES = MOVED.filter((name) => kernelExports[name] !== undefined);
+const TYPES = MOVED.filter((name) => kernelExports[name] === undefined);
 
 describe('exports moving here from the kernel (#1978)', () => {
-  for (const [file, { module, names }] of Object.entries(MOVED)) {
-    it(`${file}: forwards exactly the moved names`, () => {
-      expect(Object.keys(module).sort()).toEqual([...names].sort());
-    });
+  it('the kernel tags the names this package takes', () => {
+    expect(VALUES).toContain('readRoutedNode');
+    expect(TYPES).toContain('RoutedNode');
+  });
 
-    it(`${file}: each one is the kernel's binding, from the module and from the package index`, () => {
-      for (const name of names) {
-        const kernelBinding = (kernel as Record<string, unknown>)[name];
-        expect(kernelBinding, name).toBeDefined();
-        expect((module as Record<string, unknown>)[name], name).toBe(kernelBinding);
-        expect((host as Record<string, unknown>)[name], name).toBe(kernelBinding);
-      }
-    });
-  }
+  it.each(VALUES)("exposes %s as the kernel's binding", (name) => {
+    expect((host as Record<string, unknown>)[name]).toBe(kernelExports[name]);
+  });
 
-  it("isUpgradeRequest is the kernel's binding", () => {
-    expect(host.isUpgradeRequest).toBe(kernel.isUpgradeRequest);
+  it.each([
+    ['invocation-log', invocationLogModule],
+    ['routed-node', routedNodeModule],
+    ['platform-call', platformCallModule],
+  ] as const)('%s forwards only kernel bindings, each one tagged as moving here', (_, module) => {
+    for (const [name, binding] of Object.entries(module)) {
+      expect(VALUES, name).toContain(name);
+      expect(binding, name).toBe(kernelExports[name]);
+    }
   });
 
   it('an error thrown through one import is an instance of the other', () => {
@@ -47,7 +58,21 @@ describe('exports moving here from the kernel (#1978)', () => {
     expect(() => host.assertPlatformCall(headers)).toThrow(kernel.PlatformCallError);
   });
 
-  it('the moved types are the kernel types', () => {
+  it('every moved type is checked below', () => {
+    expect([...TYPES].sort()).toEqual(
+      [
+        'HeaderReader',
+        'IncomingRequest',
+        'InvocationLogContext',
+        'InvocationLogLine',
+        'InvocationRecord',
+        'InvocationStamp',
+        'ModuleWorker',
+        'OutputFieldsReport',
+        'ReadRoutedNodeOptions',
+        'RoutedNode',
+      ],
+    );
     expectTypeOf<host.InvocationLogLine>().toEqualTypeOf<kernel.InvocationLogLine>();
     expectTypeOf<host.InvocationLogContext>().toEqualTypeOf<kernel.InvocationLogContext>();
     expectTypeOf<host.InvocationRecord>().toEqualTypeOf<kernel.InvocationRecord>();

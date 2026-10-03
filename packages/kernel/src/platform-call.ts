@@ -13,9 +13,10 @@ import {
  * exist and tells the vertical to create it, because only the vertical can create a
  * usable scope DO. This is the vertical's side of that call.
  *
- * It lives in the kernel for the same reason `readRoutedNode` does — five verticals
- * each re-deriving how to trust a header is five chances to get it wrong, and the
- * one that gets it wrong is not obviously broken.
+ * It is shared code for the same reason `readRoutedNode` is — five verticals each
+ * re-deriving how to trust a header is five chances to get it wrong, and the one that
+ * gets it wrong is not obviously broken. Both are moving from the kernel to
+ * `vertical-host` (#1978), which already re-exports them.
  *
  * Note the direction. `readRoutedNode` answers "which tenant is this request for",
  * and a request with no assertion is legitimate (a standalone deploy). This answers

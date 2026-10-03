@@ -131,11 +131,12 @@ export { invocationLevelOf, type InvocationLevel } from '@substrat-run/contracts
  * its scope host as `VerticalScopeHost` rather than importing a concrete adapter: the
  * seam is the shape, not the vendor.
  *
- * It is also what puts this code in kernel rather than in `vertical-host`. Kernel owns
- * the router-assertion family (`readRoutedNode`, `assertPlatformCall`) — the code that
- * reads what the router asserted about a request — and this line is the same family
- * seen from the other end: it writes that assertion down so a reader can find it again.
- * Living here means a lean vertical picks it up without also taking on an AI SDK.
+ * This line belongs with the router-assertion family (`readRoutedNode`,
+ * `assertPlatformCall`) — the code that reads what the router asserted about a request —
+ * because it is the same family seen from the other end: it writes that assertion down so
+ * a reader can find it again. The family is moving from the kernel to `vertical-host`
+ * (#1978), which already re-exports it; `vertical-host` keeps its AI SDK behind the
+ * `./model` subpath, so a vertical importing this from its root bundles none of it.
  */
 export interface InvocationLogContext<Env = unknown> {
   req: { method: string; raw: { url: string; headers: HeaderReader } };
