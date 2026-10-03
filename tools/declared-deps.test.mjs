@@ -9,12 +9,14 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import {
   FORBIDDEN_EDGES,
+  PERMISSIVE_LICENSES,
   PERMISSIVE_ONLY,
   forbiddenEdgeProblems,
   licenseProblem,
   licenseProblems,
   realResolver,
   shippedImportProblems,
+  spdxPermissive,
   workspaceMembers,
 } from './declared-deps.mjs';
 
@@ -142,6 +144,85 @@ test('licenseProblem: SPDX expressions — OR passes on either side, AND needs b
   assert.equal(licenseProblem(undefined, [{ type: 'MIT' }, { type: 'GPL-3.0' }]), null);
   assert.ok(licenseProblem(undefined, [{ type: 'GPL-3.0' }, { type: 'MPL-2.0' }]));
   assert.equal(licenseProblem({ type: 'MIT' }), null);
+});
+
+test('spdxPermissive: an expression that is not in the SPDX grammar is refused, whatever permissive words it holds', () => {
+  for (const malformed of [
+    'MIT WITH OR',
+    'MIT WITH (',
+    'MIT WITH )',
+    'MIT WITH',
+    'MIT WITH AND ISC',
+    'MIT WITH Foo WITH Bar',
+    'OR MIT',
+    'MIT OR',
+    'MIT OR OR ISC',
+    'MIT AND',
+    '()',
+    '( )',
+    '',
+    '(MIT',
+    'MIT)',
+    '((MIT)',
+    'MIT ISC',
+    'MIT, ISC',
+    'MIT/ISC',
+    'Apache 2.0',
+    'MIT@1',
+    // A permissive side never rescues a broken one: the whole string must parse.
+    'MIT OR GPL-3.0 WITH (',
+    'MIT OR ISC )',
+    'MIT OR (ISC AND',
+  ]) {
+    assert.equal(spdxPermissive(malformed), false, JSON.stringify(malformed));
+  }
+});
+
+test('spdxPermissive: well-formed expressions — nesting, precedence, WITH, `+`, case — judged by their licences', () => {
+  for (const ok of [
+    'MIT',
+    '(MIT)',
+    '((MIT))',
+    'MIT OR ISC',
+    '(MIT AND (ISC OR GPL-3.0))',
+    '(GPL-3.0 OR (MIT AND ISC)) AND Apache-2.0',
+    'Apache-2.0 WITH LLVM-exception',
+    'Apache-2.0 WITH LLVM-exception AND MIT',
+    '(Apache-2.0 WITH LLVM-exception) OR GPL-3.0',
+    'Apache-2.0+',
+    'mit or isc',
+    'MIT and ISC',
+  ]) {
+    assert.equal(spdxPermissive(ok), true, ok);
+  }
+  for (const no of [
+    'GPL-3.0',
+    'GPL-2.0+',
+    'GPL-2.0 WITH Classpath-exception-2.0',
+    '(MIT OR Apache-2.0) AND MPL-2.0',
+    'GPL-3.0 OR (MPL-2.0 AND MIT)',
+    '((GPL-3.0))',
+    'MIT AND (GPL-3.0 OR MPL-2.0)',
+  ]) {
+    assert.equal(spdxPermissive(no), false, no);
+  }
+});
+
+test('spdxPermissive: a LicenseRef is a licence nobody named — refused unless allowlisted by its full spelling', () => {
+  for (const ref of ['LicenseRef-Custom', 'LicenseRef-Custom OR GPL-3.0', 'DocumentRef-x:LicenseRef-y', 'MIT AND LicenseRef-Custom']) {
+    assert.equal(spdxPermissive(ref), false, ref);
+  }
+  // The positive twin: once someone allowlists it in review, it passes — and a malformed ref still does not.
+  PERMISSIVE_LICENSES.add('licenseref-custom');
+  try {
+    assert.equal(spdxPermissive('LicenseRef-Custom'), true);
+    assert.equal(spdxPermissive('MIT AND LicenseRef-Custom'), true);
+    assert.equal(spdxPermissive('LicenseRef-Custom WITH'), false);
+    assert.equal(spdxPermissive('LicenseRef-'), false);
+  } finally {
+    PERMISSIVE_LICENSES.delete('licenseref-custom');
+  }
+  assert.equal(spdxPermissive('LicenseRef-Custom'), false);
 });
 
 test('refuses an AGPL package as a direct runtime dependency, whichever field declares it', () => {

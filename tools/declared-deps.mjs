@@ -171,52 +171,91 @@ export const PERMISSIVE_LICENSES = new Set(
 );
 
 /**
- * Whether an SPDX licence expression is wholly permissive: `A OR B` passes when either side
- * does (the consumer may choose it), `A AND B` only when both do, `AND` binds tighter than
- * `OR`, parentheses group, and `X WITH exception` is judged on `X` alone (an exception never
- * makes a copyleft licence permissive). Anything that does not parse is refused.
+ * The SPDX licence-expression grammar (SPDX spec, annex D), as a recursive-descent parser:
+ *
+ *     expression  = and-expr *( "OR" and-expr )
+ *     and-expr    = with-expr *( "AND" with-expr )
+ *     with-expr   = simple [ "WITH" exception-id ]
+ *     simple      = "(" expression ")" / license-id [ "+" ] / license-ref
+ *     license-id, exception-id = 1*( ALPHA / DIGIT / "-" / "." )
+ *     license-ref = [ "DocumentRef-" idstring ":" ] "LicenseRef-" idstring
+ *
+ * `AND` binds tighter than `OR`, and the operators are read case-insensitively (an `or` is
+ * unambiguous). It returns the expression's verdict — `OR`: either side permits, `AND`: both
+ * must — and THROWS on anything that is not in the grammar, so a caller fails closed:
+ * `MIT WITH OR`, `MIT WITH (`, a dangling operator, an unbalanced parenthesis, and an
+ * identifier with a character the grammar does not allow are all errors rather than guesses.
+ * `X WITH exception` is judged on `X` alone: an exception never makes a copyleft licence
+ * permissive. A `LicenseRef-*` is a licence nobody named in this file, so it is refused unless
+ * it is allowlisted by its full spelling.
  */
-export function spdxPermissive(expression) {
+function parseSpdx(expression) {
   const tokens = String(expression).match(/\(|\)|[^\s()]+/g) ?? [];
   let at = 0;
-  const peek = () => tokens[at];
-  const word = (w) => peek()?.toUpperCase() === w;
-  const primary = () => {
+  const fail = (why) => {
+    throw new SyntaxError(`${why} in SPDX expression ${JSON.stringify(String(expression))}`);
+  };
+  const isOperator = (t) => t !== undefined && /^(?:AND|OR|WITH)$/i.test(t);
+  const isWord = (t, w) => t !== undefined && t.toUpperCase() === w;
+  const IDSTRING = /^[A-Za-z0-9.-]+$/;
+  const LICENSE_REF = /^(?:DocumentRef-[A-Za-z0-9.-]+:)?LicenseRef-[A-Za-z0-9.-]+$/;
+
+  function simple() {
     const t = tokens[at++];
-    if (t === undefined || t === ')') return null;
+    if (t === undefined) return fail('expected a licence, found the end');
+    if (t === ')') return fail("unexpected ')'");
     if (t === '(') {
       const inner = or();
-      if (inner === null || tokens[at++] !== ')') return null;
+      if (tokens[at++] !== ')') return fail("expected ')'");
       return inner;
     }
-    if (/^(?:AND|OR|WITH)$/i.test(t)) return null;
-    const allowed = PERMISSIVE_LICENSES.has(t.replace(/\+$/, '').toLowerCase());
-    if (word('WITH')) {
+    if (isOperator(t)) return fail(`expected a licence, found '${t}'`);
+    if (LICENSE_REF.test(t)) return PERMISSIVE_LICENSES.has(t.toLowerCase());
+    const id = t.endsWith('+') ? t.slice(0, -1) : t;
+    if (!IDSTRING.test(id)) return fail(`'${t}' is not a licence identifier`);
+    return PERMISSIVE_LICENSES.has(id.toLowerCase());
+  }
+  function withException() {
+    const value = simple();
+    if (isWord(tokens[at], 'WITH')) {
       at++;
-      if (tokens[at++] === undefined) return null;
+      const exception = tokens[at++];
+      if (exception === undefined || exception === '(' || exception === ')' || isOperator(exception) || !IDSTRING.test(exception)) {
+        return fail('expected an exception identifier after WITH');
+      }
     }
-    return allowed;
-  };
-  const and = () => {
-    let left = primary();
-    while (left !== null && word('AND')) {
+    return value;
+  }
+  function and() {
+    let value = withException();
+    while (isWord(tokens[at], 'AND')) {
       at++;
-      const right = primary();
-      left = right === null ? null : left && right;
+      const right = withException();
+      value = value && right;
     }
-    return left;
-  };
+    return value;
+  }
   function or() {
-    let left = and();
-    while (left !== null && word('OR')) {
+    let value = and();
+    while (isWord(tokens[at], 'OR')) {
       at++;
       const right = and();
-      left = right === null ? null : left || right;
+      value = value || right;
     }
-    return left;
+    return value;
   }
   const verdict = or();
-  return verdict === true && at === tokens.length;
+  if (at !== tokens.length) fail(`unexpected '${tokens[at]}'`);
+  return verdict;
+}
+
+/** Whether an SPDX expression is wholly permissive; one that does not parse is not. */
+export function spdxPermissive(expression) {
+  try {
+    return parseSpdx(expression);
+  } catch {
+    return false;
+  }
 }
 
 /**
