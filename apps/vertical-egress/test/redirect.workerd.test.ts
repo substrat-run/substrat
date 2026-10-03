@@ -151,12 +151,12 @@ describe('an install: the declared surface bounds where a redirect lands (#2011)
     expect(hops).toEqual([`GET https://${DECLARED}/start`]);
   });
 
-  it("a redirect loop between declared hosts ends at the runtime's own limit, every hop through the egress worker", async () => {
+  // The egress worker follows nothing, so it owns no hop limit: the vertical's runtime does, and
+  // it holds — the first request plus 20 redirects, then `fetch` throws.
+  it("a redirect loop between declared hosts ends at the runtime's own limit", async () => {
     const res = await call(`https://${DECLARED}/loop`);
     expect(res.thrown).toMatch(/redirect/i);
-    // Each hop that reached the web was one the egress worker let out; none was its own follow.
-    expect(hops.length).toBeGreaterThan(2);
-    expect(hops.every((h) => h.endsWith('/loop'))).toBe(true);
+    expect(hops).toHaveLength(21);
   });
 
   it('the platform loopback: another app redirecting to an undeclared host is refused on the hop', async () => {

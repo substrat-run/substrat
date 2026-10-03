@@ -195,6 +195,11 @@ function isOwnHost(hostname: string, policy: OutboundPolicy): boolean {
  * follows redirects sees the same response, `url` and `redirected` it always did; only a hop
  * the policy refuses ends differently, in the same 403 a direct call there would meet.
  *
+ * workerd already hands this worker an incoming request whose mode is `manual`, whatever the
+ * vertical asked for, so forwarding it as it came did not follow either — but that was a property
+ * of the runtime, not a decision made here, and any request rebuilt from parts defaults to
+ * `follow`. Setting it is what makes it one; `redirect.workerd.test.ts` holds it end to end.
+ *
  * The 3xx is metered as a `redirect` beside the verdict that let the request out, carrying
  * where it pointed, so a refusal of a host the vertical never named can be traced to the
  * allowed host that sent it there.

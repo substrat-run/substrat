@@ -32,7 +32,8 @@
 
 	// Egress metering (#303, D-30 "meter, don't bill"): one datapoint per subrequest
 	// decision — index = vertical slug; blobs = [hostname, verdict, tenant]. This is what
-	// keeps the unenforced tail (pre-#303 versions) and refusal spikes visible.
+	// keeps the unenforced tail (pre-#303 versions) and refusal spikes visible. A destination
+	// that answers 3xx adds a `redirect` datapoint with a fourth blob, the host it pointed at (#2011).
 	"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_egress" }],
 
 	// No public route and no workers.dev hostname: this worker is only ever reached as the
