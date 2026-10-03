@@ -3979,11 +3979,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // from the start visits it again. A healed preview is no longer a candidate, which is
   // what makes a re-run a no-op. `dryRun` lists the candidates and touches nothing.
   const REPAIR_SCAN_PAGE = 500;
-  const repairServingPinsBody = z.object({
-    cursor: scopeIdSchema.optional(),
-    limit: z.number().int().min(1).max(100).default(25),
-    dryRun: z.boolean().default(false),
-  });
+  const repairServingPinsBody = z
+    .object({
+      cursor: scopeIdSchema.optional(),
+      limit: z.number().int().min(1).max(100).default(25),
+      dryRun: z.boolean().default(false),
+    })
+    .strict();
   type PinRepairOutcome =
     | { repaired: { from: string; to: string; tables: number } }
     | { skipped: string };
@@ -4016,7 +4018,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!options.resolveVerticalVersion || !options.resolveVerticalRef) {
       return c.json({ error: 'repairing serving pins needs dispatch resolution for both ends' }, 501);
     }
-    const parsed = repairServingPinsBody.safeParse(await c.req.json().catch(() => ({})));
+    // Only a genuinely empty body takes the defaults (a real pass, 25 at a time). A body that does
+    // not parse is a refusal: defaulting it would start a repair from a request nobody could read.
+    const text = (await c.req.text()).trim();
+    let raw: unknown = {};
+    if (text !== '') {
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        return c.json({ error: 'body must be JSON: { cursor?: <scope id>, limit?: 1..100, dryRun?: boolean }' }, 400);
+      }
+    }
+    const parsed = repairServingPinsBody.safeParse(raw);
     if (!parsed.success) {
       return c.json({ error: 'body must be { cursor?: <scope id>, limit?: 1..100, dryRun?: boolean }' }, 400);
     }

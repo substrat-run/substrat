@@ -102,6 +102,8 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
   };
   const repair = (headers: Record<string, string>, body: object = {}) =>
     app.request(REPAIR, { method: 'POST', headers, body: JSON.stringify(body) });
+  const repairRaw = (headers: Record<string, string>, body: string | undefined) =>
+    app.request(REPAIR, { method: 'POST', headers, body });
   type Pass = {
     dryRun: boolean;
     repaired: { tenantId: string; scopeId: string; from: string; to: string; tables: number }[];
@@ -131,24 +133,25 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
   const sinceStart = async (sid: string, action: 'bindScopeVersion' | 'setScopeServingRef') =>
     (await host.admin.auditLog(staff, { tenantId: t, scopeId: scopeId.parse(sid), action })).length;
 
+  const baseOptions = () => ({
+    host,
+    authenticateTenantService: tenantTokenAuth(TENANT_SECRET, serviceActor),
+    authenticateBuilder: firstBuilderAuth(pushTokenBuilderAuth(PUSH_SECRET)),
+    tenantTokenSecret: TENANT_SECRET,
+    pushTokenSecret: PUSH_SECRET,
+    platformBaseDomains: ['global.substrat.run'],
+    provisionRetryDelaysMs: [1],
+    resolveVerticalVersion: async (s: string, versionId: string) => {
+      const ref = s === slug ? refOf.get(versionId) : undefined;
+      return ref ? deployment(ref) : undefined;
+    },
+    resolveVerticalRef: async (ref: string) => deployment(ref),
+  });
+
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-preview-pin-repair-'));
     host = new SqliteScopeHost({ dir });
-    app = createControlPlaneApi({
-      host,
-      authenticate: UNSAFE_devPlatformActorAuth(),
-      authenticateTenantService: tenantTokenAuth(TENANT_SECRET, serviceActor),
-      authenticateBuilder: firstBuilderAuth(pushTokenBuilderAuth(PUSH_SECRET)),
-      tenantTokenSecret: TENANT_SECRET,
-      pushTokenSecret: PUSH_SECRET,
-      platformBaseDomains: ['global.substrat.run'],
-      provisionRetryDelaysMs: [1],
-      resolveVerticalVersion: async (s, versionId) => {
-        const ref = s === slug ? refOf.get(versionId) : undefined;
-        return ref ? deployment(ref) : undefined;
-      },
-      resolveVerticalRef: async (ref) => deployment(ref),
-    });
+    app = createControlPlaneApi({ ...baseOptions(), authenticate: UNSAFE_devPlatformActorAuth() });
     await host.admin.createTenant(staff, { id: t, slug: 'pin-co', name: 'Pin Co' });
     await host.admin.createTenant(staff, { id: other, slug: 'other-co', name: 'Other Co' });
     // PRIVATE (owned, unlisted), so every push self-admits, as a builder's does.
@@ -395,15 +398,34 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     expect((await recordOf(racing.scopeId)).verticalVersionId).toBe(v2);
   });
 
-  it('refuses a malformed body before touching anything', async () => {
+  it('refuses a body it cannot read as the request, before touching anything', async () => {
     const pinned = await legacyPreview('legacy-validate', v1, 'v-row');
-    for (const body of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: '5' }, { cursor: 'not-a-scope-id' }, { dryRun: 'yes' }]) {
+    calls.length = 0;
+    // Wrong types and bounds, a key the route does not know (a typo for `dryRun` would otherwise
+    // start a real pass), and JSON that is not an object.
+    for (const body of [
+      { limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: '5' }, { cursor: 'not-a-scope-id' }, { cursor: 7 },
+      { dryRun: 'yes' }, { dryrun: true }, { limit: 5, extra: 1 },
+    ]) {
       const res = await repair(asStaff, body);
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
+    // Malformed JSON must not fall back to the defaults, which are a REAL pass.
+    for (const raw of ['{', '{"dryRun": true', 'dryRun=true', '[]', 'null', '"x"', '5']) {
+      const res = await repairRaw(asStaff, raw);
+      expect(res.status, raw).toBe(400);
+    }
+    expect(calls).toEqual([]);
     expect((await recordOf(pinned.scopeId)).servingRef).toBe(SERVING);
-    // The pass the other tests rely on, so the fixture does not leak into them.
-    await pass();
+
+    // A genuinely empty body, or none, is the defaults: a real pass.
+    const empty = await repairRaw(asStaff, '');
+    expect(empty.status).toBe(200);
+    expect(((await empty.json()) as Pass)).toMatchObject({ dryRun: false, repaired: [{ scopeId: pinned.scopeId }] });
+    expect((await recordOf(pinned.scopeId)).servingRef ?? null).toBeNull();
+    const none = await repairRaw(asStaff, undefined);
+    expect(none.status).toBe(200);
+    expect(((await none.json()) as Pass).repaired).toEqual([]);
   });
 
   describe('who can call it', () => {
