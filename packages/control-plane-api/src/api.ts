@@ -3995,6 +3995,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // would strand it on the serving script.
     const bound = await c.var.admin.getVersion(actor, versionId, scope.vertical);
     if (!bound?.deploymentRef) return { skipped: `version ${versionId} has no script of its own` };
+    // The same carry → bind → clear-pin → reassert sequence as `POST …/scopes/:scopeId/version`
+    // runs for a legacy preview (`repairPreviewPin` there). Keep the two in step: #1722 folds
+    // them into one helper.
     const carried = await carryOntoVersion(c, scope, versionId, { dropServingRef: true });
     // `expectedVersionId`: a push that re-pointed the preview since it was listed wins, and
     // this pass leaves the scope to it rather than binding it back.
@@ -4707,6 +4710,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { versionId, snapshot, acknowledge } = bindScopeVersionBody.parse(await c.req.json());
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    // The fleet pass `repairPreviewServingPin` (POST /previews/repair-serving-pins) repeats this
+    // sequence for every legacy preview at once. Keep the two in step: #1722 folds them into one helper.
     const repairPreviewPin = scope?.kind === 'preview' && Boolean(scope.servingRef);
     // #1756: the apps in this tenant the bind would break, asked BEFORE the carry and the
     // snapshot below, which move data. The host refuses too, whoever calls, but by then a
