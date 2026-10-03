@@ -630,11 +630,7 @@ describe('peersDeclaredBy (#1706)', () => {
   });
 });
 
-/**
- * #2001. The declared `order` is what a caller gets by naming none, and it is applied
- * HERE because every door — the route, MCP, an in-process `invoke`, a seed, a schedule —
- * parses through this map. It used to be read only by the OpenAPI emitter.
- */
+/** #2001 (K-44): the declared `order` is what a caller naming none gets, on every door. */
 describe('operationInputsOf: a paged read’s declared order', () => {
   const inputs = operationInputsOf({
     'acme/newest': {

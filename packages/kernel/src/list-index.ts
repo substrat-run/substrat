@@ -369,7 +369,9 @@ export class CursorMismatch extends SubstratError {
  * encoding, survives in a query string and reads by eye — the properties K-41
  * kept the walk out of the cursor for, which this keeps too (K-44).
  */
-const CURSOR_WALK = /^(asc|desc)\.([A-Za-z_][A-Za-z0-9_]*)\.([\s\S]*)$/;
+const CURSOR_WALK = new RegExp(
+  `^(?<order>asc|desc)\\.(?<sort>${IDENTIFIER.source.slice(1, -1)})\\.(?<position>[\\s\\S]*)$`,
+);
 
 /** Build the cursor a row hands to the next page — tagged with the walk that minted it. */
 export function cursorOf(
@@ -400,7 +402,7 @@ function positionIn(
   sortColumn: string,
   order: 'asc' | 'desc',
 ): string {
-  const walk = CURSOR_WALK.exec(cursor);
+  const walk = CURSOR_WALK.exec(cursor)?.groups;
   if (!walk) {
     if (order === 'asc' && sortColumn === plan.sortable[0]) return cursor;
     throw new CursorMismatch(
@@ -408,15 +410,14 @@ function positionIn(
         'restart paging from the first page, without a cursor',
     );
   }
-  const [, mintedOrder, mintedSort, position] = walk as unknown as [string, string, string, string];
-  if (mintedOrder !== order || mintedSort !== sortColumn) {
+  if (walk['order'] !== order || walk['sort'] !== sortColumn) {
     throw new CursorMismatch(
-      `list: this cursor continues a walk by '${mintedSort}' ${mintedOrder}, and this request ` +
+      `list: this cursor continues a walk by '${walk['sort']}' ${walk['order']}, and this request ` +
         `asks for '${sortColumn}' ${order} — keep the sort and order the first page was read with, ` +
         'or restart paging from the first page, without a cursor',
     );
   }
-  return position;
+  return walk['position'] as string;
 }
 
 /**

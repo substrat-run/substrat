@@ -1873,7 +1873,7 @@ export const listModManifest = moduleManifest.parse({
  * parses a declared module — through `operationInputsOf`. Nothing in its handler
  * names an order, so whatever direction it walks in came from the declaration.
  */
-const listDeclaredOps = {
+export const listDeclaredOps = {
   'list/newest': {
     paged: { over: { entity: 'listorder', sortable: ['number', 'status', 'id'] }, order: 'desc' },
   },

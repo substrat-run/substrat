@@ -438,12 +438,9 @@ export interface OperationContext {
    * `FilterNotDeclared` for a filter outside it — never a silently-ignored
    * parameter, which is how a caller comes to believe a filter is applied.
    *
-   * `params.order` unset walks ascending; the operation's DECLARED order reaches
-   * here already applied, because the host parses every invocation's input
-   * through `operationInputsOf` (#2001). The `nextCursor` names the walk that
-   * minted it, and a cursor replayed under another sort or order throws
-   * `CursorMismatch` (`validation_failed`, `reason: 'cursor_restart'`) rather
-   * than answering with the rows the caller has already read.
+   * `params.order` unset walks ascending; an operation's declared order arrives
+   * already applied by `operationInputsOf`. A cursor replayed under another sort
+   * or order throws `CursorMismatch` (`reason: 'cursor_restart'`) — #2001, K-44.
    */
   page<T>(entityType: string, params: PageParams): Page<T> | CountedPage<T>;
   /**

@@ -29,15 +29,13 @@ import {
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { listMod } from '@substrat-run/contract-tests';
+import { listDeclaredOps, listMod } from '@substrat-run/contract-tests';
+import { mcpToolsOf } from '../src/mcp.js';
 import { mountOperations } from '../src/operations-routes.js';
 
 /** The declared surface: `list/newest` declares `desc`, and its handler names no order. */
 const operations = {
-  'list/newest': {
-    paged: { over: { entity: 'listorder', sortable: ['number', 'status', 'id'] }, order: 'desc' },
-    http: { method: 'GET', path: '/orders' },
-  },
+  'list/newest': { ...listDeclaredOps['list/newest'], http: { method: 'GET', path: '/orders' } },
 } as const;
 
 type Row = { id: string; number: string };
@@ -81,11 +79,11 @@ describe('a declared order, served through every door (#2001)', () => {
     return seen;
   };
 
-  async function rpc(params: unknown) {
+  async function rpc(method: string, params?: unknown) {
     const res = await app.request('/api/mcp', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, ...(params === undefined ? {} : { params }) }),
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (await res.json()) as any;
@@ -142,21 +140,23 @@ describe('a declared order, served through every door (#2001)', () => {
 
   describe('over MCP', () => {
     it('advertises the declared order as the default', async () => {
-      const res = await app.request('/api/mcp', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-      });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tool = ((await res.json()) as any).result.tools.find((x: { name: string }) => x.name === 'list_newest');
+      const body = await rpc('tools/list');
+      const tool = body.result.tools.find((x: { name: string }) => x.name === 'list_newest');
       expect(tool.inputSchema.properties.order.default).toBe('desc');
+    });
+
+    it('states no default where nothing declares an order, leaving it to the handler', () => {
+      const [tool] = mcpToolsOf({
+        'list/own-walk': { paged: { sortKey: 'id' }, http: { method: 'GET', path: '/own' } },
+      });
+      expect((tool!.inputSchema as { properties: { order: object } }).properties.order).not.toHaveProperty('default');
     });
 
     it('serves the declared desc when the call names no order, and walks it by cursor', async () => {
       const seen: string[] = [];
       let cursor: string | null | undefined;
       for (let guard = 0; cursor !== null && guard < 10; guard++) {
-        const body = await rpc({ name: 'list_newest', arguments: { limit: 2, ...(cursor ? { cursor } : {}) } });
+        const body = await rpc('tools/call', { name: 'list_newest', arguments: { limit: 2, ...(cursor ? { cursor } : {}) } });
         const page = body.result.structuredContent as { entries: Row[]; nextCursor: string | null };
         seen.push(...numbersOf(page.entries));
         cursor = page.nextCursor;
@@ -165,7 +165,7 @@ describe('a declared order, served through every door (#2001)', () => {
     });
 
     it('lets an explicit order override it', async () => {
-      const body = await rpc({ name: 'list_newest', arguments: { limit: 2, order: 'asc' } });
+      const body = await rpc('tools/call', { name: 'list_newest', arguments: { limit: 2, order: 'asc' } });
       expect(numbersOf(body.result.structuredContent.entries)).toEqual(['1001', '1002']);
     });
   });

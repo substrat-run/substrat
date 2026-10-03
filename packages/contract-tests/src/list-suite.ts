@@ -53,11 +53,15 @@ export function listContractSuite(
       stub.invoke<Page<Row> | CountedPage<Row>>('list/page', params);
 
     /** Walk the whole list one page at a time, following the cursor as a client would. */
-    const walkAll = async (params: Record<string, unknown>, limit: number): Promise<string[]> => {
+    const walkAll = async (
+      params: Record<string, unknown>,
+      limit: number,
+      operation = 'list/page',
+    ): Promise<string[]> => {
       const seen: string[] = [];
       let cursor: string | undefined;
       for (let guard = 0; guard < 50; guard++) {
-        const got = await page({ ...params, limit, cursor });
+        const got = await stub.invoke<Page<Row>>(operation, { ...params, limit, cursor });
         seen.push(...got.entries.map((r) => String(r['id'])));
         if (got.nextCursor === null) return seen;
         cursor = got.nextCursor;
@@ -157,29 +161,18 @@ export function listContractSuite(
      * that tells a client to read the first page again — never answered with a page.
      */
     const expectRestart = async (call: Promise<unknown>): Promise<void> => {
-      const err = await call.then(
-        () => undefined,
-        (e: unknown) => e,
-      );
-      expect(err, 'the replay was answered with a page').toBeDefined();
-      expect(errorCodeOf(err)).toBe('validation_failed');
-      expect((err as { extensions?: Record<string, unknown> }).extensions?.['reason']).toBe(
-        PAGE_CURSOR_RESTART,
-      );
-      expect(String((err as Error).message)).toMatch(/restart paging/);
+      const err: unknown = await call.then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(err), 'the replay was answered with a page').toBe('validation_failed');
+      expect(err).toMatchObject({
+        message: expect.stringMatching(/restart paging/),
+        extensions: { reason: PAGE_CURSOR_RESTART },
+      });
     };
 
     it('serves a declared desc when the caller names no order, and walks it to the end', async () => {
       const first = await stub.invoke<Page<Row>>('list/newest', { limit: 2 });
       expect(first.entries.map((r) => r['number'])).toEqual(['1006', '1005']);
-      const seen = first.entries.map((r) => String(r['id']));
-      let cursor = first.nextCursor;
-      for (let guard = 0; cursor !== null && guard < 10; guard++) {
-        const next: Page<Row> = await stub.invoke<Page<Row>>('list/newest', { limit: 2, cursor });
-        seen.push(...next.entries.map((r) => String(r['id'])));
-        cursor = next.nextCursor;
-      }
-      expect(seen).toEqual(['01F', '01E', '01D', '01C', '01B', '01A']);
+      expect(await walkAll({}, 2, 'list/newest')).toEqual(['01F', '01E', '01D', '01C', '01B', '01A']);
     });
 
     it('lets an explicit order override the declared one', async () => {
