@@ -113,6 +113,61 @@ describe('the call’s headers, in every shape HeadersInit allows', () => {
   });
 });
 
+describe('one credential per request, whatever the headers option carries', () => {
+  const stale = { 'X-Platform-Actor': 'stale-actor', 'X-Service-Token': 'stale-token', 'x-keep': '1' };
+
+  it('a service token drops BOTH credential headers from the option — no actor rides beside it', async () => {
+    const { seen, fetch } = spy();
+    await make(fetch, { serviceToken: 'good', headers: stale }).call2('/x');
+    expect(seen[0]!.headers).toEqual({ [SERVICE_TOKEN_HEADER]: 'good', 'x-keep': '1', 'content-type': 'application/json' });
+  });
+
+  it('an actor drops BOTH too — a stale service token would outrank it at the plane', async () => {
+    const { seen, fetch } = spy();
+    await make(fetch, { actor: 'dev', headers: stale }).call2('/x');
+    expect(seen[0]!.headers).toEqual({ [DEV_ACTOR_HEADER]: 'dev', 'x-keep': '1', 'content-type': 'application/json' });
+  });
+
+  it('with a token AND an actor, only the token leaves (#980), whatever the option carries', async () => {
+    const { seen, fetch } = spy();
+    await make(fetch, { serviceToken: 'good', actor: 'dev', headers: stale }).call2('/x');
+    expect(seen[0]!.headers).toEqual({ [SERVICE_TOKEN_HEADER]: 'good', 'x-keep': '1', 'content-type': 'application/json' });
+  });
+
+  it('every spelling is dropped, not just the lowercase one', async () => {
+    const { seen, fetch } = spy();
+    await make(fetch, { serviceToken: 'good', headers: { 'X-PLATFORM-ACTOR': 'a', 'x-Service-TOKEN': 'b' } }).call2('/x');
+    expect(Object.keys(seen[0]!.headers).sort()).toEqual(['content-type', SERVICE_TOKEN_HEADER]);
+    expect(seen[0]!.headers[SERVICE_TOKEN_HEADER]).toBe('good');
+  });
+
+  it('a client with NO credential of its own passes the map through untouched (the CLI’s case — the positive twin)', async () => {
+    const { seen, fetch } = spy();
+    await make(fetch, { actor: null, headers: stale }).call2('/x');
+    expect(seen[0]!.headers).toEqual({
+      'x-platform-actor': 'stale-actor',
+      'x-service-token': 'stale-token',
+      'x-keep': '1',
+      'content-type': 'application/json',
+    });
+  });
+
+  it('a single call can still choose its own credential — the per-call override is intact', async () => {
+    const { seen, fetch } = spy();
+    await make(fetch, { serviceToken: 'good', headers: stale }).call2('/x', { headers: { 'X-Platform-Actor': 'call-actor' } });
+    expect(seen[0]!.headers[DEV_ACTOR_HEADER]).toBe('call-actor');
+    expect(seen[0]!.headers[SERVICE_TOKEN_HEADER]).toBe('good');
+  });
+
+  it('holds for the builder client as well', async () => {
+    const { seen, fetch } = spy();
+    const { ControlPlaneBuilderClient } = await import('../src/index.js');
+    await new ControlPlaneBuilderClient({ baseUrl: BASE, serviceToken: 'good', actor: 'dev', headers: stale, fetch }).whoami();
+    expect(seen[0]!.headers[SERVICE_TOKEN_HEADER]).toBe('good');
+    expect(DEV_ACTOR_HEADER in seen[0]!.headers).toBe(false);
+  });
+});
+
 describe('the contentType option', () => {
   it('null sends none — the CLI’s bodyless reads and its multipart upload carry no JSON type', async () => {
     const { seen, fetch } = spy();

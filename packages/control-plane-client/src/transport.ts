@@ -34,8 +34,9 @@ export interface ControlPlaneTransportOptions {
    * credential header map (the CLI's `Authorization: Bearer …` / `x-service-token`, plus the
    * tenant it acts for). PRECEDENCE, lowest first: these, then the transport's own
    * credential (`serviceToken` / `actor`), then the content type, then the request's own
-   * `init.headers`. So a configured credential option is never overridden by a stale map
-   * entry, and a single call can still override anything.
+   * `init.headers`. A client that has a credential of its own ignores any credential header
+   * (`x-service-token`, `x-platform-actor`, any case) in this map, so exactly one credential
+   * leaves per request; a single call can still override anything.
    */
   headers?: Record<string, string>;
   /**
@@ -161,6 +162,16 @@ export class ControlPlaneTransport {
     // actor header would be ignored there — and a dev-only header has no business
     // leaving a production caller at all. Without a token, the actor header IS the
     // (local, UNSAFE) credential.
+    //
+    // That holds against the `headers` option too: a client that has a credential of its own
+    // drops BOTH credential headers from the option before applying it, so a stale entry for
+    // the OTHER header cannot ride beside the one the client chose. (Setting only the chosen
+    // one would leave, say, an `x-platform-actor` from the map next to the token.) A client
+    // with none — the CLI, which hands over a resolved map — passes the map through as it is.
+    if (this.serviceToken || this.actor !== null) {
+      merged.delete(SERVICE_TOKEN_HEADER);
+      merged.delete(DEV_ACTOR_HEADER);
+    }
     if (this.serviceToken) merged.set(SERVICE_TOKEN_HEADER, this.serviceToken);
     else if (this.actor !== null) merged.set(DEV_ACTOR_HEADER, this.actor);
     if (this.contentType !== null) merged.set('content-type', this.contentType);
