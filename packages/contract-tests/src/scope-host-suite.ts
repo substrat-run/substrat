@@ -39,6 +39,7 @@ import {
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
   startPlatformSweeper,
+  createUlid,
   ulid,
   type AuditLogFilter,
   type OperationHandler,
@@ -635,6 +636,138 @@ export function scopeHostContractSuite(
         await host.restoreScope(staff, t1, source, await host.admin.exportScope(staff, t1, source));
         const back = (await host.listPlatformRequests(t1, source)).find((r) => r.id === id);
         expect(back).toMatchObject({ status: 'pending', payload: { slug: 'copied' }, lastError: null, settledAt: null });
+      });
+    });
+
+    /**
+     * #1686, the rest of the queue. Delivery is "no delivery row yet", so an event the source
+     * emitted and nobody reached is owed work in the copy too, and an executor retry is due work.
+     * The dump below is the source's own export with the journal set back: the consumer's row
+     * for one event removed (never delivered), one executor delivery made due for a retry, and
+     * another removed (never attempted).
+     */
+    describe('a copy never runs work the source queued (#1686)', () => {
+      type Dump = Awaited<ReturnType<ScopeHost['admin']['exportScope']>>;
+      let source: ScopeId;
+      let queued: Dump;
+      let step1: string;
+      const count = (tag: string) => effected.filter((e) => e === tag).length;
+      const logOf = async (s: ScopeId) =>
+        (await (await host.getScope(alice, t1, s)).invoke<{ event_id: string }[]>('flow/log')).map((r) => r.event_id);
+      const activeScope = async () => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s, jurisdiction: 'eu', vertical: 'connector-vertical' });
+        await host.admin.activateScope(staff, t1, s);
+        return s;
+      };
+
+      beforeAll(async () => {
+        source = await activeScope();
+        const stub = await host.getScope(alice, t1, source);
+        await stub.invoke('flow/produce');
+        await stub.invoke('connector/request-effect', { tag: 'copy-retry' });
+        await stub.invoke('connector/request-effect', { tag: 'copy-unattempted' });
+        // The source ran all three: the consumer logged step1, the executor effected both.
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        const dump = await host.admin.exportScope(staff, t1, source);
+        const outbox = dump.tables.find((t) => t.name === '_substrat_outbox')!;
+        const col = (name: string) => outbox.columns.indexOf(name);
+        const idOf = (type: string, entityId: string) =>
+          String(outbox.rows.find((r) => r[col('type')] === type && r[col('entity_id')] === entityId)![col('id')]);
+        step1 = idOf('flow.step1', 'f1');
+        const retry = idOf('effect.requested', 'copy-retry');
+        const unattempted = idOf('effect.requested', 'copy-unattempted');
+        expect(await logOf(source)).toContain(step1);
+        queued = {
+          ...dump,
+          tables: dump.tables.map((t) => {
+            // The consumer's own record of the delivery goes with the delivery row.
+            if (t.name === 'flow_log') return { ...t, rows: [] };
+            if (t.name !== '_substrat_deliveries') return t;
+            const at = (name: string) => t.columns.indexOf(name);
+            const rows = t.rows
+              .filter((r) => !(r[at('event_id')] === step1 && r[at('consumer_module')] === '@test/flow'))
+              .filter((r) => r[at('event_id')] !== unattempted)
+              .map((r) => {
+                if (r[at('event_id')] !== retry) return r;
+                const due = [...r];
+                due[at('error')] = 'boom';
+                due[at('attempts')] = 1;
+                due[at('next_attempt_at')] = '2000-01-01T00:00:00.000Z';
+                return due;
+              });
+            return { ...t, rows };
+          }),
+        };
+      });
+
+      it('a fork: no consumer reaches the copied event and no executor runs, on dispatch or on drainDue', async () => {
+        const fork = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: fork, jurisdiction: 'eu', vertical: 'connector-vertical' }, queued);
+        const stub = await host.getScope(alice, t1, fork);
+        await stub.invoke('flow/log'); // an invocation in the copy dispatches
+        await host.drainDue(t1, fork);
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        // The consumer never ran on the copied event.
+        expect(await logOf(fork)).toEqual([]);
+        expect(await host.listPlatformRequests(t1, fork)).toEqual([]);
+        // The retry reads settled, saying why, rather than vanishing.
+        const settled = (await host.executorDeadLetters(t1, fork)).find((d) => d.executorId === 'flaky-effector');
+        expect(settled?.error).toMatch(new RegExp(`^not carried: copied from scope ${source}`));
+
+        // The twin: work the copy creates itself flows as it always did.
+        await stub.invoke('flow/produce');
+        const own = await logOf(fork);
+        expect(own).toHaveLength(2); // its own step1, and the step2 that consumer emitted
+        expect(own).not.toContain(step1);
+        await stub.invoke('connector/request-effect', { tag: 'fork-own' });
+        expect(count('fork-own')).toBe(1);
+      });
+
+      it("the copy's own events still sort above a copied event stamped by a clock that ran ahead", async () => {
+        // A copied event from a source whose clock was ahead: without the loader re-seeding the
+        // copy's id floor from the outbox it brought, the copy's next event would sort below the
+        // mark and be withheld as if it were the source's.
+        const ahead = createUlid()(Date.parse('2099-01-01T00:00:00.000Z'));
+        const withAhead = {
+          ...queued,
+          tables: queued.tables.map((t) => {
+            if (t.name !== '_substrat_outbox') return t;
+            const at = (name: string) => t.columns.indexOf(name);
+            const template = t.rows.find((r) => r[at('type')] === 'effect.requested')!;
+            const future = [...template];
+            future[at('id')] = ahead;
+            future[at('entity_id')] = 'copy-ahead';
+            future[at('payload')] = JSON.stringify({ tag: 'copy-ahead' });
+            return { ...t, rows: [...t.rows, future] };
+          }),
+        };
+        const fork = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: fork, jurisdiction: 'eu', vertical: 'connector-vertical' }, withAhead);
+        await (await host.getScope(alice, t1, fork)).invoke('connector/request-effect', { tag: 'fork-after-ahead' });
+        expect(count('fork-after-ahead')).toBe(1);
+        expect(count('copy-ahead')).toBe(0);
+      });
+
+      it('a snapshot: the same', async () => {
+        const snap = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: snap, jurisdiction: 'eu', vertical: 'connector-vertical' }, queued);
+        await host.drainDue(t1, snap);
+        await (await host.getScope(alice, t1, snap)).invoke('flow/log');
+        expect(count('copy-retry')).toBe(1);
+        expect(count('copy-unattempted')).toBe(1);
+        expect(await logOf(snap)).toEqual([]);
+      });
+
+      it('a return (the same dump restored into its own scope) runs all of it', async () => {
+        await host.restoreScope(staff, t1, source, queued);
+        await (await host.getScope(alice, t1, source)).invoke('flow/log');
+        await host.drainDue(t1, source);
+        expect(count('copy-retry')).toBe(2);
+        expect(count('copy-unattempted')).toBe(2);
+        expect(await logOf(source)).toContain(step1);
       });
     });
 

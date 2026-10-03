@@ -212,6 +212,7 @@ import {
   assertNoSecret,
   assertPermissionKey,
   CAPABILITY_DDL,
+  COPY_ORIGIN_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
@@ -519,7 +520,7 @@ import {
   unknownRoleError,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
-import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedIntents, spineColumnAdditions } from '@substrat-run/kernel';
+import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -880,6 +881,9 @@ const KERNEL_DDL = `
   -- an exchange trades that secret for. Spine (kernel-written), shared with the DO adapter
   -- from @substrat-run/kernel so the two cannot part company; the column comments are there.
   ${CAPABILITY_DDL}
+  -- #1686: where a copied scope's data came from, and the event id its own events start above.
+  -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
+  ${COPY_ORIGIN_DDL}
   -- #383 / #1232 / #1288: the platform sweep's per-scope gating state, holding two
   -- families of row that the kind COLUMN — not the spelling of a key — tells apart.
   -- Spine (kernel-written), never a module migration. Shared with the DO adapter from
@@ -3461,8 +3465,8 @@ export class SqliteScopeHost implements ScopeHost {
       // at this host's clock as the checker judges expiry.
       const switchSql = switchSqlOf(db);
       repointScopeGrants(switchSql, scopeId, { scopeId: dump.scopeId, exact: dump.exact }, this.clock());
-      // #1686: a copy never runs the source's pending intents; a return leaves them pending.
-      settleCopiedIntents(switchSql, scopeId, dump.scopeId, this.clock());
+      // #1686: nothing the source queued runs in a copy; a return leaves it all queued.
+      settleCopiedWork(switchSql, scopeId, dump.scopeId, this.clock());
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);
@@ -3473,6 +3477,17 @@ export class SqliteScopeHost implements ScopeHost {
     await rt.actor.turn(() => {
       // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
       load(capabilitiesForLoad(dump.tables, scopeId, dump.scopeId));
+      // #1335 / #1686: ids resume above the outbox the dump brought, as on a reopen, so a copy's
+      // own events sort above every copied one (`emittedHere()`). A top id that is no ULID leaves
+      // the floor where it was.
+      const top = (db.prepare('SELECT MAX(id) AS id FROM _substrat_outbox').get() as { id: string | null } | undefined)?.id;
+      if (top) {
+        try {
+          rt.mintEventId.seedFrom(top);
+        } catch {
+          // Not a ULID: nothing this mint could have written, so there is no floor to keep.
+        }
+      }
       // The frontier came in with the dump — refresh the cached applied-migration set so
       // a later bind/migrate builds on the loaded state, not the previous one.
       rt.appliedMigrations.clear();
@@ -4940,7 +4955,7 @@ export class SqliteScopeHost implements ScopeHost {
           `SELECT o.* FROM _substrat_outbox o
            LEFT JOIN _substrat_deliveries d
              ON d.event_id = o.id AND d.consumer_module = ?
-           WHERE o.type = ?
+           WHERE o.type = ? AND ${emittedHere('o.')}
              AND (d.event_id IS NULL
                   OR (d.next_attempt_at IS NOT NULL AND d.next_attempt_at <= ?))
            ORDER BY o.id`,
@@ -5514,7 +5529,7 @@ export class SqliteScopeHost implements ScopeHost {
           const rows = rt.db
             .prepare(
               `SELECT * FROM _substrat_outbox o
-               WHERE o.type = ?
+               WHERE o.type = ? AND ${emittedHere('o.')}
                  AND NOT EXISTS (
                    SELECT 1 FROM _substrat_deliveries d
                    WHERE d.event_id = o.id AND d.consumer_module = ?
@@ -7924,7 +7939,7 @@ export class SqliteScopeHost implements ScopeHost {
         // follows needs no such care: it stamps only rows that exist and are undrained.
         const db = this.scopeReadDbFor(tenantId, scopeId);
         const page = db.prepare(
-          `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ? OFFSET ?`,
+          `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL AND ${emittedHere()} ORDER BY id LIMIT ? OFFSET ?`,
         );
         // The kernel's read, shared with the DO: the envelope and the columns lifted beside
         // it (#1242, #1237) are decoded once, and a row that will not decode is stepped over
