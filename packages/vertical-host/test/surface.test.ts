@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts';
-import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
+import { mountPlatformSurface, registeredScopeSweepHost, type VerticalScopeHost } from '../src/index.js';
 
 const SECRET = 'sekret';
 // Valid 26-char ULIDs (Crockford base32 — no I/L/O/U).
@@ -2214,4 +2214,92 @@ describe('marking a copy (#2005)', () => {
       expect(host.calls).not.toContain(verb);
     });
   }
+});
+
+/**
+ * The platform's scope sweeper (#1902): `mountPlatformSurface` hands it the vertical's host
+ * and keeps its roster — but only when the upload says it supplied one.
+ */
+describe('mountPlatformSurface — the platform-supplied sweeper (#1902)', () => {
+  type SweepEnv = Env & Record<string, unknown>;
+  /** A namespace whose singleton records what the surface told it. */
+  function sweeperNamespace() {
+    const told: string[] = [];
+    const named: string[] = [];
+    return {
+      told,
+      named,
+      idFromName: (name: string) => (named.push(name), name),
+      get: () => ({
+        noteScope: async (t: string, s: string) => void told.push(`note ${t} ${s}`),
+        forgetScope: async (s: string) => void told.push(`forget ${s}`),
+      }),
+    };
+  }
+  const call = (app: Hono<{ Bindings: Env }>, path: string, body: unknown, env: SweepEnv) =>
+    app.request(path, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) }, env);
+
+  it('notes a provisioned and a reconciled scope, after the vertical’s hook, and forgets a deleted one', async () => {
+    const ns = sweeperNamespace();
+    const env: SweepEnv = { ...ENV, SUBSTRAT_SCOPE_SWEEPER: 'SWEEPER', SWEEPER: ns };
+    const order: string[] = [];
+    const app = appWith(fakeHost(), {
+      resolveOwner: async () => OWNER as never,
+      onProvision: async () => void order.push(`hook (roster: ${ns.told.length})`),
+    });
+    expect((await call(app, '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER }, env)).status).toBe(201);
+    expect((await call(app, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE }, env)).status).toBe(200);
+    expect((await call(app, '/internal/delete-scope', { tenantId: TENANT, scopeId: SCOPE }, env)).status).toBe(200);
+    expect(ns.told).toEqual([`note ${TENANT} ${SCOPE}`, `note ${TENANT} ${SCOPE}`, `forget ${SCOPE}`]);
+    // The hook ran before each note: a scope whose provision throws in the hook is never swept.
+    expect(order).toEqual(['hook (roster: 0)', 'hook (roster: 1)']);
+    expect(ns.named).toEqual(['scope-sweeper', 'scope-sweeper', 'scope-sweeper']);
+  });
+
+  it('a provision whose hook throws leaves the scope off the roster', async () => {
+    const ns = sweeperNamespace();
+    const app = appWith(fakeHost(), {
+      onProvision: async () => {
+        throw new Error('the vertical half failed');
+      },
+    });
+    const res = await call(app, '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER }, {
+      ...ENV,
+      SUBSTRAT_SCOPE_SWEEPER: 'SWEEPER',
+      SWEEPER: ns,
+    });
+    expect(res.ok).toBe(false);
+    expect(ns.told).toEqual([]);
+  });
+
+  it('touches nothing when the upload supplied no sweeper — a vertical’s own SWEEPER is its hooks’ business', async () => {
+    const ns = sweeperNamespace();
+    const app = appWith(fakeHost(), { resolveOwner: async () => OWNER as never });
+    const env: SweepEnv = { ...ENV, SWEEPER: ns };
+    expect((await call(app, '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER }, env)).status).toBe(201);
+    expect((await call(app, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE }, env)).status).toBe(200);
+    expect((await call(app, '/internal/delete-scope', { tenantId: TENANT, scopeId: SCOPE }, env)).status).toBe(200);
+    expect(ns.told).toEqual([]);
+  });
+
+  it('says so when the var names a binding the script does not have', async () => {
+    const res = await call(appWith(fakeHost()), '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER }, {
+      ...ENV,
+      SUBSTRAT_SCOPE_SWEEPER: 'SWEEPER',
+    });
+    expect(res.ok).toBe(false);
+    expect(JSON.stringify(await res.json())).toMatch(/names the binding 'SWEEPER', but this script has no Durable Object namespace/);
+  });
+
+  it('registers the vertical’s hostFor where the platform’s copy of the reader finds it', () => {
+    const host = fakeHost();
+    const hostFor = vi.fn(() => host);
+    const app = new Hono<{ Bindings: Env }>();
+    mountPlatformSurface<Env>(app, { platformSecret: (env) => env.PLATFORM_SECRET, hostFor, roles: [], ownerRoleKey: 'admin' });
+    // Read the way the generated sweeper does: the global symbol, not this module's export.
+    const registered = (globalThis as unknown as Record<symbol, (env: unknown) => unknown>)[Symbol.for('substrat.scope-sweep-host')];
+    expect(registered).toBe(hostFor);
+    expect(registeredScopeSweepHost()).toBe(hostFor);
+    expect(registered!(ENV)).toBe(host);
+  });
 });
