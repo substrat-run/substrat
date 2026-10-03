@@ -101,7 +101,9 @@ import {
   type BecomeCapabilityInput,
   type Instant,
   type CapabilityExchange,
+  type CapabilityFilter,
   type CapabilityId,
+  type CapabilityPage,
   type MintedCapability,
   type Connection,
   type ConnectionGrant,
@@ -219,6 +221,7 @@ import {
   guardSecrets,
   mintBecomeCapability,
   plausibleSessionToken,
+  readCapabilityPage,
   redactSecrets,
   redactSecretText,
   moduleLog,
@@ -6992,6 +6995,21 @@ export class SqliteScopeHost implements ScopeHost {
           capabilityId,
           revoked: true,
         });
+      },
+
+      // #1686 — the operator's read of the directory `ctx.capabilities.list` reads. The
+      // denial log's discipline: `scopeReadDbFor` is the K-3 cross-check, the read is the
+      // kernel's one (`readCapabilityPage`: no `token_hash` column in it), and the read leaves a K-24 row.
+      listCapabilities: async (
+        actor,
+        tenantId: TenantId,
+        scopeId: ScopeId,
+        filter?: CapabilityFilter,
+      ): Promise<CapabilityPage> => {
+        const db = this.scopeReadDbFor(tenantId, scopeId);
+        const page = readCapabilityPage(spineSql(db), filter);
+        this.recordAccess(actor, 'listCapabilities', { tenantId, scopeId }, filter ?? null, page.entries.length);
+        return page;
       },
 
       grantToOrg: async (actor, orgId, permission, node, entity) => {

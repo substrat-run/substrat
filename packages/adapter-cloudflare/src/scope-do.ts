@@ -205,6 +205,8 @@ import type {
   BecomeCapabilityInput,
   CapabilityExchange,
   CapabilityId,
+  CapabilityFilter,
+  CapabilityPage,
   CapabilityRecord,
   CheckSubject,
   ExportedBatch,
@@ -255,6 +257,7 @@ import {
   moduleLog,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
+  readCapabilityPage,
   domainEventOf,
   facetEvents,
   readDeadLetters,
@@ -3781,6 +3784,16 @@ export function defineScopeDO(
             revokeCapabilityAsPlatform(doSpineSql(this.sql), id, actor, instant.parse(new Date().toISOString())),
           ) ?? null,
       );
+    }
+
+    /**
+     * The operator's read of this scope's capabilities (#1686). The kernel's one read
+     * (`readCapabilityPage`): no `token_hash` selected, decoded to a record with no field to hold one.
+     * Authorization and the K-3 cross-check happen on the coordinator first.
+     */
+    async listCapabilities(filter?: CapabilityFilter): Promise<CapabilityPage> {
+      await this.ensureMigrations();
+      return readCapabilityPage(doSpineSql(this.sql), filter);
     }
 
     /**

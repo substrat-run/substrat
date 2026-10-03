@@ -60,6 +60,9 @@ import {
   ownerTransferAbandon,
   platformRequestFilter,
   denialFilter,
+  capabilityFilterQuery,
+  type CapabilityFilter,
+  type CapabilityPage,
   type DenialFilter,
   type DenialSummary,
   type PermissionDenial,
@@ -221,6 +224,8 @@ export interface VerticalScopeHost {
   introspectScopeQuery(scopeId: ScopeId, input: { sql: string }): Promise<ScopeQueryResult>;
   listDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]>;
   summarizeDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary>;
+  /** The operator's capability read (#1686): records, never a secret or a hash. */
+  listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage>;
   listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]>;
   listPlatformRequestHistory(
     tenantId: TenantId,
@@ -978,6 +983,17 @@ export function mountPlatformSurface<Env extends object>(
   app.get('/internal/denials/summary', async (c) => {
     const s = scopeIdOf.parse(c.req.query('scopeId'));
     return c.json(await deps.hostFor(c.env).summarizeDenialsLocal(s, denialQuery(c)));
+  });
+
+  // The operator's capability read (#1686). The directory rows are in THIS deployment's scope
+  // DO (a capability is minted inside the scope's operation), so the control plane asks, as it
+  // does for the denial log. Records only: the query behind it selects no hash, and the record
+  // schema has no field to carry one. Platform-secret gated like the rest of the surface; the
+  // K-3 check and the K-24 entry are the platform's, made before this is reached.
+  app.get('/internal/capabilities', async (c) => {
+    const s = scopeIdOf.parse(c.req.query('scopeId'));
+    const { scopeId: _scope, ...rest } = c.req.query();
+    return c.json(await deps.hostFor(c.env).listCapabilitiesLocal(s, capabilityFilterQuery.parse(rest)));
   });
 
   // Platform-intent drain surface (platform-intents.md): the control plane PULLS this

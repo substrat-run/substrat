@@ -179,13 +179,113 @@ export const capabilityExchange = z.discriminatedUnion('kind', [
 ]);
 export type CapabilityExchange = z.infer<typeof capabilityExchange>;
 
-/** What narrows `ctx.capabilities.list`. Live capabilities only unless `includeRevoked`. */
+/**
+ * What narrows `ctx.capabilities.list` and `HostAdmin.listCapabilities`. Live capabilities
+ * only unless `includeRevoked`.
+ *
+ * `cursor` is the platform's keyset cursor (`pagination.ts`): the `id` of the last record of
+ * the previous page, EXCLUSIVE, walking newest to oldest. A capability id is a ULID, so a
+ * cursor that is not one is refused rather than read as "from the start" — a walk that
+ * silently restarted would loop forever.
+ */
 export const capabilityFilter = z.object({
   entity: entityRef.optional(),
   includeRevoked: z.boolean().optional(),
   limit: z.number().int().min(1).max(200).optional(),
+  cursor: capabilityId.optional(),
 });
 export type CapabilityFilter = z.infer<typeof capabilityFilter>;
+
+/**
+ * One page of the operator's capability read: records newest first, and `nextCursor` — the
+ * last entry's id — ONLY when at least one more record follows. The adapters read one row
+ * past the page to know, so a full last page ends the walk instead of costing an empty fetch.
+ * Parsing a vertical's answer through this drops any field a record does not declare.
+ */
+export const capabilityPage = z.object({
+  entries: z.array(capabilityRecord),
+  nextCursor: capabilityId.nullable(),
+});
+export type CapabilityPage = z.infer<typeof capabilityPage>;
+
+/**
+ * Where a capability stands NOW, read off its record — for a surface that shows many at once
+ * (the operator's console, #1686). `revoked` and `expired` mean no session it handed out acts
+ * any more; `used-up` means its secret cannot be exchanged again but sessions it already
+ * handed out keep acting until the expiry or a revoke. The record-side twin of the kernel's
+ * `capabilityLive` / `capabilityExchangeable` (which read the stored row): the kernel's tests
+ * pin that the two agree on every case, so a console cannot call live what the checker refuses.
+ */
+export type CapabilityStatus = 'live' | 'used-up' | 'expired' | 'revoked';
+
+export function capabilityStatus(
+  record: Pick<CapabilityRecord, 'revokedAt' | 'expiresAt' | 'maxUses' | 'uses'>,
+  now: string,
+): CapabilityStatus {
+  if (record.revokedAt !== null) return 'revoked';
+  if (record.expiresAt !== null && record.expiresAt <= now) return 'expired';
+  if (record.maxUses !== null && record.uses >= record.maxUses) return 'used-up';
+  return 'live';
+}
+
+/**
+ * `capabilityFilter` as a query string — the ENCODER half of the operator's capability read
+ * (#1686), for the platform's client of a vertical and the staff client. One definition, so
+ * the two never disagree on a name; `capabilityFilterQuery` below is the decoder.
+ *
+ * The entity travels as two params, `entityType` and `entityId`, and only together.
+ */
+export function capabilityFilterParams(filter?: CapabilityFilter): URLSearchParams {
+  const q = new URLSearchParams();
+  if (filter?.entity) {
+    q.set('entityType', filter.entity.entityType);
+    q.set('entityId', filter.entity.entityId);
+  }
+  if (filter?.includeRevoked) q.set('includeRevoked', 'true');
+  if (filter?.limit) q.set('limit', String(filter.limit));
+  if (filter?.cursor) q.set('cursor', filter.cursor);
+  return q;
+}
+
+/** `capabilityFilterParams` as a URL suffix: `?`-prefixed, or `''` when nothing is narrowed. */
+export function capabilityQuery(filter?: CapabilityFilter): string {
+  const qs = capabilityFilterParams(filter).toString();
+  return qs ? `?${qs}` : '';
+}
+
+/**
+ * The DECODER half: a query string's params back into a `CapabilityFilter`, for both HTTP
+ * surfaces that read capabilities (the control plane's staff route and a vertical's
+ * `/internal/capabilities`). Strings are coerced here; the rules (a limit of 1..200, an
+ * entity) stay `capabilityFilter`'s, which the result is parsed by. A half-named entity is
+ * refused, not ignored: a narrowing that silently widened would list every capability.
+ */
+export const capabilityFilterQuery = z
+  .object({
+    entityType: z.string().min(1).optional(),
+    entityId: z.string().min(1).optional(),
+    includeRevoked: z.enum(['true', 'false']).optional(),
+    limit: z.coerce.number().int().optional(),
+    cursor: z.string().min(1).optional(),
+  })
+  .superRefine((q, ctx) => {
+    if ((q.entityType === undefined) !== (q.entityId === undefined)) {
+      ctx.addIssue({ code: 'custom', message: 'entityType and entityId are given together or not at all' });
+    }
+  })
+  .transform((q, ctx) => {
+    const parsed = capabilityFilter.safeParse({
+      ...(q.entityType !== undefined && q.entityId !== undefined
+        ? { entity: { entityType: q.entityType, entityId: q.entityId } }
+        : {}),
+      ...(q.includeRevoked !== undefined ? { includeRevoked: q.includeRevoked === 'true' } : {}),
+      ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      ...(q.cursor !== undefined ? { cursor: q.cursor } : {}),
+    });
+    if (parsed.success) return parsed.data;
+    for (const issue of parsed.error.issues) ctx.addIssue({ code: 'custom', message: issue.message, path: issue.path });
+    return z.NEVER;
+  });
 
 // ---------------------------------------------------------------------------
 // The spine events the kernel emits about capabilities — kernel-authored, like

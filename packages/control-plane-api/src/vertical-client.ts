@@ -62,6 +62,10 @@ import {
   PREVIEW_CLIENT_PATH,
   attachmentRecord,
   denialFilterParams,
+  capabilityFilterParams,
+  capabilityPage,
+  type CapabilityFilter,
+  type CapabilityPage,
   mintedPreviewClient,
   ownerSeat,
   ownerClaimLink,
@@ -470,6 +474,13 @@ export class VerticalClient {
     return this.getInternal<DenialSummary>(
       `/internal/denials/summary?${denialParams(scopeId, filter)}`,
     );
+  }
+
+  /** The scope's capability directory (#1686), pulled from the vertical that holds it and parsed on arrival, so a hash-bearing answer cannot pass through. */
+  async listCapabilities(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage> {
+    const q = capabilityFilterParams(filter);
+    q.set('scopeId', scopeId);
+    return capabilityPage.parse(await this.getInternal<unknown>(`/internal/capabilities?${q}`));
   }
 
   /**

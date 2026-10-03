@@ -1,10 +1,12 @@
-import { denialQuery } from '@substrat-run/contracts';
+import { capabilityQuery, denialQuery } from '@substrat-run/contracts';
 import type {
   AdminAction,
   AdminLogEntry,
   ChannelName,
   ConnectionHealthPage,
   ConnectionHealthState,
+  CapabilityFilter,
+  CapabilityPage,
   DenialFilter,
   DenialSummary,
   DirectoryBackup,
@@ -392,6 +394,11 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
     this.call(`/tenants/${t}/scopes/${s}/denials/summary${denialQuery(filter)}`);
   listDenials = (t: TenantId, s: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]> =>
     this.call(`/tenants/${t}/scopes/${s}/denials${denialQuery(filter)}`);
+
+  // The operator's read of a scope's capabilities (#1686). Staff-only server-side; a
+  // deployment predating the route answers 404/501 like the other late reads. Records only.
+  listCapabilities = (t: TenantId, s: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage> =>
+    this.call(`/tenants/${t}/scopes/${s}/capabilities${capabilityQuery(filter)}`);
 
   // The #1666 schedule kill switch, read and moved from the console (#1674/#1675). No
   // new permission surface here — the route is already staff-only server-side

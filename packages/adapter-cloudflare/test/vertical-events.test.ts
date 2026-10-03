@@ -113,6 +113,20 @@ describe('cross-vertical verbs on the shared control plane (#1705)', () => {
     await expect(shared.deliverToPeer(t, hosted, batch(hosted))).rejects.toThrow(served);
   });
 
+  // #1686: the operator's capability read. A scope a vertical's own deployment serves keeps
+  // its directory THERE; this namespace holds a placeholder, and an empty list from it would
+  // read as "no link into this scope". So the shared control plane refuses rather than answer
+  // — the control-plane API asks the vertical instead — and the scope it serves itself reads.
+  it('refuses the capability read for a hosted scope, and reads one it serves itself', async () => {
+    const served = `is served by the '${BOARD_VERTICAL}' deployment`;
+    await expect(shared.admin.listCapabilities(staff, t, hosted)).rejects.toThrow(served);
+    expect(await shared.admin.listCapabilities(staff, t, ownScope)).toEqual({ entries: [], nextCursor: null });
+    // The vertical's own door is the local read, with no directory gate of its own.
+    expect(await shared.listCapabilitiesLocal(ownScope)).toEqual({ entries: [], nextCursor: null });
+    // A bad bound keeps its error across the DO hop: refused here, not as a bare stub message.
+    await expect(shared.admin.listCapabilities(staff, t, ownScope, { limit: 201 })).rejects.toThrow(/200/);
+  });
+
   it('edge health with no reach says it cannot answer, rather than reporting no edges (#1705 PR 3)', async () => {
     const view = await crossVerticalHealth(shared, { actor: staff, tenantId: t });
     expect(view.unavailable).toMatch(/cannot reach the deployments/);

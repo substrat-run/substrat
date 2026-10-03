@@ -88,6 +88,7 @@ import {
   REDRAIN_BATCH,
   migrationsOnTop,
   errorCodeOf,
+  capabilityFilterQuery,
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
@@ -3426,6 +3427,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           colocated: () => c.var.admin.summarizeDenials(c.get('actor'), tenantId, scopeId, filter),
         },
         (r) => r.buckets.length,
+      ),
+    );
+  });
+
+  // The operator's read of a scope's capabilities (#1686). **Staff and the platform service
+  // token ONLY**, and unlike the denial log a builder does NOT read its own tenant's: a row
+  // names the vertical's end users, not the builder's. BUILDER_ROUTES and the tenant pin
+  // already default-deny it; the handler refuses by `confinedTenant` as well, so the refusal
+  // does not rest on which list the route is absent from. Delegated like the denial log.
+  app.get('/tenants/:tenantId/scopes/:scopeId/capabilities', async (c) => {
+    if (confinedTenant(c.get('principal')) !== null) {
+      return c.json({ error: 'forbidden: the capability directory is staff-only' }, 403);
+    }
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const filter = capabilityFilterQuery.parse(c.req.query());
+    const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    return c.json(
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'listCapabilities', filter,
+        {
+          viaVertical: (v) => v.listCapabilities(scopeId, filter),
+          colocated: () => c.var.admin.listCapabilities(c.get('actor'), tenantId, scopeId, filter),
+        },
+        (r) => r.entries.length,
       ),
     );
   });
