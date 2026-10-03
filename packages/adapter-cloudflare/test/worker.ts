@@ -68,6 +68,42 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
       );
       return eventId;
     }
+
+    /**
+     * #1722's cost probe (write-revision-cost.test.ts): `ops` operations, each its own run and its
+     * own transaction of `rows` row inserts, `rows` event inserts and `rows` updates in place,
+     * through the object's own handle, with the write revision counted or not.
+     */
+    async testWriteBatch(scopeId: string, ops: number, rows: number, counted: boolean): Promise<void> {
+      const self = this as unknown as { sql: SqlStorage; revisionSuspended: boolean };
+      self.sql.exec('CREATE TABLE IF NOT EXISTS bench_rows (id TEXT PRIMARY KEY, body TEXT, n INTEGER)');
+      self.revisionSuspended = !counted;
+      try {
+        for (let o = 0; o < ops; o++) {
+          this.ctx.storage.transactionSync(() => {
+            for (let r = 0; r < rows; r++) {
+              const id = ulid();
+              self.sql.exec('INSERT INTO bench_rows (id, body, n) VALUES (?, ?, ?)', id, 'x'.repeat(64), r);
+              self.sql.exec(
+                `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor, entity_type, entity_id, pii_class)
+                 VALUES (?, 'bench.wrote', 1, ?, 'tenant', ?, 'actor', 'row', ?, 'none')`,
+                ulid(), new Date().toISOString(), scopeId, id,
+              );
+              self.sql.exec('UPDATE bench_rows SET n = n + 1 WHERE id = ?', id);
+            }
+          });
+          // Each operation its own run, as an invoke is: the bump it queued lands here.
+          await Promise.resolve();
+        }
+      } finally {
+        self.revisionSuspended = false;
+      }
+    }
+
+    /** #1722's cost probe: count the write revision or not, for calls that follow. */
+    testCountWrites(counted: boolean): void {
+      (this as unknown as { revisionSuspended: boolean }).revisionSuspended = !counted;
+    }
   };
 }
 

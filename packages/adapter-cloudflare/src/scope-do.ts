@@ -731,22 +731,52 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
 }
 
 /**
- * The scope DO's SQL handle with the write revision attached (#1722, Codex #2008 r2): every
- * statement that can change the store (`isWriteStatement`) advances `WRITE_REVISION_KEY` right
- * after it, on the same connection and so in the same transaction. A carry's conditional restore
- * compares that revision, so an UPDATE in place (a drain receipt, a redrain) moves it as surely
- * as an emitted event. One wrapper at the one place the handle is taken, so a writer added later
- * cannot forget it. `suspended` is the wake's idempotent DDL and a load's drop-and-replay.
+ * The scope DO's SQL handle with the write revision attached (#1722, Codex #2008 r2): any run of
+ * statements that can change the store (`isWriteStatement`) advances `WRITE_REVISION_KEY`. A
+ * carry's conditional restore compares that revision, so an UPDATE in place (a drain receipt, a
+ * redrain) moves it as surely as an emitted event. One wrapper at the one place the handle is
+ * taken, so a writer added later cannot forget it. `suspended` is the wake's idempotent DDL and a
+ * load's drop-and-replay.
+ *
+ * Once per synchronous run, not once per statement: a statement-by-statement bump cost 28.6% on
+ * a write-heavy operation, measured (`write-revision-cost.test.ts`). The first write of a run
+ * queues one microtask that advances the revision. It runs when the run ends, at its first await
+ * or its end, and so before this object takes another request: a marker read, or a fenced
+ * restore, never sees the writes without the bump. An open transaction is still open when it
+ * runs, so the bump commits or rolls back with the writes; one that rolled back before the bump
+ * leaves a bump with no writes, which over-counts, and over-counting only refuses a restore that
+ * could have landed. Never deferred across an await: the next run's writes queue their own.
  */
 function revisionCounting(sql: SqlStorage, suspended: () => boolean): SqlStorage {
-  const exec = (query: string, ...bindings: unknown[]) => {
-    const cursor = sql.exec(query, ...bindings);
-    if (!suspended() && isWriteStatement(query)) {
+  let queued = false;
+  const bump = () => {
+    queued = false;
+    try {
       sql.exec(
         `INSERT INTO _substrat_meta (key, value) VALUES (?, '1')
          ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`,
         WRITE_REVISION_KEY,
       );
+    } catch {
+      // Storage destroyed in the same run (a reap): nothing is left to count.
+    }
+  };
+  // A statement's text is almost always a constant, so its answer is remembered (bounded).
+  const writes = new Map<string, boolean>();
+  const isWrite = (query: string): boolean => {
+    let known = writes.get(query);
+    if (known === undefined) {
+      known = isWriteStatement(query);
+      if (writes.size >= 512) writes.clear();
+      writes.set(query, known);
+    }
+    return known;
+  };
+  const exec = (query: string, ...bindings: unknown[]) => {
+    const cursor = sql.exec(query, ...bindings);
+    if (!queued && !suspended() && isWrite(query)) {
+      queued = true;
+      queueMicrotask(bump);
     }
     return cursor;
   };
