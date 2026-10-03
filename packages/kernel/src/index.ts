@@ -563,6 +563,8 @@ export type {
 // every receipt writer and the sweep answer both questions the same way.
 export {
   isPrimaryScope,
+  // #2005: what every outbound door journals when a non-primary scope asks it for an effect.
+  INERT_SCOPE_REASON,
   runningVersionOf,
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,

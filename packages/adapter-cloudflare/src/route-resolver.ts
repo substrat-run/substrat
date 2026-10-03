@@ -38,6 +38,10 @@ export interface RouteRowLike {
   /** The dispatched code's declared outgoing peer calls (#1706) as JSON text, on the
    *  same terms as `outbound_json`: null for a version pushed before the declaration. */
   calls_json?: string | null;
+  /** Whether the scope is the real install (#2005), decided by the control-plane DO. Absent
+   *  from one that predates the field, which resolves `primary: true` — the skew window
+   *  `routeTarget` documents. */
+  primary?: boolean;
 }
 
 /** The one method this needs from the control-plane DO. */
@@ -87,6 +91,8 @@ export function toRouteTarget(row: RouteRowLike | undefined): RouteTarget | unde
     region: row.region,
     outboundHosts,
     calls,
+    // #2005: absent only from a control-plane DO that predates the field — see RouteRowLike.
+    ...(row.primary === undefined ? {} : { primary: row.primary }),
   });
 }
 

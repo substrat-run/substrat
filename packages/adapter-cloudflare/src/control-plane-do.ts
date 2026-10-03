@@ -217,6 +217,10 @@ export interface RouteRow {
   outbound_json: string | null;
   /** The dispatched code's declared outgoing peer calls (#1706) as JSON text. */
   calls_json: string | null;
+  /** Whether the scope is the real install (`isPrimaryScope`, #2005), decided HERE, where the
+   *  kernel is — the router's routing entry deliberately depends on contracts alone. The
+   *  egress worker holds a fork or a preview to no third-party egress on it. */
+  primary: boolean;
 }
 
 /** One candidate instance of a vertical in a tenant (#1706), with what it dispatches as. */
@@ -2523,7 +2527,7 @@ export class ControlPlaneDO extends DurableObject {
     // json_extract keeps the hot path from parsing whole manifests in JS: SQLite hands
     // back just the `outbound` array as JSON text, or NULL for a pre-#303 manifest —
     // which the egress worker treats as unenforced-but-metered.
-    return this.sql
+    const row = this.sql
       .exec(
         `SELECT h.tenant_id, h.scope_id, h.vertical_slug, h.surface, h.region,
                 COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
@@ -2532,7 +2536,8 @@ export class ControlPlaneDO extends DurableObject {
                      ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
                 CASE WHEN s.serving_ref IS NOT NULL
                      THEN json_extract(sv.manifest_json, '$.calls')
-                     ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json
+                     ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json,
+                s.kind, s.forked_from
            FROM hostnames h
            JOIN scopes s ON s.scope_id = h.scope_id AND s.tenant_id = h.tenant_id
            JOIN tenants t ON t.tenant_id = s.tenant_id
@@ -2543,7 +2548,12 @@ export class ControlPlaneDO extends DurableObject {
             AND s.status = 'active' AND t.status = 'active'`,
         hostname,
       )
-      .toArray()[0] as unknown as RouteRow | undefined;
+      .toArray()[0] as unknown as (Omit<RouteRow, 'primary'> & { kind: string; forked_from: string | null }) | undefined;
+    if (!row) return undefined;
+    // #2005: the predicate runs here, once, rather than travelling as two columns for the
+    // router to re-derive — every reader of the directory answers it the same way.
+    const { kind, forked_from, ...route } = row;
+    return { ...route, primary: isPrimaryScope({ kind, forkedFrom: forked_from as ScopeId | null }) };
   }
 
   /** Demote any current canonical for this surface — exactly one may hold it. */

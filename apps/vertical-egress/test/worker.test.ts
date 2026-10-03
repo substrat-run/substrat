@@ -302,3 +302,65 @@ describe('outbound policy (#303)', () => {
     expect(res.status).toBe(200);
   });
 });
+
+/**
+ * #2005: a fork, a snapshot or a preview causes no outbound effects. The router says which a
+ * dispatch is (`primary`, from the directory read), and this worker holds a non-primary scope
+ * to no third party at all — while the platform's own loopback and relay still answer, since
+ * neither is the outside world.
+ */
+describe('a non-primary scope reaches no third party (#2005)', () => {
+  const policy = (primary: boolean | undefined, hosts: string[] | null = ['api.scrive.com']): OutboundPolicy => ({
+    slug: 'acme-crm',
+    tenant: '01TENANT',
+    hosts,
+    ...(primary === undefined ? {} : { primary }),
+  });
+  const meterInto = (points: unknown[]) =>
+    ({ writeDataPoint: (p: unknown) => void points.push(p) }) as unknown as AnalyticsEngineDataset;
+
+  for (const [name, hosts] of [
+    ['a host its version declares', ['api.scrive.com']],
+    ['an unenforced pre-#303 manifest', null],
+  ] as const) {
+    it(`refuses ${name}, and meters it as inert`, async () => {
+      const internet = vi.fn(async () => new Response('external', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+      const points: unknown[] = [];
+      const res = await worker.fetch(
+        new Request('https://api.scrive.com/api/v2/documents'),
+        envWith({ ANALYTICS: meterInto(points), OUTBOUND_POLICY: policy(false, hosts as string[] | null) }),
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'api.scrive.com' });
+      expect(internet).not.toHaveBeenCalled();
+      expect(points).toEqual([{ indexes: ['acme-crm'], blobs: ['api.scrive.com', 'inert', '01TENANT'] }]);
+    });
+  }
+
+  it('twin: the same subrequest from a primary scope leaves', async () => {
+    const internet = vi.fn(async () => new Response('external', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const res = await worker.fetch(new Request('https://api.scrive.com/x'), envWith({ OUTBOUND_POLICY: policy(true) }));
+    expect(res.status).toBe(200);
+    expect(internet).toHaveBeenCalledTimes(1);
+  });
+
+  it('a router that predates the field passes as before — the skew window fails open', async () => {
+    const internet = vi.fn(async () => new Response('external', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const res = await worker.fetch(new Request('https://api.scrive.com/x'), envWith({ OUTBOUND_POLICY: policy(undefined) }));
+    expect(res.status).toBe(200);
+  });
+
+  it('the platform loopback and the relay still answer a non-primary scope', async () => {
+    const r = router();
+    const internet = vi.fn(async () => new Response('relayed', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const env = envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(false) });
+    expect((await worker.fetch(new Request('https://a.global.substrat.run/x'), env)).status).toBe(200);
+    expect(r.calls).toHaveLength(1);
+    expect((await worker.fetch(new Request('https://console.substrat.net/internal/x'), env)).status).toBe(200);
+    expect(internet).toHaveBeenCalledTimes(1);
+  });
+});

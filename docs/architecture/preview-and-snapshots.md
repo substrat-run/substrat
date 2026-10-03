@@ -115,9 +115,35 @@ slots straight in, alongside `forked_from`, `forked_at`, and a read-only flag fo
 
 ## 6. Guardrails
 
-- **A fork is a dead end.** The export copies the `_substrat_*` spine too, so nothing
-  downstream — connectors, cron, billing — may consume from a preview/archive scope. Enforced
-  by leaving the fork's outbound side unwired.
+- **A fork is a dead end: a scope that is not primary causes no outbound effects** (#2005).
+  A fork, a snapshot (`archive`) and a preview of either kind (a preview fork, or a clean-room
+  preview with no source) run their code, commit their writes and answer their reads. But
+  nothing they ask for leaves them. One predicate decides it, the kernel's `isPrimaryScope`
+  (no `forkedFrom`, and `kind` is not `preview`), read from the directory. Every outbound
+  door applies it:
+
+  | Door | What a non-primary scope gets |
+  |---|---|
+  | The platform-intent drain | Each intent is settled `failed`, attributed to the platform, with `INERT_SCOPE_REASON`, and no handler runs. That covers connector deliveries, provision-sibling, archive-scope, provision-tenant, set-entitlements and peer-invoke. The settle lands no ops-failure row, because it is the platform doing what it should. |
+  | In-process executors and connectors (both adapters, the emitting call's tail and `drainDue`) | Each delivery is journaled terminal with the same reason (`ExecutorDrainReport.inert`), and its handler never runs. A CP-less host has no directory to ask, and needs none: the only executor that can act there is a connector, which it routes onto the intent drain above. |
+  | The vertical egress worker | Every third-party subrequest is refused, even to a host the version declares and even on an unenforced pre-#303 manifest. The router's dispatch carries `primary` from the directory read. The platform loopback and the relay still answer. A router that predates the field sends none, and that passes as before for the skew window only. |
+  | Recurring schedules and freshness checks | Never run. The sweep filters on `isPrimaryScope`; lineage alone used to let a clean-room preview through. A CP-less vertical's own sweeper never learns a non-primary scope: its roster is filled by `/internal/provision` and `/internal/reconcile`, which the platform calls for installs only (a preview is materialized by a restore), and the reconcile phase is itself primary-only. |
+  | Peer calls, cross-vertical producer kicks, the provision reconcile, serving and upgrades | Already primary-only before #2005, by the same predicate. |
+
+  Two intent kinds still land from a non-primary scope, because they **record** something that
+  already happened rather than ask for something to happen. `model-usage` is the cost of a
+  model call that already ran in the preview's own worker, so dropping it would make a
+  preview's model use unmetered, not absent. `sweep-runs` is telemetry.
+
+  Not doors, and left alone on purpose: the lake export (the platform's own audit store,
+  recorded under the copy's own scope id), resumable jobs (driven only by a CP-less
+  sweeper's roster, which holds primaries; the kernel's own attachment-text job is in-scope
+  work a preview needs for search), and the migration-progress count (a frontier, not an
+  effect). The relays a vertical calls on the control plane (email, connections) are
+  excluded from #2005 pending a platform decision.
+
+  #2003 is the complement: it settles the work the SOURCE had queued, which a copy carries
+  in, at load. This rule covers what the copy asks for itself.
 - **The local sink crosses the trust boundary.** Server-side forks stay in the governed
   environment; pulling to a laptop does not, and that is a different risk class:
   - **Residency.** Jurisdiction pins *execution*, not just storage (K-7/K-32) — the reason

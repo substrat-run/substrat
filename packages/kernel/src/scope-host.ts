@@ -961,6 +961,12 @@ export interface ExecutorDrainReport {
    * the response so the router kicks an immediate drain.
    */
   routedToPlatform?: number;
+  /**
+   * Deliveries journaled as not executed because the scope is not primary — a fork, a
+   * snapshot or a preview, which cause no outbound effects (#2005, `INERT_SCOPE_REASON`).
+   * Terminal and counted apart from `deadLettered`: nothing failed, the platform declined.
+   */
+  inert?: number;
 }
 
 /**
@@ -4572,6 +4578,10 @@ export interface ScopeHost {
    * not. A failure is retried with backoff, dead-lettered at `maxAttempts`, and
    * surfaced through `drainDue`/`executorDeadLetters` — never thrown at whoever happened
    * to be holding the request.
+   *
+   * **Never on a scope that is not primary** (#2005). A fork, a snapshot or a preview causes
+   * no outbound effects, so its deliveries are journaled terminal with `INERT_SCOPE_REASON`
+   * (counted in `ExecutorDrainReport.inert`) and no handler — executor or connector — runs.
    */
   registerExecutor(
     id: string,

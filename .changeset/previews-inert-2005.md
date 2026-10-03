@@ -1,0 +1,20 @@
+---
+'@substrat-run/kernel': minor
+'@substrat-run/contracts': minor
+'@substrat-run/adapter-sqlite': minor
+'@substrat-run/adapter-cloudflare': minor
+'@substrat-run/control-plane-api': minor
+'@substrat-run/contract-tests': minor
+'@substrat-run/control-plane': minor
+'@substrat-run/router': minor
+'@substrat-run/vertical-egress': minor
+---
+
+Previews and forks are inert: a scope that is not primary causes no outbound effects (#2005).
+
+A fork, a snapshot and a preview of either kind still run their code and commit their writes, but nothing they ask for leaves them. One predicate decides it, `isPrimaryScope`, and every outbound door applies it:
+
+- The platform-intent drain settles a non-primary scope's own intents `failed`, attributed to the platform, with the new `INERT_SCOPE_REASON`, and runs no handler. The settle lands no ops-failure row. `model-usage` and `sweep-runs` still land, because they record something that already happened. `drainScopePlatformRequests` now takes a `PlatformDrainContext`, which requires `primary`.
+- Executor and connector dispatch, on both adapters (the emitting call's tail and `drainDue`), journals a non-primary scope's deliveries terminal with the same reason and never runs the handler. `ExecutorDrainReport` gains an optional `inert` count.
+- `RouteTarget` gains `primary` (defaulted to `true` for a resolver that predates it). The router hands it to the egress worker, which refuses every third-party subrequest from a non-primary scope and meters it as `inert`. The platform loopback and the relay still pass.
+- The sweep's schedule and freshness phases filter on `isPrimaryScope`, so a clean-room preview no longer fires its schedules.

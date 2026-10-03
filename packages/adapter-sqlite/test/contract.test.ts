@@ -8,6 +8,7 @@ import {
   grantExpiryContractSuite,
   facetRecencyContractSuite,
   impersonationContractSuite,
+  inertScopeContractSuite,
   capabilityAttachmentContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -42,6 +43,25 @@ scopeHostContractSuite('adapter-sqlite', async () => {
     checker: UNSAFE_allowAllChecker,
     // A fixed key: the contract suite asserts the credential round-trips and
     // never leaks, not that the ciphertext is unpredictable.
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    fetch: connectorTestFetch,
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2005: a fork or a preview causes no outbound effects. Allow-all, like the scope-host
+// suite: what this pins is whether an effect RUNS, not who may ask for one.
+inertScopeContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-inert-'));
+  const host = new SqliteScopeHost({
+    dir,
+    checker: UNSAFE_allowAllChecker,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,
   });

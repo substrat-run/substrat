@@ -120,6 +120,12 @@ interface OutboundPolicy {
   scope: string;
   calls: string[] | null;
   depth: number;
+  /**
+   * #2005: whether that scope is the real install. False for a fork, a snapshot or a
+   * preview, whose third-party subrequests the egress worker refuses — those scopes cause
+   * no outbound effects. From the resolve, like every field here.
+   */
+  primary: boolean;
 }
 
 /** Headers the router asserts. Any inbound copy is stripped before these are set. */
@@ -156,6 +162,7 @@ function verticalFor(env: Env, target: RouteTarget): Fetcher | undefined {
       // A request from the outside world starts a chain: depth 0. A peer call sets its own
       // (see `PeerCalls` below), which is what bounds A→B→A.
       depth: 0,
+      primary: target.primary,
     };
     return env.DISPATCH.get(target.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
   }
@@ -535,6 +542,9 @@ export async function handlePeerCall(
     scope: decision.scopeId,
     calls: decision.calls,
     depth: decision.depth,
+    // A peer call only ever dispatches to a primary instance — the resolver refuses any
+    // other target (`resolveVerticalInstanceFrom`), so this is a fact about the decision.
+    primary: true,
   };
   const target = env.DISPATCH.get(decision.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
   // A fresh Request per attempt: a POST body is a stream and is consumed by the first one.

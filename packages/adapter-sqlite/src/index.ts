@@ -519,6 +519,7 @@ import {
   unknownRoleError,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScope } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -1375,6 +1376,8 @@ function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
  * The policy an undecodable event's executor delivery is journaled under (#1636): one
  * attempt, so the first failure is the dead letter. A decode is pure — retrying it cannot
  * succeed — and the Cloudflare coordinator records the same row with no next attempt.
+ * An inert scope's delivery (#2005) is journaled under it too, for the same reason: a
+ * scope does not become primary, so a retry would decide the same.
  */
 const UNDECODABLE_RETRY: Required<ExecutorRetryPolicy> = { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 };
 
@@ -4926,7 +4929,13 @@ export class SqliteScopeHost implements ScopeHost {
       retrying: 0,
       deadLettered: 0,
     };
+    if (this.executors.size === 0) return report;
     const now = new Date().toISOString();
+    // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
+    // outbound effects. Every executor is host code acting with platform authority — a
+    // connector with the tenant's credential, a plain executor with `HostAdmin` — so its
+    // deliveries are journaled terminal with the reason and the handler never runs.
+    const inert = !this.isPrimaryInDirectory(rt.scopeId);
     for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
       // Due = never attempted, or retrying and past its next attempt time.
@@ -4957,6 +4966,12 @@ export class SqliteScopeHost implements ScopeHost {
           // handler's transient failure keeps its backoff below.
           this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), UNDECODABLE_RETRY, invocationId);
           report.deadLettered += 1;
+          continue;
+        }
+        if (inert) {
+          // Terminal on the first pass, like an undecodable row (see `UNDECODABLE_RETRY`).
+          this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, UNDECODABLE_RETRY, invocationId);
+          report.inert = (report.inert ?? 0) + 1;
           continue;
         }
         this.causedBy = event.id;
@@ -5046,6 +5061,18 @@ export class SqliteScopeHost implements ScopeHost {
         invocationId,
       );
     return error !== null && exhausted;
+  }
+
+  /**
+   * Whether the directory says `scopeId` is the real install (`isPrimaryScope`, #2005). A
+   * scope with no directory row has never been provisioned here and is not treated as one:
+   * the answer that runs effects is the one that has to be proven.
+   */
+  private isPrimaryInDirectory(scopeId: ScopeId): boolean {
+    const row = this.directory
+      .prepare('SELECT kind, forked_from FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { kind: string | null; forked_from: string | null } | undefined;
+    return row !== undefined && isPrimaryScope({ kind: row.kind ?? '', forkedFrom: row.forked_from as ScopeId | null });
   }
 
   async drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport> {
@@ -7248,7 +7275,8 @@ export class SqliteScopeHost implements ScopeHost {
                     COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
                     CASE WHEN s.serving_ref IS NOT NULL
                          THEN json_extract(sv.manifest_json, '$.outbound')
-                         ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json
+                         ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json,
+                    s.kind, s.forked_from
                FROM hostnames h
                JOIN scopes s ON s.scope_id = h.scope_id AND s.tenant_id = h.tenant_id
                JOIN tenants t ON t.tenant_id = s.tenant_id
@@ -7267,6 +7295,8 @@ export class SqliteScopeHost implements ScopeHost {
               region: string | null;
               deployment_ref: string | null;
               outbound_json: string | null;
+              kind: string | null;
+              forked_from: string | null;
             }
           | undefined;
         if (!r) return undefined;
@@ -7289,6 +7319,8 @@ export class SqliteScopeHost implements ScopeHost {
           surface: r.surface,
           region: r.region,
           outboundHosts,
+          // #2005: the egress worker holds a fork or a preview to no third-party egress.
+          primary: isPrimaryScope({ kind: r.kind ?? '', forkedFrom: r.forked_from as ScopeId | null }),
         });
       },
       registerVertical: async (actor: PlatformActorId, input: RegisterVerticalInput) => {

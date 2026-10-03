@@ -1,4 +1,5 @@
 import {
+  INERT_SCOPE_REASON,
   isTerminalDispatchFailure,
   isPrimaryScope,
   platformIntentFailureMessage,
@@ -21,6 +22,8 @@ import {
   connectorDispatchPayload,
   CONNECTOR_DISPATCH_KIND_PREFIX,
   modelUsageLine,
+  MODEL_USAGE_KIND,
+  SWEEP_RUNS_KIND,
   type PlatformActorId,
   type PlatformRequest,
   type PlatformRequestFailure,
@@ -58,6 +61,28 @@ export interface PlatformRequestContext {
    */
   versionId?: string | null;
 }
+
+/**
+ * What the DRAIN needs beyond what a handler is handed (#2005): whether the scope is the real
+ * install (`isPrimaryScope` over its directory record). Required, not defaulted: a caller
+ * that forgets to say must not be read as "primary", because that is the answer that runs a
+ * preview's effects with platform authority. Not on `PlatformRequestContext`, because no
+ * handler is the place that decides it — a non-primary scope's intents never reach one.
+ */
+export interface PlatformDrainContext extends PlatformRequestContext {
+  primary: boolean;
+}
+
+/**
+ * Intent kinds that RECORD something that already happened, rather than ask the platform to
+ * cause something (#2005). They land for a non-primary scope too, because refusing them does
+ * not make a preview inert — it only makes what the preview did invisible:
+ *
+ * - `model-usage`: the model call already ran in the preview's own worker. Dropping the line
+ *   would make a preview's model use free and unmetered, not absent.
+ * - `sweep-runs`: the outcomes of a pass that already ran — telemetry, with no effect.
+ */
+const RECORD_KINDS: ReadonlySet<string> = new Set([MODEL_USAGE_KIND, SWEEP_RUNS_KIND]);
 
 /** What a handler reports for one intent; `result` is persisted (COALESCE'd) for two-phase idempotency. */
 export interface PlatformRequestOutcome {
@@ -116,7 +141,7 @@ export interface PlatformDrainOptions {
  */
 export async function drainScopePlatformRequests(
   client: Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>,
-  ctx: PlatformRequestContext,
+  ctx: PlatformDrainContext,
   handlers: Record<string, PlatformRequestHandler>,
   opts?: PlatformDrainOptions,
 ): Promise<PlatformDrainReport> {
@@ -125,6 +150,8 @@ export async function drainScopePlatformRequests(
   for (const request of pending) {
     const handler = handlers[request.kind];
     let outcome: PlatformRequestOutcome;
+    // #2005: an intent a non-primary scope raised for itself is settled, never executed.
+    let inert = false;
     if (request.decodeError !== undefined) {
       // #1588: the read is tolerant so one malformed row cannot hide the queue; the WORK stays
       // strict. A row that did not decode carries an empty stand-in wherever it failed — a
@@ -135,6 +162,18 @@ export async function drainScopePlatformRequests(
         status: 'failed',
         error: `not executed: the intent row could not be decoded (${request.decodeError})`,
         failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      };
+    } else if (!ctx.primary && !RECORD_KINDS.has(request.kind)) {
+      // #2005: a fork, a snapshot or a preview causes no outbound effects. Settled `failed`
+      // rather than left pending — nothing will ever run it, and a row reading "pending"
+      // forever would say otherwise — and before any handler is looked up, so no kind's
+      // handler is the place that has to remember. Terminal, like the decode refusal: a
+      // scope does not become primary, so the next pass would decide the same.
+      inert = true;
+      outcome = {
+        status: 'failed',
+        error: INERT_SCOPE_REASON,
+        failure: { origin: 'platform', code: 'precondition_failed', permission: null },
       };
     } else if (!handler) {
       outcome = { status: 'failed', error: `no handler for platform-request kind '${request.kind}'` };
@@ -180,7 +219,11 @@ export async function drainScopePlatformRequests(
         code: outcome.failure?.code ?? null,
         message: platformIntentFailureMessage(request.id, outcome.error ?? 'unknown'),
       });
-    } else if (outcome.status === 'failed') {
+    } else if (outcome.status === 'failed' && !inert) {
+      // #2005: an inert settle is the platform doing what it should, not an operator's
+      // headline — every intent a preview raises would otherwise land as a fleet failure.
+      // The settle below still journals the reason and the attribution.
+      //
       // #618: a TERMINAL settle is the ceiling's own argument arriving early — the intent is
       // over, nobody is coming back to it, and until now its only trace was a `last_error`
       // column in the vertical's own DO. An unknown kind, a refused payload, a provider's 4xx:

@@ -208,5 +208,14 @@ export const routeTarget = z.object({
    * this field still parses.
    */
   calls: z.array(verticalSlug).nullable().default(null),
+  /**
+   * Whether the scope is the real install (`isPrimaryScope`, #2005) — false for a fork, a
+   * snapshot or a preview of either kind. The router hands it to the egress worker, which
+   * refuses a non-primary scope's third-party subrequests: those scopes cause no outbound
+   * effects. Defaulted to `true` ONLY so a resolver that predates this field still parses —
+   * it fails open for that skew window, exactly as a pre-#303 `outboundHosts: null` does,
+   * and every resolver in this repo sets it.
+   */
+  primary: z.boolean().default(true),
 });
 export type RouteTarget = z.infer<typeof routeTarget>;

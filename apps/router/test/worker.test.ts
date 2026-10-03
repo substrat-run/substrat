@@ -21,6 +21,7 @@ interface Row {
   status: string;
   deployment_ref?: string | null;
   outbound_json?: string | null;
+  primary?: boolean;
 }
 
 const row = (over: Partial<Row> = {}): Row => ({
@@ -283,8 +284,33 @@ describe('router', () => {
       scope: S,
       calls: null,
       depth: 0,
+      // #2005: a row from a control-plane DO that predates the field says nothing, which
+      // resolves primary — the skew window `routeTarget` documents.
+      primary: true,
     });
   });
+
+  // #2005: the egress worker refuses a non-primary scope's third-party subrequests, so the
+  // dispatch has to say which kind of scope it is serving — ferried from the directory read,
+  // which decides it (the contract suite pins that decision on both adapters).
+  for (const primary of [true, false]) {
+    it(`ferries the directory's primary=${primary} to the egress worker`, async () => {
+      let options: { outbound?: Record<string, unknown> } | undefined;
+      const fsm = spyVertical();
+      const env = {
+        ROUTER_SECRET: SECRET,
+        CONTROL_PLANE: directory({ 'acme.example.com': row({ deployment_ref: 'fsm-01ky535a', primary }) }),
+        DISPATCH: {
+          get: (_name: string, _args?: unknown, opts?: { outbound?: Record<string, unknown> }) => {
+            options = opts;
+            return fsm.binding;
+          },
+        },
+      } as unknown as Env;
+      await worker.fetch(get('https://acme.example.com/api/x'), env);
+      expect(options?.outbound?.OUTBOUND_POLICY).toMatchObject({ primary });
+    });
+  }
 
   it('passes hosts: null for a version pushed before the declaration existed', async () => {
     // Unenforced, not deny-all — the egress worker meters it and lets it through, so a

@@ -67,6 +67,7 @@ export {
   type PlatformDrainOptions,
   type ArchiveScopeDeps,
   type PlatformRequestHandler,
+  type PlatformDrainContext,
   type PlatformRequestContext,
   type PlatformRequestOutcome,
   type PlatformDrainReport,

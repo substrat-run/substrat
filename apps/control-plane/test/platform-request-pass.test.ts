@@ -1,9 +1,18 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { platformActorId } from '@substrat-run/contracts';
-import { ulid, type PlatformSweepReport } from '@substrat-run/kernel';
-import worker, { drainTarget, platformRequestSweepRun, recordPlatformRequestPass, timedDrain } from '../src/worker.js';
+import {
+  platformActorId,
+  platformRequestId,
+  principalId,
+  PROVISION_SIBLING_KIND,
+  scopeId,
+  tenantId,
+  type ScopeId,
+} from '@substrat-run/contracts';
+import { drainScopePlatformRequests } from '@substrat-run/control-plane-api';
+import { INERT_SCOPE_REASON, ulid, type PlatformSweepReport } from '@substrat-run/kernel';
+import worker, { drainContextOf, drainTarget, platformRequestSweepRun, recordPlatformRequestPass, timedDrain } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -178,4 +187,77 @@ describe('timedDrain (#1840)', () => {
   it('falls back to the pass start when no drain ran', () => {
     expect(timedDrain(async () => 'ok').finishedAt(PASS_START)).toBe(PASS_START);
   });
+});
+
+/**
+ * #2005 — the drain's context comes from the scope's directory record, and `primary` is the
+ * field a wrong answer turns into an outbound effect. Read from the real directory Durable
+ * Object, for every shape of copy the platform makes, and then handed to the real drain: a
+ * copy's own intent is settled inert, and the install's runs.
+ */
+describe('drainContextOf: a copy of a scope drains inert (#2005)', () => {
+  const staff = platformActorId.parse(ulid());
+  const host = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const t = tenantId.parse(ulid());
+  const vertical = 'acme/crm';
+  const scopes: Record<'install' | 'previewFork' | 'cleanRoom' | 'snapshot', ScopeId> = {} as never;
+
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const h = host();
+    await h.admin.createTenant(staff, { id: t, slug: `inert-${t.toLowerCase()}`, name: 'Inert' });
+    const provision = async (extra: Record<string, unknown> = {}): Promise<ScopeId> => {
+      const s = scopeId.parse(ulid());
+      await h.provisionScope(staff, { tenantId: t, scopeId: s, vertical, ...extra });
+      await h.admin.activateScope(staff, t, s);
+      return s;
+    };
+    scopes.install = await provision();
+    scopes.previewFork = await provision({ kind: 'preview', forkedFrom: scopes.install, forkedAt: new Date().toISOString() });
+    scopes.cleanRoom = await provision({ kind: 'preview' });
+    scopes.snapshot = await h.snapshotScope(staff, t, scopes.install);
+  });
+
+  const drainOne = async (s: ScopeId) => {
+    const rec = await host().admin.getScopeRecord(staff, t, s);
+    const ctx = drainContextOf(rec!, vertical);
+    let ran = 0;
+    const settled: { status: string; lastError: string | null }[] = [];
+    const client = {
+      listPlatformRequests: async () => [
+        {
+          id: platformRequestId.parse(ulid()),
+          kind: PROVISION_SIBLING_KIND,
+          payload: {},
+          requestedBy: principalId.parse(ulid()),
+          status: 'pending',
+          attempts: 0,
+          lastError: null,
+          result: null,
+          requestedAt: new Date().toISOString(),
+          settledAt: null,
+        },
+      ],
+      settlePlatformRequest: async (_t: unknown, _s: unknown, _id: unknown, o: { status: string; lastError: string | null }) =>
+        void settled.push(o),
+    } as never;
+    await drainScopePlatformRequests(client, ctx, { [PROVISION_SIBLING_KIND]: async () => (ran++, { status: 'done' }) });
+    return { ctx, ran, settled };
+  };
+
+  it('twin: the install is primary, and its intent runs', async () => {
+    const { ctx, ran, settled } = await drainOne(scopes.install);
+    expect(ctx).toEqual({ tenantId: t, scopeId: scopes.install, vertical, versionId: null, primary: true });
+    expect(ran).toBe(1);
+    expect(settled).toEqual([expect.objectContaining({ status: 'done' })]);
+  });
+
+  for (const shape of ['previewFork', 'cleanRoom', 'snapshot'] as const) {
+    it(`${shape}: not primary, and its own intent is settled inert without running`, async () => {
+      const { ctx, ran, settled } = await drainOne(scopes[shape]);
+      expect(ctx.primary).toBe(false);
+      expect(ran).toBe(0);
+      expect(settled).toEqual([expect.objectContaining({ status: 'failed', lastError: INERT_SCOPE_REASON })]);
+    });
+  }
 });

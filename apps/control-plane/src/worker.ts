@@ -106,6 +106,7 @@ import {
   sweepRunsHandler,
   connectorDispatchHandler,
   type ManagedTenantDeps,
+  type PlatformDrainContext,
   type PlatformDrainReport,
   type DeployVerticalFn,
   type FetchVerticalAssetFn,
@@ -1412,6 +1413,25 @@ export async function drainTarget<R extends { vertical: string | null }, C>(
   return { rec, vertical: rec.vertical, client };
 }
 
+/**
+ * The drain's context for one scope, from its directory record and nothing else (#2005): who
+ * it is, the version it is bound to, and whether it is the real install. A preview's or a
+ * fork's own intents are settled inert by the drain, never executed — so `primary` is the
+ * one field here a wrong answer turns into an outbound effect.
+ */
+export function drainContextOf(
+  rec: Pick<Scope, 'tenantId' | 'id' | 'verticalVersionId' | 'kind' | 'forkedFrom'>,
+  vertical: string,
+): PlatformDrainContext {
+  return {
+    tenantId: rec.tenantId,
+    scopeId: rec.id,
+    vertical,
+    versionId: rec.verticalVersionId ?? null,
+    primary: isPrimaryScope(rec),
+  };
+}
+
 async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDrainReport> {
   const host = hostFor(env);
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
@@ -1430,7 +1450,7 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
   };
   return drainScopePlatformRequests(
     client,
-    { tenantId: t, scopeId: s, vertical, versionId: rec.verticalVersionId ?? null },
+    drainContextOf(rec, vertical),
     {
       [PROVISION_SIBLING_KIND]: provisionSiblingHandler({
         host,

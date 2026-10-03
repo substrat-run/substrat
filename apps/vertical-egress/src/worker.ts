@@ -89,6 +89,14 @@ export interface OutboundPolicy {
   scope?: string;
   calls?: string[] | null;
   depth?: number;
+  /**
+   * #2005: whether that scope is the real install. `false` — a fork, a snapshot or a preview
+   * of either kind — refuses every third-party subrequest: those scopes cause no outbound
+   * effects. Absent (a router that predates the field) passes as before, the same
+   * fail-open-on-plumbing posture as a missing policy; once the router sends it, `false` is
+   * enforced. The platform loopback and the relay are not third parties and still pass.
+   */
+  primary?: boolean;
 }
 
 export interface Env {
@@ -169,8 +177,9 @@ function relayHost(env: Env): string | null {
 /** What the router's peer entrypoint answers. */
 type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: number; code: string; message: string };
 
-/** Where a subrequest ended up: the six verdicts the meter distinguishes. */
-type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer';
+/** Where a subrequest ended up: the seven verdicts the meter distinguishes. `inert` is a
+ *  third-party subrequest refused because the scope is not primary (#2005). */
+type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer' | 'inert';
 
 /** One datapoint per decision — append-only shape, like the router's request meter:
  *  index [slug]; blobs [hostname, verdict, tenant]. */
@@ -268,6 +277,24 @@ export default {
       return fetch(request);
     }
     const policy = env.OUTBOUND_POLICY;
+    if (policy?.primary === false) {
+      // #2005: a fork or a preview reaches no third party at all — not even a host its
+      // version declares, and not on an unenforced pre-#303 manifest either. Ahead of both,
+      // because whether the scope may have effects is a question about the scope, and
+      // neither of those answers is about the scope.
+      meter(env, hostname, 'inert');
+      return new Response(
+        JSON.stringify({
+          error: 'outbound refused',
+          host: hostname,
+          vertical: policy.slug,
+          detail:
+            'this scope is a preview or a fork, and those cause no outbound effects: a ' +
+            'subrequest to a third party is refused whatever the version declares (#2005).',
+        }),
+        { status: 403, headers: { 'content-type': 'application/json' } },
+      );
+    }
     if (!policy || policy.hosts === null) {
       // No declared surface travelled with this dispatch: a pre-#303 version (or a
       // dispatcher that passed no policy). Unenforced by design — least privilege
