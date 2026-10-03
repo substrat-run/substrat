@@ -63,6 +63,12 @@ describe('marking copies as copies, in their own storage (#2005)', () => {
   const deployment = (ref: string): VerticalClient =>
     ({
       exportScope: async (sid: string) => storeOf(ref).get(sid) ?? [],
+      // #1722's carry verbs, as a deployment built before the fence answers them.
+      exportScopeStamped: async (sid: string) => ({ tables: storeOf(ref).get(sid) ?? [], loadStamp: null, revision: null }),
+      loadMarker: async () => 'unfenced',
+      wipeCarriedCopy: async () => 'unfenced',
+      keptCopy: async () => null,
+      readScopeTable: async () => ({ table: '_substrat_meta', columns: ['key', 'value'], rows: [] }),
       restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[], opts?: { markCopy?: Lineage }) => {
         // The vertical's own guard: a classification of a primary is refused, as the host does.
         if (opts?.markCopy && isPrimaryScope(opts.markCopy)) throw new ControlPlaneError(409, 'mark-copy refused: primary');

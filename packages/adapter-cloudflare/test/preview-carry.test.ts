@@ -943,6 +943,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       // Gone from v1's script, which keeps only the tombstone naming where the data went.
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
       expect(JSON.parse((await tombstoneIn('v1', p.scopeId))!)).toMatchObject({ to: refOf.get(version.v2) });
+      // #2005: the preview's wiped copy is still marked a copy, so nothing reads it as primary.
+      const v1stub = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(p.scopeId)) as unknown as { isCopy(): Promise<boolean> };
+      expect(await v1stub.isCopy()).toBe(true);
       // Not reaped: a rollback carries into that DO again and serves from it, and then v2's copy goes.
       expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['from prod', 'gone data'] });
@@ -1050,12 +1053,15 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const reached = deferred();
       let reads = 0;
       const spy = vi.spyOn(dir.admin, 'getScopeRecord').mockImplementation(async (...args) => {
-        // A's third read of the scope is its cleanup's: the route's, then the export check's.
-        if (args[2] === p.scopeId && ++reads === 3) {
+        // The first read of the scope after A's bind landed is A's cleanup reading the route.
+        const record = await read(...args);
+        if (args[2] === p.scopeId && reads === 0 && record?.verticalVersionId === version.v2) {
+          reads += 1;
           reached.resolve();
           await release.promise;
+          return read(...args);
         }
-        return read(...args);
+        return record;
       });
       try {
         const a = bindTo(p.scopeId, 'v2');
