@@ -29,7 +29,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "dev": "tsx dev/server.mts"
+    "dev": "tsx dev/server.mts",
+    "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",

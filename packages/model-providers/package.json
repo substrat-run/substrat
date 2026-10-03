@@ -25,7 +25,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "update-rate-card": "node scripts/update-rate-card.mjs"
+    "update-rate-card": "node scripts/update-rate-card.mjs",
+    "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.55",
