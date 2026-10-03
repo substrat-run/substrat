@@ -755,6 +755,9 @@ const rebindScopeVerticalBody = z.object({
 // #1756: an adopt moves the scope onto what its vertical serves, and is refused when that breaks
 // an app in the tenant. The body is optional, as it always was.
 const adoptServingBody = z.object({ acknowledge: bindAcknowledgement.optional() });
+// The BULK form starts a run over every still-legacy scope of a vertical, so it reads its body
+// strictly (`readJsonBody`); the single-scope form above keeps the lenient parse it always had.
+const adoptVerticalServingBody = adoptServingBody.strict();
 
 // A snapshot request (preview-and-snapshots.md §3/§9). `expiresAt` opts into the GC
 // sweep; absent = pinned until deliberately deleted. `kind` defaults to 'archive'.
@@ -769,9 +772,32 @@ const snapshotScopeBody = z.object({
 //   false     — the explicit "I accept an unrecoverable wipe"
 //   undefined — back up if a store is configured, proceed without one if not, which is
 //               what keeps every pre-#493 caller (and self-host) working unchanged
-const reapScopeBody = z.object({
-  backup: z.boolean().optional(),
-});
+const reapScopeBody = z
+  .object({
+    backup: z.boolean().optional(),
+  })
+  .strict();
+
+/**
+ * Read the JSON body of a route whose default is an ACT (a reap, a bulk adoption, a fleet
+ * repair), under one grammar: an empty body is the documented defaults (`{}` through the
+ * schema), JSON that does not parse is a 400, and the schema decides the rest. The old
+ * `await c.req.json().catch(() => ({}))` turned a malformed body into the defaults, so a body
+ * of `{"backup": false` ran the action it was cut short of describing. A schema that guards an
+ * act is `.strict()`, so a misspelt key is refused rather than dropped.
+ */
+async function readJsonBody<S extends z.ZodType>(c: { req: { text(): Promise<string> } }, schema: S): Promise<z.output<S>> {
+  const text = (await c.req.text()).trim();
+  let raw: unknown = {};
+  if (text !== '') {
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw new ControlPlaneError(400, 'the body is not valid JSON');
+    }
+  }
+  return schema.parse(raw);
+}
 
 // A directory-restore request (#40). `capturedAt` addresses the copy — there is one
 // directory, so that is its whole address. `overwrite` is the guard against the
@@ -1627,7 +1653,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/tenants/:tenantId/reap', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const actor = c.get('actor');
-    const { backup: wantsBackup } = reapScopeBody.parse(await c.req.json().catch(() => ({})));
+    const { backup: wantsBackup } = await readJsonBody(c, reapScopeBody);
     const tenant = await c.var.admin.getTenant(actor, tenantId);
     if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
     if (tenant.status !== 'deleting') {
@@ -4018,22 +4044,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!options.resolveVerticalVersion || !options.resolveVerticalRef) {
       return c.json({ error: 'repairing serving pins needs dispatch resolution for both ends' }, 501);
     }
-    // Only a genuinely empty body takes the defaults (a real pass, 25 at a time). A body that does
-    // not parse is a refusal: defaulting it would start a repair from a request nobody could read.
-    const text = (await c.req.text()).trim();
-    let raw: unknown = {};
-    if (text !== '') {
-      try {
-        raw = JSON.parse(text);
-      } catch {
-        return c.json({ error: 'body must be JSON: { cursor?: <scope id>, limit?: 1..100, dryRun?: boolean }' }, 400);
-      }
-    }
-    const parsed = repairServingPinsBody.safeParse(raw);
-    if (!parsed.success) {
-      return c.json({ error: 'body must be { cursor?: <scope id>, limit?: 1..100, dryRun?: boolean }' }, 400);
-    }
-    const { cursor, limit, dryRun } = parsed.data;
+    const { cursor, limit, dryRun } = await readJsonBody(c, repairServingPinsBody);
     const actor = c.get('actor');
     const page = await c.var.admin.listScopes(actor, { status: ['active'], cursor, limit: REPAIR_SCAN_PAGE });
     const repaired: { tenantId: string; scopeId: string; from: string; to: string; tables: number }[] = [];
@@ -4200,7 +4211,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     // Body is optional so the bare `POST …/reap` every existing caller sends still
     // parses; `backup` tri-states on purpose (see the ordering comment below).
-    const { backup: wantsBackup } = reapScopeBody.parse(await c.req.json().catch(() => ({})));
+    const { backup: wantsBackup } = await readJsonBody(c, reapScopeBody);
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     if (scope.status !== 'archived') {
@@ -4640,7 +4651,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const owned = (
       await c.var.admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug })
     ).filter((s) => !s.forkedFrom && s.kind !== 'preview' && s.status === 'active');
-    const { acknowledge } = adoptServingBody.parse(await c.req.json().catch(() => ({})));
+    const { acknowledge } = await readJsonBody(c, adoptVerticalServingBody);
     const adopted: string[] = [];
     const alreadyAdopted: string[] = [];
     try {
