@@ -907,6 +907,8 @@ interface ScopeStubRpc {
    * Same return contract as `migrate()`.
    */
   retryMigrations(): Promise<number | null>;
+  /** Whether the scope was loaded as a copy (#2005): what a CP-less coordinator reads for primacy. */
+  isCopy(): Promise<boolean>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -2159,15 +2161,15 @@ export class CloudflareScopeHost implements ScopeHost {
     const stub = this.scopeStub(scopeId);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects, so its deliveries are journaled terminal with the reason and no
-    // handler runs. Asked of the directory, which is the only place fork-ness lives. A
-    // CP-less host has none to ask — and needs none: the only executor that can act there is
-    // a connector, which it routes onto the platform's intent drain, and that drain settles
-    // a non-primary scope's intents inert in the platform's own directory. Asked on the first
-    // due event, once per pass: most passes have none, and the directory is one global object.
+    // handler runs. Asked of the directory where there is one. A CP-less host has none, so it
+    // asks the scope's own storage whether it was loaded as a copy (`_substrat_copy_origin`,
+    // which every copy holds) — a preview and a snapshot reach a hosted vertical as restores.
+    // Asked on the first due event, once per pass: most passes have none, and the directory
+    // is one global object.
     let inert: Promise<boolean> | undefined;
     const isInert = (): Promise<boolean> =>
       (inert ??= this.cpLess
-        ? Promise.resolve(false)
+        ? stub.isCopy()
         : this.cp.getScopeRecord(tenantId, scopeId).then((row) => !isPrimaryScopeRow(row)));
     for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;

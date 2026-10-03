@@ -3506,11 +3506,11 @@ export function scopeHostContractSuite(
         );
 
         // Same tables and row counts as the source (the spine came across too), but for the one
-        // row a copy adds when it brought events in: where it came from, and the mark (#1686).
+        // row every copy adds: where it came from, and the mark (#1686, and #2005: an empty copy
+        // holds it too, which is how a host with no directory knows a copy).
         const srcTables = await host.admin.listScopeTables(staff, t1, s1);
-        const copiedEvents = (srcTables.find((t) => t.name === '_substrat_outbox')?.rowCount ?? 0) > 0;
         const src = srcTables
-          .map((t) => (t.name === '_substrat_copy_origin' ? `${t.name}:${copiedEvents ? 1 : 0}` : `${t.name}:${t.rowCount}`))
+          .map((t) => (t.name === '_substrat_copy_origin' ? `${t.name}:1` : `${t.name}:${t.rowCount}`))
           .sort();
         const dst = (await host.admin.listScopeTables(staff, t1, copy))
           .map((t) => `${t.name}:${t.rowCount}`)

@@ -285,7 +285,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4276,6 +4276,15 @@ export function defineScopeDO(
         }
       }
       return { events, undecodable };
+    }
+
+    /**
+     * Whether this scope was loaded as a copy (#2005) — its `_substrat_copy_origin` row. A CP-less
+     * coordinator has no directory to read a scope's kind from, so this is how it holds a copy's
+     * executor deliveries inert; a coordinator with a directory asks that instead.
+     */
+    isCopy(): boolean {
+      return this.sql.exec(IS_COPY_SQL).toArray().length > 0;
     }
 
     /**

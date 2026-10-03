@@ -55,10 +55,12 @@ const NOT_CARRIED_FAILURE = JSON.stringify({
 
 /**
  * Where a scope's data came from when it is a copy: at most one row, written by the load that made
- * it one. `events_through` is the highest event id the copy brought in. Every event at or below it
- * was emitted in another scope; every event the copy emits itself sorts above it, because a loader
- * re-seeds the scope's event-id floor from `MAX(id)` (#1335) once the rows are in. A scope that was
- * never a copy holds no row. Kernel-owned and shared by both adapters' `KERNEL_DDL`, so the two
+ * it one. `events_through` is the highest event id the copy brought in, or `''` when it brought
+ * none. Every event at or below it was emitted in another scope; every event the copy emits itself
+ * sorts above it, because a loader re-seeds the scope's event-id floor from `MAX(id)` (#1335) once
+ * the rows are in. A scope that was never a copy holds no row — and every copy holds one, an empty
+ * one included (a clean-room preview is a restore of nothing), which is what lets a host with no
+ * directory tell a copy from an install by its own storage (#2005). Kernel-owned and shared by both adapters' `KERNEL_DDL`, so the two
  * cannot part company.
  */
 export const COPY_ORIGIN_DDL = `
@@ -136,12 +138,27 @@ export function settleCopiedWork(
     now,
   );
   const highest = sql.all('SELECT MAX(id) AS id FROM _substrat_outbox')[0]?.id;
-  if (typeof highest === 'string') {
-    sql.run(
-      'INSERT OR REPLACE INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, ?, ?, ?)',
-      sourceScopeId ?? null,
-      highest,
-      now,
-    );
-  }
+  // Written for an empty copy too: `''` is below every id, so `emittedHere()` passes all of the
+  // copy's own events exactly as no row would — and the row still says this scope is a copy.
+  // An origin the dump already carried with the same source and mark is kept as it was, its
+  // `copied_at` included, so re-loading a copy's own export changes nothing in it.
+  sql.run(
+    `INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET
+         source_scope_id = excluded.source_scope_id,
+         events_through = excluded.events_through,
+         copied_at = excluded.copied_at
+       WHERE _substrat_copy_origin.source_scope_id IS NOT excluded.source_scope_id
+          OR _substrat_copy_origin.events_through IS NOT excluded.events_through`,
+    sourceScopeId ?? null,
+    typeof highest === 'string' ? highest : '',
+    now,
+  );
 }
+
+/**
+ * Whether this scope was loaded as a copy (#2005): the copy-origin row every copy holds. The one
+ * primacy fact a host with no control-plane directory can read from the scope's own storage — a
+ * CP-less hosted vertical's coordinator asks it before it runs an executor.
+ */
+export const IS_COPY_SQL = 'SELECT 1 AS copy FROM _substrat_copy_origin WHERE id = 1';
