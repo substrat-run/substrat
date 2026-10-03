@@ -625,8 +625,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         testRollbackThenWrite(id: string, body: string): Promise<void>;
       };
       const rev = async () => Number((await v1.loadMarkerLocal(sid)).revision);
+      await stub.testWriteBatch(sid, 0, 0, true); // creates the helper's table, counted on its own
       const start = await rev();
-      // Three operations, each its own run in one call: three bumps, not one.
+      // Three operations, each its own run and transaction in one call: three bumps, not one.
       await stub.testWriteBatch(sid, 3, 2, true);
       expect(await rev()).toBe(start + 3);
       // A rolled-back transaction and then a landed write, in one run: still counted.
@@ -635,6 +636,28 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await rev()).toBeGreaterThan(Number(before.revision));
       expect(bodiesIn(await v1.exportScopeLocal(sid))).toEqual(['base', 'after the rollback']);
       await expect(v1.restoreScopeLocal(sid, notes('stale'), { expect: before })).rejects.toThrow(/changed since the carry read it/);
+    });
+
+    it('the bump is in the transaction that commits the write, it fails the write when it cannot land, and a same-run read sees it', async () => {
+      const sid = scopeId.parse(ulid());
+      const v1 = hostFor('v1');
+      await v1.restoreScopeLocal(sid, notes('base'));
+      const stub = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(sid)) as unknown as {
+        testSyncTxRevision(id: string): Promise<[string | null, string | null]>;
+        testSameRunMarker(id: string): Promise<[string | null, string | null]>;
+        testBumpFailure(id: string): Promise<{ threw: boolean; landed: boolean }>;
+      };
+      // (a) Read straight after the transactionSync returns, before any microtask could run.
+      const [a0, a1] = await stub.testSyncTxRevision('n-tx');
+      expect(Number(a1)).toBe(Number(a0) + 1);
+      // (c) Outside a transaction too: the read in the same run already sees it.
+      const [c0, c1] = await stub.testSameRunMarker('n-run');
+      expect(Number(c1)).toBe(Number(c0) + 1);
+      // (b) No bump, no write.
+      const before = await v1.loadMarkerLocal(sid);
+      expect(await stub.testBumpFailure('n-fail')).toEqual({ threw: true, landed: false });
+      expect(await v1.loadMarkerLocal(sid)).toEqual(before);
+      expect(bodiesIn(await v1.exportScopeLocal(sid))).toEqual(['base', 'in a sync transaction', 'same run']);
     });
 
     it('a push wipes the copy in the old script, and a bind back to it restores into that same store', async () => {

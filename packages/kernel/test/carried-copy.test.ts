@@ -60,8 +60,20 @@ describe('isWriteStatement (#1722)', () => {
 describe("the scope DO's one SQL handle counts writes (#1722)", () => {
   const source = readFileSync(join(import.meta.dirname, '../../adapter-cloudflare/src/scope-do.ts'), 'utf8');
 
-  it('takes `ctx.storage.sql` once, through revisionCounting', () => {
+  it('takes `ctx.storage.sql` once, into the write revision', () => {
     expect(source.match(/storage\.sql\b/g)).toEqual(['storage.sql']);
-    expect(source).toMatch(/this\.sql = revisionCounting\(ctx\.storage\.sql,/);
+    expect(source).toMatch(/new WriteRevision\(ctx\.storage\.sql, ctx\.storage,/);
+    expect(source).toMatch(/this\.sql = this\.revision\.sql;/);
+  });
+
+  // Codex #2008 r4: the bump has to be inside the transaction that commits the write, so the
+  // revision has to see every transaction boundary. One opened on `ctx.storage` directly would
+  // be a transaction whose first write may find the flag set by a bump that rolled back.
+  it('opens every transaction through the write revision', () => {
+    expect(source.match(/this\.(ctx\.)?storage\.transaction(Sync)?\(/g)).toEqual([
+      'this.storage.transactionSync(',
+      'this.storage.transaction(',
+    ]);
+    expect(source.match(/this\.revision\.transaction(Sync)?\(/g)?.length).toBeGreaterThan(20);
   });
 });

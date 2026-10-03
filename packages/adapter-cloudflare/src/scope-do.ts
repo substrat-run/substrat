@@ -731,62 +731,94 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
 }
 
 /**
- * The scope DO's SQL handle with the write revision attached (#1722, Codex #2008 r2): any run of
- * statements that can change the store (`isWriteStatement`) advances `WRITE_REVISION_KEY`. A
- * carry's conditional restore compares that revision, so an UPDATE in place (a drain receipt, a
- * redrain) moves it as surely as an emitted event. One wrapper at the one place the handle is
- * taken, so a writer added later cannot forget it. `suspended` is the wake's idempotent DDL and a
- * load's drop-and-replay.
+ * The scope DO's write revision (#1722): the one SQL handle this object writes through, and the
+ * one way it opens a transaction, so a writer or a transaction added later cannot slip past it.
+ * A carry's conditional restore compares the revision, so every change to the store has to move
+ * it: an UPDATE in place (a drain receipt, a redrain) as surely as an emitted event (Codex #2008
+ * r2). `suspended` is the wake's idempotent DDL, a load's drop-and-replay and a migration's own
+ * statements, which advance it themselves.
  *
- * Once per synchronous run, not once per statement: a statement-by-statement bump cost 28.6% on
- * a write-heavy operation, measured (`write-revision-cost.test.ts`). The first write of a run
- * queues one microtask that advances the revision. It runs when the run ends, at its first await
- * or its end, and so before this object takes another request: a marker read, or a fenced
- * restore, never sees the writes without the bump. An open transaction is still open when it
- * runs, so the bump commits or rolls back with the writes; one that rolled back before the bump
- * leaves a bump with no writes, which over-counts, and over-counting only refuses a restore that
- * could have landed. Never deferred across an await: the next run's writes queue their own.
+ * **Atomic with the write (Codex #2008 r4).** The bump runs synchronously, right BEFORE the first
+ * write that needs it, on the same connection: inside a `transactionSync` or `transaction` it
+ * commits or rolls back with that transaction's writes, and outside one it joins the same
+ * coalesced batch. A bump that fails throws before the write runs, so no write lands under the old
+ * revision. Nothing is deferred to a later commit.
+ *
+ * **Once per run, not per statement** (a bump per statement cost 28.7–32.4% on a write-heavy
+ * operation, `write-revision-cost.test.ts`). After a bump, later writes skip it while they are
+ * covered by it: until the run ends (a microtask clears the flag at its first await or its end)
+ * and until a transaction boundary. Entering a transaction clears it, so each committing
+ * transaction holds a bump of its own; leaving one clears it too, so after a rollback (which took
+ * the bump with it) or a commit the next write bumps again. Clearing more often only over-counts,
+ * and over-counting only refuses a restore that could have landed.
  */
-function revisionCounting(sql: SqlStorage, suspended: () => boolean): SqlStorage {
-  let queued = false;
-  const bump = () => {
-    queued = false;
+class WriteRevision {
+  /** Whether the current run, in the current transaction scope, already holds a bump. */
+  private covered = false;
+  /** A statement's text is almost always a constant, so its answer is remembered (bounded). */
+  private readonly writes = new Map<string, boolean>();
+  readonly sql: SqlStorage;
+
+  constructor(
+    private readonly raw: SqlStorage,
+    private readonly storage: DurableObjectStorage,
+    private readonly suspended: () => boolean,
+  ) {
+    const exec = (query: string, ...bindings: unknown[]) => {
+      if (!this.covered && !this.suspended() && this.isWrite(query)) this.bump();
+      return raw.exec(query, ...bindings);
+    };
+    this.sql = new Proxy(raw, {
+      get(target, prop) {
+        if (prop === 'exec') return exec;
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+  }
+
+  /** `storage.transactionSync`, at a transaction boundary. */
+  transactionSync<T>(run: () => T): T {
+    this.covered = false;
     try {
-      sql.exec(
-        `INSERT INTO _substrat_meta (key, value) VALUES (?, '1')
-         ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`,
-        WRITE_REVISION_KEY,
-      );
-    } catch {
-      // Storage destroyed in the same run (a reap): nothing is left to count.
+      return this.storage.transactionSync(run);
+    } finally {
+      this.covered = false;
     }
-  };
-  // A statement's text is almost always a constant, so its answer is remembered (bounded).
-  const writes = new Map<string, boolean>();
-  const isWrite = (query: string): boolean => {
-    let known = writes.get(query);
+  }
+
+  /** `storage.transaction`, at a transaction boundary. */
+  async transaction<T>(run: () => Promise<T>): Promise<T> {
+    this.covered = false;
+    try {
+      return await this.storage.transaction(run);
+    } finally {
+      this.covered = false;
+    }
+  }
+
+  private bump(): void {
+    // No catch: a bump that cannot be written fails the write it was for.
+    this.raw.exec(
+      `INSERT INTO _substrat_meta (key, value) VALUES (?, '1')
+       ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`,
+      WRITE_REVISION_KEY,
+    );
+    this.covered = true;
+    queueMicrotask(() => {
+      this.covered = false;
+    });
+  }
+
+  private isWrite(query: string): boolean {
+    let known = this.writes.get(query);
     if (known === undefined) {
       known = isWriteStatement(query);
-      if (writes.size >= 512) writes.clear();
-      writes.set(query, known);
+      if (this.writes.size >= 512) this.writes.clear();
+      this.writes.set(query, known);
     }
     return known;
-  };
-  const exec = (query: string, ...bindings: unknown[]) => {
-    const cursor = sql.exec(query, ...bindings);
-    if (!queued && !suspended() && isWrite(query)) {
-      queued = true;
-      queueMicrotask(bump);
-    }
-    return cursor;
-  };
-  return new Proxy(sql, {
-    get(target, prop) {
-      if (prop === 'exec') return exec;
-      const value = Reflect.get(target, prop, target) as unknown;
-      return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-    },
-  });
+  }
 }
 
 function toRpcError(err: unknown): Error {
@@ -1033,6 +1065,8 @@ export function defineScopeDO(
      * load's drop-and-replay, which sets the revision itself once the store is rebuilt.
      */
     private revisionSuspended = true;
+    /** #1722: the write revision, and the one way this object opens a transaction. */
+    private readonly revision: WriteRevision;
 
     constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
       super(ctx, env);
@@ -1041,10 +1075,12 @@ export function defineScopeDO(
       // subscriber's ping still reaches `webSocketMessage` and pins the DO in memory —
       // exactly the hibernation cost `acceptWebSocket` (below) exists to avoid.
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
-      // #1722: the ONE handle this object writes through, so every write advances the write
-      // revision a carry's restore is fenced on. Nothing else here may take the raw handle
-      // (`carried-copy.test.ts` in the kernel holds that).
-      this.sql = revisionCounting(ctx.storage.sql, () => this.revisionSuspended);
+      // #1722: the ONE handle this object writes through and the one way it opens a transaction,
+      // so every write advances the write revision a carry's restore is fenced on, inside the
+      // transaction that commits it. Nothing else here may take the raw handle or open a
+      // transaction on `ctx.storage` itself (`carried-copy.test.ts` in the kernel holds that).
+      this.revision = new WriteRevision(ctx.storage.sql, ctx.storage, () => this.revisionSuspended);
+      this.sql = this.revision.sql;
       for (const stmt of splitSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
       }
@@ -1559,7 +1595,7 @@ export function defineScopeDO(
             const event: ImportedEvent = structuredClone({ ...fact, source });
             this.causedBy = e.id;
             try {
-              await this.ctx.storage.transaction(async () => {
+              await this.revision.transaction(async () => {
                 // As the producer's principal: real checks against the grants this vertical's
                 // `peers` gave it; its emits carry `{ vertical, scope }` and what they passed.
                 await imp.handler(this.importContext(tenantId, scopeId, peerSubject), event);
@@ -1935,7 +1971,7 @@ export function defineScopeDO(
       switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
     ): Promise<SwitchedOff[]> {
       return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => {
+        this.revision.transactionSync(() => {
           for (const t of tuples) {
             const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
             this.sql.exec(seat.sql, ...seat.params);
@@ -2374,7 +2410,7 @@ export function defineScopeDO(
         // commit together, or a throw (from either) rolls domain writes AND
         // emitted events back as one — verified across `await` in workerd.
         try {
-          await this.ctx.storage.transaction(async () => {
+          await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal,
               tenantId,
@@ -2922,7 +2958,7 @@ export function defineScopeDO(
         // the reason it is read there: that is where this call holds the DO to itself.
         const liveSince = this.liveHighWaterMark();
         try {
-          await this.ctx.storage.transaction(async () => {
+          await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal, tenantId, scopeId, undefined, connectionId,
               undefined, undefined, undefined, 'attachments.upload',
@@ -3101,7 +3137,7 @@ export function defineScopeDO(
         // #938: same mark-then-settle pair as the upload path above.
         const liveSince = this.liveHighWaterMark();
         try {
-          await this.ctx.storage.transaction(async () => {
+          await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal, tenantId, scopeId, undefined, connectionId,
               undefined, undefined, undefined, 'attachments.remove',
@@ -3189,7 +3225,7 @@ export function defineScopeDO(
     async attachmentTextRecord(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean> {
       await this.ensureMigrations();
       return this.queue.enqueue(async () =>
-        this.ctx.storage.transactionSync(() =>
+        this.revision.transactionSync(() =>
           recordAttachmentText(doSpineSql(this.sql), attachmentId, outcome, new Date().toISOString()),
         ),
       );
@@ -3398,7 +3434,7 @@ export function defineScopeDO(
       at: string,
     ): Promise<SwitchOutcome & { instance: string }> {
       const outcome = await this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
+        this.revision.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
       );
       // #1819: the instance that applied it, which the rewind hold's release rule reads.
       return { ...outcome, instance: this.instanceId };
@@ -3416,7 +3452,7 @@ export function defineScopeDO(
       // deployment whose handlers would run, never from the platform's request.
       const imports = this.crossVertical.consumes();
       return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => moveImportCursor(this.switchSql(), { ...input, imports })),
+        this.revision.transactionSync(() => moveImportCursor(this.switchSql(), { ...input, imports })),
       );
     }
 
@@ -3426,7 +3462,7 @@ export function defineScopeDO(
      */
     async switchPeer(vertical: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
       return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => switchPeer(this.switchSql(), { vertical, scopeId, to, at })),
+        this.revision.transactionSync(() => switchPeer(this.switchSql(), { vertical, scopeId, to, at })),
       );
     }
 
@@ -3599,7 +3635,7 @@ export function defineScopeDO(
      */
     switchHoldOn(scopeId: string, moduleId: string, claimIds: string[]): void {
       this.switchHoldsTable();
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         const seq = (
           this.sql
             .exec(
@@ -3639,7 +3675,7 @@ export function defineScopeDO(
     switchHoldClaim(scopeId: string, moduleIds: string[], claimId: string, token: number): void {
       this.switchHoldsTable();
       const at = new Date().toISOString();
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         for (const moduleId of moduleIds) {
           this.sql.exec(
             `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
@@ -3669,7 +3705,7 @@ export function defineScopeDO(
     switchHoldJoin(scopeId: string, moduleId: string, claimIds: string[]): void {
       this.switchHoldsTable();
       const at = new Date().toISOString();
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         for (const claimId of claimIds) {
           this.sql.exec(
             `INSERT OR IGNORE INTO _substrat_switch_holds (scope_id, module_id, claim_id, state, doomed, held_at)
@@ -3746,7 +3782,7 @@ export function defineScopeDO(
     /** Release these claims on one module, or every claim on the scope when `claimIds` is null. */
     switchHoldRelease(scopeId: string, moduleId: string | null, claimIds: string[] | null): void {
       this.switchHoldsTable();
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         if (moduleId === null || claimIds === null) {
           this.sql.exec('DELETE FROM _substrat_switch_holds WHERE scope_id = ?', scopeId);
           this.sql.exec('DELETE FROM _substrat_switch_hold_ons WHERE scope_id = ?', scopeId);
@@ -3795,7 +3831,7 @@ export function defineScopeDO(
         // and the event's `occurredAt` are one fact, and two clock reads could disagree.
         const now = instant.parse(new Date().toISOString());
         let outcome: CapabilityExchange | null = null;
-        await this.ctx.storage.transaction(async () => {
+        await this.revision.transaction(async () => {
           outcome = await exchangeCapability(
             {
               sql: doSpineSql(this.sql),
@@ -3854,7 +3890,7 @@ export function defineScopeDO(
       await this.ensureMigrations();
       return await this.queue.enqueue(
         () =>
-          this.ctx.storage.transactionSync(() =>
+          this.revision.transactionSync(() =>
             revokeCapabilityAsPlatform(doSpineSql(this.sql), id, actor, instant.parse(new Date().toISOString())),
           ) ?? null,
       );
@@ -4017,7 +4053,7 @@ export function defineScopeDO(
       // `jobRunInsert`: an `await` between them is an output-gate boundary, and the
       // point of doing this in one RPC is that there is no boundary to be evicted
       // at. Same reason `SCHEDULE_STATE_REBUILD` insists on it.
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         this.sql.exec(
           `INSERT INTO _substrat_job_runs
              (id, module_id, job, instance, payload, status, cursor, counters, attempts,
@@ -4164,7 +4200,7 @@ export function defineScopeDO(
       // `transactionSync` with both statements inline — NOT `await
       // this.jobRunPatch(...)` then the delete. The await is an output-gate
       // boundary, which is precisely the gap this method exists to close.
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         this.sql.exec(
           JOB_RUN_PATCH_SQL,
           patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
@@ -4251,7 +4287,7 @@ export function defineScopeDO(
           const key = `${moduleId}@${migration.version}`;
           if (this.applied.has(key)) continue;
           try {
-            await this.ctx.storage.transaction(async () => {
+            await this.revision.transaction(async () => {
               const already = this.sql
                 .exec(
                   'SELECT 1 FROM _substrat_migrations WHERE module_id = ? AND version = ?',
@@ -4707,7 +4743,7 @@ export function defineScopeDO(
       let result: ScopeQueryResult | undefined;
       const rollback = new Error('read-only console rollback');
       try {
-        await this.ctx.storage.transaction(async () => {
+        await this.revision.transaction(async () => {
           const cursor = this.sql.exec(stmt);
           const columns = cursor.columnNames;
           const rows: unknown[][] = [];
@@ -4955,7 +4991,7 @@ export function defineScopeDO(
       // runtime forbids a manual BEGIN through `sql.exec`, and this body is wholly
       // synchronous, which is the one case the sync API is for (it commits at the
       // first await, and there is none). It also has to be sync because the caller is.
-      this.ctx.storage.transactionSync(() => {
+      this.revision.transactionSync(() => {
         for (const stmt of splitSqlStatements(SCHEDULE_STATE_REBUILD)) this.sql.exec(stmt);
       });
     }
@@ -5026,7 +5062,7 @@ export function defineScopeDO(
       if (exact && !sourceScopeId) {
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
       }
-      const switched = await this.ctx.storage.transaction(async () => {
+      const switched = await this.revision.transaction(async () => {
         const before = this.loadMarker();
         if (expect) {
           if (before.loadStamp !== expect.loadStamp || (expect.revision !== undefined && before.revision !== expect.revision)) {
@@ -5442,7 +5478,7 @@ export function defineScopeDO(
               // emit records no operation either.
               this.causedBy = event.id;
               try {
-                await this.ctx.storage.transaction(async () => {
+                await this.revision.transaction(async () => {
                   const ctx = this.operationContext(this.systemPrincipal, tenantId, scopeId, {
                     system: mod.id,
                   });
@@ -5672,7 +5708,7 @@ export function defineScopeDO(
        * owns that stack itself. It is exactly this asymmetry that makes `RunSub`
        * closure-shaped rather than an enter/rollback/release triple.
        */
-      const runSub: RunSub = (_depth, fn) => this.ctx.storage.transaction(fn);
+      const runSub: RunSub = (_depth, fn) => this.revision.transaction(fn);
 
       // Lifted so `grant` reuses the SAME check the operation itself passes —
       // a delegation check that could differ from the operation's would be a
@@ -6199,7 +6235,7 @@ export function defineScopeDO(
       // serializes but does not roll back, and a role insert that throws part-way must not leave
       // the receipt (or a half-replaced role set) behind for `servesTenant` to trust.
       return this.queue.enqueue(() =>
-        this.ctx.storage.transactionSync(() => {
+        this.revision.transactionSync(() => {
           // #1738: the receipt `servesTenant` reads. First writer wins: absent or equal is written,
           // a receipt for ANOTHER tenant refuses the whole projection (K-3), before a single row
           // moves, so a misdirected projection can never re-point a scope or leave its roles behind.

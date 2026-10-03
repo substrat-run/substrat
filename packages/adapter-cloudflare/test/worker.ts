@@ -76,11 +76,12 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
      */
     async testWriteBatch(scopeId: string, ops: number, rows: number, counted: boolean): Promise<void> {
       const self = this as unknown as { sql: SqlStorage; revisionSuspended: boolean };
-      self.sql.exec('CREATE TABLE IF NOT EXISTS bench_rows (id TEXT PRIMARY KEY, body TEXT, n INTEGER)');
+      const exists = self.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bench_rows'`).toArray().length > 0;
+      if (!exists) self.sql.exec('CREATE TABLE bench_rows (id TEXT PRIMARY KEY, body TEXT, n INTEGER)');
       self.revisionSuspended = !counted;
       try {
         for (let o = 0; o < ops; o++) {
-          this.ctx.storage.transactionSync(() => {
+          (this as unknown as { revision: { transactionSync<T>(run: () => T): T } }).revision.transactionSync(() => {
             for (let r = 0; r < rows; r++) {
               const id = ulid();
               self.sql.exec('INSERT INTO bench_rows (id, body, n) VALUES (?, ?, ?)', id, 'x'.repeat(64), r);
@@ -107,7 +108,7 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
     testRollbackThenWrite(id: string, body: string): void {
       const sql = (this as unknown as { sql: SqlStorage }).sql;
       try {
-        this.ctx.storage.transactionSync(() => {
+        (this as unknown as { revision: { transactionSync<T>(run: () => T): T } }).revision.transactionSync(() => {
           sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', `${id}-rolled-back`, body);
           throw new Error('roll back');
         });
@@ -115,6 +116,53 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
         // rolled back, as intended
       }
       sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, body);
+    }
+
+    /**
+     * #1722 (Codex #2008 r4): a write inside `transactionSync`, and the revision read straight
+     * after it with no await in between: the bump has to be in the transaction that committed,
+     * not in a later microtask. Answers [before, after].
+     */
+    testSyncTxRevision(id: string): [string | null, string | null] {
+      const self = this as unknown as {
+        sql: SqlStorage;
+        revision: { transactionSync<T>(run: () => T): T };
+        loadMarker(): { revision: string | null };
+      };
+      const before = self.loadMarker().revision;
+      self.revision.transactionSync(() => {
+        self.sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, 'in a sync transaction');
+      });
+      return [before, self.loadMarker().revision];
+    }
+
+    /** #1722: a write then a marker read in one run, outside any transaction. Answers [before, after]. */
+    testSameRunMarker(id: string): [string | null, string | null] {
+      const self = this as unknown as { sql: SqlStorage; loadMarker(): { revision: string | null } };
+      const before = self.loadMarker().revision;
+      self.sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, 'same run');
+      return [before, self.loadMarker().revision];
+    }
+
+    /**
+     * #1722 (Codex #2008 r4): a bump that cannot be written fails the write it was for. The
+     * revision's table is moved aside through the raw handle, a write is attempted through the
+     * object's own, and the table is put back. Answers whether it threw and whether the row landed.
+     */
+    testBumpFailure(id: string): { threw: boolean; landed: boolean } {
+      const raw = this.ctx.storage.sql;
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      raw.exec('ALTER TABLE _substrat_meta RENAME TO _substrat_meta_aside');
+      let threw = false;
+      try {
+        sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, 'must not land');
+      } catch {
+        threw = true;
+      } finally {
+        raw.exec('ALTER TABLE _substrat_meta_aside RENAME TO _substrat_meta');
+      }
+      const landed = (raw.exec('SELECT COUNT(*) AS n FROM pv_notes WHERE id = ?', id).toArray()[0] as { n: number }).n > 0;
+      return { threw, landed };
     }
 
     /** #1722's cost probe: count the write revision or not, for calls that follow. */
