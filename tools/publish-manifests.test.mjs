@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import semver from 'semver';
 import {
   DEP_FIELDS,
   RUNTIME_FIELDS,
@@ -15,11 +16,13 @@ import {
   guardProblem,
   installTarget,
   manifestProblems,
+  isRegistrySpec,
   npmViewAnswer,
   packedManifest,
   provenanceNote,
   pnpmMembers,
   unresolvedEdges,
+  withOneRetry,
 } from './publish-manifests.mjs';
 import { PUBLISH_GUARD, publisherProblem } from './publish-guard.mjs';
 
@@ -168,13 +171,73 @@ test('refuses an alias to a private member in every runtime field; allows one to
   assert.deepEqual(manifestProblems(pkg({ devDependencies: { kit: 'npm:@substrat-run/engine-test-kit@0.1.0' } }), members), []);
 });
 
-test("npm view's answers: a version is yes, E404 and ETARGET are no, a broken manifest is a found version, anything else is no answer", () => {
-  assert.equal(npmViewAnswer({ ok: true, stdout: '"0.135.0"\n' }), true);
-  assert.equal(npmViewAnswer({ ok: true, stdout: '' }), false);
-  assert.equal(npmViewAnswer({ ok: false, stderr: 'npm error code E404\nnpm error 404 Not Found' }), false);
-  assert.equal(npmViewAnswer({ ok: false, stdout: '{"error":{"code":"ETARGET"}}' }), false);
-  assert.equal(npmViewAnswer({ ok: false, stderr: 'npm error code EUNSUPPORTEDPROTOCOL' }), true);
-  assert.equal(npmViewAnswer({ ok: false, stderr: 'npm error code ECONNRESET' }), undefined);
+test("npm view's answers are classified by npm's own error code, pinned", () => {
+  // Each row is a shape npm 10 actually prints for `npm view <spec> version --json`.
+  const e404 = (summary) => JSON.stringify({ error: { code: 'E404', summary } });
+  const table = [
+    [{ ok: true, stdout: '"0.135.0"\n' }, true],
+    [{ ok: true, stdout: '' }, false],
+    [{ ok: false, stdout: e404('No match found for version ^99.0.0'), stderr: 'npm error code E404' }, false],
+    [{ ok: false, stdout: e404('Not Found - GET https://registry.npmjs.org/@x%2fy'), stderr: 'npm error code E404' }, false],
+    [{ ok: false, stderr: 'npm error code ETARGET\nnpm error notarget No matching version' }, false],
+    [{ ok: false, stderr: 'npm error code E429' }, 'transient'],
+    [{ ok: false, stderr: 'npm error code E503' }, 'transient'],
+    [{ ok: false, stderr: 'npm error code ECONNRESET' }, 'transient'],
+    [{ ok: false, stderr: 'npm error code EAI_AGAIN' }, 'transient'],
+    // An error about the QUESTION is not an answer about the package — never "found".
+    [{ ok: false, stderr: 'npm error code EUNSUPPORTEDPROTOCOL\nnpm error Unsupported URL Type "workspace:"' }, undefined],
+    [{ ok: false, stderr: 'npm error code EINVALIDTAGNAME' }, undefined],
+    [{ ok: false, stderr: 'something npm has never printed' }, undefined],
+  ];
+  for (const [result, expected] of table) assert.equal(npmViewAnswer(result), expected, JSON.stringify(result));
+});
+
+test('a transient answer is asked once more; a second transient, or no answer, throws', async () => {
+  const sleep = async () => {};
+  const answers = (...xs) => () => Promise.resolve(xs.shift());
+  assert.equal(await withOneRetry(answers('transient', true), 'q', { sleep }), true);
+  assert.equal(await withOneRetry(answers('transient', false), 'q', { sleep }), false);
+  await assert.rejects(withOneRetry(answers('transient', 'transient'), 'q', { sleep }), /q: no answer from the registry \(transient\)/);
+  await assert.rejects(withOneRetry(answers(undefined, true), 'q', { sleep }), /q: no answer from the registry \(unexpected error\)/);
+});
+
+test('registry specs: agrees with node-semver on ranges, and accepts dist-tags only by their own grammar', () => {
+  const ranges = [
+    '^0.135.0', '0.135.0', '~1.2.3', '>=5', '>= 5 <7', '1.x', '*', '', 'x', '^1.0.0-beta.1', '1.2.3+build.5',
+    '1.2.3 - 2.0.0', '^1 || ^2', 'v1.2.3', '~>1.2', '<=1.2.3 >0.1',
+    'workspace:^', 'workspace:*', 'catalog:', 'file:../x', 'link:../x', 'portal:../x', 'github:a/b',
+    'https://example.test/x.tgz', '^1.2.3.4', '01.2.3', '>>1', '1.2.3 -', '^', 'npm:x@1',
+  ];
+  for (const r of ranges) {
+    const valid = semver.validRange(r) !== null;
+    // A dist-tag-shaped word is accepted as a tag even where semver says "not a range".
+    const tagShaped = /^[A-Za-z][A-Za-z0-9._-]*$/.test(r);
+    assert.equal(isRegistrySpec(r), valid || tagShaped, `'${r}': node-semver says ${valid}`);
+  }
+  for (const tag of ['latest', 'next', 'beta-2', 'rc.1']) assert.equal(isRegistrySpec(tag), true, tag);
+});
+
+test('an npm: alias with a workspace: (or any non-registry) range is refused, in every runtime field', () => {
+  for (const field of RUNTIME_FIELDS) {
+    for (const spec of ['npm:@substrat-run/contracts@workspace:^', 'npm:@substrat-run/contracts@catalog:', 'npm:left-pad@file:../x']) {
+      assert.deepEqual(manifestProblems(pkg({ [field]: { c: spec } }), members), [
+        `@substrat-run/x@1.0.0: ${field}['c'] is '${spec}' — an npm: alias must name a semver range or dist-tag`,
+      ]);
+    }
+    assert.deepEqual(manifestProblems(pkg({ [field]: { c: 'npm:@substrat-run/contracts@latest' } }), members), []);
+  }
+});
+
+test('registry mode: an alias with a workspace: range is refused, and never sent to npm as a question', async () => {
+  const served = pkg({ dependencies: { c: 'npm:@substrat-run/contracts@workspace:^', '@substrat-run/contracts': 'workspace:^' } });
+  // The same check registry mode runs on what npm serves.
+  assert.equal(manifestProblems(served, members).length, 2);
+  const asked = [];
+  const missing = await unresolvedEdges(served, members, async (n, r) => (asked.push(`${n}@${r}`), true), {
+    deadline: 60_000,
+    ...fakeTime(),
+  });
+  assert.deepEqual([asked, missing], [[], []]);
 });
 
 /** A clock that only moves when the code under test sleeps. */

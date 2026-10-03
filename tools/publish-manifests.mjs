@@ -66,6 +66,24 @@ export function installTarget(dep, spec) {
   return at > 0 ? { name: rest.slice(0, at), range: rest.slice(at + 1) } : { name: rest, range: 'latest' };
 }
 
+// node-semver's range grammar (https://github.com/npm/node-semver#range-grammar), plus the `v`
+// prefix and the space after an operator that it also accepts. Hand-written so the registry
+// job needs no install; the test pins it against node-semver itself.
+const NR = '(?:0|[1-9]\\d*)';
+const XR = `(?:[xX*]|${NR})`;
+const IDENTS = '[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*';
+const PARTIAL = `v?${XR}(?:\\.${XR}(?:\\.${XR}(?:-${IDENTS})?(?:\\+${IDENTS})?)?)?`;
+const SIMPLE = `(?:(?:<=|>=|<|>|=|~>?|\\^)\\s*)?${PARTIAL}`;
+const RANGE = `(?:${PARTIAL}\\s+-\\s+${PARTIAL}|${SIMPLE}(?:\\s+${SIMPLE})*)?`;
+const RANGE_SET = new RegExp(`^\\s*${RANGE}\\s*(?:\\|\\|\\s*${RANGE}\\s*)*$`);
+/** A dist-tag: what npm-package-arg calls a tag once a spec is not a range — letters first, no protocol. */
+const DIST_TAG = /^[A-Za-z][A-Za-z0-9._-]*$/;
+
+/** Whether npm resolves `spec` from the registry: a semver range (versions included) or a dist-tag. */
+export function isRegistrySpec(spec) {
+  return RANGE_SET.test(spec) || DIST_TAG.test(spec);
+}
+
 /** Each runtime dependency of `manifest`, with the package it actually installs. */
 export function runtimeEdges(manifest) {
   return RUNTIME_FIELDS.flatMap((field) =>
@@ -88,8 +106,16 @@ export function manifestProblems(manifest, members) {
       }
     }
   }
-  for (const { field, dep, name } of runtimeEdges(manifest)) {
-    if (UNPUBLISHABLE_PROTOCOLS.some((p) => String(manifest[field][dep]).startsWith(p))) continue;
+  for (const { field, dep, name, range } of runtimeEdges(manifest)) {
+    const spec = String(manifest[field][dep]);
+    if (UNPUBLISHABLE_PROTOCOLS.some((p) => spec.startsWith(p))) continue;
+    // An alias's own spec is not caught by the protocol check above —
+    // `npm:@substrat-run/contracts@workspace:^` starts with `npm:` — so it is held to the
+    // only thing npm resolves inside an alias: a range or a dist-tag.
+    if (spec.startsWith('npm:') && !isRegistrySpec(range)) {
+      problems.push(`${id}: ${field}['${dep}'] is '${spec}' — an npm: alias must name a semver range or dist-tag`);
+      continue;
+    }
     if (members.get(name)?.private) {
       const what = name === dep ? '' : ` (an alias of ${name})`;
       problems.push(`${id}: ${field}['${dep}']${what} is a private workspace member — it is never published`);
@@ -112,7 +138,12 @@ export async function unresolvedEdges(
   resolves,
   { deadline, interval = 20_000, sleep, now = Date.now, warn = () => {} } = {},
 ) {
-  let pending = runtimeEdges(manifest).filter(({ name }) => members.has(name) && !members.get(name).private);
+  // Only a spec npm resolves from the registry is asked about. Anything else never reaches
+  // npm: a protocol or an alias that is not a range is refused by `manifestProblems`, and
+  // the registry's answer to an invalid spec is an error about the QUESTION, not the package.
+  let pending = runtimeEdges(manifest).filter(
+    ({ name, range }) => members.has(name) && !members.get(name).private && isRegistrySpec(range),
+  );
   for (;;) {
     const results = await Promise.all(pending.map((e) => resolves(e.name, e.range)));
     pending = pending.filter((_, i) => !results[i]);
@@ -122,31 +153,54 @@ export async function unresolvedEdges(
   }
 }
 
+/** The error code npm reported for a failed `npm view --json`: its JSON body, else its stderr. */
+function npmErrorCode({ stdout = '', stderr = '' }) {
+  try {
+    const code = JSON.parse(stdout)?.error?.code;
+    if (code) return code;
+  } catch {}
+  return /npm error code (\S+)/.exec(stderr)?.[1] ?? null;
+}
+
+/** Codes that say the network or the registry failed, not that the package is missing. */
+const TRANSIENT = /^(E429|E5\d\d|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|EPIPE|ENETUNREACH)$/;
+
 /**
- * Whether npm can satisfy `name@range`, from npm's own answer to `npm view` (`stdout` and
- * `stderr` of the run): a version printed is yes; E404 (no such package) and ETARGET (no
- * version in range) are no. EUNSUPPORTEDPROTOCOL is a yes too: npm found the version and
- * then choked on ITS manifest — the defect `manifestProblems` reports against that package.
- * Anything else is a question npm did not answer, and is thrown rather than guessed.
+ * npm's answer to `npm view <name>@<range> version --json`, for a range that already passed
+ * `isRegistrySpec`: a version printed is `true`; E404 or ETARGET is `false` — npm 10 reports
+ * both "no such package" and "no version in range" as E404, older npm says ETARGET for the
+ * second; a network or registry failure is `'transient'`; anything else is `undefined`, a
+ * question npm did not answer, which the caller throws on rather than guessing either way.
  */
-export function npmViewAnswer({ ok, stdout = '', stderr = '' }) {
-  if (ok) return stdout.trim() !== '';
-  if (/\bEUNSUPPORTEDPROTOCOL\b/.test(stderr)) return true;
-  if (/\b(E404|ETARGET)\b/.test(`${stdout}${stderr}`)) return false;
+export function npmViewAnswer(result) {
+  if (result.ok) return (result.stdout ?? '').trim() !== '';
+  const code = npmErrorCode(result);
+  if (code === 'E404' || code === 'ETARGET') return false;
+  if (code && TRANSIENT.test(code)) return 'transient';
   return undefined;
 }
 
-/** Whether npm can satisfy `name@range` — asked of npm itself, the resolver a consumer runs. */
-async function npmResolves(name, range) {
-  let result;
-  try {
-    result = { ok: true, ...(await run('npm', ['view', `${name}@${range}`, 'version', '--json'])) };
-  } catch (err) {
-    result = { ok: false, stdout: err.stdout, stderr: err.stderr };
+/**
+ * `fn()` once more after `pause` when its first answer is `'transient'`, so one dropped
+ * connection does not redden the weekly job; a failure that persists is thrown, visibly.
+ */
+export async function withOneRetry(fn, describe, { sleep, pause = 10_000 }) {
+  let answer = await fn();
+  if (answer === 'transient') {
+    await sleep(pause);
+    answer = await fn();
   }
-  const answer = npmViewAnswer(result);
-  if (answer === undefined) throw new Error(`npm view ${name}@${range} gave no answer:\n${result.stderr}`);
+  if (typeof answer !== 'boolean') throw new Error(`${describe}: no answer from the registry (${answer ?? 'unexpected error'})`);
   return answer;
+}
+
+/** One `npm view` run, as `npmViewAnswer` reads it. */
+async function npmView(name, range) {
+  try {
+    return npmViewAnswer({ ok: true, ...(await run('npm', ['view', `${name}@${range}`, 'version', '--json'])) });
+  } catch (err) {
+    return npmViewAnswer({ ok: false, stdout: err.stdout, stderr: err.stderr });
+  }
 }
 
 /**
@@ -203,11 +257,20 @@ export async function packedManifest(path) {
   }
 }
 
-/** The manifest npm serves for `name@version`, or `null` when that version is not published. */
-async function registryManifest(name, version, registry) {
-  const res = await fetch(`${registry}/${name.replace('/', '%2f')}/${encodeURIComponent(version)}`);
+/**
+ * The manifest npm serves for `name@version`, or `null` when that version is not published.
+ * A network failure, a 429 or a 5xx is asked once more after `pause`; a second is thrown.
+ */
+async function registryManifest(name, version, registry, { sleep, pause = 10_000 }) {
+  const url = `${registry}/${name.replace('/', '%2f')}/${encodeURIComponent(version)}`;
+  const once = () => fetch(url).catch((err) => ({ status: 0, ok: false, err }));
+  let res = await once();
+  if (res.status === 0 || res.status === 429 || res.status >= 500) {
+    await sleep(pause);
+    res = await once();
+  }
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`${name}@${version}: the registry answered ${res.status}`);
+  if (!res.ok) throw new Error(`${name}@${version}: the registry answered ${res.status || res.err}`);
   return res.json();
 }
 
@@ -233,7 +296,7 @@ async function main() {
     const deadline = Date.now() + 3 * 60_000;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await pool(published, 8, async ([name, { version }]) => {
-      const manifest = await registryManifest(name, version, registry);
+      const manifest = await registryManifest(name, version, registry, { sleep });
       if (!manifest) {
         notes.push(`${name}@${version} is not on the registry yet`);
         return;
@@ -242,7 +305,8 @@ async function main() {
       // A public member it requires must be installable too — published, at a version the
       // range admits. Asked again for a bounded window, the same three minutes
       // scaffold-check waits for a publish, then refused.
-      const missing = await unresolvedEdges(manifest, members, npmResolves, {
+      const resolves = (n, r) => withOneRetry(() => npmView(n, r), `npm view ${n}@${r}`, { sleep });
+      const missing = await unresolvedEdges(manifest, members, resolves, {
         deadline,
         sleep,
         warn: (w) => console.log(`warning: ${w}`),
