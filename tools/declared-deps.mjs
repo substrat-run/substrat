@@ -243,7 +243,10 @@ export function licenseProblem(license, legacyLicenses) {
  */
 export function licenseProblems(rootPj, rootKey, read) {
   const out = [];
-  const seen = new Set([rootPj.name]);
+  // Visited by resolved INSTANCE (the directory a dependency was found in), not by name: two
+  // versions of one package are two packages, and the second may carry a licence the first
+  // does not. A diamond that reaches the SAME instance twice, and a cycle, are still walked once.
+  const seen = new Set([rootKey]);
   const walkDeps = (pj, key, trail) => {
     const required = new Set(Object.keys(pj.dependencies ?? {}));
     // A peer is the CONSUMER's to provide, so it is legitimately absent from this package's own
@@ -256,13 +259,13 @@ export function licenseProblems(rootPj, rootKey, read) {
     );
     const names = new Set([...required, ...mayBeAbsent]);
     for (const name of names) {
-      if (seen.has(name)) continue;
       const dep = read(name, key);
       if (!dep) {
         if (!mayBeAbsent.has(name)) out.push(`${[...trail, name].join(' → ')}: cannot be resolved — run \`pnpm install\``);
         continue;
       }
-      seen.add(name);
+      if (seen.has(dep.key)) continue;
+      seen.add(dep.key);
       const why = licenseProblem(dep.pj.license, dep.pj.licenses);
       if (why) out.push(`${[...trail, name].join(' → ')} ${why}`);
       walkDeps(dep.pj, dep.key, [...trail, name]);

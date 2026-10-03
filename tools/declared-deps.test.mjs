@@ -220,6 +220,42 @@ test('an unresolved peer is skipped like an optional one — but a name that is 
   );
 });
 
+test('two versions of one package are two packages: only the copyleft one is flagged, wherever it sits', () => {
+  // cli → a → shared@1 (MIT), cli → b → shared@2 (AGPL): a walk keyed by NAME judges the first and skips the second.
+  const instances = {
+    'a→shared': { key: 'shared@1', pj: { name: 'shared', version: '1.0.0', license: 'MIT' } },
+    'b→shared': { key: 'shared@2', pj: { name: 'shared', version: '2.0.0', license: 'AGPL-3.0-only' } },
+  };
+  const read = (name, from) =>
+    ({
+      a: { key: 'a', pj: { name: 'a', license: 'MIT', dependencies: { shared: '^1' } } },
+      b: { key: 'b', pj: { name: 'b', license: 'MIT', dependencies: { shared: '^2' } } },
+    })[name] ?? instances[`${from}→${name}`] ?? null;
+  assert.deepEqual(licenseProblems({ ...CLI, dependencies: { a: '*', b: '*' } }, 'cli', read), [
+    '@substrat-run/cli → b → shared is AGPL-3.0-only, which is not on the permissive allowlist',
+  ]);
+  // Order must not matter.
+  assert.deepEqual(licenseProblems({ ...CLI, dependencies: { b: '*', a: '*' } }, 'cli', read), [
+    '@substrat-run/cli → b → shared is AGPL-3.0-only, which is not on the permissive allowlist',
+  ]);
+});
+
+test('the same instance reached twice (a diamond) and a cycle through the root are each walked once', () => {
+  let reads = 0;
+  const pkgs = {
+    a: { key: 'a', pj: { name: 'a', license: 'MIT', dependencies: { shared: '1', cli: '*' } } },
+    b: { key: 'b', pj: { name: 'b', license: 'MIT', dependencies: { shared: '1' } } },
+    shared: { key: 'shared@1', pj: { name: 'shared', license: 'GPL-3.0' } },
+    cli: { key: 'cli', pj: CLI },
+  };
+  const read = (name) => (reads++, pkgs[name] ?? null);
+  // One report for the shared instance, not one per path; the cycle back to the root ends.
+  assert.deepEqual(licenseProblems({ ...CLI, dependencies: { a: '*', b: '*' } }, 'cli', read), [
+    '@substrat-run/cli → a → shared is GPL-3.0, which is not on the permissive allowlist',
+  ]);
+  assert.ok(reads < 20, `terminated after ${reads} reads`);
+});
+
 test('the guarded packages exist, are themselves permissive, and the repo as it stands holds the rule', () => {
   const root = new URL('..', import.meta.url).pathname;
   const cwd = process.cwd();
