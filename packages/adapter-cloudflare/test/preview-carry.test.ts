@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
   createControlPlaneApi,
@@ -42,6 +42,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // Makes v3's restore fail INSIDE the DO's transaction, after its drops: the dump gains a
   // table whose schema the DO refuses, so the import throws and SQLite rolls it all back.
   let sabotageV3 = false;
+  // #1722: the scripts built before the fenced wipe (`/internal/wipe-carried` answers 404 there),
+  // and hooks that hold one request at a chosen step so a test can interleave two of them.
+  const unfenced = new Set<string>();
+  type Hook = (ref: string, sid: ScopeId, tables?: ScopeDumpTable[]) => Promise<void>;
+  const hooks: { export?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
     {
@@ -65,16 +70,37 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   const clientFor = (ref: string): VerticalClient => {
     const host = hostOf.get(ref)!;
     return {
-      exportScope: (sid: ScopeId) => relay(() => host.exportScopeLocal(sid)),
+      exportScope: (sid: ScopeId) =>
+        relay(async () => {
+          await hooks.export?.(ref, sid);
+          return host.exportScopeLocal(sid);
+        }),
       restoreScope: (_t: unknown, sid: ScopeId, tables: ScopeDumpTable[]) =>
-        relay(() =>
-          host.restoreScopeLocal(
+        relay(async () => {
+          await hooks.restore?.(ref, sid, tables);
+          const out = await host.restoreScopeLocal(
             sid,
             sabotageV3 && ref === refOf.get(version.v3)
               ? [...tables, { name: 'zz_bad', ddl: 'CREATE TABLE not_zz_bad (x TEXT)', columns: ['x'], rows: [] }]
               : tables,
-          ),
-        ),
+          );
+          await hooks.restored?.(ref, sid, tables);
+          return out;
+        }),
+      readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
+        relay(async () => {
+          await hooks.read?.(ref, sid);
+          return host.introspectScopeTable(sid, input);
+        }),
+      wipeCarriedCopy: async (input: { scopeId: ScopeId; expectLoadStamp: string | null; carriedTo: string; at: string }) =>
+        unfenced.has(ref)
+          ? 'unfenced'
+          : relay(async () => {
+              await hooks.wipe?.(ref, input.scopeId);
+              return {
+                wiped: await host.wipeCarriedLocal(input.scopeId, input.expectLoadStamp, { to: input.carriedTo, at: input.at }),
+              };
+            }),
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
         relay(() => host.snapshotScopeLocal(input.sourceScopeId, input.newScopeId)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
@@ -95,6 +121,35 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       body: JSON.stringify({ tag, versionId: version[v], ...extra }),
     });
     return { status: res.status, body: (await res.json()) as { scopeId: ScopeId; hostname: string; error?: string } };
+  };
+  const bindTo = async (sid: ScopeId, v: keyof typeof version) => {
+    const res = await api.request(`/tenants/${t}/scopes/${sid}/version`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ versionId: version[v] }),
+    });
+    return { status: res.status, body: (await res.json()) as { error?: string } };
+  };
+  /** The `carried_away` tombstone in `v`'s copy of a scope, or null when it holds none. */
+  const tombstoneIn = async (v: keyof typeof version, sid: ScopeId) =>
+    dumpMetaValue(await hostFor(v).exportScopeLocal(sid), CARRIED_AWAY_KEY);
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+  /** Holds the FIRST call that matches, until `release`; `reached` says it is being held. */
+  const holdFirst = (match: (ref: string, sid: ScopeId, tables?: ScopeDumpTable[]) => boolean) => {
+    const reached = deferred();
+    const release = deferred();
+    let held = false;
+    const hook: Hook = async (ref, sid, tables) => {
+      if (held || !match(ref, sid, tables)) return;
+      held = true;
+      reached.resolve();
+      await release.promise;
+    };
+    return { hook, reached: reached.promise, release: release.resolve };
   };
 
   beforeAll(async () => {
@@ -355,4 +410,144 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     expect(await served(c.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['c was adopted'] });
   });
 
+  describe('the copy a carry leaves behind is wiped, and no interleaving loses the data (#1722)', () => {
+    const fresh = async (tag: string, ...bodies: string[]) => {
+      const created = await push(tag, 'v1', { ttlHours: null });
+      expect(created.status).toBe(201);
+      await hostFor('v1').restoreScopeLocal(created.body.scopeId, notes(...bodies));
+      return created.body;
+    };
+    afterEach(() => {
+      for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
+      unfenced.clear();
+    });
+
+    it('a push wipes the copy in the old script, and a bind back to it restores into that same store', async () => {
+      const p = await fresh('gone', 'from prod', 'gone data');
+      expect((await push('gone', 'v2')).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['from prod', 'gone data'] });
+      // Gone from v1's script, which keeps only the tombstone naming where the data went.
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect(JSON.parse((await tombstoneIn('v1', p.scopeId))!)).toMatchObject({ to: refOf.get(version.v2) });
+      // Not reaped: a rollback carries into that DO again and serves from it, and then v2's copy goes.
+      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['from prod', 'gone data'] });
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+    });
+
+    it('of two pushes that read the same binding, the second bind is refused and its copy is wiped', async () => {
+      const p = await fresh('race', 'race data');
+      // B has exported v1's intact copy and is about to restore it into v3 when A lands whole.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v3) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const b = push('race', 'v3');
+      await held.reached;
+      expect((await push('race', 'v2')).status).toBe(200);
+      held.release();
+      const refused = await b;
+      expect(refused.status).toBe(412);
+      // A's bind stands, serving v1's data from v2; B's restored copy did not survive the refusal.
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['race data'] });
+      expect(bodiesIn(await hostFor('v3').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect(await tombstoneIn('v3', p.scopeId)).not.toBeNull();
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+    });
+
+    it("an export that reaches a copy another push already wiped is refused before it restores anything", async () => {
+      const p = await fresh('late', 'late data');
+      // B is held before its export; A lands whole and wipes v1; then B exports the wiped store.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.export = held.hook;
+      const b = push('late', 'v3');
+      await held.reached;
+      expect((await push('late', 'v2')).status).toBe(200);
+      held.release();
+      const refused = await b;
+      expect(refused.status).toBe(412);
+      expect(refused.body.error).toMatch(/re-pointed while its data was being copied/);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['late data'] });
+      // Nothing reached v3: no copy, and no tombstone either.
+      expect(bodiesIn(await hostFor('v3').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect(await tombstoneIn('v3', p.scopeId)).toBeNull();
+    });
+
+    it('a carry refuses to copy a wiped store, even when the binding names it again', async () => {
+      const p = await fresh('aba', 'aba data');
+      expect((await push('aba', 'v2')).status).toBe(200);
+      // A pointer-only bind back to v1 (no carry), so the binding names the wiped copy again.
+      await dir.admin.bindScopeVersion(staff, t, p.scopeId, version.v1);
+      const refused = await push('aba', 'v3');
+      expect(refused.status).toBe(412);
+      expect(refused.body.error).toMatch(/already carried to another script and wiped/);
+      // Nothing was bound and nothing reached v3; v2's copy, the data, is still there.
+      expect((await dir.admin.getScopeRecord(staff, t, p.scopeId))?.verticalVersionId).toBe(version.v1);
+      expect(bodiesIn(await hostFor('v3').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual(['aba data']);
+    });
+
+    it('a retried push of the same version never wipes the store the preview serves', async () => {
+      const p = await fresh('retry', 'retry data');
+      // Two runs of the same job, both carrying v1 → v2. The second restores into v2 after the
+      // first has bound it, which is the winner's live store: refused, and kept.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const second = push('retry', 'v2');
+      await held.reached;
+      expect((await push('retry', 'v2')).status).toBe(200);
+      held.release();
+      expect((await second).status).toBe(412);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['retry data'] });
+      expect(await tombstoneIn('v2', p.scopeId)).toBeNull();
+    });
+
+    it("a rollback that restores into the old script while the push's wipe is in flight keeps its data (fenced)", async () => {
+      const p = await fresh('rb', 'rb data');
+      // A has bound v2 and its wipe of v1 is on the wire when R (a bind back to v1) carries v2
+      // into v1, binds, and wipes v2. A's wipe then arrives: v1 was loaded since A read it.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.wipe = held.hook;
+      const a = bindTo(p.scopeId, 'v2');
+      await held.reached;
+      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      held.release();
+      expect((await a).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['rb data'] });
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+      expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+    });
+
+    it('on a script that cannot fence the wipe, a rollback the wipe overtook carries its source again', async () => {
+      const p = await fresh('rb-old', 'old data');
+      unfenced.add(refOf.get(version.v1)!);
+      // A's unconditional wipe of v1 (a tombstone load through the restore verb) is held; R
+      // carries v2 into v1 and binds; A's wipe lands just before R looks at what it bound to.
+      const aWipe = holdFirst((ref, sid, tables) =>
+        ref === refOf.get(version.v1) && sid === p.scopeId && dumpMetaValue(tables ?? [], CARRIED_AWAY_KEY) !== null,
+      );
+      hooks.restore = aWipe.hook;
+      const wiped = deferred();
+      hooks.restored = async (ref, sid, tables) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId && dumpMetaValue(tables ?? [], CARRIED_AWAY_KEY) !== null) {
+          wiped.resolve();
+        }
+      };
+      let checked = false;
+      hooks.read = async (ref, sid) => {
+        if (checked || ref !== refOf.get(version.v1) || sid !== p.scopeId) return;
+        checked = true;
+        aWipe.release();
+        await wiped.promise;
+      };
+      const a = bindTo(p.scopeId, 'v2');
+      await aWipe.reached;
+      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      expect(checked).toBe(true);
+      expect((await a).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['old data'] });
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+      expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+    });
+  });
 });
