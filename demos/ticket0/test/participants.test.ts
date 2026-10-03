@@ -533,7 +533,7 @@ describe('one mailbox is one person, however it is spelled (#1086, Codex round 1
     expect(reply).toMatchObject({ visibility: 'public', author_contact_id: contactIdOf(d, 'ana@customer.example') });
   });
 
-  it('a desk already holding two contacts for one mailbox resolves to the oldest, and still never mails the customer twice', async () => {
+  it('a desk already holding two contacts for one mailbox resolves another spelling to the oldest, and still never mails the customer twice', async () => {
     const d = await kit.freshDesk({ agents: 0 });
     const admin = await kit.as(d, d.admin);
     const first = await mail(d, { from: 'dee@customer.example' });
@@ -551,9 +551,12 @@ describe('one mailbox is one person, however it is spelled (#1086, Codex round 1
       ).run(conversationId);
     });
 
-    // The oldest is the mailbox's: a reply resolves to it, and threads as the customer.
+    // The exact address wins: a reply from it is the contact that always had it.
     const reply = await mail(d, { from: 'dee@customer.example', inReplyTo: messageIdOf(d, first.id) });
-    expect(reply).toMatchObject({ conversation_id: conversationId, author_contact_id: 'legacy-dee' });
+    expect(reply).toMatchObject({ conversation_id: conversationId, author_contact_id: requester });
+    // With no exact match, the oldest is the mailbox's — and it threads as the customer.
+    const variant = await mail(d, { from: 'Dee@Customer.example', inReplyTo: messageIdOf(d, first.id) });
+    expect(variant).toMatchObject({ conversation_id: conversationId, author_contact_id: 'legacy-dee' });
     // It is still the customer: no forward to it, and the customer is not their own CC.
     await expect(
       admin.invoke('ticket0/forward-message', { conversationId, to: 'dee@customer.example', body: 'Q?' }),
@@ -593,6 +596,63 @@ describe('one mailbox is one person, however it is spelled (#1086, Codex round 1
       ).run(conversationId);
     });
     expect((await readOutbound(d, 'legacy-forward')).toEmail).toBeNull();
+  });
+});
+
+describe('an exact address keeps the contact that always had it (#1086, Codex round 2)', () => {
+  /** What an older version left: two contacts for one mailbox, the portal grant on the NEWER. */
+  async function legacyAna(d: Desk) {
+    kit.sql(d, (db) => {
+      db.prepare(
+        "INSERT INTO ticket0_contacts (id, email, created_at) VALUES ('old-ana', 'ANA@customer.example', '2020-01-01T00:00:00.000Z')",
+      ).run();
+      db.prepare(
+        "INSERT INTO ticket0_contacts (id, email, created_at) VALUES ('new-ana', 'ana@customer.example', '2021-01-01T00:00:00.000Z')",
+      ).run();
+    });
+    return { newer: await portalFor(d, 'new-ana'), older: await portalFor(d, 'old-ana') };
+  }
+
+  it('a newer contact holding the portal grant keeps seeing its own new mail; another spelling falls back to the oldest', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const portal = await legacyAna(d);
+
+    const exact = await mail(d, { from: 'ana@customer.example', body: 'From the address I always use.' });
+    expect((await kit.read(d, exact.conversation_id)).contact_id).toBe('new-ana');
+    expect(exact.author_contact_id).toBe('new-ana');
+    expect(await myConversations(d, portal.newer)).toEqual([exact.conversation_id]);
+
+    // No row has this spelling: the mailbox's oldest takes it, as before — and its portal
+    // is the one that sees it.
+    const other = await mail(d, { from: 'Ana@Customer.example' });
+    expect((await kit.read(d, other.conversation_id)).contact_id).toBe('old-ana');
+    expect(await myConversations(d, portal.older)).toEqual([other.conversation_id]);
+    expect(await myConversations(d, portal.newer)).toEqual([exact.conversation_id]);
+  });
+
+  it('every door that puts an address on a conversation resolves it the same way', async () => {
+    const d = await kit.freshDesk({ agents: 0 });
+    const admin = await kit.as(d, d.admin);
+    const portal = await legacyAna(d);
+
+    // Copied in by a mail: the exact address is the grant-holder, who reads the thread.
+    const copied = (await mail(d, { from: 'bo@customer.example', cc: ['ana@customer.example'] })).conversation_id;
+    expect((await participants(d, copied)).filter((p) => p.role === 'cc').map((p) => p.contact_id)).toEqual(['new-ana']);
+    expect(await myConversations(d, portal.newer)).toEqual([copied]);
+
+    // Added by an agent: the same, and another spelling is the oldest's.
+    const added = (await mail(d, { from: 'cy@customer.example' })).conversation_id;
+    const exact = (await admin.invoke('ticket0/add-participant', { conversationId: added, email: 'ana@customer.example' })) as {
+      contact_id: string;
+    };
+    expect(exact.contact_id).toBe('new-ana');
+    const elsewhere = (await mail(d, { from: 'di@customer.example' })).conversation_id;
+    const variant = (await admin.invoke('ticket0/add-participant', { conversationId: elsewhere, email: 'Ana@Customer.example' })) as {
+      contact_id: string;
+    };
+    expect(variant.contact_id).toBe('old-ana');
+    expect((await myConversations(d, portal.newer)).sort()).toEqual([copied, added].sort());
+    expect(await myConversations(d, portal.older)).toEqual([elsewhere]);
   });
 });
 
