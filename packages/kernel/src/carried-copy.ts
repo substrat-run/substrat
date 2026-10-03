@@ -33,8 +33,31 @@ export const LOAD_STAMP_KEY = 'load_stamp';
  * describes this store and never leaves in a dump.
  */
 export const WRITE_REVISION_KEY = 'write_revision';
+/**
+ * A copy the carry's fenced wipe refused because it changed after the export (#1722, Codex #2008
+ * r7): a write reached it from a request still routed there before the bind, and the carry never
+ * copied that write. The marker protects the copy, in the store itself: every load into it is
+ * refused (409) until a staff resolution discards it or restores it forward. Its value is the
+ * `KeptCopy` below, as JSON.
+ */
+export const KEPT_DIVERGENT_KEY = 'kept_divergent';
 /** The `_substrat_meta` keys that describe the store rather than the scope's data: never dumped. */
-export const STORE_LOCAL_META_KEYS: readonly string[] = [LOAD_STAMP_KEY, WRITE_REVISION_KEY];
+export const STORE_LOCAL_META_KEYS: readonly string[] = [LOAD_STAMP_KEY, WRITE_REVISION_KEY, KEPT_DIVERGENT_KEY];
+
+/** What a kept copy records about itself: where the scope's data went, when, and its revision then. */
+export interface KeptCopy {
+  /** The script the carry moved the scope to. */
+  carriedTo: string;
+  /** When the carry's wipe found the copy changed and kept it. */
+  keptAt: string;
+  /** The copy's write revision when it was kept. */
+  revision: string | null;
+}
+
+/** The refusal a load into a kept copy answers (409). */
+export const KEPT_COPY_REFUSAL =
+  'this copy of the scope holds writes that were not carried to where the scope now runs (#1722); ' +
+  'resolve it first: discard it, or restore it forward, through the staff kept-copy route';
 export const CARRIED_AWAY_KEY = 'carried_away';
 
 /**

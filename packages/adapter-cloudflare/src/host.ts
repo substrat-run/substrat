@@ -232,7 +232,9 @@ import {
   resolveScopeRecord,
   ulid,
   type CarriedAway,
+  type KeptCopy,
   type LoadMarker,
+  KEPT_COPY_REFUSAL,
   capabilityTokenHash,
   checkBecomeInput,
   plausibleSessionToken,
@@ -1366,8 +1368,8 @@ interface ScopeStubRpc {
   ): Promise<SwitchedOff[]>;
   /** #1722: what a carry's restore into this store expects to find unchanged. */
   loadMarker(): Promise<LoadMarker>;
-  /** #1722: `importDump` under `expect`, the refusal answered as a value. */
-  importDumpExpecting(
+  /** #1722: `importDump` with its refusals (`changed` under `expect`, `kept`) answered as values. */
+  importDumpChecked(
     tables: ScopeDumpTable[],
     destScopeId: ScopeId,
     opts: {
@@ -1375,11 +1377,19 @@ interface ScopeStubRpc {
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
-      expect: LoadMarker;
+      expect?: LoadMarker;
     },
-  ): Promise<{ refused: true } | { refused: false; switchedOff: SwitchedOff[] }>;
+  ): Promise<{ refused: 'changed' | 'kept' } | { refused: false; switchedOff: SwitchedOff[] }>;
+  /** #1722: the kept-copy marker, or null. */
+  keptCopy(): Promise<KeptCopy | null>;
+  /** #1722: discard a kept copy at the revision the operator acted on. */
+  discardKeptCopy(
+    scopeId: ScopeId,
+    revision: string | null,
+    carriedAway: CarriedAway,
+  ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
-  exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string; revision: string | null }>;
+  exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
   /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
   wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway, expectRevision?: string | null): Promise<boolean>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
@@ -2589,26 +2599,43 @@ export class CloudflareScopeHost implements ScopeHost {
       exact: opts?.exact,
       loadStamp: opts?.loadStamp,
     };
-    let switchedOff: SwitchedOff[];
-    if (opts?.expect) {
-      const out = await this.scopeStub(scopeId).importDumpExpecting(tables, scopeId, { ...load, expect: opts.expect });
-      if (out.refused) {
-        // A retry of a load that already committed (its answer was lost on the way back) is
-        // refused by the marker that load itself moved. The store holding THIS request's stamp
-        // says so: no other load writes it. Answered as applied, without `switchedOff`, so the
-        // caller's re-assert after the bind covers the OFF positions.
-        const now = await this.scopeStub(scopeId).loadMarker();
-        if (!opts.loadStamp || now.loadStamp !== opts.loadStamp) {
-          // Thrown here, in the vertical's own isolate, so its route answers 412 rather than a fault.
-          throw substratError('precondition_failed', 'scope store changed since the carry read it; nothing was loaded (#1722)');
-        }
-        return { tables: tables.length };
-      }
-      switchedOff = out.switchedOff;
-    } else {
-      switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, load);
+    // Both refusals come back as values (a throw over the RPC carries only its message) and are
+    // thrown here, in the vertical's own isolate, so its route answers 409 or 412, not a fault.
+    const out = await this.scopeStub(scopeId).importDumpChecked(tables, scopeId, {
+      ...load,
+      ...(opts?.expect ? { expect: opts.expect } : {}),
+    });
+    if (out.refused === false) {
+      return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff: out.switchedOff } : {}) };
     }
-    return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
+    if (out.refused === 'kept') throw substratError('conflict', KEPT_COPY_REFUSAL);
+    // A retry of a load that already committed (its answer was lost on the way back) is
+    // refused by the marker that load itself moved. The store holding THIS request's stamp
+    // says so: no other load writes it. Answered as applied, without `switchedOff`, so the
+    // caller's re-assert after the bind covers the OFF positions.
+    const now = await this.scopeStub(scopeId).loadMarker();
+    if (!opts?.loadStamp || now.loadStamp !== opts.loadStamp) {
+      throw substratError('precondition_failed', 'scope store changed since the carry read it; nothing was loaded (#1722)');
+    }
+    return { tables: tables.length };
+  }
+
+  /** The kept-copy marker of this scope's store in THIS deployment (#1722), or null. */
+  async keptCopyLocal(scopeId: ScopeId): Promise<KeptCopy | null> {
+    return this.scopeStub(scopeId).keptCopy();
+  }
+
+  /**
+   * Discard the kept copy of a scope in THIS deployment (#1722), behind the vertical's
+   * `/internal/kept-copy/discard`: the staff resolution, only at the write revision the operator
+   * acted on. Answers whether it was discarded, or why not.
+   */
+  async discardKeptCopyLocal(
+    scopeId: ScopeId,
+    revision: string | null,
+    carriedAway: CarriedAway,
+  ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
+    return this.scopeStub(scopeId).discardKeptCopy(scopeId, revision, carriedAway);
   }
 
   /**
@@ -2686,7 +2713,9 @@ export class CloudflareScopeHost implements ScopeHost {
    * `exportScopeLocal` with the store's load stamp, read in the same DO call (#1722): what a
    * carry's fenced wipe of the copy it leaves here expects. Behind the vertical's `/internal/export`.
    */
-  async exportScopeStampedLocal(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string; revision: string | null }> {
+  async exportScopeStampedLocal(
+    scopeId: ScopeId,
+  ): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }> {
     return this.scopeStub(scopeId).exportDumpStamped();
   }
 

@@ -286,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isWriteStatement, type CarriedAway, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -763,9 +763,15 @@ class WriteRevision {
     private readonly raw: SqlStorage,
     private readonly storage: DurableObjectStorage,
     private readonly suspended: () => boolean,
+    /** Why this store takes no write at all right now, or null (a `carried_away` copy, #1722). */
+    private readonly refusal: () => string | null,
   ) {
     const exec = (query: string, ...bindings: unknown[]) => {
-      if (!this.covered && !this.suspended() && this.isWrite(query)) this.bump();
+      if (!this.suspended() && this.isWrite(query)) {
+        const refused = this.refusal();
+        if (refused) throw substratError('conflict', refused);
+        if (!this.covered) this.bump();
+      }
       return raw.exec(query, ...bindings);
     };
     this.sql = new Proxy(raw, {
@@ -820,6 +826,11 @@ class WriteRevision {
     return known;
   }
 }
+
+/** What a write into a wiped copy answers (#1722): the scope's data lives in another script now. */
+const CARRIED_AWAY_WRITE_REFUSAL =
+  'this copy of the scope was carried to another script and wiped (#1722); it takes no writes — ' +
+  'a request that reaches it was routed before the move';
 
 function toRpcError(err: unknown): Error {
   if (err instanceof Error) {
@@ -1065,6 +1076,13 @@ export function defineScopeDO(
      * load's drop-and-replay, which sets the revision itself once the store is rebuilt.
      */
     private revisionSuspended = true;
+    /**
+     * #1722 (Codex #2008 r7): whether this store is a copy a carry wiped (it holds the
+     * `carried_away` tombstone). Such a store takes no write: a stale request still routed here
+     * after the wipe would land a write that belongs to no live copy. A load, a rollback's
+     * restore, ends it. Read on every wake and after every load.
+     */
+    private carriedAwayCopy = false;
     /** #1722: the write revision, and the one way this object opens a transaction. */
     private readonly revision: WriteRevision;
 
@@ -1079,13 +1097,19 @@ export function defineScopeDO(
       // so every write advances the write revision a carry's restore is fenced on, inside the
       // transaction that commits it. Nothing else here may take the raw handle or open a
       // transaction on `ctx.storage` itself (`carried-copy.test.ts` in the kernel holds that).
-      this.revision = new WriteRevision(ctx.storage.sql, ctx.storage, () => this.revisionSuspended);
+      this.revision = new WriteRevision(
+        ctx.storage.sql,
+        ctx.storage,
+        () => this.revisionSuspended,
+        () => (this.carriedAwayCopy ? CARRIED_AWAY_WRITE_REFUSAL : null),
+      );
       this.sql = this.revision.sql;
       for (const stmt of splitSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
       }
       this.applySpineColumnAdditions();
       this.revisionSuspended = false;
+      this.carriedAwayCopy = this.metaValue(CARRIED_AWAY_KEY) !== null;
 
       for (const registration of modules) this.registerModule(registration);
       for (const [name, handler] of Object.entries(bareOps)) this.defineOperation(name, handler);
@@ -4858,9 +4882,10 @@ export function defineScopeDO(
      * so the stamp handed out is present exactly while nothing has been loaded here since. One
      * synchronous method, so no load can land between the dump and the stamp.
      */
-    exportDumpStamped(): { tables: ScopeDumpTable[]; loadStamp: string; revision: string | null } {
+    exportDumpStamped(): { tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null } {
       let stamp = this.loadStamp();
-      if (!stamp) {
+      // A wiped copy takes no write, a stamp included; the carry refuses its tombstone anyway.
+      if (!stamp && !this.carriedAwayCopy) {
         stamp = ulid();
         this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, stamp);
       }
@@ -5006,6 +5031,7 @@ export function defineScopeDO(
         exact,
         loadStamp,
         expect,
+        resolveKept,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
@@ -5023,6 +5049,9 @@ export function defineScopeDO(
          *  load's transaction, before the first drop; a mismatch throws `precondition_failed`
          *  and the store is untouched. */
         expect?: { loadStamp: string | null; revision?: string | null };
+        /** #1722: the staff resolution of a kept copy, the one load a kept copy takes. It must be
+         *  one (the marker set) at this write revision, the one the operator acted on. */
+        resolveKept?: { revision: string | null };
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -5065,6 +5094,17 @@ export function defineScopeDO(
       }
       const switched = await this.revision.transaction(async () => {
         const before = this.loadMarker();
+        // #1722 (Codex #2008 r7): a kept copy holds writes nothing else has. No load replaces it
+        // except its own resolution, and that only at the revision the operator acted on.
+        const kept = this.metaValue(KEPT_DIVERGENT_KEY);
+        if (resolveKept) {
+          if (!kept) throw substratError('precondition_failed', 'no kept copy here to resolve; nothing was loaded');
+          if (before.revision !== resolveKept.revision) {
+            throw substratError('precondition_failed', 'the kept copy changed since it was read; nothing was loaded');
+          }
+        } else if (kept) {
+          throw substratError('conflict', KEPT_COPY_REFUSAL);
+        }
         if (expect) {
           if (before.loadStamp !== expect.loadStamp || (expect.revision !== undefined && before.revision !== expect.revision)) {
             throw substratError('precondition_failed', 'scope store changed since it was read; nothing was loaded');
@@ -5153,6 +5193,7 @@ export function defineScopeDO(
           this.revisionSuspended = false;
         }
       });
+      this.carriedAwayCopy = this.metaValue(CARRIED_AWAY_KEY) !== null;
       // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
       // create, so it also repairs an index a dump left stale, and the triggers it
       // recreates are what keep the restored scope in step from here. Skipped for a plan
@@ -5215,18 +5256,46 @@ export function defineScopeDO(
     }
 
     /**
-     * `importDump` under `expect` (#1722), its refusal answered as a value: across this RPC a
-     * throw carries only its message, and the host has to tell "the store moved" from a failure.
+     * `importDump` with its two refusals answered as values (#1722): across this RPC a throw
+     * carries only its message, and the host has to tell "the store moved since it was read"
+     * (`changed`, 412) and "this store is a kept copy" (`kept`, 409) from a failure.
      */
-    async importDumpExpecting(
+    async importDumpChecked(
       tables: ScopeDumpTable[],
       destScopeId: ScopeId,
-      opts: Parameters<this['importDump']>[2] & { expect: LoadMarker },
-    ): Promise<{ refused: true } | { refused: false; switchedOff: SwitchedOff[] }> {
+      opts: Parameters<this['importDump']>[2],
+    ): Promise<{ refused: 'changed' | 'kept' } | { refused: false; switchedOff: SwitchedOff[] }> {
       try {
         return { refused: false, switchedOff: await this.importDump(tables, destScopeId, opts) };
       } catch (e) {
-        if (errorCodeOf(e) === 'precondition_failed') return { refused: true };
+        const code = errorCodeOf(e);
+        if (code === 'precondition_failed') return { refused: 'changed' };
+        if (code === 'conflict') return { refused: 'kept' };
+        throw toRpcError(e);
+      }
+    }
+
+    /** The kept-copy marker (#1722), or null when this store is not one. */
+    keptCopy(): KeptCopy | null {
+      const raw = this.metaValue(KEPT_DIVERGENT_KEY);
+      return raw ? (JSON.parse(raw) as KeptCopy) : null;
+    }
+
+    /**
+     * Discard a kept copy (#1722): the staff resolution that wipes it to the tombstone, only if it
+     * is still one at the write revision the operator acted on. The marker goes with the wipe.
+     */
+    async discardKeptCopy(
+      scopeId: ScopeId,
+      revision: string | null,
+      carriedAway: CarriedAway,
+    ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
+      if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' };
+      try {
+        await this.importDump(carriedAwayDump(carriedAway), scopeId, { sourceScopeId: scopeId, resolveKept: { revision } });
+        return { discarded: true };
+      } catch (e) {
+        if (errorCodeOf(e) === 'precondition_failed') return { refused: 'changed' };
         throw toRpcError(e);
       }
     }
@@ -5269,8 +5338,22 @@ export function defineScopeDO(
         });
         return true;
       } catch (e) {
-        if (errorCodeOf(e) === 'precondition_failed') return false;
-        throw toRpcError(e);
+        const code = errorCodeOf(e);
+        // Already a kept copy: it stays one.
+        if (code === 'conflict') return false;
+        if (code !== 'precondition_failed') throw toRpcError(e);
+        // Refused. When nothing was LOADED here since the export (the stamp is the one read) but
+        // the store was WRITTEN (the revision moved), the copy holds a write the carry never
+        // copied: protect it in the store itself, decided again inside its own transaction.
+        this.revision.transactionSync(() => {
+          const now = this.loadMarker();
+          const writtenSince =
+            expectRevision !== undefined && now.loadStamp === expectLoadStamp && now.revision !== expectRevision;
+          if (!writtenSince || this.metaValue(KEPT_DIVERGENT_KEY)) return;
+          const kept: KeptCopy = { carriedTo: carriedAway.to, keptAt: carriedAway.at, revision: now.revision };
+          this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, KEPT_DIVERGENT_KEY, JSON.stringify(kept));
+        });
+        return false;
       }
     }
 
