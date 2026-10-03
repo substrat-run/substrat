@@ -134,10 +134,6 @@
         {
           "binding": "AUTH",
           "class": "IdentityDO"
-        },
-        {
-          "binding": "SWEEPER",
-          "class": "SweeperDO"
         }
       ],
       "assets": {

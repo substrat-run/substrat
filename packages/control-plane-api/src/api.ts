@@ -157,6 +157,7 @@ import {
   stableDeploymentRefFor,
   nextMigrationTag,
   upstreamStatusOf,
+  sweeperFactsOf,
 } from './deploy.js';
 import type {
   AssetUpload,
@@ -6467,6 +6468,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // #1054: the model runtime is bound only for a version that ASKED for it, so the
         // capability is visible in the manifest diff at admit rather than fleet-wide.
         ...(manifest.usesModels ? { usesModels: true } : {}),
+        // #1902: the same sweeper decision the push's own upload made, from the same manifest.
+        ...sweeperFactsOf(manifest),
         // #340/#578: the version's static files travel with it onto the serving script —
         // from the RETAINED manifest, with no bytes. The runtime's asset store dedupes
         // per SCRIPT (not namespace-wide — the #578 finding), so the serving script only
@@ -7022,6 +7025,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // #1242: the freshly minted version id — this archive script IS that version,
         // and a preview routed at it stamps the signals `version` dimension honestly.
         versionId: id,
+        // #1902: what decides whether the platform supplies this version's scope sweeper.
+        ...sweeperFactsOf(manifest),
         // #340: the verified bytes go up with the bundle. The manifest's routing config
         // rides along untouched — it decides what the RUNTIME does with paths, and carries
         // no reach, so there is nothing in it for the sandbox contract to refuse.

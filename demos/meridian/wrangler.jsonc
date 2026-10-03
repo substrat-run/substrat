@@ -36,7 +36,7 @@
 		"run_worker_first": ["/api/*", "/internal/*", "/openapi.json"]
 	},
 	// A SANDBOX-CLEAN, control-plane-less vertical (scope-local-permissions.md Phase 3):
-	// its ONLY bindings are three Durable Object classes of its own, below, and no D1. No
+	// its ONLY bindings are two Durable Object classes of its own, below, and no D1. No
 	// CONTROL_PLANE binding, no service binding to a platform worker, no ASSETS binding —
 	// assertSandboxContract (control-plane-api/deploy.ts) refuses those, and the push
 	// would be rejected. The router asserts the node; permissions evaluate from each
@@ -45,15 +45,13 @@
 	//   - AUTH (IdentityDO): the per-tenant identity directory and per-instance config
 	//     (@substrat-run/vertical-auth), so there is no per-worker auth database to leak
 	//     across tenants.
-	//   - SWEEPER (SweeperDO): the deployment's own timer (#461, #1646). A DO alarm is the
-	//     only timer a dispatch script can own; without it engine-absence's declared
-	//     `absence/expire-stale` never runs on a hosted deploy.
-	// All three are the vertical's OWN classes, which is what the sandbox contract permits.
+	// Both are the vertical's OWN classes, which is what the sandbox contract permits. The
+	// deployment's timer — `SWEEPER` (SweeperDO), what runs engine-absence's declared
+	// `absence/expire-stale` — is the platform's, added at upload (#1902).
 	"durable_objects": {
 		"bindings": [
 			{ "name": "SCOPE", "class_name": "ScopeDO" },
-			{ "name": "AUTH", "class_name": "IdentityDO" },
-			{ "name": "SWEEPER", "class_name": "SweeperDO" }
+			{ "name": "AUTH", "class_name": "IdentityDO" }
 		]
 	},
 	// Append-only: v1 has shipped, so the new class rides a NEW tag rather than an edited v1.
@@ -61,7 +59,9 @@
 	// set, and the control plane's uploader derives the tag for the script it writes (a fresh
 	// script: `v1` with every class; the in-place serving script: the added class alone under
 	// the next tag). They matter to a local `wrangler dev` with persisted state, which is what
-	// an edited v1 would break.
+	// an edited v1 would break. v2 stays although this worker no longer exports `SweeperDO`
+	// (#1902): the class the platform supplies at upload carries that name, so a serving
+	// script keeps the namespace v2 created, and its sweeper's roster and alarm with it.
 	"migrations": [
 		{
 			"tag": "v1",

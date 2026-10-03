@@ -82,6 +82,7 @@ import { pathToFileURL } from 'node:url';
 import {
   exportedSweeperNames,
   exportedSweeperNamesOf,
+  platformCanSupplySweeper,
   sweeperOffence,
   type ScheduleRef,
   type SweeperWiring,
@@ -126,7 +127,10 @@ const TEMPLATE = 'packages/create-substrat/template';
  */
 const TEMPLATE_PERMISSIONS_ENTRY = 'src/provision.ts';
 /** The `substrat.runtimeNeeds.stores` literal `packages/create-substrat/index.js` writes. */
-const TEMPLATE_STORE_CLASSES = ['ScopeDO', 'SweeperDO', 'ConfigDO'];
+const TEMPLATE_STORES = [
+  { binding: 'SCOPE', class: 'ScopeDO' },
+  { binding: 'CONFIG', class: 'ConfigDO' },
+];
 
 /** Exit 2: the tool cannot do its job. Always names the remedy. */
 function cannot(message: string): never {
@@ -153,6 +157,13 @@ export const offense = sweeperOffence;
  * rather than treating that as a parse failure — plenty of wrangler configs bind none.
  */
 export function parseWranglerBindingClasses(text: string): string[] {
+  return parseWranglerBindings(text)
+    .map((b) => b.class_name)
+    .filter((c): c is string => Boolean(c));
+}
+
+/** Every Durable Object binding a committed `wrangler.jsonc` declares, name and class. */
+export function parseWranglerBindings(text: string): { name?: string; class_name?: string }[] {
   let stripped = '';
   let i = 0;
   while (i < text.length) {
@@ -187,20 +198,20 @@ export function parseWranglerBindingClasses(text: string): string[] {
     noTrailingCommas = noTrailingCommas.replace(/,(\s*[}\]])/g, '$1');
   } while (noTrailingCommas !== prev);
 
-  let parsed: { durable_objects?: { bindings?: { class_name?: string }[] } };
+  let parsed: { durable_objects?: { bindings?: { name?: string; class_name?: string }[] } };
   try {
     parsed = JSON.parse(noTrailingCommas);
   } catch (e) {
     throw new Error(`could not parse wrangler config as JSONC: ${(e as Error).message}`);
   }
-  return (parsed.durable_objects?.bindings ?? []).map((b) => b.class_name).filter((c): c is string => Boolean(c));
+  return parsed.durable_objects?.bindings ?? [];
 }
 
 interface Deployable {
   dir: string;
   permissionsEntry: string;
-  /** `substrat.runtimeNeeds.stores[].class` values, or `[]` for a vertical using wrangler.jsonc. */
-  storeClasses: string[];
+  /** `substrat.runtimeNeeds.stores`, or `[]` for a vertical using wrangler.jsonc. */
+  stores: { binding?: string; class?: string }[];
 }
 
 /** Every directory that declares a vertical slug and ships a worker entry, plus the template. */
@@ -217,7 +228,7 @@ export function deployables(): Deployable[] {
         substrat?: {
           slug?: string;
           permissions?: string;
-          runtimeNeeds?: { stores?: { class?: string }[] };
+          runtimeNeeds?: { stores?: { binding?: string; class?: string }[] };
         };
       };
       try {
@@ -236,10 +247,7 @@ export function deployables(): Deployable[] {
             `  Remedy: add \`"substrat": { "permissions": "src/provision.ts" }\`. See demos/ticket0.`,
         );
       }
-      const storeClasses = (pkg.substrat.runtimeNeeds?.stores ?? [])
-        .map((s) => s.class)
-        .filter((c): c is string => Boolean(c));
-      found.push({ dir, permissionsEntry, storeClasses });
+      found.push({ dir, permissionsEntry, stores: pkg.substrat.runtimeNeeds?.stores ?? [] });
     }
   }
   if (existsSync(join(TEMPLATE, 'src', 'worker.ts'))) {
@@ -247,7 +255,7 @@ export function deployables(): Deployable[] {
     // (syncTemplate's own failure mode) is exit 2 before any offense is collected —
     // the same "cannot do its job" distinction every other early exit in this file draws.
     const checkDir = syncTemplate();
-    found.push({ dir: checkDir, permissionsEntry: TEMPLATE_PERMISSIONS_ENTRY, storeClasses: TEMPLATE_STORE_CLASSES });
+    found.push({ dir: checkDir, permissionsEntry: TEMPLATE_PERMISSIONS_ENTRY, stores: TEMPLATE_STORES });
   }
   return found;
 }
@@ -257,7 +265,12 @@ async function main() {
   // nothing. Same guard `invocation-log.mjs`'s SELF_TEST carries, for the same reason.
   const SELF_TEST: [ScheduleRef[], SweeperWiring, boolean][] = [
     [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: ['SweeperDO'], boundClassNames: ['SweeperDO'] }, false],
-    [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: [], boundClassNames: [] }, true], // no export at all
+    // #1902: no export at all is the platform's to supply…
+    [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: [], boundClassNames: [], platformCanSupply: true }, false],
+    // …unless the vertical-host cannot hand it a host, or its names are taken.
+    [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: [], boundClassNames: [], platformCanSupply: false }, true],
+    [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: [], boundClassNames: ['SweeperDO'] }, true],
+    [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: [], boundClassNames: ['X'], boundBindingNames: ['SWEEPER'] }, true],
     [[{ moduleId: 'm', operation: 'm/op' }], { exportedNames: ['SweeperDO'], boundClassNames: ['ScopeDO'] }, true], // exported, unbound
     [[], { exportedNames: [], boundClassNames: [] }, false], // no schedules, nothing owed
   ];
@@ -296,7 +309,7 @@ async function main() {
 
   const offenders: string[] = [];
   let checked = 0;
-  for (const { dir, permissionsEntry, storeClasses } of dirs) {
+  for (const { dir, permissionsEntry, stores } of dirs) {
     checked++;
     const entryPath = join(dir, permissionsEntry);
     if (!existsSync(entryPath)) {
@@ -330,22 +343,29 @@ async function main() {
     const exportedNames = exportedSweeperNamesOf(workerPath);
 
     const wranglerPath = join(dir, 'wrangler.jsonc');
-    let boundClassNames = [...storeClasses];
+    const bound = stores.map((s) => ({ name: s.binding, class_name: s.class }));
     if (existsSync(wranglerPath)) {
       try {
-        boundClassNames = boundClassNames.concat(parseWranglerBindingClasses(readFileSync(wranglerPath, 'utf8')));
+        bound.push(...parseWranglerBindings(readFileSync(wranglerPath, 'utf8')));
       } catch (e) {
         cannot(`${wranglerPath}: ${(e as Error).message}`);
       }
     }
+    const present = (xs: (string | undefined)[]) => xs.filter((x): x is string => Boolean(x));
 
-    const why = offense(schedules, { exportedNames, boundClassNames });
+    const why = offense(schedules, {
+      exportedNames,
+      boundClassNames: present(bound.map((b) => b.class_name)),
+      boundBindingNames: present(bound.map((b) => b.name)),
+      // The workspace's own vertical-host, resolved from the vertical as a push would.
+      platformCanSupply: platformCanSupplySweeper(dir),
+    });
     if (why) offenders.push(`${workerPath}: ${why}`);
   }
 
   if (offenders.length > 0) {
     console.error(
-      'schedule-sweeper: a vertical declares recurring work that nothing will ever run on a hosted deploy.',
+      'schedule-sweeper: a vertical declares recurring work its wiring would leave unrun on a hosted deploy.',
     );
     for (const o of offenders) console.error(`  ${o}`);
     process.exit(1);

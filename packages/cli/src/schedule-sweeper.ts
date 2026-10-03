@@ -1,38 +1,42 @@
 /**
- * A vertical that declares schedules wires `defineScopeSweeperDO`, or those schedules never
- * fire on a hosted deploy (#1646).
+ * Who runs a vertical's declared schedules on a hosted deploy (#1646, #1902).
  *
  * The only platform timer is the control plane's cron, and it iterates the schedules of the
  * control plane's OWN host, which registers no modules. A pushed, control-plane-less vertical
- * has to bring its own timer (`docs/architecture/scheduler.md` §3.3): a `SweeperDO` singleton,
- * exported from the worker entry and bound as a Durable Object class, whose roster the platform
- * fills through `/internal/provision` → `noteScope`. Without it the schedules parse, provisioning
- * grants their keys, and nothing ever runs them — and nothing raises an error either.
+ * needs a timer of its own (`docs/architecture/scheduler.md` §3.3): a `defineScopeSweeperDO`
+ * singleton, exported from the worker entry and bound as a Durable Object class, whose roster
+ * the platform fills through `/internal/provision` → `noteScope`.
+ *
+ * Since #1902 the platform supplies that sweeper at upload to a vertical that brings none, so a
+ * vertical either wires its own or wires nothing. Three shapes are still wrong, and this file
+ * names them (`sweeperOffence`):
+ *
+ *   1. an OWN sweeper nothing binds. workerd resolves a Durable Object class from the entry's
+ *      exports and instantiates only a bound one, so its alarm never runs (Copilot review on
+ *      #1873 found the unexported-const variant);
+ *   2. no own sweeper, but the platform's names — class `SweeperDO`, binding `SWEEPER` — used
+ *      for something else, which the upload refuses;
+ *   3. no own sweeper, and a `@substrat-run/vertical-host` too old to register the host the
+ *      platform's sweeper runs.
  *
  * Two callers share this file, and that is why it lives in a published package:
  *
  *   - `substrat push` (`assertSchedulesAreSwept` in `push.ts`), the only check an EXTERNAL
- *     vertical's deploy passes through;
+ *     vertical's deploy passes through — and the reader of `sweeperClasses`, the names the
+ *     push declares in its manifest so the uploader decides from a declaration, not the bytes;
  *   - this repo's `lint:schedule-sweeper` (`tools/schedule-sweeper.mts`), which imports the
  *     built copy the way `tools/invocation-log.mjs` imports boundary-lint's R10 predicate, so
- *     the two gates cannot disagree about what "wires a sweeper" means.
- *
- * "Wires a sweeper" has two halves, both required:
- *
- *   1. the worker entry EXPORTS a name bound to a `defineScopeSweeperDO(...)` call. workerd
- *      resolves a Durable Object class from the entry module's exports, so a call sitting in an
- *      unexported `const` binds nothing (Copilot review on #1873);
- *   2. the deploy config binds a Durable Object class under one of those exported names. An
- *      export nobody binds is in the bundle and is never instantiated, so its alarm never runs.
+ *     the two gates cannot disagree.
  *
  * Parsed with `@babel/parser` rather than TypeScript's compiler API: TypeScript 7 exposes no
  * standalone parser (see `tools/docs-union-check.mjs`), and Babel's TypeScript plugin is what
  * the repo tool already used for exactly this job.
  *
- * What this does NOT see: whether the sweeper's roster is ever populated (`noteScope` from
- * `onProvision`). That is runtime wiring, and the reason #1646 keeps a production check open.
+ * What this does NOT see: whether an own sweeper's roster is ever populated (`noteScope` from
+ * `onProvision`). That is runtime wiring; the platform's sweeper has none to forget.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { parse } from '@babel/parser';
 
@@ -54,6 +58,10 @@ export interface SweeperWiring {
   exportedNames: string[];
   /** Durable Object `class_name`s the deploy config binds, in whichever vocabulary it uses. */
   boundClassNames: string[];
+  /** The binding names the deploy config declares, of any type (#1902). */
+  boundBindingNames?: string[];
+  /** {@link platformCanSupplySweeper} — `undefined` when it could not be told. */
+  platformCanSupply?: boolean;
 }
 
 function nameOf(node: { type: 'Identifier'; name: string } | { type: 'StringLiteral'; value: string }): string {
@@ -220,30 +228,71 @@ export function exportedSweeperNamesOf(entryPath: string): string[] {
 }
 
 /**
+ * Can the platform supply this vertical's sweeper (#1902)? The class it supplies runs the
+ * vertical's own host, which the vertical's `mountPlatformSurface` registers — so it needs a
+ * `@substrat-run/vertical-host` new enough to register one, as installed in THIS project.
+ * `undefined` when the package does not resolve from `dir` at all: this check then says
+ * nothing rather than refusing on a layout it cannot read.
+ */
+export function platformCanSupplySweeper(dir: string): boolean | undefined {
+  let main: string;
+  try {
+    main = createRequire(resolve(dir, 'package.json')).resolve('@substrat-run/vertical-host');
+  } catch {
+    return undefined;
+  }
+  // The registry ships as its own module beside the package's entry (`scope-sweep-host.ts`).
+  return existsSync(resolve(dirname(main), 'scope-sweep-host.js'));
+}
+
+/** The class and binding the platform's sweeper takes (`platformSweeperPlan` in control-plane-api). */
+export const PLATFORM_SWEEPER_CLASS = 'SweeperDO';
+export const PLATFORM_SWEEPER_BINDING = 'SWEEPER';
+
+/**
  * The offence in one vertical, or `null` when it is fine. No schedules declared means no
  * sweeper is owed, whatever the wiring looks like.
+ *
+ * Since #1902 a vertical that brings no sweeper is given the platform's at upload, so "no
+ * sweeper" is no longer the offence. What is: an own sweeper nothing binds (Cloudflare never
+ * instantiates it), the platform's names taken by something else (the upload would refuse),
+ * and a vertical-host too old to hand the platform's sweeper a host.
  */
 export function sweeperOffence(schedules: readonly ScheduleRef[], wiring: SweeperWiring): string | null {
   if (schedules.length === 0) return null;
   const named = schedules.map((s) => `${s.moduleId} → ${s.operation}`).join(', ');
-  if (wiring.exportedNames.length === 0) {
-    return (
-      `declares schedules with no sweeper to run them (${named}). On a pushed deploy the ` +
-      `control plane's own cron reaches no module — a control-plane-less vertical brings its own ` +
-      `timer. Export a \`defineScopeSweeperDO\` class (from @substrat-run/adapter-cloudflare) from ` +
-      `the worker entry, as the \`npm create substrat\` template's src/worker.ts does — a call ` +
-      `sitting in an unexported const binds nothing, because workerd resolves a Durable Object ` +
-      `class from the entry module's exports.`
-    );
-  }
-  const bound = wiring.exportedNames.filter((n) => wiring.boundClassNames.includes(n));
-  if (bound.length === 0) {
+  if (wiring.exportedNames.length > 0) {
+    const bound = wiring.exportedNames.filter((n) => wiring.boundClassNames.includes(n));
+    if (bound.length > 0) return null;
     return (
       `exports a sweeper (${wiring.exportedNames.join(', ')}) for schedules it declares (${named}), ` +
       `but no deploy config binds it as a Durable Object class — checked wrangler.jsonc's ` +
       `durable_objects.bindings and package.json's substrat.runtimeNeeds.stores, and neither ` +
       `names ${wiring.exportedNames.join(' or ')}. The class exists in the bundle but ` +
-      `Cloudflare never instantiates it, so its alarm never runs.`
+      `Cloudflare never instantiates it, so its alarm never runs. Bind it, or delete it: the ` +
+      `platform supplies a sweeper to a vertical that exports none.`
+    );
+  }
+  const taken = (wiring.boundBindingNames ?? []).includes(PLATFORM_SWEEPER_BINDING)
+    ? `the binding '${PLATFORM_SWEEPER_BINDING}'`
+    : wiring.boundClassNames.includes(PLATFORM_SWEEPER_CLASS)
+      ? `the class name '${PLATFORM_SWEEPER_CLASS}'`
+      : undefined;
+  if (taken) {
+    return (
+      `declares schedules (${named}) and exports no sweeper, so the platform supplies one at upload ` +
+      `as class '${PLATFORM_SWEEPER_CLASS}' bound to '${PLATFORM_SWEEPER_BINDING}' — but the deploy config ` +
+      `already uses ${taken} for something that is not a \`defineScopeSweeperDO\` class, and the upload ` +
+      `would be refused. If it is a sweeper you have since deleted, drop its binding — the platform ` +
+      `adds its own — and otherwise rename it.`
+    );
+  }
+  if (wiring.platformCanSupply === false) {
+    return (
+      `declares schedules (${named}) and exports no sweeper. The platform supplies one at upload, ` +
+      `but it runs the host your \`mountPlatformSurface\` registers, and the installed ` +
+      `@substrat-run/vertical-host predates that registration — the supplied sweeper would have no ` +
+      `host and no roster. Update @substrat-run/vertical-host.`
     );
   }
   return null;

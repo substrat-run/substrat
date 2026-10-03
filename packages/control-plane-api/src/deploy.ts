@@ -61,6 +61,12 @@ export interface VerticalBundle {
    *  as `env.AI`. Travels with the version, so who holds the capability is a property of
    *  the code that shipped rather than of the fleet's config. */
   usesModels?: boolean;
+  /** The version declares recurring `schedules` (#1902) — what makes it owe a sweeper,
+   *  which the uploader supplies when the bundle brings none (`platform-entry.ts`). */
+  declaresSchedules?: boolean;
+  /** The manifest's `sweeperClasses` (#1902): the vertical's own sweeper classes, `[]` for
+   *  none, absent when an older CLI pushed it. */
+  sweeperClasses?: string[];
   /** The version REGISTRY id this bundle deploys (#1242) — injected as the
    *  `SUBSTRAT_VERSION_ID` plain-text binding so the running scope host can stamp the
    *  signals `version` dimension (#1231) on the records it writes. Optional: a caller
@@ -131,6 +137,20 @@ export class DeployUploadError extends Error {
 /** The upstream runtime status a `DeployVerticalFn` upload failed with, or undefined for any other throw. */
 export function upstreamStatusOf(e: unknown): number | undefined {
   return e instanceof DeployUploadError ? e.upstreamStatus : undefined;
+}
+
+/**
+ * The two manifest facts the uploader's sweeper decision reads (#1902): whether the version
+ * declares schedules, and the sweeper classes the push found in the vertical's source —
+ * passed through as absent when the push carried none, which is not the same as `[]`.
+ */
+export function sweeperFactsOf(
+  manifest: Pick<DeployManifest, 'schedules' | 'sweeperClasses'>,
+): Pick<VerticalBundle, 'declaresSchedules' | 'sweeperClasses'> {
+  return {
+    ...(manifest.schedules?.length ? { declaresSchedules: true } : {}),
+    ...(manifest.sweeperClasses ? { sweeperClasses: manifest.sweeperClasses } : {}),
+  };
 }
 
 /**

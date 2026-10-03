@@ -94,8 +94,6 @@ function packageJson(name) {
           entry: 'src/worker.ts',
           stores: [
             { binding: 'SCOPE', class: 'ScopeDO' },
-            // The scope-local sweep singleton — the deployment's own timer (#461).
-            { binding: 'SWEEPER', class: 'SweeperDO' },
             // Per-instance config delivered by the platform (/internal/configure) —
             // one DO per tenant, rows per scope. Without it the app cannot receive
             // the settings the dashboard offers its users.

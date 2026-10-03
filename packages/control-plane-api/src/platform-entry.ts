@@ -21,15 +21,32 @@
  * - **The archive script is the bundle store** that promote and backout re-upload from, so
  *   a re-served bundle already holds a platform entry. It is replaced with the current
  *   one, never stacked: the manifest's `entry` is always the vertical's own module.
+ *
+ * The entry is also how the platform supplies a scope sweeper (#1902). A version that
+ * declares schedules needs a `defineScopeSweeperDO` class exported from its main module, or
+ * the schedules never fire on a hosted deploy (#1646) — a second rule every vertical had to
+ * remember. Now one that brings none is given the platform's, re-exported from this entry;
+ * `platformSweeperPlan` says when, from the push's declaration alone.
  */
-import type { VerticalBundle } from './deploy.js';
+import { DeployUploadError, type VerticalBundle } from './deploy.js';
 import {
   PLATFORM_ENTRY_MODULE,
   PLATFORM_ENTRY_PLACEHOLDER,
   PLATFORM_ENTRY_SOURCE,
+  PLATFORM_SWEEPER_CLASS,
+  PLATFORM_SWEEPER_MODULE,
+  PLATFORM_SWEEPER_SOURCE,
 } from './platform-entry.generated.js';
 
-export { PLATFORM_ENTRY_MODULE };
+export { PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_CLASS, PLATFORM_SWEEPER_MODULE };
+
+/** The binding the supplied sweeper is reached by — the template's and both demos' name. */
+export const PLATFORM_SWEEPER_BINDING = 'SWEEPER';
+/** Names that binding for `mountPlatformSurface` (`@substrat-run/vertical-host`'s
+ *  `PLATFORM_SWEEPER_VAR`), which is what tells it the roster is its to keep. */
+export const PLATFORM_SWEEPER_VAR = 'SUBSTRAT_SCOPE_SWEEPER';
+
+const PLATFORM_MODULES = new Set([PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE]);
 
 /** The line `invocationLog` writes, as it appears in any build: `substrat:"invocation"`. */
 const WRITES_THE_LINE = /substrat['"]?\s*:\s*["']invocation["']/;
@@ -52,7 +69,7 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
   let writes = false;
   let shares = false;
   for (const m of bundle.modules) {
-    if (m.name === PLATFORM_ENTRY_MODULE || !isScript(m)) continue;
+    if (PLATFORM_MODULES.has(m.name) || !isScript(m)) continue;
     const text = decoder.decode(m.content);
     writes ||= WRITES_THE_LINE.test(text);
     shares ||= text.includes(SHARES_THE_STAMP);
@@ -61,23 +78,113 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
   return undefined;
 }
 
+/** The facts the sweeper decision reads — all of them declared, none read from the bytes. */
+type SweeperFacts = Partial<Pick<VerticalBundle, 'doClasses' | 'bindings' | 'declaresSchedules' | 'sweeperClasses'>>;
+
+/**
+ * Whether the platform supplies this upload's scope sweeper (#1902), from what the push
+ * DECLARED: the manifest's `schedules` and `sweeperClasses`, and the deploy config's classes
+ * and bindings. `'supply'`, a reason it is not supplied, or a thrown 422 when the declaration
+ * contradicts itself or occupies the names the platform's sweeper needs.
+ *
+ * Why it is the sweeper's names (`SweeperDO` bound as `SWEEPER`) that the platform takes:
+ * they are what the template and both hosted demos exported by hand, so a vertical that drops
+ * its own keeps the same Durable Object namespace on its serving script — the same singleton,
+ * its roster and its armed alarm — and the in-place migration delta is empty. Any other name
+ * would be a class rename, which is a migration the uploader does not write.
+ *
+ * The bundle's bytes are deliberately not consulted: an export's name, or a method name
+ * inside a minified build, says nothing reliable about which class is a sweeper. A push from
+ * a CLI that predates `sweeperClasses` falls back to the convention — `SWEEPER` bound to
+ * `SweeperDO` is the vertical's own, neither name bound means it has none — and refuses the
+ * half-matches it cannot tell apart, rather than guessing either way: a wrong "it has one"
+ * leaves the schedules unrun, and a wrong "it has none" runs them twice.
+ */
+export function platformSweeperPlan(bundle: SweeperFacts): 'supply' | { keep: string } {
+  if (!bundle.declaresSchedules) return { keep: 'the version declares no schedules' };
+  const bindings = bundle.bindings ?? [];
+  const own = bundle.sweeperClasses;
+  // Bindings, not `doClasses`: a class stays in a config's migration history after its export
+  // is deleted (migrations are append-only), and only a binding is a live use of a name.
+  const boundClasses = bindings.filter((b) => b.type === 'durable_object_namespace').map((b) => b.class_name);
+  const byName = bindings.find((b) => b.name === PLATFORM_SWEEPER_BINDING);
+  const byClass = boundClasses.includes(PLATFORM_SWEEPER_CLASS);
+  const refuse = (why: string): never => {
+    throw new DeployUploadError(422, `cannot run this version's declared schedules: ${why}`);
+  };
+  if (own && own.length > 0) {
+    const bound = own.filter((c) => boundClasses.includes(c));
+    if (bound.length === 0) {
+      refuse(
+        `the worker entry exports its own sweeper (${own.join(', ')}), but no Durable Object binding names ` +
+          `that class, so Cloudflare never instantiates it and its alarm never runs. Bind it as a store, ` +
+          `or delete it and let the platform supply one`,
+      );
+    }
+    return { keep: `the vertical brings its own sweeper (${bound.join(', ')})` };
+  }
+  if (own) {
+    // The push read no sweeper in the source: the platform's goes in, under names nothing else may hold.
+    if (byName || byClass) {
+      refuse(
+        `the platform supplies a sweeper as class '${PLATFORM_SWEEPER_CLASS}' bound to '${PLATFORM_SWEEPER_BINDING}', and ` +
+          `this version already binds ${byName ? `the name '${PLATFORM_SWEEPER_BINDING}'` : `the class '${PLATFORM_SWEEPER_CLASS}'`} ` +
+          `to something that is not a defineScopeSweeperDO class. If it is a sweeper you have since deleted, drop ` +
+          `its binding — the platform adds its own — and otherwise rename it`,
+      );
+    }
+    return 'supply';
+  }
+  // A CLI from before `sweeperClasses`: the convention is all there is to read.
+  if (byName?.type === 'durable_object_namespace' && byName.class_name === PLATFORM_SWEEPER_CLASS) {
+    return { keep: `the vertical binds '${PLATFORM_SWEEPER_CLASS}' as '${PLATFORM_SWEEPER_BINDING}', the conventional own sweeper` };
+  }
+  if (!byName && !byClass) return 'supply';
+  return refuse(
+    `this push carries no sweeperClasses (its CLI predates them), and its config binds ` +
+      `${byName ? `the name '${PLATFORM_SWEEPER_BINDING}' to another class` : `the class '${PLATFORM_SWEEPER_CLASS}' under another name`}, ` +
+      `so whether it brings its own sweeper cannot be told. Push again with a current @substrat-run/cli`,
+  );
+}
+
 /**
  * The bundle as uploaded: the platform's entry module added (or refreshed) and named as
- * the script's main module, importing the vertical's own entry. A bundle the platform
- * cannot or need not wrap comes back unchanged, apart from dropping a stale platform
- * entry it can no longer reach.
+ * the script's main module, importing the vertical's own entry — and, when
+ * {@link platformSweeperPlan} says so, the platform's sweeper beside it: its module, the
+ * entry's re-export of its class, the class in `doClasses` (so the migration the uploader
+ * derives declares it) and its binding, plus the var that hands its roster to
+ * `mountPlatformSurface`. A bundle the platform cannot or need not wrap comes back
+ * unchanged, apart from dropping stale platform modules it can no longer reach.
  */
-export function withPlatformEntry<B extends Pick<VerticalBundle, 'entry' | 'modules'>>(bundle: B): B {
+export function withPlatformEntry<B extends Pick<VerticalBundle, 'entry' | 'modules'> & SweeperFacts>(bundle: B): B {
+  const supply = platformSweeperPlan(bundle) === 'supply';
   if (platformEntrySkipReason(bundle) !== undefined) return bundle;
-  const own = bundle.modules.filter((m) => m.name !== PLATFORM_ENTRY_MODULE);
+  const own = bundle.modules.filter((m) => !PLATFORM_MODULES.has(m.name));
+  const encode = (text: string) => new TextEncoder().encode(text);
   // Module names are paths from the script root, where the platform entry sits too.
-  const source = PLATFORM_ENTRY_SOURCE.split(PLATFORM_ENTRY_PLACEHOLDER).join(`./${bundle.entry}`);
+  let source = PLATFORM_ENTRY_SOURCE.split(PLATFORM_ENTRY_PLACEHOLDER).join(`./${bundle.entry}`);
+  if (supply) source += `export { ${PLATFORM_SWEEPER_CLASS} } from "./${PLATFORM_SWEEPER_MODULE}";\n`;
+  const kind = 'application/javascript+module';
   return {
     ...bundle,
     entry: PLATFORM_ENTRY_MODULE,
     modules: [
-      { name: PLATFORM_ENTRY_MODULE, content: new TextEncoder().encode(source), contentType: 'application/javascript+module' },
+      { name: PLATFORM_ENTRY_MODULE, content: encode(source), contentType: kind },
+      ...(supply ? [{ name: PLATFORM_SWEEPER_MODULE, content: encode(PLATFORM_SWEEPER_SOURCE), contentType: kind }] : []),
       ...own,
     ],
+    ...(supply
+      ? {
+          // Deduplicated: a vertical that dropped its own `SweeperDO` keeps the class in its
+          // migration history, and the class must be declared once.
+          doClasses: [...new Set([...(bundle.doClasses ?? []), PLATFORM_SWEEPER_CLASS])],
+          bindings: [
+            ...(bundle.bindings ?? []),
+            { type: 'durable_object_namespace', name: PLATFORM_SWEEPER_BINDING, class_name: PLATFORM_SWEEPER_CLASS },
+            // `text` is not a declared binding's field — this one the platform writes, never the vertical.
+            { type: 'plain_text', name: PLATFORM_SWEEPER_VAR, text: PLATFORM_SWEEPER_BINDING } as VerticalBundle['bindings'][number],
+          ],
+        }
+      : {}),
   };
 }

@@ -1041,6 +1041,19 @@ export const deployManifest = z.object({
    *  twice over. */
   freshness: z.array(freshnessSpec.extend({ moduleId })).optional(),
   /**
+   * The Durable Object classes the worker entry exports as its OWN scope sweeper — the
+   * names bound to a `defineScopeSweeperDO(...)` call, as the push read them from source
+   * (#1902). The uploader decides from this whether to supply the platform's sweeper to a
+   * version that declares `schedules`: `[]` means the vertical brings none, so it is given
+   * one; a name here means it brings its own, which is kept, and must be one of
+   * `doClasses` or the upload is refused.
+   *
+   * ABSENT means a CLI from before the field: the uploader then reads the conventional
+   * names instead (`SWEEPER` bound to `SweeperDO`), and refuses what it cannot tell apart.
+   * Never inferred from the bundle's bytes — an export's name says nothing about its class.
+   */
+  sweeperClasses: z.array(z.string().min(1)).max(16).optional(),
+  /**
    * Every SQL migration the vertical's modules ship (#1677), module by module in
    * registration order and each module's own order, with its SQL verbatim. It is what the
    * promote dialog and `substrat promote` read to show the migrations a promote would run.
