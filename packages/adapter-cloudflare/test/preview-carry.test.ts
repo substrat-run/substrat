@@ -1223,11 +1223,16 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         // Codex #2008 r13: the clear brought forward is this carry's, so it is fenced on this
         // carry's load of v2. A governed restore that replaced v2 since brings a GENUINE copy
         // marker (a copy of another scope), which must survive, inert, and v1 stays kept.
-        /** A governed restore into `install`'s v2 store of ANOTHER scope's data, empty outbox. */
+        /** A governed restore into `install`'s v2 store of ANOTHER scope's data, empty outbox, that
+         *  marks it a copy. Since #2009 a load of another scope's data classifies nothing by itself,
+         *  so the restore carries the classification, as a restore onto a copy does. */
         const foreignRestoreIntoV2 = async (install: ScopeId) => {
           const other = scopeId.parse(ulid());
           await hostFor('v2').restoreScopeLocal(other, notes('foreign data'));
-          await hostFor('v2').restoreScopeLocal(install, await hostFor('v2').exportScopeLocal(other), { sourceScopeId: other });
+          await hostFor('v2').restoreScopeLocal(install, await hostFor('v2').exportScopeLocal(other), {
+            sourceScopeId: other,
+            markCopy: { kind: 'preview', forkedFrom: other },
+          });
           expect(await v2stub(install).isCopy()).toBe(true);
         };
         const clearedThenReplaced = async (land: (t2: TenantId, install: ScopeId) => void) => {
