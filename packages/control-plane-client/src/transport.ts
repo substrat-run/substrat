@@ -140,24 +140,32 @@ export class ControlPlaneTransport {
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
       ...init,
       ...(this.credentials ? { credentials: this.credentials } : {}),
-      headers: {
-        ...this.extraHeaders,
-        // One credential per request (#980): a service token identifies the caller as
-        // the plane's service actor and is checked BEFORE the dev-actor stub, so the
-        // actor header would be ignored there — and a dev-only header has no business
-        // leaving a production caller at all. Without a token, the actor header IS the
-        // (local, UNSAFE) credential.
-        ...(this.serviceToken
-          ? { [SERVICE_TOKEN_HEADER]: this.serviceToken }
-          : this.actor !== null
-            ? { [DEV_ACTOR_HEADER]: this.actor }
-            : {}),
-        ...(this.contentType === null ? {} : { 'content-type': this.contentType }),
-        ...init?.headers,
-      },
+      headers: this.headersFor(init?.headers),
     });
     this.onResponse?.({ status: res.status, headers: res.headers });
     return res;
+  }
+
+  /**
+   * The headers one request goes out with, merged through the `Headers` API so that names
+   * compare case-insensitively and every `HeadersInit` shape — a record, a tuple array or a
+   * `Headers` instance — is read the same way. Spreading the call's headers as if they were a
+   * record dropped a `Headers` instance's entries altogether, and let `Content-Type` and
+   * `content-type` ride side by side. Lowest first: the `headers` option, the transport's own
+   * credential, the content type, then the call's own.
+   */
+  private headersFor(call: HeadersInit | undefined): Record<string, string> {
+    const merged = new Headers(this.extraHeaders);
+    // One credential per request (#980): a service token identifies the caller as
+    // the plane's service actor and is checked BEFORE the dev-actor stub, so the
+    // actor header would be ignored there — and a dev-only header has no business
+    // leaving a production caller at all. Without a token, the actor header IS the
+    // (local, UNSAFE) credential.
+    if (this.serviceToken) merged.set(SERVICE_TOKEN_HEADER, this.serviceToken);
+    else if (this.actor !== null) merged.set(DEV_ACTOR_HEADER, this.actor);
+    if (this.contentType !== null) merged.set('content-type', this.contentType);
+    new Headers(call).forEach((value, name) => merged.set(name, value));
+    return Object.fromEntries(merged.entries());
   }
 
   /** The full URL a path is requested at — for a message that names it. */

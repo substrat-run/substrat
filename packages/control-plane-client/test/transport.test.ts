@@ -74,6 +74,45 @@ describe('the headers option', () => {
   });
 });
 
+describe('the call’s headers, in every shape HeadersInit allows', () => {
+  const shapes: Array<[string, () => HeadersInit]> = [
+    ['a record', () => ({ 'content-type': 'text/plain', [SERVICE_TOKEN_HEADER]: 'call-token', 'x-extra': '1' })],
+    ['a tuple array', () => [['content-type', 'text/plain'], [SERVICE_TOKEN_HEADER, 'call-token'], ['x-extra', '1']]],
+    ['a Headers instance', () => new Headers({ 'content-type': 'text/plain', [SERVICE_TOKEN_HEADER]: 'call-token', 'x-extra': '1' })],
+  ];
+
+  it.each(shapes)('%s: every entry arrives, and each overrides the default it names', async (_name, headers) => {
+    const { seen, fetch } = spy();
+    await make(fetch, { serviceToken: 'option-token' }).call2('/x', { headers: headers() });
+    expect(seen[0]!.headers).toEqual({
+      [SERVICE_TOKEN_HEADER]: 'call-token',
+      'content-type': 'text/plain',
+      'x-extra': '1',
+    });
+  });
+
+  it('names compare case-insensitively: one entry per header, the call’s value, never both spellings', async () => {
+    const { seen, fetch } = spy();
+    await make(fetch).call2('/x', { headers: { 'Content-Type': 'text/plain', 'X-Platform-Actor': 'call-actor' } });
+    expect(seen[0]!.headers).toEqual({ [DEV_ACTOR_HEADER]: 'call-actor', 'content-type': 'text/plain' });
+  });
+
+  it('a differently-cased option header cannot sit beside the credential it names', async () => {
+    const { seen, fetch } = spy();
+    await make(fetch, { serviceToken: 'tok', headers: { 'X-Service-Token': 'stale' } }).call2('/x');
+    expect(seen[0]!.headers).toEqual({ [SERVICE_TOKEN_HEADER]: 'tok', 'content-type': 'application/json' });
+  });
+
+  it('no call headers is the defaults alone (the positive twin), and request() reads the shapes the same way', async () => {
+    const { seen, fetch } = spy();
+    const t = make(fetch);
+    await t.call2('/x');
+    await t.request('/y', { headers: new Headers({ 'x-extra': '1' }) });
+    expect(seen[0]!.headers).toEqual({ [DEV_ACTOR_HEADER]: 'actor-1', 'content-type': 'application/json' });
+    expect(seen[1]!.headers).toEqual({ [DEV_ACTOR_HEADER]: 'actor-1', 'content-type': 'application/json', 'x-extra': '1' });
+  });
+});
+
 describe('the contentType option', () => {
   it('null sends none — the CLI’s bodyless reads and its multipart upload carry no JSON type', async () => {
     const { seen, fetch } = spy();
