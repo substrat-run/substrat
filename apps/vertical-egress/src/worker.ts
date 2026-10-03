@@ -176,6 +176,18 @@ function isOwnHost(hostname: string, policy: OutboundPolicy): boolean {
   return [policy.hostname, ...(policy.hostnames ?? [])].some((own) => own?.toLowerCase() === h);
 }
 
+/**
+ * The request as it leaves for a destination this worker allowed (#2005). A fork's or a
+ * preview's goes with `redirect: 'manual'`: a redirect this worker followed would be ITS OWN
+ * subrequest, which nothing polices, so an allowed host answering 3xx to a third party would
+ * carry an inert scope out. Unfollowed, the 3xx goes back to the copy's code, and its request to
+ * the new location comes through here again and meets the same rule. An install's requests go
+ * as they came.
+ */
+function passThrough(request: Request, env: Env): Request {
+  return env.OUTBOUND_POLICY?.primary === false ? new Request(request, { redirect: 'manual' }) : request;
+}
+
 /** The platform base domains this deployment mints under, from the shared reader (#973). */
 const baseDomains = (env: Env): string[] => parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
 
@@ -306,7 +318,7 @@ export default {
       // caller cannot forge the tenant it lands as. Policy never applies here — the
       // router's own resolution + the destination vertical's auth are the gate.
       meter(env, hostname, 'platform');
-      return env.ROUTER.fetch(request);
+      return env.ROUTER.fetch(passThrough(request, env));
     }
     if (hostname.toLowerCase() === relayHost(env)) {
       // The platform's own relay (#981), on a different zone from the tenant apps. The
@@ -315,7 +327,7 @@ export default {
       // declares, and the policy below never gets to see it. The relay authenticates
       // its own callers; being allowed here is reachability, not authorization.
       meter(env, hostname, 'relay');
-      return fetch(request);
+      return fetch(passThrough(request, env));
     }
     const policy = env.OUTBOUND_POLICY;
     if (policy?.primary === false && !isOwnHost(hostname, policy)) {
@@ -337,12 +349,12 @@ export default {
       // dispatcher that passed no policy). Unenforced by design — least privilege
       // arrives version by version, not as a fleet outage — but never invisible.
       meter(env, hostname, 'unenforced');
-      return fetch(request);
+      return fetch(passThrough(request, env));
     }
     if (matchesOutboundHost(hostname, policy.hosts)) {
       // The one place a vertical's subrequest actually leaves for the public internet.
       meter(env, hostname, 'allowed');
-      return fetch(request);
+      return fetch(passThrough(request, env));
     }
     meter(env, hostname, 'refused');
     return outboundRefused(

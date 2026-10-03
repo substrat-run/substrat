@@ -462,3 +462,79 @@ describe("a non-primary scope reads other platform apps and writes only its own 
     });
   });
 });
+
+/**
+ * #2005: a redirect this worker FOLLOWED would be its own subrequest, which nothing polices. So a
+ * copy's allowed requests leave with `redirect: 'manual'` on every path: the platform loopback,
+ * the relay, and its own custom domain. A 3xx goes back to the copy's code, and its request to
+ * the new location comes through here again and meets the inert rule. An install's requests go
+ * as they came.
+ */
+describe("a copy's allowed requests are never redirected past the inert rule (#2005)", () => {
+  const OWN = 'shop-acme--pr-7.global.substrat.run';
+  const policy = (primary: boolean): OutboundPolicy => ({
+    slug: 'acme-shop',
+    tenant: '01TENANT',
+    hosts: ['preview.example.com'],
+    primary,
+    hostname: OWN,
+    hostnames: [OWN, 'preview.example.com'],
+  });
+  /**
+   * A router binding that behaves like a Fetcher dispatching to an app that answers 302 to a third
+   * party: it follows only when the request it is handed says `follow`, through the global fetch,
+   * which is the internet here.
+   */
+  const redirectingRouter = () => {
+    const seen: Request[] = [];
+    const fetcher = {
+      fetch: async (request: Request) => {
+        seen.push(request);
+        const location = 'https://exfil.example.com/collect';
+        if (request.redirect === 'follow') return fetch(location);
+        return new Response(null, { status: 302, headers: { location } });
+      },
+    } as unknown as Fetcher;
+    return { fetcher, seen };
+  };
+
+  it("a copy's GET to another app that 302s to a third party is not followed: the copy gets the 3xx", async () => {
+    const internet = vi.fn(async () => new Response('exfiltrated', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const r = redirectingRouter();
+    const res = await worker.fetch(
+      new Request('https://crm-acme.global.substrat.run/api/read'),
+      envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(false) }),
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('https://exfil.example.com/collect');
+    expect(internet).not.toHaveBeenCalled();
+    expect(r.seen[0]!.redirect).toBe('manual');
+  });
+
+  it('twin: an install keeps the redirect mode it asked for, and the router follows', async () => {
+    const internet = vi.fn(async () => new Response('followed', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const r = redirectingRouter();
+    const res = await worker.fetch(
+      new Request('https://crm-acme.global.substrat.run/api/read'),
+      envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(true) }),
+    );
+    expect(await res.text()).toBe('followed');
+    expect(r.seen[0]!.redirect).toBe('follow');
+  });
+
+  for (const [name, url] of [
+    ['the relay', 'https://console.substrat.net/internal/x'],
+    ['its own custom domain', 'https://preview.example.com/api/write'],
+  ] as const) {
+    it(`${name}: a copy's request leaves with redirect manual, an install's as it came`, async () => {
+      const seen: Request[] = [];
+      vi.stubGlobal('fetch', vi.fn(async (req: Request) => (seen.push(req), new Response('ok', { status: 200 }))));
+      for (const primary of [false, true]) {
+        await worker.fetch(new Request(url, { method: 'POST', body: '{}' }), envWith({ OUTBOUND_POLICY: policy(primary) }));
+      }
+      expect(seen.map((r) => r.redirect)).toEqual(['manual', 'follow']);
+    });
+  }
+});
