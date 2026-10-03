@@ -62,7 +62,7 @@ describe("the scope DO's one SQL handle counts writes (#1722)", () => {
 
   it('takes `ctx.storage.sql` once, into the write revision', () => {
     expect(source.match(/storage\.sql\b/g)).toEqual(['storage.sql']);
-    expect(source).toMatch(/new WriteRevision\(ctx\.storage\.sql, ctx\.storage,/);
+    expect(source).toMatch(/new WriteRevision\(\s*ctx\.storage\.sql,\s*ctx\.storage,/);
     expect(source).toMatch(/this\.sql = this\.revision\.sql;/);
   });
 
