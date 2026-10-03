@@ -100,6 +100,8 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
         return 'unfenced';
       },
       loadMarker: async () => 'unfenced',
+      // A deployment built before the fenced wipe holds no kept copies.
+      keptCopy: async () => null,
       readScopeTable: async (sid: string) => {
         const meta = storeOf(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
@@ -525,6 +527,30 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       expect(ok.status).toBe(200);
       expect(((await ok.json()) as Pass).repaired.map((r) => r.scopeId)).toEqual([pinned.scopeId]);
       expect((await recordOf(pinned.scopeId)).servingRef ?? null).toBeNull();
+    });
+
+    // #1722: the kept-copy routes resolve data a carry left behind, so they are staff only too.
+    it('the kept-copy read and resolution are staff only, take a strict body, and refuse a copy that is not kept', async () => {
+      const sid = (await legacyPreview('kept-denied', v1, 'row')).scopeId;
+      const read = (headers: Record<string, string>) =>
+        app.request(`/tenants/${t}/scopes/${sid}/kept-copy?script=${SERVING}`, { headers });
+      const resolveAs = (headers: Record<string, string>, body: unknown) =>
+        app.request(`/tenants/${t}/scopes/${sid}/kept-copy/resolve`, { method: 'POST', headers, body: JSON.stringify(body) });
+      const discard = { script: SERVING, action: 'discard', acknowledge: { discard: true } };
+      for (const who of [asBuilder, asTenant, asOtherTenant]) {
+        expect((await read(who)).status).toBe(403);
+        expect((await resolveAs(who, discard)).status).toBe(403);
+      }
+      expect((await resolveAs({ 'content-type': 'application/json' }, discard)).status).toBe(401);
+      // Staff: a strict body, and nothing to resolve where no copy is kept.
+      expect((await resolveAs(asStaff, { ...discard, extra: 1 })).status).toBe(400);
+      expect((await resolveAs(asStaff, { ...discard, acknowledge: {} })).status).toBe(400);
+      expect((await read(asStaff)).status).toBe(200);
+      expect(await (await read(asStaff)).json()).toMatchObject({ kept: null });
+      expect((await resolveAs(asStaff, discard)).status).toBe(409);
+      expect(await host.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: scopeId.parse(sid) })).toEqual([]);
+      // Leave no pinned preview for the passes the next tests count.
+      await host.admin.setScopeServingRef(staff, t, scopeId.parse(sid), null);
     });
 
     it('is reachable through the production service-token auth, and only with the right token', async () => {

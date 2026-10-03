@@ -5072,24 +5072,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const marker = await client.loadMarker(scopeId);
       return marker === 'unfenced' ? null : marker.revision;
     };
+    // The kept copy as it stands now, which is what this resolution acts on and is fenced on: a
+    // write that reaches it after this read refuses the wipe. (The marker's own `revision` is the
+    // one it was kept at; writing the marker, and any later write, moved it on.)
+    const revisionBefore = await revisionOf(holder);
     const record = (action: 'discard' | 'restore-forward', revisionAfter: string | null) =>
       c.var.admin.recordKeptCopyResolution(actor, tenantId, scopeId, {
         action,
         script: body.script,
         liveScript: action === 'restore-forward' ? route : null,
         keptAt: kept.keptAt,
-        revisionBefore: kept.revision,
+        revisionBefore,
         revisionAfter,
       });
 
     if (body.action === 'discard') {
-      const out = await holder.discardKeptCopy({ scopeId, revision: kept.revision, carriedTo: route, at });
+      const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route, at });
       if ('refused' in out) {
         return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was discarded` }, 412);
       }
       const revisionAfter = await revisionOf(holder);
       await record('discard', revisionAfter);
-      return c.json({ scopeId, script: body.script, action: 'discard', revisionBefore: kept.revision, revisionAfter });
+      return c.json({ scopeId, script: body.script, action: 'discard', revisionBefore, revisionAfter });
     }
 
     // restore-forward: the acknowledgement names what is replaced, as the marker says it.
@@ -5113,7 +5117,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
     const revisionAfter = await revisionOf(live);
     await record('restore-forward', revisionAfter);
-    const wiped = await holder.discardKeptCopy({ scopeId, revision: kept.revision, carriedTo: route, at });
+    const wiped = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route, at });
     if ('refused' in wiped) {
       return c.json({
         error:
@@ -5121,7 +5125,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `stays kept: read it again and resolve it again`,
       }, 409);
     }
-    return c.json({ scopeId, script: body.script, action: 'restore-forward', liveScript: route, revisionBefore: kept.revision, revisionAfter });
+    return c.json({ scopeId, script: body.script, action: 'restore-forward', liveScript: route, revisionBefore, revisionAfter });
   });
 
   // Pin a scope to a vertical version (#31; orchestration.md §4). Refuses a

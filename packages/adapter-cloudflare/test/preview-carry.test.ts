@@ -64,8 +64,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     try {
       return await fn();
     } catch (e) {
-      // A refused precondition answers 412 over the real hop, as the vertical's error envelope does.
-      const status = errorCodeOf(e) === 'precondition_failed' ? 412 : 500;
+      // A refused precondition answers 412 and a conflict 409 over the real hop, as the vertical's
+      // error envelope does.
+      const code = errorCodeOf(e);
+      const status = code === 'precondition_failed' ? 412 : code === 'conflict' ? 409 : 500;
       throw new ControlPlaneError(status, e instanceof Error ? e.message : String(e));
     }
   };
@@ -98,6 +100,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           await hooks.restored?.(ref, sid, tables);
           return out;
         }),
+      keptCopy: async (sid: ScopeId) => (unfenced.has(ref) ? null : relay(() => host.keptCopyLocal(sid))),
+      discardKeptCopy: (input: { scopeId: ScopeId; revision: string | null; carriedTo: string; at: string }) =>
+        relay(() => host.discardKeptCopyLocal(input.scopeId, input.revision, { to: input.carriedTo, at: input.at })),
       loadMarker: async (sid: ScopeId) => {
         await hooks.marker?.(ref, sid);
         return unfenced.has(ref) ? 'unfenced' : relay(() => host.loadMarkerLocal(sid));
@@ -674,20 +679,95 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     // CodeRabbit #2008: a write that reached the old copy after the export (a request still routed
     // there before the bind) was never carried. The wipe is fenced on the revision too, so that
     // copy is kept, holding the write, and recorded for recovery rather than erased.
-    it('a write that reaches the source after the export keeps the source copy, and is recorded', async () => {
-      const p = await fresh('late-write', 'carried');
+    /** A push v1 → v2 whose export is followed by a write on v1: the copy the carry keeps. */
+    const keptByLateWrite = async (tag: string) => {
+      const p = await fresh(tag, 'carried');
       const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
       hooks.marker = held.hook; // after the export, before the restore
-      const pushed = push('late-write', 'v2');
+      const pushed = push(tag, 'v2');
       await held.reached;
       await writeOn('v1', p.scopeId, 'n-late', 'written after the export');
       held.release();
       expect((await pushed).status).toBe(200);
+      delete hooks.marker;
+      return p;
+    };
+    const resolve = (sid: ScopeId, body: object) =>
+      api.request(`/tenants/${t}/scopes/${sid}/kept-copy/resolve`, { method: 'POST', headers: auth, body: JSON.stringify(body) });
+
+    it('a write that reaches the source after the export keeps the source copy, and is recorded', async () => {
+      const p = await keptByLateWrite('late-write');
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried'] });
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['carried', 'written after the export']);
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
       const kept = (await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId })).find((f) => f.stage === 'source-copy-kept');
       expect(kept).toMatchObject({ operation: 'scope.carry', status: 409 });
+    });
+
+    // Codex #2008 r7: the kept copy is protected in the store. A bind back to it is refused
+    // (409) rather than restoring v2's older data over the only copy of the late write.
+    it('a bind back to the kept copy is refused until it is resolved; restoring it forward keeps the late write', async () => {
+      const p = await keptByLateWrite('kept-forward');
+      const back = await api.request(`/tenants/${t}/scopes/${p.scopeId}/version`, {
+        method: 'POST', headers: auth, body: JSON.stringify({ versionId: version.v1 }),
+      });
+      expect(back.status).toBe(409);
+      expect(((await back.json()) as { error: string }).error).toMatch(/holds writes that were not carried/);
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['carried', 'written after the export']);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried'] });
+
+      // What the staff read shows, and a restore forward refused until it names what it replaces.
+      const v1ref = refOf.get(version.v1)!;
+      const read = await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy?script=${v1ref}`, { headers: auth });
+      const { kept } = (await read.json()) as { kept: { keptAt: string; revision: string; carriedTo: string } };
+      expect(kept).toMatchObject({ carriedTo: refOf.get(version.v2) });
+      expect((await resolve(p.scopeId, { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: 'yesterday' } })).status).toBe(409);
+      const done = await resolve(p.scopeId, { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: kept.keptAt } });
+      expect(done.status).toBe(200);
+      // The late write now lives where the scope runs; the kept copy is wiped, the guard with it.
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried', 'written after the export'] });
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+      const [logged] = await dir.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: p.scopeId });
+      expect(logged).toMatchObject({ before: { script: v1ref, keptAt: kept.keptAt }, after: { action: 'restore-forward', liveScript: refOf.get(version.v2) } });
+      expect(Number((logged!.before as { revision: string }).revision)).toBeGreaterThan(Number(kept.revision));
+      // And the bind back is an ordinary carry again.
+      // (On the DO: a discard is fenced on the revision read, and refused where nothing is kept.)
+      const v1host = hostFor('v1');
+      const away = { to: 'x', at: '2026-10-03T00:00:00.000Z' };
+      expect(await v1host.discardKeptCopyLocal(p.scopeId, '0', away)).toEqual({ refused: 'not-kept' });
+      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['carried', 'written after the export'] });
+      // Nothing left to resolve.
+      expect((await resolve(p.scopeId, { script: v1ref, action: 'discard', acknowledge: { discard: true } })).status).toBe(409);
+    });
+
+    it('discarding the kept copy is acknowledged, logged, and lets the bind back carry again', async () => {
+      const p = await keptByLateWrite('kept-discard');
+      const v1ref = refOf.get(version.v1)!;
+      // On the DO: a discard at a revision the copy has moved past is refused, and keeps it.
+      const stale = await hostFor('v1').discardKeptCopyLocal(p.scopeId, '0', { to: 'x', at: '2026-10-03T00:00:00.000Z' });
+      expect(stale).toEqual({ refused: 'changed' });
+      expect(await hostFor('v1').keptCopyLocal(p.scopeId)).not.toBeNull();
+      expect((await resolve(p.scopeId, { script: v1ref, action: 'discard', acknowledge: { discard: false } })).status).toBe(400);
+      expect((await resolve(p.scopeId, { script: v1ref, action: 'discard', acknowledge: { discard: true } })).status).toBe(200);
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried'] });
+      const [logged] = await dir.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: p.scopeId });
+      expect(logged).toMatchObject({ after: { action: 'discard', liveScript: null } });
+      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['carried'] });
+    });
+
+    // Codex #2008 r7: a copy the carry wiped takes no write, so a stale request still routed to
+    // it lands nowhere. A rollback's restore makes it a live store again, and it takes writes.
+    it('a wiped copy refuses writes until a restore makes it live again', async () => {
+      const p = await fresh('tomb-write', 'tomb data');
+      expect((await push('tomb-write', 'v2')).status).toBe(200);
+      await expect(writeOn('v1', p.scopeId, 'n-stale', 'a stale request')).rejects.toThrow(/carried to another script and wiped/);
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      await writeOn('v1', p.scopeId, 'n-live', 'live again');
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['tomb data', 'live again']);
     });
 
     // CodeRabbit #2008: a restore that committed and lost its answer is retried with the same

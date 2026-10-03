@@ -758,6 +758,36 @@ describe('VerticalClient.loadMarker (#1722)', () => {
   });
 });
 
+describe('VerticalClient kept copies (#1722)', () => {
+  const client = (res: () => Response, seen: unknown[] = []) =>
+    new VerticalClient({
+      fetch: (async (_u: string, init?: RequestInit) => {
+        if (init?.body) seen.push(JSON.parse(String(init.body)));
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+  const kept = { carriedTo: 'v2', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' };
+
+  it('reads a kept copy, none, and none from a deployment that predates them', async () => {
+    expect(await client(() => Response.json({ kept })).keptCopy(s)).toEqual(kept);
+    expect(await client(() => Response.json({ kept: null })).keptCopy(s)).toBeNull();
+    expect(await client(() => new Response('nope', { status: 404 })).keptCopy(s)).toBeNull();
+    const shape = await client(() => Response.json({ kept: { carriedTo: 1 } })).keptCopy(s).then(() => null, (e: unknown) => e as ControlPlaneError);
+    expect(shape?.status).toBe(502);
+  });
+
+  it('discards with the revision, and reads the refusal; a deployment that predates it is a 501', async () => {
+    const seen: unknown[] = [];
+    const input = { scopeId: s, revision: '9', carriedTo: 'v2', at: '2026-10-03T00:00:00.000Z' };
+    expect(await client(() => Response.json({ discarded: true }), seen).discardKeptCopy(input)).toEqual({ discarded: true });
+    expect(seen).toEqual([input]);
+    expect(await client(() => Response.json({ refused: 'changed' })).discardKeptCopy(input)).toEqual({ refused: 'changed' });
+    const old = await client(() => new Response('nope', { status: 404 })).discardKeptCopy(input).then(() => null, (e: unknown) => e as ControlPlaneError);
+    expect(old?.status).toBe(501);
+  });
+});
+
 it('restoreScope sends the stamp a carry leaves on its copy, and none when not given one (#1722)', async () => {
   const bodies: unknown[] = [];
   const client = new VerticalClient({

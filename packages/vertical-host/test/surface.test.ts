@@ -45,6 +45,9 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     redrainCountLocal: async (_s: unknown, before?: unknown) =>
       note('redrainCountLocal', before === '2026-09-16T00:00:00.000Z' ? 11 : -1),
     loadMarkerLocal: async () => note('loadMarkerLocal', { loadStamp: 'st', revision: null }),
+    keptCopyLocal: async () => note('keptCopyLocal', { carriedTo: 'v2-script', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' }),
+    discardKeptCopyLocal: async (_s: unknown, revision?: unknown) =>
+      note('discardKeptCopyLocal', revision === '9' ? ({ discarded: true } as const) : ({ refused: 'changed' } as const)),
     // #1722: refuses unless the stamp and the tombstone arrive verbatim.
     wipeCarriedLocal: async (_s: unknown, stamp?: unknown, away?: unknown) =>
       note(
@@ -443,6 +446,25 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     }, ENV);
     expect(fenced.status).toBe(200);
     expect(opts).toMatchObject({ expect: { loadStamp: null, revision: 'ev-9' } });
+  });
+
+  it('serves the kept-copy read and discard behind the gate, and 501s on a host that keeps no copies (#1722)', async () => {
+    const host = fakeHost();
+    const read = await appWith(host).request('/internal/kept-copy?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ kept: { carriedTo: 'v2-script', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' } });
+    const discard = (h: ReturnType<typeof fakeHost>, body: unknown, headers = authed({ 'content-type': 'application/json' })) =>
+      appWith(h).request('/internal/kept-copy/discard', { method: 'POST', headers, body: JSON.stringify(body) }, ENV);
+    const body = { scopeId: SCOPE, revision: '9', carriedTo: 'v2-script', at: '2026-10-03T00:00:00.000Z' };
+    expect(await (await discard(host, body)).json()).toEqual({ discarded: true });
+    expect(await (await discard(host, { ...body, revision: '8' })).json()).toEqual({ refused: 'changed' });
+    expect((await discard(host, { ...body, revision: undefined })).status).toBe(400);
+    expect((await discard(host, body, { 'content-type': 'application/json' })).status).toBe(403);
+    expect((await appWith(host).request('/internal/kept-copy?scopeId=' + SCOPE, {}, ENV)).status).toBe(403);
+    const older = fakeHost({ keptCopyLocal: undefined, discardKeptCopyLocal: undefined });
+    expect((await appWith(older).request('/internal/kept-copy?scopeId=' + SCOPE, { headers: authed() }, ENV)).status).toBe(501);
+    expect((await discard(older, body)).status).toBe(501);
+    expect(older.calls).toHaveLength(0);
   });
 
   it('serves the load marker behind the gate, and 501s on a host that cannot fence a restore (#1722)', async () => {
