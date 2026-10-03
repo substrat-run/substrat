@@ -3683,8 +3683,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (REACTIVATIONS.has(action)) {
         const rec = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
         if (rec && !isPrimaryScope(rec)) {
-          const step = await markScopeIfCopy(c, rec);
-          if ('fail' in step) return c.json({ error: `${action} refused: ${step.fail.error}` }, 503);
+          // ANY failed marker write keeps the scope parked: a 503 that says what to do, and an
+          // ops-failure row, whether the step reported it (no deployment resolves) or the vertical
+          // refused (an older one has no /internal/mark-copy and answers 404). Passing a 404 or
+          // a vertical's error through would read as "no such scope" and leave no trace.
+          let failure: { error: string; cause: unknown } | undefined;
+          try {
+            const step = await markScopeIfCopy(c, rec);
+            if ('fail' in step) failure = { error: step.fail.error, cause: NO_CAUSE };
+          } catch (e) {
+            failure = { error: e instanceof Error ? e.message : String(e), cause: e };
+          }
+          if (failure) {
+            const error =
+              `${action} refused: this copy could not be marked as one (${failure.error}); ` +
+              'redeploy the vertical so it can mark it, then retry — the scope stays as it was';
+            recordFailure(
+              {
+                actor: c.get('actor'),
+                operation: `scope.${action}`,
+                stage: 'mark-copy',
+                tenantId,
+                scopeId,
+                vertical: rec.vertical,
+                version: rec.verticalVersionId,
+                status: 503,
+                message: error,
+              },
+              failure.cause,
+            );
+            return c.json({ error }, 503);
+          }
         }
       }
       await run(c.var.admin, c.get('actor'), tenantId, scopeId);

@@ -302,6 +302,37 @@ describe('marking copies as copies, in their own storage (#2005)', () => {
       }
     });
 
+    // An older vertical has no /internal/mark-copy and answers 404. That must not pass through as
+    // "no such scope": every reactivation refuses 503 with what to do, logs an ops failure, and
+    // leaves the directory exactly where it was.
+    for (const [action, park, expected] of [
+      ['activate', async (_s: ScopeId) => undefined, 'provisioning'],
+      ['unsuspend', async (s: ScopeId) => host.admin.suspendScope(staff, t, s), 'suspended'],
+      ['unarchive', async (s: ScopeId) => host.admin.archiveScope(staff, t, s), 'archived'],
+    ] as const) {
+      it(`${action}: an older vertical's 404 is a 503 with an ops failure, and the copy stays ${expected}`, async () => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: slug, kind: 'preview' });
+        await host.admin.bindScopeVersion(staff, t, s, v1);
+        if (action !== 'activate') await host.admin.activateScope(staff, t, s);
+        await park(s);
+        mine.add(s);
+        refuseMark = s;
+        try {
+          const res = await app.request(`/tenants/${t}/scopes/${s}/${action}`, { method: 'POST', headers: asStaff });
+          expect(res.status).toBe(503);
+          expect(((await res.json()) as { error: string }).error).toMatch(/could not be marked.*redeploy the vertical/);
+          expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe(expected);
+          const failures = await host.admin.listOpsFailures(staff, { scopeId: s });
+          expect(failures).toEqual([
+            expect.objectContaining({ operation: `scope.${action}`, stage: 'mark-copy', status: 503, tenantId: t, scopeId: s }),
+          ]);
+        } finally {
+          refuseMark = null;
+        }
+      });
+    }
+
     it('twin: reactivating an install marks nothing', async () => {
       await host.admin.suspendScope(staff, t, install);
       markCalls.length = 0;
