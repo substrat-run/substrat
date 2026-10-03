@@ -717,8 +717,14 @@ export function scopeHostContractSuite(
         const settled = (await host.executorDeadLetters(t1, fork)).find((d) => d.executorId === 'flaky-effector');
         expect(settled?.error).toMatch(new RegExp(`^not carried: copied from scope ${source}`));
 
-        // The twin: work the copy creates itself flows as it always did.
+        // Nor does it ship the source's events to Tier 2 again: the drain's read is empty here,
+        // while the source's own read still holds them.
+        expect(await host.admin.readUndrainedEvents(staff, t1, fork, 200)).toHaveLength(0);
+        expect((await host.admin.readUndrainedEvents(staff, t1, source, 200)).map((e) => e.id)).toContain(step1);
+
+        // The twin: work the copy creates itself flows as it always did, to Tier 2 included.
         await stub.invoke('flow/produce');
+        expect((await host.admin.readUndrainedEvents(staff, t1, fork, 200)).map((e) => e.type)).toContain('flow.step1');
         const own = await logOf(fork);
         expect(own).toHaveLength(2); // its own step1, and the step2 that consumer emitted
         expect(own).not.toContain(step1);
