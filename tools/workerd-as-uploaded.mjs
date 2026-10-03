@@ -7,8 +7,9 @@
  * sweeper module it re-exports from, the `SWEEPER` binding and the class's migration. A suite
  * that ran `src/worker.ts` as its main module would run a worker with no timer at all, which
  * is not what production runs. So this takes the producers themselves — the CLI's
- * `deriveDeclaredSurface` and `sweeperClassesOf` (what the push declares) and control-plane-
- * api's `withPlatformEntry` (what the uploader does with it) — applies them to the derived
+ * `deriveDeclaredSurface` and `sweeperClassesOf` (what the push declares), control-plane-api's
+ * `platformSweeperDecision` (what the push route decides from it) and `withPlatformEntry`
+ * (what the uploader then does) — applies them to the derived
  * wrangler config, writes the platform's modules beside it, and points `main` at the
  * platform's entry. Built output, like every other caller of those packages from a config:
  * run `pnpm build` first.
@@ -22,7 +23,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { deriveDeclaredSurface, sweeperClassesOf } from '../packages/cli/dist/push.js';
-import { withPlatformEntry } from '../packages/control-plane-api/dist/platform-entry.js';
+import { platformSweeperDecision, withPlatformEntry } from '../packages/control-plane-api/dist/platform-entry.js';
 
 /**
  * @param {string} dir  the vertical's directory
@@ -40,13 +41,20 @@ export async function asUploaded(dir, derived) {
   // The vertical's entry, named by its path from where the platform's modules are written —
   // the uploader names it by its path from the script root, and the entry imports it so.
   const entry = relative(cacheDir, main).split('\\').join('/');
+  const modules = [{ name: entry, content: new Uint8Array(), contentType: 'application/javascript+module' }];
+  const bindings = doBindings.map((b) => ({ type: 'durable_object_namespace', name: b.name, class_name: b.class_name }));
+  // The decision the control plane makes once, at push, from the same declaration.
+  const decision = platformSweeperDecision(
+    { ...(schedules?.length ? { declaresSchedules: true } : {}), ...(sweeperClasses ? { sweeperClasses } : {}), bindings },
+    { entry, modules },
+  );
+  if ('refuse' in decision) throw new Error(`the control plane would refuse this push: ${decision.refuse}`);
   const uploaded = withPlatformEntry({
     entry,
-    modules: [{ name: entry, content: new Uint8Array(), contentType: 'application/javascript+module' }],
+    modules,
     doClasses: migrations.flatMap((m) => m.new_sqlite_classes ?? []),
-    bindings: doBindings.map((b) => ({ type: 'durable_object_namespace', name: b.name, class_name: b.class_name })),
-    ...(schedules?.length ? { declaresSchedules: true } : {}),
-    ...(sweeperClasses ? { sweeperClasses } : {}),
+    bindings,
+    supplySweeper: decision.supply,
   });
   for (const m of uploaded.modules) {
     if (m.name !== entry) writeFileSync(join(cacheDir, m.name), m.content);

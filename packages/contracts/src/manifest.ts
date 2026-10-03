@@ -122,6 +122,18 @@ export type FreshnessSpec = z.infer<typeof freshnessSpec>;
  */
 export const PLATFORM_BINDING_PREFIX = 'SUBSTRAT_';
 
+/**
+ * The response header a control plane lists the platform behaviours it provides in (#1902),
+ * comma-separated, on every response — the capability half of the handshake whose version
+ * half is `x-substrat-cli-min-version`. A CLI that would omit something on the strength of
+ * the platform providing it asks first, and refuses when the plane does not say so: a plane
+ * that predates a behaviour stays silent, and silence is never read as yes.
+ */
+export const PLATFORM_FEATURES_HEADER = 'x-substrat-platform-features';
+
+/** The platform supplies the scope sweeper to a version that declares schedules and brings none (#1902). */
+export const PLATFORM_FEATURE_SCOPE_SWEEPER = 'scope-sweeper';
+
 // A single declared environment variable — the config a deployment must provide,
 // self-describing so a host/console can render a settings form (placeholder +
 // description) and validate the required keys before deploy. `secret: true` marks a

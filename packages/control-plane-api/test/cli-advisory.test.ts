@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId } from '@substrat-run/contracts';
+import { PLATFORM_FEATURES_HEADER, PLATFORM_FEATURE_SCOPE_SWEEPER, platformActorId } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   CLI_LATEST_VERSION_HEADER,
@@ -86,5 +86,37 @@ describe('CLI version advisory headers', () => {
       expect(res.headers.has(CLI_MIN_VERSION_HEADER)).toBe(false);
       expect(res.headers.has(CLI_LATEST_VERSION_HEADER)).toBe(false);
     }
+  });
+});
+
+/**
+ * #1902: the capability half of the same handshake. A CLI leaves a vertical's sweeper out
+ * only when the plane says it supplies one, so the plane must say it on every answer the CLI
+ * might read first — a refusal and a miss included — and unconfigured, since it is a fact
+ * about this code.
+ */
+describe('the platform features header (#1902)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-features-'));
+    host = new SqliteScopeHost({ dir });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('lists the scope sweeper on a success, a 401 and a 404, with nothing configured', async () => {
+    const app = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+    const answers = [
+      await app.request('/tenants', { headers: { [DEV_ACTOR_HEADER]: staff } }),
+      await app.request('/verticals/nope/versions?limit=1'),
+      await app.request('/no-such-route', { headers: { [DEV_ACTOR_HEADER]: staff } }),
+    ];
+    expect(answers.map((r) => r.status)).toEqual([200, 401, 404]);
+    for (const r of answers) expect(r.headers.get(PLATFORM_FEATURES_HEADER)).toBe(PLATFORM_FEATURE_SCOPE_SWEEPER);
   });
 });

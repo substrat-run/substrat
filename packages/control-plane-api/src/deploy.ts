@@ -61,12 +61,9 @@ export interface VerticalBundle {
    *  as `env.AI`. Travels with the version, so who holds the capability is a property of
    *  the code that shipped rather than of the fleet's config. */
   usesModels?: boolean;
-  /** The version declares recurring `schedules` (#1902) — what makes it owe a sweeper,
-   *  which the uploader supplies when the bundle brings none (`platform-entry.ts`). */
-  declaresSchedules?: boolean;
-  /** The manifest's `sweeperClasses` (#1902): the vertical's own sweeper classes, `[]` for
-   *  none, absent when an older CLI pushed it. */
-  sweeperClasses?: string[];
+  /** Carry the platform's scope sweeper (#1902) — the decision the push made and the
+   *  version records (`platformSweeper`), never re-made by an upload. */
+  supplySweeper?: boolean;
   /** The version REGISTRY id this bundle deploys (#1242) — injected as the
    *  `SUBSTRAT_VERSION_ID` plain-text binding so the running scope host can stamp the
    *  signals `version` dimension (#1231) on the records it writes. Optional: a caller
@@ -140,16 +137,17 @@ export function upstreamStatusOf(e: unknown): number | undefined {
 }
 
 /**
- * The two manifest facts the uploader's sweeper decision reads (#1902): whether the version
- * declares schedules, and the sweeper classes the push found in the vertical's source —
- * passed through as absent when the push carried none, which is not the same as `[]`.
+ * The facts the push-time sweeper decision reads (#1902): whether the version declares
+ * schedules, the sweeper classes the push found in the vertical's source — passed through as
+ * absent when the push carried none, which is not the same as `[]` — and its bindings.
  */
 export function sweeperFactsOf(
-  manifest: Pick<DeployManifest, 'schedules' | 'sweeperClasses'>,
-): Pick<VerticalBundle, 'declaresSchedules' | 'sweeperClasses'> {
+  manifest: Pick<DeployManifest, 'schedules' | 'sweeperClasses' | 'bindings'>,
+): { declaresSchedules?: boolean; sweeperClasses?: string[]; bindings: DeclaredBinding[] } {
   return {
     ...(manifest.schedules?.length ? { declaresSchedules: true } : {}),
     ...(manifest.sweeperClasses ? { sweeperClasses: manifest.sweeperClasses } : {}),
+    bindings: manifest.bindings,
   };
 }
 

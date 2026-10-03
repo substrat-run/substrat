@@ -22,6 +22,8 @@ import {
   envVarSpec,
   runtimeNeeds,
   RUNTIME_BASELINE,
+  PLATFORM_FEATURES_HEADER,
+  PLATFORM_FEATURE_SCOPE_SWEEPER,
   type AssetEntry,
   type AssetsNeed,
   type DeclaredBinding,
@@ -1170,6 +1172,48 @@ export function assertSchedulesAreSwept(
 }
 
 /**
+ * Does the target control plane supply the scope sweeper (#1902)? A vertical whose entry
+ * exports none leaves it to the platform, and a plane from before #1902 supplies nothing —
+ * it would accept the version, and the schedules would never fire, with no error anywhere.
+ * So the plane must SAY so: every response from a current one lists
+ * `PLATFORM_FEATURE_SCOPE_SWEEPER` in `PLATFORM_FEATURES_HEADER` (the capability half of the
+ * handshake the CLI version advisory rides). One cheap read of the slug's versions asks; its
+ * status does not matter — a 401 or a 404 carries the header too — and silence is a refusal.
+ */
+export async function assertPlaneSuppliesSweeper(
+  opts: { controlPlaneUrl: string; authHeader: Record<string, string>; slug: string },
+  allow = false,
+  log: (message: string) => void = console.log,
+): Promise<void> {
+  const res = await planeFor(opts.controlPlaneUrl, opts.authHeader).request(
+    `/verticals/${encodeURIComponent(opts.slug)}/versions?limit=1`,
+    { method: 'GET' },
+  );
+  await res.body?.cancel();
+  if (planeSupplies(res.headers, PLATFORM_FEATURE_SCOPE_SWEEPER)) return;
+  const why =
+    `this vertical declares schedules and exports no sweeper, leaving it to the platform — but the ` +
+    `control plane at ${opts.controlPlaneUrl} does not say it supplies one (no '${PLATFORM_FEATURE_SCOPE_SWEEPER}' ` +
+    `in its ${PLATFORM_FEATURES_HEADER} header), so it predates #1902 and the schedules would never fire.`;
+  if (allow) {
+    log(`warning: --allow-unswept-schedules — ${why}\n  Pushing anyway, as asked.`);
+    return;
+  }
+  throw new Error(
+    `${why}\n\n  Push again once the platform is updated, or export your own defineScopeSweeperDO class ` +
+      '(bound as a store) for this version. --allow-unswept-schedules pushes anyway.',
+  );
+}
+
+/** Whether a control plane's response lists `feature` among the platform's features (#1902). */
+export function planeSupplies(headers: Headers, feature: string): boolean {
+  return (headers.get(PLATFORM_FEATURES_HEADER) ?? '')
+    .split(',')
+    .map((f) => f.trim())
+    .includes(feature);
+}
+
+/**
  * The classes the worker entry exports as its own `defineScopeSweeperDO` sweeper — the
  * manifest's `sweeperClasses` (#1902), what the uploader decides from whether to supply the
  * platform's. `[]` when it exports none; `undefined` when the entry cannot be read, which the
@@ -1490,6 +1534,12 @@ export async function push(
   // `substrat push --check`, which makes the same check with no build at all.
   assertSchedulesAreSwept(opts.dir, cfg, schedules, opts.allowUnsweptSchedules);
   const sweeperClasses = sweeperClassesOf(opts.dir, cfg);
+  // #1902: leaving the sweeper out is safe only where the platform puts one in. Asked of the
+  // plane itself, before the build is uploaded — a plane that predates it would accept the
+  // version and never run its schedules.
+  if (schedules?.length && sweeperClasses?.length === 0) {
+    await assertPlaneSuppliesSweeper(opts, opts.allowUnsweptSchedules);
+  }
 
   if (migrations.omitted) {
     console.warn(
