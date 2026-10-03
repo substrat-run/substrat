@@ -14,10 +14,15 @@
  *
  * `--dry-run` lists the scopes a real run would visit and touches nothing.
  *
+ * Suspended and archived copies are visited too, since either can be reactivated (and a
+ * reactivation marks a copy first, so neither path brings an unmarked copy back to life).
+ *
  * The control plane pages the walk and this follows `nextCursor` to the end, so a run that is
  * interrupted is finished by running it again. It is idempotent: a marked scope answers
- * "already". A scope that FAILS (a vertical too old to have the verb, say) is reported and left
- * unmarked, and the exit code is 1; re-push that vertical and run again.
+ * "already". A scope that FAILS — a vertical too old to have the verb, or a hosted copy whose
+ * deployment does not currently resolve — is reported and left unmarked, and the exit code is 1;
+ * fix the cause and run again. SKIPPED is legitimately finished: a copy bound to no vertical, or a
+ * co-located one, whose host reads the directory and needs no marker.
  *
  * Credentials from the secrets file, never argv: `SERVICE_TOKEN`. The route is staff/service
  * only (on neither the builder nor the tenant-credential allowlist).

@@ -3671,10 +3671,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     unarchive: (admin: HostAdmin, a: PlatformActorId, t: TenantId, s: ScopeId) => admin.unarchiveScope(a, t, s),
   } as const;
 
+  /** #2005: the transitions that bring a scope (back) to life — each marks a copy first. */
+  const REACTIVATIONS: ReadonlySet<string> = new Set(['activate', 'unsuspend', 'unarchive']);
   for (const [action, run] of Object.entries(transitions)) {
     app.post(`/tenants/:tenantId/scopes/:scopeId/${action}`, async (c) => {
       const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
       const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+      // #2005: a copy made before the copy marker existed holds none, and a CP-less host that
+      // finds none runs its effects. So a copy is marked BEFORE it comes back to life, and a
+      // hosted copy whose marker cannot be written is refused here rather than reactivated.
+      if (REACTIVATIONS.has(action)) {
+        const rec = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+        if (rec && !isPrimaryScope(rec)) {
+          const step = await markScopeIfCopy(c, rec);
+          if ('fail' in step) return c.json({ error: `${action} refused: ${step.fail.error}` }, 503);
+        }
+      }
       await run(c.var.admin, c.get('actor'), tenantId, scopeId);
       return c.json(await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId));
     });
@@ -4124,11 +4136,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   /**
    * Mark one scope a copy in the vertical that holds it (#2005), if its directory record says it
-   * is not primary, and log it — the one step behind the repair below:
+   * is not primary, and log it. The one step behind the repair below and every reactivation, so
+   * the two classify a scope the same way:
    *
    * - a primary is never marked (`skip`), and the vertical refuses one anyway;
    * - a scope bound to no vertical runs no module code, so nothing reads a marker (`skip`);
-   * - a scope no deployment resolves for is left as it is (`skip`).
+   * - a CO-LOCATED scope (no script of its own: an embedded vertical, a self-host) runs on a host
+   *   that reads the directory, so it needs none (`skip`);
+   * - a HOSTED scope (a serving script, or a bound version with a script) that does not resolve
+   *   is unfinished work (`fail`), never a skip: it can resolve later with no marker.
    */
   type CopyMarkStep =
     | { done: 'marked' | 'already' }
@@ -4139,7 +4155,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (isPrimaryScope(scope)) return { skip: 'primary: an install is never marked' };
     if (!scope.vertical) return { skip: 'bound to no vertical: no module code runs, so nothing reads the marker' };
     const vertical = await verticalForScope(c, scope);
-    if (!vertical) return { skip: 'no deployment holds this scope' };
+    if (!vertical) {
+      const hosted =
+        scope.servingRef !== null && scope.servingRef !== undefined
+          ? true
+          : scope.verticalVersionId
+            ? Boolean((await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical))?.deploymentRef)
+            : false;
+      return hosted
+        ? { fail: { status: 503, error: 'no deployment resolves for this hosted scope, so its copy marker was not written' } }
+        : { skip: 'co-located: the host that runs this scope reads the directory, so it needs no marker' };
+    }
     const { marked } = await vertical.markCopy(scope.id, { kind: scope.kind, forkedFrom: scope.forkedFrom });
     await c.var.admin.recordCopyMark(actor, {
       action: 'mark',
@@ -4156,7 +4182,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // every carry onto a non-primary scope stamps it (`restoreCarryingSwitches`) — but a copy
   // made before either, never carried since, holds none and would read as an install there.
   // This is the pass over those: for each scope the directory says is not primary, ask the
-  // vertical that holds it to stamp the marker (idempotent there), and log the outcome.
+  // vertical that holds it to stamp the marker (idempotent there), and log the outcome. Active,
+  // suspended and archived scopes alike: a suspended or archived copy can be reactivated, and a
+  // reactivation stamps too (`markScopeIfCopy` in the lifecycle routes), so neither path brings
+  // an unmarked copy back to life. A hosted scope that does not resolve is FAILED, not skipped.
   //
   // Staff only, by default-deny, like the serving-pin repair: the path is on neither
   // `BUILDER_ROUTES` nor `TENANT_ROUTES`. Paged and resumable the same way — one page of
@@ -4174,7 +4203,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/scopes/mark-copies', async (c) => {
     const { cursor, limit, dryRun } = await readJsonBody(c, markCopiesBody);
     const actor = c.get('actor');
-    const page = await c.var.admin.listScopes(actor, { status: ['active'], cursor, limit: REPAIR_SCAN_PAGE });
+    const page = await c.var.admin.listScopes(actor, {
+      status: ['active', 'suspended', 'archived'],
+      cursor,
+      limit: REPAIR_SCAN_PAGE,
+    });
     const marked: { tenantId: string; scopeId: string }[] = [];
     const already: { tenantId: string; scopeId: string }[] = [];
     const candidates: { tenantId: string; scopeId: string }[] = [];

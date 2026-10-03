@@ -262,6 +262,79 @@ describe('marking copies as copies, in their own storage (#2005)', () => {
     });
   });
 
+  describe('suspended and archived copies, and reactivation (round 3)', () => {
+    let parked: ScopeId;
+    let archived: ScopeId;
+
+    it('the repair visits a suspended and an archived copy too', async () => {
+      parked = await provision({ kind: 'preview' });
+      archived = await provision({ forkedFrom: install, forkedAt: new Date().toISOString() });
+      mine.add(parked);
+      mine.add(archived);
+      await host.admin.suspendScope(staff, t, parked);
+      await host.admin.archiveScope(staff, t, archived);
+      const { body } = await pass({ dryRun: true, limit: 200 });
+      expect(ours(body.candidates)).toEqual(expect.arrayContaining([parked, archived]));
+    });
+
+    it('a reactivation marks a copy BEFORE it comes back to life', async () => {
+      markedIn.delete(parked);
+      markCalls.length = 0;
+      const res = await app.request(`/tenants/${t}/scopes/${parked}/unsuspend`, { method: 'POST', headers: asStaff });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(markCalls).toEqual([parked]);
+      expect(markedIn.has(parked)).toBe(true);
+      const log = await host.admin.auditLog(staff, { tenantId: t, scopeId: parked, action: 'markScopeCopy' });
+      expect(log.at(-1)?.after).toMatchObject({ outcome: 'marked' });
+    });
+
+    it('a hosted copy whose marker cannot be written is refused reactivation, and stays parked', async () => {
+      markedIn.delete(archived);
+      refOf.delete(v1); // the bound version's script no longer resolves
+      try {
+        const res = await app.request(`/tenants/${t}/scopes/${archived}/unarchive`, { method: 'POST', headers: asStaff });
+        expect(res.status).toBe(503);
+        expect((await host.admin.getScopeRecord(staff, t, archived))?.status).toBe('archived');
+      } finally {
+        refOf.set(v1, `${slug}-${v1.toLowerCase()}`);
+      }
+    });
+
+    it('twin: reactivating an install marks nothing', async () => {
+      await host.admin.suspendScope(staff, t, install);
+      markCalls.length = 0;
+      const res = await app.request(`/tenants/${t}/scopes/${install}/unsuspend`, { method: 'POST', headers: asStaff });
+      expect(res.status).toBe(200);
+      expect(markCalls).toEqual([]);
+    });
+  });
+
+  describe('a hosted copy that does not resolve is failed work; a co-located one is skipped', () => {
+    it('reports an unresolvable hosted copy as failed, never skipped', async () => {
+      const lost = await provision({ kind: 'preview' });
+      mine.add(lost);
+      markedIn.delete(lost);
+      refOf.delete(v1);
+      try {
+        const { body } = await pass({ limit: 200 });
+        expect(body.failed.filter((f) => f.scopeId === lost)).toEqual([expect.objectContaining({ scopeId: lost, status: 503 })]);
+        expect(body.skipped.map((s) => s.scopeId)).not.toContain(lost);
+      } finally {
+        refOf.set(v1, `${slug}-${v1.toLowerCase()}`);
+      }
+    });
+
+    it('skips a co-located copy (no script of its own), saying why', async () => {
+      const colo = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: colo, vertical: 'embedded-vert', kind: 'preview' });
+      await host.admin.activateScope(staff, t, colo);
+      mine.add(colo);
+      const { body } = await pass({ limit: 200 });
+      expect(body.skipped.find((s) => s.scopeId === colo)?.reason).toMatch(/^co-located/);
+      expect(body.failed.map((f) => f.scopeId)).not.toContain(colo);
+    });
+  });
+
   describe("clearing a mistaken mark (round 3)", () => {
     const clear = (s: string) => app.request(`/tenants/${t}/scopes/${s}/clear-copy-mark`, { method: 'POST', headers: asStaff });
 
