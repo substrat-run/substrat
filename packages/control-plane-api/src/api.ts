@@ -5012,9 +5012,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // - `discard` wipes the kept copy: what reached it after the carry's export is gone.
   // - `restore-forward` restores the kept copy over the store the scope now routes to, then
   //   wipes the kept copy: what the live store took since the copy was kept is gone.
-  // There is no merge of two scope dumps. To reconcile by hand, take the live store with the
-  // governed export (`GET …/export`, which reads the scope's route) before choosing; the kept
-  // copy itself is reached only through these two resolutions (this route's GET says where it is).
+  // There is no merge of two scope dumps. To reconcile by hand, pull the kept copy with
+  // `GET …/kept-copy/export` and the live store with the governed export (`GET …/export`, which
+  // reads the scope's route), re-apply what matters, then discard.
   //
   // Staff only, by default-deny: neither path is on BUILDER_ROUTES or TENANT_ROUTES. One scope
   // at a time, refused unless the copy really is kept, and admin-logged with the write revision
@@ -5052,6 +5052,41 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const kept = await (await keptHolder(script)).keptCopy(scopeId);
     return c.json({ scopeId, script, kept, routesTo: await routeOf(c, scope) });
+  });
+
+  // The kept copy's own dump, for reconciling by hand before a discard: the governed export's
+  // rules exactly (`GET …/export` above). Refused outside `global` residency, masked unless
+  // `full=true`, and K-24 access-logged through the same canonical `exportScope`. It reads the
+  // script named, refused unless the copy there is kept, so it never becomes a way to pull a
+  // live store past that route.
+  const keptExportQuery = z
+    .object({ script: z.string().min(1), full: z.enum(['true', 'false']).optional() })
+    .strict();
+  app.get('/tenants/:tenantId/scopes/:scopeId/kept-copy/export', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const { script, full } = keptExportQuery.parse(c.req.query());
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (scope.jurisdiction !== 'global') {
+      return c.json(
+        {
+          error:
+            `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
+            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`,
+        },
+        403,
+      );
+    }
+    const holder = await keptHolder(script);
+    const kept = await holder.keptCopy(scopeId);
+    if (!kept) return c.json({ error: `scope ${scopeId} has no kept copy in '${script}'` }, 409);
+    const dump = await c.var.admin.exportScope(actor, tenantId, scopeId);
+    const tables = await holder.exportScope(scopeId);
+    if (full === 'true') return c.json({ ...dump, tables, masked: false, script, kept });
+    const mask = await createPseudonymizer(options.maskSalt ?? crypto.randomUUID());
+    return c.json({ ...dump, tables: await maskDump(tables, mask), masked: true, script, kept });
   });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/kept-copy/resolve', async (c) => {

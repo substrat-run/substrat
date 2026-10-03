@@ -744,6 +744,19 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     it('discarding the kept copy is acknowledged, logged, and lets the bind back carry again', async () => {
       const p = await keptByLateWrite('kept-discard');
       const v1ref = refOf.get(version.v1)!;
+      // The kept copy's own dump, to reconcile by hand before choosing: raw with full=true,
+      // masked by default, and access-logged like the governed export.
+      const pulls = async () => (await dir.admin.accessLog(staff, { tenantId: t, method: 'exportScope' })).length;
+      const before = await pulls();
+      const raw = await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy/export?script=${v1ref}&full=true`, { headers: auth });
+      expect(raw.status).toBe(200);
+      const rawBody = (await raw.json()) as { tables: ScopeDumpTable[]; masked: boolean; kept: unknown };
+      expect(rawBody.masked).toBe(false);
+      expect(rawBody.kept).not.toBeNull();
+      expect(bodiesIn(rawBody.tables)).toEqual(['carried', 'written after the export']);
+      const masked = await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy/export?script=${v1ref}`, { headers: auth });
+      expect(((await masked.json()) as { masked: boolean }).masked).toBe(true);
+      expect(await pulls()).toBe(before + 2);
       // On the DO: a discard at a revision the copy has moved past is refused, and keeps it.
       const stale = await hostFor('v1').discardKeptCopyLocal(p.scopeId, '0', { to: 'x', at: '2026-10-03T00:00:00.000Z' });
       expect(stale).toEqual({ refused: 'changed' });
@@ -754,6 +767,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried'] });
       const [logged] = await dir.admin.auditLog(staff, { action: 'resolveKeptCopy', scopeId: p.scopeId });
       expect(logged).toMatchObject({ after: { action: 'discard', liveScript: null } });
+      // Discarded: nothing kept to export any more.
+      expect((await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy/export?script=${v1ref}`, { headers: auth })).status).toBe(409);
       expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['carried'] });
     });

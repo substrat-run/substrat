@@ -537,10 +537,19 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       const resolveAs = (headers: Record<string, string>, body: unknown) =>
         app.request(`/tenants/${t}/scopes/${sid}/kept-copy/resolve`, { method: 'POST', headers, body: JSON.stringify(body) });
       const discard = { script: SERVING, action: 'discard', acknowledge: { discard: true } };
+      const exportAs = (headers: Record<string, string>) =>
+        app.request(`/tenants/${t}/scopes/${sid}/kept-copy/export?script=${SERVING}&full=true`, { headers });
       for (const who of [asBuilder, asTenant, asOtherTenant]) {
         expect((await read(who)).status).toBe(403);
         expect((await resolveAs(who, discard)).status).toBe(403);
+        expect((await exportAs(who)).status).toBe(403);
       }
+      expect((await exportAs({})).status).toBe(401);
+      // Staff, where nothing is kept: no dump, and no access-log entry for one.
+      const pulls = async () => (await host.admin.accessLog(staff, { tenantId: t, method: 'exportScope' })).length;
+      const pulled = await pulls();
+      expect((await exportAs(asStaff)).status).toBe(409);
+      expect(await pulls()).toBe(pulled);
       expect((await resolveAs({ 'content-type': 'application/json' }, discard)).status).toBe(401);
       // Staff: a strict body, and nothing to resolve where no copy is kept.
       expect((await resolveAs(asStaff, { ...discard, extra: 1 })).status).toBe(400);
