@@ -1393,6 +1393,9 @@ export function timedDrain<A extends unknown[], R>(
   };
 }
 
+/** What a preview or a fork is told when it asks the email relay to send (#2005). */
+export const PREVIEW_EMAIL_REFUSAL = 'previews and forks cannot send email: this scope is a preview or a fork';
+
 /** What a scope's drain reports when it never reached a queue at all (#1840). */
 export type ScopeDrainReport = PlatformDrainReport & { unreachable?: boolean };
 
@@ -2019,6 +2022,8 @@ export default {
       const host = hostFor(c.env);
       const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
       if (!rec?.vertical) return c.json({ error: 'scope has no vertical bound' }, 404);
+      // #2005: a preview or a fork causes no outbound effects, and mail is one. Nothing is sent.
+      if (!isPrimaryScope(rec)) return c.json({ error: PREVIEW_EMAIL_REFUSAL }, 403);
       const registered = (await host.admin.listVerticals(SWEEP_ACTOR)).find((v) => v.slug === rec.vertical);
       if (!registered?.emailSender) {
         return c.json(

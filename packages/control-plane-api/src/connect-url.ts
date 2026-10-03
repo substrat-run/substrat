@@ -1,4 +1,4 @@
-import { signConnectState, type ScopeHost } from '@substrat-run/kernel';
+import { isPrimaryScope, signConnectState, type ScopeHost } from '@substrat-run/kernel';
 import {
   connectUrlRelayRequest,
   instant,
@@ -7,6 +7,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
+import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 
 /**
  * The connect-url relay (connections.md §3.5.3) — the OAuth half of §3.5.2's credential
@@ -32,7 +33,7 @@ export class ConnectUrlRelayError extends Error {
   constructor(
     message: string,
     /** `503` when the DEPLOYMENT cannot run a round at all, the same distinction #603 drew. */
-    readonly status: 400 | 404 | 503,
+    readonly status: 400 | 403 | 404 | 503,
   ) {
     super(message);
     this.name = 'ConnectUrlRelayError';
@@ -158,6 +159,11 @@ export async function relayConnectUrl(
   const rec = await host.admin.getScopeRecord(actor, input.tenantId, input.scopeId);
   if (!rec?.vertical) {
     throw new ConnectUrlRelayError('scope has no vertical bound', 404);
+  }
+  // #2005: no URL is minted for a preview or a fork — the round would end in a write to the
+  // tenant's connection, which the store refuses for such a scope anyway (connection-relay.ts).
+  if (!isPrimaryScope(rec)) {
+    throw new ConnectUrlRelayError(PREVIEW_CONNECTIONS_REFUSAL, 403);
   }
 
   if (input.returnUrl) {
