@@ -387,16 +387,21 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await post(host, { ...body, expectLoadStamp: undefined })).status).toBe(400);
     expect((await post(host, { ...body, expectLoadStamp: null })).status).toBe(200);
     expect(host.calls.filter((c) => c === 'wipeCarriedLocal')).toHaveLength(2);
-    // The write revision the export read, and the protect flag, ride through to the host.
-    let seen: unknown[] = [];
+    // The write revision the export read, the protect flag and the directory's classification
+    // (#2005, Codex #2008 r10) ride through to the host.
+    let seen: unknown;
     const revising = fakeHost({
-      wipeCarriedLocal: async (_s, _st, _a, revision, protect) => {
-        seen = [revision, protect];
+      wipeCarriedLocal: async (_s, _st, _a, opts) => {
+        seen = opts;
         return true;
       },
     });
-    expect((await post(revising, { ...body, expectRevision: '42', protectIfChanged: true })).status).toBe(200);
-    expect(seen).toEqual(['42', true]);
+    const lineage = { kind: 'preview', forkedFrom: null };
+    expect((await post(revising, { ...body, expectRevision: '42', protectIfChanged: true, markCopy: lineage })).status).toBe(200);
+    expect(seen).toEqual({ expectRevision: '42', protectIfChanged: true, markCopy: lineage });
+    expect((await post(revising, body)).status).toBe(200);
+    expect(seen).toEqual({});
+    expect((await post(revising, { ...body, markCopy: { kind: 'preview' } })).status).toBe(400);
     // Behind the platform gate like every sibling.
     const unsigned = await appWith(host).request('/internal/wipe-carried', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
