@@ -231,7 +231,7 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
           sourceScopeId?: ScopeId;
           exact?: boolean;
           loadStamp?: string;
-          expect?: { loadStamp: string | null; outboxTop: string | null };
+          expect?: { loadStamp: string | null; revision: string | null };
         },
       ) =>
         relay(() =>

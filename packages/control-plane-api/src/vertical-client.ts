@@ -101,6 +101,14 @@ import { ControlPlaneError } from '@substrat-run/control-plane-client';
 /** `fencedAnswer`'s word for a deployment that predates the route it was asked (#1722). */
 const UNFENCED = Symbol('unfenced');
 
+/** The SPA fallback's answer to a path the deployment does not know: an HTML document, served as one. */
+function isHtmlShell(res: Response, text: string): boolean {
+  return (
+    (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html') &&
+    /^\uFEFF?\s*(<!doctype\s+html|<html[\s>])/i.test(text)
+  );
+}
+
 /**
  * The query string for both internal denial reads. The filter's own fields come from
  * the ONE encoder in contracts (#971) — this branch answers the same two routes as
@@ -1080,7 +1088,7 @@ export class VerticalClient {
 
   /**
    * What a carry's restore into this scope expects to find unchanged (#1722): the load stamp and
-   * the outbox's highest event id. `'unfenced'` on `wipeCarriedCopy`'s terms: only the
+   * the store's write revision. `'unfenced'` on `wipeCarriedCopy`'s terms: only the
    * deployment's own answer that it predates the route; everything else is a failure.
    */
   async loadMarker(scopeId: ScopeId): Promise<LoadMarker | 'unfenced'> {
@@ -1092,20 +1100,22 @@ export class VerticalClient {
       }),
     );
     if (answer === UNFENCED) return 'unfenced';
-    const { loadStamp, outboxTop } = (answer ?? {}) as { loadStamp?: unknown; outboxTop?: unknown };
+    const { loadStamp, revision } = (answer ?? {}) as { loadStamp?: unknown; revision?: unknown };
     const field = (v: unknown) => v === null || (typeof v === 'string' && v.length > 0);
-    if (!field(loadStamp) || !field(outboxTop)) {
+    if (!field(loadStamp) || !field(revision)) {
       throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${scopeId} with an unexpected shape`);
     }
-    return { loadStamp: loadStamp as string | null, outboxTop: outboxTop as string | null };
+    return { loadStamp: loadStamp as string | null, revision: revision as string | null };
   }
 
   /**
    * #1722: the answer to a route a deployment built before #1722 does not have. Only an answer
-   * the deployment actually gave counts as that: a 404, a 501, or a body received whole that is
-   * not JSON (an SPA shell). A transport failure, a refusal, and a body that fails to READ are
-   * failures, never `UNFENCED`, because the request may have landed: a fenced wipe that committed
-   * and then lost its answer must not be followed by the unconditional fallback.
+   * the deployment actually gave, and that says so, counts as that: a 404, a 501, or the HTML
+   * shell an SPA fallback serves for a path it does not know (`text/html`, a body that opens as an
+   * HTML document). Everything else is a failure, never `UNFENCED`, because the request may have
+   * landed: a transport failure, a refusal, a body that fails to read, and a body that is not
+   * valid JSON (a truncated `{"wiped":` from a deployment that DID act). A fenced wipe that
+   * committed and then lost its answer must not be followed by the unconditional fallback.
    */
   private async fencedAnswer(verb: string, request: () => Promise<Response>): Promise<unknown> {
     const res = await this.reach(verb, request);
@@ -1123,7 +1133,11 @@ export class VerticalClient {
     try {
       return JSON.parse(text) as unknown;
     } catch {
-      return UNFENCED;
+      if (isHtmlShell(res, text)) return UNFENCED;
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with a body that is neither JSON nor its HTML shell — it may or may not have acted`,
+      );
     }
   }
 

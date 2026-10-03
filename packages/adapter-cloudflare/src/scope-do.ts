@@ -286,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { LOAD_STAMP_KEY, carriedAwayDump, type CarriedAway, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isWriteStatement, type CarriedAway, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -730,6 +730,35 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
   write(event);
 }
 
+/**
+ * The scope DO's SQL handle with the write revision attached (#1722, Codex #2008 r2): every
+ * statement that can change the store (`isWriteStatement`) advances `WRITE_REVISION_KEY` right
+ * after it, on the same connection and so in the same transaction. A carry's conditional restore
+ * compares that revision, so an UPDATE in place (a drain receipt, a redrain) moves it as surely
+ * as an emitted event. One wrapper at the one place the handle is taken, so a writer added later
+ * cannot forget it. `suspended` is the wake's idempotent DDL and a load's drop-and-replay.
+ */
+function revisionCounting(sql: SqlStorage, suspended: () => boolean): SqlStorage {
+  const exec = (query: string, ...bindings: unknown[]) => {
+    const cursor = sql.exec(query, ...bindings);
+    if (!suspended() && isWriteStatement(query)) {
+      sql.exec(
+        `INSERT INTO _substrat_meta (key, value) VALUES (?, '1')
+         ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`,
+        WRITE_REVISION_KEY,
+      );
+    }
+    return cursor;
+  };
+  return new Proxy(sql, {
+    get(target, prop) {
+      if (prop === 'exec') return exec;
+      const value = Reflect.get(target, prop, target) as unknown;
+      return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
+
 function toRpcError(err: unknown): Error {
   if (err instanceof Error) {
     return err.constructor === Error ? err : new Error(err.message);
@@ -968,6 +997,12 @@ export function defineScopeDO(
      * `runInDurableObject` — rather than assuming the runtime's documented behaviour.
      */
     private webSocketMessagesHandled = 0;
+    /**
+     * #1722: while true, a write does not advance the write revision. True through the wake's
+     * own idempotent DDL (which every wake re-runs, and which changes nothing) and through a
+     * load's drop-and-replay, which sets the revision itself once the store is rebuilt.
+     */
+    private revisionSuspended = true;
 
     constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
       super(ctx, env);
@@ -976,11 +1011,15 @@ export function defineScopeDO(
       // subscriber's ping still reaches `webSocketMessage` and pins the DO in memory —
       // exactly the hibernation cost `acceptWebSocket` (below) exists to avoid.
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
-      this.sql = ctx.storage.sql;
+      // #1722: the ONE handle this object writes through, so every write advances the write
+      // revision a carry's restore is fenced on. Nothing else here may take the raw handle
+      // (`carried-copy.test.ts` in the kernel holds that).
+      this.sql = revisionCounting(ctx.storage.sql, () => this.revisionSuspended);
       for (const stmt of splitSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
       }
       this.applySpineColumnAdditions();
+      this.revisionSuspended = false;
 
       for (const registration of modules) this.registerModule(registration);
       for (const [name, handler] of Object.entries(bareOps)) this.defineOperation(name, handler);
@@ -4196,8 +4235,15 @@ export function defineScopeDO(
                 // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
                 // spine guard's REFERENCES rule is applied here.
                 assertNoSpineReference(migration.sql, `migration ${key}`);
-                for (const stmt of splitSqlStatements(migration.sql)) {
-                  this.sql.exec(stmt);
+                // #1722: not counted per statement, so `total_changes()` measures the migration
+                // alone. The journal row below is a write, and advances the revision once.
+                this.revisionSuspended = true;
+                try {
+                  for (const stmt of splitSqlStatements(migration.sql)) {
+                    this.sql.exec(stmt);
+                  }
+                } finally {
+                  this.revisionSuspended = false;
                 }
                 const after = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
                 this.sql.exec(
@@ -4725,11 +4771,14 @@ export function defineScopeDO(
       return defs.map(({ name, sql }) => {
         // Raw positional rows, cells as-is (blobs kept as bytes, not nulled like a UI
         // read) so the dump reloads faithfully. The name is from the live schema.
-        // #1722: the load stamp names THIS store's last load, so it never leaves in a dump
-        // (`exportDumpStamped` hands it over beside one); every load writes its own.
+        // #1722: the load stamp and the write revision describe THIS store, so they never leave
+        // in a dump (`exportDumpStamped` hands the stamp over beside one); every load writes its own.
         const cursor =
           name === '_substrat_meta'
-            ? this.sql.exec(`SELECT * FROM "${name}" WHERE key <> ?`, LOAD_STAMP_KEY)
+            ? this.sql.exec(
+                `SELECT * FROM "${name}" WHERE key NOT IN (${STORE_LOCAL_META_KEYS.map(() => '?').join(', ')})`,
+                ...STORE_LOCAL_META_KEYS,
+              )
             : this.sql.exec(`SELECT * FROM "${name}"`);
         const columns = cursor.columnNames;
         const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
@@ -4903,10 +4952,10 @@ export function defineScopeDO(
          *  it lands can later be wiped under a fence. Without one, a load leaves no stamp. */
         loadStamp?: string;
         /** #1722: load only if this store still holds this load stamp (null: none) and, when
-         *  `outboxTop` is given, this highest event id (null: no events). Compared inside the
+         *  `revision` is given, this write revision (null: never written). Compared inside the
          *  load's transaction, before the first drop; a mismatch throws `precondition_failed`
          *  and the store is untouched. */
-        expect?: { loadStamp: string | null; outboxTop?: string | null };
+        expect?: { loadStamp: string | null; revision?: string | null };
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -4948,82 +4997,94 @@ export function defineScopeDO(
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
       }
       const switched = await this.ctx.storage.transaction(async () => {
+        const before = this.loadMarker();
         if (expect) {
-          const now = this.loadMarker();
-          if (now.loadStamp !== expect.loadStamp || (expect.outboxTop !== undefined && now.outboxTop !== expect.outboxTop)) {
+          if (before.loadStamp !== expect.loadStamp || (expect.revision !== undefined && before.revision !== expect.revision)) {
             throw substratError('precondition_failed', 'scope store changed since it was read; nothing was loaded');
           }
         }
-        this.sql.exec('PRAGMA defer_foreign_keys = ON');
-        // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
-        const existing = this.sql
-          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
-          .toArray() as unknown as { name: string }[];
-        // Search index tables are left alone here and rebuilt below (#827): dropping a
-        // shadow table directly is an error, and `sqlite_master` order would reach one
-        // before its virtual table.
-        for (const { name } of existing) {
-          if (isSearchIndexTable(name.toLowerCase())) continue;
-          this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+        // #1722: the drops take `_substrat_meta` with them; the revision is written back below.
+        this.revisionSuspended = true;
+        try {
+          this.sql.exec('PRAGMA defer_foreign_keys = ON');
+          // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
+          const existing = this.sql
+            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
+            .toArray() as unknown as { name: string }[];
+          // Search index tables are left alone here and rebuilt below (#827): dropping a
+          // shadow table directly is an error, and `sqlite_master` order would reach one
+          // before its virtual table.
+          for (const { name } of existing) {
+            if (isSearchIndexTable(name.toLowerCase())) continue;
+            this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+          }
+          // A vertical's tables take the dump's own DDL. The spine never does (#1883): a dump
+          // that declared a column the checker compares on as COLLATE NOCASE would otherwise
+          // decide how this DO's permission checks match. Every `_substrat_*` table is built
+          // from KERNEL_DDL instead, and the dump contributes only rows, by column name
+          // (`spineRowsInsert`), a missing column taking the kernel's default.
+          for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(t.ddl);
+          // KERNEL_DDL also builds what the dump did not carry (#321). A dump captured from a
+          // WORLD that stores some `_substrat_*` tables ELSEWHERE carries only a subset — an
+          // `@substrat-run/adapter-sqlite` scope file keeps `_substrat_roles` /
+          // `_substrat_tenant_tuples` in its DIRECTORY database, so its per-scope dump omits
+          // them, and without them the very next permission check would raise a bare `no such
+          // table: _substrat_roles`. Roles land empty here and are re-projected by the
+          // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
+          // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
+          // leaves to it.
+          for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+          this.applySpineColumnAdditions();
+          const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
+          assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
+          // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
+          // untyped column the checker never reads.
+          for (const t of replayable) {
+            if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
+          }
+          for (const t of replayable) {
+            const insert = dumpRowsInsert(t, columnsOf);
+            for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
+          }
+          // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
+          // not this one. Dropped, so a restore never carries a receipt over; the repair
+          // projection that follows writes this scope's own.
+          this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+          // #1722: whatever stamp an export read here no longer describes this store, so every load
+          // replaces it: with the carry's own, or with none. And the write revision moves on from
+          // where it stood before the drops, so it never goes back.
+          if (loadStamp) {
+            this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
+          } else {
+            this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, LOAD_STAMP_KEY);
+          }
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`,
+            WRITE_REVISION_KEY,
+            String(Number(before.revision ?? 0) + 1),
+          );
+          // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
+          // text of attachments the dump did not bring back, and queue extraction for those
+          // it brought back without text — the bytes decide what that run finds.
+          const now = new Date().toISOString();
+          // #1686: nothing the source queued runs in a copy; a return leaves it all queued. BEFORE
+          // the extraction queue below, which is this scope's own work, not the source's.
+          settleCopiedWork(this.switchSql(), destScopeId, sourceScopeId, now);
+          reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
+          // Re-point the restored grants at THIS scope (after the spine exists, so a dump
+          // that carried no tuples table still finds one here).
+          if (destScopeId) {
+            this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact }, new Date().toISOString());
+          }
+          // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
+          // the spine and the re-point. A switch that throws rolls the whole restore back, so
+          // the dump's grants never commit live without the switch that should cover them.
+          return destScopeId && switchOff
+            ? switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff })
+            : [];
+        } finally {
+          this.revisionSuspended = false;
         }
-        // A vertical's tables take the dump's own DDL. The spine never does (#1883): a dump
-        // that declared a column the checker compares on as COLLATE NOCASE would otherwise
-        // decide how this DO's permission checks match. Every `_substrat_*` table is built
-        // from KERNEL_DDL instead, and the dump contributes only rows, by column name
-        // (`spineRowsInsert`), a missing column taking the kernel's default.
-        for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(t.ddl);
-        // KERNEL_DDL also builds what the dump did not carry (#321). A dump captured from a
-        // WORLD that stores some `_substrat_*` tables ELSEWHERE carries only a subset — an
-        // `@substrat-run/adapter-sqlite` scope file keeps `_substrat_roles` /
-        // `_substrat_tenant_tuples` in its DIRECTORY database, so its per-scope dump omits
-        // them, and without them the very next permission check would raise a bare `no such
-        // table: _substrat_roles`. Roles land empty here and are re-projected by the
-        // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
-        // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
-        // leaves to it.
-        for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
-        this.applySpineColumnAdditions();
-        const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
-        assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
-        // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
-        // untyped column the checker never reads.
-        for (const t of replayable) {
-          if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
-        }
-        for (const t of replayable) {
-          const insert = dumpRowsInsert(t, columnsOf);
-          for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
-        }
-        // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
-        // not this one. Dropped, so a restore never carries a receipt over; the repair
-        // projection that follows writes this scope's own.
-        this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
-        // #1722: whatever stamp an export read here no longer describes this store, so every load
-        // replaces it: with the carry's own, or with none.
-        if (loadStamp) {
-          this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
-        } else {
-          this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, LOAD_STAMP_KEY);
-        }
-        // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
-        // text of attachments the dump did not bring back, and queue extraction for those
-        // it brought back without text — the bytes decide what that run finds.
-        const now = new Date().toISOString();
-        // #1686: nothing the source queued runs in a copy; a return leaves it all queued. BEFORE
-        // the extraction queue below, which is this scope's own work, not the source's.
-        settleCopiedWork(this.switchSql(), destScopeId, sourceScopeId, now);
-        reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
-        // Re-point the restored grants at THIS scope (after the spine exists, so a dump
-        // that carried no tuples table still finds one here).
-        if (destScopeId) {
-          this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact }, new Date().toISOString());
-        }
-        // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
-        // the spine and the re-point. A switch that throws rolls the whole restore back, so
-        // the dump's grants never commit live without the switch that should cover them.
-        return destScopeId && switchOff
-          ? switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff })
-          : [];
       });
       // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
       // create, so it also repairs an index a dump left stale, and the triggers it
@@ -5105,15 +5166,18 @@ export function defineScopeDO(
 
     /** What a carry's restore into this store expects to find unchanged (#1722): see `LoadMarker`. */
     loadMarker(): LoadMarker {
-      const top = this.sql.exec('SELECT MAX(id) AS id FROM _substrat_outbox').toArray()[0] as { id: string | null } | undefined;
-      return { loadStamp: this.loadStamp(), outboxTop: top?.id ?? null };
+      return { loadStamp: this.metaValue(LOAD_STAMP_KEY), revision: this.metaValue(WRITE_REVISION_KEY) };
     }
 
     /** This store's load stamp (#1722), or null when no load has written one. */
     private loadStamp(): string | null {
-      const row = this.sql
-        .exec(`SELECT value FROM _substrat_meta WHERE key = ?`, LOAD_STAMP_KEY)
-        .toArray()[0] as { value: string } | undefined;
+      return this.metaValue(LOAD_STAMP_KEY);
+    }
+
+    private metaValue(key: string): string | null {
+      const row = this.sql.exec(`SELECT value FROM _substrat_meta WHERE key = ?`, key).toArray()[0] as
+        | { value: string }
+        | undefined;
       return row?.value ?? null;
     }
 

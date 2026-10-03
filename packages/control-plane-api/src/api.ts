@@ -2815,7 +2815,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * lands, so neither check can pass on an export from a copy that is about to go.
    *
    * The restore is conditional too. Before the check above, the carry reads the destination's
-   * `LoadMarker` (load stamp and outbox top), and the restore is refused inside its own
+   * `LoadMarker` (load stamp and write revision), and the restore is refused inside its own
    * transaction if the store moved since. So a carry held before its restore cannot overwrite
    * a store that another carry into the same script has loaded, or that went live under that
    * carry's bind and took a write: a CI retry of the same version. A deployment built before

@@ -83,7 +83,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         _t: unknown,
         sid: ScopeId,
         tables: ScopeDumpTable[],
-        opts?: { loadStamp?: string; expect?: { loadStamp: string | null; outboxTop: string | null } },
+        opts?: { loadStamp?: string; expect?: { loadStamp: string | null; revision: string | null } },
       ) =>
         relay(async () => {
           await hooks.restore?.(ref, sid, tables);
@@ -437,10 +437,44 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       unfenced.clear();
     });
     /** A write on `v`'s copy, as a module operation leaves one: a note row and its outbox event. */
-    const writeOn = async (v: keyof typeof version, sid: ScopeId, id: string, body: string) => {
+    const writeOn = async (v: keyof typeof version, sid: ScopeId, id: string, body: string): Promise<string> => {
       const ns = { v1: env.PC_V1_SCOPE, v2: env.PC_V2_SCOPE, v3: env.PC_V3_SCOPE }[v];
-      const stub = ns.get(ns.idFromName(sid)) as unknown as { testWrite(s: string, i: string, b: string): Promise<void> };
-      await stub.testWrite(sid, id, body);
+      const stub = ns.get(ns.idFromName(sid)) as unknown as { testWrite(s: string, i: string, b: string): Promise<string> };
+      return stub.testWrite(sid, id, body);
+    };
+    /** The `drained_at` of one event in `v`'s copy of a scope. */
+    const drainedAt = async (v: keyof typeof version, sid: ScopeId, eventId: string): Promise<unknown> => {
+      const outbox = (await hostFor(v).exportScopeLocal(sid)).find((tb) => tb.name === '_substrat_outbox')!;
+      const row = outbox.rows.find((r) => r[outbox.columns.indexOf('id')] === eventId);
+      return row?.[outbox.columns.indexOf('drained_at')];
+    };
+    /**
+     * Two pushes of the same version: the winner has restored v2 and is held before binding; the
+     * loser exports, reads v2's marker (the winner's), finds the binding unchanged, and is held
+     * before its restore. Then the winner binds, `afterBind` changes the live v2, and the loser is
+     * released. Answers the loser's response.
+     */
+    const loserPastWinnersRestore = async (tag: string, afterBind: () => Promise<void>) => {
+      const winnerRestored = deferred();
+      const winnerGo = deferred();
+      let winnerLanded = false;
+      hooks.restored = async (ref, sid, tables) => {
+        if (winnerLanded || ref !== refOf.get(version.v2) || dumpMetaValue(tables ?? [], CARRIED_AWAY_KEY) !== null) return;
+        winnerLanded = true;
+        winnerRestored.resolve();
+        await winnerGo.promise;
+      };
+      const loserHeld = holdFirst((ref) => winnerLanded && ref === refOf.get(version.v2));
+      hooks.restore = loserHeld.hook;
+      const winner = push(tag, 'v2');
+      await winnerRestored.promise;
+      const loser = push(tag, 'v2');
+      await loserHeld.reached;
+      winnerGo.resolve();
+      expect((await winner).status).toBe(200);
+      await afterBind();
+      loserHeld.release();
+      return loser;
     };
 
     it('a retried push held before its restore cannot overwrite the live store the first run bound and wrote to', async () => {
@@ -475,29 +509,35 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
 
     it('nor can one that read the marker after the winner restored: the write after the bind moves it', async () => {
       const p = await fresh('live-write', 'write data');
-      // The winner's restore has landed and it is held before binding; the loser reads the marker
-      // now (the winner's stamp), finds the binding unchanged, and is held before its restore.
-      const winnerRestored = deferred();
-      const winnerGo = deferred();
-      let winnerLanded = false;
-      hooks.restored = async (ref, sid) => {
-        if (winnerLanded || ref !== refOf.get(version.v2) || sid !== p.scopeId) return;
-        winnerLanded = true;
-        winnerRestored.resolve();
-        await winnerGo.promise;
-      };
-      const loserHeld = holdFirst((ref, sid) => winnerLanded && ref === refOf.get(version.v2) && sid === p.scopeId);
-      hooks.restore = loserHeld.hook;
-      const winner = push('live-write', 'v2');
-      await winnerRestored.promise;
-      const loser = push('live-write', 'v2');
-      await loserHeld.reached;
-      winnerGo.resolve();
-      expect((await winner).status).toBe(200);
-      await writeOn('v2', p.scopeId, 'n-live', 'written after the bind');
-      loserHeld.release();
-      expect((await loser).status).toBe(412);
+      const loser = await loserPastWinnersRestore('live-write', async () => {
+        await writeOn('v2', p.scopeId, 'n-live', 'written after the bind');
+      });
+      expect(loser.status).toBe(412);
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['write data', 'written after the bind'] });
+    });
+
+    // Codex #2008 r2: a drain receipt is an UPDATE in place. It appends no event, and the fence
+    // still has to see it, or the loser's older dump clears the receipt and the event ships twice.
+    it("a drain receipt on the live store after the bind refuses the loser's restore, and the receipt stands", async () => {
+      const p = await fresh('live-drain', 'drain data');
+      const event = await writeOn('v1', p.scopeId, 'n-ev', 'an event to drain');
+      const at = '2026-10-03T12:00:00.000Z';
+      const loser = await loserPastWinnersRestore('live-drain', async () => {
+        expect(await hostFor('v2').markEventsDrainedLocal(p.scopeId, [event], at)).toBe(1);
+      });
+      expect(loser.status).toBe(412);
+      expect(await drainedAt('v2', p.scopeId, event)).toBe(at);
+    });
+
+    it("so does a redrain on the live store: the reopened event stays reopened", async () => {
+      const p = await fresh('live-redrain', 'redrain data');
+      const event = await writeOn('v1', p.scopeId, 'n-ev', 'an event drained before the push');
+      await hostFor('v1').markEventsDrainedLocal(p.scopeId, [event], '2026-10-01T00:00:00.000Z');
+      const loser = await loserPastWinnersRestore('live-redrain', async () => {
+        expect(await hostFor('v2').redrainEventsLocal(p.scopeId, '2026-10-02T00:00:00.000Z')).toBe(1);
+      });
+      expect(loser.status).toBe(412);
+      expect(await drainedAt('v2', p.scopeId, event)).toBeNull();
     });
 
     it('on a script that cannot fence the restore, the binding read just before it refuses one the winner made live', async () => {

@@ -449,7 +449,7 @@ const restoreBody = z.object({
   /** #1722: the stamp a carry leaves on the copy it lands, so a later wipe of it can be fenced. */
   loadStamp: z.string().min(1).optional(),
   /** #1722: the marker the carry read from this store; the load is refused if the store moved since. */
-  expect: z.object({ loadStamp: z.string().min(1).nullable(), outboxTop: z.string().min(1).nullable() }).optional(),
+  expect: z.object({ loadStamp: z.string().min(1).nullable(), revision: z.string().min(1).nullable() }).optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -763,13 +763,8 @@ export function mountPlatformSurface<Env extends object>(
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });
 
-  // #1722: wipe the copy a carry left here, after the scope's route moved to another script.
-  // Conditional on the load stamp the carry read, compared inside the wipe's own transaction,
-  // so a rollback that restored into this scope since is never destroyed. `wiped: false` is
-  // that refusal. Non-terminal: the store keeps a `carried_away` tombstone and takes a later
-  // restore like any scope, which `/internal/delete-scope` (a reap) would not.
   // #1722: what a carry's restore into this scope expects to find unchanged (the load stamp and
-  // the outbox's highest event id). Read before the carry checks the binding again; the restore
+  // the store's write revision). Read before the carry checks the binding again; the restore
   // then sends it back as `expect`, so a store the winning carry loaded, or that took a write
   // since it went live, is never overwritten. Metadata only: no scope bytes cross.
   app.get('/internal/load-marker', async (c) => {
@@ -780,6 +775,11 @@ export function mountPlatformSurface<Env extends object>(
     return c.json(await host.loadMarkerLocal(scopeIdOf.parse(c.req.query('scopeId'))));
   });
 
+  // #1722: wipe the copy a carry left here, after the scope's route moved to another script.
+  // Conditional on the load stamp the carry read, compared inside the wipe's own transaction,
+  // so a rollback that restored into this scope since is never destroyed. `wiped: false` is
+  // that refusal. Non-terminal: the store keeps a `carried_away` tombstone and takes a later
+  // restore like any scope, which `/internal/delete-scope` (a reap) would not.
   app.post('/internal/wipe-carried', async (c) => {
     const body = wipeCarriedBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);

@@ -55,14 +55,18 @@ function onDirectory(Base: ScopeDOClass, directory: string): ScopeDOClass {
  */
 function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
   return class extends Base {
-    testWrite(scopeId: string, id: string, body: string): void {
-      const sql = this.ctx.storage.sql;
+    /** Answers the event's id. */
+    testWrite(scopeId: string, id: string, body: string): string {
+      // Through the object's own handle, as a module operation writes: the one that counts writes.
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      const eventId = ulid();
       sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, body);
       sql.exec(
         `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor, entity_type, entity_id, pii_class)
          VALUES (?, 'pv.noted', 1, ?, 'tenant', ?, 'actor', 'note', ?, 'none')`,
-        ulid(), new Date().toISOString(), scopeId, id,
+        eventId, new Date().toISOString(), scopeId, id,
       );
+      return eventId;
     }
   };
 }

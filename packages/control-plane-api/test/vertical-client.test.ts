@@ -667,7 +667,7 @@ describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
     ['a host without the method (501)', () => Response.json({ error: 'redeploy it' }, { status: 501 })],
-    ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ['the HTML shell an SPA fallback serves', () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })],
   ])('%s is unfenced', async (_name, res) => {
     await expect(answering(res).wipeCarriedCopy(input)).resolves.toBe('unfenced');
   });
@@ -682,6 +682,19 @@ describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
     expect(err).toBeInstanceOf(ControlPlaneError);
     expect(err.status).toBe(502);
     expect(err.message).toMatch(/reading the vertical's answer to wipe-carried failed.*stream reset.*may or may not have acted/);
+  });
+
+  // Codex #2008 r2: only the shell an old deployment serves is skew. A truncated answer from a
+  // deployment that has the route may follow a wipe that committed, so it is a failure.
+  it.each([
+    ['truncated JSON', () => new Response('{"wiped":', { status: 200, headers: { 'content-type': 'application/json' } })],
+    ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+    ['text/html that is not a document', () => new Response('oops', { status: 200, headers: { 'content-type': 'text/html' } })],
+  ])('%s is a failure, never unfenced', async (_name, res) => {
+    const err = (await answering(res).wipeCarriedCopy(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/neither JSON nor its HTML shell/);
   });
 
   it('a transport failure, a 5xx and a wrong shape are failures, never unfenced', async () => {
@@ -710,13 +723,13 @@ describe('VerticalClient.loadMarker (#1722)', () => {
 
   it('reads the marker, nulls included', async () => {
     const urls: string[] = [];
-    await expect(client(() => Response.json({ loadStamp: 'st', outboxTop: 'ev' }), urls).loadMarker(s)).resolves.toEqual({
+    await expect(client(() => Response.json({ loadStamp: 'st', revision: 'ev' }), urls).loadMarker(s)).resolves.toEqual({
       loadStamp: 'st',
-      outboxTop: 'ev',
+      revision: 'ev',
     });
-    await expect(client(() => Response.json({ loadStamp: null, outboxTop: null })).loadMarker(s)).resolves.toEqual({
+    await expect(client(() => Response.json({ loadStamp: null, revision: null })).loadMarker(s)).resolves.toEqual({
       loadStamp: null,
-      outboxTop: null,
+      revision: null,
     });
     expect(new URL(urls[0]!).pathname).toBe('/internal/load-marker');
     expect(new URL(urls[0]!).searchParams.get('scopeId')).toBe(s);
@@ -725,7 +738,7 @@ describe('VerticalClient.loadMarker (#1722)', () => {
   it.each([
     ['a 404', () => new Response('404 Not Found', { status: 404 })],
     ['a 501', () => Response.json({ error: 'redeploy it' }, { status: 501 })],
-    ['an SPA shell', () => new Response('<!doctype html>', { status: 200 })],
+    ['the HTML shell', () => new Response('<!DOCTYPE html>\n<html>', { status: 200, headers: { 'content-type': 'text/html' } })],
   ])('%s is unfenced', async (_n, res) => {
     await expect(client(res).loadMarker(s)).resolves.toBe('unfenced');
   });
@@ -735,7 +748,9 @@ describe('VerticalClient.loadMarker (#1722)', () => {
     const broken = () => new Response(new ReadableStream({ start: (c) => c.error(new Error('reset')) }), { status: 200 });
     expect((await failure(broken))?.status).toBe(502);
     expect((await failure(() => Response.json({ error: 'x' }, { status: 500 })))?.status).toBe(500);
-    expect((await failure(() => Response.json({ loadStamp: 7, outboxTop: null })))?.status).toBe(502);
+    expect((await failure(() => Response.json({ loadStamp: 7, revision: null })))?.status).toBe(502);
+    // Codex #2008 r2: a truncated marker would otherwise drop the fence from the restore.
+    expect((await failure(() => new Response('{"loadStamp":', { status: 200 })))?.status).toBe(502);
   });
 });
 
@@ -748,10 +763,10 @@ it('restoreScope sends the stamp a carry leaves on its copy, and none when not g
     }) as unknown as typeof fetch,
     platformSecret: 'secret',
   });
-  await client.restoreScope(t, s, [], { loadStamp: 'stamp-9', expect: { loadStamp: null, outboxTop: 'ev' } });
+  await client.restoreScope(t, s, [], { loadStamp: 'stamp-9', expect: { loadStamp: null, revision: 'ev' } });
   await client.restoreScope(t, s, []);
   expect(bodies).toEqual([
-    { tenantId: t, scopeId: s, tables: [], loadStamp: 'stamp-9', expect: { loadStamp: null, outboxTop: 'ev' } },
+    { tenantId: t, scopeId: s, tables: [], loadStamp: 'stamp-9', expect: { loadStamp: null, revision: 'ev' } },
     { tenantId: t, scopeId: s, tables: [] },
   ]);
 });

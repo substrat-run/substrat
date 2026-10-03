@@ -24,17 +24,49 @@ import type { ScopeDumpTable } from '@substrat-run/contracts';
  *   wipe on every script, old ones included, because it arrives as a row of the dump.
  */
 export const LOAD_STAMP_KEY = 'load_stamp';
+/**
+ * The store's write revision (#1722, Codex #2008 r2): a counter every statement that writes
+ * the store advances, in the same transaction, so "nothing changed here since" covers every
+ * mutation and not only the ones that append an event (a drain receipt is an UPDATE in place).
+ * A load carries it forward and advances it too, so it never goes back. Like the load stamp it
+ * describes this store and never leaves in a dump.
+ */
+export const WRITE_REVISION_KEY = 'write_revision';
+/** The `_substrat_meta` keys that describe the store rather than the scope's data: never dumped. */
+export const STORE_LOCAL_META_KEYS: readonly string[] = [LOAD_STAMP_KEY, WRITE_REVISION_KEY];
 export const CARRIED_AWAY_KEY = 'carried_away';
 
 /**
  * What a carry expects to find unchanged in the store it is about to restore into (#1722): the
- * load stamp (any load since moves it) and the outbox's highest event id (any write since moves
- * it, since every mutation emits). A store the winning carry has loaded, or that has taken a
- * write since it went live, no longer matches, and the restore is refused before its first drop.
+ * load stamp and the write revision, which every load and every write advances. A store the
+ * winning carry has loaded, or that has changed in any way since it went live, no longer
+ * matches, and the restore is refused before its first drop.
  */
 export interface LoadMarker {
   loadStamp: string | null;
-  outboxTop: string | null;
+  revision: string | null;
+}
+
+
+/**
+ * Whether one SQL string can change the store (#1722): what advances the write revision. Reads
+ * are `SELECT`, `EXPLAIN`, `PRAGMA` (a setting, not data) and a `WITH` that names no write verb.
+ * Anything else counts, so an unknown statement over-counts rather than slipping past the fence.
+ * A string carrying several statements counts if any of them is a write.
+ */
+export function isWriteStatement(sql: string): boolean {
+  for (const raw of sql.split(';')) {
+    const stmt = raw.replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
+    if (!stmt) continue;
+    const verb = /^[A-Za-z]+/.exec(stmt)?.[0]?.toUpperCase();
+    if (verb === 'SELECT' || verb === 'EXPLAIN' || verb === 'PRAGMA') continue;
+    if (verb === 'WITH') {
+      if (/\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(stmt)) return true;
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 /** Where a carried copy went, and when — the tombstone's value, as JSON. */
