@@ -8,6 +8,7 @@ import {
   schedulesCardState,
   scheduleBadgeStatus,
   submitSwitch,
+  unknownSwitchToast,
   validReason,
 } from '../lib/schedules';
 import { ActorCell } from './ActorCell';
@@ -101,14 +102,7 @@ export function SchedulesCard({
         // position at all when that read failed too.
         setEntries(attempt.entries);
         setError(attempt.entries === null ? attempt.readError : null);
-        onToast(
-          'Not confirmed — the switch may or may not have moved',
-          `${moduleId} on ${scope.slug} · ${errorMessage(attempt.error)} · ` +
-            (attempt.entries === null
-              ? 'Its position could not be re-read either; read it before trying again.'
-              : 'The card now shows its position, read just now; check it before trying again.'),
-          'danger',
-        );
+        onToast(...unknownSwitchToast(moduleId, scope.slug, attempt), 'danger');
         setDialog(null);
         setReason('');
         return;

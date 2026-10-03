@@ -1,4 +1,5 @@
 import type { SystemGrantsStatusEntry } from '@substrat-run/contracts';
+import { provesNothingChanged } from '@substrat-run/control-plane-api/browser';
 import { ApiError } from './api';
 import { runExclusive } from './exclusive';
 
@@ -79,22 +80,12 @@ export function errorMessage(error: unknown): string {
 }
 
 /**
- * Whether a failed switch call proves nothing moved (#2010): the control plane or the
- * deployment refused it (a 4xx), or the deployment predates the route (501). Anything else —
- * a 502 that lost the deployment's answer, another 5xx, the console's own request lost in
- * transit — may follow a switch that moved, so its position is unknown.
- */
-export function nothingMoved(error: unknown): boolean {
-  return error instanceof ApiError && ((error.status >= 400 && error.status < 500) || error.status === 501);
-}
-
-/**
  * The two-step shape one switch confirm is (Copilot review, #1707): the write, and the
  * re-read that confirms it — kept SEPARATE, because the two can fail independently and
  * an operator must never read one failure as the other.
  *
  * - `refused`: the switch itself failed in a way that proves nothing moved
- *   (`nothingMoved`). This is the only branch that should ever read as "Refused" — the
+ *   (`provesNothingChanged`: a 4xx, or a 501 from a deployment that predates the route). This is the only branch that should ever read as "Refused" — the
  *   naive single `try/catch` this replaces caught BOTH steps together, so a switch that
  *   succeeded but whose follow-up read failed also said "Refused", with the card left
  *   showing the stale (now wrong) position. An operator reading that would retry a switch
@@ -124,7 +115,7 @@ export async function performSwitch<T, E>(
   try {
     result = await runSwitch();
   } catch (error) {
-    if (nothingMoved(error)) return { kind: 'refused', error };
+    if (provesNothingChanged(error)) return { kind: 'refused', error };
     try {
       return { kind: 'unknown', error, entries: await refresh() };
     } catch (readError) {
@@ -137,4 +128,22 @@ export async function performSwitch<T, E>(
   } catch (error) {
     return { kind: 'unconfirmed', result, error };
   }
+}
+
+/**
+ * The toast for an `unknown` switch (#2010), one wording for every switch card: never
+ * "Refused", which would send an operator to retry a switch that may have moved.
+ */
+export function unknownSwitchToast<E>(
+  subject: string,
+  slug: string,
+  attempt: Extract<SwitchAttempt<unknown, E>, { kind: 'unknown' }>,
+): [title: string, body: string] {
+  return [
+    'Not confirmed — the switch may or may not have moved',
+    `${subject} on ${slug} · ${errorMessage(attempt.error)} · ` +
+      (attempt.entries === null
+        ? 'Its position could not be re-read either; read it before trying again.'
+        : 'The card now shows its position, read just now; check it before trying again.'),
+  ];
 }

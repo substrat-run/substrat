@@ -722,23 +722,21 @@ export class VerticalClient {
       `the switch on scope ${input.scopeId} may or may not have moved. ` +
       `Confirm its position (read the scope's schedule status) before retrying.`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
+    const rule = {
+      legacy501: false,
+      lost,
+      predates:
+        `the deployment serving scope ${input.scopeId} predates the schedule switch (#1666) — ` +
+        `redeploy the vertical, then retry. Nothing was switched.`,
+      shape: `vertical answered ${verb} with an unexpected shape — ${lost}`,
+    };
+    return this.parsedAnswer(verb, rule, systemSwitchOutcome, () =>
       this.options.fetch(`${base}/internal/system-switch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(input),
       }),
     );
-    if (answer === PREDATES) {
-      throw new ControlPlaneError(
-        501,
-        `the deployment serving scope ${input.scopeId} predates the schedule switch (#1666) — ` +
-          `redeploy the vertical, then retry. Nothing was switched.`,
-      );
-    }
-    const parsed = systemSwitchOutcome.safeParse(answer);
-    if (!parsed.success) throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — ${lost}`);
-    return parsed.data;
   }
 
   /**
@@ -755,24 +753,20 @@ export class VerticalClient {
     const verb = 'system-grants';
     const lost = `the status of scope ${input.scopeId} could not be read. Nothing was changed; retry the read.`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
+    const rule = {
+      legacy501: false,
+      lost,
+      predates:
+        `the deployment serving scope ${input.scopeId} predates the schedule switch's status read (#1674) — ` +
+        `redeploy the vertical, then retry.`,
+      shape: `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`,
+    };
+    return this.parsedAnswer(verb, rule, systemScheduleEntry.array(), () =>
       this.options.fetch(`${base}/internal/system-grants?scopeId=${encodeURIComponent(input.scopeId)}`, {
         method: 'GET',
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
-    if (answer === PREDATES) {
-      throw new ControlPlaneError(
-        501,
-        `the deployment serving scope ${input.scopeId} predates the schedule switch's status read (#1674) — ` +
-          `redeploy the vertical, then retry.`,
-      );
-    }
-    const parsed = systemScheduleEntry.array().safeParse(answer);
-    if (!parsed.success) {
-      throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`);
-    }
-    return parsed.data;
   }
 
   /**
@@ -787,24 +781,20 @@ export class VerticalClient {
     const verb = 'peer-grants';
     const lost = `the peer status of scope ${input.scopeId} could not be read. Nothing was changed; retry the read.`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
+    const rule = {
+      legacy501: false,
+      lost,
+      predates:
+        `the deployment serving scope ${input.scopeId} predates the peer switch's status read (#1706) — ` +
+        `redeploy the vertical, then retry.`,
+      shape: `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`,
+    };
+    return this.parsedAnswer(verb, rule, peerGrantsEntry.array(), () =>
       this.options.fetch(`${base}/internal/peer-grants?scopeId=${encodeURIComponent(input.scopeId)}`, {
         method: 'GET',
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
-    if (answer === PREDATES) {
-      throw new ControlPlaneError(
-        501,
-        `the deployment serving scope ${input.scopeId} predates the peer switch's status read (#1706) — ` +
-          `redeploy the vertical, then retry.`,
-      );
-    }
-    const parsed = peerGrantsEntry.array().safeParse(answer);
-    if (!parsed.success) {
-      throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`);
-    }
-    return parsed.data;
   }
 
   /**
@@ -826,23 +816,21 @@ export class VerticalClient {
       `the switch for peer '${input.vertical}' on scope ${input.scopeId} may or may not have moved. ` +
       `Confirm its position (read the scope's peer status) before retrying.`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
+    const rule = {
+      legacy501: false,
+      lost,
+      predates:
+        `the deployment serving scope ${input.scopeId} predates the peer kill switch (#1706) — ` +
+        `redeploy the vertical, then retry. Nothing was switched.`,
+      shape: `vertical answered ${verb} with an unexpected shape — ${lost}`,
+    };
+    return this.parsedAnswer(verb, rule, peerSwitchOutcome, () =>
       this.options.fetch(`${base}/internal/peer-switch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(input),
       }),
     );
-    if (answer === PREDATES) {
-      throw new ControlPlaneError(
-        501,
-        `the deployment serving scope ${input.scopeId} predates the peer kill switch (#1706) — ` +
-          `redeploy the vertical, then retry. Nothing was switched.`,
-      );
-    }
-    const parsed = peerSwitchOutcome.safeParse(answer);
-    if (!parsed.success) throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — ${lost}`);
-    return parsed.data;
   }
 
   /**
@@ -885,26 +873,21 @@ export class VerticalClient {
     issuerScopeId: ScopeId,
   ): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const lost = `the auth server serving scope ${issuerScopeId} may or may not have acted on it.`;
-    const answer = await this.routeAnswer(verb, { legacy501: true, lost }, () =>
+    const rule = {
+      legacy501: true,
+      lost: `the auth server serving scope ${issuerScopeId} may or may not have acted on it.`,
+      predates:
+        `the auth server serving scope ${issuerScopeId} predates preview clients (#1704) — redeploy it, ` +
+        `then re-run. Nothing was minted or deleted there.`,
+      shape: `auth server answered ${verb} with an unexpected shape for scope ${issuerScopeId}.`,
+    };
+    return this.parsedAnswer(verb, rule, schema, () =>
       this.options.fetch(`${base}${path}`, {
         method,
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(body),
       }),
     );
-    if (answer === PREDATES) {
-      throw new ControlPlaneError(
-        501,
-        `the auth server serving scope ${issuerScopeId} predates preview clients (#1704) — redeploy it, ` +
-          `then re-run. Nothing was minted or deleted there.`,
-      );
-    }
-    const parsed = schema.safeParse(answer);
-    if (!parsed.success) {
-      throw new ControlPlaneError(502, `auth server answered ${verb} with an unexpected shape for scope ${issuerScopeId}.`);
-    }
-    return parsed.data;
   }
 
   /** Journal a platform-request outcome back in the vertical after the platform ran it. */
@@ -1199,20 +1182,46 @@ export class VerticalClient {
     const res = await this.reach(verb, request);
     if (res.status === 404 || (rule.legacy501 && res.status === 501)) return PREDATES;
     if (!res.ok) throw await this.refusal(verb, res);
+    return this.readAnswer(verb, res, rule.lost);
+  }
+
+  /**
+   * `routeAnswer` for a verb whose "predates" is always a 501 and whose answer has a schema:
+   * the parsed answer, or the 501 `rule.predates`, or the 502 `rule.shape` for a wrong shape.
+   */
+  private async parsedAnswer<T>(
+    verb: string,
+    rule: RouteRule & { predates: string; shape: string },
+    schema: { safeParse(v: unknown): { success: true; data: T } | { success: false } },
+    request: () => Promise<Response>,
+  ): Promise<T> {
+    const answer = await this.routeAnswer(verb, rule, request);
+    if (answer === PREDATES) throw new ControlPlaneError(501, rule.predates);
+    const parsed = schema.safeParse(answer);
+    if (!parsed.success) throw new ControlPlaneError(502, rule.shape);
+    return parsed.data;
+  }
+
+  /**
+   * A 200's body, read under #2010's rule: the JSON it carries, or `PREDATES` for the HTML shell
+   * an SPA fallback serves. A body that fails to read, or is neither, is a 502 that names
+   * `subject` and ends with `lost`, because the deployment that answered may have acted.
+   */
+  private async readAnswer(subject: string, res: Response, lost: string): Promise<unknown> {
     let text: string;
     try {
       text = await res.text();
     } catch (e) {
       throw new ControlPlaneError(
         502,
-        `reading the vertical's answer to ${verb} failed (${e instanceof Error ? e.message : String(e)}) — ${rule.lost}`,
+        `reading the vertical's answer to ${subject} failed (${e instanceof Error ? e.message : String(e)}) — ${lost}`,
       );
     }
     try {
       return JSON.parse(text) as unknown;
     } catch {
       if (isHtmlShell(res, text)) return PREDATES;
-      throw new ControlPlaneError(502, `vertical answered ${verb} with a body that is neither JSON nor its HTML shell — ${rule.lost}`);
+      throw new ControlPlaneError(502, `vertical answered ${subject} with a body that is neither JSON nor its HTML shell — ${lost}`);
     }
   }
 
@@ -1489,31 +1498,15 @@ export class VerticalClient {
    * follow a write that ran, so it never says to redeploy.
    */
   private async parseInternal<T>(verb: string, path: string, res: Response): Promise<T> {
-    let text: string;
-    try {
-      text = await res.text();
-    } catch (e) {
+    const answer = await this.readAnswer(`${verb} (${path})`, res, 'it may or may not have acted');
+    if (answer === PREDATES) {
       throw new ControlPlaneError(
         502,
-        `reading the vertical's answer to ${verb} (${path}) failed (${e instanceof Error ? e.message : String(e)}) — ` +
-          `it may or may not have acted`,
+        `vertical answered ${verb} (${path}) with its HTML shell — its deployed script predates this ` +
+          `surface. Redeploy the vertical (or, for a rebind, use abandonData).`,
       );
     }
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      if (isHtmlShell(res, text)) {
-        throw new ControlPlaneError(
-          502,
-          `vertical answered ${verb} (${path}) with its HTML shell — its deployed script predates this ` +
-            `surface. Redeploy the vertical (or, for a rebind, use abandonData).`,
-        );
-      }
-      throw new ControlPlaneError(
-        502,
-        `vertical answered ${verb} (${path}) with a body that is neither JSON nor its HTML shell — it may or may not have acted`,
-      );
-    }
+    return answer as T;
   }
 
   /** A platform-authenticated POST to the vertical's `/internal/*` surface. */
@@ -1611,7 +1604,15 @@ export class VerticalClient {
       : 'it may or may not have acted; repeating it is safe.';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const secret = { [PLATFORM_SECRET_HEADER]: this.options.platformSecret };
-    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
+    const rule = {
+      legacy501: false,
+      lost,
+      predates:
+        `the deployment serving scope ${scopeId} predates cross-vertical events (#1705) — redeploy the vertical. ` +
+        `Nothing was read or delivered; the edge's watermark holds.`,
+      shape: `vertical answered ${verb} with an unexpected shape for scope ${scopeId}` + (opts.write ? ` — ${lost}` : '.'),
+    };
+    return this.parsedAnswer(verb, rule, schema, () =>
       this.options.fetch(
         `${base}${path}`,
         body === undefined
@@ -1619,21 +1620,6 @@ export class VerticalClient {
           : { method: 'POST', headers: { ...secret, 'content-type': 'application/json' }, body: JSON.stringify(body) },
       ),
     );
-    if (answer === PREDATES) {
-      throw new ControlPlaneError(
-        501,
-        `the deployment serving scope ${scopeId} predates cross-vertical events (#1705) — redeploy the vertical. ` +
-          `Nothing was read or delivered; the edge's watermark holds.`,
-      );
-    }
-    const parsed = schema.safeParse(answer);
-    if (!parsed.success) {
-      throw new ControlPlaneError(
-        502,
-        `vertical answered ${verb} with an unexpected shape for scope ${scopeId}` + (opts.write ? ` — ${lost}` : '.'),
-      );
-    }
-    return parsed.data;
   }
 
   private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {

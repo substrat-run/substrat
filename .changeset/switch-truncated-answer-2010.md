@@ -1,5 +1,6 @@
 ---
 '@substrat-run/control-plane-api': patch
+'@substrat-run/control-plane-client': patch
 '@substrat-run/console': patch
 '@substrat-run/dashboard-web': patch
 ---
@@ -17,3 +18,6 @@ internal calls.
 The console's Schedules and Peers cards and the dashboard's app-to-app panel no longer show
 such a failure as "Refused". They read the position again, show it, and say the switch was
 not confirmed.
+
+`@substrat-run/control-plane-client` exports `provesNothingChanged(error)`, the one rule both apps
+use to tell a refusal (4xx, or 501) from a failure whose effect is unknown.
