@@ -126,22 +126,24 @@ slots straight in, alongside `forked_from`, `forked_at`, and a read-only flag fo
   | Door | What a non-primary scope gets |
   |---|---|
   | The platform-intent drain | Each intent is settled `failed`, attributed to the platform, with `INERT_SCOPE_REASON`, and no handler runs: connector deliveries, provision-sibling, archive-scope, provision-tenant, set-entitlements, peer-invoke. The drain decides from the scope's kind and lineage itself, and lands no ops-failure row for it. |
-  | Executors and connectors in process (both adapters; the emitting call's tail and `drainDue`) | Each delivery is journaled terminal with the same reason (`ExecutorDrainReport.inert`), and no handler runs. A CP-less host has no directory to ask, and needs none: the only executor that can act there is a connector, which it routes onto the intent drain above. |
-  | The vertical egress worker | Every third-party subrequest is refused 403, even to a host the version declares and even on an unenforced pre-#303 manifest. The directory's route read decides `primary` and the router carries it on the dispatch. The platform loopback and the relay still answer. A router that predates the field sends none, which passes as before: fail-open for that skew window only. |
+  | Executors and connectors in process (both adapters; the emitting call's tail and `drainDue`) | Each delivery is journaled terminal with the same reason (`ExecutorDrainReport.inert`), and no handler runs. A host with a directory asks it. A CP-less hosted vertical has none, so it asks the scope's own storage: every copy is loaded as a restore and records its origin (`_substrat_copy_origin`, a clean-room preview's restore of nothing included). That is #1686's definition of a copy, so one scope's backup restored onto another counts as one there too. A CP-less host's connectors are routed onto the intent drain above in any case. |
+  | The vertical egress worker | Every third-party subrequest is refused 403, even to a host the version declares and even on an unenforced pre-#303 manifest. Model calls to a third-party provider are such subrequests. Another app on the platform answers only reads (GET, HEAD, OPTIONS); a write to it is refused the same way. The copy's own address takes any method, and the relay still answers. The directory's route read decides `primary`, and the router carries it and the dispatched hostname on the dispatch. A router that predates the field sends none, which passes as before: fail-open for that skew window only. |
   | The email relay, the connection relay, connect-url | Refused 403 at entry: nothing is sent, no credential is written or rotated, no consent URL is minted. A consent round's callback stores through the same connection relay, so it is refused at write time, however old the round. |
   | Recurring schedules and freshness checks | Never run: the sweep filters on `isPrimaryScope` (lineage alone used to let a clean-room preview through). A CP-less vertical's own sweeper never learns a non-primary scope, because its roster is filled only by `/internal/provision` and `/internal/reconcile`, which the platform calls for installs (a preview is materialized by a restore). |
   | Peer calls, cross-vertical producer kicks, the provision reconcile, serving and upgrades | Primary-only already, by the same predicate. |
 
   Two intent kinds still land, because they **record** something that already happened rather
-  than ask for something to happen: `model-usage` (the model call already ran in the copy's own
-  worker, so refusing the line would make its use unmetered, not absent) and `sweep-runs`
-  (telemetry). Left alone on purpose, because none of them is an effect outside the platform:
-  the lake export (the platform's own audit store, under the copy's own scope id), resumable
-  jobs (driven only by a CP-less sweeper's roster, which holds installs; the kernel's own
-  attachment-text job is in-scope work a preview's search needs), and the migration-progress
-  count. So a copy acts on nothing outside itself: no provider call, no mail, no change to the
-  tenant's connections, no platform intent executed and no recurring work fired, with model
-  usage still metered.
+  than ask for something to happen. One is `model-usage`: inference on the platform's own model
+  binding (`env.AI`) is allowed in a copy, because it changes nothing outside the platform, and it
+  is metered like any other. Refusing the usage line would make it unmetered, not absent. The
+  other is `sweep-runs`, which is telemetry. Left alone on purpose, because none of them is an
+  effect outside the platform: the lake export (the platform's own audit store, under the copy's
+  own scope id), resumable jobs (driven only by a CP-less sweeper's roster, which holds installs;
+  the kernel's own attachment-text job is in-scope work a preview's search needs), and the
+  migration-progress count. So a copy changes no state outside itself: no third-party call, no
+  write to another app, no mail, no change to the tenant's connections, no platform intent
+  executed and no recurring work fired, while its inference on the platform's own models runs
+  and is metered.
 - **A copy keeps the source's history and none of its power** (#1686). A load into a scope
   other than the one the dump came from is a *copy*: a fork, a snapshot, a preview, or one
   scope's backup restored onto another. A load back into its own scope is a *return*: a
