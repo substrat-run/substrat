@@ -25,6 +25,12 @@ describe('isWriteStatement (#1722)', () => {
     'SELECT 1; DELETE FROM t',
     'INSERT INTO t VALUES (1) RETURNING a',
     'VACUUM',
+    // Fail-safe: a pragma is a write unless it is one the DO runs that changes no data.
+    'PRAGMA user_version = 3',
+    'PRAGMA foreign_keys = OFF',
+    'PRAGMA main.journal_mode = WAL',
+    'PRAGMA optimize',
+    'PRAGMA',
   ])('counts %j as a write', (sql) => {
     expect(isWriteStatement(sql)).toBe(true);
   });
@@ -36,6 +42,9 @@ describe('isWriteStatement (#1722)', () => {
     'WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 3) SELECT x FROM r',
     'EXPLAIN QUERY PLAN SELECT * FROM t',
     'PRAGMA defer_foreign_keys = ON',
+    'pragma DEFER_FOREIGN_KEYS = off',
+    'PRAGMA main.defer_foreign_keys = ON',
+    'VALUES (1, 2)',
     '-- only a comment',
     '',
   ])('does not count %j', (sql) => {

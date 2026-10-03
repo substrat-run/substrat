@@ -49,17 +49,29 @@ export interface LoadMarker {
 
 
 /**
+ * The pragmas the scope DO runs that change no data, by name. Only these are exempt: a pragma
+ * not listed here counts as a write, so one added later (or one that does change data) is
+ * counted until someone decides otherwise, rather than slipping past the fence.
+ */
+const NON_WRITING_PRAGMAS: ReadonlySet<string> = new Set(['defer_foreign_keys']);
+
+/**
  * Whether one SQL string can change the store (#1722): what advances the write revision. Reads
- * are `SELECT`, `EXPLAIN`, `PRAGMA` (a setting, not data) and a `WITH` that names no write verb.
- * Anything else counts, so an unknown statement over-counts rather than slipping past the fence.
- * A string carrying several statements counts if any of them is a write.
+ * are `SELECT`, `VALUES`, `EXPLAIN`, a `WITH` that names no write verb, and the pragmas in
+ * `NON_WRITING_PRAGMAS`. Anything else counts, so an unknown statement over-counts rather than
+ * slipping past the fence. A string carrying several statements counts if any of them is a write.
  */
 export function isWriteStatement(sql: string): boolean {
   for (const raw of sql.split(';')) {
     const stmt = raw.replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
     if (!stmt) continue;
     const verb = /^[A-Za-z]+/.exec(stmt)?.[0]?.toUpperCase();
-    if (verb === 'SELECT' || verb === 'EXPLAIN' || verb === 'PRAGMA') continue;
+    if (verb === 'SELECT' || verb === 'VALUES' || verb === 'EXPLAIN') continue;
+    if (verb === 'PRAGMA') {
+      const name = /^PRAGMA\s+(?:"?\w+"?\.)?"?(\w+)/i.exec(stmt)?.[1]?.toLowerCase();
+      if (name !== undefined && NON_WRITING_PRAGMAS.has(name)) continue;
+      return true;
+    }
     if (verb === 'WITH') {
       if (/\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(stmt)) return true;
       continue;
