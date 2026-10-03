@@ -17,7 +17,7 @@
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { STORE_LOCAL_META_KEYS, ulid } from '@substrat-run/kernel';
 
 const t = tenantId.parse(ulid());
 const site = scopeId.parse(ulid());
@@ -51,7 +51,12 @@ function tablesOf(stub: DurableObjectStub): Promise<Record<string, string[]>> {
     ].map((r) => String(r.name));
     const out: Record<string, string[]> = {};
     for (const name of names) {
-      out[name] = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].map((r) => JSON.stringify(r)).sort();
+      // #1722: the store's own bookkeeping (its load stamp and write revision) moves with every
+      // write, an idempotent one included. It is not the scope's data, so it is not compared.
+      const rows = [...state.storage.sql.exec(`SELECT * FROM "${name}"`)].filter(
+        (r) => name !== '_substrat_meta' || !STORE_LOCAL_META_KEYS.includes(String(r.key)),
+      );
+      out[name] = rows.map((r) => JSON.stringify(r)).sort();
     }
     return out;
   });
