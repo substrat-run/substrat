@@ -1414,10 +1414,9 @@ export async function drainTarget<R extends { vertical: string | null }, C>(
 }
 
 /**
- * The drain's context for one scope, from its directory record and nothing else (#2005): who
- * it is, the version it is bound to, and whether it is the real install. A preview's or a
- * fork's own intents are settled inert by the drain, never executed — so `primary` is the
- * one field here a wrong answer turns into an outbound effect.
+ * The drain's context for one scope, from its directory record and nothing else: who it is,
+ * the version it is bound to, and its kind and lineage — from which the drain decides whether
+ * the scope is the real install, and settles a preview's or a fork's own intents inert (#2005).
  */
 export function drainContextOf(
   rec: Pick<Scope, 'tenantId' | 'id' | 'verticalVersionId' | 'kind' | 'forkedFrom'>,
@@ -1428,7 +1427,7 @@ export function drainContextOf(
     scopeId: rec.id,
     vertical,
     versionId: rec.verticalVersionId ?? null,
-    primary: isPrimaryScope(rec),
+    scope: { kind: rec.kind, forkedFrom: rec.forkedFrom },
   };
 }
 

@@ -37,7 +37,7 @@ import {
   MODEL_USAGE_RETENTION_DAYS,
   DO_SQL_LIMITS,
   ulid,
-  isPrimaryScope,
+  isPrimaryScopeRow,
   resolveVerticalInstanceFrom,
   LEGACY_SCOPE_ROWS_BACKFILL,
   loadDirectoryDump,
@@ -2492,7 +2492,7 @@ export class ControlPlaneDO extends DurableObject {
     // for the target, and the router must not carry a second copy of "what is primary".
     const callerState: PeerCallerState = !caller || caller.tenant_id !== tenantId || caller.vertical !== callerVertical
       ? 'unknown'
-      : !isPrimaryScope({ kind: caller.kind ?? '', forkedFrom: (caller.forked_from as ScopeId | null) ?? null })
+      : !isPrimaryScopeRow(caller)
         ? 'not-primary'
         : caller.status !== 'active' || caller.tenant_status !== 'active'
           ? 'inactive'
@@ -2553,7 +2553,7 @@ export class ControlPlaneDO extends DurableObject {
     // #2005: the predicate runs here, once, rather than travelling as two columns for the
     // router to re-derive — every reader of the directory answers it the same way.
     const { kind, forked_from, ...route } = row;
-    return { ...route, primary: isPrimaryScope({ kind, forkedFrom: forked_from as ScopeId | null }) };
+    return { ...route, primary: isPrimaryScopeRow({ kind, forked_from }) };
   }
 
   /** Demote any current canonical for this surface — exactly one may hold it. */

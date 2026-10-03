@@ -63,14 +63,13 @@ export interface PlatformRequestContext {
 }
 
 /**
- * What the DRAIN needs beyond what a handler is handed (#2005): whether the scope is the real
- * install (`isPrimaryScope` over its directory record). Required, not defaulted: a caller
- * that forgets to say must not be read as "primary", because that is the answer that runs a
- * preview's effects with platform authority. Not on `PlatformRequestContext`, because no
- * handler is the place that decides it — a non-primary scope's intents never reach one.
+ * What the DRAIN needs beyond what a handler is handed (#2005): the scope's kind and lineage,
+ * from its directory record, so the drain itself asks `isPrimaryScope` — the door decides,
+ * not each caller. Not on `PlatformRequestContext`, because no handler is the place that
+ * decides it: a non-primary scope's intents never reach one.
  */
 export interface PlatformDrainContext extends PlatformRequestContext {
-  primary: boolean;
+  scope: Pick<Scope, 'kind' | 'forkedFrom'>;
 }
 
 /**
@@ -147,11 +146,12 @@ export async function drainScopePlatformRequests(
 ): Promise<PlatformDrainReport> {
   const pending = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
   const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0 };
+  const primary = isPrimaryScope(ctx.scope);
   for (const request of pending) {
     const handler = handlers[request.kind];
     let outcome: PlatformRequestOutcome;
     // #2005: an intent a non-primary scope raised for itself is settled, never executed.
-    let inert = false;
+    const inert = request.decodeError === undefined && !primary && !RECORD_KINDS.has(request.kind);
     if (request.decodeError !== undefined) {
       // #1588: the read is tolerant so one malformed row cannot hide the queue; the WORK stays
       // strict. A row that did not decode carries an empty stand-in wherever it failed — a
@@ -163,13 +163,9 @@ export async function drainScopePlatformRequests(
         error: `not executed: the intent row could not be decoded (${request.decodeError})`,
         failure: { origin: 'platform', code: 'validation_failed', permission: null },
       };
-    } else if (!ctx.primary && !RECORD_KINDS.has(request.kind)) {
-      // #2005: a fork, a snapshot or a preview causes no outbound effects. Settled `failed`
-      // rather than left pending — nothing will ever run it, and a row reading "pending"
-      // forever would say otherwise — and before any handler is looked up, so no kind's
-      // handler is the place that has to remember. Terminal, like the decode refusal: a
-      // scope does not become primary, so the next pass would decide the same.
-      inert = true;
+    } else if (inert) {
+      // Settled `failed`, not left pending: nothing will ever run it. Before any handler is
+      // looked up, so no kind's handler is the place that has to remember (#2005).
       outcome = {
         status: 'failed',
         error: INERT_SCOPE_REASON,
@@ -220,9 +216,8 @@ export async function drainScopePlatformRequests(
         message: platformIntentFailureMessage(request.id, outcome.error ?? 'unknown'),
       });
     } else if (outcome.status === 'failed' && !inert) {
-      // #2005: an inert settle is the platform doing what it should, not an operator's
-      // headline — every intent a preview raises would otherwise land as a fleet failure.
-      // The settle below still journals the reason and the attribution.
+      // An inert settle (#2005) is expected, not an operator's headline; the settle below
+      // still journals its reason and attribution.
       //
       // #618: a TERMINAL settle is the ceiling's own argument arriving early — the intent is
       // over, nobody is coming back to it, and until now its only trace was a `last_error`
@@ -499,6 +494,8 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
     } catch (error) {
       return { status: 'pending', error: `could not verify peer caller lifecycle: ${String(error)}` };
     }
+    // `isPrimaryScope` here is a backstop: the drain settles a non-primary caller's intents
+    // inert before any handler runs (#2005), so through the drain this term never decides.
     if (!caller || caller.tenantId !== ctx.tenantId || caller.vertical !== ctx.vertical ||
         caller.status !== 'active' || !isPrimaryScope(caller) || tenant?.status !== 'active') {
       return { status: 'failed', error: 'peer caller must be a primary, active scope in an active tenant' };

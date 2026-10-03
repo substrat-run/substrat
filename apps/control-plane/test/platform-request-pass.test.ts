@@ -245,17 +245,16 @@ describe('drainContextOf: a copy of a scope drains inert (#2005)', () => {
     return { ctx, ran, settled };
   };
 
-  it('twin: the install is primary, and its intent runs', async () => {
+  it('twin: the install carries its own kind and lineage, and its intent runs', async () => {
     const { ctx, ran, settled } = await drainOne(scopes.install);
-    expect(ctx).toEqual({ tenantId: t, scopeId: scopes.install, vertical, versionId: null, primary: true });
+    expect(ctx).toEqual({ tenantId: t, scopeId: scopes.install, vertical, versionId: null, scope: { kind: 'scope', forkedFrom: null } });
     expect(ran).toBe(1);
     expect(settled).toEqual([expect.objectContaining({ status: 'done' })]);
   });
 
   for (const shape of ['previewFork', 'cleanRoom', 'snapshot'] as const) {
-    it(`${shape}: not primary, and its own intent is settled inert without running`, async () => {
+    it(`${shape}: its own intent is settled inert without running`, async () => {
       const { ctx, ran, settled } = await drainOne(scopes[shape]);
-      expect(ctx.primary).toBe(false);
       expect(ran).toBe(0);
       expect(settled).toEqual([expect.objectContaining({ status: 'failed', lastError: INERT_SCOPE_REASON })]);
     });

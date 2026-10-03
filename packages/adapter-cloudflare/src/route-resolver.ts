@@ -91,8 +91,9 @@ export function toRouteTarget(row: RouteRowLike | undefined): RouteTarget | unde
     region: row.region,
     outboundHosts,
     calls,
-    // #2005: absent only from a control-plane DO that predates the field — see RouteRowLike.
-    ...(row.primary === undefined ? {} : { primary: row.primary }),
+    // #2005: absent only from a control-plane DO that predates the field, which the schema
+    // defaults to `true` — see RouteRowLike.
+    primary: row.primary,
   });
 }
 

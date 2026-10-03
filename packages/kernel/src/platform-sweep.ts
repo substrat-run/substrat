@@ -526,6 +526,15 @@ export function isPrimaryScope(scope: Pick<Scope, 'forkedFrom' | 'kind'>): boole
 }
 
 /**
+ * `isPrimaryScope` over a raw directory row, in the snake_case both adapters store (#2005) —
+ * so a reader holding a row asks the same one rule rather than restating it. No row is not
+ * primary: the answer that runs effects with platform authority is the one to be proven.
+ */
+export function isPrimaryScopeRow(row: { kind: string | null; forked_from: string | null } | undefined): boolean {
+  return row !== undefined && isPrimaryScope({ kind: row.kind ?? '', forkedFrom: row.forked_from as Scope['forkedFrom'] });
+}
+
+/**
  * Why an effect a NON-primary scope asked for was settled without running (#2005). A fork,
  * a snapshot and a preview of either kind are inert: they cause no outbound effects, so
  * whatever they queue — a platform intent, an executor or connector delivery — is journaled

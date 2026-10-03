@@ -365,7 +365,7 @@ import {
   assertRowLimit,
   assertRowOffset,
   INERT_SCOPE_REASON,
-  isPrimaryScope,
+  isPrimaryScopeRow,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -1777,14 +1777,6 @@ export interface CloudflareScopeHostOptions {
 }
 
 /**
- * Whether a directory row is the real install (`isPrimaryScope`, #2005). No row is not one:
- * the answer that runs effects with platform authority is the one that has to be proven.
- */
-function isPrimaryRow(row: ScopeRow | undefined): boolean {
-  return row !== undefined && isPrimaryScope({ kind: row.kind, forkedFrom: row.forked_from as ScopeId | null });
-}
-
-/**
  * A control-plane stand-in for a CP-less vertical (scope-local-permissions.md Phase 3).
  * The hot path a served scope actually touches becomes trust-the-upstream:
  *   - `scopeAccessRefusal` / `setMigrationState` → no-op: the router already gated the
@@ -2170,8 +2162,13 @@ export class CloudflareScopeHost implements ScopeHost {
     // handler runs. Asked of the directory, which is the only place fork-ness lives. A
     // CP-less host has none to ask — and needs none: the only executor that can act there is
     // a connector, which it routes onto the platform's intent drain, and that drain settles
-    // a non-primary scope's intents inert in the platform's own directory.
-    const inert = !this.cpLess && !isPrimaryRow(await this.cp.getScopeRecord(tenantId, scopeId));
+    // a non-primary scope's intents inert in the platform's own directory. Asked on the first
+    // due event, once per pass: most passes have none, and the directory is one global object.
+    let inert: Promise<boolean> | undefined;
+    const isInert = (): Promise<boolean> =>
+      (inert ??= this.cpLess
+        ? Promise.resolve(false)
+        : this.cp.getScopeRecord(tenantId, scopeId).then((row) => !isPrimaryScopeRow(row)));
     for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
       const { events, undecodable } = await stub.pendingExecutorDeliveries(deliveryId, executor.eventType);
@@ -2186,7 +2183,7 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       for (const event of events) {
         report.attempted += 1;
-        if (inert) {
+        if (await isInert()) {
           // No next attempt, like an undecodable row: a scope does not become primary.
           await stub.recordExecutorAttempt(event.id, deliveryId, INERT_SCOPE_REASON, null, invocationId);
           report.inert = (report.inert ?? 0) + 1;
@@ -5615,7 +5612,7 @@ export class CloudflareScopeHost implements ScopeHost {
           if (owning && owning.owner_tenant !== null && !owning.listed) {
             const bound = (
               await this.cp.listScopes({ tenantId: owning.owner_tenant, vertical: verticalSlug, status: ['active'] })
-            ).filter((s) => !s.forked_from && s.kind !== 'preview');
+            ).filter(isPrimaryScopeRow);
             for (const s of bound) {
               if (s.vertical_version_id === versionId) continue;
               const prev = s.vertical_version_id ? await this.cp.readVersion(s.vertical_version_id) : undefined;

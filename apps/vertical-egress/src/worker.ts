@@ -174,6 +174,14 @@ function relayHost(env: Env): string | null {
   }
 }
 
+/** The one refusal shape a vertical's subrequest meets: what was refused, for whom, and why. */
+function outboundRefused(hostname: string, slug: string | null, detail: string): Response {
+  return new Response(JSON.stringify({ error: 'outbound refused', host: hostname, vertical: slug, detail }), {
+    status: 403,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 /** What the router's peer entrypoint answers. */
 type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: number; code: string; message: string };
 
@@ -278,21 +286,14 @@ export default {
     }
     const policy = env.OUTBOUND_POLICY;
     if (policy?.primary === false) {
-      // #2005: a fork or a preview reaches no third party at all — not even a host its
-      // version declares, and not on an unenforced pre-#303 manifest either. Ahead of both,
-      // because whether the scope may have effects is a question about the scope, and
-      // neither of those answers is about the scope.
+      // #2005: ahead of the declared list and the unenforced pass, because whether the scope
+      // may have effects at all is a question about the scope, not about the host.
       meter(env, hostname, 'inert');
-      return new Response(
-        JSON.stringify({
-          error: 'outbound refused',
-          host: hostname,
-          vertical: policy.slug,
-          detail:
-            'this scope is a preview or a fork, and those cause no outbound effects: a ' +
-            'subrequest to a third party is refused whatever the version declares (#2005).',
-        }),
-        { status: 403, headers: { 'content-type': 'application/json' } },
+      return outboundRefused(
+        hostname,
+        policy.slug,
+        'this scope is a preview or a fork, and those cause no outbound effects: a ' +
+          'subrequest to a third party is refused whatever the version declares (#2005).',
       );
     }
     if (!policy || policy.hosts === null) {
@@ -308,18 +309,13 @@ export default {
       return fetch(request);
     }
     meter(env, hostname, 'refused');
-    return new Response(
-      JSON.stringify({
-        error: 'outbound refused',
-        host: hostname,
-        vertical: policy.slug,
-        detail:
-          `'${hostname}' is not in this vertical's declared outbound surface. ` +
-          `Add it to package.json substrat.outbound (e.g. ["${hostname}"]) and push a new ` +
-          'version — the declaration is reviewed at the admit checkpoint ' +
-          '(self-serve-deploy.md §4.2, #303).',
-      }),
-      { status: 403, headers: { 'content-type': 'application/json' } },
+    return outboundRefused(
+      hostname,
+      policy.slug,
+      `'${hostname}' is not in this vertical's declared outbound surface. ` +
+        `Add it to package.json substrat.outbound (e.g. ["${hostname}"]) and push a new ` +
+        'version — the declaration is reviewed at the admit checkpoint ' +
+        '(self-serve-deploy.md §4.2, #303).',
     );
   },
 };

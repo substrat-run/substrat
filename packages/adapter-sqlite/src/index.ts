@@ -519,7 +519,7 @@ import {
   unknownRoleError,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
-import { INERT_SCOPE_REASON, isPrimaryScope } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -1373,13 +1373,12 @@ function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
 }
 
 /**
- * The policy an undecodable event's executor delivery is journaled under (#1636): one
- * attempt, so the first failure is the dead letter. A decode is pure — retrying it cannot
- * succeed — and the Cloudflare coordinator records the same row with no next attempt.
- * An inert scope's delivery (#2005) is journaled under it too, for the same reason: a
- * scope does not become primary, so a retry would decide the same.
+ * The policy a delivery that can never succeed is journaled under: one attempt, so the first
+ * is the dead letter, and the Cloudflare coordinator records the same row with no next
+ * attempt. An undecodable event (#1636) — a decode is pure, so a retry cannot succeed — and an
+ * inert scope's delivery (#2005) — a scope does not become primary, so a retry decides the same.
  */
-const UNDECODABLE_RETRY: Required<ExecutorRetryPolicy> = { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 };
+const TERMINAL_RETRY: Required<ExecutorRetryPolicy> = { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 };
 
 interface OutboxRow {
   id: string;
@@ -4935,7 +4934,9 @@ export class SqliteScopeHost implements ScopeHost {
     // outbound effects. Every executor is host code acting with platform authority — a
     // connector with the tenant's credential, a plain executor with `HostAdmin` — so its
     // deliveries are journaled terminal with the reason and the handler never runs.
-    const inert = !this.isPrimaryInDirectory(rt.scopeId);
+    // Asked on the first due event, once per pass: most passes have none.
+    let inert: boolean | undefined;
+    const isInert = (): boolean => (inert ??= !this.isPrimaryInDirectory(rt.scopeId));
     for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
       // Due = never attempted, or retrying and past its next attempt time.
@@ -4964,13 +4965,12 @@ export class SqliteScopeHost implements ScopeHost {
           // on the FIRST failure, unlike a handler's: the decode is pure, of text already
           // in hand, so a retry cannot succeed — and only the decode is caught here, so a
           // handler's transient failure keeps its backoff below.
-          this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), UNDECODABLE_RETRY, invocationId);
+          this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), TERMINAL_RETRY, invocationId);
           report.deadLettered += 1;
           continue;
         }
-        if (inert) {
-          // Terminal on the first pass, like an undecodable row (see `UNDECODABLE_RETRY`).
-          this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, UNDECODABLE_RETRY, invocationId);
+        if (isInert()) {
+          this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, TERMINAL_RETRY, invocationId);
           report.inert = (report.inert ?? 0) + 1;
           continue;
         }
@@ -5063,16 +5063,13 @@ export class SqliteScopeHost implements ScopeHost {
     return error !== null && exhausted;
   }
 
-  /**
-   * Whether the directory says `scopeId` is the real install (`isPrimaryScope`, #2005). A
-   * scope with no directory row has never been provisioned here and is not treated as one:
-   * the answer that runs effects is the one that has to be proven.
-   */
+  /** Whether the directory says `scopeId` is the real install (`isPrimaryScopeRow`, #2005). */
   private isPrimaryInDirectory(scopeId: ScopeId): boolean {
-    const row = this.directory
-      .prepare('SELECT kind, forked_from FROM scopes WHERE scope_id = ?')
-      .get(scopeId) as { kind: string | null; forked_from: string | null } | undefined;
-    return row !== undefined && isPrimaryScope({ kind: row.kind ?? '', forkedFrom: row.forked_from as ScopeId | null });
+    return isPrimaryScopeRow(
+      this.directory.prepare('SELECT kind, forked_from FROM scopes WHERE scope_id = ?').get(scopeId) as
+        | { kind: string | null; forked_from: string | null }
+        | undefined,
+    );
   }
 
   async drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport> {
@@ -7320,7 +7317,7 @@ export class SqliteScopeHost implements ScopeHost {
           region: r.region,
           outboundHosts,
           // #2005: the egress worker holds a fork or a preview to no third-party egress.
-          primary: isPrimaryScope({ kind: r.kind ?? '', forkedFrom: r.forked_from as ScopeId | null }),
+          primary: isPrimaryScopeRow(r),
         });
       },
       registerVertical: async (actor: PlatformActorId, input: RegisterVerticalInput) => {

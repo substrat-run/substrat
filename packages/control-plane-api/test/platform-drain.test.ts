@@ -37,6 +37,10 @@ import {
   VerticalClient,
 } from '../src/index.js';
 
+/** A primary install's kind and lineage, and a clean-room preview's (#2005). */
+const INSTALL = { kind: 'app', forkedFrom: null };
+const PREVIEW = { kind: 'preview', forkedFrom: null };
+
 /** A minimal well-formed intent row for the dispatcher tests. */
 function intent(kind: string, over: Partial<PlatformRequest> = {}): PlatformRequest {
   return {
@@ -72,7 +76,7 @@ function fakeTransport(pending: PlatformRequest[]) {
 }
 
 describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
-  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', primary: true };
+  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL };
 
   it('dispatches to the handler for each kind and settles its outcome', async () => {
     const done = intent('provision-sibling');
@@ -172,7 +176,7 @@ describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
  * work happens: a row carrying `decodeError` must never reach a handler.
  */
 describe('drainScopePlatformRequests — an undecodable row is refused, never executed (#1588)', () => {
-  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', primary: true };
+  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL };
 
   /** A handler that records every request it was handed — the thing that must stay clean. */
   const recording = () => {
@@ -313,7 +317,7 @@ describe('drainScopePlatformRequests — an undecodable row is refused, never ex
       // The host IS the drain's transport here: the same two calls `VerticalClient` makes.
       const report = await drainScopePlatformRequests(
         host as unknown as Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>,
-        { tenantId: t, scopeId: s, vertical: 'demo-vert', primary: true },
+        { tenantId: t, scopeId: s, vertical: 'demo-vert', scope: INSTALL },
         { 'provision-sibling': handler },
       );
 
@@ -335,7 +339,7 @@ describe('drainScopePlatformRequests — an undecodable row is refused, never ex
 describe('connectorDispatchHandler — executes a routed connector delivery (#574 phase 3)', () => {
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
-  const ctx = { tenantId: t, scopeId: s, vertical: 'meridian', primary: true };
+  const ctx = { tenantId: t, scopeId: s, vertical: 'meridian', scope: INSTALL };
 
   /** A kernel-stamped event as the routing host embeds it — JSON-shaped, parsed at drain. */
   const routedEvent = (over: Record<string, unknown> = {}) => ({
@@ -1281,7 +1285,7 @@ describe('drainScopePlatformRequests — a non-primary scope is inert (#2005)', 
     const { client, settled } = fakeTransport(pending);
     const { ran, handlers } = recording(EFFECT_KINDS);
     const failures: unknown[] = [];
-    const report = await drainScopePlatformRequests(client, { ...at, primary: false }, handlers, {
+    const report = await drainScopePlatformRequests(client, { ...at, scope: PREVIEW }, handlers, {
       recordFailure: (f) => void failures.push(f),
     });
     expect(ran).toEqual([]);
@@ -1302,7 +1306,7 @@ describe('drainScopePlatformRequests — a non-primary scope is inert (#2005)', 
   it('twin: the same intents on a primary scope run their handlers', async () => {
     const { client, settled } = fakeTransport(EFFECT_KINDS.map((k) => intent(k)));
     const { ran, handlers } = recording(EFFECT_KINDS);
-    await drainScopePlatformRequests(client, { ...at, primary: true }, handlers);
+    await drainScopePlatformRequests(client, { ...at, scope: INSTALL }, handlers);
     expect(ran).toEqual(EFFECT_KINDS);
     expect(settled.every((s) => s.status === 'done')).toBe(true);
   });
@@ -1313,20 +1317,20 @@ describe('drainScopePlatformRequests — a non-primary scope is inert (#2005)', 
     const kinds = [MODEL_USAGE_KIND, SWEEP_RUNS_KIND];
     const { client, settled } = fakeTransport(kinds.map((k) => intent(k)));
     const { ran, handlers } = recording(kinds);
-    await drainScopePlatformRequests(client, { ...at, primary: false }, handlers);
+    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW }, handlers);
     expect(ran).toEqual(kinds);
     expect(settled.map((s) => s.status)).toEqual(['done', 'done']);
   });
 
   it('a kind with no handler is still inert, not "no handler" — the scope is decided first', async () => {
     const { client, settled } = fakeTransport([intent('mystery')]);
-    await drainScopePlatformRequests(client, { ...at, primary: false }, {});
+    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW }, {});
     expect(settled[0]!.lastError).toBe(INERT_SCOPE_REASON);
   });
 
   it('an undecodable row on a non-primary scope keeps its own, more specific reason', async () => {
     const { client, settled } = fakeTransport([intent(MODEL_USAGE_KIND, { decodeError: 'payload: bad' })]);
-    await drainScopePlatformRequests(client, { ...at, primary: false }, recording([MODEL_USAGE_KIND]).handlers);
+    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW }, recording([MODEL_USAGE_KIND]).handlers);
     expect(settled[0]!.lastError).toMatch(/could not be decoded/);
   });
 });
