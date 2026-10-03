@@ -519,7 +519,7 @@ import {
   unknownRoleError,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
-import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
+import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -3468,7 +3468,8 @@ export class SqliteScopeHost implements ScopeHost {
     // load was a SAVEPOINT inside it, and that invoke's rollback undid the restore after
     // this verb had audited it.
     await rt.actor.turn(() => {
-      load(dump.tables);
+      // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
+      load(capabilitiesForLoad(dump.tables, scopeId, dump.scopeId));
       // The frontier came in with the dump — refresh the cached applied-migration set so
       // a later bind/migrate builds on the loaded state, not the previous one.
       rt.appliedMigrations.clear();

@@ -284,7 +284,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertNoSpineReference, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4895,7 +4895,12 @@ export function defineScopeDO(
       // A dump written before indexes were excluded may still carry them; skipped
       // rather than failing a restore over data about to be recomputed.
       // Matched without case, as SQLite resolves a table name (#1883 review).
-      const replayable = tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
+      // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
+      const replayable = capabilitiesForLoad(
+        tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase())),
+        destScopeId,
+        sourceScopeId,
+      );
       // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
       // in the string it is given, so a `ddl` with anything appended to its CREATE
       // TABLE executed that too — with entirely plain identifiers, which is why no

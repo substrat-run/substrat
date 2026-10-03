@@ -320,4 +320,94 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
     expect((await push('pr-8', 'v2')).status).toBe(200);
     expect(tuplesIn(await hostFor('v2').exportScopeLocal(preview))).toEqual(want);
   });
+
+  it("#1686: a preview fork carries none of prod's capability rows; a carry keeps the preview's own", async () => {
+    await hostFor('v1').restoreScopeLocal(prod, [...dumpFrom(prod), ...capTables('prod')], { sourceScopeId: prod });
+    const created = await push('pr-9', 'v1');
+    expect(created.status).toBe(201);
+    const preview = created.body.scopeId;
+    expect(capsIn(await hostFor('v1').exportScopeLocal(preview))).toEqual(none);
+    expect(capsIn(await hostFor('v1').exportScopeLocal(prod))).toEqual(held('prod'));
+    // A link minted IN the preview is the preview's own, and a carry onto the next version keeps it.
+    await hostFor('v1').restoreScopeLocal(preview, [...dumpFrom(preview), ...capTables('pr-9')], { sourceScopeId: preview });
+    expect((await push('pr-9', 'v2')).status).toBe(200);
+    expect(capsIn(await hostFor('v2').exportScopeLocal(preview))).toEqual(held('pr-9'));
+  });
+});
+
+/**
+ * #1686 on workerd: capability rows never cross a scope id. The rows are planted through the
+ * dump, so each path below loads the same two tables; which of them arrives is the property.
+ */
+const capTables = (marker: string): ScopeDumpTable[] => [
+  {
+    name: '_substrat_capabilities',
+    ddl: 'CREATE TABLE _substrat_capabilities (id TEXT PRIMARY KEY, token_hash TEXT, mode TEXT, minted_by TEXT, minted_at TEXT)',
+    columns: ['id', 'token_hash', 'mode', 'minted_by', 'minted_at'],
+    rows: [[`cap-${marker}`, `hash-${marker}`, 'act', '"principal:gina"', '2026-01-01T00:00:00.000Z']],
+  },
+  {
+    name: '_substrat_capability_sessions',
+    ddl: 'CREATE TABLE _substrat_capability_sessions (token_hash TEXT PRIMARY KEY, capability_id TEXT, created_at TEXT, expires_at TEXT)',
+    columns: ['token_hash', 'capability_id', 'created_at', 'expires_at'],
+    rows: [[`session-${marker}`, `cap-${marker}`, '2026-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z']],
+  },
+];
+/** The ids in each capability table of a scope's export, keyed by table. */
+const capsIn = (tables: ScopeDumpTable[]): Record<string, unknown[]> =>
+  Object.fromEntries(
+    ['_substrat_capabilities', '_substrat_capability_sessions'].map((name) => [
+      name,
+      (tables.find((t) => t.name === name)?.rows ?? []).map((r) => r[0]),
+    ]),
+  );
+const held = (marker: string) => ({
+  _substrat_capabilities: [`cap-${marker}`],
+  _substrat_capability_sessions: [`session-${marker}`],
+});
+const none = { _substrat_capabilities: [], _substrat_capability_sessions: [] };
+
+describe("the ScopeDO's importDump keeps capability rows in their scope (#1686)", () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, secretBox });
+
+  it('a restore into the scope the dump came from keeps both tables; the same dump onto another scope keeps neither', async () => {
+    const self = scopeId.parse(ulid());
+    await host.restoreScopeLocal(self, [...dumpFrom(self), ...capTables('a')], { sourceScopeId: self });
+    expect(capsIn(await host.exportScopeLocal(self))).toEqual(held('a'));
+    const other = scopeId.parse(ulid());
+    await host.restoreScopeLocal(other, [...dumpFrom(self), ...capTables('a')], { sourceScopeId: self });
+    expect(capsIn(await host.exportScopeLocal(other))).toEqual(none);
+    // The rest of the dump arrived: only the capability rows were left behind.
+    expect(tuplesIn(await host.exportScopeLocal(other))).toHaveLength(4);
+  });
+
+  it('a restore that names no source counts as a copy, even into the scope it came from', async () => {
+    const self = scopeId.parse(ulid());
+    await host.restoreScopeLocal(self, [...dumpFrom(self), ...capTables('b')]);
+    expect(capsIn(await host.exportScopeLocal(self))).toEqual(none);
+  });
+
+  it('a table name in another case is the same table, and is left behind too', async () => {
+    const self = scopeId.parse(ulid());
+    const shouted = capTables('c').map((t) => ({
+      ...t,
+      name: t.name.toUpperCase(),
+      ddl: t.ddl.replace(t.name, t.name.toUpperCase()),
+    }));
+    const other = scopeId.parse(ulid());
+    await host.restoreScopeLocal(other, [...dumpFrom(self), ...shouted], { sourceScopeId: self });
+    expect(capsIn(await host.exportScopeLocal(other))).toEqual(none);
+    // The twin: the same shouted tables restored into their own scope land in the kernel's table.
+    await host.restoreScopeLocal(self, [...dumpFrom(self), ...shouted], { sourceScopeId: self });
+    expect(capsIn(await host.exportScopeLocal(self))).toEqual(held('c'));
+  });
+
+  it('snapshotScopeLocal leaves them behind, and the source keeps its own', async () => {
+    const self = scopeId.parse(ulid());
+    await host.restoreScopeLocal(self, [...dumpFrom(self), ...capTables('d')], { sourceScopeId: self });
+    const snap = scopeId.parse(ulid());
+    await host.snapshotScopeLocal(self, snap);
+    expect(capsIn(await host.exportScopeLocal(snap))).toEqual(none);
+    expect(capsIn(await host.exportScopeLocal(self))).toEqual(held('d'));
+  });
 });

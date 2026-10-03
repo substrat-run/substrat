@@ -158,6 +158,7 @@ export {
   capabilityByIdQuery,
   capabilityExchangeable,
   capabilityGrantOf,
+  capabilitiesForLoad,
   capabilityListQuery,
   capabilityLive,
   capabilityRecordOf,
