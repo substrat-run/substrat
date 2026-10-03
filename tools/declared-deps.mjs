@@ -275,6 +275,41 @@ export function licenseProblems(rootPj, rootKey, read) {
   return out;
 }
 
+/**
+ * What a permissive-only package SHIPS must import only what it ships with (#971). The
+ * declared-imports check above accepts a `devDependency`, which is right for a test or a
+ * tool and wrong for `src/`: the compiled JS (and the emitted `.d.ts`) reaches the importing
+ * package at run time, where a dependency declared only for development is not installed.
+ * It is also how the licence closure would be sidestepped — the closure walks the runtime
+ * dependencies, so an AGPL package declared as a devDependency and imported from `src/` would
+ * pass both checks and still be loaded by the published CLI.
+ *
+ * `files` maps a path relative to the package to its text; only `src/` and the emitted
+ * `dist/` types are judged, so a test file's import of a dev-only dependency stays legal.
+ */
+export function shippedImportProblems(pj, files) {
+  const shipped = new Set([
+    ...Object.keys(pj.dependencies ?? {}),
+    ...Object.keys(pj.peerDependencies ?? {}),
+    ...Object.keys(pj.optionalDependencies ?? {}),
+    pj.name,
+  ]);
+  const devOnly = new Set(Object.keys(pj.devDependencies ?? {}).filter((n) => !shipped.has(n)));
+  const out = [];
+  for (const [where, text] of Object.entries(files)) {
+    if (!/^(?:src|dist)[/\\]/.test(where)) continue;
+    for (const spec of specifiersIn(text)) {
+      if (devOnly.has(spec)) {
+        out.push(
+          `${pj.name} ships an import of '${spec}' in ${where}, but declares it only as a devDependency — ` +
+            'the published package reaches it at run time, where it is not installed',
+        );
+      }
+    }
+  }
+  return out;
+}
+
 /** The real resolver: workspace members by name, everything else up the `node_modules` chain. */
 export function realResolver(workspace) {
   return (name, fromKey) => {
@@ -374,6 +409,16 @@ function main() {
     }
     const own = licenseProblem(member.pj.license, member.pj.licenses);
     if (own) problems.push(`${name} ${own}`);
+    const shipped = {};
+    for (const sub of ['src', 'dist']) {
+      for (const f of walk(join(member.key, sub))) {
+        const isSource = /\.(ts|tsx|mts)$/.test(f) && !f.endsWith('.d.ts') && !f.includes('.generated.');
+        if ((sub === 'src' && isSource) || (sub === 'dist' && f.endsWith('.d.ts'))) {
+          shipped[relative(member.key, f)] = readFileSync(f, 'utf8');
+        }
+      }
+    }
+    problems.push(...shippedImportProblems(member.pj, shipped));
     for (const p of licenseProblems(member.pj, member.key, read)) problems.push(`licence closure: ${p}`);
   }
 

@@ -14,6 +14,7 @@ import {
   licenseProblem,
   licenseProblems,
   realResolver,
+  shippedImportProblems,
   workspaceMembers,
 } from './declared-deps.mjs';
 
@@ -254,6 +255,39 @@ test('the same instance reached twice (a diamond) and a cycle through the root a
     '@substrat-run/cli → a → shared is GPL-3.0, which is not on the permissive allowlist',
   ]);
   assert.ok(reads < 20, `terminated after ${reads} reads`);
+});
+
+test('shipped source may import only what it ships with: a src import of a dev-only dependency is refused, a test import is not', () => {
+  const pj = {
+    ...CLI,
+    dependencies: { esbuild: '1' },
+    peerDependencies: { react: '*' },
+    devDependencies: { vitest: '1', '@substrat-run/control-plane-api': 'workspace:^' },
+  };
+  assert.deepEqual(
+    shippedImportProblems(pj, { 'src/push.ts': "import { createControlPlaneApi } from '@substrat-run/control-plane-api';" }),
+    [
+      "@substrat-run/cli ships an import of '@substrat-run/control-plane-api' in src/push.ts, but declares it only as a devDependency — the published package reaches it at run time, where it is not installed",
+    ],
+  );
+  // The emitted types are shipped too.
+  assert.equal(
+    shippedImportProblems(pj, { 'dist/x.d.ts': "export declare const y: import('vitest').T;" }).length,
+    1,
+  );
+  // The twins: a test or tool may import a dev-only dependency; src may import dependencies, peers, itself.
+  assert.deepEqual(shippedImportProblems(pj, { 'test/x.test.ts': "import { it } from 'vitest';" }), []);
+  assert.deepEqual(
+    shippedImportProblems(pj, {
+      'src/a.ts': "import { build } from 'esbuild';\nimport React from 'react';\nimport { z } from '@substrat-run/cli';",
+    }),
+    [],
+  );
+  // A name that is a dependency AND a devDependency is shipped.
+  assert.deepEqual(
+    shippedImportProblems({ ...pj, devDependencies: { esbuild: '1' } }, { 'src/a.ts': "import 'esbuild';" }),
+    [],
+  );
 });
 
 test('the guarded packages exist, are themselves permissive, and the repo as it stands holds the rule', () => {
