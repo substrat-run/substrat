@@ -6,7 +6,7 @@
  * the exported bindings via `CloudflareScopeHost` — see contract.test.ts.
  */
 import { platformActorId } from '@substrat-run/contracts';
-import { runCrossVerticalFrom, runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
+import { runCrossVerticalFrom, runPlatformSweep, ulid, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
 import {
   boardImportMod,
   brokenMod,
@@ -44,6 +44,25 @@ function onDirectory(Base: ScopeDOClass, directory: string): ScopeDOClass {
       const own = (env as unknown as Record<string, DurableObjectNamespace | undefined>)[directory];
       if (!own) throw new Error(`test worker: no directory binding ${directory}`);
       super(ctx, { ...env, CONTROL_PLANE: own });
+    }
+  };
+}
+
+/**
+ * #1722: a write on a scope that is serving, the way a module operation leaves one: a row in
+ * the vertical's table and the event announcing it in the outbox. The preview classes carry no
+ * modules, so the carry suite writes through this instead of an `invoke`.
+ */
+function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
+  return class extends Base {
+    testWrite(scopeId: string, id: string, body: string): void {
+      const sql = this.ctx.storage.sql;
+      sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, body);
+      sql.exec(
+        `INSERT INTO _substrat_outbox (id, type, schema_version, occurred_at, tenant_id, scope_id, actor, entity_type, entity_id, pii_class)
+         VALUES (?, 'pv.noted', 1, ?, 'tenant', ?, 'actor', 'note', ?, 'none')`,
+        ulid(), new Date().toISOString(), scopeId, id,
+      );
     }
   };
 }
@@ -87,9 +106,9 @@ export const BoardScopeDO = onDirectory(defineScopeDO([boardImportMod], {}), 'VE
  * the point: the only thing that separates them is the namespace, which is the fact a
  * preview's second push used to lose its data to. See preview-carry.test.ts.
  */
-export const PreviewV1ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
-export const PreviewV2ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
-export const PreviewV3ScopeDO = onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE');
+export const PreviewV1ScopeDO = withTestWrite(onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE'));
+export const PreviewV2ScopeDO = withTestWrite(onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE'));
+export const PreviewV3ScopeDO = withTestWrite(onDirectory(defineScopeDO([], {}), 'PC_CONTROL_PLANE'));
 
 /**
  * #1898: a module whose migration declares a foreign key to the spine, and its twin whose

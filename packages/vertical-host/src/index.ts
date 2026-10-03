@@ -28,6 +28,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf } from './errors.js';
 import {
   type CarriedAway,
+  type LoadMarker,
   type InvokeOptions,
   type AppliedMigration,
   type SwitchedOff,
@@ -167,9 +168,10 @@ export interface VerticalScopeHost {
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-    /** #1722: `opts.loadStamp`, the stamp a carry leaves on the copy it lands. A host built
-     *  before it ignores the field, and its copy is then wiped unfenced. */
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string },
+    /** #1722: `opts.loadStamp`, the stamp a carry leaves on the copy it lands, and `opts.expect`,
+     *  the marker the carry read: the load is refused if the store moved since. A host built
+     *  before them has no `loadMarkerLocal` either, so the platform never sends `expect` there. */
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string; expect?: LoadMarker },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   /**
    * #1722: wipe the copy a carry left in this deployment, only if nothing was loaded into the
@@ -177,6 +179,9 @@ export interface VerticalScopeHost {
    * before it satisfies this interface without it, and the route answers 501, which the
    * platform reads as "this script cannot fence the wipe" and falls back to an unconditional one.
    */
+  /** #1722: what a carry's restore into this store expects to find unchanged. Optional, like
+   *  `wipeCarriedLocal`; the route answers 501 without it, and the platform then cannot fence. */
+  loadMarkerLocal?(scopeId: ScopeId): Promise<LoadMarker>;
   wipeCarriedLocal?(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway): Promise<boolean>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
@@ -443,6 +448,8 @@ const restoreBody = z.object({
   exact: z.boolean().optional(),
   /** #1722: the stamp a carry leaves on the copy it lands, so a later wipe of it can be fenced. */
   loadStamp: z.string().min(1).optional(),
+  /** #1722: the marker the carry read from this store; the load is refused if the store moved since. */
+  expect: z.object({ loadStamp: z.string().min(1).nullable(), outboxTop: z.string().min(1).nullable() }).optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -750,6 +757,7 @@ export function mountPlatformSurface<Env extends object>(
       sourceScopeId: body.sourceScopeId,
       exact: body.exact,
       loadStamp: body.loadStamp,
+      expect: body.expect,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
@@ -760,6 +768,18 @@ export function mountPlatformSurface<Env extends object>(
   // so a rollback that restored into this scope since is never destroyed. `wiped: false` is
   // that refusal. Non-terminal: the store keeps a `carried_away` tombstone and takes a later
   // restore like any scope, which `/internal/delete-scope` (a reap) would not.
+  // #1722: what a carry's restore into this scope expects to find unchanged (the load stamp and
+  // the outbox's highest event id). Read before the carry checks the binding again; the restore
+  // then sends it back as `expect`, so a store the winning carry loaded, or that took a write
+  // since it went live, is never overwritten. Metadata only: no scope bytes cross.
+  app.get('/internal/load-marker', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.loadMarkerLocal) {
+      return c.json({ error: 'this deployment cannot fence a carry\'s restore (#1722) — redeploy it' }, 501);
+    }
+    return c.json(await host.loadMarkerLocal(scopeIdOf.parse(c.req.query('scopeId'))));
+  });
+
   app.post('/internal/wipe-carried', async (c) => {
     const body = wipeCarriedBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);

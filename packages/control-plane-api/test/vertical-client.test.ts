@@ -672,6 +672,18 @@ describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
     await expect(answering(res).wipeCarriedCopy(input)).resolves.toBe('unfenced');
   });
 
+  // Codex #2008 r1: a 200 whose body fails to read is NOT a deployment that predates the route.
+  // The fenced wipe may have committed before the answer was lost; reading it as unfenced would
+  // send the caller to the unconditional fallback, which the fence exists to prevent.
+  it('a 200 whose body fails to read is a failure, never unfenced', async () => {
+    const broken = () =>
+      new Response(new ReadableStream({ start: (c) => c.error(new Error('stream reset')) }), { status: 200 });
+    const err = (await answering(broken).wipeCarriedCopy(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err.status).toBe(502);
+    expect(err.message).toMatch(/reading the vertical's answer to wipe-carried failed.*stream reset.*may or may not have acted/);
+  });
+
   it('a transport failure, a 5xx and a wrong shape are failures, never unfenced', async () => {
     const lost = new VerticalClient({
       fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
@@ -686,6 +698,47 @@ describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
   });
 });
 
+describe('VerticalClient.loadMarker (#1722)', () => {
+  const client = (res: () => Response, urls: string[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string) => {
+        urls.push(u);
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('reads the marker, nulls included', async () => {
+    const urls: string[] = [];
+    await expect(client(() => Response.json({ loadStamp: 'st', outboxTop: 'ev' }), urls).loadMarker(s)).resolves.toEqual({
+      loadStamp: 'st',
+      outboxTop: 'ev',
+    });
+    await expect(client(() => Response.json({ loadStamp: null, outboxTop: null })).loadMarker(s)).resolves.toEqual({
+      loadStamp: null,
+      outboxTop: null,
+    });
+    expect(new URL(urls[0]!).pathname).toBe('/internal/load-marker');
+    expect(new URL(urls[0]!).searchParams.get('scopeId')).toBe(s);
+  });
+
+  it.each([
+    ['a 404', () => new Response('404 Not Found', { status: 404 })],
+    ['a 501', () => Response.json({ error: 'redeploy it' }, { status: 501 })],
+    ['an SPA shell', () => new Response('<!doctype html>', { status: 200 })],
+  ])('%s is unfenced', async (_n, res) => {
+    await expect(client(res).loadMarker(s)).resolves.toBe('unfenced');
+  });
+
+  it('a body that fails to read, a 5xx and a wrong shape are failures', async () => {
+    const failure = (res: () => Response) => client(res).loadMarker(s).then(() => null, (e: unknown) => e as ControlPlaneError);
+    const broken = () => new Response(new ReadableStream({ start: (c) => c.error(new Error('reset')) }), { status: 200 });
+    expect((await failure(broken))?.status).toBe(502);
+    expect((await failure(() => Response.json({ error: 'x' }, { status: 500 })))?.status).toBe(500);
+    expect((await failure(() => Response.json({ loadStamp: 7, outboxTop: null })))?.status).toBe(502);
+  });
+});
+
 it('restoreScope sends the stamp a carry leaves on its copy, and none when not given one (#1722)', async () => {
   const bodies: unknown[] = [];
   const client = new VerticalClient({
@@ -695,10 +748,10 @@ it('restoreScope sends the stamp a carry leaves on its copy, and none when not g
     }) as unknown as typeof fetch,
     platformSecret: 'secret',
   });
-  await client.restoreScope(t, s, [], { loadStamp: 'stamp-9' });
+  await client.restoreScope(t, s, [], { loadStamp: 'stamp-9', expect: { loadStamp: null, outboxTop: 'ev' } });
   await client.restoreScope(t, s, []);
   expect(bodies).toEqual([
-    { tenantId: t, scopeId: s, tables: [], loadStamp: 'stamp-9' },
+    { tenantId: t, scopeId: s, tables: [], loadStamp: 'stamp-9', expect: { loadStamp: null, outboxTop: 'ev' } },
     { tenantId: t, scopeId: s, tables: [] },
   ]);
 });

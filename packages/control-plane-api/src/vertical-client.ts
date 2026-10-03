@@ -94,9 +94,12 @@ import {
   LOAD_STAMP_HEADER,
   PLATFORM_SECRET_HEADER,
 } from '@substrat-run/contracts';
-import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import type { LoadMarker, OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
+
+/** `fencedAnswer`'s word for a deployment that predates the route it was asked (#1722). */
+const UNFENCED = Symbol('unfenced');
 
 /**
  * The query string for both internal denial reads. The filter's own fields come from
@@ -1013,8 +1016,9 @@ export class VerticalClient {
      *  #1869: `sourceScopeId`, the scope the tables were captured from, so the vertical re-points
      *  exactly that scope's grants, and `exact` when the platform exported them itself. A
      *  vertical that predates the fields ignores them. #1722: `loadStamp`, the stamp a carry
-     *  leaves on the copy it lands, which a later fenced wipe of that copy expects. */
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string },
+     *  leaves on the copy it lands, which a later fenced wipe of that copy expects, and `expect`,
+     *  the marker the carry read here (`loadMarker`): the load is refused if the store moved since. */
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string; expect?: LoadMarker },
   ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
     // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
     if (opts?.exact && !opts.sourceScopeId) {
@@ -1030,6 +1034,7 @@ export class VerticalClient {
         ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
         ...(opts?.exact ? { exact: true } : {}),
         ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),
+        ...(opts?.expect ? { expect: opts.expect } : {}),
       },
       'restore',
     );
@@ -1055,22 +1060,15 @@ export class VerticalClient {
   }): Promise<{ wiped: boolean } | 'unfenced'> {
     const verb = 'wipe-carried';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.reach(verb, () =>
+    const answer = await this.fencedAnswer(verb, () =>
       this.options.fetch(`${base}/internal/wipe-carried`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(input),
       }),
     );
-    if (res.status === 404 || res.status === 501) return 'unfenced';
-    if (!res.ok) throw await this.refusal(verb, res);
-    let raw: unknown;
-    try {
-      raw = JSON.parse(await res.text());
-    } catch {
-      return 'unfenced';
-    }
-    const wiped = (raw as { wiped?: unknown } | null)?.wiped;
+    if (answer === UNFENCED) return 'unfenced';
+    const wiped = (answer as { wiped?: unknown } | null)?.wiped;
     if (typeof wiped !== 'boolean') {
       throw new ControlPlaneError(
         502,
@@ -1078,6 +1076,55 @@ export class VerticalClient {
       );
     }
     return { wiped };
+  }
+
+  /**
+   * What a carry's restore into this scope expects to find unchanged (#1722): the load stamp and
+   * the outbox's highest event id. `'unfenced'` on `wipeCarriedCopy`'s terms: only the
+   * deployment's own answer that it predates the route; everything else is a failure.
+   */
+  async loadMarker(scopeId: ScopeId): Promise<LoadMarker | 'unfenced'> {
+    const verb = 'load-marker';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const answer = await this.fencedAnswer(verb, () =>
+      this.options.fetch(`${base}/internal/load-marker?scopeId=${encodeURIComponent(scopeId)}`, {
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (answer === UNFENCED) return 'unfenced';
+    const { loadStamp, outboxTop } = (answer ?? {}) as { loadStamp?: unknown; outboxTop?: unknown };
+    const field = (v: unknown) => v === null || (typeof v === 'string' && v.length > 0);
+    if (!field(loadStamp) || !field(outboxTop)) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${scopeId} with an unexpected shape`);
+    }
+    return { loadStamp: loadStamp as string | null, outboxTop: outboxTop as string | null };
+  }
+
+  /**
+   * #1722: the answer to a route a deployment built before #1722 does not have. Only an answer
+   * the deployment actually gave counts as that: a 404, a 501, or a body received whole that is
+   * not JSON (an SPA shell). A transport failure, a refusal, and a body that fails to READ are
+   * failures, never `UNFENCED`, because the request may have landed: a fenced wipe that committed
+   * and then lost its answer must not be followed by the unconditional fallback.
+   */
+  private async fencedAnswer(verb: string, request: () => Promise<Response>): Promise<unknown> {
+    const res = await this.reach(verb, request);
+    if (res.status === 404 || res.status === 501) return UNFENCED;
+    if (!res.ok) throw await this.refusal(verb, res);
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (e) {
+      throw new ControlPlaneError(
+        502,
+        `reading the vertical's answer to ${verb} failed (${e instanceof Error ? e.message : String(e)}) — it may or may not have acted`,
+      );
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return UNFENCED;
+    }
   }
 
   /** Facets over one scope's outbox (#1239) — through the vertical that holds the data. */

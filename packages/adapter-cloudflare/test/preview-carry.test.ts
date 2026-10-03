@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
@@ -46,7 +46,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // and hooks that hold one request at a chosen step so a test can interleave two of them.
   const unfenced = new Set<string>();
   type Hook = (ref: string, sid: ScopeId, tables?: ScopeDumpTable[]) => Promise<void>;
-  const hooks: { export?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook } = {};
+  const hooks: { export?: Hook; marker?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
     {
@@ -64,7 +64,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     try {
       return await fn();
     } catch (e) {
-      throw new ControlPlaneError(500, e instanceof Error ? e.message : String(e));
+      // A refused precondition answers 412 over the real hop, as the vertical's error envelope does.
+      const status = errorCodeOf(e) === 'precondition_failed' ? 412 : 500;
+      throw new ControlPlaneError(status, e instanceof Error ? e.message : String(e));
     }
   };
   const clientFor = (ref: string): VerticalClient => {
@@ -77,7 +79,12 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           if (!unfenced.has(ref)) return host.exportScopeStampedLocal(sid);
           return { tables: await host.exportScopeLocal(sid), loadStamp: null };
         }),
-      restoreScope: (_t: unknown, sid: ScopeId, tables: ScopeDumpTable[], opts?: { loadStamp?: string }) =>
+      restoreScope: (
+        _t: unknown,
+        sid: ScopeId,
+        tables: ScopeDumpTable[],
+        opts?: { loadStamp?: string; expect?: { loadStamp: string | null; outboxTop: string | null } },
+      ) =>
         relay(async () => {
           await hooks.restore?.(ref, sid, tables);
           const out = await host.restoreScopeLocal(
@@ -85,12 +92,16 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
             sabotageV3 && ref === refOf.get(version.v3)
               ? [...tables, { name: 'zz_bad', ddl: 'CREATE TABLE not_zz_bad (x TEXT)', columns: ['x'], rows: [] }]
               : tables,
-            // A script that cannot fence keeps no stamp either: it predates both.
-            { loadStamp: unfenced.has(ref) ? undefined : opts?.loadStamp },
+            // A script that cannot fence keeps no stamp and takes no expectation: it predates both.
+            unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect },
           );
           await hooks.restored?.(ref, sid, tables);
           return out;
         }),
+      loadMarker: async (sid: ScopeId) => {
+        await hooks.marker?.(ref, sid);
+        return unfenced.has(ref) ? 'unfenced' : relay(() => host.loadMarkerLocal(sid));
+      },
       readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
         relay(async () => {
           await hooks.read?.(ref, sid);
@@ -425,6 +436,87 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
       unfenced.clear();
     });
+    /** A write on `v`'s copy, as a module operation leaves one: a note row and its outbox event. */
+    const writeOn = async (v: keyof typeof version, sid: ScopeId, id: string, body: string) => {
+      const ns = { v1: env.PC_V1_SCOPE, v2: env.PC_V2_SCOPE, v3: env.PC_V3_SCOPE }[v];
+      const stub = ns.get(ns.idFromName(sid)) as unknown as { testWrite(s: string, i: string, b: string): Promise<void> };
+      await stub.testWrite(sid, id, body);
+    };
+
+    it('a retried push held before its restore cannot overwrite the live store the first run bound and wrote to', async () => {
+      const p = await fresh('live', 'live data');
+      // The loser read v2's marker and the binding, and is held right before its restore.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const loser = push('live', 'v2');
+      await held.reached;
+      // The winner restores, binds, and the preview takes a write on v2.
+      expect((await push('live', 'v2')).status).toBe(200);
+      await writeOn('v2', p.scopeId, 'n-live', 'written after the bind');
+      held.release();
+      const refused = await loser;
+      expect(refused.status).toBe(412);
+      expect(refused.body.error).toMatch(/changed since the carry read it/);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['live data', 'written after the bind'] });
+    });
+
+    it("with no write at all, the winner's load alone refuses the held retry's restore", async () => {
+      const p = await fresh('live-load', 'load data');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const loser = push('live-load', 'v2');
+      await held.reached;
+      expect((await push('live-load', 'v2')).status).toBe(200);
+      held.release();
+      const refused = await loser;
+      expect(refused.status).toBe(412);
+      expect(refused.body.error).toMatch(/changed since the carry read it/);
+    });
+
+    it('nor can one that read the marker after the winner restored: the write after the bind moves it', async () => {
+      const p = await fresh('live-write', 'write data');
+      // The winner's restore has landed and it is held before binding; the loser reads the marker
+      // now (the winner's stamp), finds the binding unchanged, and is held before its restore.
+      const winnerRestored = deferred();
+      const winnerGo = deferred();
+      let winnerLanded = false;
+      hooks.restored = async (ref, sid) => {
+        if (winnerLanded || ref !== refOf.get(version.v2) || sid !== p.scopeId) return;
+        winnerLanded = true;
+        winnerRestored.resolve();
+        await winnerGo.promise;
+      };
+      const loserHeld = holdFirst((ref, sid) => winnerLanded && ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = loserHeld.hook;
+      const winner = push('live-write', 'v2');
+      await winnerRestored.promise;
+      const loser = push('live-write', 'v2');
+      await loserHeld.reached;
+      winnerGo.resolve();
+      expect((await winner).status).toBe(200);
+      await writeOn('v2', p.scopeId, 'n-live', 'written after the bind');
+      loserHeld.release();
+      expect((await loser).status).toBe(412);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['write data', 'written after the bind'] });
+    });
+
+    it('on a script that cannot fence the restore, the binding read just before it refuses one the winner made live', async () => {
+      const p = await fresh('live-old', 'old data');
+      unfenced.add(refOf.get(version.v2)!);
+      // Held at its marker read, which a script built before #1722 cannot answer; the binding is
+      // read right after it, and that read is the only guard there.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.marker = held.hook;
+      const loser = push('live-old', 'v2');
+      await held.reached;
+      expect((await push('live-old', 'v2')).status).toBe(200);
+      await writeOn('v2', p.scopeId, 'n-live', 'written after the bind');
+      held.release();
+      const refused = await loser;
+      expect(refused.status).toBe(412);
+      expect(refused.body.error).toMatch(/re-pointed while its data was being copied/);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['old data', 'written after the bind'] });
+    });
 
     it('the fence: any load since the stamped export refuses the wipe, and nothing loaded lets it run', async () => {
       const sid = scopeId.parse(ulid());
@@ -533,8 +625,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
 
     it('a retried push of the same version never wipes the store the preview serves', async () => {
       const p = await fresh('retry', 'retry data');
-      // Two runs of the same job, both carrying v1 → v2. The second restores into v2 after the
-      // first has bound it, which is the winner's live store: refused, and kept.
+      // Two runs of the same job, both carrying v1 → v2. On a v2 built before #1722 the second
+      // restores into v2 after the first has bound it (no write lands in between: the window the
+      // binding re-read leaves there), and its bind is refused. The copy it would discard is the
+      // winner's live store, so it is kept. A fenced v2 refuses the restore itself (above).
+      unfenced.add(refOf.get(version.v2)!);
       const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
       hooks.restore = held.hook;
       const second = push('retry', 'v2');

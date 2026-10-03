@@ -232,6 +232,7 @@ import {
   resolveScopeRecord,
   ulid,
   type CarriedAway,
+  type LoadMarker,
   capabilityTokenHash,
   checkBecomeInput,
   plausibleSessionToken,
@@ -1363,6 +1364,20 @@ interface ScopeStubRpc {
       loadStamp?: string;
     },
   ): Promise<SwitchedOff[]>;
+  /** #1722: what a carry's restore into this store expects to find unchanged. */
+  loadMarker(): Promise<LoadMarker>;
+  /** #1722: `importDump` under `expect`, the refusal answered as a value. */
+  importDumpExpecting(
+    tables: ScopeDumpTable[],
+    destScopeId: ScopeId,
+    opts: {
+      switchOff?: { moduleIds: readonly string[]; at: string };
+      sourceScopeId?: ScopeId;
+      exact?: boolean;
+      loadStamp?: string;
+      expect: LoadMarker;
+    },
+  ): Promise<{ refused: true } | { refused: false; switchedOff: SwitchedOff[] }>;
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
   exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string }>;
   /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
@@ -2558,16 +2573,43 @@ export class CloudflareScopeHost implements ScopeHost {
      *  own event — a dump from before a switch was pulled brings its grants back live. #1869:
      *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it;
      *  `exact` says the platform exported the dump itself, so the re-point never falls back.
-     *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, for a fenced wipe later. */
-    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string },
+     *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, for a fenced wipe later,
+     *  and `expect`, the marker the carry read here: the load is refused if the store moved since. */
+    opts?: {
+      switchedOff?: readonly ModuleId[];
+      sourceScopeId?: ScopeId;
+      exact?: boolean;
+      loadStamp?: string;
+      expect?: LoadMarker;
+    },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
-    const switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, {
+    const load = {
       switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId,
       exact: opts?.exact,
       loadStamp: opts?.loadStamp,
-    });
+    };
+    let switchedOff: SwitchedOff[];
+    if (opts?.expect) {
+      const out = await this.scopeStub(scopeId).importDumpExpecting(tables, scopeId, { ...load, expect: opts.expect });
+      // Thrown here, in the vertical's own isolate, so its route answers 412 rather than a fault.
+      if (out.refused) {
+        throw substratError('precondition_failed', 'scope store changed since the carry read it; nothing was loaded (#1722)');
+      }
+      switchedOff = out.switchedOff;
+    } else {
+      switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, load);
+    }
     return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
+  }
+
+  /**
+   * What a carry's restore into this scope's store expects to find unchanged (#1722), behind
+   * the vertical's `/internal/load-marker`. Read before the carry checks the binding again; the
+   * restore then carries it as `expect`, and is refused if the store was loaded or written since.
+   */
+  async loadMarkerLocal(scopeId: ScopeId): Promise<LoadMarker> {
+    return this.scopeStub(scopeId).loadMarker();
   }
 
   /**

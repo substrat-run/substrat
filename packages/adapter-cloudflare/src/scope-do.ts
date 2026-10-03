@@ -286,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { LOAD_STAMP_KEY, carriedAwayDump, type CarriedAway, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { LOAD_STAMP_KEY, carriedAwayDump, type CarriedAway, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4889,7 +4889,7 @@ export function defineScopeDO(
         sourceScopeId,
         exact,
         loadStamp,
-        expectLoadStamp,
+        expect,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
@@ -4902,10 +4902,11 @@ export function defineScopeDO(
         /** #1722: the stamp this load leaves (`LOAD_STAMP_KEY`) — a carry names one, so the copy
          *  it lands can later be wiped under a fence. Without one, a load leaves no stamp. */
         loadStamp?: string;
-        /** #1722: load only if this DO's stamp is still this one (null: none was ever written).
-         *  Compared inside the load's transaction, before the first drop; a mismatch throws
-         *  `precondition_failed` and the store is untouched. */
-        expectLoadStamp?: string | null;
+        /** #1722: load only if this store still holds this load stamp (null: none) and, when
+         *  `outboxTop` is given, this highest event id (null: no events). Compared inside the
+         *  load's transaction, before the first drop; a mismatch throws `precondition_failed`
+         *  and the store is untouched. */
+        expect?: { loadStamp: string | null; outboxTop?: string | null };
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -4947,8 +4948,11 @@ export function defineScopeDO(
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
       }
       const switched = await this.ctx.storage.transaction(async () => {
-        if (expectLoadStamp !== undefined && this.loadStamp() !== expectLoadStamp) {
-          throw substratError('precondition_failed', 'scope store was loaded since it was read; nothing was loaded');
+        if (expect) {
+          const now = this.loadMarker();
+          if (now.loadStamp !== expect.loadStamp || (expect.outboxTop !== undefined && now.outboxTop !== expect.outboxTop)) {
+            throw substratError('precondition_failed', 'scope store changed since it was read; nothing was loaded');
+          }
         }
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
         // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
@@ -5082,6 +5086,29 @@ export function defineScopeDO(
       return switched;
     }
 
+    /**
+     * `importDump` under `expect` (#1722), its refusal answered as a value: across this RPC a
+     * throw carries only its message, and the host has to tell "the store moved" from a failure.
+     */
+    async importDumpExpecting(
+      tables: ScopeDumpTable[],
+      destScopeId: ScopeId,
+      opts: Parameters<this['importDump']>[2] & { expect: LoadMarker },
+    ): Promise<{ refused: true } | { refused: false; switchedOff: SwitchedOff[] }> {
+      try {
+        return { refused: false, switchedOff: await this.importDump(tables, destScopeId, opts) };
+      } catch (e) {
+        if (errorCodeOf(e) === 'precondition_failed') return { refused: true };
+        throw toRpcError(e);
+      }
+    }
+
+    /** What a carry's restore into this store expects to find unchanged (#1722): see `LoadMarker`. */
+    loadMarker(): LoadMarker {
+      const top = this.sql.exec('SELECT MAX(id) AS id FROM _substrat_outbox').toArray()[0] as { id: string | null } | undefined;
+      return { loadStamp: this.loadStamp(), outboxTop: top?.id ?? null };
+    }
+
     /** This store's load stamp (#1722), or null when no load has written one. */
     private loadStamp(): string | null {
       const row = this.sql
@@ -5099,7 +5126,7 @@ export function defineScopeDO(
      */
     async wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway): Promise<boolean> {
       try {
-        await this.importDump(carriedAwayDump(carriedAway), scopeId, { sourceScopeId: scopeId, expectLoadStamp });
+        await this.importDump(carriedAwayDump(carriedAway), scopeId, { sourceScopeId: scopeId, expect: { loadStamp: expectLoadStamp } });
         return true;
       } catch (e) {
         if (errorCodeOf(e) === 'precondition_failed') return false;

@@ -44,6 +44,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     // reply that came from the reopen above is recognisable as the wrong verb.
     redrainCountLocal: async (_s: unknown, before?: unknown) =>
       note('redrainCountLocal', before === '2026-09-16T00:00:00.000Z' ? 11 : -1),
+    loadMarkerLocal: async () => note('loadMarkerLocal', { loadStamp: 'st', outboxTop: null }),
     // #1722: refuses unless the stamp and the tombstone arrive verbatim.
     wipeCarriedLocal: async (_s: unknown, stamp?: unknown, away?: unknown) =>
       note(
@@ -422,6 +423,26 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     }, ENV);
     expect(restore.status).toBe(200);
     expect(opts).toMatchObject({ loadStamp: 'stamp-8' });
+
+    // The marker a carry's restore expects, sent back as `expect`.
+    const fenced = await appWith(restoring).request('/internal/restore', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ scopeId: SCOPE, tables: [], expect: { loadStamp: null, outboxTop: 'ev-9' } }),
+    }, ENV);
+    expect(fenced.status).toBe(200);
+    expect(opts).toMatchObject({ expect: { loadStamp: null, outboxTop: 'ev-9' } });
+  });
+
+  it('serves the load marker behind the gate, and 501s on a host that cannot fence a restore (#1722)', async () => {
+    const host = fakeHost();
+    const ok = await appWith(host).request('/internal/load-marker?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ loadStamp: 'st', outboxTop: null });
+    expect((await appWith(host).request('/internal/load-marker?scopeId=' + SCOPE, {}, ENV)).status).toBe(403);
+    const older = fakeHost({ loadMarkerLocal: undefined });
+    expect((await appWith(older).request('/internal/load-marker?scopeId=' + SCOPE, { headers: authed() }, ENV)).status).toBe(501);
+    expect(older.calls).toHaveLength(0);
   });
 
   // #1524: the size behind the on-demand storage reading. It sits behind the same

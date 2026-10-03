@@ -114,7 +114,7 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { CrossVerticalOptions, HostAdmin, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
+import type { CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import {
   BIND_EXPORT_BREAK_REFUSAL,
@@ -2522,8 +2522,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tables: Parameters<VerticalClient['restoreScope']>[2],
     /** #1869: the scope `tables` were captured from — `scopeId` itself unless the copy moves —
      *  and `exact` when the platform exported them itself rather than a caller supplying them.
-     *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands. */
-    source: { scopeId: ScopeId; exact: boolean; loadStamp?: string },
+     *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, and `expect`, the marker
+     *  the carry read from `dest`, so a store that moved since is never overwritten. */
+    source: { scopeId: ScopeId; exact: boolean; loadStamp?: string; expect?: LoadMarker },
   ): ReturnType<VerticalClient['restoreScope']> => {
     return retryTransient(async () =>
       dest.restoreScope(tenantId, scopeId, tables, {
@@ -2531,6 +2532,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         sourceScopeId: source.scopeId,
         exact: source.exact,
         loadStamp: source.loadStamp,
+        expect: source.expect,
       }),
     );
   };
@@ -2812,6 +2814,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * way. The caller binds with `bindAfterCarry`, which wipes the source copy once the bind
    * lands, so neither check can pass on an export from a copy that is about to go.
    *
+   * The restore is conditional too. Before the check above, the carry reads the destination's
+   * `LoadMarker` (load stamp and outbox top), and the restore is refused inside its own
+   * transaction if the store moved since. So a carry held before its restore cannot overwrite
+   * a store that another carry into the same script has loaded, or that went live under that
+   * carry's bind and took a write: a CI retry of the same version. A deployment built before
+   * #1722 cannot read a marker, and there the binding re-read is all that guards the restore.
+   * Its window: a bind that lands between that re-read and the restore, followed by a write.
+   *
    * What it does not do:
    * - Carry writes that land on the source between the export and the bind. Those are lost.
    * - Cross lineages. A version of another vertical reads as absent here, and moving a scope
@@ -2859,6 +2869,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
     const { tables: dump, loadStamp: sourceStamp } = await retryTransient(() => source.exportScopeStamped(scope.id));
+    // What the destination holds now, read before the binding is checked again. The restore
+    // sends it back and is refused if the store moved since: another carry into the same script
+    // loaded it, or it went live under another carry's bind and took a write. That is a CI retry
+    // of the same version, held before its restore while the first run bound and served.
+    const destMarker = await retryTransient(() => dest.loadMarker(scope.id));
     const now = await c.var.admin.getScopeRecord(actor, scope.tenantId, scope.id);
     if (
       !now ||
@@ -2885,6 +2900,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       scopeId: scope.id,
       exact: true,
       loadStamp: restoredStamp,
+      ...(destMarker === 'unfenced' ? {} : { expect: destMarker }),
     });
     return {
       from,

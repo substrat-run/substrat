@@ -26,6 +26,17 @@ import type { ScopeDumpTable } from '@substrat-run/contracts';
 export const LOAD_STAMP_KEY = 'load_stamp';
 export const CARRIED_AWAY_KEY = 'carried_away';
 
+/**
+ * What a carry expects to find unchanged in the store it is about to restore into (#1722): the
+ * load stamp (any load since moves it) and the outbox's highest event id (any write since moves
+ * it, since every mutation emits). A store the winning carry has loaded, or that has taken a
+ * write since it went live, no longer matches, and the restore is refused before its first drop.
+ */
+export interface LoadMarker {
+  loadStamp: string | null;
+  outboxTop: string | null;
+}
+
 /** Where a carried copy went, and when — the tombstone's value, as JSON. */
 export interface CarriedAway {
   to: string;

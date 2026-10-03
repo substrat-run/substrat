@@ -59,6 +59,8 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
   let v3: string; // a version with no script of its own
   let prod: ReturnType<typeof scopeId.parse>; // the production install previews fork from
   let failRestoreInto: string | null = null;
+  // #1722: a fenced wipe whose answer is lost in transit (Codex #2008 r1).
+  let wipeAnswerLost = false;
 
   const refOf = new Map<string, string>(); // versionId → its script
   const scripts = new Map<string, Map<string, ScopeDumpTable[]>>(); // script → scope → dump
@@ -93,7 +95,11 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       },
       // #1722: a deployment built before the fenced wipe, so the carry's cleanup takes the
       // tombstone load; the meta read is what the cleanup checks a destination with.
-      wipeCarriedCopy: async () => 'unfenced',
+      wipeCarriedCopy: async () => {
+        if (wipeAnswerLost) throw new ControlPlaneError(502, "reading the vertical's answer to wipe-carried failed (reset)");
+        return 'unfenced';
+      },
+      loadMarker: async () => 'unfenced',
       readScopeTable: async (sid: string) => {
         const meta = storeOf(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
@@ -382,6 +388,26 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     expect((await recordOf(moved.scopeId)).servingRef ?? null).toBeNull();
     expect(rowsOf(refOf.get(v1)!, moved.scopeId)).toEqual([['reassert-row']]);
     expect(storeOf(SERVING).get(moved.scopeId)?.[0]?.name).toBe('_substrat_meta');
+  });
+
+  it('a fenced wipe whose answer is lost never falls back to the unconditional wipe, and is recorded (#1722)', async () => {
+    const lost = await legacyPreview('legacy-lost-answer', v1, 'lost-row');
+    wipeAnswerLost = true;
+    calls.length = 0;
+    try {
+      const out = await pass();
+      expect(out.repaired.map((r) => r.scopeId)).toContain(lost.scopeId);
+    } finally {
+      wipeAnswerLost = false;
+    }
+    // The carry and the bind landed; the cleanup did not load a tombstone over the serving copy.
+    expect(calls).toEqual([`export ${SERVING} ${lost.scopeId}`, `restore ${refOf.get(v1)} ${lost.scopeId}`]);
+    expect(rowsOf(SERVING, lost.scopeId)).toEqual([['lost-row']]);
+    await new Promise((r) => setTimeout(r, 20)); // the recorder is fire-and-forget
+    const recorded = (await host.admin.listOpsFailures(staff, { scopeId: scopeId.parse(lost.scopeId) })).find(
+      (f) => f.stage === 'source-copy',
+    );
+    expect(recorded).toMatchObject({ operation: 'scope.carry', status: 502 });
   });
 
   it('skips a preview whose bound version has no script of its own, and keeps its pin', async () => {

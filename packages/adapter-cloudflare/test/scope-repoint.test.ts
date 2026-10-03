@@ -227,15 +227,22 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
         _t: unknown,
         sid: ScopeId,
         tables: ScopeDumpTable[],
-        opts?: { sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string },
+        opts?: {
+          sourceScopeId?: ScopeId;
+          exact?: boolean;
+          loadStamp?: string;
+          expect?: { loadStamp: string | null; outboxTop: string | null };
+        },
       ) =>
         relay(() =>
           host.restoreScopeLocal(sid, tables, {
             sourceScopeId: opts?.sourceScopeId,
             exact: opts?.exact,
             loadStamp: opts?.loadStamp,
+            expect: opts?.expect,
           }),
         ),
+      loadMarker: (sid: ScopeId) => relay(() => host.loadMarkerLocal(sid)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
       // #1722: what a carry's cleanup calls once the bind lands.
       readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
