@@ -11,8 +11,9 @@ import { join, resolve } from 'node:path';
 import {
   DEP_FIELDS,
   RUNTIME_FIELDS,
-  guardProblem,
   UNPUBLISHABLE_PROTOCOLS,
+  guardProblem,
+  installTarget,
   manifestProblems,
   packedManifest,
   pnpmMembers,
@@ -143,3 +144,24 @@ test('against the producers: `npm publish` is refused by the guard, `pnpm publis
   assert.doesNotMatch(`${pnpm.stdout}${pnpm.stderr}`, /refusing to publish/);
   assert.equal(pnpm.status, 0, pnpm.stderr);
 });
+
+test('an npm: alias installs its target: scoped, unscoped, with and without a range', () => {
+  assert.deepEqual(installTarget('kit', 'npm:@substrat-run/engine-test-kit@0.1.0'), { name: '@substrat-run/engine-test-kit', range: '0.1.0' });
+  assert.deepEqual(installTarget('b', 'npm:codex-review-b@^1.0.0'), { name: 'codex-review-b', range: '^1.0.0' });
+  assert.deepEqual(installTarget('b', 'npm:@scope/b'), { name: '@scope/b', range: 'latest' });
+  assert.deepEqual(installTarget('zod', '^3.25.0'), { name: 'zod', range: '^3.25.0' });
+});
+
+test('refuses an alias to a private member in every runtime field; allows one to a public member or an external package', () => {
+  // The shape `pnpm pack` writes for `"kit": "workspace:@substrat-run/engine-test-kit@*"`.
+  for (const field of RUNTIME_FIELDS) {
+    assert.deepEqual(manifestProblems(pkg({ [field]: { kit: 'npm:@substrat-run/engine-test-kit@0.1.0' } }), members), [
+      `@substrat-run/x@1.0.0: ${field}['kit'] (an alias of @substrat-run/engine-test-kit) is a private workspace member — it is never published`,
+    ]);
+    assert.deepEqual(manifestProblems(pkg({ [field]: { c: 'npm:@substrat-run/contracts@^0.135.0' } }), members), []);
+    assert.deepEqual(manifestProblems(pkg({ [field]: { 'string-width-cjs': 'npm:string-width@^4.2.0' } }), members), []);
+  }
+  // A devDependency is never installed for a consumer, aliased or not.
+  assert.deepEqual(manifestProblems(pkg({ devDependencies: { kit: 'npm:@substrat-run/engine-test-kit@0.1.0' } }), members), []);
+});
+

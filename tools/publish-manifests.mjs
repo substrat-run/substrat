@@ -42,6 +42,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { PUBLISH_GUARD } from './publish-guard.mjs';
 
+const run = promisify(execFile);
+
 /** Specifier protocols that mean something inside a workspace and nothing on npm. */
 export const UNPUBLISHABLE_PROTOCOLS = ['workspace:', 'catalog:', 'link:', 'file:', 'portal:'];
 /** The fields npm installs for a consumer — a private member named here can never resolve. */
@@ -52,6 +54,24 @@ export const RUNTIME_FIELDS = ['dependencies', 'peerDependencies', 'optionalDepe
  * which is the defect, and it is free to refuse.
  */
 export const DEP_FIELDS = [...RUNTIME_FIELDS, 'devDependencies'];
+
+/**
+ * The package a specifier installs: `npm:<name>@<range>` aliases another package (which is
+ * how `pnpm pack` writes `workspace:<name>@…`), anything else installs the key itself.
+ */
+export function installTarget(dep, spec) {
+  if (!String(spec).startsWith('npm:')) return { name: dep, range: String(spec) };
+  const rest = String(spec).slice('npm:'.length);
+  const at = rest.lastIndexOf('@'); // a scoped name starts with one
+  return at > 0 ? { name: rest.slice(0, at), range: rest.slice(at + 1) } : { name: rest, range: 'latest' };
+}
+
+/** Each runtime dependency of `manifest`, with the package it actually installs. */
+export function runtimeEdges(manifest) {
+  return RUNTIME_FIELDS.flatMap((field) =>
+    Object.entries(manifest[field] ?? {}).map(([dep, spec]) => ({ field, dep, ...installTarget(dep, spec) })),
+  );
+}
 
 /**
  * What is wrong with one manifest as a consumer of the registry would receive it.
@@ -65,11 +85,14 @@ export function manifestProblems(manifest, members) {
       const protocol = UNPUBLISHABLE_PROTOCOLS.find((p) => String(spec).startsWith(p));
       if (protocol) {
         problems.push(`${id}: ${field}['${dep}'] is '${spec}' — npm cannot resolve the ${protocol} protocol`);
-        continue;
       }
-      if (RUNTIME_FIELDS.includes(field) && members.get(dep)?.private) {
-        problems.push(`${id}: ${field}['${dep}'] is a private workspace member — it is never published`);
-      }
+    }
+  }
+  for (const { field, dep, name } of runtimeEdges(manifest)) {
+    if (UNPUBLISHABLE_PROTOCOLS.some((p) => String(manifest[field][dep]).startsWith(p))) continue;
+    if (members.get(name)?.private) {
+      const what = name === dep ? '' : ` (an alias of ${name})`;
+      problems.push(`${id}: ${field}['${dep}']${what} is a private workspace member — it is never published`);
     }
   }
   return problems;
@@ -102,7 +125,6 @@ export function pnpmMembers(root = process.cwd()) {
   return members;
 }
 
-const run = promisify(execFile);
 
 /**
  * Pack the member at `path` the way `pnpm publish` would and return the package.json inside
@@ -155,10 +177,7 @@ async function main() {
         return;
       }
       problems.push(...manifestProblems(manifest, members));
-      // Every version release.yml publishes carries provenance; one without it came from
-      // somewhere else. Reported, not refused: a package's first version is published by
-      // hand by design, and is correct when it was published with `pnpm publish`.
-      if (!manifest.dist?.attestations) notes.push(`${name}@${version} has no provenance attestation — published outside release.yml`);
+      // Every version release.yml      if (!manifest.dist?.attestations) notes.push(`${name}@${version} has no provenance attestation — published outside release.yml`);
     });
   } else {
     await pool(published, 6, async ([, { path, manifest }]) => {
