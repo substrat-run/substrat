@@ -231,6 +231,7 @@ import {
   parseValidationRecords,
   resolveScopeRecord,
   ulid,
+  type CarriedAway,
   capabilityTokenHash,
   checkBecomeInput,
   plausibleSessionToken,
@@ -1365,7 +1366,7 @@ interface ScopeStubRpc {
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
   exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string }>;
   /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
-  wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: { to: string; at: string }): Promise<boolean>;
+  wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway): Promise<boolean>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
   /**
@@ -2578,7 +2579,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async wipeCarriedLocal(
     scopeId: ScopeId,
     expectLoadStamp: string | null,
-    carriedAway: { to: string; at: string },
+    carriedAway: CarriedAway,
   ): Promise<boolean> {
     return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway);
   }

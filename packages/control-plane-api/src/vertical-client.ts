@@ -989,13 +989,8 @@ export class VerticalClient {
    * A store nothing has stamped is stamped by this read.
    */
   async exportScopeStamped(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null }> {
-    // `exportScope`'s request exactly, with the header read off the same response.
     const path = `/internal/export?scopeId=${encodeURIComponent(scopeId)}&stamp=1`;
-    const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.reach('introspection', () =>
-      this.options.fetch(`${base}${path}`, { headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret } }),
-    );
-    if (!res.ok) throw await this.refusal('introspection', res);
+    const res = await this.getInternalResponse(path);
     const loadStamp = res.headers.get(LOAD_STAMP_HEADER) || null;
     return { tables: await this.parseInternal<ScopeDumpTable[]>('introspection', path, res), loadStamp };
   }
@@ -1490,6 +1485,11 @@ export class VerticalClient {
 
   /** A platform-authenticated GET to the vertical's `/internal/*` surface. */
   private async getInternal<T>(path: string): Promise<T> {
+    return this.parseInternal<T>('introspection', path, await this.getInternalResponse(path));
+  }
+
+  /** `getInternal`'s request, answering the response itself, for a caller that reads a header too. */
+  private async getInternalResponse(path: string): Promise<Response> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const res = await this.reach('introspection', () =>
       this.options.fetch(`${base}${path}`, {
@@ -1497,6 +1497,6 @@ export class VerticalClient {
       }),
     );
     if (!res.ok) throw await this.refusal('introspection', res);
-    return this.parseInternal<T>('introspection', path, res);
+    return res;
   }
 }

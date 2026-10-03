@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
-import { CARRIED_AWAY_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
   createControlPlaneApi,
@@ -444,7 +444,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           name: '_substrat_meta',
           ddl: 'CREATE TABLE _substrat_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
           columns: ['key', 'value'],
-          rows: [['load_stamp', forged]],
+          rows: [[LOAD_STAMP_KEY, forged]],
         },
       ]);
       expect(await v1.wipeCarriedLocal(sid, forged, away)).toBe(false);
@@ -462,7 +462,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       // Never in a dump: a copy of this store carries no stamp of it.
       await v1.restoreScopeLocal(sid, notes('again'), { loadStamp: 'carry-stamp' });
       const dumped = await v1.exportScopeLocal(sid);
-      expect(dumpMetaValue(dumped, 'load_stamp')).toBeNull();
+      expect(dumpMetaValue(dumped, LOAD_STAMP_KEY)).toBeNull();
       expect((await v1.exportScopeStampedLocal(sid)).loadStamp).toBe('carry-stamp');
     });
 

@@ -2530,7 +2530,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ...(await switchCarryFor(host.admin, actor, { tenantId, scopeId })),
         sourceScopeId: source.scopeId,
         exact: source.exact,
-        ...(source.loadStamp ? { loadStamp: source.loadStamp } : {}),
+        loadStamp: source.loadStamp,
       }),
     );
   };
@@ -2756,6 +2756,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
   };
 
+  /** The script a scope's requests reach: its serving pin, else its bound version's own script. */
+  const routeOf = async (c: ReqCtx, scope: Scope): Promise<string | null> => {
+    if (scope.servingRef) return scope.servingRef;
+    if (!scope.vertical || !scope.verticalVersionId) return null;
+    return (await c.var.admin.getVersion(c.get('actor'), scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null;
+  };
+
   /** A carry that landed (#1710): where the data went, and what `bindAfterCarry` settles with (#1722). */
   type Carried = {
     from: string;
@@ -2802,7 +2809,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * binding or pin that moved since the caller read it is refused (412): another carry bound
    * away from this script, which may already have wiped it, and an export from a wiped DO comes
    * back as an empty store. A dump that carries the `carried_away` tombstone is refused the same
-   * way. The caller binds with `bindAfterCarry`, which deletes the source copy once the bind
+   * way. The caller binds with `bindAfterCarry`, which wipes the source copy once the bind
    * lands, so neither check can pass on an export from a copy that is about to go.
    *
    * What it does not do:
@@ -2831,10 +2838,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     if (!resolveVersion || (scope.servingRef && !opts.dropServingRef)) return null;
     const to = incoming.deploymentRef ?? null;
-    const bound = scope.verticalVersionId
-      ? await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical)
-      : undefined;
-    const from = scope.servingRef ?? bound?.deploymentRef ?? null;
+    const from = await routeOf(c, scope);
     if (!to || !from || from === to) return null;
     // Resolve each end at exactly the script named above. No fallback to the prod channel:
     // a guessed source would be exported, found empty, and carried as if it were the data.
@@ -2894,13 +2898,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
   };
 
-  /** The script a scope's requests reach: its serving pin, else its bound version's own script. */
-  const routeOf = async (c: ReqCtx, scope: Scope): Promise<string | null> => {
-    if (scope.servingRef) return scope.servingRef;
-    if (!scope.vertical || !scope.verticalVersionId) return null;
-    return (await c.var.admin.getVersion(c.get('actor'), scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null;
-  };
-
   /**
    * Wipe one copy of a scope that no route reaches (#1722), without reaping it. Fenced where the
    * deployment can fence it: the wipe runs only if nothing was loaded into that DO since
@@ -2911,7 +2908,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * all that guards an unfenced wipe.
    */
   const wipeCarriedCopy = async (
-    actor: PlatformActorId,
     holder: VerticalClient,
     scope: Scope,
     expectLoadStamp: string | null,
@@ -2929,6 +2925,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }),
     );
     return true;
+  };
+
+  /**
+   * Where the scope routes now, read again after a carry's bind (null for a scope gone from the
+   * directory). Bound to the carry's own version and unpinned, that is the carry's destination,
+   * which needs no version read.
+   */
+  const currentRoute = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<string | null> => {
+    const now = await c.var.admin.getScopeRecord(c.get('actor'), scope.tenantId, scope.id);
+    if (!now) return null;
+    if (!now.servingRef && now.verticalVersionId === versionId) return carried.to;
+    return routeOf(c, now);
   };
 
   /** Whether the scope's store in `holder` is a wiped copy: it holds the `carried_away` tombstone. */
@@ -3010,10 +3018,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const dropUnboundCopy = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
     try {
-      const now = await c.var.admin.getScopeRecord(c.get('actor'), scope.tenantId, scope.id);
-      const route = now ? await routeOf(c, now) : null;
+      const route = await currentRoute(c, scope, versionId, carried);
       if (route === carried.to) return;
-      await wipeCarriedCopy(c.get('actor'), carried.dest, scope, carried.restoredStamp, route ?? carried.from);
+      await wipeCarriedCopy(carried.dest, scope, carried.restoredStamp, route ?? carried.from);
     } catch (e) {
       recordCarryCleanup(c, scope, versionId, 'unbound-copy', e);
     }
@@ -3036,8 +3043,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const settleCarriedSource = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
     const actor = c.get('actor');
     try {
-      const now = await c.var.admin.getScopeRecord(actor, scope.tenantId, scope.id);
-      const route = now ? await routeOf(c, now) : null;
+      const route = await currentRoute(c, scope, versionId, carried);
       if (route === carried.from) return;
       if (route === carried.to && (await isCarriedAway(carried.dest, scope))) {
         const { tables: dump, loadStamp: stamp } = await retryTransient(() => carried.source.exportScopeStamped(scope.id));
@@ -3053,10 +3059,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           throw new ControlPlaneError(500, `scope ${scope.id}'s store in '${carried.to}' was wiped again; its source copy stays`);
         }
         // Re-carried, so the fence expects the stamp the re-export read.
-        await wipeCarriedCopy(actor, carried.source, scope, stamp, carried.to);
+        await wipeCarriedCopy(carried.source, scope, stamp, carried.to);
         return;
       }
-      await wipeCarriedCopy(actor, carried.source, scope, carried.sourceStamp, carried.to);
+      await wipeCarriedCopy(carried.source, scope, carried.sourceStamp, carried.to);
     } catch (e) {
       recordCarryCleanup(c, scope, versionId, 'source-copy', e);
     }

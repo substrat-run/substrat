@@ -286,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, carriedAwayDump, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { LOAD_STAMP_KEY, carriedAwayDump, type CarriedAway, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -5097,7 +5097,7 @@ export function defineScopeDO(
      * the `carriedAway` tombstone, so a later restore into it works as on any scope. False when
      * refused.
      */
-    async wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: { to: string; at: string }): Promise<boolean> {
+    async wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway): Promise<boolean> {
       try {
         await this.importDump(carriedAwayDump(carriedAway), scopeId, { sourceScopeId: scopeId, expectLoadStamp });
         return true;

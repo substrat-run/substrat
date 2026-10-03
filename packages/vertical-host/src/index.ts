@@ -27,6 +27,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf } from './errors.js';
 import {
+  type CarriedAway,
   type InvokeOptions,
   type AppliedMigration,
   type SwitchedOff,
@@ -176,7 +177,7 @@ export interface VerticalScopeHost {
    * before it satisfies this interface without it, and the route answers 501, which the
    * platform reads as "this script cannot fence the wipe" and falls back to an unconditional one.
    */
-  wipeCarriedLocal?(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: { to: string; at: string }): Promise<boolean>;
+  wipeCarriedLocal?(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway): Promise<boolean>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #1722: the export and the store's load stamp, read together. Optional: a host built before
@@ -748,7 +749,7 @@ export function mountPlatformSurface<Env extends object>(
       switchedOff: body.switchedOff,
       sourceScopeId: body.sourceScopeId,
       exact: body.exact,
-      ...(body.loadStamp ? { loadStamp: body.loadStamp } : {}),
+      loadStamp: body.loadStamp,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
