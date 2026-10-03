@@ -354,6 +354,7 @@ export type {
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, emittedHere, settleCopiedWork } from './scope-copy.js';
+export { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, carriedAwayDump, dumpMetaValue, metaValueIn, type CarriedAway } from './carried-copy.js';
 export { LEGACY_SCOPE_ROWS_BACKFILL, assertDirectoryTablesBuilt, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, spineColumnAdditions, spineRowsInsert, type KernelColumnsOf } from './spine-restore.js';
 export {
   SYSTEM_SWITCH_OFF_PREDICATE,

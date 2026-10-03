@@ -167,7 +167,14 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
     opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; loadStamp?: string }>;
+  /**
+   * #1722: wipe the copy a carry left in this deployment, only if nothing was loaded into the
+   * scope since the stamp the carry read. Optional, like `redrainCountLocal`: a host built
+   * before it satisfies this interface without it, and the route answers 501, which the
+   * platform reads as "this script cannot fence the wipe" and falls back to an unconditional one.
+   */
+  wipeCarriedLocal?(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: { to: string; at: string }): Promise<boolean>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
@@ -407,6 +414,15 @@ const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
   const parsed = switched ? z.array(switchedOffInUnit).safeParse(switched) : undefined;
   return parsed?.success ? { switchedOff: parsed.data } : {};
 };
+
+const wipeCarriedBody = z.object({
+  scopeId: scopeIdOf,
+  /** The stamp the carry read from its export; null for a store no load has stamped. */
+  expectLoadStamp: z.string().min(1).nullable(),
+  /** The script the data went to, and when, for the tombstone. */
+  carriedTo: z.string().min(1),
+  at: z.string().min(1),
+});
 
 const restoreBody = z.object({
   tenantId: tenantIdOf.optional(),
@@ -717,7 +733,27 @@ export function mountPlatformSurface<Env extends object>(
       exact: body.exact,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
-    return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
+    return c.json({
+      tables: result.tables,
+      ...switchedOffAnswer(result.switchedOff),
+      ...(result.loadStamp ? { loadStamp: result.loadStamp } : {}),
+    });
+  });
+
+  // #1722: wipe the copy a carry left here, after the scope's route moved to another script.
+  // Conditional on the load stamp the carry read, compared inside the wipe's own transaction,
+  // so a rollback that restored into this scope since is never destroyed. `wiped: false` is
+  // that refusal. Non-terminal: the store keeps a `carried_away` tombstone and takes a later
+  // restore like any scope, which `/internal/delete-scope` (a reap) would not.
+  app.post('/internal/wipe-carried', async (c) => {
+    const body = wipeCarriedBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.wipeCarriedLocal) {
+      return c.json({ error: 'this deployment cannot fence a carried copy\'s wipe (#1722) — redeploy it' }, 501);
+    }
+    return c.json({
+      wiped: await host.wipeCarriedLocal(body.scopeId, body.expectLoadStamp, { to: body.carriedTo, at: body.at }),
+    });
   });
 
   // #1239: facets over this scope's own outbox — narrow, group, count. Counts and

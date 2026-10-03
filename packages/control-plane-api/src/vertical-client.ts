@@ -998,12 +998,16 @@ export class VerticalClient {
      *  exactly that scope's grants, and `exact` when the platform exported them itself. A
      *  vertical that predates the fields ignores them. */
     opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
+  ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[]; loadStamp?: string }> {
     // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
     if (opts?.exact && !opts.sourceScopeId) {
       throw substratError('validation_failed', 'restore: `exact` needs `sourceScopeId`, the scope the dump came from');
     }
-    const { tables: count, switchedOff } = await this.postInternal<{ tables: number; switchedOff?: unknown }>(
+    const { tables: count, switchedOff, loadStamp } = await this.postInternal<{
+      tables: number;
+      switchedOff?: unknown;
+      loadStamp?: unknown;
+    }>(
       '/internal/restore',
       {
         tenantId,
@@ -1015,7 +1019,57 @@ export class VerticalClient {
       },
       'restore',
     );
-    return { tables: count, ...switchedOffFrom(switchedOff) };
+    // #1722: the stamp THIS load wrote, so a wipe of the copy can be fenced on it. A vertical
+    // that predates it answers none.
+    return {
+      tables: count,
+      ...switchedOffFrom(switchedOff),
+      ...(typeof loadStamp === 'string' && loadStamp ? { loadStamp } : {}),
+    };
+  }
+
+  /**
+   * Wipe the copy a carry left in this deployment (#1722), only if nothing was loaded into the
+   * scope since `expectLoadStamp` (null: a store no load has stamped). `wiped: false` is the
+   * vertical's refusal: something was restored there since, and it stays.
+   *
+   * `'unfenced'` is a deployment that cannot compare the stamp, and the only answer that lets
+   * the caller fall back to an unconditional wipe: a 404 (built before the route), a 501 (a host
+   * without the method) or an SPA shell (a 200 that is not JSON) are the deployment's own proof
+   * that it wiped nothing. Everything else surfaces as the failure it is: the wipe may or may
+   * not have run.
+   */
+  async wipeCarriedCopy(input: {
+    scopeId: ScopeId;
+    expectLoadStamp: string | null;
+    carriedTo: string;
+    at: string;
+  }): Promise<{ wiped: boolean } | 'unfenced'> {
+    const verb = 'wipe-carried';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}/internal/wipe-carried`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (res.status === 404 || res.status === 501) return 'unfenced';
+    if (!res.ok) throw await this.refusal(verb, res);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await res.text());
+    } catch {
+      return 'unfenced';
+    }
+    const wiped = (raw as { wiped?: unknown } | null)?.wiped;
+    if (typeof wiped !== 'boolean') {
+      throw new ControlPlaneError(
+        502,
+        `vertical answered ${verb} with an unexpected shape — the copy of scope ${input.scopeId} may or may not be wiped`,
+      );
+    }
+    return { wiped };
   }
 
   /** Facets over one scope's outbox (#1239) — through the vertical that holds the data. */

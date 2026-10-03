@@ -1,0 +1,57 @@
+import type { ScopeDumpTable } from '@substrat-run/contracts';
+
+/**
+ * The copy a carry leaves behind (#1722), as two `_substrat_meta` keys.
+ *
+ * A hosted scope's versions are separate scripts, and a carry moves the scope's data from the
+ * script it is served from into the one a version bind is about to route it to. The copy in
+ * the old script is then wiped, never reaped: a later bind back to that version (a rollback)
+ * carries the data into the same Durable Object again, and a reaped DO drops the restore's
+ * role projection (#321). The wipe is a load, the same drop-then-replay a restore runs, of a
+ * dump that holds only the tombstone below.
+ *
+ * - `LOAD_STAMP_KEY` changes on every load into a scope DO, so it says "nothing has been loaded
+ *   here since". A carry reads it from the dump it exported, and the scope DO's conditional
+ *   wipe compares it inside the wipe's own transaction: a rollback that restored into the old
+ *   script in the meantime changed it, and the wipe is refused instead of destroying that
+ *   restore. Written by a scope DO built with #1722; an older one writes none.
+ * - `CARRIED_AWAY_KEY` marks a store whose data was carried to another script and wiped. A
+ *   carry refuses a dump that carries it (its export reached a wiped copy), and a carry that
+ *   finds it on the store it just bound to knows a wipe overtook its restore. Written by the
+ *   wipe on every script, old ones included, because it arrives as a row of the dump.
+ */
+export const LOAD_STAMP_KEY = 'load_stamp';
+export const CARRIED_AWAY_KEY = 'carried_away';
+
+/** Where a carried copy went, and when — the tombstone's value, as JSON. */
+export interface CarriedAway {
+  to: string;
+  at: string;
+}
+
+/** The `_substrat_meta` value under `key` in a dump or a table page's rows, or null. */
+export function metaValueIn(rows: readonly (readonly unknown[])[], columns: readonly string[], key: string): string | null {
+  const k = columns.indexOf('key');
+  const v = columns.indexOf('value');
+  if (k < 0 || v < 0) return null;
+  const row = rows.find((r) => r[k] === key);
+  return row && typeof row[v] === 'string' ? row[v] : null;
+}
+
+/** The `_substrat_meta` value under `key` in a scope dump, or null. */
+export function dumpMetaValue(tables: readonly ScopeDumpTable[], key: string): string | null {
+  const meta = tables.find((t) => t.name.toLowerCase() === '_substrat_meta');
+  return meta ? metaValueIn(meta.rows, meta.columns, key) : null;
+}
+
+/** The dump a wipe loads: an empty store holding only the tombstone. */
+export function carriedAwayDump(record: CarriedAway): ScopeDumpTable[] {
+  return [
+    {
+      name: '_substrat_meta',
+      ddl: 'CREATE TABLE _substrat_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+      columns: ['key', 'value'],
+      rows: [[CARRIED_AWAY_KEY, JSON.stringify({ to: record.to, at: record.at })]],
+    },
+  ];
+}

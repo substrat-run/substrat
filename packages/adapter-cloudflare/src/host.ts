@@ -1358,8 +1358,12 @@ interface ScopeStubRpc {
       sourceScopeId?: ScopeId;
       /** The platform exported the dump itself: no fallback (`RepointSource.exact`). */
       exact?: boolean;
+      /** #1722: this load's stamp; the DO mints one when none is named. */
+      loadStamp?: string;
     },
   ): Promise<SwitchedOff[]>;
+  /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
+  wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: { to: string; at: string }): Promise<boolean>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
   /**
@@ -2552,13 +2556,30 @@ export class CloudflareScopeHost implements ScopeHost {
      *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it;
      *  `exact` says the platform exported the dump itself, so the re-point never falls back. */
     opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; loadStamp: string }> {
+    // #1722: minted here, so the answer names THIS load's stamp and no later one's.
+    const loadStamp = ulid();
     const switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, {
       switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId,
       exact: opts?.exact,
+      loadStamp,
     });
-    return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
+    return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}), loadStamp };
+  }
+
+  /**
+   * Wipe the copy a carry left in THIS deployment (#1722), behind the vertical's
+   * `/internal/wipe-carried`: only if nothing was loaded into the scope's DO since the stamp
+   * the carry read (`expectLoadStamp`, null for a store no load has stamped). Non-terminal,
+   * so a later bind back to this version can restore into it. False when refused.
+   */
+  async wipeCarriedLocal(
+    scopeId: ScopeId,
+    expectLoadStamp: string | null,
+    carriedAway: { to: string; at: string },
+  ): Promise<boolean> {
+    return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway);
   }
 
   /**

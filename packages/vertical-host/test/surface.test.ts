@@ -44,6 +44,12 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     // reply that came from the reopen above is recognisable as the wrong verb.
     redrainCountLocal: async (_s: unknown, before?: unknown) =>
       note('redrainCountLocal', before === '2026-09-16T00:00:00.000Z' ? 11 : -1),
+    // #1722: refuses unless the stamp and the tombstone arrive verbatim.
+    wipeCarriedLocal: async (_s: unknown, stamp?: unknown, away?: unknown) =>
+      note(
+        'wipeCarriedLocal',
+        stamp === 'stamp-1' && JSON.stringify(away) === JSON.stringify({ to: 'v2-script', at: '2026-10-03T00:00:00.000Z' }),
+      ),
     entityHistoryLocal: async (_s: unknown, input?: unknown) =>
       note('entityHistoryLocal', { entries: [input], nextCursor: null }) as never,
     facetEventsLocal: async (_s: unknown, input?: unknown) =>
@@ -351,6 +357,35 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const older = fakeHost({ redrainCountLocal: undefined });
     const refused = await post(older, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z' });
     expect(refused.status).toBe(501);
+    expect(older.calls).toHaveLength(0);
+  });
+
+  // #1722: the fenced wipe of a carried copy. Its own route, so a deployment built before it
+  // answers 404 rather than stripping a field and wiping unconditionally; a host without the
+  // method answers 501. Both read as "cannot fence" on the platform's side.
+  it('serves the fenced wipe with the stamp carried through, and 501s on a host that cannot fence', async () => {
+    const post = (h: ReturnType<typeof fakeHost>, body: unknown) =>
+      appWith(h).request('/internal/wipe-carried', {
+        method: 'POST',
+        headers: { ...authed(), 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }, ENV);
+    const body = { scopeId: SCOPE, expectLoadStamp: 'stamp-1', carriedTo: 'v2-script', at: '2026-10-03T00:00:00.000Z' };
+    const host = fakeHost();
+    const ok = await post(host, body);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ wiped: true });
+    // A stamp is required, even if it is null: an absent one would read as "wipe whatever is there".
+    expect((await post(host, { ...body, expectLoadStamp: undefined })).status).toBe(400);
+    expect((await post(host, { ...body, expectLoadStamp: null })).status).toBe(200);
+    expect(host.calls.filter((c) => c === 'wipeCarriedLocal')).toHaveLength(2);
+    // Behind the platform gate like every sibling.
+    const unsigned = await appWith(host).request('/internal/wipe-carried', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    }, ENV);
+    expect(unsigned.status).toBe(403);
+    const older = fakeHost({ wipeCarriedLocal: undefined });
+    expect((await post(older, body)).status).toBe(501);
     expect(older.calls).toHaveLength(0);
   });
 

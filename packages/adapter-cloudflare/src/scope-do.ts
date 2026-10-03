@@ -52,6 +52,7 @@ import {
   listLimitOf,
   requestFingerprint,
   substratError,
+  errorCodeOf,
   assertReplayableDump,
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
@@ -285,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, carriedAwayDump, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4867,6 +4868,8 @@ export function defineScopeDO(
         switchOff,
         sourceScopeId,
         exact,
+        loadStamp = ulid(),
+        expectLoadStamp,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
@@ -4876,6 +4879,12 @@ export function defineScopeDO(
         sourceScopeId?: ScopeId;
         /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
         exact?: boolean;
+        /** #1722: this load's stamp (`LOAD_STAMP_KEY`), minted here when the caller names none. */
+        loadStamp?: string;
+        /** #1722: load only if this DO's stamp is still this one (null: none was ever written).
+         *  Compared inside the load's transaction, before the first drop; a mismatch throws
+         *  `precondition_failed` and the store is untouched. */
+        expectLoadStamp?: string | null;
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -4917,6 +4926,9 @@ export function defineScopeDO(
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
       }
       const switched = await this.ctx.storage.transaction(async () => {
+        if (expectLoadStamp !== undefined && this.loadStamp() !== expectLoadStamp) {
+          throw substratError('precondition_failed', 'scope store was loaded since it was read; nothing was loaded');
+        }
         this.sql.exec('PRAGMA defer_foreign_keys = ON');
         // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
         const existing = this.sql
@@ -4961,6 +4973,8 @@ export function defineScopeDO(
         // not this one. Dropped, so a restore never carries a receipt over; the repair
         // projection that follows writes this scope's own.
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+        // #1722: a dump's stamp is the store it came from; this load gets its own.
+        this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
         // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
         // text of attachments the dump did not bring back, and queue extraction for those
         // it brought back without text — the bytes decide what that run finds.
@@ -5040,6 +5054,31 @@ export function defineScopeDO(
       this.migrationPromise = undefined;
       this.lastFailure = null;
       return switched;
+    }
+
+    /** This store's load stamp (#1722), or null when no load has written one. */
+    private loadStamp(): string | null {
+      const row = this.sql
+        .exec(`SELECT value FROM _substrat_meta WHERE key = ?`, LOAD_STAMP_KEY)
+        .toArray()[0] as { value: string } | undefined;
+      return row?.value ?? null;
+    }
+
+    /**
+     * Wipe the copy a carry left in this script (#1722), only if nothing was loaded here since
+     * the carry exported it. A rollback that restored into this DO in the meantime changed the
+     * stamp, and its restore stays. Non-terminal, unlike `destroyStorage`: the store is a load of
+     * the `carriedAway` tombstone, so a later restore into it works as on any scope. False when
+     * refused.
+     */
+    async wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: { to: string; at: string }): Promise<boolean> {
+      try {
+        await this.importDump(carriedAwayDump(carriedAway), scopeId, { sourceScopeId: scopeId, expectLoadStamp });
+        return true;
+      } catch (e) {
+        if (errorCodeOf(e) === 'precondition_failed') return false;
+        throw toRpcError(e);
+      }
     }
 
     /**
