@@ -124,7 +124,7 @@ the control plane's WfP uploader — verticals need no secret setup of their own
 control plane must hold the values (hence they're set here).
 
 Optional keys (`CF_SAAS_ROUTING_TARGET`, `CF_SAAS_SSL_METHOD`, `PLATFORM_BASE_DOMAINS`,
-`SECRET_BOX_KEY_ID`, `EMAIL_FROM`, `CP_ACTOR`) are normally wrangler.jsonc `vars`; set
+`SECRET_BOX_KEY_ID`, `EMAIL_FROM`) are normally wrangler.jsonc `vars`; set
 them in the file only to override, and they'll be pushed as secrets that shadow the var.
 
 ## Store-only keys (in the file, never pushed)

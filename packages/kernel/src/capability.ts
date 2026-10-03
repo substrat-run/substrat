@@ -137,6 +137,9 @@ export const CAPABILITY_DDL = `
     ON _substrat_capability_sessions (expires_at);
 `;
 
+/** The tables `CAPABILITY_DDL` builds — what a copy of a scope leaves behind (`capabilitiesForLoad`, #1686). */
+export const CAPABILITY_TABLE_NAMES = ['_substrat_capabilities', '_substrat_capability_sessions'] as const;
+
 /** One capability row as the spine stores it — snake_case, because that is what both adapters `SELECT`. */
 export interface CapabilityRow {
   id: string;

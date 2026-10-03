@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import {
   createControlPlaneApi,
-  UNSAFE_devPlatformActorAuth,
+  mintTenantToken,
+  tenantTokenAuth,
   type ControlPlaneApiOptions,
 } from '@substrat-run/control-plane-api';
 import {
@@ -82,16 +83,28 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const api = () =>
-    createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), scopeBackups: backups });
+  /**
+   * The plane as production wires it for the dashboard (#977): the dashboard's tenant token
+   * is the only credential it reads here, and nobody is staff, so every claim below holds
+   * for the tenant-confined surface the dashboard really reaches — not a fleet-wide one.
+   */
+  const TENANT_TOKEN_SECRET = 'bound-scopes-tenant-token-secret';
+  const tenantPlane = () => ({
+    host,
+    authenticate: () => null,
+    authenticateTenantService: tenantTokenAuth(TENANT_TOKEN_SECRET, staff),
+  });
+  /** What the dashboard presents for a tenant: a token the plane minted for it. */
+  const tokenFor = (tenant: TenantId) => () => mintTenantToken(TENANT_TOKEN_SECRET, { tenantId: tenant });
+
+  const api = () => createControlPlaneApi({ ...tenantPlane(), scopeBackups: backups });
 
   /** A dashboard authority for one tenant, over the real plane. */
   function planeFor(tenant: TenantId): TenantNarrowedControlPlane {
     const plane = api();
     return new TenantNarrowedControlPlane({
       baseUrl: 'http://cp',
-      actor: staff,
-      credential: 'unused-by-the-dev-authenticator',
+      credential: tokenFor(tenant),
       tenantId: tenant,
       fetch: (async (url: string | URL | Request, init?: RequestInit) => {
         const u = new URL(String(url));
@@ -315,11 +328,10 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
       // A plane with no backup store answers reap 501 and leaves the scope intact — but by
       // then its names are released and it is archived. Carrying on would take the NEXT
       // scope offline into the same refusal.
-      const noBackups = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+      const noBackups = createControlPlaneApi(tenantPlane());
       const cp = new TenantNarrowedControlPlane({
         baseUrl: 'http://cp',
-        actor: staff,
-        credential: 'x',
+        credential: tokenFor(A),
         tenantId: A,
         fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
@@ -347,9 +359,9 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
 
       // The same run against a plane that cannot back up: nothing is told, nothing was retired.
       const more = await install(A, 'acme/courses', 'more');
-      const noBackups = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+      const noBackups = createControlPlaneApi(tenantPlane());
       const cp = new TenantNarrowedControlPlane({
-        baseUrl: 'http://cp', actor: staff, credential: 'x', tenantId: A,
+        baseUrl: 'http://cp', credential: tokenFor(A), tenantId: A,
         fetch: (async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
           return noBackups.request(u.pathname + u.search, init);
@@ -456,7 +468,6 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
     const seen: Array<{ url: string; method: string; body: unknown }> = [];
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
-      actor: staff,
       credential: 't',
       tenantId: A,
       fetch: (async (url: string | URL | Request, init?: RequestInit) => {

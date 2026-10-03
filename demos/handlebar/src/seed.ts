@@ -15,6 +15,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { workorderModule, PERM as WO } from '@substrat-run/engine-workorder';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
@@ -127,7 +128,7 @@ export const permissions = definePermissions({
 });
 
 export function buildBikeShopHost(dir: string): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir }); // default checker: the tuple engine
+  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors() }); // default checker: the tuple engine
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

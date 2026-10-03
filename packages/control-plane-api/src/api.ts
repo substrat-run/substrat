@@ -755,6 +755,9 @@ const rebindScopeVerticalBody = z.object({
 // #1756: an adopt moves the scope onto what its vertical serves, and is refused when that breaks
 // an app in the tenant. The body is optional, as it always was.
 const adoptServingBody = z.object({ acknowledge: bindAcknowledgement.optional() });
+// The BULK form starts a run over every still-legacy scope of a vertical, so it reads its body
+// strictly (`readJsonBody`); the single-scope form above keeps the lenient parse it always had.
+const adoptVerticalServingBody = adoptServingBody.strict();
 
 // A snapshot request (preview-and-snapshots.md §3/§9). `expiresAt` opts into the GC
 // sweep; absent = pinned until deliberately deleted. `kind` defaults to 'archive'.
@@ -769,9 +772,46 @@ const snapshotScopeBody = z.object({
 //   false     — the explicit "I accept an unrecoverable wipe"
 //   undefined — back up if a store is configured, proceed without one if not, which is
 //               what keeps every pre-#493 caller (and self-host) working unchanged
-const reapScopeBody = z.object({
-  backup: z.boolean().optional(),
-});
+const reapScopeBody = z
+  .object({
+    backup: z.boolean().optional(),
+  })
+  .strict();
+
+/**
+ * Read the JSON body of a route whose default is an ACT (a reap, a bulk adoption, a fleet
+ * repair), under one grammar. The old `await c.req.json().catch(() => ({}))` turned a body
+ * that did not parse into the defaults, so a body of `{"backup": true` (cut short on the wire)
+ * ran the action it was cut short of describing.
+ *
+ * **Only a ZERO-LENGTH body takes the defaults.** Any other body must hold a JSON value, or it
+ * is a 400. That is deliberately not "an empty-looking body": a body of whitespace, or of a
+ * byte-order mark and nothing else, is a request that did not arrive intact, and reading it as
+ * "no body" would run the default act on it (a tenant reap of ` \t\n ` reaped with no backup).
+ * So the check is on the BYTES, before any decoding or trimming, and a leading BOM is stripped
+ * only so that JSON following it can parse. Do not "simplify" this to `text.trim() === ''`.
+ *
+ * The schema decides the rest. One that guards an act is `.strict()`, so a misspelt key is
+ * refused rather than dropped.
+ */
+async function readJsonBody<S extends z.ZodType>(
+  c: { req: { arrayBuffer(): Promise<ArrayBuffer> } },
+  schema: S,
+): Promise<z.output<S>> {
+  const bytes = await c.req.arrayBuffer();
+  let raw: unknown = {};
+  if (bytes.byteLength > 0) {
+    // `ignoreBOM: true` KEEPS the mark in the string; the default decoder would drop it and
+    // let a BOM-only body decode to '' and look empty.
+    const text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes).replace(/^\uFEFF/, '');
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      throw new ControlPlaneError(400, 'the body is not valid JSON');
+    }
+  }
+  return schema.parse(raw);
+}
 
 // A directory-restore request (#40). `capturedAt` addresses the copy — there is one
 // directory, so that is its whole address. `overwrite` is the guard against the
@@ -1627,7 +1667,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/tenants/:tenantId/reap', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const actor = c.get('actor');
-    const { backup: wantsBackup } = reapScopeBody.parse(await c.req.json().catch(() => ({})));
+    const { backup: wantsBackup } = await readJsonBody(c, reapScopeBody);
     const tenant = await c.var.admin.getTenant(actor, tenantId);
     if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
     if (tenant.status !== 'deleting') {
@@ -3958,6 +3998,122 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ capturedAt: dump.capturedAt, tables: dump.tables.length });
   });
 
+  // -- one-time repair of previews that kept a production serving pin (#1724) --------------
+  // A preview adopted onto its vertical's serving script before #1731 still routes by
+  // `COALESCE(servingRef, deploymentRef)`, so it serves production code while its binding
+  // names the version it was pushed from. #1962 heals one on its next `scope bind`; this is
+  // the pass over the previews nobody binds again. It is the SAME act a bind runs, with the
+  // version the preview is already bound to as its target: carry the data off the serving
+  // script into that version's own script, bind it, then clear the pin. A pin that fails to
+  // clear leaves the route where the data still is, and the next pass carries again.
+  //
+  // Staff only, by default-deny: the path is on neither `BUILDER_ROUTES` nor
+  // `TENANT_ROUTES`, so a builder's push token and a tenant credential both 403 before the
+  // handler runs. (A fleet-wide walk is the wrong shape for either, even a tenant's own.)
+  //
+  // Paged and resumable like every fleet walk here: a pass reads one page of ACTIVE
+  // directory rows after `cursor` and repairs at most `limit` previews from it, answering
+  // `nextCursor` until the fleet is exhausted. Bounded by `limit` because each repair is a
+  // data move between two Durable Objects. A scope that fails is reported and the pass
+  // moves on, so one bad preview cannot hold the rest; it is still pinned, so the next walk
+  // from the start visits it again. A healed preview is no longer a candidate, which is
+  // what makes a re-run a no-op. `dryRun` lists the candidates and touches nothing.
+  const REPAIR_SCAN_PAGE = 500;
+  const repairServingPinsBody = z
+    .object({
+      cursor: scopeIdSchema.optional(),
+      limit: z.number().int().min(1).max(100).default(25),
+      dryRun: z.boolean().default(false),
+    })
+    .strict();
+  type PinRepairOutcome =
+    | { repaired: { from: string; to: string; tables: number } }
+    | { skipped: string };
+  const repairPreviewServingPin = async (c: ReqCtx, scope: Scope): Promise<PinRepairOutcome> => {
+    const actor = c.get('actor');
+    const versionId = scope.verticalVersionId;
+    if (!scope.vertical || !versionId) return { skipped: 'the preview is bound to no version' };
+    // Without its own script the version has nowhere to receive the data, and clearing the pin
+    // would strand it on the serving script.
+    const bound = await c.var.admin.getVersion(actor, versionId, scope.vertical);
+    if (!bound?.deploymentRef) return { skipped: `version ${versionId} has no script of its own` };
+    // The same carry → bind → clear-pin → reassert sequence as `POST …/scopes/:scopeId/version`
+    // runs for a legacy preview (`repairPreviewPin` there). Keep the two in step: #1722 folds
+    // them into one helper.
+    const carried = await carryOntoVersion(c, scope, versionId, { dropServingRef: true });
+    // `expectedVersionId`: a push that re-pointed the preview since it was listed wins, and
+    // this pass leaves the scope to it rather than binding it back.
+    await c.var.admin
+      .bindScopeVersion(actor, scope.tenantId, scope.id, versionId, { expectedVersionId: versionId })
+      .catch(relayHostRefusal);
+    await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null).catch(relayHostRefusal);
+    await c.var.admin.reassertSystemSwitches(
+      actor,
+      { tenantId: scope.tenantId, scopeId: scope.id },
+      { appliedInUnit: carried?.switchedOff },
+    );
+    return { repaired: { from: carried?.from ?? scope.servingRef!, to: bound.deploymentRef, tables: carried?.tables ?? 0 } };
+  };
+  app.post('/previews/repair-serving-pins', async (c) => {
+    if (!options.resolveVerticalVersion || !options.resolveVerticalRef) {
+      return c.json({ error: 'repairing serving pins needs dispatch resolution for both ends' }, 501);
+    }
+    const { cursor, limit, dryRun } = await readJsonBody(c, repairServingPinsBody);
+    const actor = c.get('actor');
+    const page = await c.var.admin.listScopes(actor, { status: ['active'], cursor, limit: REPAIR_SCAN_PAGE });
+    const repaired: { tenantId: string; scopeId: string; from: string; to: string; tables: number }[] = [];
+    const candidates: { tenantId: string; scopeId: string; servingRef: string }[] = [];
+    const skipped: { tenantId: string; scopeId: string; reason: string }[] = [];
+    const failed: { tenantId: string; scopeId: string; status: number; error: string }[] = [];
+    let last: string | undefined = cursor;
+    let handled = 0;
+    let stopped = false;
+    for (const scope of page) {
+      if (scope.kind !== 'preview' || !scope.servingRef) {
+        last = scope.id;
+        continue;
+      }
+      if (handled >= limit) {
+        stopped = true;
+        break;
+      }
+      handled += 1;
+      last = scope.id;
+      const at = { tenantId: scope.tenantId, scopeId: scope.id };
+      if (dryRun) {
+        candidates.push({ ...at, servingRef: scope.servingRef });
+        continue;
+      }
+      try {
+        const outcome = await repairPreviewServingPin(c, scope);
+        if ('skipped' in outcome) skipped.push({ ...at, reason: outcome.skipped });
+        else repaired.push({ ...at, ...outcome.repaired });
+      } catch (e) {
+        // The status the app's error boundary would have answered, so a host refusal (a push
+        // re-pointed the preview since it was listed) reads as a 412 and not as a platform fault.
+        const { status } = mapError(e);
+        const message = e instanceof Error ? e.message : String(e);
+        if (status >= 500 && status !== 501) {
+          recordFailure({
+            actor,
+            operation: 'preview.repair-serving-pin',
+            stage: 'repair',
+            tenantId: scope.tenantId,
+            scopeId: scope.id,
+            vertical: scope.vertical,
+            version: scope.verticalVersionId,
+            status,
+            message,
+          }, e);
+        }
+        failed.push({ ...at, status, error: message });
+      }
+    }
+    // Exhausted only when the page ran short: a full page may be followed by more rows.
+    const nextCursor = stopped || page.length === REPAIR_SCAN_PAGE ? (last ?? null) : null;
+    return c.json({ dryRun, repaired, candidates, skipped, failed, nextCursor });
+  });
+
   // Reap an ARCHIVED primary scope (control-plane.md §4.4): free its DO storage —
   // Cloudflare never garbage-collects a Durable Object, so a deleted app's bytes persist
   // forever otherwise — while keeping the directory row as a tombstone. A POST verb, not
@@ -4069,7 +4225,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     // Body is optional so the bare `POST …/reap` every existing caller sends still
     // parses; `backup` tri-states on purpose (see the ordering comment below).
-    const { backup: wantsBackup } = reapScopeBody.parse(await c.req.json().catch(() => ({})));
+    const { backup: wantsBackup } = await readJsonBody(c, reapScopeBody);
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     if (scope.status !== 'archived') {
@@ -4509,7 +4665,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const owned = (
       await c.var.admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug })
     ).filter((s) => !s.forkedFrom && s.kind !== 'preview' && s.status === 'active');
-    const { acknowledge } = adoptServingBody.parse(await c.req.json().catch(() => ({})));
+    const { acknowledge } = await readJsonBody(c, adoptVerticalServingBody);
     const adopted: string[] = [];
     const alreadyAdopted: string[] = [];
     try {
@@ -4592,6 +4748,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { versionId, snapshot, acknowledge } = bindScopeVersionBody.parse(await c.req.json());
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    // The fleet pass `repairPreviewServingPin` (POST /previews/repair-serving-pins) repeats this
+    // sequence for every legacy preview at once. Keep the two in step: #1722 folds them into one helper.
     const repairPreviewPin = scope?.kind === 'preview' && Boolean(scope.servingRef);
     // #1756: the apps in this tenant the bind would break, asked BEFORE the carry and the
     // snapshot below, which move data. The host refuses too, whoever calls, but by then a

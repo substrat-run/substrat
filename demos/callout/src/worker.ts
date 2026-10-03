@@ -27,6 +27,7 @@ import {
 } from '@substrat-run/contracts';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   assertPlatformCall,
   PlatformCallError,
@@ -152,7 +153,7 @@ function nodeFor(req: Request, env: Env): DemoNode {
  * durable stores are its own `SCOPE` DO class and `AUTH_DB`.
  */
 function hostFor(env: Env): CloudflareScopeHost {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, attachmentExtractors: defaultAttachmentExtractors() });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

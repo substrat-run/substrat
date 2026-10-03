@@ -49,6 +49,7 @@
     "lake:provision": "node scripts/lake-provision.mjs",
     "lake:check": "node scripts/lake-provision.mjs --dry-run",
     "lake:redrain": "node scripts/lake-redrain.mjs",
+    "preview:repair-pins": "node scripts/repair-preview-pins.mjs",
     "todo-demo": "pnpm --filter @substrat-run/demo-todo",
     "lint:tests": "node tools/test-independence.mjs",
     "lint:docs": "node tools/lint-docs.mjs",

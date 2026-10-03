@@ -14,6 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type Clock } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { shopModule, SHOP_PERM } from './module.js';
 import { SHOP_PERMISSIONS } from './operations.js';
@@ -127,7 +128,7 @@ export const permissions = definePermissions({
  * lapses after its real 15 minutes instead of being declared zero-length.
  */
 export function buildShopHost(dir: string, options?: { clock?: Clock }): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir, ...(options?.clock ? { clock: options.clock } : {}) });
+  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors(), ...(options?.clock ? { clock: options.clock } : {}) });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }
