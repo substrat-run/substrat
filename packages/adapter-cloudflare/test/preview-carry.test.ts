@@ -518,6 +518,36 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
     });
 
+    it('on a script that cannot fence the wipe, a rollback that lands first keeps the old script', async () => {
+      const p = await fresh('rb-first', 'first data');
+      unfenced.add(refOf.get(version.v1)!);
+      // A has bound v2 and stops right before it reads the route again to wipe v1; R binds the
+      // scope back to v1 meanwhile. A then finds the scope routing to v1 and leaves it.
+      const read = dir.admin.getScopeRecord.bind(dir.admin);
+      const release = deferred();
+      const reached = deferred();
+      let reads = 0;
+      const spy = vi.spyOn(dir.admin, 'getScopeRecord').mockImplementation(async (...args) => {
+        // A's third read of the scope is its cleanup's: the route's, then the export check's.
+        if (args[2] === p.scopeId && ++reads === 3) {
+          reached.resolve();
+          await release.promise;
+        }
+        return read(...args);
+      });
+      try {
+        const a = bindTo(p.scopeId, 'v2');
+        await reached.promise;
+        expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+        release.resolve();
+        expect((await a).status).toBe(200);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['first data'] });
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+    });
+
     it('on a script that cannot fence the wipe, a rollback the wipe overtook carries its source again', async () => {
       const p = await fresh('rb-old', 'old data');
       unfenced.add(refOf.get(version.v1)!);
