@@ -4858,13 +4858,14 @@ export function defineScopeDO(
      * so the stamp handed out is present exactly while nothing has been loaded here since. One
      * synchronous method, so no load can land between the dump and the stamp.
      */
-    exportDumpStamped(): { tables: ScopeDumpTable[]; loadStamp: string } {
+    exportDumpStamped(): { tables: ScopeDumpTable[]; loadStamp: string; revision: string | null } {
       let stamp = this.loadStamp();
       if (!stamp) {
         stamp = ulid();
         this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, stamp);
       }
-      return { tables: this.exportDump(), loadStamp: stamp };
+      // Read after the stamp's own write, so it is the revision the store holds as it is dumped.
+      return { tables: this.exportDump(), loadStamp: stamp, revision: this.metaValue(WRITE_REVISION_KEY) };
     }
 
     /**
@@ -5254,9 +5255,18 @@ export function defineScopeDO(
      * the `carriedAway` tombstone, so a later restore into it works as on any scope. False when
      * refused.
      */
-    async wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway): Promise<boolean> {
+    async wipeCarried(
+      scopeId: ScopeId,
+      expectLoadStamp: string | null,
+      carriedAway: CarriedAway,
+      /** The write revision the carry's export read; absent from a platform that read none. */
+      expectRevision?: string | null,
+    ): Promise<boolean> {
       try {
-        await this.importDump(carriedAwayDump(carriedAway), scopeId, { sourceScopeId: scopeId, expect: { loadStamp: expectLoadStamp } });
+        await this.importDump(carriedAwayDump(carriedAway), scopeId, {
+          sourceScopeId: scopeId,
+          expect: { loadStamp: expectLoadStamp, ...(expectRevision !== undefined ? { revision: expectRevision } : {}) },
+        });
         return true;
       } catch (e) {
         if (errorCodeOf(e) === 'precondition_failed') return false;

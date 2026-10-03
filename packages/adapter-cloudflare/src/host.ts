@@ -1379,9 +1379,9 @@ interface ScopeStubRpc {
     },
   ): Promise<{ refused: true } | { refused: false; switchedOff: SwitchedOff[] }>;
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
-  exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string }>;
+  exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string; revision: string | null }>;
   /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
-  wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway): Promise<boolean>;
+  wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway, expectRevision?: string | null): Promise<boolean>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
   /**
@@ -2592,9 +2592,17 @@ export class CloudflareScopeHost implements ScopeHost {
     let switchedOff: SwitchedOff[];
     if (opts?.expect) {
       const out = await this.scopeStub(scopeId).importDumpExpecting(tables, scopeId, { ...load, expect: opts.expect });
-      // Thrown here, in the vertical's own isolate, so its route answers 412 rather than a fault.
       if (out.refused) {
-        throw substratError('precondition_failed', 'scope store changed since the carry read it; nothing was loaded (#1722)');
+        // A retry of a load that already committed (its answer was lost on the way back) is
+        // refused by the marker that load itself moved. The store holding THIS request's stamp
+        // says so: no other load writes it. Answered as applied, without `switchedOff`, so the
+        // caller's re-assert after the bind covers the OFF positions.
+        const now = await this.scopeStub(scopeId).loadMarker();
+        if (!opts.loadStamp || now.loadStamp !== opts.loadStamp) {
+          // Thrown here, in the vertical's own isolate, so its route answers 412 rather than a fault.
+          throw substratError('precondition_failed', 'scope store changed since the carry read it; nothing was loaded (#1722)');
+        }
+        return { tables: tables.length };
       }
       switchedOff = out.switchedOff;
     } else {
@@ -2622,8 +2630,10 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     expectLoadStamp: string | null,
     carriedAway: CarriedAway,
+    /** #1722: the write revision the carry's export read, so a write since refuses the wipe. */
+    expectRevision?: string | null,
   ): Promise<boolean> {
-    return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway);
+    return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway, expectRevision);
   }
 
   /**
@@ -2676,7 +2686,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * `exportScopeLocal` with the store's load stamp, read in the same DO call (#1722): what a
    * carry's fenced wipe of the copy it leaves here expects. Behind the vertical's `/internal/export`.
    */
-  async exportScopeStampedLocal(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string }> {
+  async exportScopeStampedLocal(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string; revision: string | null }> {
     return this.scopeStub(scopeId).exportDumpStamped();
   }
 

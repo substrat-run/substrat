@@ -136,6 +136,7 @@ import {
   type ImportState,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
+  WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
 
 /**
@@ -182,12 +183,17 @@ export interface VerticalScopeHost {
   /** #1722: what a carry's restore into this store expects to find unchanged. Optional, like
    *  `wipeCarriedLocal`; the route answers 501 without it, and the platform then cannot fence. */
   loadMarkerLocal?(scopeId: ScopeId): Promise<LoadMarker>;
-  wipeCarriedLocal?(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: CarriedAway): Promise<boolean>;
+  wipeCarriedLocal?(
+    scopeId: ScopeId,
+    expectLoadStamp: string | null,
+    carriedAway: CarriedAway,
+    expectRevision?: string | null,
+  ): Promise<boolean>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #1722: the export and the store's load stamp, read together. Optional: a host built before
    *  it answers the export alone, and the platform then has no stamp to fence a wipe on. */
-  exportScopeStampedLocal?(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string }>;
+  exportScopeStampedLocal?(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string; revision: string | null }>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
   deleteScopeLocal(scopeId: ScopeId): Promise<void>;
   migrationBookmarksLocal(
@@ -430,6 +436,9 @@ const wipeCarriedBody = z.object({
   scopeId: scopeIdOf,
   /** The stamp the carry read from its export; null for a store no load has stamped. */
   expectLoadStamp: z.string().min(1).nullable(),
+  /** The write revision the carry read with it; null for a store never written. A platform that
+   *  predates the field sends none, and the wipe is fenced on the stamp alone. */
+  expectRevision: z.string().min(1).nullable().optional(),
   /** The script the data went to, and when, for the tombstone. */
   carriedTo: z.string().min(1),
   at: z.string().min(1),
@@ -739,8 +748,9 @@ export function mountPlatformSurface<Env extends object>(
     if (c.req.query('stamp') !== '1' || !host.exportScopeStampedLocal) {
       return c.json(await host.exportScopeLocal(scopeId));
     }
-    const { tables, loadStamp } = await host.exportScopeStampedLocal(scopeId);
+    const { tables, loadStamp, revision } = await host.exportScopeStampedLocal(scopeId);
     if (loadStamp) c.header(LOAD_STAMP_HEADER, loadStamp);
+    if (revision) c.header(WRITE_REVISION_HEADER, revision);
     return c.json(tables);
   });
 
@@ -787,7 +797,12 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot fence a carried copy\'s wipe (#1722) — redeploy it' }, 501);
     }
     return c.json({
-      wiped: await host.wipeCarriedLocal(body.scopeId, body.expectLoadStamp, { to: body.carriedTo, at: body.at }),
+      wiped: await host.wipeCarriedLocal(
+        body.scopeId,
+        body.expectLoadStamp,
+        { to: body.carriedTo, at: body.at },
+        body.expectRevision,
+      ),
     });
   });
 

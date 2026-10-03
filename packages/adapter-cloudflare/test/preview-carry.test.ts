@@ -77,7 +77,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         relay(async () => {
           await hooks.export?.(ref, sid);
           if (!unfenced.has(ref)) return host.exportScopeStampedLocal(sid);
-          return { tables: await host.exportScopeLocal(sid), loadStamp: null };
+          return { tables: await host.exportScopeLocal(sid), loadStamp: null, revision: null };
         }),
       restoreScope: (
         _t: unknown,
@@ -107,13 +107,24 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           await hooks.read?.(ref, sid);
           return host.introspectScopeTable(sid, input);
         }),
-      wipeCarriedCopy: async (input: { scopeId: ScopeId; expectLoadStamp: string | null; carriedTo: string; at: string }) =>
+      wipeCarriedCopy: async (input: {
+        scopeId: ScopeId;
+        expectLoadStamp: string | null;
+        expectRevision?: string | null;
+        carriedTo: string;
+        at: string;
+      }) =>
         unfenced.has(ref)
           ? 'unfenced'
           : relay(async () => {
               await hooks.wipe?.(ref, input.scopeId);
               return {
-                wiped: await host.wipeCarriedLocal(input.scopeId, input.expectLoadStamp, { to: input.carriedTo, at: input.at }),
+                wiped: await host.wipeCarriedLocal(
+                  input.scopeId,
+                  input.expectLoadStamp,
+                  { to: input.carriedTo, at: input.at },
+                  input.expectRevision,
+                ),
               };
             }),
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
@@ -660,6 +671,42 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(bodiesIn(await v1.exportScopeLocal(sid))).toEqual(['base', 'in a sync transaction', 'same run']);
     });
 
+    // CodeRabbit #2008: a write that reached the old copy after the export (a request still routed
+    // there before the bind) was never carried. The wipe is fenced on the revision too, so that
+    // copy is kept, holding the write, and recorded for recovery rather than erased.
+    it('a write that reaches the source after the export keeps the source copy, and is recorded', async () => {
+      const p = await fresh('late-write', 'carried');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.marker = held.hook; // after the export, before the restore
+      const pushed = push('late-write', 'v2');
+      await held.reached;
+      await writeOn('v1', p.scopeId, 'n-late', 'written after the export');
+      held.release();
+      expect((await pushed).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried'] });
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['carried', 'written after the export']);
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+      const kept = (await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId })).find((f) => f.stage === 'source-copy-kept');
+      expect(kept).toMatchObject({ operation: 'scope.carry', status: 409 });
+    });
+
+    // CodeRabbit #2008: a restore that committed and lost its answer is retried with the same
+    // expectation, which the first load itself moved. The store holding the retry's own stamp is
+    // answered as applied, so the push lands instead of failing with a 412.
+    it("a restore retried after its answer was lost is answered as applied, and the push lands", async () => {
+      const p = await fresh('lost-answer', 'lost answer data');
+      let lost = false;
+      hooks.restored = async (ref, sid, tables) => {
+        if (lost || ref !== refOf.get(version.v2) || sid !== p.scopeId || dumpMetaValue(tables ?? [], CARRIED_AWAY_KEY) !== null) return;
+        lost = true;
+        throw new Error('connection reset before the answer arrived');
+      };
+      expect((await push('lost-answer', 'v2')).status).toBe(200);
+      expect(lost).toBe(true);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['lost answer data'] });
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+    });
+
     it('a push wipes the copy in the old script, and a bind back to it restores into that same store', async () => {
       const p = await fresh('gone', 'from prod', 'gone data');
       expect((await push('gone', 'v2')).status).toBe(200);
@@ -757,6 +804,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['rb data'] });
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
       expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+      // A's refused wipe hit the live store again, which is not a kept copy to recover.
+      const failures = await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId });
+      expect(failures.filter((f) => f.stage === 'source-copy-kept')).toEqual([]);
     });
 
     it('on a script that cannot fence the wipe, a rollback that lands first keeps the old script', async () => {

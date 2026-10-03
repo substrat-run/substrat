@@ -2774,8 +2774,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     /** The two ends, as resolved for the carry. */
     source: VerticalClient;
     dest: VerticalClient;
-    /** The source store's load stamp, read with the export: what its fenced wipe expects. */
+    /** The source store's load stamp and write revision, read with the export: what its fenced
+     *  wipe expects, so a write that reached it since keeps the copy rather than erasing it. */
     sourceStamp: string | null;
+    sourceRevision: string | null;
     /** The stamp the restore left on `dest` (a deployment that predates it keeps none, and cannot fence). */
     restoredStamp: string;
   };
@@ -2868,7 +2870,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `so the version was not bound (#1710)`,
       );
     }
-    const { tables: dump, loadStamp: sourceStamp } = await retryTransient(() => source.exportScopeStamped(scope.id));
+    const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
+      source.exportScopeStamped(scope.id),
+    );
     // What the destination holds now, read before the binding is checked again. The restore
     // sends it back and is refused if the store moved since: another carry into the same script
     // loaded it, or it went live under another carry's bind and took a write. That is a CI retry
@@ -2910,6 +2914,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       source,
       dest,
       sourceStamp,
+      sourceRevision,
       restoredStamp,
     };
   };
@@ -2926,12 +2931,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const wipeCarriedCopy = async (
     holder: VerticalClient,
     scope: Scope,
-    expectLoadStamp: string | null,
+    expect: { loadStamp: string | null; revision?: string | null },
     carriedTo: string,
   ): Promise<boolean> => {
     const at = new Date().toISOString();
     const fenced = await retryTransient(() =>
-      holder.wipeCarriedCopy({ scopeId: scope.id, expectLoadStamp, carriedTo, at }),
+      holder.wipeCarriedCopy({
+        scopeId: scope.id,
+        expectLoadStamp: expect.loadStamp,
+        ...(expect.revision !== undefined ? { expectRevision: expect.revision } : {}),
+        carriedTo,
+        at,
+      }),
     );
     if (fenced !== 'unfenced') return fenced.wiped;
     await retryTransient(() =>
@@ -3036,10 +3047,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       const route = await currentRoute(c, scope, versionId, carried);
       if (route === carried.to) return;
-      await wipeCarriedCopy(carried.dest, scope, carried.restoredStamp, route ?? carried.from);
+      await wipeCarriedCopy(carried.dest, scope, { loadStamp: carried.restoredStamp }, route ?? carried.from);
     } catch (e) {
       recordCarryCleanup(c, scope, versionId, 'unbound-copy', e);
     }
+  };
+
+  /**
+   * The source wipe, fenced on what the export read. Refused means the copy changed after the
+   * export: a write from a request still routed there before the bind, which the carry never
+   * copied. The copy is then kept, holding that write, and recorded so it can be recovered.
+   */
+  const keepOrWipeSource = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    carried: Carried,
+    expect: { loadStamp: string | null; revision: string | null },
+  ): Promise<void> => {
+    if (await wipeCarriedCopy(carried.source, scope, expect, carried.to)) return;
+    // A rollback that restored into it since made it the live store again: nothing to report.
+    if ((await currentRoute(c, scope, versionId, carried)) === carried.from) return;
+    recordCarryCleanup(
+      c,
+      scope,
+      versionId,
+      'source-copy-kept',
+      new ControlPlaneError(
+        409,
+        `scope ${scope.id}'s copy in '${carried.from}' changed after it was carried to '${carried.to}', so it was ` +
+          `kept: it holds what reached it in between, which the carry did not copy (#1722)`,
+      ),
+    );
   };
 
   /**
@@ -3062,7 +3101,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const route = await currentRoute(c, scope, versionId, carried);
       if (route === carried.from) return;
       if (route === carried.to && (await isCarriedAway(carried.dest, scope))) {
-        const { tables: dump, loadStamp: stamp } = await retryTransient(() => carried.source.exportScopeStamped(scope.id));
+        const { tables: dump, loadStamp: stamp, revision } = await retryTransient(() =>
+          carried.source.exportScopeStamped(scope.id),
+        );
         if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
           throw new ControlPlaneError(500, `both copies of scope ${scope.id} hold the carried_away tombstone; nothing was wiped`);
         }
@@ -3074,11 +3115,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (await isCarriedAway(carried.dest, scope)) {
           throw new ControlPlaneError(500, `scope ${scope.id}'s store in '${carried.to}' was wiped again; its source copy stays`);
         }
-        // Re-carried, so the fence expects the stamp the re-export read.
-        await wipeCarriedCopy(carried.source, scope, stamp, carried.to);
+        // Re-carried, so the fence expects what the re-export read.
+        await keepOrWipeSource(c, scope, versionId, carried, { loadStamp: stamp, revision });
         return;
       }
-      await wipeCarriedCopy(carried.source, scope, carried.sourceStamp, carried.to);
+      await keepOrWipeSource(c, scope, versionId, carried, { loadStamp: carried.sourceStamp, revision: carried.sourceRevision });
     } catch (e) {
       recordCarryCleanup(c, scope, versionId, 'source-copy', e);
     }

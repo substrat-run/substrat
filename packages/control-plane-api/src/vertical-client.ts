@@ -93,6 +93,7 @@ import {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   PLATFORM_SECRET_HEADER,
+  WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
 import type { LoadMarker, OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { undrainedEventsOf } from '@substrat-run/kernel';
@@ -999,11 +1000,14 @@ export class VerticalClient {
    * expects. Null from a deployment that predates the stamp, which cannot fence a wipe either.
    * A store nothing has stamped is stamped by this read.
    */
-  async exportScopeStamped(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null }> {
+  async exportScopeStamped(
+    scopeId: ScopeId,
+  ): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }> {
     const path = `/internal/export?scopeId=${encodeURIComponent(scopeId)}&stamp=1`;
     const res = await this.getInternalResponse(path);
     const loadStamp = res.headers.get(LOAD_STAMP_HEADER) || null;
-    return { tables: await this.parseInternal<ScopeDumpTable[]>('introspection', path, res), loadStamp };
+    const revision = res.headers.get(WRITE_REVISION_HEADER) || null;
+    return { tables: await this.parseInternal<ScopeDumpTable[]>('introspection', path, res), loadStamp, revision };
   }
 
   /**
@@ -1063,6 +1067,8 @@ export class VerticalClient {
   async wipeCarriedCopy(input: {
     scopeId: ScopeId;
     expectLoadStamp: string | null;
+    /** The write revision read with the stamp; a write since refuses the wipe too. */
+    expectRevision?: string | null;
     carriedTo: string;
     at: string;
   }): Promise<{ wiped: boolean } | 'unfenced'> {

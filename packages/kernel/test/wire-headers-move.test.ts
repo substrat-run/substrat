@@ -61,8 +61,10 @@ describe('wire header names, moved to contracts (#1978)', () => {
 
   // A header added after the move is born in contracts and never had a kernel binding (#1722).
   it('a header born after the move has no kernel binding', () => {
-    expect(wireHeaders.LOAD_STAMP_HEADER).toBeDefined();
-    expect(kernelExports.LOAD_STAMP_HEADER).toBeUndefined();
+    for (const name of ['LOAD_STAMP_HEADER', 'WRITE_REVISION_HEADER']) {
+      expect((wireHeaders as Record<string, unknown>)[name], name).toBeDefined();
+      expect(kernelExports[name], name).toBeUndefined();
+    }
   });
 
   it.each(TO_CONTRACTS)("the kernel's %s is the contracts binding", (name) => {
@@ -97,6 +99,7 @@ describe('wire header names, moved to contracts (#1978)', () => {
       CONNECTOR_ATTACHMENT_RECORD_HEADER: 'x-substrat-attachment',
       LIVE_MODE_HEADER: 'x-substrat-live',
       LOAD_STAMP_HEADER: 'x-substrat-load-stamp',
+      WRITE_REVISION_HEADER: 'x-substrat-write-revision',
     });
   });
 });
