@@ -17,6 +17,7 @@ import {
   manifestProblems,
   npmViewAnswer,
   packedManifest,
+  provenanceNote,
   pnpmMembers,
   unresolvedEdges,
 } from './publish-manifests.mjs';
@@ -234,4 +235,12 @@ test('registry: after the window a member that never resolved is returned, for t
   // It waited out the window — bounded, not forever and not zero.
   assert.equal(time.now(), 180_000);
   assert.equal(warnings.length, 9);
+});
+
+test('registry: a served version without provenance is a note; one with it is not', () => {
+  assert.equal(
+    provenanceNote({ name: '@substrat-run/control-plane-client', version: '0.1.0', dist: {} }),
+    '@substrat-run/control-plane-client@0.1.0 has no provenance attestation — published outside release.yml',
+  );
+  assert.equal(provenanceNote(pkg({ dist: { attestations: { provenance: {} } } })), null);
 });

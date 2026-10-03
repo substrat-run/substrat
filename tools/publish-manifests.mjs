@@ -150,6 +150,16 @@ async function npmResolves(name, range) {
 }
 
 /**
+ * Every version release.yml publishes carries provenance; one without it came from somewhere
+ * else. A note, not a refusal: a package's first version is published by hand by design, and
+ * is correct when it was published with `pnpm publish`.
+ */
+export function provenanceNote(manifest) {
+  if (manifest.dist?.attestations) return null;
+  return `${manifest.name}@${manifest.version} has no provenance attestation — published outside release.yml`;
+}
+
+/**
  * A public package that does not declare the publish guard as `prepublishOnly` can be
  * published with `npm publish`, which ships the unrewritten manifest (tools/publish-guard.mjs).
  */
@@ -175,7 +185,6 @@ export function pnpmMembers(root = process.cwd()) {
   }
   return members;
 }
-
 
 /**
  * Pack the member at `path` the way `pnpm publish` would and return the package.json inside
@@ -241,7 +250,8 @@ async function main() {
       for (const edge of missing) {
         problems.push(`${name}@${version}: ${edge.field}['${edge.dep}'] requires ${edge.name}@${edge.range}, which npm has no version of`);
       }
-      // Every version release.yml      if (!manifest.dist?.attestations) notes.push(`${name}@${version} has no provenance attestation — published outside release.yml`);
+      const provenance = provenanceNote(manifest);
+      if (provenance) notes.push(provenance);
     });
   } else {
     await pool(published, 6, async ([, { path, manifest }]) => {
