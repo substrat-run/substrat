@@ -127,6 +127,17 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
     expect(deliveredTo(s)).toEqual(['suspended/active', 'active/active']);
   });
 
+  it('the receipt is what stops a re-delivery: an archived scope, delivered once, is not delivered again', async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.archiveScope(actor, t, s);
+    expect(deliveredTo(s)).toEqual(['archived/active']);
+    await platform().healLifecycles(actor, { limit: 1000 });
+    await platform().healLifecycles(actor, { limit: 1000 });
+    expect(deliveredTo(s)).toEqual(['archived/active']);
+    await expect(servedHere(t, s)).rejects.toThrow(/scope not active \(status: archived\)/);
+  });
+
   it("a tenant's transition fans out to every hosted scope under it, and to nothing else", async () => {
     const t = await tenantOf();
     const a = await hosted(t);
