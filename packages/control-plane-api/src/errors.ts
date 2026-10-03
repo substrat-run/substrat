@@ -32,7 +32,7 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   SUITE asserts on (`/unknown tenant/`, `/illegal scope transition/`, `/already
  *   taken/`, `/not active/`), against both adapters. Changing one turns a contract test
  *   red, not just this mapping. Phase 5 migrates those assertions onto codes and this
- *   table goes with them — **one family at a time, and eight are gone.** `unknown vertical`
+ *   table goes with them — **one family at a time, and ten are gone.** `unknown vertical`
  *   went first; `unknown version` followed, its ten throw sites across the two adapters
  *   now saying `substratError('not_found', …)` with the contract suite asserting that
  *   code rather than the sentence, so the row had nothing left to do. `deploy refused:`
@@ -53,6 +53,10 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   publish seam, `setVerticalListed`: prod points at a version only the AUTO admission note
  *   vouches for, so a staff admit is what it names as the way out) and `not admitted`
  *   (`bindScopeVersion` and `promoteVersion` refusing a version that is not admitted).
+ *   The ninth and tenth are the last two coordinator-only registry refusals: `is already admitted`
+ *   (`rejectVersion` — an admitted version may be bound, so it cannot be un-vouched) and
+ *   `belongs to '` (`promoteVersion` — a version promoted through a vertical that does not own
+ *   it), now `substratError('conflict', …)` at one site per adapter each.
  *   That is the shape every remaining row is waiting for: type the throws, move the
  *   suite's assertion, delete the row. A row is not removed before its throws are typed —
  *   deleting one early turns its refusal into the generic 500 below.
@@ -95,8 +99,6 @@ const CODE_PATTERNS: readonly [RegExp, ErrorCode][] = [
   // Registry (#31): well-formed, but conflicts with a version's admission state or
   // ownership, or needs an unacknowledged change acknowledged (the two checkpoints).
   [/is already registered/, 'conflict'],
-  [/is already admitted/, 'conflict'],
-  [/belongs to '/, 'conflict'],
   [/acknowledge it explicitly to promote/, 'conflict'],
   // The ADDRESSED resource does not exist — including the K-3 fail-closed case
   // where it exists under a DIFFERENT tenant and must read as absent.

@@ -34,13 +34,14 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(body.error).toMatch(/auto-admitted.*staff admit/);
   });
 
-  it('is not swallowed by a neighbouring admission pattern (order is significant)', () => {
-    // `/is already admitted/` still sits beside it in the table and describes a DIFFERENT
-    // state. Were it to match this message, the operator would be told the version is
-    // already admitted — which is true, and precisely the confusion that hid the real
-    // requirement: admitted is not the same as vouched for.
-    expect(mapError(autoAdmitRefusal).body.error).not.toMatch(/^unknown /);
-    expect(mapError(new Error('version 01J is already admitted')).status).toBe(409);
+  it('is not mistaken for the neighbouring "already admitted" refusal', () => {
+    // `rejectVersion`'s `is already admitted` describes a DIFFERENT state, and both are
+    // `conflict` now by their own declaration — so the sentence an operator reads is the
+    // throw's, never a guess from the other's wording. Admitted is not the same as vouched for.
+    const rejectRefusal = substratError('conflict', 'version 01J is already admitted — it may be bound');
+    expect(mapError(autoAdmitRefusal).body.detail).toMatch(/auto-admitted.*staff admit/);
+    expect(mapError(autoAdmitRefusal).body.detail).not.toMatch(/already admitted/);
+    expect(mapError(rejectRefusal).body.detail).toBe(rejectRefusal.message);
   });
 
   it('keeps the note itself out of the matching — the text is the contract, not the constant', () => {
@@ -174,8 +175,9 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(mapError(new Error(sentence)).status).toBe(500);
   });
 
-  it('reads `is owned by`, `is auto-admitted` and `not admitted` from the code now that their rows are gone (#113 phase 5)', () => {
-    // The sixth to eighth families off `CODE_PATTERNS`: the registry's own refusals. Every
+  it('reads the registry\'s own refusals from the code now that their rows are gone (#113 phases 5–6)', () => {
+    // The sixth to tenth families off `CODE_PATTERNS`: `is owned by`, `is auto-admitted`,
+    // `not admitted`, and — `rejectVersion` / `promoteVersion` — `is already admitted` and `belongs to`. Every
     // site is on the coordinator (`host.ts`, `adapter-sqlite`) — none is raised inside a
     // Durable Object — so the real error object reaches `mapError` and the code is read.
     const sentences = [
@@ -184,6 +186,8 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
       `vertical 'crm' prod version 01ABC is auto-admitted (private self-serve) — a staff admit must vouch for it before listing`,
       `version 01ABC is pending, not admitted — it cannot be bound to a scope`,
       `version 01ABC is rejected, not admitted — it cannot be promoted`,
+      `version 01ABC is already admitted — it may be bound`,
+      `version 01ABC belongs to 'helpdesk'`,
     ];
     for (const sentence of sentences) {
       const typed = mapError(substratError('conflict', sentence));
