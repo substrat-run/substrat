@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ControlPlaneError,
   ControlPlaneTransport,
+  ControlPlaneUsageError,
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   type ControlPlaneTransportOptions,
@@ -194,7 +195,9 @@ describe('one credential per request, whatever the headers option carries', () =
     const err = (await make(fetch, { serviceToken: 'good' })
       .call2('/x', { headers: { [SERVICE_TOKEN_HEADER]: 'a', 'X-Platform-Actor': 'b' } })
       .catch((e: unknown) => e)) as Error;
-    expect(err).toBeInstanceOf(TypeError);
+    // A distinct class: `fetch` throws TypeError for a network failure, so a retrying caller cannot key on that.
+    expect(err).toBeInstanceOf(ControlPlaneUsageError);
+    expect(err).not.toBeInstanceOf(TypeError);
     expect(err).not.toBeInstanceOf(ControlPlaneError);
     expect(err.message).toMatch(/names two credentials/);
     expect(seen).toHaveLength(0);

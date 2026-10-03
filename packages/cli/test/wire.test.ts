@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ControlPlaneUsageError } from '@substrat-run/control-plane-client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listVerticalHostnames, unbindHostname, verifyHostname } from '../src/hostnames.js';
 import { printInstalls } from '../src/installs.js';
@@ -428,6 +429,36 @@ describe('preview', () => {
       [`${CP}/verticals/helpdesk/previews/pr-7`, 'DELETE', { ...HEADER, ...JSON_TYPE }],
       [`${CP}/verticals/helpdesk/previews`, 'GET', { ...HEADER, ...JSON_TYPE }],
     ]);
+  });
+
+  it('a request the client refuses to send (two credentials) is thrown once — no retry, no backoff, no warning', async () => {
+    const both = { 'x-service-token': 't', 'x-platform-actor': 'a' };
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ['create (after-handler-ended)', () => createPreview({ ...base, header: both, tag: 'pr-1', versionId: 'v' })],
+      ['list (idempotent)', () => listPreviews({ ...base, header: both })],
+      ['delete (idempotent)', () => deletePreview({ ...base, header: both, tag: 'pr-1' })],
+    ];
+    for (const [, call] of calls) {
+      plane(json([]));
+      const warned = vi.mocked(console.warn).mock.calls.length;
+      await expect(call()).rejects.toBeInstanceOf(ControlPlaneUsageError);
+      expect(seen).toHaveLength(0);
+      expect(vi.mocked(console.warn).mock.calls.length).toBe(warned);
+    }
+  });
+
+  it('a dropped connection on an idempotent call IS still retried and announced (the positive twin — fetch throws TypeError)', async () => {
+    vi.useFakeTimers();
+    try {
+      plane(new TypeError('fetch failed'), json([]));
+      const done = listPreviews(base);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(done).resolves.toEqual([]);
+      expect(seen).toHaveLength(2);
+      expect(vi.mocked(console.warn)).toHaveBeenCalledWith(expect.stringMatching(/network error: fetch failed\); retrying in 1s/));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('nudges a stale CLI off a preview answer', async () => {

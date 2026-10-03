@@ -37,7 +37,7 @@ export interface ControlPlaneTransportOptions {
    * `init.headers`. A client that has a credential of its own ignores any credential header
    * (`x-service-token`, `x-platform-actor`, any case) in this map, and a call that names a
    * credential replaces the client's, so exactly one credential leaves per request — two are
-   * refused with a `TypeError` before anything is sent; a single call can still override
+   * refused with a `ControlPlaneUsageError` before anything is sent; a single call can still override
    * anything else.
    */
   headers?: Record<string, string>;
@@ -106,8 +106,19 @@ export class ControlPlaneError extends Error {
   readonly malformed: boolean;
 }
 
-/** A request that would have carried two credentials — refused before it is sent. */
-class CredentialConflict extends TypeError {}
+/**
+ * The caller built a request the client refuses to send — today, one that would carry two
+ * credentials. A mistake in how the client was used, raised BEFORE anything leaves, so it is
+ * not a `ControlPlaneError` (no plane answered, none was found unreachable) and not a
+ * `TypeError` either: `fetch` itself throws `TypeError` for a network failure, and a caller
+ * that retries on transport errors must be able to tell the two apart by class.
+ */
+export class ControlPlaneUsageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ControlPlaneUsageError';
+  }
+}
 
 export class ControlPlaneTransport {
   private readonly baseUrl: string;
@@ -193,7 +204,7 @@ export class ControlPlaneTransport {
     // both, or an option map that carries both to a client with none of its own, is refused
     // here, before anything is sent, rather than left for the plane to pick between.
     if (merged.has(SERVICE_TOKEN_HEADER) && merged.has(DEV_ACTOR_HEADER)) {
-      throw new CredentialConflict(
+      throw new ControlPlaneUsageError(
         `a request names two credentials (${SERVICE_TOKEN_HEADER} and ${DEV_ACTOR_HEADER}) — send exactly one`,
       );
     }
@@ -216,7 +227,7 @@ export class ControlPlaneTransport {
       res = await this.request(path, init);
     } catch (e) {
       // A refused request is the caller's mistake, not an unreachable plane: it never left.
-      if (e instanceof CredentialConflict) throw e;
+      if (e instanceof ControlPlaneUsageError) throw e;
       // A transport failure (control plane down) must fail closed, not silently
       // pass — a vertical that cannot reach the authority does not get to run.
       throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`, undefined, {

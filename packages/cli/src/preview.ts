@@ -11,7 +11,7 @@
  * tenant-scoped push token CI already carries.
  */
 import { oidcCallbackUrl, type PreviewAuth } from '@substrat-run/contracts';
-import type { ControlPlaneBuilderClient } from '@substrat-run/control-plane-client';
+import { ControlPlaneUsageError, type ControlPlaneBuilderClient } from '@substrat-run/control-plane-client';
 import { parseJsonBody } from './http.js';
 import { planeFor } from './plane.js';
 import { failureMessage } from './problem.js';
@@ -92,6 +92,10 @@ async function request<T>(
       // failure must reach it as the error `fetch` threw, so it can tell the two apart.
       res = await plane.request(path, init);
     } catch (e) {
+      // The client refused to send this request at all (it would have carried two credentials):
+      // a mistake in the request, not a flaky network, so it is neither retried nor announced
+      // as a retry. Keyed on its own class — `fetch` throws `TypeError` for a dropped connection.
+      if (e instanceof ControlPlaneUsageError) throw e;
       // A network-level failure (no response at all) is the same transient class as a 502 —
       // for a call that is safe to repeat while the first is still running. A dropped
       // connection can come after the handler started, so a create does not retry on it.
