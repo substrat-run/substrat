@@ -92,6 +92,11 @@ jobs:
       # and the test first proves that rule still refuses.
       - run: pnpm test:declared-deps
       - run: node tools/declared-deps.mjs
+      # The package.json each public package SHIPS — out of the tarball `pnpm pack` writes,
+      # not the source file — resolves from npm (tools/publish-manifests.mjs says why). Test
+      # first, so a check that stopped refusing is red rather than quiet.
+      - run: pnpm test:publish-manifests
+      - run: pnpm lint:publish-manifests
       # The runtime's `fetch` is handed on as the kernel's `globalFetch`, never as the
       # bare global. workerd refuses the bare global called with any other receiver
       # ("Illegal invocation") and nothing that runs in CI does — Node's fetch accepts
