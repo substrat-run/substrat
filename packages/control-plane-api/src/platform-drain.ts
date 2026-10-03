@@ -29,7 +29,7 @@ import {
   type TenantId,
   sweepRunsPayload,
 } from '@substrat-run/contracts';
-import { ControlPlaneError } from './client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import { reconcileThenReassert } from './reconcile.js';

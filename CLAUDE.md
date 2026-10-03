@@ -51,6 +51,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/contract-tests` | Suites every adapter must pass | AGPL + commercial |
 | `packages/attachment-extractors` | The file-format parsers behind the kernel's attachment extractor seam (K-43): text, HTML, DOCX, XLSX, PPTX. A host passes them in; the kernel and the adapters never import them (`lint:deps` refuses it) | AGPL + commercial |
 | `packages/control-plane-api` | HTTP surface over `HostAdmin` — the audited control-plane transport | AGPL + commercial |
+| `packages/control-plane-client` | The typed HTTP client for the control-plane API — the one transport (credentials, problem documents, `ControlPlaneError`) the CLI, the console and a vertical's connect seam share. Apache-2.0 because the CLI imports it; `lint:deps` refuses an AGPL dependency in it or in the CLI. `control-plane-api` re-exports it | Apache-2.0 |
 | `packages/vertical-host` | The host a deployed vertical runs on — routing, guards, input parsing | AGPL + commercial |
 | `packages/vertical-auth` | One auth composition a vertical mounts (OIDC RP + session + identity) | AGPL + commercial |
 | `packages/oidc-rp` | The relying-party half, shared by the platform apps | AGPL + commercial |
@@ -488,7 +489,14 @@ removing ONE scratch importer and leaving a second adds no offending line and pa
 gate reads the FILE. In a local checkout that means the working tree, so a studio project
 you have open goes red here before you have committed anything — expected, and the message
 says so), `lint:deps`
-(`tools/declared-deps.mjs`: an import whose package the graph does not declare),
+(`tools/declared-deps.mjs`: an import whose package the graph does not declare, and, for
+`@substrat-run/cli` and `@substrat-run/control-plane-client` — the two Apache-2.0 packages a
+builder's tooling installs — a licence off an explicit permissive ALLOWLIST (SPDX expressions
+parsed by a grammar-checking parser, a malformed one refused; MPL, EPL, CDDL, UNLICENSED and anything unnamed are refused) anywhere in the runtime
+closure (`dependencies`, peer, optional; workspace and registry; every resolved instance),
+and an import in what they SHIP — the emitted `dist` JS and types, plus the `src/` imports that survive compilation — of a dependency declared only for development. An AGPL dependency would
+leave their tarballs saying Apache-2.0 while `npm install` pulled the server in beside them,
+#971),
 `lint:generated-marks` (`tools/generated-marks.mjs`: marks 1 and 2 of the three above,
 in both directions — a file that SAYS it is generated carries the `.generated` suffix
 (a document may carry the `<!-- GENERATED … -->` marker instead), and a file NAMED

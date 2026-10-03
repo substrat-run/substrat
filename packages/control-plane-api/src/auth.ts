@@ -16,21 +16,10 @@ import { platformActorId, type OnBehalfOf, type PlatformActorId, type TenantId }
  */
 export type PlatformActorAuth = (request: Request) => Promise<PlatformActorId | null> | PlatformActorId | null;
 
-/** Header the dev stub reads. Mirrors the demos' `x-principal` dev affordance. */
-export const DEV_ACTOR_HEADER = 'x-platform-actor';
-
-/** Header a SERVICE (a vertical registering itself) presents — not a staff subject. */
-export const SERVICE_TOKEN_HEADER = 'x-service-token';
-
-/**
- * Header naming the tenant a caller ACTS FOR. For a builder session it selects the
- * workspace (`--tenant`) the builder reader narrows to. For a staff/service caller it is
- * the slug-resolution pin (#417): vertical routes form `<tenantSlug>/<slug>` from it the
- * way a pinned push does, so `versions <bare> --tenant <t>` over a service token reaches
- * the same registry row a builder session would. It never widens access — staff reach
- * everything already, and for builders the tenant must be one of their memberships.
- */
-export const TENANT_HEADER = 'x-substrat-tenant';
+// The header names live in the client package, which every caller can import without taking
+// this server with it; this module re-exports them so the server reads the same spelling.
+import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER, TENANT_HEADER } from '@substrat-run/control-plane-client';
+export { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER, TENANT_HEADER };
 
 /**
  * A service credential (open decision 2): a shared bearer token that resolves to

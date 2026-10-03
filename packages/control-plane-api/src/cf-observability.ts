@@ -1,5 +1,5 @@
 import { resolveObservabilityWindow, observabilityBucketMinutes } from './observability-window.js';
-import { ControlPlaneError } from './client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type CubeStore, type RequestCubeRow } from './aggregate-source.js';
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';

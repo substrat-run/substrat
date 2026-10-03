@@ -1881,6 +1881,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
+      '@substrat-run/control-plane-client':
+        specifier: workspace:^
+        version: link:../control-plane-client
       '@substrat-run/model-view':
         specifier: workspace:^
         version: link:../model-view
@@ -1937,6 +1940,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
+      '@substrat-run/control-plane-client':
+        specifier: workspace:^
+        version: link:../control-plane-client
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../kernel
@@ -1974,6 +1980,22 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+
+  packages/control-plane-client:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../contracts
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.4
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/create-substrat: {}
 

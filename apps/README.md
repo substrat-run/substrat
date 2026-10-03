@@ -15,6 +15,7 @@ genuinely exitable:
 
 - `packages/contracts`, `packages/cli`, `packages/create-substrat`,
   `packages/boundary-lint`, `packages/model-emit`, `packages/model-view`,
+  `packages/control-plane-client`,
   `demos/*` — **Apache-2.0**
 - `packages/kernel`, `packages/adapter-sqlite`, `packages/adapter-cloudflare`,
   `packages/control-plane-api`,

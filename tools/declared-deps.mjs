@@ -30,8 +30,8 @@
  * `lib: ES2023` refusing to declare it, which is why two packages needed an
  * explicit `"types": ["node"]` when the tree shifted under them.
  */
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
 import { builtinModules } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -129,6 +129,302 @@ export function forbiddenEdgeProblems(pj, files, forbidden = FORBIDDEN_EDGES) {
   return out;
 }
 
+/**
+ * Packages whose RUNTIME dependency closure must hold only permissive licences (#971).
+ *
+ * `@substrat-run/cli` and `@substrat-run/control-plane-client` are Apache-2.0 on purpose
+ * (LICENSING.md): the tools a builder runs against their own code must never
+ * copyleft-capture it. A dependency is the quiet way to break that — the tarball would still
+ * say Apache-2.0 while `npm install` pulled the AGPL server in beside it — which is exactly
+ * what moving the client out of `control-plane-api` was for. So the closure is judged, not
+ * only the direct edge: `dependencies`, `peerDependencies` and `optionalDependencies`, one
+ * hop after another, workspace and registry packages alike. A devDependency is not shipped
+ * and stays legal (the CLI's own tests may import anything).
+ */
+export const PERMISSIVE_ONLY = ['@substrat-run/cli', '@substrat-run/control-plane-client'];
+
+/**
+ * The licences a permissive-only closure may contain — an ALLOWLIST, not a denylist of the
+ * copyleft ones it happens to know. A denylist passes whatever it has not heard of: MPL-2.0,
+ * EPL-2.0 and CDDL-1.0 are file-level copyleft that none of a GPL-shaped pattern catches, and
+ * a licence nobody named yet is by construction not on it. Everything not listed here is
+ * refused, including `UNLICENSED`, `SEE LICENSE IN …` and a field that is absent; widening
+ * the list is a decision a review reads, one identifier at a time. SPDX ids compare
+ * case-insensitively.
+ */
+export const PERMISSIVE_LICENSES = new Set(
+  [
+    'MIT',
+    'MIT-0',
+    'ISC',
+    'BSD-2-Clause',
+    'BSD-3-Clause',
+    'Apache-2.0',
+    '0BSD',
+    'Unlicense',
+    'CC0-1.0',
+    'BlueOak-1.0.0',
+    'Zlib',
+    'Python-2.0',
+    'CC-BY-4.0',
+  ].map((id) => id.toLowerCase()),
+);
+
+/**
+ * The licence EXCEPTIONS a permissive licence may carry (`Apache-2.0 WITH LLVM-exception`).
+ * An exception modifies the licence it follows, so which ones are acceptable is a review
+ * decision, one identifier at a time, exactly like the licences themselves: an unlisted id,
+ * another licence's id (`MIT WITH AGPL-3.0-only`), a `LicenseRef-*` and an `AdditionRef-*`
+ * are all refused. Only exceptions that make a permissive licence MORE permissive belong here.
+ */
+export const PERMISSIVE_EXCEPTIONS = new Set(['LLVM-exception'].map((id) => id.toLowerCase()));
+
+/**
+ * The SPDX licence-expression grammar (SPDX spec, annex D), as a recursive-descent parser:
+ *
+ *     expression  = and-expr *( "OR" and-expr )
+ *     and-expr    = with-expr *( "AND" with-expr )
+ *     with-expr   = simple [ "WITH" exception-id ]
+ *     simple      = "(" expression ")" / license-id [ "+" ] / license-ref
+ *     license-id, exception-id = 1*( ALPHA / DIGIT / "-" / "." )
+ *     license-ref = [ "DocumentRef-" idstring ":" ] "LicenseRef-" idstring
+ *
+ * `AND` binds tighter than `OR`, and the operators are read case-insensitively (an `or` is
+ * unambiguous). It returns the expression's verdict — `OR`: either side permits, `AND`: both
+ * must — and THROWS on anything that is not in the grammar, so a caller fails closed:
+ * `MIT WITH OR`, `MIT WITH (`, a dangling operator, an unbalanced parenthesis, and an
+ * identifier with a character the grammar does not allow are all errors rather than guesses.
+ *
+ * `WITH` is the one place the grammar is narrower than "an expression": its left side is a
+ * SIMPLE licence (`(MIT OR GPL-3.0) WITH LLVM-exception` is not in the grammar), and its right
+ * side must be an exception on `PERMISSIVE_EXCEPTIONS` — an exception is judged, not merely
+ * parsed, so `MIT WITH AGPL-3.0-only` and `MIT WITH LicenseRef-x` are refused. A
+ * `LicenseRef-*` is a licence nobody named in this file, so it is refused unless it is
+ * allowlisted by its full spelling.
+ */
+function parseSpdx(expression) {
+  const tokens = String(expression).match(/\(|\)|[^\s()]+/g) ?? [];
+  let at = 0;
+  const fail = (why) => {
+    throw new SyntaxError(`${why} in SPDX expression ${JSON.stringify(String(expression))}`);
+  };
+  const isOperator = (t) => t !== undefined && /^(?:AND|OR|WITH)$/i.test(t);
+  const isWord = (t, w) => t !== undefined && t.toUpperCase() === w;
+  const IDSTRING = /^[A-Za-z0-9.-]+$/;
+  const LICENSE_REF = /^(?:DocumentRef-[A-Za-z0-9.-]+:)?LicenseRef-[A-Za-z0-9.-]+$/;
+
+  /** One operand: a parenthesized group or a single licence; `group` says which, for WITH. */
+  function simple() {
+    const t = tokens[at++];
+    if (t === undefined) return fail('expected a licence, found the end');
+    if (t === ')') return fail("unexpected ')'");
+    if (t === '(') {
+      const inner = or();
+      if (tokens[at++] !== ')') return fail("expected ')'");
+      return { value: inner, group: true };
+    }
+    if (isOperator(t)) return fail(`expected a licence, found '${t}'`);
+    if (LICENSE_REF.test(t)) return { value: PERMISSIVE_LICENSES.has(t.toLowerCase()), group: false };
+    const id = t.endsWith('+') ? t.slice(0, -1) : t;
+    if (!IDSTRING.test(id)) return fail(`'${t}' is not a licence identifier`);
+    return { value: PERMISSIVE_LICENSES.has(id.toLowerCase()), group: false };
+  }
+  function withException() {
+    const left = simple();
+    if (!isWord(tokens[at], 'WITH')) return left.value;
+    at++;
+    if (left.group) return fail('the left side of WITH must be a single licence, not a group');
+    const exception = tokens[at++];
+    if (exception === undefined || exception === '(' || exception === ')' || isOperator(exception) || !IDSTRING.test(exception)) {
+      return fail('expected an exception identifier after WITH');
+    }
+    // Judged, not just parsed: another licence's id, a LicenseRef or an unreviewed exception is no exception.
+    if (!PERMISSIVE_EXCEPTIONS.has(exception.toLowerCase())) return fail(`'${exception}' is not an allowlisted licence exception`);
+    return left.value;
+  }
+  function and() {
+    let value = withException();
+    while (isWord(tokens[at], 'AND')) {
+      at++;
+      const right = withException();
+      value = value && right;
+    }
+    return value;
+  }
+  function or() {
+    let value = and();
+    while (isWord(tokens[at], 'OR')) {
+      at++;
+      const right = and();
+      value = value || right;
+    }
+    return value;
+  }
+  const verdict = or();
+  if (at !== tokens.length) fail(`unexpected '${tokens[at]}'`);
+  return verdict;
+}
+
+/** Whether an SPDX expression is wholly permissive; one that does not parse is not. */
+export function spdxPermissive(expression) {
+  try {
+    return parseSpdx(expression);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why a package's licence is not acceptable in a permissive-only closure, or `null`. Reads
+ * the `license` field (an SPDX string, or the legacy `{ type }` object) and, failing that,
+ * the legacy `licenses` array, whose entries are alternatives.
+ */
+export function licenseProblem(license, legacyLicenses) {
+  let text = typeof license === 'string' ? license : license && typeof license === 'object' ? license.type : undefined;
+  if (!text && Array.isArray(legacyLicenses)) {
+    text = legacyLicenses.map((l) => (typeof l === 'string' ? l : l?.type)).filter(Boolean).join(' OR ') || undefined;
+  }
+  if (!text || !String(text).trim()) return 'declares no licence';
+  return spdxPermissive(text) ? null : `is ${text}, which is not on the permissive allowlist`;
+}
+
+/**
+ * The closure problems of one package. `read(name, fromKey)` answers
+ * `{ pj, key } | null` for a dependency named from the package at `fromKey` — the CLI wires
+ * it to the workspace and `node_modules`; a test wires it to a literal graph. An optional or
+ * peer dependency that cannot be resolved is skipped (esbuild's per-platform binaries are
+ * installed for one platform only; a peer is the consumer's to install); a required one is a problem, because a check that
+ * silently skipped what it could not find would pass on an empty install.
+ */
+export function licenseProblems(rootPj, rootKey, read) {
+  const out = [];
+  // Visited by resolved INSTANCE (the directory a dependency was found in), not by name: two
+  // versions of one package are two packages, and the second may carry a licence the first
+  // does not. A diamond that reaches the SAME instance twice, and a cycle, are still walked once.
+  const seen = new Set([rootKey]);
+  const walkDeps = (pj, key, trail) => {
+    const required = new Set(Object.keys(pj.dependencies ?? {}));
+    // A peer is the CONSUMER's to provide, so it is legitimately absent from this package's own
+    // install; an optional dependency is absent on the platforms it does not target. A name
+    // that is also a regular dependency is neither: it must resolve.
+    const mayBeAbsent = new Set(
+      [...Object.keys(pj.peerDependencies ?? {}), ...Object.keys(pj.optionalDependencies ?? {})].filter(
+        (n) => !required.has(n),
+      ),
+    );
+    const names = new Set([...required, ...mayBeAbsent]);
+    for (const name of names) {
+      const dep = read(name, key);
+      if (!dep) {
+        if (!mayBeAbsent.has(name)) out.push(`${[...trail, name].join(' → ')}: cannot be resolved — run \`pnpm install\``);
+        continue;
+      }
+      if (seen.has(dep.key)) continue;
+      seen.add(dep.key);
+      const why = licenseProblem(dep.pj.license, dep.pj.licenses);
+      if (why) out.push(`${[...trail, name].join(' → ')} ${why}`);
+      walkDeps(dep.pj, dep.key, [...trail, name]);
+    }
+  };
+  walkDeps(rootPj, rootKey, [rootPj.name]);
+  return out;
+}
+
+/**
+ * What a permissive-only package SHIPS must import only what it ships with (#971). The
+ * declared-imports check above accepts a `devDependency`, which is right for a test or a
+ * tool and wrong for what is published: the emitted JS (and the emitted `.d.ts`) reaches the
+ * importing package at run time, where a dependency declared only for development is not
+ * installed. It is also how the licence closure would be sidestepped — the closure walks the
+ * runtime dependencies, so an AGPL package declared as a devDependency and imported by shipped
+ * code would pass both checks and still be loaded by the published CLI.
+ *
+ * The SHIPPED OUTPUT is the authority: every import in `dist/**\/*.js` and `dist/**\/*.d.ts`,
+ * value or type, because that is what a consumer receives — including what a source-excluded
+ * generated file emits. `src/` is judged too, but only for imports that survive compilation:
+ * `import type` / `export type` are erased and never reach the package, so a type-only import of
+ * a dev-only package is not a finding (and one that leaks into a `.d.ts` is caught there).
+ * `files` maps a path relative to the package to its text; a test or tool file is not judged.
+ */
+export function shippedImportProblems(pj, files) {
+  const shipped = new Set([
+    ...Object.keys(pj.dependencies ?? {}),
+    ...Object.keys(pj.peerDependencies ?? {}),
+    ...Object.keys(pj.optionalDependencies ?? {}),
+    pj.name,
+  ]);
+  const devOnly = new Set(Object.keys(pj.devDependencies ?? {}).filter((n) => !shipped.has(n)));
+  const out = [];
+  for (const [where, text] of Object.entries(files)) {
+    const inDist = /^dist[/\\].*\.(?:js|mjs|cjs|d\.ts|d\.mts|d\.cts)$/.test(where);
+    const inSrc = /^src[/\\]/.test(where);
+    if (!inDist && !inSrc) continue;
+    for (const spec of specifiersIn(inSrc ? withoutTypeOnlyImports(text) : text)) {
+      if (devOnly.has(spec)) {
+        out.push(
+          `${pj.name} ships an import of '${spec}' in ${where}, but declares it only as a devDependency — ` +
+            'the published package reaches it at run time, where it is not installed',
+        );
+      }
+    }
+  }
+  return out;
+}
+
+/** Source with its `import type … from` / `export type … from` statements removed: they are erased. */
+function withoutTypeOnlyImports(text) {
+  return text.replace(/(^|[\n;])\s*(?:import|export)\s+type\b[^;]*?\bfrom\s*['"][^'"]+['"]/g, '$1');
+}
+
+/**
+ * The files of a package that determine what it ships: its non-generated sources and the
+ * emitted JS and type declarations, keyed by path relative to the package. A generated source
+ * is left out here because its output is read in `dist/` instead.
+ */
+export function shippedFilesOf(dir) {
+  const files = {};
+  for (const f of walk(join(dir, 'src'))) {
+    if (/\.(ts|tsx|mts)$/.test(f) && !f.endsWith('.d.ts') && !f.includes('.generated.')) {
+      files[relative(dir, f)] = readFileSync(f, 'utf8');
+    }
+  }
+  for (const f of walk(join(dir, 'dist'))) {
+    if (/\.(?:js|mjs|cjs|d\.ts|d\.mts|d\.cts)$/.test(f)) files[relative(dir, f)] = readFileSync(f, 'utf8');
+  }
+  return files;
+}
+
+/** The real resolver: workspace members by name, everything else up the `node_modules` chain. */
+export function realResolver(workspace) {
+  return (name, fromKey) => {
+    const member = workspace.get(name);
+    if (member) return member;
+    let dir = fromKey;
+    for (;;) {
+      const pjPath = join(dir, 'node_modules', name, 'package.json');
+      if (existsSync(pjPath)) return { pj: JSON.parse(readFileSync(pjPath, 'utf8')), key: realpathSync(dirname(pjPath)) };
+      const up = dirname(dir);
+      if (up === dir) return null;
+      dir = up;
+    }
+  };
+}
+
+/** Every workspace member under the roots, by package name. */
+export function workspaceMembers(roots = ROOTS) {
+  const members = new Map();
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    for (const name of readdirSync(root)) {
+      const pjPath = join(root, name, 'package.json');
+      if (!existsSync(pjPath)) continue;
+      const pj = JSON.parse(readFileSync(pjPath, 'utf8'));
+      members.set(pj.name, { pj, key: resolve(root, name) });
+    }
+  }
+  return members;
+}
+
 function main() {
   const problems = [];
   let checkedPackages = 0;
@@ -186,18 +482,40 @@ function main() {
     }
   }
 
+  const workspace = workspaceMembers();
+  const read = realResolver(workspace);
+  for (const name of PERMISSIVE_ONLY) {
+    const member = workspace.get(name);
+    if (!member) {
+      // A rename must not silently drop the guard.
+      problems.push(`${name}: listed in PERMISSIVE_ONLY but no workspace member has that name`);
+      continue;
+    }
+    const own = licenseProblem(member.pj.license, member.pj.licenses);
+    if (own) problems.push(`${name} ${own}`);
+    const shipped = shippedFilesOf(member.key);
+    // The shipped output is what is judged; with no build there is nothing to read, and a check
+    // that passed on an empty directory would pass for the wrong reason.
+    if (!Object.keys(shipped).some((f) => f.startsWith('dist/'))) {
+      problems.push(`${name}: no emitted dist/ to judge — run \`pnpm -r build\` first`);
+    }
+    problems.push(...shippedImportProblems(member.pj, shipped));
+    for (const p of licenseProblems(member.pj, member.key, read)) problems.push(`licence closure: ${p}`);
+  }
+
   if (problems.length > 0) {
-    console.error('declared-deps: a package references modules it never declared, or an edge K-43 forbids\n');
+    console.error('declared-deps: a package references modules it never declared, an edge K-43 forbids, or a permissive-only package reaches a licence off the allowlist\n');
     for (const p of problems.sort()) console.error(`  ✕ ${p}`);
     console.error(
-      `\n${problems.length} undeclared reference(s). A published package must declare what its\n` +
-        'types and code reference — anything else is relying on another package hoisting it.',
+      `\n${problems.length} problem(s). A published package must declare what its types and code\n` +
+        'reference — anything else is relying on another package hoisting it — and a permissive-only\n' +
+        'package (PERMISSIVE_ONLY) must reach only allowlisted permissive licences through its runtime dependencies.',
     );
     process.exit(1);
   }
 
   console.log(
-    `declared-deps: ${checkedPackages} packages declare everything they reference, and no forbidden edge exists`,
+    `declared-deps: ${checkedPackages} packages declare everything they reference, no forbidden edge exists, and ${PERMISSIVE_ONLY.length} permissive-only closures hold only allowlisted licences`,
   );
 }
 

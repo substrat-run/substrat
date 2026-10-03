@@ -55,11 +55,11 @@ import type {
 } from '@substrat-run/contracts';
 import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
 
-import type { ClientProvisionScopeInput } from './client.js';
+import type { ClientProvisionScopeInput } from '@substrat-run/control-plane-client';
 import type { DoNamespaceRecord } from './do-namespaces.js';
 import type { ConnectorCallsBucket } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
-import { ControlPlaneTransport } from './transport.js';
+import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 
 /**
  * The staff surface of the control-plane API as one typed client — what the console

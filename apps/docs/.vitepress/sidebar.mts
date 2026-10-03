@@ -240,6 +240,7 @@ export function guideSidebar() {
         { text: '@substrat-run/vertical-host', link: '/reference/vertical-host' },
         { text: '@substrat-run/vertical-auth', link: '/reference/vertical-auth' },
         { text: '@substrat-run/control-plane-api', link: '/reference/control-plane-api' },
+        { text: '@substrat-run/control-plane-client', link: '/reference/control-plane-client' },
         { text: '@substrat-run/contract-tests', link: '/reference/contract-tests' },
         { text: '@substrat-run/boundary-lint', link: '/reference/boundary-lint' },
         { text: '@substrat-run/oidc-rp', link: '/reference/oidc-rp' },

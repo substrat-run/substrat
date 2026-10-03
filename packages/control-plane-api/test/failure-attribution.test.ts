@@ -4,7 +4,7 @@ import { PermissionDenied } from '@substrat-run/kernel';
 import { permissionKey, principalId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { attributeFailure, terminalFailureNote } from '../src/failure-attribution.js';
-import { ControlPlaneError } from '../src/client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /** A connector's own error: a real provider response, recognised only by its numeric status. */
 class ScriveApiError extends Error {

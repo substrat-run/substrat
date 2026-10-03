@@ -5,27 +5,9 @@
  * endpoints (`/verticals/:slug/versions`, `/channels`); today those are staff-gated, so
  * this works for staff now and for builders once builder-scoped authz lands.
  */
+import type { ChannelRow as Channel, ControlPlaneBuilderClient, VersionRow as Version } from '@substrat-run/control-plane-client';
 import { listVerticalHostnames } from './hostnames.js';
-import { readAllEntries } from './http.js';
-import { getJson } from './problem.js';
-
-interface Version {
-  id: string;
-  version: string;
-  admission: string;
-  deploymentRef?: string;
-}
-interface Channel {
-  channel: string;
-  versionId: string;
-  // What prod's stable serving script actually runs (#286/#321). Differs from versionId
-  // when an in-place serve failed: the channel was promoted but the scopes run old code.
-  servingVersionId?: string | null;
-}
-
-/** Walk a paged list route to the end (the CLI wants the whole list, not a screenful). */
-const getAll = <T>(url: string, header: Record<string, string>): Promise<T[]> =>
-  readAllEntries<T>(url, (pageUrl) => getJson(pageUrl, header));
+import { planeFor, walkAll } from './plane.js';
 
 /**
  * Resolve the registry identity `versions <slug>` should read (#399): the exact slug
@@ -38,23 +20,18 @@ const getAll = <T>(url: string, header: Record<string, string>): Promise<T[]> =>
  * which slug was read and a note when it differs from what was asked.
  */
 async function resolveVersionsSlug(
-  base: string,
-  header: Record<string, string>,
+  client: ControlPlaneBuilderClient,
   slug: string,
 ): Promise<{ slug: string; versions: Version[]; note?: string; ambiguous?: string[] }> {
-  const exact = await getAll<Version>(`${base}/verticals/${encodeURIComponent(slug)}/versions`, header);
+  const exact = await walkAll((page) => client.listVersions(slug, page));
   if (exact.length > 0) return { slug, versions: exact };
   // The registry list is visibility-scoped server-side (staff: all; builder: own), so a
   // tail match never reveals a foreign tenant's registration the caller couldn't read.
-  const registry = await getAll<{ slug: string }>(`${base}/verticals`, header).catch(
-    () => [] as Array<{ slug: string }>,
-  );
+  const registry = await walkAll((page) => client.listVerticals(page)).catch(() => [] as Array<{ slug: string }>);
   const candidates = registry.filter((v) => v.slug !== slug && v.slug.endsWith(`/${slug}`));
   const withVersions: Array<{ slug: string; versions: Version[] }> = [];
   for (const c of candidates) {
-    const versions = await getAll<Version>(`${base}/verticals/${encodeURIComponent(c.slug)}/versions`, header).catch(
-      () => [] as Version[],
-    );
+    const versions = await walkAll((page) => client.listVersions(c.slug, page)).catch(() => [] as Version[]);
     if (versions.length > 0) withVersions.push({ slug: c.slug, versions });
   }
   if (withVersions.length === 1) {
@@ -80,8 +57,8 @@ export async function printVersions(
   // slug. Absent (no --tenant) ⇒ the cross-check is skipped and the hint stays generic.
   tenantId?: string,
 ): Promise<void> {
-  const base = controlPlaneUrl.replace(/\/$/, '');
-  const resolved = await resolveVersionsSlug(base, header, slug);
+  const client = planeFor(controlPlaneUrl, header);
+  const resolved = await resolveVersionsSlug(client, slug);
   if (resolved.note) console.log(resolved.note);
   if (resolved.ambiguous) {
     console.log(
@@ -92,10 +69,7 @@ export async function printVersions(
   }
   const { versions } = resolved;
   // Channels are best-effort — a vertical with none registered still lists its versions.
-  const channels = await getAll<Channel>(
-    `${base}/verticals/${encodeURIComponent(resolved.slug)}/channels`,
-    header,
-  ).catch(() => [] as Channel[]);
+  const channels = await walkAll((page) => client.listChannels(resolved.slug, page)).catch(() => [] as Channel[]);
 
   if (versions.length === 0) {
     // Distinguish "no versions" from the #399 lineage fork: if installs (hostnames) are

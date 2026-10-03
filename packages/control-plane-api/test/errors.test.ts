@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AUTO_ADMISSION_NOTE, substratError } from '@substrat-run/contracts';
-import { ControlPlaneError } from '../src/client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { mapError } from '../src/errors.js';
 
 /**

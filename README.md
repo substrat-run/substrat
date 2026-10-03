@@ -63,6 +63,7 @@ platform's own applications are source-available but not licensed for reuse.
 | `packages/adapter-cloudflare` | Durable-Object scope host and the durable control plane — production | AGPL-3.0 + commercial |
 | `packages/contract-tests` | The suite every adapter must pass unchanged (decision 14) | AGPL-3.0 + commercial |
 | `packages/control-plane-api` | HTTP surface over `HostAdmin` — the audited control-plane transport | AGPL-3.0 + commercial |
+| `packages/control-plane-client` | The typed HTTP client for the control-plane API — one transport for the CLI, the console and a vertical's connect seam | Apache-2.0 |
 | `packages/vertical-host` | The `/internal/*` surface and error envelope a hosted vertical mounts | AGPL-3.0 + commercial |
 | `packages/vertical-auth` | Pluggable auth for verticals: an `AuthProvider` contract, OIDC, a per-tenant identity store | AGPL-3.0 + commercial |
 | `packages/oidc-rp` | OIDC relying party — authorization code + PKCE, workerd-safe | AGPL-3.0 + commercial |

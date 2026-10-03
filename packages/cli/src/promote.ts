@@ -21,9 +21,14 @@ import {
   type MigrationEntry,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { warnIfStale } from './version.js';
-import { parseJsonBody, readAllEntries } from './http.js';
-import { failureMessage, getJson } from './problem.js';
+import {
+  ControlPlaneError,
+  type ExportBreaks,
+  type MintedStore,
+  type PromoteResult,
+} from '@substrat-run/control-plane-client';
+import { planeFor, viaPlane, walkAll } from './plane.js';
+import { failureMessage, readRefused } from './problem.js';
 
 export interface PromoteOptions {
   controlPlaneUrl: string;
@@ -32,12 +37,6 @@ export interface PromoteOptions {
   channel: string;
   versionId: string;
   acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean };
-}
-
-/** The installed apps a promote breaks (#1705 PR 3), as the control plane lists them to this caller. */
-export interface ExportBreaks {
-  affected: ExportBreak[];
-  otherTenants?: number;
 }
 
 /** The listing a refused (or acknowledged) export break carries, one line per affected app. */
@@ -56,47 +55,23 @@ export function exportBreakListing(b: ExportBreaks): string {
   return `\n${exportBreakLines(b).join('\n')}\n(re-run with --ack-export-break once read)`;
 }
 
-/**
- * One store the promote minted for an already-installed tenant (#825) — a store declared
- * by THIS version that the tenant, having been created before the declaration existed,
- * did not have. Reported so adopting a new store is something the builder watches happen
- * rather than an ops step someone has to remember.
- */
-export interface MintedStore {
-  tenantId: string;
-  binding: string;
-  kind: 'relational' | 'blob';
-}
-
-export interface PromoteResult {
-  channel: string;
-  versionId: string;
-  /** Present only when this promote minted stores, or tried and could not. `minted` names
-   *  only tenants the caller may see (a builder reads its own tenant's directory rows and no
-   *  one else's); `otherTenants` counts the rest of the fleet the sweep also covered. */
-  storeBackfill?: { minted: MintedStore[]; otherTenants?: number; error?: string };
-  /** Present when an acknowledged export break reached installed apps (#1705 PR 3). */
-  exportBreaks?: ExportBreaks;
-}
+export type { ExportBreaks, MintedStore, PromoteResult };
 
 export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
-  const base = opts.controlPlaneUrl.replace(/\/$/, '');
-  const url = `${base}/verticals/${encodeURIComponent(opts.slug)}/channels/${encodeURIComponent(opts.channel)}/promote`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { ...opts.header, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      versionId: opts.versionId,
-      ...(opts.acknowledge ? { acknowledge: opts.acknowledge } : {}),
-    }),
-  });
-  warnIfStale(res.headers);
-  const body = await res.text();
-  // A refused promote is exactly where the problem document earns its keep: the two
-  // checkpoints answer 4xx with the digests that need acknowledging (#971) — and, since
-  // #1677, with the two diffs those digests stand for, so `--ack-*` is an informed answer.
-  // An export-break refusal (#1705 PR 3) carries its own listing of the apps it breaks.
-  if (!res.ok) {
+  // `advisory`: a promote is one of the three commands that nudge a stale CLI, off every
+  // answer — success or refusal — before it is read.
+  const client = planeFor(opts.controlPlaneUrl, opts.header, { advisory: true });
+  try {
+    // The refusal is passed through as it is: it needs a second round-trip to explain, which a
+    // synchronous mapper cannot make.
+    return await viaPlane(() => client.promoteChannel(opts.slug, opts.channel, opts.versionId, opts.acknowledge), (e) => e);
+  } catch (e) {
+    if (!(e instanceof ControlPlaneError)) throw e;
+    const body = e.body ?? '';
+    // A refused promote is exactly where the problem document earns its keep: the two
+    // checkpoints answer 4xx with the digests that need acknowledging (#971) — and, since
+    // #1677, with the two diffs those digests stand for, so `--ack-*` is an informed answer.
+    // An export-break refusal (#1705 PR 3) carries its own listing of the apps it breaks.
     let parsed: { exportBreaks?: ExportBreaks | null; exportBreaksUnavailable?: string } = {};
     try {
       parsed = JSON.parse(body) as typeof parsed;
@@ -108,7 +83,7 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
       : parsed.exportBreaksUnavailable
         ? `\n  (${parsed.exportBreaksUnavailable}; re-run with --ack-export-break to promote anyway)`
         : '';
-    const message = failureMessage('promote failed', res.status, body);
+    const message = failureMessage('promote failed', e.status, body);
     if (!message.includes(NEEDS_ACK)) throw new Error(message + listing);
     const lines = await explainRefusal(opts, {
       permission: message.includes('changes the permission surface'),
@@ -116,7 +91,6 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
     });
     throw new Error(`${message}${listing}\n\n${lines.join('\n')}`);
   }
-  return parseJsonBody<PromoteResult>(body, url);
 }
 
 /** What both digest refusals say (`… — acknowledge it explicitly to promote`). Case matters:
@@ -134,24 +108,20 @@ export async function explainRefusal(
   opts: PromoteOptions,
   refused: { permission: boolean; migration: boolean },
 ): Promise<string[]> {
-  const base = `${opts.controlPlaneUrl.replace(/\/$/, '')}/verticals/${encodeURIComponent(opts.slug)}`;
-  const get = <T>(url: string): Promise<T> => getJson<T>(url, opts.header);
+  const client = planeFor(opts.controlPlaneUrl, opts.header);
+  const get = <T>(read: () => Promise<T>): Promise<T> => viaPlane(read, readRefused);
   try {
-    const channels = await readAllEntries(`${base}/channels`, (u) =>
-      get<{ entries: { channel: string; versionId: string }[]; nextCursor: string | null }>(u),
-    );
+    const channels = await walkAll((page) => client.listChannels(opts.slug, page));
     // The channel's `versionId`, as the gate compares — not `servingVersionId`, which only
     // differs after a failed in-place serve (#1661 follows that one for reconcile).
     const serving = channels.find((c) => c.channel === opts.channel)?.versionId;
     if (!serving) return ['(nothing serves this channel yet, so there is nothing to diff against)'];
     const registry = (id: string) =>
-      get<{ registry: PermissionRegistry | null }>(`${base}/versions/${encodeURIComponent(id)}/registry`).then((r) => r.registry);
+      get(() => client.getVersionRegistry<PermissionRegistry>(opts.slug, id)).then((r) => r.registry);
     const [from, to, migrations] = await Promise.all([
       registry(serving),
       registry(opts.versionId),
-      get<{ migrations: MigrationDiff | null }>(
-        `${base}/versions/${encodeURIComponent(opts.versionId)}/migrations?base=${encodeURIComponent(serving)}`,
-      ).then((r) => r.migrations),
+      get(() => client.getVersionMigrations<MigrationDiff>(opts.slug, opts.versionId, serving)).then((r) => r.migrations),
     ]);
     return [
       `${opts.channel} serves ${serving}; promoting ${opts.versionId}.`,

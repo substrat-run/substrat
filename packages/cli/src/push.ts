@@ -42,8 +42,9 @@ import {
   formatViolations,
   maskSource,
 } from '@substrat-run/boundary-lint';
-import { warnIfStale } from './version.js';
-import { parseJsonBody, readAllEntries } from './http.js';
+import { walkPages } from '@substrat-run/control-plane-client';
+import { parseJsonBody } from './http.js';
+import { planeFor } from './plane.js';
 import { failureMessage } from './problem.js';
 import { exportedSweeperNamesOf, sweeperOffence, type ScheduleRef } from './schedule-sweeper.js';
 
@@ -1618,16 +1619,32 @@ export async function push(
     form.set(part, new Blob([a.content], { type: a.entry.contentType }), part);
   }
 
-  const url = `${opts.controlPlaneUrl}/verticals/${encodeURIComponent(opts.slug)}/deploy`;
-  console.log(
-    `uploading ${entry} (+${modules.length - 1} modules${assets.length ? `, ${assets.length} assets` : ''}) → ${url}`,
+  return uploadVersion(
+    opts,
+    form,
+    `${entry} (+${modules.length - 1} modules${assets.length ? `, ${assets.length} assets` : ''})`,
   );
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: opts.authHeader,
-    body: form,
-  });
-  warnIfStale(res.headers);
+}
+
+/**
+ * POST the assembled bundle to `/verticals/<slug>/deploy` and read the control plane's answer.
+ *
+ * The multipart upload is the one request the typed client cannot express — its body is a
+ * form whose boundary `fetch` writes, so no content type may be set — and it needs the raw
+ * exchange: the CLI reads the answer's status, headers and text itself. It still goes through
+ * the client, for the addressing and the credential map, with the stale-CLI nudge off the
+ * answer (success or refusal) as it always was.
+ */
+export async function uploadVersion(
+  opts: { controlPlaneUrl: string; authHeader: Record<string, string>; slug: string },
+  form: FormData,
+  what: string,
+): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
+  const plane = planeFor(opts.controlPlaneUrl, opts.authHeader, { advisory: true });
+  const path = `/verticals/${encodeURIComponent(opts.slug)}/deploy`;
+  const url = plane.urlFor(path);
+  console.log(`uploading ${what} → ${url}`);
+  const res = await plane.request(path, { method: 'POST', body: form });
   const body = await res.text();
   if (!res.ok) {
     // Surface what the control plane said — its problem document's `detail`, `code` and
@@ -1883,18 +1900,11 @@ export async function nextVersion(
   slugs: readonly string[],
   seed: string | undefined,
 ): Promise<string> {
-  const base = controlPlaneUrl.replace(/\/$/, '');
+  const client = planeFor(controlPlaneUrl, header);
   let best: [number, number, number] | null = null;
   for (const slug of slugs) {
     // The max semver must see EVERY version, so walk the paged list to the end.
-    const versions = await readAllEntries<{ version: string }>(
-      `${base}/verticals/${encodeURIComponent(slug)}/versions`,
-      async (pageUrl) => {
-        const r = await fetch(pageUrl, { headers: header });
-        if (!r.ok) throw new Error(String(r.status));
-        return r.json() as Promise<{ entries: { version: string }[]; nextCursor: string | null }>;
-      },
-    ).catch(() => [] as { version: string }[]);
+    const versions = await walkPages((page) => client.listVersions(slug, page)).catch(() => [] as { version: string }[]);
     for (const v of versions) {
       const t = parseSemver(v.version);
       if (t && (!best || isNewer(t, best))) best = t;
@@ -1919,17 +1929,10 @@ export async function previewVersion(
   seed: string | undefined,
   tag: string,
 ): Promise<string> {
-  const base = controlPlaneUrl.replace(/\/$/, '');
+  const client = planeFor(controlPlaneUrl, header);
   const all: string[] = [];
   for (const slug of slugs) {
-    const versions = await readAllEntries<{ version: string }>(
-      `${base}/verticals/${encodeURIComponent(slug)}/versions`,
-      async (pageUrl) => {
-        const r = await fetch(pageUrl, { headers: header });
-        if (!r.ok) throw new Error(String(r.status));
-        return r.json() as Promise<{ entries: { version: string }[]; nextCursor: string | null }>;
-      },
-    ).catch(() => [] as { version: string }[]);
+    const versions = await walkPages((page) => client.listVersions(slug, page)).catch(() => [] as { version: string }[]);
     for (const v of versions) all.push(v.version);
   }
   // The release this preview rehearses: max stable coordinate + 1 (prereleases skipped).

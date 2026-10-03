@@ -3,19 +3,14 @@
  * (builder-plane.md §5). `substrat login` calls it to store a default tenant (and to
  * prompt when a user belongs to several); a bare `whoami` command prints it.
  */
-import { readJson } from './http.js';
+import type { Whoami } from '@substrat-run/control-plane-client';
+import { bodyOrStatus, planeFor, viaPlane } from './plane.js';
 
-export interface Whoami {
-  user: { id: string; email?: string } | null;
-  tenants: { id: string; slug: string; name: string }[];
-}
+export type { Whoami };
 
 export async function fetchWhoami(controlPlaneUrl: string, header: Record<string, string>): Promise<Whoami> {
-  const base = controlPlaneUrl.replace(/\/$/, '');
-  const url = `${base}/auth/whoami`;
-  const res = await fetch(url, { headers: header });
-  if (!res.ok) {
-    throw new Error(`whoami failed (${res.status}): ${(await res.text().catch(() => res.statusText)).slice(0, 200)}`);
-  }
-  return readJson<Whoami>(res, url);
+  return viaPlane(
+    () => planeFor(controlPlaneUrl, header).whoami(),
+    (e) => new Error(`whoami failed (${e.status}): ${bodyOrStatus(e).slice(0, 200)}`),
+  );
 }

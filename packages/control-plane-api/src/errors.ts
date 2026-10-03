@@ -9,7 +9,7 @@ import {
   type Problem,
 } from '@substrat-run/contracts';
 import { SecretBoxUnconfiguredError } from '@substrat-run/kernel';
-import { ControlPlaneError } from './client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ConnectionRelayError } from './connection-relay.js';
 
 /**

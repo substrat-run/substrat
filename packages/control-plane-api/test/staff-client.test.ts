@@ -277,9 +277,9 @@ describe('ControlPlaneClient — defaults are exactly today’s request (#971)',
     expect(seen[0]!.headers).toEqual({ [DEV_ACTOR_HEADER]: '', 'content-type': 'application/json' });
   });
 
-  it('keeps one error class: ControlPlaneError from client.js is the transport’s', async () => {
-    const { ControlPlaneError: fromClient } = await import('../src/client.js');
-    const { ControlPlaneError: fromTransport } = await import('../src/transport.js');
-    expect(fromClient).toBe(fromTransport);
+  it('keeps one error class: the entry’s ControlPlaneError is the client package’s', async () => {
+    const { ControlPlaneError: fromEntry } = await import('../src/index.js');
+    const { ControlPlaneError: fromPackage } = await import('@substrat-run/control-plane-client');
+    expect(fromEntry).toBe(fromPackage);
   });
 });

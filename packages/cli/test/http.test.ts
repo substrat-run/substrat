@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { explainPlatformFault, parseJsonBody, readJson } from '../src/http.js';
+import { explainPlatformFault, parseJsonBody } from '../src/http.js';
 
 /**
  * The HTML-instead-of-JSON diagnosis (#387): a control-plane URL pointing at the
@@ -27,13 +27,6 @@ describe('parseJsonBody', () => {
     expect(() => parseJsonBody('service unavailable', 'https://cp/x')).toThrowError(
       /non-JSON response from https:\/\/cp\/x: service unavailable/,
     );
-  });
-
-  it('readJson reads a Response body through the same diagnosis', async () => {
-    const html = new Response('<!doctype html><html></html>', { status: 200 });
-    await expect(readJson(html, 'https://cp/x')).rejects.toThrowError(/got HTML, not JSON/);
-    const ok = new Response('{"ok":true}', { status: 200 });
-    await expect(readJson<{ ok: boolean }>(ok, 'https://cp/x')).resolves.toEqual({ ok: true });
   });
 });
 

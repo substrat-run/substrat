@@ -135,7 +135,7 @@ import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileThenReassert, switchCarryFor } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
-import { ControlPlaneError } from './client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { mapError, type ApiError } from './errors.js';

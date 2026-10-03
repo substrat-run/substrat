@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    // The base lib is ES2023 only. This package is an HTTP client, so it needs the
+    // web-standard fetch types (`Request`/`Headers`/`RequestInit`): real in Node, in
+    // Workers and in the browser alike — the "web-standard APIs always" rule, not a DOM
+    // dependency. Nothing here touches `window` or `document`.
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["src"]
+}

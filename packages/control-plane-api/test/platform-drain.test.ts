@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ControlPlaneError } from '../src/client.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ulid } from '@substrat-run/kernel';
 import {
   platformActorId,

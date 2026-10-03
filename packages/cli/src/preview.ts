@@ -11,8 +11,9 @@
  * tenant-scoped push token CI already carries.
  */
 import { oidcCallbackUrl, type PreviewAuth } from '@substrat-run/contracts';
-import { warnIfStale } from './version.js';
+import { ControlPlaneUsageError, type ControlPlaneBuilderClient } from '@substrat-run/control-plane-client';
 import { parseJsonBody } from './http.js';
+import { planeFor } from './plane.js';
 import { failureMessage } from './problem.js';
 
 export interface PreviewCreated {
@@ -73,11 +74,12 @@ export function formatPreviewLogin(created: PreviewCreated): string[] {
  */
 async function request<T>(
   action: string,
-  url: string,
-  header: Record<string, string>,
+  plane: ControlPlaneBuilderClient,
+  path: string,
   init?: RequestInit,
   opts: { retry?: Retry } = {},
 ): Promise<T> {
+  const url = plane.urlFor(path);
   // A transient platform fault (#1918) is one retry away from working, and a CI job nobody
   // watches turns it into a red build. Only the callers that are idempotent by contract opt
   // in; a 4xx or any other status is a definite answer and is never retried. `Retry` says
@@ -86,8 +88,14 @@ async function request<T>(
   for (let attempt = 1; ; attempt++) {
     let res: Response;
     try {
-      res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
+      // The raw exchange: this loop reads each attempt's status and body itself, and a network
+      // failure must reach it as the error `fetch` threw, so it can tell the two apart.
+      res = await plane.request(path, init);
     } catch (e) {
+      // The client refused to send this request at all (it would have carried two credentials):
+      // a mistake in the request, not a flaky network, so it is neither retried nor announced
+      // as a retry. Keyed on its own class — `fetch` throws `TypeError` for a dropped connection.
+      if (e instanceof ControlPlaneUsageError) throw e;
       // A network-level failure (no response at all) is the same transient class as a 502 —
       // for a call that is safe to repeat while the first is still running. A dropped
       // connection can come after the handler started, so a create does not retry on it.
@@ -95,7 +103,6 @@ async function request<T>(
       await backoff(action, attempt, attempts, `network error: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
-    warnIfStale(res.headers);
     let body: string;
     try {
       body = await res.text();
@@ -172,6 +179,13 @@ async function backoff(action: string, attempt: number, attempts: number, why: s
 }
 
 /**
+ * A preview call's client: the JSON content type on every request (reads and deletes too, as
+ * the hand-rolled one sent it), and the stale-CLI nudge off every answer.
+ */
+const previewPlane = (opts: { controlPlaneUrl: string; header: Record<string, string> }): ControlPlaneBuilderClient =>
+  planeFor(opts.controlPlaneUrl, opts.header, { advisory: true, contentType: 'application/json' });
+
+/**
  * Create (or update) a preview. Idempotent on the tag: a second call with the same tag —
  * what a PR *synchronize* triggers — rebinds the new version onto the SAME fork, and the
  * control plane copies the fork's data into that version's deployment first (#1710), so the
@@ -190,11 +204,10 @@ export async function createPreview(opts: {
   surface?: string;
   refresh?: boolean;
 }): Promise<PreviewCreated> {
-  const base = opts.controlPlaneUrl.replace(/\/$/, '');
   return request<PreviewCreated>(
     'preview create failed',
-    `${base}/verticals/${encodeURIComponent(opts.slug)}/previews`,
-    opts.header,
+    previewPlane(opts),
+    `/verticals/${encodeURIComponent(opts.slug)}/previews`,
     {
       method: 'POST',
       body: JSON.stringify({
@@ -223,11 +236,10 @@ export async function deletePreview(opts: {
   slug: string;
   tag: string;
 }): Promise<{ deleted: string | null }> {
-  const base = opts.controlPlaneUrl.replace(/\/$/, '');
   return request<{ deleted: string | null }>(
     'preview delete failed',
-    `${base}/verticals/${encodeURIComponent(opts.slug)}/previews/${encodeURIComponent(opts.tag)}`,
-    opts.header,
+    previewPlane(opts),
+    `/verticals/${encodeURIComponent(opts.slug)}/previews/${encodeURIComponent(opts.tag)}`,
     { method: 'DELETE' },
     // The route answers 200 `{ deleted: null }` for a preview already gone, so a retry after a
     // delete that landed but whose response was lost succeeds rather than failing on a 404.
@@ -240,11 +252,10 @@ export async function listPreviews(opts: {
   header: Record<string, string>;
   slug: string;
 }): Promise<PreviewRow[]> {
-  const base = opts.controlPlaneUrl.replace(/\/$/, '');
   return request<PreviewRow[]>(
     'preview list failed',
-    `${base}/verticals/${encodeURIComponent(opts.slug)}/previews`,
-    opts.header,
+    previewPlane(opts),
+    `/verticals/${encodeURIComponent(opts.slug)}/previews`,
     undefined,
     { retry: 'idempotent' },
   );

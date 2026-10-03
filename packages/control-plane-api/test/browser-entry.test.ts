@@ -35,10 +35,14 @@ function externalsOf(entry: string, seen = new Set<string>()): Set<string> {
 }
 
 describe('the browser entry', () => {
-  it('reaches nothing at run time but fetch and @substrat-run/contracts', () => {
+  it('reaches nothing at run time but fetch, contracts and the client package', () => {
     // A bundler follows the import graph of the subpath; one stray `hono` or `node:*` import
-    // here ships the server to every console visitor, and no unit test would notice.
-    expect([...externalsOf(join(SRC, 'browser.ts'))]).toEqual(['@substrat-run/contracts']);
+    // here ships the server to every console visitor, and no unit test would notice. The
+    // client package is Apache-2.0 and holds its own line (its entry test: contracts only).
+    expect([...externalsOf(join(SRC, 'browser.ts'))].sort()).toEqual([
+      '@substrat-run/contracts',
+      '@substrat-run/control-plane-client',
+    ]);
   });
 
   it('the scan sees a server import when there is one (the positive twin)', () => {

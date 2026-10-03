@@ -20,7 +20,8 @@
  * 3. anything else — a slice of the raw body, which is at least the truth.
  */
 import { problem as problemSchema, problemDetail } from '@substrat-run/contracts';
-import { explainPlatformFault, readJson } from './http.js';
+import type { ControlPlaneError } from '@substrat-run/control-plane-client';
+import { explainPlatformFault } from './http.js';
 
 /** How much of an unrecognised body is worth printing before it stops being a message. */
 const RAW_BODY_LIMIT = 300;
@@ -136,13 +137,11 @@ export function failureMessage(action: string, status: number, body: string): st
   return lines.join('\n') + explainPlatformFault(status, p.detail);
 }
 
-/** GET one control-plane page, reading a refusal as the problem document it is. */
-export async function getJson<T>(url: string, header: Record<string, string>): Promise<T> {
-  const res = await fetch(url, { headers: header });
-  if (!res.ok) {
-    // The control plane answers a refused read with a problem document; print what it
-    // says — the code and the detail — instead of a slice of the raw body (#971).
-    throw new Error(failureMessage('control-plane read failed', res.status, await res.text().catch(() => res.statusText)));
-  }
-  return readJson<T>(res, url);
+/**
+ * What every control-plane read refuses with: the problem document the plane answered, read
+ * as `failureMessage` reads it — the code and the detail, never a slice of the raw body (#971).
+ * The body is the response's text, or its status phrase when the stream could not be read.
+ */
+export function readRefused(e: ControlPlaneError): Error {
+  return new Error(failureMessage('control-plane read failed', e.status, e.body ?? e.statusText ?? ''));
 }
