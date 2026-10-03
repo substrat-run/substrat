@@ -559,8 +559,9 @@ Its `--registry` half reads what npm actually serves for each current version, p
 weekly (`scaffold.yml`), because `pnpm publish -r` skips a version npm already has: a broken copy
 published another way is never replaced, and no packed manifest can see it.
 `control-plane-client@0.1.0` reached npm with `workspace:^` that way, and `npx @substrat-run/cli`
-failed to install for everyone. A package's first, hand-published version goes out with
-`pnpm publish`, never `npm publish`),
+failed to install for everyone. The prevention half is `tools/publish-guard.mjs`, every public
+package's `prepublishOnly`: it refuses any publisher but pnpm — including for a package's first,
+hand-published version — and this gate refuses a public package that does not declare it),
 `lint:export-schemas --base <ref>` (`tools/export-schema-diff.mts`: D-22 for exported events,
 #1705. Each exported type's payload schema in `model.json` is compared with the merge-base. At an
 unchanged schemaVersion a removed, retyped, newly required or no-longer-required field is red,
