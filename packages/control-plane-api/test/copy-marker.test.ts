@@ -58,6 +58,7 @@ describe('marking copies as copies, in their own storage (#2005)', () => {
   const markedIn = new Set<string>();
   type Lineage = { kind: string; forkedFrom: string | null };
   const markCalls: string[] = [];
+  const clearCalls: string[] = [];
   let refuseMark: string | null = null;
   const deployment = (ref: string): VerticalClient =>
     ({
@@ -79,6 +80,7 @@ describe('marking copies as copies, in their own storage (#2005)', () => {
         return { marked: fresh };
       },
       clearCopyMark: async (sid: string, lineage: Lineage) => {
+        clearCalls.push(sid);
         if (!isPrimaryScope(lineage)) throw new ControlPlaneError(409, 'clear-copy-mark refused: a copy');
         const had = markedIn.delete(sid);
         return { cleared: had };
@@ -348,10 +350,12 @@ describe('marking copies as copies, in their own storage (#2005)', () => {
       expect(log.at(-1)?.after).toMatchObject({ outcome: 'cleared' });
     });
 
-    it('refuses to clear a real copy', async () => {
+    it('refuses to clear a real copy, before the vertical is asked', async () => {
+      clearCalls.length = 0;
       const res = await clear(snapshot);
       expect(res.status).toBe(409);
       expect(markedIn.has(snapshot)).toBe(true);
+      expect(clearCalls).toEqual([]);
     });
 
     it('is staff only', async () => {
