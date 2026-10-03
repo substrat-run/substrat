@@ -164,6 +164,8 @@ describe('the router’s peer entrypoint (#1706)', () => {
         scope: TARGET_SCOPE,
         calls: null,
         depth: 2,
+        // A peer call only ever dispatches to a primary instance (#2005).
+        primary: true,
       },
     });
   });

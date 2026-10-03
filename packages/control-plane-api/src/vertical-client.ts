@@ -1,5 +1,6 @@
 import type {
   AttachmentRecord,
+  ScopeLineage,
   ConnectionId,
   DrainedEvent,
   EntityRef,
@@ -1029,8 +1030,18 @@ export class VerticalClient {
      *  exactly that scope's grants, and `exact` when the platform exported them itself. A
      *  vertical that predates the fields ignores them. #1722: `loadStamp`, the stamp a carry
      *  leaves on the copy it lands, which a later fenced wipe of that copy expects, and `expect`,
-     *  the marker the carry read here (`loadMarker`): the load is refused if the store moved since. */
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string; expect?: LoadMarker },
+     *  the marker the carry read here (`loadMarker`): the load is refused if the store moved since.
+     *  #2005: `markCopy` — the directory's classification of this scope, sent when it is not
+     *  primary, so the vertical marks it a copy in its own storage (and refuses a primary one).
+     *  A vertical that predates the field ignores it. */
+    opts?: {
+      switchedOff?: ModuleId[];
+      sourceScopeId?: ScopeId;
+      exact?: boolean;
+      loadStamp?: string;
+      expect?: LoadMarker;
+      markCopy?: ScopeLineage;
+    },
   ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
     // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
     if (opts?.exact && !opts.sourceScopeId) {
@@ -1047,6 +1058,7 @@ export class VerticalClient {
         ...(opts?.exact ? { exact: true } : {}),
         ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),
         ...(opts?.expect ? { expect: opts.expect } : {}),
+        ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
       },
       'restore',
     );
@@ -1224,6 +1236,17 @@ export class VerticalClient {
         `vertical answered ${verb} with a body that is neither JSON nor its HTML shell — it may or may not have acted`,
       );
     }
+  }
+
+  /** Mark one scope a copy in the vertical's own storage (#2005), given the directory's
+   *  classification of it; whether this call stamped it. */
+  async markCopy(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }> {
+    return this.postInternal<{ marked: boolean }>('/internal/mark-copy', { scopeId, lineage }, 'mark-copy');
+  }
+
+  /** Remove a mistaken copy marker (#2005), given the directory's classification; whether it did. */
+  async clearCopyMark(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ cleared: boolean }> {
+    return this.postInternal<{ cleared: boolean }>('/internal/clear-copy-mark', { scopeId, lineage }, 'clear-copy-mark');
   }
 
   /** Facets over one scope's outbox (#1239) — through the vertical that holds the data. */

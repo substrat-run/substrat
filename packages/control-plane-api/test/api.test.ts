@@ -3195,9 +3195,10 @@ describe('control-plane API', () => {
       const copy = scopeId.parse(ulid());
       await host.importScope(staff, { tenantId: t, scopeId: copy, vertical: 'demo-vert' }, dump);
 
-      // The copy holds what the export said it held — same tables, same row counts.
+      // The copy holds what the export said it held — same tables, same row counts — but for
+      // the one row every copy adds: where it came from (#1686, #2005).
       const src = (await host.admin.listScopeTables(staff, t, s))
-        .map((x) => `${x.name}:${x.rowCount}`)
+        .map((x) => (x.name === '_substrat_copy_origin' ? `${x.name}:1` : `${x.name}:${x.rowCount}`))
         .sort();
       const dst = (await host.admin.listScopeTables(staff, t, copy))
         .map((x) => `${x.name}:${x.rowCount}`)

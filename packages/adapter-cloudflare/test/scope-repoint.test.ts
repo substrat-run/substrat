@@ -381,12 +381,17 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
     const preview = created.body.scopeId;
     // The real drain, with the handler counting what it was asked to run.
     const ran: string[] = [];
-    const drain = (sid: ScopeId) =>
-      drainScopePlatformRequests(
+    // The scope's kind and lineage from the directory, as the control plane's drain reads
+    // them (#2005): the preview is also inert for its own intents, so `drained: 0` below is
+    // #1686's settle-at-load — the copied intent never reaches the list at all.
+    const drain = async (sid: ScopeId) => {
+      const rec = await hostFor('v1').admin.getScopeRecord(staff, t, sid);
+      return drainScopePlatformRequests(
         hostFor('v1'),
-        { tenantId: t, scopeId: sid, vertical: slug, versionId: version.v1 },
+        { tenantId: t, scopeId: sid, vertical: slug, versionId: version.v1, scope: { kind: rec!.kind, forkedFrom: rec!.forkedFrom } },
         { 'provision-sibling': async (_ctx, r) => (ran.push(`${sid}:${r.id}`), { status: 'done' }) },
       );
+    };
     expect(await drain(preview)).toMatchObject({ drained: 0, done: 0 });
     expect(ran).toEqual([]);
     // The twin: prod's own drain runs it, once.

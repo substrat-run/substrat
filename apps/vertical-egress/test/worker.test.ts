@@ -302,3 +302,239 @@ describe('outbound policy (#303)', () => {
     expect(res.status).toBe(200);
   });
 });
+
+/**
+ * #2005: a fork, a snapshot or a preview causes no outbound effects. The router says which a
+ * dispatch is (`primary`, from the directory read), and this worker holds a non-primary scope
+ * to no third party at all — while the platform's own loopback and relay still answer, since
+ * neither is the outside world.
+ */
+describe('a non-primary scope reaches no third party (#2005)', () => {
+  const policy = (primary: boolean | undefined, hosts: string[] | null = ['api.scrive.com']): OutboundPolicy => ({
+    slug: 'acme-crm',
+    tenant: '01TENANT',
+    hosts,
+    ...(primary === undefined ? {} : { primary }),
+  });
+  const meterInto = (points: unknown[]) =>
+    ({ writeDataPoint: (p: unknown) => void points.push(p) }) as unknown as AnalyticsEngineDataset;
+
+  for (const [name, hosts] of [
+    ['a host its version declares', ['api.scrive.com']],
+    ['an unenforced pre-#303 manifest', null],
+  ] as const) {
+    it(`refuses ${name}, and meters it as inert`, async () => {
+      const internet = vi.fn(async () => new Response('external', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+      const points: unknown[] = [];
+      const res = await worker.fetch(
+        new Request('https://api.scrive.com/api/v2/documents'),
+        envWith({ ANALYTICS: meterInto(points), OUTBOUND_POLICY: policy(false, hosts as string[] | null) }),
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'api.scrive.com' });
+      expect(internet).not.toHaveBeenCalled();
+      expect(points).toEqual([{ indexes: ['acme-crm'], blobs: ['api.scrive.com', 'inert', '01TENANT'] }]);
+    });
+  }
+
+  it('twin: the same subrequest from a primary scope leaves', async () => {
+    const internet = vi.fn(async () => new Response('external', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const res = await worker.fetch(new Request('https://api.scrive.com/x'), envWith({ OUTBOUND_POLICY: policy(true) }));
+    expect(res.status).toBe(200);
+    expect(internet).toHaveBeenCalledTimes(1);
+  });
+
+  it('a router that predates the field passes as before — the skew window fails open', async () => {
+    const internet = vi.fn(async () => new Response('external', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const res = await worker.fetch(new Request('https://api.scrive.com/x'), envWith({ OUTBOUND_POLICY: policy(undefined) }));
+    expect(res.status).toBe(200);
+  });
+
+  it('the platform loopback and the relay still answer a non-primary scope', async () => {
+    const r = router();
+    const internet = vi.fn(async () => new Response('relayed', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const env = envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(false) });
+    expect((await worker.fetch(new Request('https://a.global.substrat.run/x'), env)).status).toBe(200);
+    expect(r.calls).toHaveLength(1);
+    expect((await worker.fetch(new Request('https://console.substrat.net/internal/x'), env)).status).toBe(200);
+    expect(internet).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * #2005, the loopback half: another app on the platform is real, so a fork or a preview may READ
+ * from it and may not WRITE to it. Its own address is its own, and takes any method.
+ */
+describe("a non-primary scope reads other platform apps and writes only its own (#2005)", () => {
+  const OWN = 'shop-acme--pr-7.global.substrat.run';
+  const policy = (primary: boolean): OutboundPolicy => ({
+    slug: 'acme-shop',
+    tenant: '01TENANT',
+    hosts: [],
+    primary,
+    hostname: OWN,
+  });
+  const send = (url: string, method: string, primary: boolean, r = router()) =>
+    worker
+      .fetch(new Request(url, { method, ...(method === 'GET' || method === 'HEAD' ? {} : { body: '{}' }) }), envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(primary) }))
+      .then((res) => ({ res, calls: r.calls }));
+
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    it(`refuses a ${method} to another platform app, before the router sees it`, async () => {
+      const { res, calls } = await send('https://crm-acme.global.substrat.run/api/write', method, false);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'crm-acme.global.substrat.run' });
+      expect(calls).toHaveLength(0);
+    });
+  }
+
+  for (const method of ['GET', 'HEAD', 'OPTIONS']) {
+    it(`lets a ${method} to another platform app through`, async () => {
+      const { res, calls } = await send('https://crm-acme.global.substrat.run/api/read', method, false);
+      expect(res.status).toBe(200);
+      expect(calls).toHaveLength(1);
+    });
+  }
+
+  it('lets a POST to its own address through — its own address is its own', async () => {
+    const { res, calls } = await send(`https://${OWN.toUpperCase()}/api/write`, 'POST', false);
+    expect(res.status).toBe(200);
+    expect(calls[0]!.method).toBe('POST');
+  });
+
+  it('twin: a primary scope POSTs to another platform app', async () => {
+    const { res, calls } = await send('https://crm-acme.global.substrat.run/api/write', 'POST', true);
+    expect(res.status).toBe(200);
+    expect(calls[0]!.method).toBe('POST');
+  });
+
+  // "Its own" is the SCOPE: a web surface POSTing to its own API surface is one app.
+  describe('every surface of the same scope is its own', () => {
+    const SIBLING = 'shop-acme--pr-7-api.global.substrat.run';
+    const withSiblings = (hostnames: string[] | undefined): OutboundPolicy => ({
+      ...policy(false),
+      ...(hostnames ? { hostnames } : {}),
+    });
+    const post = (url: string, p: OutboundPolicy, r = router()) =>
+      worker
+        .fetch(new Request(url, { method: 'POST', body: '{}' }), envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: p }))
+        .then((res) => ({ res, calls: r.calls }));
+
+    it("lets a POST to a sibling surface of the scope through", async () => {
+      const { res, calls } = await post(`https://${SIBLING}/api/orders`, withSiblings([OWN, SIBLING]));
+      expect(res.status).toBe(200);
+      expect(calls[0]!.method).toBe('POST');
+    });
+
+    it("still refuses a POST to another scope's host beside them", async () => {
+      const { res, calls } = await post('https://crm-acme.global.substrat.run/api/write', withSiblings([OWN, SIBLING]));
+      expect(res.status).toBe(403);
+      expect(calls).toHaveLength(0);
+    });
+
+    // A custom domain of the scope is outside the platform's base domains — and still its own.
+    it("lets a POST to the scope's own custom domain through, under the version's declared surface", async () => {
+      const internet = vi.fn(async () => new Response('own', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+      const own = { ...withSiblings([OWN, 'preview.example.com']), hosts: ['preview.example.com'] };
+      const { res } = await post('https://preview.example.com/api/write', own);
+      expect(res.status).toBe(200);
+      expect(internet).toHaveBeenCalledTimes(1);
+    });
+
+    it("twin: a custom domain that is NOT the scope's is refused as inert, declared or not", async () => {
+      const internet = vi.fn(async () => new Response('x', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+      const own = { ...withSiblings([OWN, 'preview.example.com']), hosts: ['other.example.com'] };
+      const { res } = await post('https://other.example.com/api/write', own);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'other.example.com' });
+      expect(internet).not.toHaveBeenCalled();
+    });
+
+    it('a router that sends no set (the skew window) counts only the requested hostname', async () => {
+      const { res } = await post(`https://${SIBLING}/api/orders`, withSiblings(undefined));
+      expect(res.status).toBe(403);
+    });
+  });
+});
+
+/**
+ * #2005: a redirect this worker FOLLOWED would be its own subrequest, which nothing polices. So a
+ * copy's allowed requests leave with `redirect: 'manual'` on every path: the platform loopback,
+ * the relay, and its own custom domain. A 3xx goes back to the copy's code, and its request to
+ * the new location comes through here again and meets the inert rule. An install's requests go
+ * as they came.
+ */
+describe("a copy's allowed requests are never redirected past the inert rule (#2005)", () => {
+  const OWN = 'shop-acme--pr-7.global.substrat.run';
+  const policy = (primary: boolean): OutboundPolicy => ({
+    slug: 'acme-shop',
+    tenant: '01TENANT',
+    hosts: ['preview.example.com'],
+    primary,
+    hostname: OWN,
+    hostnames: [OWN, 'preview.example.com'],
+  });
+  /**
+   * A router binding that behaves like a Fetcher dispatching to an app that answers 302 to a third
+   * party: it follows only when the request it is handed says `follow`, through the global fetch,
+   * which is the internet here.
+   */
+  const redirectingRouter = () => {
+    const seen: Request[] = [];
+    const fetcher = {
+      fetch: async (request: Request) => {
+        seen.push(request);
+        const location = 'https://exfil.example.com/collect';
+        if (request.redirect === 'follow') return fetch(location);
+        return new Response(null, { status: 302, headers: { location } });
+      },
+    } as unknown as Fetcher;
+    return { fetcher, seen };
+  };
+
+  it("a copy's GET to another app that 302s to a third party is not followed: the copy gets the 3xx", async () => {
+    const internet = vi.fn(async () => new Response('exfiltrated', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const r = redirectingRouter();
+    const res = await worker.fetch(
+      new Request('https://crm-acme.global.substrat.run/api/read'),
+      envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(false) }),
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('https://exfil.example.com/collect');
+    expect(internet).not.toHaveBeenCalled();
+    expect(r.seen[0]!.redirect).toBe('manual');
+  });
+
+  it('twin: an install keeps the redirect mode it asked for, and the router follows', async () => {
+    const internet = vi.fn(async () => new Response('followed', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+    const r = redirectingRouter();
+    const res = await worker.fetch(
+      new Request('https://crm-acme.global.substrat.run/api/read'),
+      envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(true) }),
+    );
+    expect(await res.text()).toBe('followed');
+    expect(r.seen[0]!.redirect).toBe('follow');
+  });
+
+  for (const [name, url] of [
+    ['the relay', 'https://console.substrat.net/internal/x'],
+    ['its own custom domain', 'https://preview.example.com/api/write'],
+  ] as const) {
+    it(`${name}: a copy's request leaves with redirect manual, an install's as it came`, async () => {
+      const seen: Request[] = [];
+      vi.stubGlobal('fetch', vi.fn(async (req: Request) => (seen.push(req), new Response('ok', { status: 200 }))));
+      for (const primary of [false, true]) {
+        await worker.fetch(new Request(url, { method: 'POST', body: '{}' }), envWith({ OUTBOUND_POLICY: policy(primary) }));
+      }
+      expect(seen.map((r) => r.redirect)).toEqual(['manual', 'follow']);
+    });
+  }
+});

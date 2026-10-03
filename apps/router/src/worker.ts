@@ -120,6 +120,20 @@ interface OutboundPolicy {
   scope: string;
   calls: string[] | null;
   depth: number;
+  /**
+   * #2005: whether that scope is the real install. False for a fork, a snapshot or a
+   * preview, whose third-party subrequests the egress worker refuses — those scopes cause
+   * no outbound effects. From the resolve, like every field here.
+   */
+  primary: boolean;
+  /**
+   * #2005: the hostname this dispatch serves — the scope's own address, which is the one
+   * platform host a non-primary scope may still write to. Absent on a peer dispatch, whose
+   * target is always primary.
+   */
+  hostname?: string;
+  /** #2005: every active hostname of that scope, from the resolve — its sibling surfaces. */
+  hostnames?: string[];
 }
 
 /** Headers the router asserts. Any inbound copy is stripped before these are set. */
@@ -137,7 +151,7 @@ const EXPORTED_EVENTS_HEADER = 'x-substrat-exported-events';
 const bindingNameFor = (slug: string): string =>
   `VERTICAL_${slug.toUpperCase().replace(/-/g, '_')}`;
 
-function verticalFor(env: Env, target: RouteTarget): Fetcher | undefined {
+function verticalFor(env: Env, target: RouteTarget, hostname: string): Fetcher | undefined {
   // Dispatch on the scope's bound version, if the namespace is bound and the scope
   // has one (orchestration.md §5.4). `get` returns a stub unconditionally; a script
   // that is not there (or not yet propagated, K-29) surfaces as `Worker not found.`
@@ -156,6 +170,9 @@ function verticalFor(env: Env, target: RouteTarget): Fetcher | undefined {
       // A request from the outside world starts a chain: depth 0. A peer call sets its own
       // (see `PeerCalls` below), which is what bounds A→B→A.
       depth: 0,
+      primary: target.primary,
+      hostname,
+      hostnames: target.hostnames,
     };
     return env.DISPATCH.get(target.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
   }
@@ -368,7 +385,7 @@ async function dispatch(
   target: RouteTarget,
   hostname: string,
 ): Promise<Response> {
-  const vertical = verticalFor(env, target);
+  const vertical = verticalFor(env, target, hostname);
   if (!vertical) {
     // The map says which vertical answers and no binding provides it. That is our
     // misconfiguration, not the caller's — 502, and it is worth logging loudly.
@@ -535,6 +552,9 @@ export async function handlePeerCall(
     scope: decision.scopeId,
     calls: decision.calls,
     depth: decision.depth,
+    // A peer call only ever dispatches to a primary instance — the resolver refuses any
+    // other target (`resolveVerticalInstanceFrom`), so this is a fact about the decision.
+    primary: true,
   };
   const target = env.DISPATCH.get(decision.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
   // A fresh Request per attempt: a POST body is a stream and is consumed by the first one.

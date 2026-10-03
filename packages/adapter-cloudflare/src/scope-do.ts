@@ -286,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4416,6 +4416,34 @@ export function defineScopeDO(
     }
 
     /**
+     * Whether this scope was loaded as a copy (#2005) — its `_substrat_copy_origin` row. A CP-less
+     * coordinator has no directory to read a scope's kind from, so this is how it holds a copy's
+     * executor deliveries inert; a coordinator with a directory asks that instead.
+     */
+    isCopy(): boolean {
+      return this.sql.exec(IS_COPY_SQL).toArray().length > 0;
+    }
+
+    /** Mark this scope a copy (#2005, `markCopyOrigin`): the repair of a copy that predates the
+     *  marker. Answers whether this call stamped it; an existing origin is left as it is. */
+    markCopy(): boolean {
+      let marked = false;
+      this.ctx.storage.transactionSync(() => {
+        marked = markCopyOrigin(this.switchSql(), new Date().toISOString());
+      });
+      return marked;
+    }
+
+    /** Remove a mistaken copy marker (#2005, `clearCopyMarker`); a real load's mark is kept. */
+    clearCopyMark(): 'cleared' | 'absent' | 'carries-events' {
+      let outcome: 'cleared' | 'absent' | 'carries-events' = 'absent';
+      this.ctx.storage.transactionSync(() => {
+        outcome = clearCopyMarker(this.switchSql());
+      });
+      return outcome;
+    }
+
+    /**
      * The same read as a bare list of events, for a coordinator deployed before
      * `pendingExecutorDeliveries` (#1636). An undecodable row is left out rather than
      * thrown, so that pairing still delivers the rows behind it; the next coordinator
@@ -5032,6 +5060,7 @@ export function defineScopeDO(
         loadStamp,
         expect,
         resolveKept,
+        markCopy,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
@@ -5052,6 +5081,9 @@ export function defineScopeDO(
         /** #1722: the staff resolution of a kept copy, the one load a kept copy takes. It must be
          *  one (the marker set) at this write revision, the one the operator acted on. */
         resolveKept?: { revision: string | null };
+        /** #2005: the directory says this scope is not primary, so mark it a copy in its own
+         *  storage (`markCopyOrigin`) — a carry of a copy that predates the marker brings none. */
+        markCopy?: boolean;
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -5177,6 +5209,7 @@ export function defineScopeDO(
           // #1686: nothing the source queued runs in a copy; a return leaves it all queued. BEFORE
           // the extraction queue below, which is this scope's own work, not the source's.
           settleCopiedWork(this.switchSql(), destScopeId, sourceScopeId, now);
+          if (markCopy) markCopyOrigin(this.switchSql(), now);
           reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
           // Re-point the restored grants at THIS scope (after the spine exists, so a dump
           // that carried no tuples table still finds one here).

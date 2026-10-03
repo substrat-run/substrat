@@ -1,4 +1,5 @@
 import {
+  INERT_SCOPE_REASON,
   isPrimaryScope,
   platformIntentFailureMessage,
   ulid,
@@ -21,6 +22,8 @@ import {
   connectorDispatchPayload,
   CONNECTOR_DISPATCH_KIND_PREFIX,
   modelUsageLine,
+  MODEL_USAGE_KIND,
+  SWEEP_RUNS_KIND,
   type PlatformActorId,
   type PlatformRequest,
   type PlatformRequestFailure,
@@ -58,6 +61,27 @@ export interface PlatformRequestContext {
    */
   versionId?: string | null;
 }
+
+/**
+ * What the DRAIN needs beyond what a handler is handed (#2005): the scope's kind and lineage,
+ * from its directory record, so the drain itself asks `isPrimaryScope` — the door decides,
+ * not each caller. Not on `PlatformRequestContext`, because no handler is the place that
+ * decides it: a non-primary scope's intents never reach one.
+ */
+export interface PlatformDrainContext extends PlatformRequestContext {
+  scope: Pick<Scope, 'kind' | 'forkedFrom'>;
+}
+
+/**
+ * Intent kinds that RECORD something that already happened, rather than ask the platform to
+ * cause something (#2005). They land for a non-primary scope too, because refusing them does
+ * not make a preview inert — it only makes what the preview did invisible:
+ *
+ * - `model-usage`: the model call already ran in the preview's own worker. Dropping the line
+ *   would make a preview's model use free and unmetered, not absent.
+ * - `sweep-runs`: the outcomes of a pass that already ran — telemetry, with no effect.
+ */
+const RECORD_KINDS: ReadonlySet<string> = new Set([MODEL_USAGE_KIND, SWEEP_RUNS_KIND]);
 
 /** What a handler reports for one intent; `result` is persisted (COALESCE'd) for two-phase idempotency. */
 export interface PlatformRequestOutcome {
@@ -116,15 +140,18 @@ export interface PlatformDrainOptions {
  */
 export async function drainScopePlatformRequests(
   client: Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>,
-  ctx: PlatformRequestContext,
+  ctx: PlatformDrainContext,
   handlers: Record<string, PlatformRequestHandler>,
   opts?: PlatformDrainOptions,
 ): Promise<PlatformDrainReport> {
   const pending = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
   const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0 };
+  const primary = isPrimaryScope(ctx.scope);
   for (const request of pending) {
     const handler = handlers[request.kind];
     let outcome: PlatformRequestOutcome;
+    // #2005: an intent a non-primary scope raised for itself is settled, never executed.
+    const inert = request.decodeError === undefined && !primary && !RECORD_KINDS.has(request.kind);
     if (request.decodeError !== undefined) {
       // #1588: the read is tolerant so one malformed row cannot hide the queue; the WORK stays
       // strict. A row that did not decode carries an empty stand-in wherever it failed — a
@@ -135,6 +162,14 @@ export async function drainScopePlatformRequests(
         status: 'failed',
         error: `not executed: the intent row could not be decoded (${request.decodeError})`,
         failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      };
+    } else if (inert) {
+      // Settled `failed`, not left pending: nothing will ever run it. Before any handler is
+      // looked up, so no kind's handler is the place that has to remember (#2005).
+      outcome = {
+        status: 'failed',
+        error: INERT_SCOPE_REASON,
+        failure: { origin: 'platform', code: 'precondition_failed', permission: null },
       };
     } else if (!handler) {
       outcome = { status: 'failed', error: `no handler for platform-request kind '${request.kind}'` };
@@ -180,7 +215,10 @@ export async function drainScopePlatformRequests(
         code: outcome.failure?.code ?? null,
         message: platformIntentFailureMessage(request.id, outcome.error ?? 'unknown'),
       });
-    } else if (outcome.status === 'failed') {
+    } else if (outcome.status === 'failed' && !inert) {
+      // An inert settle (#2005) is expected, not an operator's headline; the settle below
+      // still journals its reason and attribution.
+      //
       // #618: a TERMINAL settle is the ceiling's own argument arriving early — the intent is
       // over, nobody is coming back to it, and until now its only trace was a `last_error`
       // column in the vertical's own DO. An unknown kind, a refused payload, a provider's 4xx:
@@ -456,6 +494,8 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
     } catch (error) {
       return { status: 'pending', error: `could not verify peer caller lifecycle: ${String(error)}` };
     }
+    // `isPrimaryScope` here is a backstop: the drain settles a non-primary caller's intents
+    // inert before any handler runs (#2005), so through the drain this term never decides.
     if (!caller || caller.tenantId !== ctx.tenantId || caller.vertical !== ctx.vertical ||
         caller.status !== 'active' || !isPrimaryScope(caller) || tenant?.status !== 'active') {
       return { status: 'failed', error: 'peer caller must be a primary, active scope in an active tenant' };

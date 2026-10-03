@@ -127,6 +127,7 @@ import {
   exportBreakRefusal,
   isBindExportBreakRefusal,
   isExportBreakRefusal,
+  isPrimaryScope,
   migrationProgress,
   ulid,
 } from '@substrat-run/kernel';
@@ -2526,6 +2527,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
      *  the carry read from `dest`, so a store that moved since is never overwritten. */
     source: { scopeId: ScopeId; exact: boolean; loadStamp?: string; expect?: LoadMarker },
   ): ReturnType<VerticalClient['restoreScope']> => {
+    // #2005: every carry, reuse, adopt and governed restore lands here. When the directory says
+    // the destination is not primary, the vertical marks it a copy in its own storage — a carry
+    // of a copy made before every copy carried the marker brings none, and a CP-less host reads
+    // the marker for primacy. Idempotent there; an install is never marked.
+    const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
+    const markCopy = rec !== undefined && !isPrimaryScope(rec) ? { kind: rec.kind, forkedFrom: rec.forkedFrom } : undefined;
     return retryTransient(async () =>
       dest.restoreScope(tenantId, scopeId, tables, {
         ...(await switchCarryFor(host.admin, actor, { tenantId, scopeId })),
@@ -2533,6 +2540,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         exact: source.exact,
         loadStamp: source.loadStamp,
         expect: source.expect,
+        ...(markCopy ? { markCopy } : {}),
       }),
     );
   };
@@ -3984,10 +3992,51 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     unarchive: (admin: HostAdmin, a: PlatformActorId, t: TenantId, s: ScopeId) => admin.unarchiveScope(a, t, s),
   } as const;
 
+  /** #2005: the transitions that bring a scope (back) to life — each marks a copy first. */
+  const REACTIVATIONS: ReadonlySet<string> = new Set(['activate', 'unsuspend', 'unarchive']);
   for (const [action, run] of Object.entries(transitions)) {
     app.post(`/tenants/:tenantId/scopes/:scopeId/${action}`, async (c) => {
       const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
       const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+      // #2005: a copy made before the copy marker existed holds none, and a CP-less host that
+      // finds none runs its effects. So a copy is marked BEFORE it comes back to life, and a
+      // hosted copy whose marker cannot be written is refused here rather than reactivated.
+      if (REACTIVATIONS.has(action)) {
+        const rec = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+        if (rec && !isPrimaryScope(rec)) {
+          // ANY failed marker write keeps the scope parked: a 503 that says what to do, and an
+          // ops-failure row, whether the step reported it (no deployment resolves) or the vertical
+          // refused (an older one has no /internal/mark-copy and answers 404). Passing a 404 or
+          // a vertical's error through would read as "no such scope" and leave no trace.
+          let failure: { error: string; cause: unknown } | undefined;
+          try {
+            const step = await markScopeIfCopy(c, rec);
+            if ('fail' in step) failure = { error: step.fail.error, cause: NO_CAUSE };
+          } catch (e) {
+            failure = { error: e instanceof Error ? e.message : String(e), cause: e };
+          }
+          if (failure) {
+            const error =
+              `${action} refused: this copy could not be marked as one (${failure.error}); ` +
+              'redeploy the vertical so it can mark it, then retry — the scope stays as it was';
+            recordFailure(
+              {
+                actor: c.get('actor'),
+                operation: `scope.${action}`,
+                stage: 'mark-copy',
+                tenantId,
+                scopeId,
+                vertical: rec.vertical,
+                version: rec.verticalVersionId,
+                status: 503,
+                message: error,
+              },
+              failure.cause,
+            );
+            return c.json({ error }, 503);
+          }
+        }
+      }
       await run(c.var.admin, c.get('actor'), tenantId, scopeId);
       return c.json(await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId));
     });
@@ -4422,6 +4471,140 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Exhausted only when the page ran short: a full page may be followed by more rows.
     const nextCursor = stopped || page.length === REPAIR_SCAN_PAGE ? (last ?? null) : null;
     return c.json({ dryRun, repaired, candidates, skipped, failed, nextCursor });
+  });
+
+  /**
+   * Mark one scope a copy in the vertical that holds it (#2005), if its directory record says it
+   * is not primary, and log it. The one step behind the repair below and every reactivation, so
+   * the two classify a scope the same way:
+   *
+   * - a primary is never marked (`skip`), and the vertical refuses one anyway;
+   * - a scope bound to no vertical runs no module code, so nothing reads a marker (`skip`);
+   * - a CO-LOCATED scope (no script of its own: an embedded vertical, a self-host) runs on a host
+   *   that reads the directory, so it needs none (`skip`);
+   * - a HOSTED scope (a serving script, or a bound version with a script) that does not resolve
+   *   is unfinished work (`fail`), never a skip: it can resolve later with no marker.
+   */
+  type CopyMarkStep =
+    | { done: 'marked' | 'already' }
+    | { skip: string }
+    | { fail: { status: number; error: string } };
+  const markScopeIfCopy = async (c: ReqCtx, scope: Scope): Promise<CopyMarkStep> => {
+    const actor = c.get('actor');
+    if (isPrimaryScope(scope)) return { skip: 'primary: an install is never marked' };
+    if (!scope.vertical) return { skip: 'bound to no vertical: no module code runs, so nothing reads the marker' };
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) {
+      const hosted =
+        scope.servingRef !== null && scope.servingRef !== undefined
+          ? true
+          : scope.verticalVersionId
+            ? Boolean((await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical))?.deploymentRef)
+            : false;
+      return hosted
+        ? { fail: { status: 503, error: 'no deployment resolves for this hosted scope, so its copy marker was not written' } }
+        : { skip: 'co-located: the host that runs this scope reads the directory, so it needs no marker' };
+    }
+    const { marked } = await vertical.markCopy(scope.id, { kind: scope.kind, forkedFrom: scope.forkedFrom });
+    await c.var.admin.recordCopyMark(actor, {
+      action: 'mark',
+      tenantId: scope.tenantId,
+      scopeId: scope.id,
+      outcome: marked ? 'marked' : 'already',
+    });
+    return { done: marked ? 'marked' : 'already' };
+  };
+
+  // -- one-time repair: mark every existing copy as one, in its own storage (#2005) --------
+  // A CP-less hosted vertical has no directory, so it reads a scope's own copy-origin row to
+  // hold a preview's or a fork's executors inert. Every copy carries that row since #2005, and
+  // every carry onto a non-primary scope stamps it (`restoreCarryingSwitches`) — but a copy
+  // made before either, never carried since, holds none and would read as an install there.
+  // This is the pass over those: for each scope the directory says is not primary, ask the
+  // vertical that holds it to stamp the marker (idempotent there), and log the outcome. Active,
+  // suspended and archived scopes alike: a suspended or archived copy can be reactivated, and a
+  // reactivation stamps too (`markScopeIfCopy` in the lifecycle routes), so neither path brings
+  // an unmarked copy back to life. A hosted scope that does not resolve is FAILED, not skipped.
+  //
+  // Staff only, by default-deny, like the serving-pin repair: the path is on neither
+  // `BUILDER_ROUTES` nor `TENANT_ROUTES`. Paged and resumable the same way — one page of
+  // ACTIVE directory rows after `cursor`, at most `limit` scopes marked from it, `nextCursor`
+  // until the fleet is exhausted. A scope that fails is reported and the pass moves on; it is
+  // still unmarked, so the next walk visits it again, and a marked one answers `already`.
+  // `dryRun` lists the candidates and touches nothing. An install is never a candidate.
+  const markCopiesBody = z
+    .object({
+      cursor: scopeIdSchema.optional(),
+      limit: z.number().int().min(1).max(200).default(50),
+      dryRun: z.boolean().default(false),
+    })
+    .strict();
+  app.post('/scopes/mark-copies', async (c) => {
+    const { cursor, limit, dryRun } = await readJsonBody(c, markCopiesBody);
+    const actor = c.get('actor');
+    const page = await c.var.admin.listScopes(actor, {
+      status: ['active', 'suspended', 'archived'],
+      cursor,
+      limit: REPAIR_SCAN_PAGE,
+    });
+    const marked: { tenantId: string; scopeId: string }[] = [];
+    const already: { tenantId: string; scopeId: string }[] = [];
+    const candidates: { tenantId: string; scopeId: string }[] = [];
+    const skipped: { tenantId: string; scopeId: string; reason: string }[] = [];
+    const failed: { tenantId: string; scopeId: string; status: number; error: string }[] = [];
+    let last: string | undefined = cursor;
+    let handled = 0;
+    let stopped = false;
+    for (const scope of page) {
+      if (isPrimaryScope(scope)) {
+        last = scope.id;
+        continue;
+      }
+      if (handled >= limit) {
+        stopped = true;
+        break;
+      }
+      handled += 1;
+      last = scope.id;
+      const at = { tenantId: scope.tenantId, scopeId: scope.id };
+      if (dryRun) {
+        candidates.push(at);
+        continue;
+      }
+      try {
+        const step = await markScopeIfCopy(c, scope);
+        if ('skip' in step) skipped.push({ ...at, reason: step.skip });
+        else if ('fail' in step) failed.push({ ...at, ...step.fail });
+        else (step.done === 'marked' ? marked : already).push(at);
+      } catch (e) {
+        const { status } = mapError(e);
+        failed.push({ ...at, status, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    const nextCursor = stopped || page.length === REPAIR_SCAN_PAGE ? (last ?? null) : null;
+    return c.json({ dryRun, marked, already, candidates, skipped, failed, nextCursor });
+  });
+
+  // The correction for a MISTAKEN copy marker (#2005): a scope the directory says IS primary,
+  // marked by a misclassification, a race or an operator, whose executors a CP-less host would
+  // otherwise hold inert for good. One scope at a time, staff only by default-deny (the path is on
+  // neither allowlist), logged as `clearScopeCopyMark`. Refused for a scope the directory calls a
+  // copy, and, by the vertical, for a marker a real load wrote: that one names the events it
+  // brought in, and removing it would run another scope's queued work here.
+  app.post('/tenants/:tenantId/scopes/:scopeId/clear-copy-mark', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!isPrimaryScope(scope)) {
+      return c.json({ error: 'clear-copy-mark refused: the directory says this scope is a copy (a preview or a fork)' }, 409);
+    }
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501);
+    const { cleared } = await vertical.clearCopyMark(scopeId, { kind: scope.kind, forkedFrom: scope.forkedFrom });
+    await c.var.admin.recordCopyMark(actor, { action: 'clear', tenantId, scopeId, outcome: cleared ? 'cleared' : 'absent' });
+    return c.json({ cleared });
   });
 
   // Reap an ARCHIVED primary scope (control-plane.md §4.4): free its DO storage —

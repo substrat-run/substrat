@@ -173,6 +173,13 @@ export const bindHostnameInput = hostnameBinding.pick({
 export type BindHostnameInput = z.infer<typeof bindHostnameInput>;
 
 /**
+ * How many of a scope's own hostnames a route read carries (#2005). A scope has one per surface
+ * plus its custom domains, so this is far above any real one; past it, the hostnames beyond the
+ * cap (in name order) count as another scope's — a refused write, never an allowed one.
+ */
+export const ROUTE_SCOPE_HOSTNAMES_MAX = 50;
+
+/**
  * What the router needs to dispatch. Deliberately smaller than the full binding: a
  * per-request hot path should read what it uses and nothing else.
  */
@@ -208,5 +215,21 @@ export const routeTarget = z.object({
    * this field still parses.
    */
   calls: z.array(verticalSlug).nullable().default(null),
+  /**
+   * Whether the scope is the real install (`isPrimaryScope`, #2005) — false for a fork, a
+   * snapshot or a preview of either kind. The router hands it to the egress worker, which
+   * refuses a non-primary scope's third-party subrequests: those scopes cause no outbound
+   * effects. Defaulted to `true` ONLY so a resolver that predates this field still parses —
+   * it fails open for that skew window, exactly as a pre-#303 `outboundHosts: null` does,
+   * and every resolver in this repo sets it.
+   */
+  primary: z.boolean().default(true),
+  /**
+   * Every active hostname of the resolved scope (#2005), bounded by the directory read — the
+   * addresses a non-primary scope may still WRITE to, its sibling surfaces included; to any
+   * other platform host it may only read. Defaulted to `[]` for a resolver that predates it,
+   * which is the conservative answer: only the hostname the request came in on counts as its own.
+   */
+  hostnames: z.array(z.string()).default([]),
 });
 export type RouteTarget = z.infer<typeof routeTarget>;

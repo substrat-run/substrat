@@ -89,6 +89,25 @@ export interface OutboundPolicy {
   scope?: string;
   calls?: string[] | null;
   depth?: number;
+  /**
+   * #2005: whether that scope is the real install. `false` — a fork, a snapshot or a preview
+   * of either kind — refuses every third-party subrequest: those scopes cause no outbound
+   * effects. Absent (a router that predates the field) passes as before, the same
+   * fail-open-on-plumbing posture as a missing policy; once the router sends it, `false` is
+   * enforced. The platform loopback and the relay are not third parties and still pass.
+   */
+  primary?: boolean;
+  /**
+   * #2005: the hostname the dispatch serves, set by the router beside `primary` — the scope's
+   * own address. A non-primary scope may write to it; to every other platform host it may
+   * only read (GET, HEAD, OPTIONS).
+   */
+  hostname?: string;
+  /**
+   * #2005: every active hostname of the same scope — its sibling surfaces, which are its own
+   * too. Absent (a router that predates it) means only `hostname` counts.
+   */
+  hostnames?: string[];
 }
 
 export interface Env {
@@ -148,6 +167,27 @@ export interface Env {
   ANALYTICS?: AnalyticsEngineDataset;
 }
 
+/** The methods a non-primary scope may send to another app on the platform (#2005): reads. */
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** Whether `hostname` is one of the dispatched scope's own addresses (#2005). DNS ignores case. */
+function isOwnHost(hostname: string, policy: OutboundPolicy): boolean {
+  const h = hostname.toLowerCase();
+  return [policy.hostname, ...(policy.hostnames ?? [])].some((own) => own?.toLowerCase() === h);
+}
+
+/**
+ * The request as it leaves for a destination this worker allowed (#2005). A fork's or a
+ * preview's goes with `redirect: 'manual'`: a redirect this worker followed would be ITS OWN
+ * subrequest, which nothing polices, so an allowed host answering 3xx to a third party would
+ * carry an inert scope out. Unfollowed, the 3xx goes back to the copy's code, and its request to
+ * the new location comes through here again and meets the same rule. An install's requests go
+ * as they came.
+ */
+function passThrough(request: Request, env: Env): Request {
+  return env.OUTBOUND_POLICY?.primary === false ? new Request(request, { redirect: 'manual' }) : request;
+}
+
 /** The platform base domains this deployment mints under, from the shared reader (#973). */
 const baseDomains = (env: Env): string[] => parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
 
@@ -166,11 +206,20 @@ function relayHost(env: Env): string | null {
   }
 }
 
+/** The one refusal shape a vertical's subrequest meets: what was refused, for whom, and why. */
+function outboundRefused(hostname: string, slug: string | null, detail: string): Response {
+  return new Response(JSON.stringify({ error: 'outbound refused', host: hostname, vertical: slug, detail }), {
+    status: 403,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 /** What the router's peer entrypoint answers. */
 type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: number; code: string; message: string };
 
-/** Where a subrequest ended up: the six verdicts the meter distinguishes. */
-type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer';
+/** Where a subrequest ended up: the seven verdicts the meter distinguishes. `inert` is a
+ *  third-party subrequest refused because the scope is not primary (#2005). */
+type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer' | 'inert';
 
 /** One datapoint per decision — append-only shape, like the router's request meter:
  *  index [slug]; blobs [hostname, verdict, tenant]. */
@@ -250,13 +299,26 @@ export default {
       return peerCall(request, env);
     }
     if (isPlatformHost(hostname, baseDomains(env))) {
+      // #2005: a fork or a preview may write to its own addresses only — any surface of the
+      // same scope. Another app on the platform is real, so it answers a copy's reads and
+      // refuses its writes — the destination's own auth is not the boundary here, inertness is.
+      const policy = env.OUTBOUND_POLICY;
+      if (policy?.primary === false && !SAFE_METHODS.has(request.method.toUpperCase()) && !isOwnHost(hostname, policy)) {
+        meter(env, hostname, 'inert');
+        return outboundRefused(
+          hostname,
+          policy.slug,
+          'this scope is a preview or a fork, and those cause no outbound effects: it may ' +
+            'write only to its own addresses, and only read from another app on the platform (#2005).',
+        );
+      }
       // Same-zone: hand it to the router over the service binding so it re-enters
       // resolution+dispatch instead of dying at the edge (522). The router strips any
       // inbound `x-substrat-*` and re-asserts the destination's node itself, so the
       // caller cannot forge the tenant it lands as. Policy never applies here — the
       // router's own resolution + the destination vertical's auth are the gate.
       meter(env, hostname, 'platform');
-      return env.ROUTER.fetch(request);
+      return env.ROUTER.fetch(passThrough(request, env));
     }
     if (hostname.toLowerCase() === relayHost(env)) {
       // The platform's own relay (#981), on a different zone from the tenant apps. The
@@ -265,34 +327,43 @@ export default {
       // declares, and the policy below never gets to see it. The relay authenticates
       // its own callers; being allowed here is reachability, not authorization.
       meter(env, hostname, 'relay');
-      return fetch(request);
+      return fetch(passThrough(request, env));
     }
     const policy = env.OUTBOUND_POLICY;
+    if (policy?.primary === false && !isOwnHost(hostname, policy)) {
+      // #2005: ahead of the declared list and the unenforced pass, because whether the scope
+      // may have effects at all is a question about the scope, not about the host. Its own
+      // addresses are the exception on every path — a custom domain of the scope is outside the
+      // platform's base domains, and is still the scope talking to itself; it then meets the
+      // same declared-surface policy below that the install's request would.
+      meter(env, hostname, 'inert');
+      return outboundRefused(
+        hostname,
+        policy.slug,
+        'this scope is a preview or a fork, and those cause no outbound effects: a ' +
+          'subrequest to a third party is refused whatever the version declares (#2005).',
+      );
+    }
     if (!policy || policy.hosts === null) {
       // No declared surface travelled with this dispatch: a pre-#303 version (or a
       // dispatcher that passed no policy). Unenforced by design — least privilege
       // arrives version by version, not as a fleet outage — but never invisible.
       meter(env, hostname, 'unenforced');
-      return fetch(request);
+      return fetch(passThrough(request, env));
     }
     if (matchesOutboundHost(hostname, policy.hosts)) {
       // The one place a vertical's subrequest actually leaves for the public internet.
       meter(env, hostname, 'allowed');
-      return fetch(request);
+      return fetch(passThrough(request, env));
     }
     meter(env, hostname, 'refused');
-    return new Response(
-      JSON.stringify({
-        error: 'outbound refused',
-        host: hostname,
-        vertical: policy.slug,
-        detail:
-          `'${hostname}' is not in this vertical's declared outbound surface. ` +
-          `Add it to package.json substrat.outbound (e.g. ["${hostname}"]) and push a new ` +
-          'version — the declaration is reviewed at the admit checkpoint ' +
-          '(self-serve-deploy.md §4.2, #303).',
-      }),
-      { status: 403, headers: { 'content-type': 'application/json' } },
+    return outboundRefused(
+      hostname,
+      policy.slug,
+      `'${hostname}' is not in this vertical's declared outbound surface. ` +
+        `Add it to package.json substrat.outbound (e.g. ["${hostname}"]) and push a new ` +
+        'version — the declaration is reviewed at the admit checkpoint ' +
+        '(self-serve-deploy.md §4.2, #303).',
     );
   },
 };

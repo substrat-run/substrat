@@ -29,6 +29,7 @@ import {
   attachmentTextContractSuite,
   capabilityContractSuite,
   impersonationContractSuite,
+  inertScopeContractSuite,
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
@@ -86,6 +87,19 @@ scopeHostContractSuite(
   },
   { supportsRuntimeRegistration: false },
 );
+
+// #2005: a fork or a preview causes no outbound effects — on the coordinator, which is where
+// a co-located host runs its executors and reads the directory that says what a scope is.
+inertScopeContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    fetch: connectorTestFetch,
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
 
 // The permission suite runs against the DO's default tuple checker (scope tuples
 // in the ScopeDO, tenant tuples + roles in the ControlPlaneDO).
