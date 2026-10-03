@@ -25,7 +25,6 @@ import {
   defineScopeDO,
   defineScopeSweeperDO,
   CloudflareScopeHost,
-  type CloudflareScopeHostOptions,
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
@@ -166,18 +165,14 @@ function nodeFor(req: Request, env: Env): CompanyNode {
  * router asserts the node, so this vertical trusts it rather than reading a directory it
  * has no binding to. Its only durable stores are its own `SCOPE` DO class and `AUTH_DB`.
  */
-export function hostFor(
-  env: Env,
-  /** A seam for the workerd suite, which has no per-tenant bucket to resolve (nothing here declares one yet). */
-  extra: Pick<CloudflareScopeHostOptions, 'attachmentBuckets'> = {},
-): CloudflareScopeHost {
+export function hostFor(env: Env): CloudflareScopeHost {
   // K-43: the kernel parses no file format; the parsers are passed in here, so an
   // uploaded DOCX on an `employee` is searchable by its text. Without them every
-  // upload records `unsupported`.
+  // upload records `unsupported`. The attachment BUCKET is not wired here at all (#1995):
+  // the push declares it from `attachmentTargets` and the host resolves each tenant's own.
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     attachmentExtractors: defaultAttachmentExtractors(),
-    ...extra,
   });
   for (const m of MODULES) host.registerModule(m);
   // #574 phase 3: the SAME registration the node self-host makes (seed.ts) — but on

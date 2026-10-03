@@ -11,7 +11,8 @@ import { globalFetch, type ConnectorResponse, type FetchLike, type TenantBlobSto
  * `blobStoreBindingName` (contracts), attached by the control plane at provision and
  * re-derived from the ledger on every serving upload — exactly the tenant-store model
  * (#301). Object reads/writes happen exclusively through that binding, in the worker,
- * behind the kernel's attachment surface.
+ * behind the kernel's attachment surface; for attachment bytes the host looks the binding
+ * up itself (#1995, `ATTACHMENT_BLOB_BINDING`).
  */
 export interface R2BlobStores {
   /**

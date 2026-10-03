@@ -12,5 +12,7 @@ declare module 'cloudflare:test' {
     SUBSTRAT_VERSION_ID: string;
     /** JSON: the entitlements a dashboard install projects into a scope. */
     TEST_INSTALL_ENTITLEMENTS: string;
+    /** JSON: the tenants whose `ATTACHMENTS__<tenant>` r2_bucket the config binds (#1995). */
+    TEST_ATTACHMENT_TENANTS: string;
   }
 }
