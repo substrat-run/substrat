@@ -5339,7 +5339,11 @@ export function defineScopeDO(
     ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
       if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' };
       try {
-        await this.importDump(carriedAwayDump(carriedAway), scopeId, { sourceScopeId: scopeId, resolveKept: { revision } });
+        await this.importDump(carriedAwayDump(carriedAway), scopeId, {
+          sourceScopeId: scopeId,
+          resolveKept: { revision },
+          markCopy: this.isCopy(), // #2005: as `wipeCarried` — a discarded copy is still a copy
+        });
         return { discarded: true };
       } catch (e) {
         if (errorCodeOf(e) === 'precondition_failed') return { refused: 'changed' };
@@ -5386,6 +5390,9 @@ export function defineScopeDO(
         await this.importDump(carriedAwayDump(carriedAway), scopeId, {
           sourceScopeId: scopeId,
           expect: { loadStamp: expectLoadStamp, ...(expectRevision !== undefined ? { revision: expectRevision } : {}) },
+          // #2005: a copy wiped is still a copy. The drop-and-replay takes the copy-origin row
+          // with everything else, so it is written again, or the tombstone would read as primary.
+          markCopy: this.isCopy(),
         });
         return true;
       } catch (e) {

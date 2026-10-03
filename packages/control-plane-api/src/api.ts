@@ -2960,6 +2960,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       holder.restoreScope(scope.tenantId, scope.id, carriedAwayDump({ to: carriedTo, at }), {
         sourceScopeId: scope.id,
         exact: true,
+        // #2005: as every restore onto a non-primary scope, so the wiped copy stays a copy.
+        ...(!isPrimaryScope(scope) ? { markCopy: { kind: scope.kind, forkedFrom: scope.forkedFrom } } : {}),
       }),
     );
     return true;
