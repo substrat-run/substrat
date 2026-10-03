@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage, type TenantId } from '@substrat-run/contracts';
 import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, WRITE_REVISION_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
@@ -46,7 +46,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // and hooks that hold one request at a chosen step so a test can interleave two of them.
   const unfenced = new Set<string>();
   type Hook = (ref: string, sid: ScopeId, tables?: ScopeDumpTable[]) => Promise<void>;
-  const hooks: { export?: Hook; marker?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook } = {};
+  // `marker` runs before a `loadMarker` read and `markerRead` after it: a carry reads the
+  // destination's marker after its export, and the source's again right before its bind (r12).
+  const hooks: {
+    export?: Hook; marker?: Hook; markerRead?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook;
+  } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
     {
@@ -85,7 +89,13 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         _t: unknown,
         sid: ScopeId,
         tables: ScopeDumpTable[],
-        opts?: { loadStamp?: string; expect?: { loadStamp: string | null; revision: string | null }; markCopy?: ScopeLineage },
+        opts?: {
+          sourceScopeId?: ScopeId;
+          exact?: boolean;
+          loadStamp?: string;
+          expect?: { loadStamp: string | null; revision: string | null };
+          markCopy?: ScopeLineage;
+        },
       ) =>
         relay(async () => {
           await hooks.restore?.(ref, sid, tables);
@@ -96,6 +106,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
               : tables,
             // A script that cannot fence keeps no stamp and takes no expectation: it predates both.
             {
+              // As the vertical's `/internal/restore` forwards them: a carry names its own scope as
+              // the source, which is what keeps it from reading as a copy of another scope (#2003).
+              sourceScopeId: opts?.sourceScopeId,
+              exact: opts?.exact,
               ...(unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect }),
               ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
             },
@@ -115,7 +129,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         ),
       loadMarker: async (sid: ScopeId) => {
         await hooks.marker?.(ref, sid);
-        return unfenced.has(ref) ? 'unfenced' : relay(() => host.loadMarkerLocal(sid));
+        if (unfenced.has(ref)) return 'unfenced';
+        const read = await relay(() => host.loadMarkerLocal(sid));
+        await hooks.markerRead?.(ref, sid);
+        return read;
       },
       readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
         relay(async () => {
@@ -142,7 +159,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
         relay(() => host.snapshotScopeLocal(input.sourceScopeId, input.newScopeId)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
-      clearCopyMark: (sid: ScopeId, lineage: ScopeLineage) => relay(() => host.clearCopyMarkLocal(sid, lineage)),
+      clearCopyMark: (sid: ScopeId, lineage: ScopeLineage, opts: { expectRevision?: string | null } = {}) =>
+        relay(() => host.clearCopyMarkLocal(sid, lineage, ...(opts.expectRevision !== undefined ? [opts.expectRevision] : []))),
     } as unknown as VerticalClient;
   };
 
@@ -461,10 +479,12 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       unfenced.clear();
     });
     /** A write on `v`'s copy, as a module operation leaves one: a note row and its outbox event. */
-    const writeOn = async (v: keyof typeof version, sid: ScopeId, id: string, body: string): Promise<string> => {
+    const writeOn = async (v: keyof typeof version, sid: ScopeId, id: string, body: string, tenant?: TenantId): Promise<string> => {
       const ns = { v1: env.PC_V1_SCOPE, v2: env.PC_V2_SCOPE, v3: env.PC_V3_SCOPE }[v];
-      const stub = ns.get(ns.idFromName(sid)) as unknown as { testWrite(s: string, i: string, b: string): Promise<string> };
-      return stub.testWrite(sid, id, body);
+      const stub = ns.get(ns.idFromName(sid)) as unknown as {
+        testWrite(s: string, i: string, b: string, t?: string): Promise<string>;
+      };
+      return tenant ? stub.testWrite(sid, id, body, tenant) : stub.testWrite(sid, id, body);
     };
     /** The `drained_at` of one event in `v`'s copy of a scope. */
     const drainedAt = async (v: keyof typeof version, sid: ScopeId, eventId: string): Promise<unknown> => {
@@ -687,17 +707,21 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     // CodeRabbit #2008: a write that reached the old copy after the export (a request still routed
     // there before the bind) was never carried. The wipe is fenced on the revision too, so that
     // copy is kept, holding the write, and recorded for recovery rather than erased.
-    /** A push v1 → v2 whose export is followed by a write on v1: the copy the carry keeps. */
+    /**
+     * A push v1 → v2 whose source takes a write after the bind's re-check of it (r12): the window
+     * the re-check cannot close, and the copy the carry keeps. (A write before the re-check is
+     * carried by a fresh export instead; see below.)
+     */
     const keptByLateWrite = async (tag: string) => {
       const p = await fresh(tag, 'carried');
-      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
-      hooks.marker = held.hook; // after the export, before the restore
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.markerRead = held.hook; // the bind's re-check of the source, read; the bind is next
       const pushed = push(tag, 'v2');
       await held.reached;
       await writeOn('v1', p.scopeId, 'n-late', 'written after the export');
       held.release();
       expect((await pushed).status).toBe(200);
-      delete hooks.marker;
+      delete hooks.markerRead;
       return p;
     };
     const resolve = (sid: ScopeId, body: object) =>
@@ -714,6 +738,44 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
 
     // Codex #2008 r7: the kept copy is protected in the store. A bind back to it is refused
     // (409) rather than restoring v2's older data over the only copy of the late write.
+    // Codex #2008 r12: a write that lands before the bind's re-check of the source is not kept for
+    // staff: the carry runs again from a fresh export, which holds it, and binds that.
+    it("a write before the bind's re-check of the source is carried by a fresh export, and the source is wiped", async () => {
+      const p = await fresh('early-write', 'carried');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.marker = held.hook; // after the export, before the restore and the re-check
+      const pushed = push('early-write', 'v2');
+      await held.reached;
+      await writeOn('v1', p.scopeId, 'n-early', 'written before the re-check');
+      held.release();
+      expect((await pushed).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried', 'written before the re-check'] });
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+      expect(await hostFor('v1').keptCopyLocal(p.scopeId)).toBeNull();
+    });
+
+    it('a source that changes at every re-check is refused with a typed 409 after three exports, and nothing is bound', async () => {
+      const p = await fresh('restless', 'carried');
+      let writes = 0;
+      hooks.marker = async (ref, sid) => {
+        // Before each re-check's read of the source: every one finds it changed.
+        if (ref !== refOf.get(version.v1) || sid !== p.scopeId) return;
+        writes += 1;
+        await writeOn('v1', p.scopeId, `n-${writes}`, `write ${writes}`);
+      };
+      const res = await bindTo(p.scopeId, 'v2');
+      delete hooks.marker;
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({
+        carrySourceChanged: { scopeId: p.scopeId, from: refOf.get(version.v1), to: refOf.get(version.v2), attempts: 3 },
+      });
+      expect(writes).toBe(3);
+      // Still served from v1, with every write; v2's copy was dropped, and nothing is kept.
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['carried', 'write 1', 'write 2', 'write 3'] });
+      expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+      expect(await hostFor('v1').keptCopyLocal(p.scopeId)).toBeNull();
+    });
+
     it('a bind back to the kept copy is refused until it is resolved; restoring it forward keeps the late write', async () => {
       const p = await keptByLateWrite('kept-forward');
       const back = await api.request(`/tenants/${t}/scopes/${p.scopeId}/version`, {
@@ -813,9 +875,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const { kept } = (await (await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy?script=${v1ref}`, { headers: auth })).json()) as {
         kept: { keptAt: string };
       };
-      // The bind v2 → v3 has exported v2 (without the late write) and is held before restoring.
-      const held = holdFirst((ref, sid) => ref === refOf.get(version.v3) && sid === p.scopeId);
-      hooks.marker = held.hook;
+      // The bind v2 → v3 has exported v2 (without the late write), restored, and re-checked v2, and
+      // is held right before binding: the window its re-check cannot close (r12).
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.markerRead = held.hook;
       const binding = bindTo(p.scopeId, 'v3');
       await held.reached;
       // The resolution runs whole meanwhile: restores v1 into v2, finds the binding unchanged, discards v1.
@@ -855,9 +918,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const v1ref = refOf.get(version.v1)!;
       // v1 live and kept, as a carry's protection leaves it when a rollback binds right after.
       expect(await hostFor('v1').wipeCarriedLocal(p.scopeId, 'not-the-stamp', { to: 'x', at: '2026-10-03T00:00:00.000Z' }, { protectIfChanged: true })).toBe(false);
-      // A carry v1 → v2 has exported v1 and is held before restoring.
-      const carryHeld = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
-      hooks.marker = carryHeld.hook;
+      // A carry v1 → v2 has exported v1, restored, and re-checked v1, and is held before binding.
+      const carryHeld = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.markerRead = carryHeld.hook;
       const carry = bindTo(p.scopeId, 'v2');
       await carryHeld.reached;
       // The late write, after the carry's export.
@@ -886,9 +949,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const a = bindTo(p.scopeId, 'v2');
       await aWipe.reached;
       expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
-      // B carries v1 → v3 and is held after its export; then the late write lands on v1.
-      const bHeld = holdFirst((ref, sid) => ref === refOf.get(version.v3) && sid === p.scopeId);
-      hooks.marker = bHeld.hook;
+      // B carries v1 → v3 and is held after its re-check of v1; then the late write lands on v1.
+      const bHeld = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.markerRead = bHeld.hook;
       const b = bindTo(p.scopeId, 'v3');
       await bHeld.reached;
       await writeOn('v1', p.scopeId, 'n-late', 'written after B exported');
@@ -974,16 +1037,17 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         expect(await v1stub(p.scopeId).isCopy()).toBe(false);
         return p;
       };
-      /** A push v1 → v2 held after its export, while `between` runs on v1. Answers the push. */
+      /** A push v1 → v2 held after its re-check of v1 (so after its export and restore, right before
+       *  its bind), while `between` runs on v1. Answers the push. */
       const pushAround = async (tag: string, sid: ScopeId, between: () => Promise<void>) => {
-        const held = holdFirst((ref, s) => ref === refOf.get(version.v2) && s === sid);
-        hooks.marker = held.hook; // after the export, before the restore and the wipe
+        const held = holdFirst((ref, s) => ref === refOf.get(version.v1) && s === sid);
+        hooks.markerRead = held.hook;
         const pushed = push(tag, 'v2');
         await held.reached;
         await between();
         held.release();
         const res = await pushed;
-        delete hooks.marker;
+        delete hooks.markerRead;
         return res;
       };
 
@@ -1045,46 +1109,112 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         expect(await hostFor('v1').loadMarkerLocal(p.scopeId)).toEqual(before);
       });
 
-      // Codex #2008 r11: clearing a primary's mistaken marker loosens the store (its executors may
-      // run), so it is a write. A carry that exported before the clear finds its source changed and
-      // keeps it, recorded, rather than wiping the repaired store and serving the stale marker.
-      it("a staff clear of a primary's mistaken marker between the export and the wipe survives the carry", async () => {
-        // Its own tenant: a second install in the owner's would make every later preview push
-        // ambiguous about which install it forks.
-        const t2 = tenantId.parse(ulid());
-        await dir.admin.createTenant(staff, { id: t2, slug: `carry-${t2.toLowerCase()}`, name: 'Clear Co' });
-        const install = scopeId.parse(ulid());
-        await dir.provisionScope(staff, { tenantId: t2, scopeId: install, vertical: slug });
-        await dir.admin.activateScope(staff, t2, install);
-        await dir.admin.bindScopeVersion(staff, t2, install, version.v1);
-        // Routed by its bound version, so the bind below carries rather than re-pointing a pin. (An
-        // install made after an earlier test promoted prod is born on the serving script; the
-        // per-version route is the backout `setScopeServingRef(null)` documents.)
-        await dir.admin.setScopeServingRef(staff, t2, install, null);
-        const rec = await dir.admin.getScopeRecord(staff, t2, install);
-        expect([rec?.servingRef ?? null, rec?.verticalVersionId]).toEqual([null, version.v1]);
-        await hostFor('v1').restoreScopeLocal(install, notes('install data'));
-        // The mistake staff will repair: a marker with no events mark on a primary's store.
-        await v1stub(install).testForgetCopyOrigin();
-        expect(await v1stub(install).markCopy()).toBe(true);
-        const held = holdFirst((ref, s) => ref === refOf.get(version.v2) && s === install);
-        hooks.marker = held.hook; // after the export, before the restore and the wipe
-        const bound = api.request(`/tenants/${t2}/scopes/${install}/version`, {
-          method: 'POST', headers: auth, body: JSON.stringify({ versionId: version.v2 }),
+      // Codex #2008 r11–r12: clearing a primary's mistaken marker loosens the store (its executors
+      // may run), so it is a write, and the clear is the fresher decision. Whichever side of the
+      // bind's re-check of the source it lands on, the store the scope runs on ends up unmarked and
+      // its executors run: no staff action is needed to finish what the clear started.
+      describe("a staff clear of a primary's mistaken marker during a carry", () => {
+        /** A primary install on v1 with a mistaken marker: its own tenant, routed by its version. */
+        const mistaken = async () => {
+          // Its own tenant: a second install in the owner's would make every later preview push
+          // ambiguous about which install it forks.
+          const t2 = tenantId.parse(ulid());
+          await dir.admin.createTenant(staff, { id: t2, slug: `carry-${t2.toLowerCase()}`, name: 'Clear Co' });
+          const install = scopeId.parse(ulid());
+          await dir.provisionScope(staff, { tenantId: t2, scopeId: install, vertical: slug });
+          await dir.admin.activateScope(staff, t2, install);
+          await dir.admin.bindScopeVersion(staff, t2, install, version.v1);
+          // Routed by its bound version, so the bind below carries rather than re-pointing a pin.
+          // (An install made after an earlier test promoted prod is born on the serving script; the
+          // per-version route is the backout `setScopeServingRef(null)` documents.)
+          await dir.admin.setScopeServingRef(staff, t2, install, null);
+          const rec = await dir.admin.getScopeRecord(staff, t2, install);
+          expect([rec?.servingRef ?? null, rec?.verticalVersionId]).toEqual([null, version.v1]);
+          await hostFor('v1').restoreScopeLocal(install, notes('install data'));
+          // The mistake staff will repair: a marker with no events mark on a primary's store.
+          await v1stub(install).testForgetCopyOrigin();
+          expect(await v1stub(install).markCopy()).toBe(true);
+          return { t2, install };
+        };
+        const bindV2 = (t2: TenantId, install: ScopeId) =>
+          api.request(`/tenants/${t2}/scopes/${install}/version`, {
+            method: 'POST', headers: auth, body: JSON.stringify({ versionId: version.v2 }),
+          });
+        const clear = async (t2: TenantId, install: ScopeId) => {
+          const res = await api.request(`/tenants/${t2}/scopes/${install}/clear-copy-mark`, { method: 'POST', headers: auth });
+          expect(res.status).toBe(200);
+          expect(await res.json()).toEqual({ cleared: true });
+        };
+        const v2stub = (sid: ScopeId) => env.PC_V2_SCOPE.get(env.PC_V2_SCOPE.idFromName(sid)) as unknown as CopyStub;
+        /** Whether v2's store runs an executor, as a CP-LESS host decides it: by its own marker. */
+        const runsExecutorsOnV2 = async (t2: TenantId, install: ScopeId): Promise<boolean> => {
+          const cpless = new CloudflareScopeHost({ scope: env.PC_V2_SCOPE });
+          const ran: string[] = [];
+          cpless.registerExecutor('clear-effector', 'pv.noted', async (_admin, event) => {
+            ran.push(event.id);
+          });
+          const eventId = await writeOn('v2', install, `n-${ulid()}`, 'after the race', t2);
+          const report = await cpless.drainDue(t2, install);
+          expect(report.attempted).toBeGreaterThan(0);
+          return ran.includes(eventId) && !report.inert;
+        };
+        const keptFailures = async (install: ScopeId) =>
+          (await dir.admin.listOpsFailures(staff, { scopeId: install })).filter((f) => f.stage === 'source-copy-kept');
+
+        it('before the re-check: the bind carries a fresh export, so the store it binds is unmarked', async () => {
+          const { t2, install } = await mistaken();
+          const held = holdFirst((ref, s) => ref === refOf.get(version.v2) && s === install);
+          hooks.marker = held.hook; // after the export, before the restore and the re-check
+          const bound = bindV2(t2, install);
+          await held.reached;
+          await clear(t2, install);
+          held.release();
+          expect((await bound).status).toBe(200);
+          expect(await v2stub(install).isCopy()).toBe(false);
+          expect(await runsExecutorsOnV2(t2, install)).toBe(true);
+          // The source went the ordinary way: wiped, and nothing kept or recorded.
+          expect(await tombstoneIn('v1', install)).not.toBeNull();
+          expect(await hostFor('v1').keptCopyLocal(install)).toBeNull();
+          expect(await keptFailures(install)).toEqual([]);
+          expect(bodiesIn(await hostFor('v2').exportScopeLocal(install))).toContain('install data');
         });
-        await held.reached;
-        const cleared = await api.request(`/tenants/${t2}/scopes/${install}/clear-copy-mark`, { method: 'POST', headers: auth });
-        expect(cleared.status).toBe(200);
-        expect(await cleared.json()).toEqual({ cleared: true });
-        held.release();
-        expect((await bound).status).toBe(200);
-        // The repaired store is kept, unmarked, with its data, and the carry says so.
-        expect(await hostFor('v1').keptCopyLocal(install)).not.toBeNull();
-        expect(await tombstoneIn('v1', install)).toBeNull();
-        expect(await v1stub(install).isCopy()).toBe(false);
-        expect(bodiesIn(await hostFor('v1').exportScopeLocal(install))).toEqual(['install data']);
-        const kept = (await dir.admin.listOpsFailures(staff, { scopeId: install })).find((f) => f.stage === 'source-copy-kept');
-        expect(kept).toMatchObject({ operation: 'scope.carry', status: 409 });
+
+        it('after the re-check: the carry brings the clear to the store it bound, then discards the source', async () => {
+          const { t2, install } = await mistaken();
+          const held = holdFirst((ref, s) => ref === refOf.get(version.v1) && s === install);
+          hooks.markerRead = held.hook; // the re-check of the source, read; the bind is next
+          const bound = bindV2(t2, install);
+          await held.reached;
+          await clear(t2, install);
+          held.release();
+          expect((await bound).status).toBe(200);
+          expect(await v2stub(install).isCopy()).toBe(false);
+          expect(await runsExecutorsOnV2(t2, install)).toBe(true);
+          // The source held nothing but the clear, which now lives where the scope runs: discarded.
+          expect(await tombstoneIn('v1', install)).not.toBeNull();
+          expect(await hostFor('v1').keptCopyLocal(install)).toBeNull();
+          expect(await keptFailures(install)).toEqual([]);
+        });
+
+        it('a data write as well as the clear after the re-check: the source is kept with the write, and recorded', async () => {
+          const { t2, install } = await mistaken();
+          const held = holdFirst((ref, s) => ref === refOf.get(version.v1) && s === install);
+          hooks.markerRead = held.hook;
+          const bound = bindV2(t2, install);
+          await held.reached;
+          await writeOn('v1', install, 'n-late', 'written after the re-check');
+          await clear(t2, install);
+          held.release();
+          expect((await bound).status).toBe(200);
+          // Not clear-only: the write is the only copy of itself, so nothing is discarded or moved.
+          const kept = await hostFor('v1').keptCopyLocal(install);
+          expect(kept).not.toBeNull();
+          expect(kept?.clearedOnly).toBeUndefined();
+          expect(await tombstoneIn('v1', install)).toBeNull();
+          expect(bodiesIn(await hostFor('v1').exportScopeLocal(install))).toEqual(['install data', 'written after the re-check']);
+          expect(await v1stub(install).isCopy()).toBe(false);
+          expect(await keptFailures(install)).toHaveLength(1);
+        });
       });
     });
 

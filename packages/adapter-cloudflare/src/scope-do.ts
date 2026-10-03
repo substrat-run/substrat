@@ -286,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4468,12 +4468,27 @@ export function defineScopeDO(
      * work a copy holds inert, so it advances the write revision, and a carry that exported
      * before it cannot wipe the repaired store. That carry's wipe keeps it instead.
      */
-    clearCopyMark(): 'cleared' | 'absent' | 'carries-events' {
-      let outcome: 'cleared' | 'absent' | 'carries-events' = 'absent';
-      this.revision.transactionSync(() => {
-        outcome = clearCopyMarker(this.switchSql());
+    clearCopyMark(
+      /** The write revision the caller read (Codex #2008 r12): the platform's reconcile of the store
+       *  a carry landed, so it clears only the marker of the store it checked. Absent for staff. */
+      expectRevision?: string | null,
+    ): 'cleared' | 'absent' | 'carries-events' | 'changed' {
+      return this.revision.transactionSync(() => {
+        const from = this.metaValue(WRITE_REVISION_KEY);
+        if (expectRevision !== undefined && from !== expectRevision) return 'changed' as const;
+        const outcome = clearCopyMarker(this.switchSql());
+        // The clear's own revisions, so a carry's refused wipe can tell that this clear, and
+        // nothing else, is what changed here since its export (`COPY_MARK_CLEARED_KEY`).
+        if (outcome === 'cleared') {
+          this.sql.exec(
+            `INSERT INTO _substrat_meta (key, value) VALUES (?, ?)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+            COPY_MARK_CLEARED_KEY,
+            JSON.stringify({ from, to: this.metaValue(WRITE_REVISION_KEY) }),
+          );
+        }
+        return outcome;
       });
-      return outcome;
     }
 
     /**
@@ -5449,7 +5464,9 @@ export function defineScopeDO(
         return true;
       } catch (e) {
         const code = errorCodeOf(e);
-        if (copy) {
+        // Only on the directory's word: the store's own marker, read before the refused load, may
+        // have been cleared by staff since (Codex #2008 r12), and marking it again would undo that.
+        if (markCopy === true) {
           this.revision.transactionSync(() =>
             this.revision.bookkeeping(() => markCopyOrigin(this.switchSql(), carriedAway.at)),
           );
@@ -5483,6 +5500,17 @@ export function defineScopeDO(
           if (!writtenSince && !(protectIfChanged && changedSince)) return;
           const kept: KeptCopy = { carriedTo: carriedAway.to, keptAt: carriedAway.at, revision: now.revision };
           this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, KEPT_DIVERGENT_KEY, JSON.stringify(kept));
+          // Codex #2008 r12: changed ONLY by a staff clear of the copy marker — the clear's own
+          // revisions span exactly the export's and the store's now — so the data is what the carry
+          // copied, and only the fresher classification is not. Recorded on the marker with the
+          // revision this keep committed at (the same run: no second bump), which the platform's
+          // discard is fenced on once it has brought the clear to where the scope runs.
+          const cleared = this.metaValue(COPY_MARK_CLEARED_KEY);
+          const span = cleared ? (JSON.parse(cleared) as { from: string | null; to: string | null }) : null;
+          if (writtenSince && span && span.from === expectRevision && span.to === now.revision) {
+            const settled: KeptCopy = { ...kept, clearedOnly: { revision: this.metaValue(WRITE_REVISION_KEY) } };
+            this.sql.exec(`UPDATE _substrat_meta SET value = ? WHERE key = ?`, JSON.stringify(settled), KEPT_DIVERGENT_KEY);
+          }
         });
         return false;
       }

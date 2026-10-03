@@ -564,6 +564,28 @@ class ExportBreakRefused extends ControlPlaneError {
   }
 }
 
+/**
+ * A carry whose source store kept changing between its export and its bind (#1722, Codex #2008
+ * r12): every re-carry from a fresh export found the source changed again before it could bind.
+ * Nothing was bound and the destination's copy was dropped, so the caller retries the bind. Typed,
+ * so a client tells it from the other 409s: `carrySourceChanged` names the two scripts and how many
+ * exports were tried.
+ */
+class CarrySourceChanged extends ControlPlaneError {
+  constructor(
+    readonly scopeId: ScopeId,
+    readonly from: string,
+    readonly to: string,
+    readonly attempts: number,
+  ) {
+    super(
+      409,
+      `scope ${scopeId}'s store in '${from}' changed while it was being carried to '${to}', on each of ` +
+        `${attempts} exports, so nothing was bound (#1722). Retry the bind.`,
+    );
+  }
+}
+
 /** The body a route answers an `ExportBreakRefused` with: the sentence and the listing. */
 function exportBreakBody(e: ControlPlaneError): { error: string; exportBreaks?: { affected: ExportBreak[] } } {
   return { error: e.message, ...(e instanceof ExportBreakRefused ? { exportBreaks: { affected: e.breaks } } : {}) };
@@ -1582,6 +1604,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return problem(c, { status: 400, body: toProblem(err, c.req.path) });
     }
     if (err instanceof ExportBreakRefused) return c.json(exportBreakBody(err), 409);
+    if (err instanceof CarrySourceChanged) {
+      return c.json({ error: err.message, carrySourceChanged: { scopeId: err.scopeId, from: err.from, to: err.to, attempts: err.attempts } }, 409);
+    }
     const { status, body } = mapError(err);
     // A 5xx is the PLATFORM failing — an unmapped throw, or a downstream vertical's
     // own 5xx passing through (a DO storage fault during a preview restore is the
@@ -2782,6 +2807,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return (await c.var.admin.getVersion(c.get('actor'), scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null;
   };
 
+  /** How many exports a carry tries before its source holds still long enough to bind (#1722 r12). */
+  const CARRY_EXPORT_ATTEMPTS = 3;
+
   /** A carry that landed (#1710): where the data went, and what `bindAfterCarry` settles with (#1722). */
   type Carried = {
     from: string;
@@ -3034,9 +3062,40 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     scope: Scope,
     versionId: string,
     carried: Carried | null,
-    opts: { acknowledge?: BindAcknowledgement; snapshot?: boolean; clearServingRef?: boolean } = {},
+    opts: {
+      acknowledge?: BindAcknowledgement;
+      snapshot?: boolean;
+      clearServingRef?: boolean;
+      /** The same carry again, from a fresh export (#1722 r12): what step 0 runs when the source
+       *  changed after this one's export. Without it, a changed source refuses the bind. */
+      recarry?: () => Promise<Carried | null>;
+    } = {},
   ): Promise<void> => {
     const actor = c.get('actor');
+    // 0. The source, read again right before the bind (Codex #2008 r12). A store that changed since
+    //    the export (a write, a load, or a staff clear of its copy marker) holds something the
+    //    destination does not, so binding now would serve the stale export. The carry is run
+    //    again from a fresh export, a bounded number of times, and then refused with a typed 409.
+    //    What changes after this read is the source wipe's to fence (`keepOrWipeSource`).
+    for (let attempt = 1; carried; attempt++) {
+      const now = await retryTransient(() => carried!.source.loadMarker(scope.id));
+      if (now === 'unfenced' || (now.loadStamp === carried.sourceStamp && now.revision === carried.sourceRevision)) break;
+      const stale: Carried = carried;
+      let next: Carried | null = null;
+      if (attempt < CARRY_EXPORT_ATTEMPTS && opts.recarry) {
+        try {
+          next = await opts.recarry();
+        } catch (e) {
+          await dropUnboundCopy(c, scope, versionId, stale);
+          throw e;
+        }
+      }
+      if (!next) {
+        await dropUnboundCopy(c, scope, versionId, stale);
+        throw new CarrySourceChanged(scope.id, stale.from, stale.to, attempt);
+      }
+      carried = next;
+    }
     try {
       await c.var.admin
         .bindScopeVersion(actor, scope.tenantId, scope.id, versionId, {
@@ -3102,6 +3161,39 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
+   * A source kept ONLY because staff cleared its copy marker after the carry's export (Codex #2008
+   * r12; the store records that itself, `KeptCopy.clearedOnly`). Its data is what the carry
+   * copied; the fresher decision is the clear, so it is brought to the store the scope runs on:
+   * the destination's marker is cleared, fenced on the destination's revision read after the
+   * binding is confirmed, and only then is the source discarded, fenced on the revision it was
+   * kept at. True when both landed. Anything else (a write since, a move, a refusal) leaves the
+   * source kept, and the caller records it as any kept copy.
+   */
+  const bringClearForward = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<boolean> => {
+    if (!isPrimaryScope(scope)) return false; // only staff clear, and only a primary's marker
+    const kept = await carried.source.keptCopy(scope.id);
+    if (!kept?.clearedOnly) return false;
+    const destMarker = await carried.dest.loadMarker(scope.id);
+    if (destMarker === 'unfenced') return false;
+    if ((await currentRoute(c, scope, versionId, carried)) !== carried.to) return false;
+    try {
+      await carried.dest.clearCopyMark(scope.id, { kind: scope.kind, forkedFrom: scope.forkedFrom }, {
+        expectRevision: destMarker.revision,
+      });
+    } catch (e) {
+      if (e instanceof ControlPlaneError && (e.status === 412 || e.status === 409)) return false;
+      throw e;
+    }
+    const discarded = await carried.source.discardKeptCopy({
+      scopeId: scope.id,
+      revision: kept.clearedOnly.revision,
+      carriedTo: carried.to,
+      at: new Date().toISOString(),
+    });
+    return 'discarded' in discarded;
+  };
+
+  /**
    * The source wipe, fenced on what the export read. Refused means the copy changed after the
    * export: a write from a request still routed there before the bind, which the carry never
    * copied. The copy is then kept, holding that write, and recorded so it can be recovered.
@@ -3119,10 +3211,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (await wipeCarriedCopy(carried.source, scope, expect, carried.to, true)) return;
     // A rollback that restored into it since made it the live store again: it is no kept copy, and
     // a marker this refusal set while the rollback had not yet bound comes off.
-    if ((await currentRoute(c, scope, versionId, carried)) === carried.from) {
+    const route = await currentRoute(c, scope, versionId, carried);
+    if (route === carried.from) {
       await releaseIfLive(c, scope, versionId, carried, carried.source, carried.from);
       return;
     }
+    if (route === carried.to && (await bringClearForward(c, scope, versionId, carried))) return;
     recordCarryCleanup(
       c,
       scope,
@@ -4425,8 +4519,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!bound?.deploymentRef) return { skipped: `version ${versionId} has no script of its own` };
     // The carry and the tail a legacy preview's `scope bind` runs too. The bind expects the
     // version this pass read, so a push that re-pointed the preview since it was listed wins.
-    const carried = await carryOntoVersion(c, scope, versionId, { dropServingRef: true });
-    await bindAfterCarry(c, scope, versionId, carried, { clearServingRef: true });
+    const recarry = () => carryOntoVersion(c, scope, versionId, { dropServingRef: true });
+    const carried = await recarry();
+    await bindAfterCarry(c, scope, versionId, carried, { clearServingRef: true, recarry });
     return { repaired: { from: carried?.from ?? scope.servingRef!, to: bound.deploymentRef, tables: carried?.tables ?? 0 } };
   };
   app.post('/previews/repair-serving-pins', async (c) => {
@@ -5498,7 +5593,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, versionId, opts).catch(relayHostRefusal);
         return;
       }
-      await bindAfterCarry(c, scope, versionId, carried, { ...opts, clearServingRef: repairPreviewPin });
+      await bindAfterCarry(c, scope, versionId, carried, {
+        ...opts,
+        clearServingRef: repairPreviewPin,
+        recarry: () => carryOntoVersion(c, scope, versionId, { dropServingRef: repairPreviewPin }),
+      });
     };
     if (snapshot) {
       if (!scope) {
@@ -8018,7 +8117,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #527 has its inherited serving_ref cleared, so routing follows the bound version (its
       // per-version script) and not the prod serving script; the OFF positions are re-asserted
       // there (#1674); and the copy left in the old script is wiped.
-      await bindAfterCarry(c, existing, opts.versionId, carried, { clearServingRef: true });
+      await bindAfterCarry(c, existing, opts.versionId, carried, {
+        clearServingRef: true,
+        recarry: () => carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true }),
+      });
       // Renew (or clear) the preview's GC deadline so a reused preview does not silently die.
       await c.var.admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, existing.id, opts.tag, surface);

@@ -919,7 +919,7 @@ interface ScopeStubRpc {
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
   /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
-  clearCopyMark(): Promise<'cleared' | 'absent' | 'carries-events'>;
+  clearCopyMark(expectRevision?: string | null): Promise<'cleared' | 'absent' | 'carries-events' | 'changed'>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -2764,11 +2764,20 @@ export class CloudflareScopeHost implements ScopeHost {
    * Refused for a scope classified a copy, and for a marker a real load wrote (one naming copied
    * events) — removing that would let another scope's queued work run here.
    */
-  async clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ cleared: boolean }> {
+  async clearCopyMarkLocal(
+    scopeId: ScopeId,
+    lineage: ScopeLineage,
+    /** #1722 (Codex #2008 r12): the store's write revision as the caller read it; refused (412) if
+     *  it moved. The platform's reconcile of a carry's destination sends it; staff send none. */
+    expectRevision?: string | null,
+  ): Promise<{ cleared: boolean }> {
     if (!isPrimaryScope(lineage)) {
       throw substratError('conflict', 'clear-copy-mark refused: the directory classifies this scope as a copy (a preview or a fork)');
     }
-    const outcome = await this.scopeStub(scopeId).clearCopyMark();
+    const outcome = await this.scopeStub(scopeId).clearCopyMark(...(expectRevision !== undefined ? [expectRevision] : []));
+    if (outcome === 'changed') {
+      throw substratError('precondition_failed', `clear-copy-mark refused: scope ${scopeId}'s store changed since its revision was read`);
+    }
     if (outcome === 'carries-events') {
       throw substratError(
         'conflict',

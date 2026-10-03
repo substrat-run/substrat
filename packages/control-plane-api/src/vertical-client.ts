@@ -1157,6 +1157,9 @@ export class VerticalClient {
       ...(k.leftAgain && typeof k.leftAgain.to === 'string' && typeof k.leftAgain.at === 'string'
         ? { leftAgain: { to: k.leftAgain.to, at: k.leftAgain.at } }
         : {}),
+      ...(k.clearedOnly && (k.clearedOnly.revision === null || typeof k.clearedOnly.revision === 'string')
+        ? { clearedOnly: { revision: k.clearedOnly.revision } }
+        : {}),
     };
   }
 
@@ -1252,8 +1255,17 @@ export class VerticalClient {
   }
 
   /** Remove a mistaken copy marker (#2005), given the directory's classification; whether it did. */
-  async clearCopyMark(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ cleared: boolean }> {
-    return this.postInternal<{ cleared: boolean }>('/internal/clear-copy-mark', { scopeId, lineage }, 'clear-copy-mark');
+  async clearCopyMark(
+    scopeId: ScopeId,
+    lineage: ScopeLineage,
+    /** #1722 (Codex #2008 r12): clear only the store whose write revision this is; 412 otherwise. */
+    opts: { expectRevision?: string | null } = {},
+  ): Promise<{ cleared: boolean }> {
+    return this.postInternal<{ cleared: boolean }>(
+      '/internal/clear-copy-mark',
+      { scopeId, lineage, ...(opts.expectRevision !== undefined ? { expectRevision: opts.expectRevision } : {}) },
+      'clear-copy-mark',
+    );
   }
 
   /** Facets over one scope's outbox (#1239) — through the vertical that holds the data. */

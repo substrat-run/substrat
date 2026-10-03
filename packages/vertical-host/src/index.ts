@@ -190,7 +190,7 @@ export interface VerticalScopeHost {
   markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }>;
   /** #2005: remove a mistaken copy marker, given the directory's classification, which must be
    *  primary. */
-  clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ cleared: boolean }>;
+  clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage, expectRevision?: string | null): Promise<{ cleared: boolean }>;
   /** #1722: what a carry's restore into this store expects to find unchanged. Optional, like
    *  `wipeCarriedLocal`; the route answers 501 without it, and the platform then cannot fence. */
   loadMarkerLocal?(scopeId: ScopeId): Promise<LoadMarker>;
@@ -904,8 +904,20 @@ export function mountPlatformSurface<Env extends object>(
   // #2005: staff's correction of a MISTAKEN mark, for a scope the directory says IS primary. The
   // host refuses a scope classified a copy, and a marker a real load wrote.
   app.post('/internal/clear-copy-mark', async (c) => {
-    const body = z.object({ scopeId: scopeIdOf, lineage: scopeLineage }).parse(await c.req.json());
-    return c.json(await deps.hostFor(c.env).clearCopyMarkLocal(body.scopeId, body.lineage));
+    const body = z
+      .object({
+        scopeId: scopeIdOf,
+        lineage: scopeLineage,
+        // #1722 (Codex #2008 r12): the platform's reconcile of a carry's destination clears only
+        // the store it read; a 412 when that store changed since. Staff's correction sends none.
+        expectRevision: z.string().min(1).nullable().optional(),
+      })
+      .parse(await c.req.json());
+    return c.json(
+      await deps
+        .hostFor(c.env)
+        .clearCopyMarkLocal(body.scopeId, body.lineage, ...(body.expectRevision !== undefined ? [body.expectRevision] : [])),
+    );
   });
 
   // #1239: facets over this scope's own outbox — narrow, group, count. Counts and

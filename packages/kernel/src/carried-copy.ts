@@ -42,8 +42,21 @@ export const WRITE_REVISION_KEY = 'write_revision';
  * `KeptCopy` below, as JSON.
  */
 export const KEPT_DIVERGENT_KEY = 'kept_divergent';
+/**
+ * The last copy-marker clear this store took (#2005 × #1722, Codex #2008 r12), as JSON
+ * `{ from, to }`: the write revision just before the clear and the one it committed at. A clear
+ * loosens the store (its executors may run), so it is a write a carry fences on; this is how the
+ * carry's refused wipe tells a source that changed ONLY by that clear, whose data the carry did
+ * copy, from one that took a write the carry did not. A load drops it with the rest of the store.
+ */
+export const COPY_MARK_CLEARED_KEY = 'copy_mark_cleared';
 /** The `_substrat_meta` keys that describe the store rather than the scope's data: never dumped. */
-export const STORE_LOCAL_META_KEYS: readonly string[] = [LOAD_STAMP_KEY, WRITE_REVISION_KEY, KEPT_DIVERGENT_KEY];
+export const STORE_LOCAL_META_KEYS: readonly string[] = [
+  LOAD_STAMP_KEY,
+  WRITE_REVISION_KEY,
+  KEPT_DIVERGENT_KEY,
+  COPY_MARK_CLEARED_KEY,
+];
 
 /** What a kept copy records about itself: where the scope's data went, when, and its revision then. */
 export interface KeptCopy {
@@ -55,6 +68,13 @@ export interface KeptCopy {
   revision: string | null;
   /** The latest carry away from the copy after it was kept (#1722 r9), when there was one. */
   leftAgain?: { to: string; at: string };
+  /**
+   * Present when the copy changed since the carry's export ONLY by a staff clear of its copy marker
+   * (Codex #2008 r12): it holds no data the carry lacks, only the fresher classification, which the
+   * platform then brings to the store the scope runs on. `revision` is the store's revision once
+   * kept, so a discard fenced on it proves nothing else has landed since.
+   */
+  clearedOnly?: { revision: string | null };
 }
 
 /** The refusal a load into a kept copy answers (409). */
