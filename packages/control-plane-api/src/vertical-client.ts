@@ -100,8 +100,17 @@ import type { KeptCopy, LoadMarker, OpenedAttachment, UndrainedEvents, Undrained
 import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
-/** `fencedAnswer`'s word for a deployment that predates the route it was asked (#1722). */
-const UNFENCED = Symbol('unfenced');
+/** `routeAnswer`'s word for a deployment that predates the route it was asked (#1722, #2010). */
+const PREDATES = Symbol('predates');
+
+/**
+ * What `routeAnswer` needs from a verb: whether the far end's own 501 is its fallback for a
+ * route it does not have, and the sentence a lost answer ends with — what it leaves unknown.
+ */
+type RouteRule = { legacy501: boolean; lost: string };
+
+/** #1722's kept-copy and fenced-wipe verbs: a host without the method answers a 501. */
+const FENCED: RouteRule = { legacy501: true, lost: 'it may or may not have acted' };
 
 /** The SPA fallback's answer to a path the deployment does not know: an HTML document, served as one. */
 function isHtmlShell(res: Response, text: string): boolean {
@@ -698,91 +707,70 @@ export class VerticalClient {
    * ONE shape is normalized to "redeploy the vertical", and only because it is the
    * deployment's own proof that it cannot have acted: a script built before the route
    * answers a **404** (the path does not exist — the route itself answers a module it holds
-   * nothing for with a 200 `held: false`, never a 404) or its **SPA shell** (a 200 that is
-   * not JSON). "Nothing was switched" is true of exactly those.
+   * nothing for with a 200 `held: false`, never a 404) or its **SPA shell** (the HTML document
+   * its fallback serves, `routeAnswer`). "Nothing was switched" is true of exactly those.
    *
    * Everything else surfaces as the failure it is, and never claims that: a transport
-   * failure (`reach` → 502 "unreachable"), a genuine 5xx from the far end, and a 200 JSON of
-   * the wrong shape. The request may have landed and the switch may have moved before the
-   * answer was lost, so the only honest instruction is to confirm the position first.
+   * failure (`reach` → 502 "unreachable"), a genuine 5xx from the far end, a 200 whose body
+   * is truncated or fails to read (#2010), and a 200 JSON of the wrong shape. The request may
+   * have landed and the switch may have moved before the answer was lost, so the only honest
+   * instruction is to confirm the position first.
    */
   async systemSwitch(input: { scopeId: ScopeId; moduleId: ModuleId; to: 'on' | 'off' }): Promise<SystemSwitchOutcome> {
     const verb = 'system-switch';
-    const predates = (): ControlPlaneError =>
-      new ControlPlaneError(
-        501,
-        `the deployment serving scope ${input.scopeId} predates the schedule switch (#1666) — ` +
-          `redeploy the vertical, then retry. Nothing was switched.`,
-      );
+    const lost =
+      `the switch on scope ${input.scopeId} may or may not have moved. ` +
+      `Confirm its position (read the scope's schedule status) before retrying.`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.reach(verb, () =>
+    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
       this.options.fetch(`${base}/internal/system-switch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(input),
       }),
     );
-    if (res.status === 404) throw predates();
-    if (!res.ok) throw await this.refusal(verb, res);
-    const text = await res.text();
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch {
-      throw predates();
-    }
-    const parsed = systemSwitchOutcome.safeParse(raw);
-    if (!parsed.success) {
+    if (answer === PREDATES) {
       throw new ControlPlaneError(
-        502,
-        `vertical answered ${verb} with an unexpected shape — the switch on scope ${input.scopeId} may ` +
-          `or may not have moved. Confirm its position (the scope's SQL console) before retrying.`,
+        501,
+        `the deployment serving scope ${input.scopeId} predates the schedule switch (#1666) — ` +
+          `redeploy the vertical, then retry. Nothing was switched.`,
       );
     }
+    const parsed = systemSwitchOutcome.safeParse(answer);
+    if (!parsed.success) throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — ${lost}`);
     return parsed.data;
   }
 
   /**
    * The read half of the schedule kill switch's status (#1674): every module the
    * deployment serving this scope holds or has held system authority for, and where each
-   * stands. Mirrors `systemSwitch`'s seam and its skew rule exactly (#1666's "only the
-   * explicit legacy signal reads as redeploy"): a 404 (the route does not exist) or an SPA
-   * shell (a 200 that is not JSON) are the deployment's own proof it predates this read,
-   * and become a 501 that says so. A 200 of the wrong-shaped JSON is NOT that proof — it
-   * is a failure this client cannot explain, so it surfaces as the 502 it is rather than a
-   * guess at "redeploy". The far end's own 501 (the route exists, the method doesn't)
-   * passes through `refusal` verbatim, unchanged either way.
+   * stands. Mirrors `systemSwitch`'s seam and its skew rule exactly (`routeAnswer`): a 404
+   * or the SPA shell are the deployment's own proof it predates this read, and become a
+   * 501 that says so. A truncated or unreadable 200 (#2010) and a 200 of the wrong-shaped
+   * JSON are NOT that proof — they are a failed read, a 502, rather than a guess at
+   * "redeploy". The far end's own 501 (the route exists, the method doesn't) passes through
+   * `refusal` verbatim, unchanged either way.
    */
   async systemGrantsStatus(input: { scopeId: ScopeId }): Promise<SystemScheduleEntry[]> {
     const verb = 'system-grants';
-    const predates = (): ControlPlaneError =>
-      new ControlPlaneError(
-        501,
-        `the deployment serving scope ${input.scopeId} predates the schedule switch's status read (#1674) — ` +
-          `redeploy the vertical, then retry.`,
-      );
+    const lost = `the status of scope ${input.scopeId} could not be read. Nothing was changed; retry the read.`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.reach(verb, () =>
+    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
       this.options.fetch(`${base}/internal/system-grants?scopeId=${encodeURIComponent(input.scopeId)}`, {
         method: 'GET',
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
-    if (res.status === 404) throw predates();
-    if (!res.ok) throw await this.refusal(verb, res);
-    const text = await res.text();
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch {
-      throw predates();
-    }
-    const parsed = systemScheduleEntry.array().safeParse(raw);
-    if (!parsed.success) {
+    if (answer === PREDATES) {
       throw new ControlPlaneError(
-        502,
-        `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`,
+        501,
+        `the deployment serving scope ${input.scopeId} predates the schedule switch's status read (#1674) — ` +
+          `redeploy the vertical, then retry.`,
       );
+    }
+    const parsed = systemScheduleEntry.array().safeParse(answer);
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`);
     }
     return parsed.data;
   }
@@ -790,35 +778,29 @@ export class VerticalClient {
   /**
    * The read half of the peer kill switch's status (#1706): every peer the deployment
    * serving this scope holds or has held grants for, and where each stands. Mirrors
-   * `peerSwitch`'s seam and `systemGrantsStatus`'s skew rule exactly — a 404 or an SPA
+   * `peerSwitch`'s seam and `systemGrantsStatus`'s skew rule exactly — a 404 or the SPA
    * shell are the deployment's own proof it predates this read and become a 501 that says
-   * to redeploy; a wrong-shaped 200 is not that proof and surfaces as the 502 it is.
+   * to redeploy; a truncated, unreadable or wrong-shaped 200 is not that proof and surfaces
+   * as the 502 it is.
    */
   async peerGrantsStatus(input: { scopeId: ScopeId }): Promise<PeerGrantsEntry[]> {
     const verb = 'peer-grants';
-    const predates = (): ControlPlaneError =>
-      new ControlPlaneError(
-        501,
-        `the deployment serving scope ${input.scopeId} predates the peer switch's status read (#1706) — ` +
-          `redeploy the vertical, then retry.`,
-      );
+    const lost = `the peer status of scope ${input.scopeId} could not be read. Nothing was changed; retry the read.`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.reach(verb, () =>
+    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
       this.options.fetch(`${base}/internal/peer-grants?scopeId=${encodeURIComponent(input.scopeId)}`, {
         method: 'GET',
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
-    if (res.status === 404) throw predates();
-    if (!res.ok) throw await this.refusal(verb, res);
-    const text = await res.text();
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch {
-      throw predates();
+    if (answer === PREDATES) {
+      throw new ControlPlaneError(
+        501,
+        `the deployment serving scope ${input.scopeId} predates the peer switch's status read (#1706) — ` +
+          `redeploy the vertical, then retry.`,
+      );
     }
-    const parsed = peerGrantsEntry.array().safeParse(raw);
+    const parsed = peerGrantsEntry.array().safeParse(answer);
     if (!parsed.success) {
       throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`);
     }
@@ -831,45 +813,35 @@ export class VerticalClient {
    * live there and nowhere the shared control plane can reach.
    *
    * The seam, the skew rule and the honesty rule are `systemSwitch`'s, for the same reasons:
-   * a **404** (no such route) or an **SPA shell** (a 200 that is not JSON) are the
-   * deployment's own proof that it predates this route and therefore cannot have switched
-   * anything — the route itself answers a peer the scope holds nothing for with a 200
-   * `held: false`, never a 404. Everything else surfaces as the failure it is, because the
-   * request may have landed and the switch may have moved before the answer was lost.
+   * a **404** (no such route) or the **SPA shell** are the deployment's own proof that it
+   * predates this route and therefore cannot have switched anything — the route itself
+   * answers a peer the scope holds nothing for with a 200 `held: false`, never a 404.
+   * Everything else, a truncated or unreadable 200 included (#2010), surfaces as the failure
+   * it is, because the request may have landed and the switch may have moved before the
+   * answer was lost.
    */
   async peerSwitch(input: { scopeId: ScopeId; vertical: string; to: 'on' | 'off' }): Promise<PeerSwitchOutcome> {
     const verb = 'peer-switch';
-    const predates = (): ControlPlaneError =>
-      new ControlPlaneError(
-        501,
-        `the deployment serving scope ${input.scopeId} predates the peer kill switch (#1706) — ` +
-          `redeploy the vertical, then retry. Nothing was switched.`,
-      );
+    const lost =
+      `the switch for peer '${input.vertical}' on scope ${input.scopeId} may or may not have moved. ` +
+      `Confirm its position (read the scope's peer status) before retrying.`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.reach(verb, () =>
+    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
       this.options.fetch(`${base}/internal/peer-switch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(input),
       }),
     );
-    if (res.status === 404) throw predates();
-    if (!res.ok) throw await this.refusal(verb, res);
-    const text = await res.text();
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch {
-      throw predates();
-    }
-    const parsed = peerSwitchOutcome.safeParse(raw);
-    if (!parsed.success) {
+    if (answer === PREDATES) {
       throw new ControlPlaneError(
-        502,
-        `vertical answered ${verb} with an unexpected shape — the switch for peer '${input.vertical}' on ` +
-          `scope ${input.scopeId} may or may not have moved. Confirm its position before retrying.`,
+        501,
+        `the deployment serving scope ${input.scopeId} predates the peer kill switch (#1706) — ` +
+          `redeploy the vertical, then retry. Nothing was switched.`,
       );
     }
+    const parsed = peerSwitchOutcome.safeParse(answer);
+    if (!parsed.success) throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — ${lost}`);
     return parsed.data;
   }
 
@@ -879,13 +851,14 @@ export class VerticalClient {
    * here, delete the preview's clients. Addressed to the ISSUER's deployment (this client),
    * never the preview's.
    *
-   * The skew rule is `systemSwitch`'s, widened by one status: a deployment built before these
+   * The skew rule is `routeAnswer`'s with `legacy501`: a deployment built before these
    * routes answers its `/internal/*` fallback — a JSON **501** on the auth-server — or a
-   * **404**, or an SPA shell (a 200 that is not JSON). All three are the deployment's own
-   * proof it cannot have acted, and become a 501 that says to redeploy the auth server. The
-   * caller must never read that as "the parent does not sign in here". A 200 of the wrong
-   * shape is not that proof and surfaces as a 502; a refusal (403 another tenant's issuer,
-   * 409 a parent it does not claim) passes through verbatim.
+   * **404**, or the SPA shell. All three are the deployment's own proof it cannot have acted,
+   * and become a 501 that says to redeploy the auth server. The caller must never read that
+   * as "the parent does not sign in here". A truncated or unreadable 200 (#2010) and a 200 of
+   * the wrong shape are not that proof and surface as a 502: a mint or a retire may have run.
+   * A refusal (403 another tenant's issuer, 409 a parent it does not claim) passes through
+   * verbatim.
    *
    * The mint's answer carries a client SECRET. It is returned to the caller and nothing here
    * keeps, logs or quotes it: no error message on this path includes a response body that
@@ -911,30 +884,23 @@ export class VerticalClient {
     verb: string,
     issuerScopeId: ScopeId,
   ): Promise<T> {
-    const predates = (): ControlPlaneError =>
-      new ControlPlaneError(
-        501,
-        `the auth server serving scope ${issuerScopeId} predates preview clients (#1704) — redeploy it, ` +
-          `then re-run. Nothing was minted or deleted there.`,
-      );
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.reach(verb, () =>
+    const lost = `the auth server serving scope ${issuerScopeId} may or may not have acted on it.`;
+    const answer = await this.routeAnswer(verb, { legacy501: true, lost }, () =>
       this.options.fetch(`${base}${path}`, {
         method,
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(body),
       }),
     );
-    if (res.status === 404 || res.status === 501) throw predates();
-    if (!res.ok) throw await this.refusal(verb, res);
-    const text = await res.text();
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch {
-      throw predates();
+    if (answer === PREDATES) {
+      throw new ControlPlaneError(
+        501,
+        `the auth server serving scope ${issuerScopeId} predates preview clients (#1704) — redeploy it, ` +
+          `then re-run. Nothing was minted or deleted there.`,
+      );
     }
-    const parsed = schema.safeParse(raw);
+    const parsed = schema.safeParse(answer);
     if (!parsed.success) {
       throw new ControlPlaneError(502, `auth server answered ${verb} with an unexpected shape for scope ${issuerScopeId}.`);
     }
@@ -1072,7 +1038,7 @@ export class VerticalClient {
    *
    * `'unfenced'` is a deployment that cannot compare the stamp, and the only answer that lets
    * the caller fall back to an unconditional wipe: a 404 (built before the route), a 501 (a host
-   * without the method) or the HTML shell an SPA fallback serves (`fencedAnswer`) are the
+   * without the method) or the HTML shell an SPA fallback serves (`routeAnswer`) are the
    * deployment's own proof that it wiped nothing. Everything else, a truncated or malformed JSON
    * answer included, surfaces as the failure it is: the wipe may or may not have run.
    */
@@ -1091,14 +1057,14 @@ export class VerticalClient {
   }): Promise<{ wiped: boolean } | 'unfenced'> {
     const verb = 'wipe-carried';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.fencedAnswer(verb, () =>
+    const answer = await this.routeAnswer(verb, FENCED, () =>
       this.options.fetch(`${base}/internal/wipe-carried`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(input),
       }),
     );
-    if (answer === UNFENCED) return 'unfenced';
+    if (answer === PREDATES) return 'unfenced';
     const wiped = (answer as { wiped?: unknown } | null)?.wiped;
     if (typeof wiped !== 'boolean') {
       throw new ControlPlaneError(
@@ -1117,12 +1083,12 @@ export class VerticalClient {
   async loadMarker(scopeId: ScopeId): Promise<LoadMarker | 'unfenced'> {
     const verb = 'load-marker';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.fencedAnswer(verb, () =>
+    const answer = await this.routeAnswer(verb, FENCED, () =>
       this.options.fetch(`${base}/internal/load-marker?scopeId=${encodeURIComponent(scopeId)}`, {
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
-    if (answer === UNFENCED) return 'unfenced';
+    if (answer === PREDATES) return 'unfenced';
     const { loadStamp, revision } = (answer ?? {}) as { loadStamp?: unknown; revision?: unknown };
     const field = (v: unknown) => v === null || (typeof v === 'string' && v.length > 0);
     if (!field(loadStamp) || !field(revision)) {
@@ -1138,12 +1104,12 @@ export class VerticalClient {
   async keptCopy(scopeId: ScopeId): Promise<KeptCopy | null> {
     const verb = 'kept-copy';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.fencedAnswer(verb, () =>
+    const answer = await this.routeAnswer(verb, FENCED, () =>
       this.options.fetch(`${base}/internal/kept-copy?scopeId=${encodeURIComponent(scopeId)}`, {
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
-    if (answer === UNFENCED) return null;
+    if (answer === PREDATES) return null;
     const kept = (answer as { kept?: unknown } | null)?.kept;
     if (kept === null) return null;
     const k = kept as Partial<KeptCopy> | undefined;
@@ -1174,14 +1140,14 @@ export class VerticalClient {
   }): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
     const verb = 'kept-copy-release';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.fencedAnswer(verb, () =>
+    const answer = await this.routeAnswer(verb, FENCED, () =>
       this.options.fetch(`${base}/internal/kept-copy/release`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(input),
       }),
     );
-    if (answer === UNFENCED) {
+    if (answer === PREDATES) {
       throw new ControlPlaneError(501, `the deployment holding scope ${input.scopeId} keeps no copies (#1722)`);
     }
     const a = answer as { released?: unknown; refused?: unknown } | null;
@@ -1203,14 +1169,14 @@ export class VerticalClient {
   }): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
     const verb = 'kept-copy-discard';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const answer = await this.fencedAnswer(verb, () =>
+    const answer = await this.routeAnswer(verb, FENCED, () =>
       this.options.fetch(`${base}/internal/kept-copy/discard`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
         body: JSON.stringify(input),
       }),
     );
-    if (answer === UNFENCED) {
+    if (answer === PREDATES) {
       throw new ControlPlaneError(501, `the deployment holding scope ${input.scopeId} keeps no copies (#1722)`);
     }
     const a = answer as { discarded?: unknown; refused?: unknown } | null;
@@ -1220,17 +1186,18 @@ export class VerticalClient {
   }
 
   /**
-   * #1722: the answer to a route a deployment built before #1722 does not have. Only an answer
-   * the deployment actually gave, and that says so, counts as that: a 404, a 501, or the HTML
+   * The ONE skew rule for a route a deployment may predate (#1722, #2010): `PREDATES` only for an
+   * answer the deployment actually gave that says it does not have the route — a 404, the HTML
    * shell an SPA fallback serves for a path it does not know (`text/html`, a body that opens as an
-   * HTML document). Everything else is a failure, never `UNFENCED`, because the request may have
-   * landed: a transport failure, a refusal, a body that fails to read, and a body that is not
-   * valid JSON (a truncated `{"wiped":` from a deployment that DID act). A fenced wipe that
-   * committed and then lost its answer must not be followed by the unconditional fallback.
+   * HTML document), and a 501 where `rule.legacy501` says the far end's own fallback answers one.
+   * Everything else is a failure, never `PREDATES`, because the request may have landed: a
+   * transport failure, a refusal, a body that fails to read, and a body that is not valid JSON (a
+   * truncated `{"held":` from a deployment that DID act). Those last two are a 502 that ends with
+   * `rule.lost`, the verb's own sentence for what a lost answer leaves unknown.
    */
-  private async fencedAnswer(verb: string, request: () => Promise<Response>): Promise<unknown> {
+  private async routeAnswer(verb: string, rule: RouteRule, request: () => Promise<Response>): Promise<unknown> {
     const res = await this.reach(verb, request);
-    if (res.status === 404 || res.status === 501) return UNFENCED;
+    if (res.status === 404 || (rule.legacy501 && res.status === 501)) return PREDATES;
     if (!res.ok) throw await this.refusal(verb, res);
     let text: string;
     try {
@@ -1238,17 +1205,14 @@ export class VerticalClient {
     } catch (e) {
       throw new ControlPlaneError(
         502,
-        `reading the vertical's answer to ${verb} failed (${e instanceof Error ? e.message : String(e)}) — it may or may not have acted`,
+        `reading the vertical's answer to ${verb} failed (${e instanceof Error ? e.message : String(e)}) — ${rule.lost}`,
       );
     }
     try {
       return JSON.parse(text) as unknown;
     } catch {
-      if (isHtmlShell(res, text)) return UNFENCED;
-      throw new ControlPlaneError(
-        502,
-        `vertical answered ${verb} with a body that is neither JSON nor its HTML shell — it may or may not have acted`,
-      );
+      if (isHtmlShell(res, text)) return PREDATES;
+      throw new ControlPlaneError(502, `vertical answered ${verb} with a body that is neither JSON nor its HTML shell — ${rule.lost}`);
     }
   }
 
@@ -1516,21 +1480,38 @@ export class VerticalClient {
   }
 
   /**
-   * A 200 whose body is not JSON is a script that does not SERVE this route: an old
-   * worker build falls through to its SPA fallback and answers the app shell (200,
-   * `<!doctype …`) for any `/internal/*` path it predates. Surface that as the
-   * diagnosis instead of an unhandled SyntaxError → 500 (#389: a pre-#236 script has
-   * no `/internal/export`, so a carried rebind cannot dump it).
+   * A 200 that is the SPA shell (`isHtmlShell`) is a script that does not SERVE this route: an
+   * old worker build falls through to its SPA fallback and answers the app shell for any
+   * `/internal/*` path it predates. Surface that as the diagnosis instead of an unhandled
+   * SyntaxError → 500 (#389: a pre-#236 script has no `/internal/export`, so a carried rebind
+   * cannot dump it). Any other body that is not JSON, or that fails to read, is NOT that proof
+   * (#2010, `routeAnswer`'s rule): a truncated answer from a deployment that has the route may
+   * follow a write that ran, so it never says to redeploy.
    */
   private async parseInternal<T>(verb: string, path: string, res: Response): Promise<T> {
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (e) {
+      throw new ControlPlaneError(
+        502,
+        `reading the vertical's answer to ${verb} (${path}) failed (${e instanceof Error ? e.message : String(e)}) — ` +
+          `it may or may not have acted`,
+      );
+    }
     try {
       return JSON.parse(text) as T;
     } catch {
+      if (isHtmlShell(res, text)) {
+        throw new ControlPlaneError(
+          502,
+          `vertical answered ${verb} (${path}) with its HTML shell — its deployed script predates this ` +
+            `surface. Redeploy the vertical (or, for a rebind, use abandonData).`,
+        );
+      }
       throw new ControlPlaneError(
         502,
-        `vertical answered ${verb} (${path}) with non-JSON — its deployed script predates this ` +
-          `surface. Redeploy the vertical (or, for a rebind, use abandonData).`,
+        `vertical answered ${verb} (${path}) with a body that is neither JSON nor its HTML shell — it may or may not have acted`,
       );
     }
   }
@@ -1571,10 +1552,11 @@ export class VerticalClient {
    *
    * The skew rule is `systemSwitch`'s, and here it is the whole point: an EMPTY batch is a
    * real answer (nothing new), so a deployment that cannot answer must never produce one. A
-   * 404 (the route does not exist) or a 200 that is not JSON (the SPA shell of a script that
-   * predates the route) is that deployment's own proof, and becomes a 501 saying to redeploy.
+   * 404 (the route does not exist) or the SPA shell of a script that predates the route
+   * (`routeAnswer`) is that deployment's own proof, and becomes a 501 saying to redeploy.
    * The far end's own 501 (the route exists, the host method does not) passes through
-   * verbatim. A JSON 200 of the wrong shape is a 502, never a guess.
+   * verbatim. A truncated or unreadable 200 (#2010) and a JSON 200 of the wrong shape are a
+   * 502, never a guess.
    */
   async exportedEvents(input: { tenantId: TenantId; scopeId: ScopeId; input: ExportReadInput }): Promise<ExportedBatch> {
     return this.crossVerticalCall('exported-events', '/internal/exported-events', input.scopeId, exportedBatch, input);
@@ -1603,8 +1585,8 @@ export class VerticalClient {
   /**
    * The replay lever's far end (#1705 PR 3): move the watermark of the consumer scope this
    * deployment serves. The same skew rule, plus the write's one difference: a JSON 200 of the
-   * wrong shape may follow a move that happened, so the 502 says to read the edge before
-   * pulling the lever again. A 404 or an SPA shell proves the route is absent, so nothing moved.
+   * wrong shape, or one truncated or unreadable (#2010), may follow a move that happened, so the
+   * 502 says to read the edge before pulling the lever again. A 404 or an SPA shell proves the route is absent, so nothing moved.
    */
   async importCursorMove(input: { tenantId: TenantId; scopeId: ScopeId; at: ImportCursorMoveAt }): Promise<ImportCursorMoved> {
     return this.crossVerticalCall('import-cursor', '/internal/import-cursor', input.scopeId, importCursorMoved, input, {
@@ -1624,15 +1606,12 @@ export class VerticalClient {
     body?: unknown,
     opts: { write?: boolean } = {},
   ): Promise<T> {
-    const predates = (): ControlPlaneError =>
-      new ControlPlaneError(
-        501,
-        `the deployment serving scope ${scopeId} predates cross-vertical events (#1705) — redeploy the vertical. ` +
-          `Nothing was read or delivered; the edge's watermark holds.`,
-      );
+    const lost = opts.write
+      ? 'the write may have taken effect: read the edge before retrying.'
+      : 'it may or may not have acted; repeating it is safe.';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const secret = { [PLATFORM_SECRET_HEADER]: this.options.platformSecret };
-    const res = await this.reach(verb, () =>
+    const answer = await this.routeAnswer(verb, { legacy501: false, lost }, () =>
       this.options.fetch(
         `${base}${path}`,
         body === undefined
@@ -1640,21 +1619,18 @@ export class VerticalClient {
           : { method: 'POST', headers: { ...secret, 'content-type': 'application/json' }, body: JSON.stringify(body) },
       ),
     );
-    if (res.status === 404) throw predates();
-    if (!res.ok) throw await this.refusal(verb, res);
-    const text = await res.text();
-    let raw: unknown;
-    try {
-      raw = JSON.parse(text);
-    } catch {
-      throw predates();
+    if (answer === PREDATES) {
+      throw new ControlPlaneError(
+        501,
+        `the deployment serving scope ${scopeId} predates cross-vertical events (#1705) — redeploy the vertical. ` +
+          `Nothing was read or delivered; the edge's watermark holds.`,
+      );
     }
-    const parsed = schema.safeParse(raw);
+    const parsed = schema.safeParse(answer);
     if (!parsed.success) {
       throw new ControlPlaneError(
         502,
-        `vertical answered ${verb} with an unexpected shape for scope ${scopeId}.` +
-          (opts.write ? ' The write may have taken effect: read the edge before retrying.' : ''),
+        `vertical answered ${verb} with an unexpected shape for scope ${scopeId}` + (opts.write ? ` — ${lost}` : '.'),
       );
     }
     return parsed.data;
