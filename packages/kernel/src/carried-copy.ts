@@ -10,17 +10,22 @@ import type { ScopeDumpTable } from '@substrat-run/contracts';
  * role projection (#321). The wipe is a load, the same drop-then-replay a restore runs, of a
  * dump that holds only the tombstone below.
  *
- * - `LOAD_STAMP_KEY` changes on every load into a scope DO, so it says "nothing has been loaded
- *   here since". A carry reads it from the dump it exported, and the scope DO's conditional
- *   wipe compares it inside the wipe's own transaction: a rollback that restored into the old
- *   script in the meantime changed it, and the wipe is refused instead of destroying that
- *   restore. Written by a scope DO built with #1722; an older one writes none.
+ * - `LOAD_STAMP_KEY` says "nothing has been loaded here since". Every load into a scope DO
+ *   replaces it, with the stamp a carry names for the copy it lands or with none; a carry's
+ *   export reads it and stamps a store that has none, in the same call. It never leaves in a
+ *   dump: the export hands it over beside one (the `LOAD_STAMP_HEADER` on `/internal/export`).
+ *   The scope DO's conditional wipe compares it inside the wipe's own transaction, so a rollback
+ *   that restored into the old script in the meantime replaced or cleared it, and the wipe is
+ *   refused instead of destroying that restore. Kept by a scope DO built with #1722; an older
+ *   one keeps none, and cannot fence.
  * - `CARRIED_AWAY_KEY` marks a store whose data was carried to another script and wiped. A
  *   carry refuses a dump that carries it (its export reached a wiped copy), and a carry that
  *   finds it on the store it just bound to knows a wipe overtook its restore. Written by the
  *   wipe on every script, old ones included, because it arrives as a row of the dump.
  */
 export const LOAD_STAMP_KEY = 'load_stamp';
+/** The `/internal/export` response header the load stamp rides, beside the dump it was read with. */
+export const LOAD_STAMP_HEADER = 'x-substrat-load-stamp';
 export const CARRIED_AWAY_KEY = 'carried_away';
 
 /** Where a carried copy went, and when — the tombstone's value, as JSON. */

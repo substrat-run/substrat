@@ -119,7 +119,6 @@ import { attributeFailure } from './failure-attribution.js';
 import {
   BIND_EXPORT_BREAK_REFUSAL,
   CARRIED_AWAY_KEY,
-  LOAD_STAMP_KEY,
   bindExportBreakRefusal,
   carriedAwayDump,
   dumpMetaValue,
@@ -2522,14 +2521,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     scopeId: ScopeId,
     tables: Parameters<VerticalClient['restoreScope']>[2],
     /** #1869: the scope `tables` were captured from — `scopeId` itself unless the copy moves —
-     *  and `exact` when the platform exported them itself rather than a caller supplying them. */
-    source: { scopeId: ScopeId; exact: boolean },
+     *  and `exact` when the platform exported them itself rather than a caller supplying them.
+     *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands. */
+    source: { scopeId: ScopeId; exact: boolean; loadStamp?: string },
   ): ReturnType<VerticalClient['restoreScope']> => {
     return retryTransient(async () =>
       dest.restoreScope(tenantId, scopeId, tables, {
         ...(await switchCarryFor(host.admin, actor, { tenantId, scopeId })),
         sourceScopeId: source.scopeId,
         exact: source.exact,
+        ...(source.loadStamp ? { loadStamp: source.loadStamp } : {}),
       }),
     );
   };
@@ -2764,10 +2765,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     /** The two ends, as resolved for the carry. */
     source: VerticalClient;
     dest: VerticalClient;
-    /** The source store's load stamp, read from the dump: what its fenced wipe expects. */
+    /** The source store's load stamp, read with the export: what its fenced wipe expects. */
     sourceStamp: string | null;
-    /** The stamp the restore wrote into `dest`; null from a deployment that predates it. */
-    restoredStamp: string | null;
+    /** The stamp the restore left on `dest` (a deployment that predates it keeps none, and cannot fence). */
+    restoredStamp: string;
   };
 
   /**
@@ -2853,7 +2854,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `so the version was not bound (#1710)`,
       );
     }
-    const dump = await retryTransient(() => source.exportScope(scope.id));
+    const { tables: dump, loadStamp: sourceStamp } = await retryTransient(() => source.exportScopeStamped(scope.id));
     const now = await c.var.admin.getScopeRecord(actor, scope.tenantId, scope.id);
     if (
       !now ||
@@ -2873,10 +2874,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `was moved or bound (#1722). Reload the scope and retry.`,
       );
     }
-    // #1742: the recorded OFF positions ride the restore, as on adopt and rebind.
+    // #1742: the recorded OFF positions ride the restore, as on adopt and rebind. #1722: so does
+    // a stamp of this carry's own, which a refused bind's wipe of the copy expects.
+    const restoredStamp = ulid();
     const restored = await restoreCarryingSwitches(actor, dest, scope.tenantId, scope.id, dump, {
       scopeId: scope.id,
       exact: true,
+      loadStamp: restoredStamp,
     });
     return {
       from,
@@ -2885,8 +2889,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       switchedOff: restored.switchedOff,
       source,
       dest,
-      sourceStamp: dumpMetaValue(dump, LOAD_STAMP_KEY),
-      restoredStamp: restored.loadStamp ?? null,
+      sourceStamp,
+      restoredStamp,
     };
   };
 
@@ -3028,16 +3032,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const route = now ? await routeOf(c, now) : null;
       if (route === carried.from) return;
       if (route === carried.to && (await isCarriedAway(carried.dest, scope))) {
-        const dump = await retryTransient(() => carried.source.exportScope(scope.id));
+        const { tables: dump, loadStamp: stamp } = await retryTransient(() => carried.source.exportScopeStamped(scope.id));
         if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
           throw new ControlPlaneError(500, `both copies of scope ${scope.id} hold the carried_away tombstone; nothing was wiped`);
         }
-        await restoreCarryingSwitches(actor, carried.dest, scope.tenantId, scope.id, dump, { scopeId: scope.id, exact: true });
+        await restoreCarryingSwitches(actor, carried.dest, scope.tenantId, scope.id, dump, {
+          scopeId: scope.id,
+          exact: true,
+          loadStamp: ulid(),
+        });
         if (await isCarriedAway(carried.dest, scope)) {
           throw new ControlPlaneError(500, `scope ${scope.id}'s store in '${carried.to}' was wiped again; its source copy stays`);
         }
-        // Re-carried, so the source's stamp is the one the re-export read. Nothing loaded since.
-        const stamp = dumpMetaValue(dump, LOAD_STAMP_KEY);
+        // Re-carried, so the fence expects the stamp the re-export read.
         await wipeCarriedCopy(actor, carried.source, scope, stamp, carried.to);
         return;
       }

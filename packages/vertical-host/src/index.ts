@@ -29,6 +29,7 @@ import { classifyError, messageOf, problemOf } from './errors.js';
 import {
   assertPlatformCall,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
+  LOAD_STAMP_HEADER,
   PlatformCallError,
   type InvokeOptions,
   type AppliedMigration,
@@ -166,8 +167,10 @@ export interface VerticalScopeHost {
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; loadStamp?: string }>;
+    /** #1722: `opts.loadStamp`, the stamp a carry leaves on the copy it lands. A host built
+     *  before it ignores the field, and its copy is then wiped unfenced. */
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string },
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   /**
    * #1722: wipe the copy a carry left in this deployment, only if nothing was loaded into the
    * scope since the stamp the carry read. Optional, like `redrainCountLocal`: a host built
@@ -177,6 +180,9 @@ export interface VerticalScopeHost {
   wipeCarriedLocal?(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: { to: string; at: string }): Promise<boolean>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
+  /** #1722: the export and the store's load stamp, read together. Optional: a host built before
+   *  it answers the export alone, and the platform then has no stamp to fence a wipe on. */
+  exportScopeStampedLocal?(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string }>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
   deleteScopeLocal(scopeId: ScopeId): Promise<void>;
   migrationBookmarksLocal(
@@ -435,6 +441,8 @@ const restoreBody = z.object({
   /** #1869: the platform exported these tables itself, so `sourceScopeId` is a fact and the
    *  re-point never falls back. Absent for a dump a caller supplied. */
   exact: z.boolean().optional(),
+  /** #1722: the stamp a carry leaves on the copy it lands, so a later wipe of it can be fenced. */
+  loadStamp: z.string().min(1).optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -715,9 +723,16 @@ export function mountPlatformSurface<Env extends object>(
 
   // The full dump behind a governed `scope pull` (preview-and-snapshots.md §8): the one
   // /internal verb that deliberately moves scope bytes out; the control plane is the gate.
-  app.get('/internal/export', async (c) =>
-    c.json(await deps.hostFor(c.env).exportScopeLocal(scopeIdOf.parse(c.req.query('scopeId')))),
-  );
+  // #1722: the store's load stamp rides a header, read with the dump in one DO call, so the body
+  // stays the bare table list every platform reads.
+  app.get('/internal/export', async (c) => {
+    const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.exportScopeStampedLocal) return c.json(await host.exportScopeLocal(scopeId));
+    const { tables, loadStamp } = await host.exportScopeStampedLocal(scopeId);
+    if (loadStamp) c.header(LOAD_STAMP_HEADER, loadStamp);
+    return c.json(tables);
+  });
 
   // The write half (§8): load a dump into one scope, replacing its data — the governed
   // restore/backout, and the data hop of adopt-serving (#286). After the import the
@@ -731,13 +746,10 @@ export function mountPlatformSurface<Env extends object>(
       switchedOff: body.switchedOff,
       sourceScopeId: body.sourceScopeId,
       exact: body.exact,
+      ...(body.loadStamp ? { loadStamp: body.loadStamp } : {}),
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
-    return c.json({
-      tables: result.tables,
-      ...switchedOffAnswer(result.switchedOff),
-      ...(result.loadStamp ? { loadStamp: result.loadStamp } : {}),
-    });
+    return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });
 
   // #1722: wipe the copy a carry left here, after the scope's route moved to another script.

@@ -389,6 +389,36 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(older.calls).toHaveLength(0);
   });
 
+  // #1722: the load stamp rides the export as a header, beside the unchanged table list, and a
+  // restore hands the stamp a carry names to the host.
+  it('serves the export with its load stamp, and forwards a carry\'s stamp on restore', async () => {
+    const stamped = fakeHost({
+      exportScopeStampedLocal: async () => ({ tables: [], loadStamp: 'stamp-7' }),
+    });
+    const res = await appWith(stamped).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-substrat-load-stamp')).toBe('stamp-7');
+    expect(await res.json()).toEqual([]);
+    // A host without the stamped read answers the bare export, with no stamp to fence on.
+    const older = await appWith(fakeHost()).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(older.headers.get('x-substrat-load-stamp')).toBeNull();
+
+    let opts: unknown;
+    const restoring = fakeHost({
+      restoreScopeLocal: async (_s, _t, o) => {
+        opts = o;
+        return { tables: 0 };
+      },
+    });
+    const restore = await appWith(restoring).request('/internal/restore', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ scopeId: SCOPE, tables: [], loadStamp: 'stamp-8' }),
+    }, ENV);
+    expect(restore.status).toBe(200);
+    expect(opts).toMatchObject({ loadStamp: 'stamp-8' });
+  });
+
   // #1524: the size behind the on-demand storage reading. It sits behind the same
   // platform-secret gate as every sibling, and a host that predates the method answers
   // 501 rather than 0, because a 0 would be summed into a tenant's storage as a real scope.

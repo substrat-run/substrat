@@ -1358,10 +1358,12 @@ interface ScopeStubRpc {
       sourceScopeId?: ScopeId;
       /** The platform exported the dump itself: no fallback (`RepointSource.exact`). */
       exact?: boolean;
-      /** #1722: this load's stamp; the DO mints one when none is named. */
+      /** #1722: the stamp this load leaves; without one it leaves none. */
       loadStamp?: string;
     },
   ): Promise<SwitchedOff[]>;
+  /** #1722: `exportDump` and the store's load stamp, read in one call. */
+  exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string }>;
   /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
   wipeCarried(scopeId: ScopeId, expectLoadStamp: string | null, carriedAway: { to: string; at: string }): Promise<boolean>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
@@ -2554,18 +2556,17 @@ export class CloudflareScopeHost implements ScopeHost {
     /** #1742: the directory's recorded-off modules, switched off on THIS scope in the replay's
      *  own event — a dump from before a switch was pulled brings its grants back live. #1869:
      *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it;
-     *  `exact` says the platform exported the dump itself, so the re-point never falls back. */
-    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; loadStamp: string }> {
-    // #1722: minted here, so the answer names THIS load's stamp and no later one's.
-    const loadStamp = ulid();
+     *  `exact` says the platform exported the dump itself, so the re-point never falls back.
+     *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, for a fenced wipe later. */
+    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string },
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     const switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, {
       switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId,
       exact: opts?.exact,
-      loadStamp,
+      loadStamp: opts?.loadStamp,
     });
-    return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}), loadStamp };
+    return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
   }
 
   /**
@@ -2626,6 +2627,14 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]> {
     return this.scopeStub(scopeId).exportDump();
+  }
+
+  /**
+   * `exportScopeLocal` with the store's load stamp, read in the same DO call (#1722): what a
+   * carry's fenced wipe of the copy it leaves here expects. Behind the vertical's `/internal/export`.
+   */
+  async exportScopeStampedLocal(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string }> {
+    return this.scopeStub(scopeId).exportDumpStamped();
   }
 
   /** Facet this host's own scope's outbox (#1239) — the vertical-host read. */

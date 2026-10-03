@@ -70,12 +70,14 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   const clientFor = (ref: string): VerticalClient => {
     const host = hostOf.get(ref)!;
     return {
-      exportScope: (sid: ScopeId) =>
+      exportScope: (sid: ScopeId) => relay(() => host.exportScopeLocal(sid)),
+      exportScopeStamped: (sid: ScopeId) =>
         relay(async () => {
           await hooks.export?.(ref, sid);
-          return host.exportScopeLocal(sid);
+          if (!unfenced.has(ref)) return host.exportScopeStampedLocal(sid);
+          return { tables: await host.exportScopeLocal(sid), loadStamp: null };
         }),
-      restoreScope: (_t: unknown, sid: ScopeId, tables: ScopeDumpTable[]) =>
+      restoreScope: (_t: unknown, sid: ScopeId, tables: ScopeDumpTable[], opts?: { loadStamp?: string }) =>
         relay(async () => {
           await hooks.restore?.(ref, sid, tables);
           const out = await host.restoreScopeLocal(
@@ -83,6 +85,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
             sabotageV3 && ref === refOf.get(version.v3)
               ? [...tables, { name: 'zz_bad', ddl: 'CREATE TABLE not_zz_bad (x TEXT)', columns: ['x'], rows: [] }]
               : tables,
+            // A script that cannot fence keeps no stamp either: it predates both.
+            { loadStamp: unfenced.has(ref) ? undefined : opts?.loadStamp },
           );
           await hooks.restored?.(ref, sid, tables);
           return out;

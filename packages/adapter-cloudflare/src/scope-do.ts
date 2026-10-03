@@ -4725,11 +4725,31 @@ export function defineScopeDO(
       return defs.map(({ name, sql }) => {
         // Raw positional rows, cells as-is (blobs kept as bytes, not nulled like a UI
         // read) so the dump reloads faithfully. The name is from the live schema.
-        const cursor = this.sql.exec(`SELECT * FROM "${name}"`);
+        // #1722: the load stamp names THIS store's last load, so it never leaves in a dump
+        // (`exportDumpStamped` hands it over beside one); every load writes its own.
+        const cursor =
+          name === '_substrat_meta'
+            ? this.sql.exec(`SELECT * FROM "${name}" WHERE key <> ?`, LOAD_STAMP_KEY)
+            : this.sql.exec(`SELECT * FROM "${name}"`);
         const columns = cursor.columnNames;
         const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
         return { name, ddl: sql, columns, rows };
       });
+    }
+
+    /**
+     * `exportDump`, with the store's load stamp read in the same call (#1722): the stamp a
+     * carry's fenced wipe of this copy later expects. A store no load has stamped gets one now,
+     * so the stamp handed out is present exactly while nothing has been loaded here since. One
+     * synchronous method, so no load can land between the dump and the stamp.
+     */
+    exportDumpStamped(): { tables: ScopeDumpTable[]; loadStamp: string } {
+      let stamp = this.loadStamp();
+      if (!stamp) {
+        stamp = ulid();
+        this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, stamp);
+      }
+      return { tables: this.exportDump(), loadStamp: stamp };
     }
 
     /**
@@ -4868,7 +4888,7 @@ export function defineScopeDO(
         switchOff,
         sourceScopeId,
         exact,
-        loadStamp = ulid(),
+        loadStamp,
         expectLoadStamp,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
@@ -4879,7 +4899,8 @@ export function defineScopeDO(
         sourceScopeId?: ScopeId;
         /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
         exact?: boolean;
-        /** #1722: this load's stamp (`LOAD_STAMP_KEY`), minted here when the caller names none. */
+        /** #1722: the stamp this load leaves (`LOAD_STAMP_KEY`) — a carry names one, so the copy
+         *  it lands can later be wiped under a fence. Without one, a load leaves no stamp. */
         loadStamp?: string;
         /** #1722: load only if this DO's stamp is still this one (null: none was ever written).
          *  Compared inside the load's transaction, before the first drop; a mismatch throws
@@ -4973,8 +4994,13 @@ export function defineScopeDO(
         // not this one. Dropped, so a restore never carries a receipt over; the repair
         // projection that follows writes this scope's own.
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
-        // #1722: a dump's stamp is the store it came from; this load gets its own.
-        this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
+        // #1722: whatever stamp an export read here no longer describes this store, so every load
+        // replaces it: with the carry's own, or with none.
+        if (loadStamp) {
+          this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
+        } else {
+          this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, LOAD_STAMP_KEY);
+        }
         // #1575: attachment text is not in a dump, so the load left it as it was. Drop the
         // text of attachments the dump did not bring back, and queue extraction for those
         // it brought back without text — the bytes decide what that run finds.
@@ -5066,8 +5092,8 @@ export function defineScopeDO(
 
     /**
      * Wipe the copy a carry left in this script (#1722), only if nothing was loaded here since
-     * the carry exported it. A rollback that restored into this DO in the meantime changed the
-     * stamp, and its restore stays. Non-terminal, unlike `destroyStorage`: the store is a load of
+     * the carry exported it. A rollback that restored into this DO in the meantime replaced or
+     * cleared the stamp, and its restore stays. Non-terminal, unlike `destroyStorage`: the store is a load of
      * the `carriedAway` tombstone, so a later restore into it works as on any scope. False when
      * refused.
      */

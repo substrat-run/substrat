@@ -92,7 +92,7 @@ import {
   substratError,
 } from '@substrat-run/contracts';
 import type { OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
+import { CONNECTOR_ATTACHMENT_RECORD_HEADER, LOAD_STAMP_HEADER, PLATFORM_SECRET_HEADER, undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -980,6 +980,24 @@ export class VerticalClient {
   }
 
   /**
+   * `exportScope` with the store's load stamp (#1722), read by the vertical in the same call as
+   * the dump and handed over in a header: what a carry's fenced wipe of the copy it leaves
+   * expects. Null from a deployment that predates the stamp, which cannot fence a wipe either.
+   * A store nothing has stamped is stamped by this read.
+   */
+  async exportScopeStamped(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null }> {
+    // `exportScope`'s request exactly, with the header read off the same response.
+    const path = `/internal/export?scopeId=${encodeURIComponent(scopeId)}`;
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach('introspection', () =>
+      this.options.fetch(`${base}${path}`, { headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret } }),
+    );
+    if (!res.ok) throw await this.refusal('introspection', res);
+    const loadStamp = res.headers.get(LOAD_STAMP_HEADER) || null;
+    return { tables: await this.parseInternal<ScopeDumpTable[]>('introspection', path, res), loadStamp };
+  }
+
+  /**
    * The write half of `exportScope` — load a dump into one existing scope in this
    * deployment (drop-then-replay), for the governed restore/backout. The control-plane
    * route in front is the gate and the auditor, exactly as with the export.
@@ -996,18 +1014,15 @@ export class VerticalClient {
     /** #1742: the recorded-off modules, switched off on THIS scope in the restore's own event.
      *  #1869: `sourceScopeId`, the scope the tables were captured from, so the vertical re-points
      *  exactly that scope's grants, and `exact` when the platform exported them itself. A
-     *  vertical that predates the fields ignores them. */
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[]; loadStamp?: string }> {
+     *  vertical that predates the fields ignores them. #1722: `loadStamp`, the stamp a carry
+     *  leaves on the copy it lands, which a later fenced wipe of that copy expects. */
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string },
+  ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
     // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
     if (opts?.exact && !opts.sourceScopeId) {
       throw substratError('validation_failed', 'restore: `exact` needs `sourceScopeId`, the scope the dump came from');
     }
-    const { tables: count, switchedOff, loadStamp } = await this.postInternal<{
-      tables: number;
-      switchedOff?: unknown;
-      loadStamp?: unknown;
-    }>(
+    const { tables: count, switchedOff } = await this.postInternal<{ tables: number; switchedOff?: unknown }>(
       '/internal/restore',
       {
         tenantId,
@@ -1016,16 +1031,11 @@ export class VerticalClient {
         ...(opts?.switchedOff ? { switchedOff: opts.switchedOff } : {}),
         ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
         ...(opts?.exact ? { exact: true } : {}),
+        ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),
       },
       'restore',
     );
-    // #1722: the stamp THIS load wrote, so a wipe of the copy can be fenced on it. A vertical
-    // that predates it answers none.
-    return {
-      tables: count,
-      ...switchedOffFrom(switchedOff),
-      ...(typeof loadStamp === 'string' && loadStamp ? { loadStamp } : {}),
-    };
+    return { tables: count, ...switchedOffFrom(switchedOff) };
   }
 
   /**

@@ -131,9 +131,15 @@ await host.admin.bindScopeVersion(actor, tenantId, scopeId, incomingVersionId, {
 `null` expects a scope with no bound version. Omitting `expectedVersionId` keeps an
 unconditional bind. A changed binding is refused with `precondition_failed`; the caller
 must reload the scope before retrying its move. Both adapters enforce the expectation in
-the atomic pointer update, so two moves from the same version cannot both win. This guard
-protects the bind itself; carrying and cleaning up data across deployment scripts need
-their own coordination.
+the atomic pointer update, so two moves from the same version cannot both win.
+
+The platform's own data moves bind this way. A preview push or `scope bind` that copies a
+scope into another version's deployment binds with the version it copied from. Only once
+that bind lands does it wipe the copy it left behind. The wipe empties the scope's store in
+the old deployment rather than reaping it, so a later bind back to that version can copy
+the data in again. Where the old deployment supports it, the wipe is also conditional:
+it runs only if nothing has been restored into that store since the copy was read, so a
+rollback that lands during the cleanup keeps its data.
 
 ## Storage shapes
 

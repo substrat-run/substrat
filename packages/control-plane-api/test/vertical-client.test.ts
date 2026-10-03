@@ -686,14 +686,34 @@ describe('VerticalClient.wipeCarriedCopy (#1722)', () => {
   });
 });
 
-it("restoreScope reads the load stamp the vertical wrote, and none from one that predates it (#1722)", async () => {
-  const replies = [{ tables: 2, loadStamp: 'stamp-9' }, { tables: 2 }];
+it('restoreScope sends the stamp a carry leaves on its copy, and none when not given one (#1722)', async () => {
+  const bodies: unknown[] = [];
   const client = new VerticalClient({
-    fetch: (async () => Response.json(replies.shift())) as unknown as typeof fetch,
+    fetch: (async (_u: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ tables: 0 });
+    }) as unknown as typeof fetch,
     platformSecret: 'secret',
   });
-  expect(await client.restoreScope(t, s, [])).toEqual({ tables: 2, loadStamp: 'stamp-9' });
-  expect(await client.restoreScope(t, s, [])).toEqual({ tables: 2 });
+  await client.restoreScope(t, s, [], { loadStamp: 'stamp-9' });
+  await client.restoreScope(t, s, []);
+  expect(bodies).toEqual([
+    { tenantId: t, scopeId: s, tables: [], loadStamp: 'stamp-9' },
+    { tenantId: t, scopeId: s, tables: [] },
+  ]);
+});
+
+it('exportScopeStamped reads the stamp off the export, and null from a deployment that sends none (#1722)', async () => {
+  const replies = [
+    new Response('[]', { status: 200, headers: { 'x-substrat-load-stamp': 'stamp-3' } }),
+    new Response('[]', { status: 200 }),
+  ];
+  const client = new VerticalClient({
+    fetch: (async () => replies.shift()) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: 'stamp-3' });
+  expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: null });
 });
 
 /**

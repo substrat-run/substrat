@@ -73,6 +73,11 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
         calls.push(`export ${ref} ${sid}`);
         return storeOf(ref).get(sid) ?? [];
       },
+      // A deployment built before the load stamp (#1722) answers none.
+      exportScopeStamped: async (sid: string) => {
+        calls.push(`export ${ref} ${sid}`);
+        return { tables: storeOf(ref).get(sid) ?? [], loadStamp: null };
+      },
       restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
         calls.push(`restore ${ref} ${sid}`);
         if (failRestoreInto === ref) throw new ControlPlaneError(503, `storage blip in ${ref}`);

@@ -222,13 +222,28 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
     const host = hostOf.get(ref)!;
     return {
       exportScope: (sid: ScopeId) => relay(() => host.exportScopeLocal(sid)),
+      exportScopeStamped: (sid: ScopeId) => relay(() => host.exportScopeStampedLocal(sid)),
       restoreScope: (
         _t: unknown,
         sid: ScopeId,
         tables: ScopeDumpTable[],
-        opts?: { sourceScopeId?: ScopeId; exact?: boolean },
-      ) => relay(() => host.restoreScopeLocal(sid, tables, { sourceScopeId: opts?.sourceScopeId, exact: opts?.exact })),
+        opts?: { sourceScopeId?: ScopeId; exact?: boolean; loadStamp?: string },
+      ) =>
+        relay(() =>
+          host.restoreScopeLocal(sid, tables, {
+            sourceScopeId: opts?.sourceScopeId,
+            exact: opts?.exact,
+            loadStamp: opts?.loadStamp,
+          }),
+        ),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
+      // #1722: what a carry's cleanup calls once the bind lands.
+      readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
+        relay(() => host.introspectScopeTable(sid, input)),
+      wipeCarriedCopy: (input: { scopeId: ScopeId; expectLoadStamp: string | null; carriedTo: string; at: string }) =>
+        relay(async () => ({
+          wiped: await host.wipeCarriedLocal(input.scopeId, input.expectLoadStamp, { to: input.carriedTo, at: input.at }),
+        })),
     } as unknown as VerticalClient;
   };
   const push = async (tag: string, v: keyof typeof version) => {
