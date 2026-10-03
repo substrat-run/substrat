@@ -275,13 +275,14 @@ jobs:
   preview_cleanup:
     # Reaps with the CLI built from this repo, like every other job here — not
     # `npx @substrat-run/cli`, which the generated workflow uses because a project outside
-    # this monorepo has no CLI source. Here the published package is the wrong one twice:
-    # it is a different build from the one that created the preview, and a broken publish
-    # breaks the reap (the published CLI once failed to install at all, EUNSUPPORTEDPROTOCOL
-    # on a `workspace:` dependency, and every closed PR left its preview to the TTL).
+    # this monorepo has no CLI source. Here the published package ties the reap to the
+    # registry for no reason: a broken publish breaks it (the published CLI once failed to
+    # install at all, EUNSUPPORTEDPROTOCOL on a `workspace:` dependency), and a release
+    # lagging main can lack what the deploy jobs already use.
     #
     # Checked out at the BASE branch, not the PR: a closed PR's merge ref may be gone, and
-    # the reap needs no PR code — only a CLI that can delete by tag.
+    # the reap needs no PR code — only a CLI that can delete by tag. Installs and builds
+    # the CLI's closure and nothing else.
     # Not for a Dependabot PR either: it never had a preview to reap (see `preview`), and the
     # CLI has no token in that secret store either.
     if: >-
@@ -303,7 +304,7 @@ jobs:
       - name: Install dependencies
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
-        run: corepack enable && pnpm install --frozen-lockfile
+        run: corepack enable && pnpm install --frozen-lockfile --filter "@substrat-run/cli..."
       - name: Build the CLI
         run: pnpm --filter "@substrat-run/cli..." run --if-present build
       - name: Reap the preview

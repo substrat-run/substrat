@@ -37,7 +37,6 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { gunzipSync } from 'node:zlib';
 
 /** Specifier protocols that mean something inside a workspace and nothing on npm. */
 export const UNPUBLISHABLE_PROTOCOLS = ['workspace:', 'catalog:', 'link:', 'file:', 'portal:'];
@@ -73,36 +72,10 @@ export function manifestProblems(manifest, members) {
 }
 
 /**
- * `package/package.json` out of an npm tarball (gzip + tar). Parsed here rather than by
- * shelling out to `tar`, so the test drives the same reader the gate uses.
- */
-export function readPackedManifest(tgz) {
-  const tar = gunzipSync(tgz);
-  const field = (start, length) => {
-    const raw = tar.subarray(start, start + length);
-    const end = raw.indexOf(0);
-    return raw.subarray(0, end === -1 ? length : end).toString('utf8');
-  };
-  for (let offset = 0; offset + 512 <= tar.length; ) {
-    const name = field(offset, 100);
-    if (name === '') break; // the two zero blocks that end an archive
-    const prefix = field(offset + 345, 155);
-    const path = prefix ? `${prefix}/${name}` : name;
-    const size = Number.parseInt(field(offset + 124, 12).trim() || '0', 8);
-    const body = offset + 512;
-    if (path === 'package/package.json') {
-      return JSON.parse(tar.subarray(body, body + size).toString('utf8'));
-    }
-    offset = body + Math.ceil(size / 512) * 512;
-  }
-  throw new Error('no package/package.json in the tarball');
-}
-
-/**
  * Every workspace member, as pnpm itself enumerates them — minus the gitignored builder
  * studio scratch projects, which are members locally and never published (#769).
  */
-export function workspaceMembers(root = process.cwd()) {
+export function pnpmMembers(root = process.cwd()) {
   const listed = JSON.parse(
     execFileSync('pnpm', ['-r', 'ls', '--depth', '-1', '--json'], { cwd: root, encoding: 'utf8' }),
   );
@@ -118,13 +91,21 @@ export function workspaceMembers(root = process.cwd()) {
 
 const run = promisify(execFile);
 
-/** Pack one member into `dest` and return its packed manifest. */
-async function packedManifest(path, dest) {
-  const before = new Set(readdirSync(dest));
-  await run('pnpm', ['pack', '--pack-destination', dest], { cwd: path });
-  const tgz = readdirSync(dest).find((f) => !before.has(f) && f.endsWith('.tgz'));
-  if (!tgz) throw new Error(`pnpm pack wrote no tarball for ${path}`);
-  return readPackedManifest(readFileSync(join(dest, tgz)));
+/**
+ * Pack the member at `path` the way `pnpm publish` would and return the package.json inside
+ * the tarball — the copy that ships, after pnpm's rewrite.
+ */
+export async function packedManifest(path) {
+  const dest = mkdtempSync(join(tmpdir(), 'publish-manifests-'));
+  try {
+    await run('pnpm', ['pack', '--pack-destination', dest], { cwd: path });
+    const tgz = readdirSync(dest).find((f) => f.endsWith('.tgz'));
+    if (!tgz) throw new Error(`pnpm pack wrote no tarball for ${path}`);
+    const { stdout } = await run('tar', ['-xzOf', join(dest, tgz), 'package/package.json']);
+    return JSON.parse(stdout);
+  } finally {
+    rmSync(dest, { recursive: true, force: true });
+  }
 }
 
 /** The manifest npm serves for `name@version`, or `null` when that version is not published. */
@@ -135,24 +116,19 @@ async function registryManifest(name, version, registry) {
   return res.json();
 }
 
-/** `fn` over `items`, at most `limit` at a time, results in input order. */
+/** `fn` over `items`, at most `limit` at a time. */
 async function pool(items, limit, fn) {
-  const out = new Array(items.length);
   let next = 0;
   const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i]);
-    }
+    while (next < items.length) await fn(items[next++]);
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
 }
 
 async function main() {
   const registryMode = process.argv.includes('--registry');
   const root = resolve(import.meta.dirname, '..');
-  const members = workspaceMembers(root);
+  const members = pnpmMembers(root);
   const published = [...members].filter(([, m]) => !m.private);
   const problems = [];
   const notes = [];
@@ -161,7 +137,10 @@ async function main() {
     const registry = (process.env.npm_config_registry ?? 'https://registry.npmjs.org').replace(/\/$/, '');
     await pool(published, 8, async ([name, { version }]) => {
       const manifest = await registryManifest(name, version, registry);
-      if (!manifest) return notes.push(`${name}@${version} is not on the registry yet`);
+      if (!manifest) {
+        notes.push(`${name}@${version} is not on the registry yet`);
+        return;
+      }
       problems.push(...manifestProblems(manifest, members));
       // Every version release.yml publishes carries provenance; one without it came from
       // somewhere else. Reported, not refused: a package's first version is published by
@@ -169,19 +148,9 @@ async function main() {
       if (!manifest.dist?.attestations) notes.push(`${name}@${version} has no provenance attestation — published outside release.yml`);
     });
   } else {
-    const dest = mkdtempSync(join(tmpdir(), 'publish-manifests-'));
-    try {
-      // One destination directory per member: two tarballs from parallel packs must never
-      // be mistaken for each other.
-      await pool(published, 6, async ([name, { path }]) => {
-        const own = mkdtempSync(join(dest, 'p-'));
-        const manifest = await packedManifest(path, own);
-        if (manifest.name !== name) problems.push(`${name}: packed a manifest named ${manifest.name}`);
-        problems.push(...manifestProblems(manifest, members));
-      });
-    } finally {
-      rmSync(dest, { recursive: true, force: true });
-    }
+    await pool(published, 6, async ([, { path }]) => {
+      problems.push(...manifestProblems(await packedManifest(path), members));
+    });
   }
 
   for (const note of notes.sort()) console.log(`note: ${note}`);

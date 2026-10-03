@@ -45,13 +45,9 @@ jobs:
       # changesets are pending — and gets everything else from the registry.
       - run: node tools/scaffold-check.mjs --from=${{ inputs.from || 'registry' }}
 
-  # What npm SERVES for each public package's current version, held to the same rule CI
-  # holds the packed manifest to: every dependency resolves from npm. The PR-time check
-  # reads `pnpm pack`, and `pnpm publish -r` skips a version the registry already has —
-  # so a copy that reached npm another way is invisible to both, and is never replaced.
-  # `@substrat-run/control-plane-client@0.1.0` was one: published with
-  # `"@substrat-run/contracts": "workspace:^"`, which made `npx @substrat-run/cli` fail
-  # for everyone with EUNSUPPORTEDPROTOCOL. A version not on npm yet is a note, so the
+  # What npm SERVES for each public package's current version resolves from npm — the half
+  # no pack-time check can see, since `pnpm publish -r` skips a version the registry already
+  # has (tools/publish-manifests.mjs says why). A version not on npm yet is a note, so the
   # publish lag right after a release is not red. Separate job, same reasoning as below.
   published-manifests:
     runs-on: ubuntu-latest

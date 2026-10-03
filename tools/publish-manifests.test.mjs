@@ -1,23 +1,19 @@
 /**
  * `publish-manifests.mjs`: each refusal beside the allow next to it, so a check that
- * refused everything — or nothing — cannot pass. The tarball reader is driven against
- * `pnpm pack` itself, since a reader that only agrees with a hand-built archive proves
- * nothing about the one the gate actually opens.
+ * refused everything — or nothing — cannot pass, and the gate's own pack path driven
+ * against `pnpm pack` itself, the producer of what ships.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { gzipSync } from 'node:zlib';
 import {
   DEP_FIELDS,
   RUNTIME_FIELDS,
   UNPUBLISHABLE_PROTOCOLS,
   manifestProblems,
-  readPackedManifest,
-  workspaceMembers,
+  packedManifest,
+  pnpmMembers,
 } from './publish-manifests.mjs';
 
 const members = new Map([
@@ -82,65 +78,25 @@ test('a protocol is matched at the start only — a URL or a path segment contai
   assert.deepEqual(manifestProblems(pkg({ dependencies: { a: 'npm:workspace-tools@^1' } }), members), []);
 });
 
-/** A ustar archive of `entries` ([path, body]), gzipped — the shape npm and pnpm write. */
-function tgz(entries) {
-  const blocks = [];
-  for (const [path, body] of entries) {
-    const header = Buffer.alloc(512);
-    const [prefix, name] = path.length > 100 ? [path.slice(0, path.lastIndexOf('/')), path.slice(path.lastIndexOf('/') + 1)] : ['', path];
-    header.write(name, 0);
-    header.write(Buffer.byteLength(body).toString(8).padStart(11, '0'), 124);
-    header.write('0', 156);
-    header.write('ustar', 257);
-    header.write(prefix, 345);
-    const data = Buffer.alloc(Math.ceil(Buffer.byteLength(body) / 512) * 512);
-    data.write(body);
-    blocks.push(header, data);
-  }
-  blocks.push(Buffer.alloc(1024));
-  return gzipSync(Buffer.concat(blocks));
-}
-
-test('reads package/package.json past the entries in front of it, and through a ustar prefix', () => {
-  const manifest = { name: 'a', version: '1.0.0' };
-  const long = `package/${'d'.repeat(120)}/index.js`;
-  assert.deepEqual(
-    readPackedManifest(tgz([['package/LICENSE', 'x'.repeat(700)], [long, ''], ['package/package.json', JSON.stringify(manifest)]])),
-    manifest,
-  );
-  // The match is on the whole path: a nested package.json is not the package's own.
-  assert.throws(
-    () => readPackedManifest(tgz([['package/node_modules/y/package.json', '{}']])),
-    /no package\/package\.json/,
-  );
-});
-
 const root = resolve(import.meta.dirname, '..');
+const workspace = pnpmMembers(root);
 
-test('against the producer: `pnpm pack` rewrites workspace: and catalog:, and the reader sees the rewrite', () => {
+test('against the producer: `pnpm pack` rewrites workspace: and catalog:, and the gate reads the rewrite', async () => {
   const dir = join(root, 'packages/control-plane-client');
   const source = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   // The source manifest is what the gate must never be fooled by — prove it is still the
   // unpublishable one, or this test checks nothing.
   assert.match(source.dependencies['@substrat-run/contracts'], /^workspace:/);
-  assert.notEqual(manifestProblems(source, workspaceMembers(root)).length, 0);
+  assert.notEqual(manifestProblems(source, workspace).length, 0);
 
-  const dest = mkdtempSync(join(tmpdir(), 'publish-manifests-test-'));
-  try {
-    execFileSync('pnpm', ['pack', '--pack-destination', dest], { cwd: dir, stdio: 'pipe' });
-    const [file] = readdirSync(dest);
-    const packed = readPackedManifest(readFileSync(join(dest, file)));
-    assert.equal(packed.name, source.name);
-    assert.match(packed.dependencies['@substrat-run/contracts'], /^\^\d/);
-    assert.deepEqual(manifestProblems(packed, workspaceMembers(root)), []);
-  } finally {
-    rmSync(dest, { recursive: true, force: true });
-  }
+  const packed = await packedManifest(dir);
+  assert.equal(packed.name, source.name);
+  assert.match(packed.dependencies['@substrat-run/contracts'], /^\^\d/);
+  assert.deepEqual(manifestProblems(packed, workspace), []);
 });
 
 test('workspace members come from pnpm, with their private flag', () => {
-  const all = workspaceMembers(root);
-  assert.equal(all.get('@substrat-run/control-plane-client')?.private, false);
-  assert.equal(all.get('@substrat-run/engine-test-kit')?.private, true);
-  assert.ok([...all.values()].every((m) => !m.path.includes('/.builder/')));
+  assert.equal(workspace.get('@substrat-run/control-plane-client')?.private, false);
+  assert.equal(workspace.get('@substrat-run/engine-test-kit')?.private, true);
+  assert.ok([...workspace.values()].every((m) => !m.path.includes('/.builder/')));
 });

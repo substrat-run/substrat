@@ -92,13 +92,9 @@ jobs:
       # and the test first proves that rule still refuses.
       - run: pnpm test:declared-deps
       - run: node tools/declared-deps.mjs
-      # The package.json each public package would ship, read out of the tarball `pnpm pack`
-      # writes rather than the source file — `pnpm publish` rewrites `workspace:` and `catalog:`
-      # at pack time, so only the packed copy says what npm will serve. Refuses a specifier
-      # npm cannot resolve and a runtime dependency on a private member. The same check runs in
-      # front of `pnpm publish -r` in `pnpm release`; its `--registry` half, which reads what
-      # npm actually serves, runs after a release (scaffold.yml). Test first, so a check that
-      # stopped refusing is red rather than quiet.
+      # The package.json each public package SHIPS — out of the tarball `pnpm pack` writes,
+      # not the source file — resolves from npm (tools/publish-manifests.mjs says why). Test
+      # first, so a check that stopped refusing is red rather than quiet.
       - run: pnpm test:publish-manifests
       - run: pnpm lint:publish-manifests
       # The runtime's `fetch` is handed on as the kernel's `globalFetch`, never as the
