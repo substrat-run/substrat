@@ -244,28 +244,6 @@ class TenantTransport extends ControlPlaneTransport {
   }
 }
 
-/**
- * The refusal with the dashboard's own extension read off it (#605): the provider's answer
- * when a connect was refused upstream, which the dashboard shows as WHY a credential did
- * not save. The shared transport reads the sentence and keeps the raw body; the `probe`
- * stays read here, because no other client asks for it.
- */
-function withProbe(e: ControlPlaneError): ControlPlaneError {
-  let probe: ConnectionProbe | undefined;
-  try {
-    probe = (JSON.parse(e.body ?? '') as { probe?: ConnectionProbe } | null)?.probe;
-  } catch {
-    // Not JSON, or no body at all (a transport failure): nothing to carry.
-  }
-  if (probe === undefined) return e;
-  return new ControlPlaneError(e.status, e.message, probe, {
-    body: e.body,
-    statusText: e.statusText,
-    headers: e.headers,
-    url: e.url,
-  });
-}
-
 export class TenantNarrowedControlPlane {
   private readonly transport: TenantTransport;
   private readonly credential: (opts?: { fresh?: boolean }) => Promise<string>;
@@ -301,7 +279,8 @@ export class TenantNarrowedControlPlane {
    * refusal is read (`problemDetail`, the status line as the fallback) and what an
    * unreachable plane is (`ControlPlaneError` status 0). What stays here is this seam's
    * own policy on top: the per-call credential and its one re-mint, the idempotent
-   * tolerance, the connect `probe`, and a lenient read of a 2xx.
+   * tolerance, and a lenient read of a 2xx. The connect `probe` (#605) arrives on the
+   * transport's own `ControlPlaneError`.
    */
   private async call<T>(path: string, init: RequestInit & { idempotent?: boolean } = {}): Promise<T> {
     const { idempotent, ...request } = init;
@@ -335,7 +314,7 @@ export class TenantNarrowedControlPlane {
       // A tenant/entitlement that already exists is fine on an idempotent step
       // (re-provisioning, a retried create) — the directory already reflects it.
       if (idempotent && (e.status === 409 || e.status === 422)) return undefined as T;
-      throw withProbe(e);
+      throw e;
     }
     return res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);
   }
