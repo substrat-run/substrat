@@ -64,8 +64,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      # The root importer only, frozen, scripts off: the check needs node-semver (npm's own
-      # range rule) and nothing under packages/ — pnpm enumerates the members from the
+      # The root importer only, frozen, scripts off: the check needs npm-package-arg (npm's
+      # own spec parser) and nothing under packages/ — pnpm enumerates the members from the
       # checkout. Unlike the jobs around it, this one may have the workspace's tooling on
       # disk; what it reads about `@substrat-run/*` still comes only from the registry.
       - run: pnpm install --frozen-lockfile --filter substrat --ignore-scripts

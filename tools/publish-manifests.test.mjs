@@ -200,20 +200,26 @@ test('a transient answer is asked once more; a second transient, or no answer, t
   await assert.rejects(withOneRetry(answers(undefined, true), 'q', { sleep }), /q: no answer from the registry \(unexpected error\)/);
 });
 
-test('registry specs, pinned: npm-package-arg\'s rule, through node-semver', () => {
-  // Regression table. `99+build` and `7+build` are valid node-semver ranges a hand-written
-  // grammar once refused; they are the reason this delegates to node-semver.
+test('registry specs, pinned: npm-package-arg\'s classification of the whole spec', () => {
+  // Regression table. `99+build` and `7+build` are valid ranges a hand-written grammar once
+  // refused; `foo.tgz` and its kin are local files a dist-tag approximation once accepted.
+  // Both are why this asks npm's own parser instead of imitating it.
   const table = {
     '^0.135.0': true, '0.135.0': true, '~1.2.3': true, '>=5': true, '>= 5 <7': true, '1.x': true, '*': true,
     '': true, '^1.0.0-beta.1': true, '1.2.3+build.5': true, '99+build': true, '7+build': true,
     '1.2.3 - 2.0.0': true, '^1 || ^2': true, 'v1.2.3': true, '~>1.2': true,
-    latest: true, next: true, 'beta-2': true, 'rc.1': true,
+    latest: true, next: true, 'beta-2': true, 'rc.1': true, workspace: true,
     'workspace:^': false, 'workspace:*': false, 'catalog:': false, 'file:../x': false, 'link:../x': false,
     'portal:../x': false, 'github:a/b': false, 'a/b': false, 'git+https://github.com/a/b.git': false,
-    'git+ssh://git@github.com/a/b.git#v1': false, 'https://example.test/x-1.0.0.tgz': false, '../x': false,
-    'npm:x@1': false,
+    'git+ssh://git@github.com/a/b.git#v1': false, 'https://example.test/x-1.0.0.tgz': false,
+    'foo.tgz': false, 'x.tar': false, 'x.tar.gz': false, './x': false, '../x': false, '~/x': false, '/abs/path': false,
   };
-  for (const [spec, expected] of Object.entries(table)) assert.equal(isRegistrySpec(spec), expected, `'${spec}'`);
+  for (const [spec, expected] of Object.entries(table)) {
+    assert.equal(isRegistrySpec(spec), expected, `'${spec}'`);
+    // The same spec inside an alias is judged the same way.
+    if (spec !== '') assert.equal(isRegistrySpec(`npm:is-number@${spec}`), expected, `'npm:is-number@${spec}'`);
+  }
+  assert.equal(isRegistrySpec('npm:is-number'), true);
 });
 
 test('a +build range is accepted plain and inside an alias, and both are asked of npm', async () => {
@@ -233,7 +239,11 @@ test('a public package depends only on registry specs: git, github:, URL, tarbal
     assert.deepEqual(manifestProblems(pkg({ [field]: { '@substrat-run/contracts': tarball } }), members), [
       refuse(field, '@substrat-run/contracts', tarball),
     ]);
-    for (const spec of ['git+https://github.com/jonschlinkert/is-number.git', 'github:jonschlinkert/is-number', 'jonschlinkert/is-number']) {
+    for (const spec of [
+      'git+https://github.com/jonschlinkert/is-number.git', 'github:jonschlinkert/is-number', 'jonschlinkert/is-number',
+      'foo.tgz', 'x.tar', 'x.tar.gz', './x', '../x', '~/x', '/abs/path',
+      'npm:is-number@foo.tgz', 'npm:is-number@x.tar.gz', 'npm:is-number@./x', 'npm:is-number@/abs/path',
+    ]) {
       assert.deepEqual(manifestProblems(pkg({ [field]: { 'is-number': spec } }), members), [refuse(field, 'is-number', spec)]);
     }
     for (const spec of ['npm:@substrat-run/contracts@workspace:^', 'npm:@substrat-run/contracts@catalog:', 'npm:left-pad@file:../x']) {
@@ -251,7 +261,7 @@ test('registry mode: a non-registry spec reaching edge resolution is a thrown in
   const asked = [];
   await assert.rejects(
     unresolvedEdges(served, members, async (n, r) => (asked.push(`${n}@${r}`), true), { deadline: 60_000, ...fakeTime() }),
-    /spec 'workspace:\^' is not a registry spec — refuse it with manifestProblems first/,
+    /spec 'npm:@substrat-run\/contracts@workspace:\^' is not a registry spec — refuse it with manifestProblems first/,
   );
   assert.deepEqual(asked, []);
 });
@@ -309,7 +319,7 @@ test('registry: after the window a member that never resolved is returned, for t
     ...time,
   });
   assert.deepEqual(missing, [
-    { field: 'dependencies', dep: 'c2', name: '@substrat-run/contracts', range: '^0.136.0' },
+    { field: 'dependencies', dep: 'c2', spec: 'npm:@substrat-run/contracts@^0.136.0', name: '@substrat-run/contracts', range: '^0.136.0' },
   ]);
   // It waited out the window — bounded, not forever and not zero.
   assert.equal(time.now(), 180_000);

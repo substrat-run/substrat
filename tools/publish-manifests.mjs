@@ -20,8 +20,8 @@
  *
  * Both are the same check (`manifestProblems`): no dependency specifier npm cannot
  * resolve (`workspace:`, `catalog:`, `link:`, `file:`, `portal:`); a runtime, peer or
- * optional dependency names only a registry spec — a semver range or dist-tag, judged by
- * node-semver as npm judges it, never git, github:, a URL or a tarball, aliases included;
+ * optional dependency names only a registry spec — a version, range or dist-tag, as
+ * npm-package-arg classifies it, never git, github:, a URL, a file or tarball, aliases included;
  * and none of them is a workspace member that is private, which npm has never been given.
  * The pack-time half also requires the `prepublishOnly` guard (tools/publish-guard.mjs),
  * which is what refuses `npm publish` at the moment it would happen — these checks only
@@ -42,7 +42,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import semver from 'semver';
+import npa from 'npm-package-arg';
 import { PUBLISH_GUARD } from './publish-guard.mjs';
 
 const run = promisify(execFile);
@@ -69,20 +69,31 @@ export function installTarget(dep, spec) {
   return at > 0 ? { name: rest.slice(0, at), range: rest.slice(at + 1) } : { name: rest, range: 'latest' };
 }
 
+/** The npm-package-arg types that install from the registry. */
+const REGISTRY_TYPES = new Set(['version', 'range', 'tag']);
+
 /**
- * Whether npm resolves `spec` from the registry — npm-package-arg's own rule for a registry
- * spec: a version or range by node-semver (loose, as npm parses it), otherwise a dist-tag,
- * which is any name `encodeURIComponent` leaves alone. Everything else — a workspace
- * protocol, git, github:, a URL or tarball, file:, link: — is not a registry spec.
+ * Whether npm installs `name@spec` from the registry, asked of npm-package-arg — the parser
+ * npm itself runs on a dependency — rather than approximated: a version, range or dist-tag,
+ * or an `npm:` alias whose own spec is one. Anything npa calls a file (`foo.tgz`), a
+ * directory (`./x`, `~/x`), git, github:, a remote tarball, or refuses to parse at all (a
+ * workspace protocol) is not.
  */
-export function isRegistrySpec(spec) {
-  return semver.validRange(spec, true) !== null || (spec !== '' && encodeURIComponent(spec) === spec);
+export function isRegistrySpec(spec, name = 'dep') {
+  let parsed;
+  try {
+    parsed = npa.resolve(name, String(spec));
+  } catch {
+    return false;
+  }
+  if (parsed.type === 'alias') return REGISTRY_TYPES.has(parsed.subSpec?.type);
+  return REGISTRY_TYPES.has(parsed.type);
 }
 
 /** Each runtime dependency of `manifest`, with the package it actually installs. */
 export function runtimeEdges(manifest) {
   return RUNTIME_FIELDS.flatMap((field) =>
-    Object.entries(manifest[field] ?? {}).map(([dep, spec]) => ({ field, dep, ...installTarget(dep, spec) })),
+    Object.entries(manifest[field] ?? {}).map(([dep, spec]) => ({ field, dep, spec: String(spec), ...installTarget(dep, spec) })),
   );
 }
 
@@ -101,13 +112,12 @@ export function manifestProblems(manifest, members) {
       }
     }
   }
-  for (const { field, dep, name, range } of runtimeEdges(manifest)) {
-    const spec = String(manifest[field][dep]);
+  for (const { field, dep, name, spec } of runtimeEdges(manifest)) {
     if (UNPUBLISHABLE_PROTOCOLS.some((p) => spec.startsWith(p))) continue;
     // A public package installs from the registry and nowhere else: a git, github:, URL or
     // tarball spec reaches outside it, and an alias's own spec (`npm:<name>@<spec>`, which
     // the protocol check above cannot see into) is held to the same rule.
-    if (!isRegistrySpec(range)) {
+    if (!isRegistrySpec(spec, dep)) {
       problems.push(`${id}: ${field}['${dep}'] is '${spec}' — a public package may depend only on a semver range or dist-tag`);
       continue;
     }
@@ -137,8 +147,8 @@ export async function unresolvedEdges(
   // Every edge here must be a registry spec: `manifestProblems` refuses any other, and the
   // caller only resolves a manifest that passed it. An invalid one reaching this point is a
   // broken invariant, thrown — never asked of npm, whose answer would be about the QUESTION.
-  for (const { field, dep, range } of pending) {
-    if (!isRegistrySpec(range)) throw new Error(`${manifest.name}@${manifest.version}: ${field}['${dep}'] spec '${range}' is not a registry spec — refuse it with manifestProblems first`);
+  for (const { field, dep, spec } of pending) {
+    if (!isRegistrySpec(spec, dep)) throw new Error(`${manifest.name}@${manifest.version}: ${field}['${dep}'] spec '${spec}' is not a registry spec — refuse it with manifestProblems first`);
   }
   for (;;) {
     const results = await Promise.all(pending.map((e) => resolves(e.name, e.range)));
