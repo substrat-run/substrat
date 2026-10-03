@@ -85,6 +85,23 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
       }
       setDialog(null);
       setReason('');
+      if (outcome.kind === 'unknown') {
+        // #2010: the write failed without proving nothing moved, so the change may or may not
+        // have taken effect. Show the position read just now rather than offer a retry.
+        if (outcome.view === null) {
+          setView(null);
+          setFailed(true);
+          setNotice(
+            `Not confirmed — the change may or may not have taken effect (${String(outcome.error)}), and access could not be re-read: ${String(outcome.readError)}. Reload to read it before trying again.`,
+          );
+          return;
+        }
+        setView(outcome.view);
+        setNotice(
+          `Not confirmed — the change may or may not have taken effect (${String(outcome.error)}). The list below was read just now; check it before trying again.`,
+        );
+        return;
+      }
       if (outcome.kind === 'unconfirmed') {
         // The write succeeded. Invalidate the old position instead of offering it again.
         setView(null);

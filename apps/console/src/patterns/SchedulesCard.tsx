@@ -94,6 +94,25 @@ export function SchedulesCard({
         onToast('Refused', errorMessage(attempt.error), 'danger');
         return;
       }
+      if (attempt.kind === 'unknown') {
+        // #2010: the call failed without proving nothing moved — its answer was lost on the
+        // way back — so the switch may or may not have moved. Never "Refused", which would
+        // send the operator to retry: show the position read just now instead, or no
+        // position at all when that read failed too.
+        setEntries(attempt.entries);
+        setError(attempt.entries === null ? attempt.readError : null);
+        onToast(
+          'Not confirmed — the switch may or may not have moved',
+          `${moduleId} on ${scope.slug} · ${errorMessage(attempt.error)} · ` +
+            (attempt.entries === null
+              ? 'Its position could not be re-read either; read it before trying again.'
+              : 'The card now shows its position, read just now; check it before trying again.'),
+          'danger',
+        );
+        setDialog(null);
+        setReason('');
+        return;
+      }
       if (attempt.kind === 'unconfirmed') {
         // The switch applied, but the read that would prove it — and show the fresh
         // position — failed. Clear the stale entries rather than leave the old (now
