@@ -9,12 +9,16 @@
  * workerd suite.
  */
 
-export interface DeskRead {
-  /** Which handler sends it, for a reader. */
-  readonly operation: string;
+/** A statement and what to bind when asking for its plan. */
+export interface Shape {
   readonly sql: string;
   /** Bound for EXPLAIN only: a plan does not depend on these without statistics. */
   readonly args: readonly (string | number)[];
+}
+
+export interface DeskRead extends Shape {
+  /** Which handler sends it: named when a shape is missing from what the handlers sent. */
+  readonly operation: string;
   /** The index the plan must name. */
   readonly index: string;
   /** Answered from the index alone. */
@@ -210,7 +214,7 @@ export const INBOX_PAGES = {
     sql: 'SELECT * FROM ticket0_conversations WHERE assignee = ? AND state IN (SELECT value FROM json_each(?)) AND quarantine IS NULL ORDER BY updated_at ASC, id ASC LIMIT ?',
     args: ['agent-1', OPEN, 51],
   },
-} as const satisfies Record<string, { sql: string; args: readonly (string | number)[] }>;
+} as const satisfies Record<string, Shape>;
 
 /**
  * `ticket0/list-suspended`'s first page. No new index: it is pinned to the partial index 0021
@@ -231,18 +235,13 @@ export const SUSPENDED_QUEUE = {
      JOIN ticket0_contacts k ON k.id = c.contact_id
     WHERE c.quarantine = 'suspended' ORDER BY c.id DESC LIMIT ?`,
   args: [240, 51],
-} as const;
+} as const satisfies Shape;
 
-/** The indexes 0023 adds, in the order it adds them. */
-export const DESK_READ_INDEXES = [
-  'ticket0_conversations_queue_filters',
-  'ticket0_notifications_by_principal',
-  'ticket0_notifications_by_conversation',
-  'ticket0_widget_sessions_by_conversation',
-  'ticket0_mail_deliveries_by_conversation',
-  'ticket0_messages_by_email_message_id',
-  'ticket0_conversation_follows_by_conversation',
-] as const;
+/** The indexes 0023 adds: every one is named by a read above, which is what asserts its seek. */
+export const DESK_READ_INDEXES = [...new Set(Object.values(DESK_READS).map((read) => read.index))];
+
+/** Does a plan sort rows itself, rather than reading them in an index's order? */
+export const sorts = (plan: readonly string[]): boolean => plan.some((d) => d.startsWith('USE TEMP B-TREE'));
 
 /**
  * Does `plan` (EXPLAIN QUERY PLAN's detail lines) read `read`'s table through its index, with
@@ -254,6 +253,6 @@ export function planUsesIndex(read: DeskRead, plan: readonly string[]): string |
   const how = read.covering ? ['USING COVERING INDEX'] : ['USING INDEX', 'USING COVERING INDEX'];
   const seek = plan.find((d) => d.startsWith('SEARCH ') && how.some((h) => d.includes(`${h} ${read.index} (`)));
   if (!seek) return `no SEARCH ${how.join(' or ')} ${read.index} in: ${plan.join(' | ')}`;
-  if (plan.some((d) => d.startsWith('USE TEMP B-TREE'))) return `a sort of its own in: ${plan.join(' | ')}`;
+  if (sorts(plan)) return `a sort of its own in: ${plan.join(' | ')}`;
   return null;
 }

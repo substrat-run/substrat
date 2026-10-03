@@ -60,7 +60,8 @@ import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
 import { ticket0Migrations } from '../../src/migrations.generated.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
-import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex } from '../desk-read-shapes.js';
+import { DESK_TABLES, populateDesk } from '../desk-fixture.js';
+import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex, sorts, type Shape } from '../desk-read-shapes.js';
 
 interface Conversation {
   id: string;
@@ -1680,58 +1681,11 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
       // no spine for, and changes no ticket0 table.
       for (const m of ticket0Migrations.filter((x) => x.version < '0023' && x.version !== '0020')) sql.exec(m.sql);
       for (const m of listIndexMigrations(ticket0Manifest.id, lists)) sql.exec(m.sql);
-      const at = (i: number) => new Date(Date.UTC(2024, 0, 1) + i * 2_700_000).toISOString();
-      state.storage.transactionSync(() => {
-        sql.exec("INSERT INTO ticket0_contacts (id, created_at) VALUES ('k', '2024-01-01T00:00:00.000Z')");
-        for (let i = 0; i < CONVERSATIONS; i++) {
-          const id = i === 0 ? 'c-plan' : `c${String(i).padStart(6, '0')}`;
-          const live = i % 25 === 0;
-          const channel = i % 2 === 0 ? 'email' : 'widget';
-          sql.exec(
-            `INSERT INTO ticket0_conversations (id, contact_id, channel, subject, state, assignee, priority, created_at, updated_at, quarantine)
-             VALUES (?, 'k', ?, 'Before', ?, ?, ?, ?, ?, ?)`,
-            id, channel, live ? ['new', 'open', 'snoozed', 'resolved'][(i / 25) % 4]! : 'closed',
-            `agent-${i % 6}`, ['low', 'normal', 'urgent'][i % 3]!, at(i), at(i + 1),
-            i % 101 === 0 ? 'suspended' : i % 103 === 0 ? 'discarded' : null,
-          );
-          for (let j = 0; j < 3; j++) {
-            const mail = channel === 'email' && j !== 1 ? `<${id}-${j}@mail.example>` : null;
-            sql.exec(
-              `INSERT INTO ticket0_messages (id, conversation_id, author_kind, visibility, body_text, email_message_id, created_at)
-               VALUES (?, ?, ?, 'public', 'A message of an ordinary length, the kind a customer writes.', ?, ?)`,
-              `${id}-${j}`, id, j === 1 ? 'agent' : 'contact', mail, at(i),
-            );
-            if (mail) {
-              sql.exec(
-                `INSERT INTO ticket0_mail_deliveries (email_message_id, conversation_id, message_id, direction, recorded_at)
-                 VALUES (?, ?, ?, 'inbound', ?)`,
-                mail, id, `${id}-${j}`, at(i),
-              );
-            }
-            sql.exec(
-              `INSERT INTO ticket0_notifications (id, principal, kind, conversation_id, created_at) VALUES (?, ?, 'replied', ?, ?)`,
-              `${id}-n${j}`, `agent-${(i + j) % 6}`, id, at(i),
-            );
-          }
-          if (channel === 'widget') {
-            sql.exec(
-              `INSERT INTO ticket0_widget_sessions (id, conversation_id, contact_id, origin, token_hash, started_at, last_seen_at)
-               VALUES (?, ?, 'k', 'https://desk.example', ?, ?, ?)`,
-              `${id}-s`, id, `hash-${id}`, at(i), at(i + 1),
-            );
-          }
-          if (i % 3 === 0) sql.exec('INSERT INTO ticket0_conversation_follows (principal, conversation_id) VALUES (?, ?)', `agent-${i % 6}`, id);
-        }
-      });
+      state.storage.transactionSync(() => populateDesk((statement, ...args) => void sql.exec(statement, ...args), CONVERSATIONS));
 
-      const plan = (shape: { sql: string; args: readonly (string | number)[] }) =>
-        [...sql.exec(`EXPLAIN QUERY PLAN ${shape.sql}`, ...shape.args)].map((r) => String(r.detail));
+      const plan = (shape: Shape) => [...sql.exec(`EXPLAIN QUERY PLAN ${shape.sql}`, ...shape.args)].map((r) => String(r.detail));
       const counts = () =>
-        Object.fromEntries(
-          ['ticket0_conversations', 'ticket0_messages', 'ticket0_mail_deliveries', 'ticket0_notifications', 'ticket0_widget_sessions', 'ticket0_conversation_follows'].map(
-            (table) => [table, [...sql.exec(`SELECT COUNT(*) AS n FROM ${table}`)][0]!.n],
-          ),
-        );
+        Object.fromEntries(DESK_TABLES.map((table) => [table, [...sql.exec(`SELECT COUNT(*) AS n FROM ${table}`)][0]!.n]));
       /**
        * The hottest table this indexes, by rows written: a notification per recipient per event.
        * Rolled back, so the desk is measured as it was. Microseconds per row.
@@ -1743,7 +1697,7 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
             for (let n = 0; n < WRITES; n++) {
               sql.exec(
                 `INSERT INTO ticket0_notifications (id, principal, kind, conversation_id, created_at) VALUES (?, ?, 'assigned', ?, ?)`,
-                `w-${n}`, `agent-${n % 6}`, `c${String(n * 7).padStart(6, '0')}`, at(CONVERSATIONS + n),
+                `w-${n}`, `agent-${n % 4}`, `c${String(n * 7).padStart(6, '0')}`, '2027-01-01T00:00:00.000Z',
               );
             }
             throw new Error('roll back');
@@ -1754,7 +1708,8 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
         return ((performance.now() - started) * 1000) / WRITES;
       };
 
-      const before = { counts: counts(), pages: Object.values(INBOX_PAGES).map(plan), writeUs: writeCost() };
+      const snapshot = () => ({ counts: counts(), pages: Object.values(INBOX_PAGES).map(plan), writeUs: writeCost() });
+      const before = snapshot();
       const started = performance.now();
       state.storage.transactionSync(() => {
         sql.exec(ticket0Migrations.find((m) => m.version === '0023')!.sql);
@@ -1763,7 +1718,7 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
       return {
         ms,
         before,
-        after: { counts: counts(), pages: Object.values(INBOX_PAGES).map(plan), writeUs: writeCost() },
+        after: snapshot(),
         reads: Object.entries(DESK_READS).map(([name, read]) => ({ name, verdict: planUsesIndex(read, plan(read)) })),
         suspended: plan(SUSPENDED_QUEUE),
       };
@@ -1774,7 +1729,7 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
     expect(result.reads.filter((r) => r.verdict !== null)).toEqual([]);
     expect(result.after.pages).toEqual(result.before.pages);
     expect(result.suspended).toContainEqual(expect.stringMatching(/USING INDEX ticket0_conversations_suspended\b/));
-    expect(result.suspended.some((d) => d.startsWith('USE TEMP B-TREE'))).toBe(false);
+    expect(sorts(result.suspended)).toBe(false);
     // Reported for the PR rather than asserted tightly: the runtime here is a laptop's workerd.
     // The bound is the DO's default CPU limit for one request, 30 s.
     console.log(
