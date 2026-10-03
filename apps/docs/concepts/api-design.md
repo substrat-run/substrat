@@ -116,8 +116,11 @@ X-Total-Count: 340
 
 The `Link` is [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288), the same header GitHub
 serves, and it hands the client a URL to **follow** rather than one to assemble — so the
-filters and the page size travel with it and cannot be dropped by accident. Its absence is
-how the walk ends: no `rel="next"`, no further request. `X-Total-Count` appears only for a
+filters, the sort, the order and the page size travel with it and cannot be dropped by
+accident. The cursor inside it is **opaque**: hand it back, never build or parse one. A
+cursor replayed in a walk that did not mint it is refused with a `400` whose problem carries
+`reason: "cursor_restart"` — the answer is to read the first page again. The `Link`'s
+absence is how the walk ends: no `rel="next"`, no further request. `X-Total-Count` appears only for a
 list that asked for a total.
 
 **Why headers and not a `{ entries, nextCursor }` body.** Because the body is a published

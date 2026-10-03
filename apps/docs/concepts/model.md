@@ -323,6 +323,8 @@ drift apart, and it appears in a search for "cursor".
 - **`limit` / `cursor` / `order` / `sort` are supplied by the platform**, not declared per
   operation, so the default page size and the `LIST_PAGE_MAX` ceiling are true of every paged
   read. A request above the ceiling is refused, not silently capped;
+- the declared **`order` is the default** a caller gets by naming none — over HTTP, over MCP
+  and in process alike — and an explicit `order` still wins;
 - the **emitted OpenAPI** grows those parameters, an enum of your `sortable` columns, and one
   query parameter per `filterable` column;
 - the **HTTP body is still the entries array** — the walk rides in `Link` and `X-Total-Count`
@@ -332,8 +334,11 @@ Filters are **equality only**. Ranges, `IN`, `LIKE` and boolean composition are 
 filter vocabulary turns into a query language; a read that needs more than equality is an
 operation with its own name and its own arguments.
 
-A cursor is only valid for the sort that issued it. **Follow the `Link` header** — it carries
-the sort and every filter — rather than assembling `?cursor=…&sort=…` yourself.
+A cursor is **opaque**, and only valid for the sort and order that issued it. **Follow the
+`Link` header** — it carries the sort, the order and every filter — rather than assembling
+`?cursor=…&sort=…` yourself. A kernel-composed read refuses a cursor replayed under another
+sort or order with a `400` whose problem carries `reason: "cursor_restart"`: read the first
+page again, without a cursor (K-44).
 
 `total` is opt-in because a keyset page cannot produce one for free: it costs a second
 query per request, and it counts the **same filter** the page ran under. Say `true`

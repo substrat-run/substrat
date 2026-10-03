@@ -2585,3 +2585,54 @@ describe('closing the month', () => {
     ).rejects.toThrow(/horizon/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+// #2001: the declared `order: 'desc'` is what a caller naming no order gets, every page of it.
+describe('the inbox opens on what moved last', () => {
+  it('is newest first when no order is named, and pages on in that order', async () => {
+    const relay = await at(world.substrat, 'relay');
+    const fresh: string[] = [];
+    for (const n of [1, 2]) {
+      // The real clock: a few milliseconds apart so `updated_at` alone decides.
+      await new Promise((r) => setTimeout(r, 5));
+      const msg = (await relay.invoke('ticket0/ingest-message', {
+        conversationId: null,
+        contactEmail: `newest-${n}@customer.example`,
+        contactName: `Newest ${n}`,
+        subject: `The newest thing, number ${n}`,
+        bodyText: 'Hello?',
+        emailMessageId: `<newest-${n}@mail.example>`,
+      })) as Message;
+      fresh.push(msg.conversation_id);
+    }
+
+    type Row = Conversation & { updated_at: string };
+    const anna = await at(world.substrat, 'agent');
+    const walked: Row[] = [];
+    let cursor: string | null = null;
+    let total = 0;
+    do {
+      const page: CountedPage<Row> = (await anna.invoke('ticket0/list-conversations', {
+        limit: 2,
+        ...(cursor ? { cursor } : {}),
+      })) as CountedPage<Row>;
+      walked.push(...page.entries);
+      total = page.total;
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+
+    expect(walked.slice(0, 2).map((c) => c.id)).toEqual([...fresh].reverse());
+    const stamps = walked.map((c) => c.updated_at);
+    expect(stamps).toEqual([...stamps].sort().reverse());
+    expect(new Set(walked.map((c) => c.id)).size).toBe(walked.length);
+    expect(walked.length).toBe(total);
+    expect(walked.length).toBeGreaterThan(2);
+
+    const asc = (await anna.invoke('ticket0/list-conversations', {
+      order: 'asc',
+      limit: 100,
+    })) as CountedPage<Row>;
+    expect(asc.entries.map((c) => c.id).slice(-2)).toEqual(fresh);
+  });
+});

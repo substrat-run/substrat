@@ -354,10 +354,9 @@ export function splitCursor(cursor: string): { value: string; id: string | undef
  */
 export class CursorMismatch extends SubstratError {
   constructor(message: string) {
-    super('validation_failed', message, {
-      errors: [{ path: 'cursor', message }],
-      reason: PAGE_CURSOR_RESTART,
-    });
+    // A SEMANTIC refusal, so no `errors` list: that list is what marks a parse failure,
+    // and `toProblem` would trade this sentence and its reason for "did not parse".
+    super('validation_failed', message, { reason: PAGE_CURSOR_RESTART });
   }
 }
 
