@@ -204,7 +204,15 @@ it:
   platform's names bound to something else are refused rather than clobbered. A push from a
   CLI that predates the field falls back to the convention — `SWEEPER` bound to `SweeperDO` is
   the vertical's own, neither bound means none — and refuses the half-matches it cannot tell
-  apart. Promote and backout re-decide from the retained manifest.
+  apart. The decision is made ONCE, by the push route before anything is uploaded, and
+  recorded with the version (the stored manifest's `platformSweeper`); promote, re-serve and
+  backout carry out the record and never re-decide, so none of them can refuse a version that
+  was accepted, and a version pushed before the record existed keeps what it had — no
+  platform sweeper.
+- **Which plane.** A plane from before #1902 supplies nothing, so a CLI that leaves the
+  sweeper to the platform asks first: every control-plane response lists
+  `x-substrat-platform-features: scope-sweeper` (the capability half of the handshake the CLI
+  version advisory rides), and the push refuses before uploading when the plane is silent.
 - **Which names.** `SweeperDO` bound as `SWEEPER`, the names the template and both demos used
   by hand. A vertical that drops its own therefore keeps the same namespace on its serving
   script: same singleton, same roster, its alarm still set, and an empty in-place migration
@@ -216,7 +224,7 @@ sweeper", only wiring that would still leave schedules unrun — an own sweeper 
 platform's names taken, a vertical-host too old to register the host. What is still owed: the
 platform supplies a sweeper only for `schedules`, so a vertical relying on executor retries or
 resumable jobs and declaring no schedule keeps its own. And a version pushed before this ships
-gets the platform's sweeper only on its next upload (push, promote, backout).
+keeps exactly what it had; the platform's sweeper comes with its next push.
 
 The two hosted demos that declare schedules, `demos/ticket0` and `demos/meridian`, no longer
 wire one, and neither does the create-substrat template (#1646, #1902). Each demo runs its

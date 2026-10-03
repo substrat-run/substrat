@@ -1215,8 +1215,8 @@ export function planeSupplies(headers: Headers, feature: string): boolean {
 
 /**
  * The classes the worker entry exports as its own `defineScopeSweeperDO` sweeper — the
- * manifest's `sweeperClasses` (#1902), what the uploader decides from whether to supply the
- * platform's. `[]` when it exports none; `undefined` when the entry cannot be read, which the
+ * manifest's `sweeperClasses` (#1902), what the control plane decides from, once at push,
+ * whether to supply the platform's. `[]` when it exports none; `undefined` when the entry cannot be read, which the
  * manifest carries as absence rather than as a claim of "none".
  */
 export function sweeperClassesOf(dir: string, cfg: Record<string, unknown>): string[] | undefined {
@@ -1634,7 +1634,7 @@ export async function push(
     // schedule-health view needs `everyMinutes`, which exists nowhere off the manifest.
     ...(schedules ? { schedules } : {}),
     ...(freshness ? { freshness } : {}),
-    // #1902: the vertical's own sweeper classes, `[]` for none — what the uploader decides
+    // #1902: the vertical's own sweeper classes, `[]` for none — what the control plane decides
     // from whether to supply the platform's. Absent only when the entry could not be read.
     ...(sweeperClasses ? { sweeperClasses } : {}),
     // ALWAYS sent, `[]` when the modules declare none — the same reasoning `outbound`

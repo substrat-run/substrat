@@ -23,7 +23,7 @@
  *
  *   - `substrat push` (`assertSchedulesAreSwept` in `push.ts`), the only check an EXTERNAL
  *     vertical's deploy passes through — and the reader of `sweeperClasses`, the names the
- *     push declares in its manifest so the uploader decides from a declaration, not the bytes;
+ *     push declares in its manifest so the control plane decides from a declaration, not the bytes;
  *   - this repo's `lint:schedule-sweeper` (`tools/schedule-sweeper.mts`), which imports the
  *     built copy the way `tools/invocation-log.mjs` imports boundary-lint's R10 predicate, so
  *     the two gates cannot disagree.

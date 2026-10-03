@@ -207,7 +207,11 @@ whose schedules your own source never names, and your worker entry exports no sw
 platform adds one at upload: the class `SweeperDO`, bound as `SWEEPER`.
 `mountPlatformSurface` gives it your worker's scope host, and adds each scope it provisions or
 reconciles to the sweeper's list (the roster), and removes each scope it deletes. Upgrade
-`@substrat-run/vertical-host` if it predates this; the push says so.
+`@substrat-run/vertical-host` if it predates this; the push says so. Before it uploads, the
+push also checks that the control plane it targets says it adds the sweeper. A control plane
+that doesn't say so is too old to add one, and the push refuses. The control plane decides
+once, when a version is pushed, and records it with the version. Promoting or rolling back a
+version reuses that record, so it can never be refused over the sweeper.
 
 A worker that exports its own `defineScopeSweeperDO` keeps it. The push reads the export from
 your entry's source, following relative re-exports, and sends its name with the version, and
