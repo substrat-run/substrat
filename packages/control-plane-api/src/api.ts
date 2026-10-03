@@ -5012,8 +5012,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // - `discard` wipes the kept copy: what reached it after the carry's export is gone.
   // - `restore-forward` restores the kept copy over the store the scope now routes to, then
   //   wipes the kept copy: what the live store took since the copy was kept is gone.
-  // There is no merge of two scope dumps. To reconcile by hand, pull the kept copy first (the
-  // governed export reads the live route; this route's GET says where the kept copy is).
+  // There is no merge of two scope dumps. To reconcile by hand, take the live store with the
+  // governed export (`GET …/export`, which reads the scope's route) before choosing; the kept
+  // copy itself is reached only through these two resolutions (this route's GET says where it is).
   //
   // Staff only, by default-deny: neither path is on BUILDER_ROUTES or TENANT_ROUTES. One scope
   // at a time, refused unless the copy really is kept, and admin-logged with the write revision
