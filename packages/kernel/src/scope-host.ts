@@ -30,6 +30,7 @@ import type {
   AccessLogEntry,
   DelegatedReadRecord,
   OwnerTransferAudit,
+  CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
@@ -3625,6 +3626,14 @@ export interface HostAdmin {
    * `id` and `at`. Throws when the row cannot be written.
    */
   recordOwnerTransfer(actor: PlatformActorId, entry: OwnerTransferAudit): Promise<void>;
+
+  /**
+   * Record one scope the copy-marker repair visited (#2005) on the admin log, as `markScopeCopy`.
+   * The marker lives in the vertical's deployment, so the control plane writes this around its
+   * call there — `recordOwnerTransfer`'s shape: fixed action, parsed entry, request actor,
+   * adapter-stamped `id` and `at`. Throws when the row cannot be written.
+   */
+  recordCopyMark(actor: PlatformActorId, entry: CopyMarkAudit): Promise<void>;
 
   /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including

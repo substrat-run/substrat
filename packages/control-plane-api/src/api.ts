@@ -123,6 +123,7 @@ import {
   exportBreakRefusal,
   isBindExportBreakRefusal,
   isExportBreakRefusal,
+  isPrimaryScope,
   migrationProgress,
   ulid,
 } from '@substrat-run/kernel';
@@ -2520,11 +2521,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
      *  and `exact` when the platform exported them itself rather than a caller supplying them. */
     source: { scopeId: ScopeId; exact: boolean },
   ): ReturnType<VerticalClient['restoreScope']> => {
+    // #2005: every carry, reuse, adopt and governed restore lands here. When the directory says
+    // the destination is not primary, the vertical marks it a copy in its own storage — a carry
+    // of a copy made before every copy carried the marker brings none, and a CP-less host reads
+    // the marker for primacy. Idempotent there; an install is never marked.
+    const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
+    const markCopy = rec !== undefined && !isPrimaryScope(rec);
     return retryTransient(async () =>
       dest.restoreScope(tenantId, scopeId, tables, {
         ...(await switchCarryFor(host.admin, actor, { tenantId, scopeId })),
         sourceScopeId: source.scopeId,
         exact: source.exact,
+        ...(markCopy ? { markCopy: true } : {}),
       }),
     );
   };
@@ -4112,6 +4120,73 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Exhausted only when the page ran short: a full page may be followed by more rows.
     const nextCursor = stopped || page.length === REPAIR_SCAN_PAGE ? (last ?? null) : null;
     return c.json({ dryRun, repaired, candidates, skipped, failed, nextCursor });
+  });
+
+  // -- one-time repair: mark every existing copy as one, in its own storage (#2005) --------
+  // A CP-less hosted vertical has no directory, so it reads a scope's own copy-origin row to
+  // hold a preview's or a fork's executors inert. Every copy carries that row since #2005, and
+  // every carry onto a non-primary scope stamps it (`restoreCarryingSwitches`) — but a copy
+  // made before either, never carried since, holds none and would read as an install there.
+  // This is the pass over those: for each scope the directory says is not primary, ask the
+  // vertical that holds it to stamp the marker (idempotent there), and log the outcome.
+  //
+  // Staff only, by default-deny, like the serving-pin repair: the path is on neither
+  // `BUILDER_ROUTES` nor `TENANT_ROUTES`. Paged and resumable the same way — one page of
+  // ACTIVE directory rows after `cursor`, at most `limit` scopes marked from it, `nextCursor`
+  // until the fleet is exhausted. A scope that fails is reported and the pass moves on; it is
+  // still unmarked, so the next walk visits it again, and a marked one answers `already`.
+  // `dryRun` lists the candidates and touches nothing. An install is never a candidate.
+  const markCopiesBody = z
+    .object({
+      cursor: scopeIdSchema.optional(),
+      limit: z.number().int().min(1).max(200).default(50),
+      dryRun: z.boolean().default(false),
+    })
+    .strict();
+  app.post('/scopes/mark-copies', async (c) => {
+    const { cursor, limit, dryRun } = await readJsonBody(c, markCopiesBody);
+    const actor = c.get('actor');
+    const page = await c.var.admin.listScopes(actor, { status: ['active'], cursor, limit: REPAIR_SCAN_PAGE });
+    const marked: { tenantId: string; scopeId: string }[] = [];
+    const already: { tenantId: string; scopeId: string }[] = [];
+    const candidates: { tenantId: string; scopeId: string }[] = [];
+    const skipped: { tenantId: string; scopeId: string; reason: string }[] = [];
+    const failed: { tenantId: string; scopeId: string; status: number; error: string }[] = [];
+    let last: string | undefined = cursor;
+    let handled = 0;
+    let stopped = false;
+    for (const scope of page) {
+      if (isPrimaryScope(scope)) {
+        last = scope.id;
+        continue;
+      }
+      if (handled >= limit) {
+        stopped = true;
+        break;
+      }
+      handled += 1;
+      last = scope.id;
+      const at = { tenantId: scope.tenantId, scopeId: scope.id };
+      if (dryRun) {
+        candidates.push(at);
+        continue;
+      }
+      try {
+        const vertical = await verticalForScope(c, scope);
+        if (!vertical) {
+          skipped.push({ ...at, reason: 'no deployment holds this scope' });
+          continue;
+        }
+        const { marked: stamped } = await vertical.markCopy(scope.id);
+        await c.var.admin.recordCopyMark(actor, { ...at, outcome: stamped ? 'marked' : 'already' });
+        (stamped ? marked : already).push(at);
+      } catch (e) {
+        const { status } = mapError(e);
+        failed.push({ ...at, status, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    const nextCursor = stopped || page.length === REPAIR_SCAN_PAGE ? (last ?? null) : null;
+    return c.json({ dryRun, marked, already, candidates, skipped, failed, nextCursor });
   });
 
   // Reap an ARCHIVED primary scope (control-plane.md §4.4): free its DO storage —

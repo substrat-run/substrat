@@ -165,8 +165,10 @@ export interface VerticalScopeHost {
   restoreScopeLocal(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
-    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
+    opts?: { switchedOff?: ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; markCopy?: boolean },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
+  /** #2005: mark one scope a copy in its own storage — the repair of a copy that predates the marker. */
+  markCopyLocal(scopeId: ScopeId): Promise<{ marked: boolean }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
@@ -418,6 +420,9 @@ const restoreBody = z.object({
   /** #1869: the platform exported these tables itself, so `sourceScopeId` is a fact and the
    *  re-point never falls back. Absent for a dump a caller supplied. */
   exact: z.boolean().optional(),
+  /** #2005: the platform's directory says this scope is not primary, so the restore marks it a
+   *  copy in its own storage. Absent from a platform that predates it: nothing is marked. */
+  markCopy: z.boolean().optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -714,9 +719,18 @@ export function mountPlatformSurface<Env extends object>(
       switchedOff: body.switchedOff,
       sourceScopeId: body.sourceScopeId,
       exact: body.exact,
+      markCopy: body.markCopy,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
+  });
+
+  // #2005: mark one scope a copy in its own storage, for a copy made before every copy carried
+  // the marker. The platform decides which (its directory says the scope is not primary) and
+  // audits; this end only stamps, idempotently, and says whether it did.
+  app.post('/internal/mark-copy', async (c) => {
+    const body = z.object({ scopeId: scopeIdOf }).parse(await c.req.json());
+    return c.json(await deps.hostFor(c.env).markCopyLocal(body.scopeId));
   });
 
   // #1239: facets over this scope's own outbox — narrow, group, count. Counts and

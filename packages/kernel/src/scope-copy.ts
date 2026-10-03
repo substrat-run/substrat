@@ -157,6 +157,22 @@ export function settleCopiedWork(
 }
 
 /**
+ * Mark this scope a copy without moving its events mark (#2005), for a scope its directory says
+ * is not primary whose storage holds no origin row — a copy made before every copy carried one,
+ * or a same-scope carry of such a copy. `events_through` is `''`, which passes every event
+ * exactly as no row does, so dispatch is unchanged; only the copy's own record of being one is
+ * new. Idempotent: an existing origin is kept as it is. Answers whether this call stamped it.
+ */
+export function markCopyOrigin(sql: SwitchSql, now: string): boolean {
+  if (sql.all(IS_COPY_SQL).length > 0) return false;
+  sql.run(
+    "INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
+    now,
+  );
+  return true;
+}
+
+/**
  * Whether this scope was loaded as a copy (#2005): the copy-origin row every copy holds. The one
  * primacy fact a host with no control-plane directory can read from the scope's own storage — a
  * CP-less hosted vertical's coordinator asks it before it runs an executor.

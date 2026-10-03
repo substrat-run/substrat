@@ -111,6 +111,15 @@ export function inertScopeContractSuite(adapterName: string, makeFixture: () => 
       expect(called).toContain('outbound-primary-after');
     });
 
+    // The copy-marker repair writes its outcome around the vertical's stamp (#2005).
+    it('records a copy-marker repair outcome on the admin log, and refuses one it cannot parse', async () => {
+      const s = await scope({ kind: 'preview' });
+      await host.admin.recordCopyMark(staff, { tenantId: t, scopeId: s, outcome: 'marked' });
+      const [row] = await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'markScopeCopy' });
+      expect(row).toMatchObject({ action: 'markScopeCopy', actor: staff, tenantId: t, scopeId: s, after: { outcome: 'marked' } });
+      await expect(host.admin.recordCopyMark(staff, { tenantId: t, scopeId: s, outcome: 'maybe' } as never)).rejects.toThrow();
+    });
+
     describe('the route read tells the egress worker what kind of scope a hostname serves', () => {
       const bound = async (s: ScopeId): Promise<string> => {
         const hostname = `inert-${ulid().toLowerCase()}.example.com`;

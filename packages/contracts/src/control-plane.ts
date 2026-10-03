@@ -195,8 +195,23 @@ export const adminAction = z.enum([
   // both principals and, like every row, the actor from the request. Written intent-first then
   // outcome, like the schedule switch, since the move happens in the vertical's own deployment.
   'transferOwner',
+  // #2005 — a scope the directory says is not primary, marked a copy in its own storage, where a
+  // host with no directory reads it. A one-time repair of copies that predate the marker; the
+  // row names the scope and whether this pass stamped it or found it already stamped.
+  'markScopeCopy',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
+
+/** One scope the copy-marker repair visited (#2005), as its `markScopeCopy` admin-log row. */
+export const copyMarkAudit = z
+  .object({
+    tenantId,
+    scopeId,
+    /** `marked`: this pass stamped it. `already`: it carried the marker before the pass. */
+    outcome: z.enum(['marked', 'already']),
+  })
+  .strict();
+export type CopyMarkAudit = z.infer<typeof copyMarkAudit>;
 
 /**
  * What a `shredSubject` did (#37) — the receipt a DSAR response is written from.

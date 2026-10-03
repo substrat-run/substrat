@@ -69,6 +69,59 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
     expect(await inertIn(clean)).toBe(1);
   });
 
+  // A copy made before every copy carried the marker, or a same-scope carry of one, holds no
+  // row: on its own storage it reads as an install. The platform, which has the directory, marks it.
+  describe('a copy that predates the marker (#2005)', () => {
+    /** A scope this deployment holds with no origin row, as such a copy does. */
+    const legacy = async () => {
+      const s = scopeId.parse(ulid());
+      await seat(s);
+      return s;
+    };
+    const originOf = async (s: ScopeId) =>
+      (await hostFor().exportScopeLocal(s)).find((t) => t.name === '_substrat_copy_origin')?.rows ?? [];
+
+    it('reads as an install until it is marked — the gap this closes', async () => {
+      const s = await legacy();
+      await act(s);
+      expect(ran).toContain(s);
+    });
+
+    it('a carry the platform flags (markCopy) stamps it, and its executors are then inert', async () => {
+      const s = await legacy();
+      await hostFor().restoreScopeLocal(s, await hostFor().exportScopeLocal(s), { sourceScopeId: s, exact: true, markCopy: true });
+      await act(s);
+      expect(ran).not.toContain(s);
+      expect(await inertIn(s)).toBe(1);
+    });
+
+    it('twin: the same carry unflagged leaves an install an install', async () => {
+      const s = await legacy();
+      await hostFor().restoreScopeLocal(s, await hostFor().exportScopeLocal(s), { sourceScopeId: s, exact: true });
+      await act(s);
+      expect(ran).toContain(s);
+      expect(await originOf(s)).toEqual([]);
+    });
+
+    it('the repair verb stamps once, answers whether it did, and then holds it inert', async () => {
+      const s = await legacy();
+      expect(await hostFor().markCopyLocal(s)).toEqual({ marked: true });
+      expect(await hostFor().markCopyLocal(s)).toEqual({ marked: false });
+      await act(s);
+      expect(ran).not.toContain(s);
+    });
+
+    it("the next case along: an existing origin is kept as it is — its mark and source", async () => {
+      const copy = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(install), { sourceScopeId: install });
+      const before = await originOf(copy);
+      expect(before).toHaveLength(1);
+      expect(await hostFor().markCopyLocal(copy)).toEqual({ marked: false });
+      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(copy), { sourceScopeId: copy, exact: true, markCopy: true });
+      expect(await originOf(copy)).toEqual(before);
+    });
+  });
+
   it("the next case along: the install's own backup returned to it is still the install", async () => {
     await hostFor().restoreScopeLocal(install, await hostFor().exportScopeLocal(install), { sourceScopeId: install });
     const before = ran.length;

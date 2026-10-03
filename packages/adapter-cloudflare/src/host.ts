@@ -111,6 +111,7 @@ import {
   type EventCauseInput,
   delegatedReadRecord,
   ownerTransferAudit,
+  copyMarkAudit,
   type EventEffectsInput,
   type EffectsTree,
   type InvocationEventsInput,
@@ -909,6 +910,8 @@ interface ScopeStubRpc {
   retryMigrations(): Promise<number | null>;
   /** Whether the scope was loaded as a copy (#2005): what a CP-less coordinator reads for primacy. */
   isCopy(): Promise<boolean>;
+  /** Mark the scope a copy (#2005); whether this call stamped it. */
+  markCopy(): Promise<boolean>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -1362,6 +1365,8 @@ interface ScopeStubRpc {
       sourceScopeId?: ScopeId;
       /** The platform exported the dump itself: no fallback (`RepointSource.exact`). */
       exact?: boolean;
+      /** #2005: the directory says the scope is not primary — mark it a copy. */
+      markCopy?: boolean;
     },
   ): Promise<SwitchedOff[]>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
@@ -2573,14 +2578,25 @@ export class CloudflareScopeHost implements ScopeHost {
      *  own event — a dump from before a switch was pulled brings its grants back live. #1869:
      *  `sourceScopeId`, the scope the dump was captured from, narrows the grant re-point to it;
      *  `exact` says the platform exported the dump itself, so the re-point never falls back. */
-    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean },
+    opts?: { switchedOff?: readonly ModuleId[]; sourceScopeId?: ScopeId; exact?: boolean; markCopy?: boolean },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     const switchedOff = await this.scopeStub(scopeId).importDump(tables, scopeId, {
       switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId,
       exact: opts?.exact,
+      // #2005: the control plane's directory says the scope is not primary — mark it a copy.
+      markCopy: opts?.markCopy,
     });
     return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff } : {}) };
+  }
+
+  /**
+   * Mark one scope in THIS deployment a copy (#2005), behind the vertical's `/internal/mark-copy`:
+   * the repair of a copy that predates the marker, which a CP-less coordinator reads for primacy.
+   * The control plane decides which scopes (its directory says they are not primary) and audits.
+   */
+  async markCopyLocal(scopeId: ScopeId): Promise<{ marked: boolean }> {
+    return { marked: await this.scopeStub(scopeId).markCopy() };
   }
 
   /**
@@ -7091,6 +7107,11 @@ export class CloudflareScopeHost implements ScopeHost {
       recordOwnerTransfer: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         await this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
+      },
+      /** #2005: one scope the copy-marker repair visited, written around the vertical's stamp. */
+      recordCopyMark: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = copyMarkAudit.parse(entry);
+        await this.recordAdmin(actor, 'markScopeCopy', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const rows = await this.cp.accessLog({
