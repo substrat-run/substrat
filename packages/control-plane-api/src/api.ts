@@ -109,6 +109,7 @@ import type {
   Scope,
   ScopeDump,
   ScopeId,
+  ScopeLineage,
   ServiceDimensions,
   SwitchedOffInUnit,
   TenantExport,
@@ -539,6 +540,14 @@ type ReqCtx = { get: (k: 'actor') => PlatformActorId; var: { host: ScopeHost; ad
  * `kind === 'builder'` answers fleet-wide for every other confined credential — which
  * is the shape #977 found the dashboard's in.
  */
+/**
+ * The directory's classification of a scope that is not primary (#2005), which a verb sends so
+ * the store it writes is marked a copy whatever its own marker says; undefined for a primary one.
+ */
+function copyLineageOf(scope: Pick<Scope, 'kind' | 'forkedFrom'>): ScopeLineage | undefined {
+  return isPrimaryScope(scope) ? undefined : { kind: scope.kind, forkedFrom: scope.forkedFrom };
+}
+
 function outsideTenant(p: Principal, tenantId: TenantId): boolean {
   const pin = confinedTenant(p);
   return pin !== null && pin !== tenantId;
@@ -2532,7 +2541,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // of a copy made before every copy carried the marker brings none, and a CP-less host reads
     // the marker for primacy. Idempotent there; an install is never marked.
     const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
-    const markCopy = rec !== undefined && !isPrimaryScope(rec) ? { kind: rec.kind, forkedFrom: rec.forkedFrom } : undefined;
+    const markCopy = rec ? copyLineageOf(rec) : undefined;
     return retryTransient(async () =>
       dest.restoreScope(tenantId, scopeId, tables, {
         ...(await switchCarryFor(host.admin, actor, { tenantId, scopeId })),
@@ -2945,6 +2954,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     protectIfChanged = false,
   ): Promise<boolean> => {
     const at = new Date().toISOString();
+    // #2005 (Codex #2008 r10): the directory's word that the scope is not primary goes with the
+    // wipe, on both paths, so a copy made before the marker leaves it marked — tombstoned or kept.
+    const markCopy = copyLineageOf(scope);
     const fenced = await retryTransient(() =>
       holder.wipeCarriedCopy({
         scopeId: scope.id,
@@ -2953,6 +2965,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ...(protectIfChanged ? { protectIfChanged: true } : {}),
         carriedTo,
         at,
+        ...(markCopy ? { markCopy } : {}),
       }),
     );
     if (fenced !== 'unfenced') return fenced.wiped;
@@ -2961,7 +2974,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         sourceScopeId: scope.id,
         exact: true,
         // #2005: as every restore onto a non-primary scope, so the wiped copy stays a copy.
-        ...(!isPrimaryScope(scope) ? { markCopy: { kind: scope.kind, forkedFrom: scope.forkedFrom } } : {}),
+        ...(markCopy ? { markCopy } : {}),
       }),
     );
     return true;
@@ -3084,7 +3097,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if ((await currentRoute(c, scope, versionId, carried)) !== script) return;
     const marker = await holder.loadMarker(scope.id);
     if (marker === 'unfenced') return;
-    await holder.releaseKeptCopy({ scopeId: scope.id, revision: marker.revision });
+    const markCopy = copyLineageOf(scope);
+    await holder.releaseKeptCopy({ scopeId: scope.id, revision: marker.revision, ...(markCopy ? { markCopy } : {}) });
   };
 
   /**
@@ -5345,6 +5359,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // write that reaches it after this read refuses the wipe. (The marker's own `revision` is the
     // one it was kept at; writing the marker, and any later write, moved it on.)
     const revisionBefore = await revisionOf(holder);
+    // #2005 (Codex #2008 r10): whatever the resolution leaves in that store, it is a copy when
+    // the directory says the scope is not primary, marker or no marker.
+    const lineage = copyLineageOf(scope);
+    const markCopy = lineage ? { markCopy: lineage } : {};
     const record = (action: 'discard' | 'restore-forward' | 'release', revisionAfter: string | null) =>
       c.var.admin.recordKeptCopyResolution(actor, tenantId, scopeId, {
         action,
@@ -5356,7 +5374,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       });
 
     if (body.action === 'release') {
-      const out = await holder.releaseKeptCopy({ scopeId, revision: revisionBefore });
+      const out = await holder.releaseKeptCopy({ scopeId, revision: revisionBefore, ...markCopy });
       if ('refused' in out) {
         return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was released` }, 412);
       }
@@ -5365,7 +5383,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
 
     if (body.action === 'discard') {
-      const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route!, at });
+      const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route!, at, ...markCopy });
       if ('refused' in out) {
         return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was discarded` }, 412);
       }
@@ -5425,7 +5443,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!(await bindingHeld())) return moved();
     const revisionAfter = await revisionOf(live);
     await record('restore-forward', revisionAfter);
-    const wiped = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: liveScript, at });
+    const wiped = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: liveScript, at, ...markCopy });
     if ('refused' in wiped) {
       return c.json({
         error:

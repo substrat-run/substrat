@@ -70,6 +70,20 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
     }
 
     /**
+     * #2005 × #1722 (Codex #2008 r10): a copy made before the marker — its origin row removed through
+     * the raw handle, past the write revision, as a store that never had one never moved it.
+     */
+    testForgetCopyOrigin(): void {
+      (this as unknown as { ctx: DurableObjectState }).ctx.storage.sql.exec('DELETE FROM _substrat_copy_origin');
+    }
+
+    /** The bookkeeping path asked to take a data write, which it must refuse (Codex #2008 r10). */
+    testBookkeepingDataWrite(id: string): void {
+      const self = this as unknown as { revision: { bookkeeping<T>(run: () => T): T }; sql: SqlStorage };
+      self.revision.bookkeeping(() => self.sql.exec('INSERT INTO pv_notes (id, body) VALUES (?, ?)', id, 'unrevised'));
+    }
+
+    /**
      * #1722's cost probe (write-revision-cost.test.ts): `ops` operations, each its own run and its
      * own transaction of `rows` row inserts, `rows` event inserts and `rows` updates in place,
      * through the object's own handle, with the write revision counted or not.

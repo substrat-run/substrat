@@ -1085,6 +1085,9 @@ export class VerticalClient {
     protectIfChanged?: boolean;
     carriedTo: string;
     at: string;
+    /** #2005: the directory's classification, sent when the scope is not primary, so a copy
+     *  made before the marker leaves the wipe marked, tombstoned or kept. */
+    markCopy?: ScopeLineage;
   }): Promise<{ wiped: boolean } | 'unfenced'> {
     const verb = 'wipe-carried';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
@@ -1161,6 +1164,8 @@ export class VerticalClient {
   async releaseKeptCopy(input: {
     scopeId: ScopeId;
     revision: string | null;
+    /** #2005: the directory's classification, sent when the scope is not primary. */
+    markCopy?: ScopeLineage;
   }): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
     const verb = 'kept-copy-release';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
@@ -1186,6 +1191,8 @@ export class VerticalClient {
     revision: string | null;
     carriedTo: string;
     at: string;
+    /** #2005: the directory's classification, sent when the scope is not primary. */
+    markCopy?: ScopeLineage;
   }): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
     const verb = 'kept-copy-discard';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';

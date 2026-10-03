@@ -107,6 +107,26 @@ export function isWriteStatement(sql: string): boolean {
   return false;
 }
 
+/**
+ * Whether one SQL string is copy-origin bookkeeping (#2005 × #1722, Codex #2008 r10): every
+ * statement in it writes `_substrat_copy_origin` and nothing else. Marking a store a copy says
+ * what the store IS, not what the scope holds, so it advances no write revision: a backfill that
+ * marks a carry's source between its export and its wipe must not make the source read as having
+ * taken a write the carry did not copy. This is the whole of what the scope DO lets through its
+ * bookkeeping path; any other write there throws.
+ */
+export function isCopyOriginWrite(sql: string): boolean {
+  let any = false;
+  for (const raw of sql.split(';')) {
+    const stmt = raw.replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)+/, '');
+    if (!stmt) continue;
+    const target = /^(?:INSERT(?:\s+OR\s+[A-Z]+)?\s+INTO|DELETE\s+FROM|UPDATE(?:\s+OR\s+[A-Z]+)?)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?/i.exec(stmt)?.[1];
+    if (target?.toLowerCase() !== '_substrat_copy_origin') return false;
+    any = true;
+  }
+  return any;
+}
+
 /** Where a carried copy went, and when — the tombstone's value, as JSON. */
 export interface CarriedAway {
   to: string;

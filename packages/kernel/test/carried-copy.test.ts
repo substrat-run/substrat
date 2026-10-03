@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isWriteStatement } from '../src/carried-copy.js';
+import { isCopyOriginWrite, isWriteStatement } from '../src/carried-copy.js';
 
 describe('isWriteStatement (#1722)', () => {
   it.each([
@@ -49,6 +49,28 @@ describe('isWriteStatement (#1722)', () => {
     '',
   ])('does not count %j', (sql) => {
     expect(isWriteStatement(sql)).toBe(false);
+  });
+});
+
+describe('isCopyOriginWrite (#2005 × #1722)', () => {
+  it.each([
+    "INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
+    'DELETE FROM _substrat_copy_origin WHERE id = 1',
+    'insert or replace into "_substrat_copy_origin" (id) values (1)',
+    'UPDATE _substrat_copy_origin SET copied_at = ?',
+  ])('is bookkeeping: %j', (sql) => {
+    expect(isCopyOriginWrite(sql)).toBe(true);
+  });
+
+  it.each([
+    'INSERT INTO pv_notes (id) VALUES (1)',
+    'UPDATE _substrat_outbox SET drained_at = ?',
+    'DELETE FROM _substrat_copy_origin_shadow',
+    'DELETE FROM _substrat_copy_origin; DELETE FROM pv_notes',
+    'SELECT 1 FROM _substrat_copy_origin',
+    '',
+  ])('is not: %j', (sql) => {
+    expect(isCopyOriginWrite(sql)).toBe(false);
   });
 });
 

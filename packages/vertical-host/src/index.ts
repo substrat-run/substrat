@@ -204,11 +204,15 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
     expectLoadStamp: string | null,
     carriedAway: CarriedAway,
-    expectRevision?: string | null,
-    protectIfChanged?: boolean,
+    opts?: { expectRevision?: string | null; protectIfChanged?: boolean; markCopy?: ScopeLineage },
   ): Promise<boolean>;
-  /** #1722: clear the marker of a kept copy that is the live store after all, at the revision read. */
-  releaseKeptCopyLocal?(scopeId: ScopeId, revision: string | null): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
+  /** #1722: clear the marker of a kept copy that is the live store after all, at the revision read.
+   *  #2005: `markCopy`, the directory's classification when the scope is not primary. */
+  releaseKeptCopyLocal?(
+    scopeId: ScopeId,
+    revision: string | null,
+    markCopy?: ScopeLineage,
+  ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #1722: the export and the store's load stamp, read together. Optional: a host built before
@@ -222,6 +226,7 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
     revision: string | null,
     carriedAway: CarriedAway,
+    markCopy?: ScopeLineage,
   ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
   snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
   deleteScopeLocal(scopeId: ScopeId): Promise<void>;
@@ -468,6 +473,8 @@ const discardKeptBody = z.object({
   /** Where the scope runs now, and when, for the tombstone the discard leaves. */
   carriedTo: z.string().min(1),
   at: z.string().min(1),
+  /** #2005: the directory's classification, sent when the scope is not primary. */
+  markCopy: scopeLineage.optional(),
 });
 
 const wipeCarriedBody = z.object({
@@ -482,6 +489,9 @@ const wipeCarriedBody = z.object({
   /** The script the data went to, and when, for the tombstone. */
   carriedTo: z.string().min(1),
   at: z.string().min(1),
+  /** #2005 (Codex #2008 r10): the directory's classification, sent when the scope is not primary,
+   *  so a copy made before the marker is marked by the wipe, whether it tombstones or keeps it. */
+  markCopy: scopeLineage.optional(),
 });
 
 const restoreBody = z.object({
@@ -841,17 +851,21 @@ export function mountPlatformSurface<Env extends object>(
   });
 
   app.post('/internal/kept-copy/release', async (c) => {
-    const body = z.object({ scopeId: scopeIdOf, revision: z.string().min(1).nullable() }).parse(await c.req.json());
+    const body = z
+      .object({ scopeId: scopeIdOf, revision: z.string().min(1).nullable(), markCopy: scopeLineage.optional() })
+      .parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.releaseKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
-    return c.json(await host.releaseKeptCopyLocal(body.scopeId, body.revision));
+    return c.json(await host.releaseKeptCopyLocal(body.scopeId, body.revision, body.markCopy));
   });
 
   app.post('/internal/kept-copy/discard', async (c) => {
     const body = discardKeptBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.discardKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
-    return c.json(await host.discardKeptCopyLocal(body.scopeId, body.revision, { to: body.carriedTo, at: body.at }));
+    return c.json(
+      await host.discardKeptCopyLocal(body.scopeId, body.revision, { to: body.carriedTo, at: body.at }, body.markCopy),
+    );
   });
 
   // #1722: wipe the copy a carry left here, after the scope's route moved to another script.
@@ -870,8 +884,11 @@ export function mountPlatformSurface<Env extends object>(
         body.scopeId,
         body.expectLoadStamp,
         { to: body.carriedTo, at: body.at },
-        body.expectRevision,
-        body.protectIfChanged,
+        {
+          ...(body.expectRevision !== undefined ? { expectRevision: body.expectRevision } : {}),
+          ...(body.protectIfChanged !== undefined ? { protectIfChanged: body.protectIfChanged } : {}),
+          ...(body.markCopy ? { markCopy: body.markCopy } : {}),
+        },
       ),
     });
   });

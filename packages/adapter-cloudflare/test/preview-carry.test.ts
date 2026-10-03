@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage } from '@substrat-run/contracts';
 import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, WRITE_REVISION_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
@@ -85,7 +85,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         _t: unknown,
         sid: ScopeId,
         tables: ScopeDumpTable[],
-        opts?: { loadStamp?: string; expect?: { loadStamp: string | null; revision: string | null } },
+        opts?: { loadStamp?: string; expect?: { loadStamp: string | null; revision: string | null }; markCopy?: ScopeLineage },
       ) =>
         relay(async () => {
           await hooks.restore?.(ref, sid, tables);
@@ -95,19 +95,24 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
               ? [...tables, { name: 'zz_bad', ddl: 'CREATE TABLE not_zz_bad (x TEXT)', columns: ['x'], rows: [] }]
               : tables,
             // A script that cannot fence keeps no stamp and takes no expectation: it predates both.
-            unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect },
+            {
+              ...(unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect }),
+              ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
+            },
           );
           await hooks.restored?.(ref, sid, tables);
           return out;
         }),
       keptCopy: async (sid: ScopeId) => (unfenced.has(ref) ? null : relay(() => host.keptCopyLocal(sid))),
-      releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null }) =>
+      releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null; markCopy?: ScopeLineage }) =>
         relay(async () => {
           await hooks.release?.(ref, input.scopeId);
-          return host.releaseKeptCopyLocal(input.scopeId, input.revision);
+          return host.releaseKeptCopyLocal(input.scopeId, input.revision, input.markCopy);
         }),
-      discardKeptCopy: (input: { scopeId: ScopeId; revision: string | null; carriedTo: string; at: string }) =>
-        relay(() => host.discardKeptCopyLocal(input.scopeId, input.revision, { to: input.carriedTo, at: input.at })),
+      discardKeptCopy: (input: { scopeId: ScopeId; revision: string | null; carriedTo: string; at: string; markCopy?: ScopeLineage }) =>
+        relay(() =>
+          host.discardKeptCopyLocal(input.scopeId, input.revision, { to: input.carriedTo, at: input.at }, input.markCopy),
+        ),
       loadMarker: async (sid: ScopeId) => {
         await hooks.marker?.(ref, sid);
         return unfenced.has(ref) ? 'unfenced' : relay(() => host.loadMarkerLocal(sid));
@@ -124,19 +129,14 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         protectIfChanged?: boolean;
         carriedTo: string;
         at: string;
+        markCopy?: ScopeLineage;
       }) =>
         unfenced.has(ref)
           ? 'unfenced'
           : relay(async () => {
               await hooks.wipe?.(ref, input.scopeId);
               return {
-                wiped: await host.wipeCarriedLocal(
-                  input.scopeId,
-                  input.expectLoadStamp,
-                  { to: input.carriedTo, at: input.at },
-                  input.expectRevision,
-                  input.protectIfChanged,
-                ),
+                wiped: await host.wipeCarriedLocal(input.scopeId, input.expectLoadStamp, { to: input.carriedTo, at: input.at }, input),
               };
             }),
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
@@ -833,7 +833,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const v1ref = refOf.get(version.v1)!;
       // Marked kept while live: what a carry's protection leaves when a rollback binds right after.
       const live = hostFor('v1');
-      expect(await live.wipeCarriedLocal(p.scopeId, 'not-the-stamp', { to: 'elsewhere', at: '2026-10-03T00:00:00.000Z' }, undefined, true)).toBe(false);
+      expect(await live.wipeCarriedLocal(p.scopeId, 'not-the-stamp', { to: 'elsewhere', at: '2026-10-03T00:00:00.000Z' }, { protectIfChanged: true })).toBe(false);
       expect(await live.keptCopyLocal(p.scopeId)).not.toBeNull();
       // Only `release` resolves a kept copy the scope routes to.
       expect((await resolve(p.scopeId, { script: v1ref, action: 'discard', acknowledge: { discard: true } })).status).toBe(409);
@@ -853,7 +853,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const p = await fresh('rel-race', 'live data');
       const v1ref = refOf.get(version.v1)!;
       // v1 live and kept, as a carry's protection leaves it when a rollback binds right after.
-      expect(await hostFor('v1').wipeCarriedLocal(p.scopeId, 'not-the-stamp', { to: 'x', at: '2026-10-03T00:00:00.000Z' }, undefined, true)).toBe(false);
+      expect(await hostFor('v1').wipeCarriedLocal(p.scopeId, 'not-the-stamp', { to: 'x', at: '2026-10-03T00:00:00.000Z' }, { protectIfChanged: true })).toBe(false);
       // A carry v1 → v2 has exported v1 and is held before restoring.
       const carryHeld = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
       hooks.marker = carryHeld.hook;
@@ -952,6 +952,90 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
       expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
       expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+    });
+
+    // Codex #2008 r10: the directory's classification, not only the store's own marker, decides
+    // that a carry's source is a copy — so one made before the marker leaves the carry marked,
+    // whether the wipe tombstones it or keeps it. And marking is bookkeeping, not a data write: a
+    // backfill that marks the source between the export and the wipe does not keep the copy.
+    describe('copy marking across a carry (#2005 × #1722)', () => {
+      type CopyStub = {
+        isCopy(): Promise<boolean>;
+        markCopy(): Promise<boolean>;
+        testForgetCopyOrigin(): Promise<void>;
+        testBookkeepingDataWrite(id: string): Promise<void>;
+      };
+      const v1stub = (sid: ScopeId) => env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(sid)) as unknown as CopyStub;
+      /** A preview whose v1 copy predates the marker: no origin row, and no write revision moved. */
+      const legacy = async (tag: string) => {
+        const p = await fresh(tag, 'legacy data');
+        await v1stub(p.scopeId).testForgetCopyOrigin();
+        expect(await v1stub(p.scopeId).isCopy()).toBe(false);
+        return p;
+      };
+      /** A push v1 → v2 held after its export, while `between` runs on v1. Answers the push. */
+      const pushAround = async (tag: string, sid: ScopeId, between: () => Promise<void>) => {
+        const held = holdFirst((ref, s) => ref === refOf.get(version.v2) && s === sid);
+        hooks.marker = held.hook; // after the export, before the restore and the wipe
+        const pushed = push(tag, 'v2');
+        await held.reached;
+        await between();
+        held.release();
+        const res = await pushed;
+        delete hooks.marker;
+        return res;
+      };
+
+      it('a copy made before the marker is marked by the carry that wipes it', async () => {
+        const p = await legacy('legacy-wipe');
+        expect((await push('legacy-wipe', 'v2')).status).toBe(200);
+        expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+        expect(await v1stub(p.scopeId).isCopy()).toBe(true);
+      });
+
+      it('and by the carry that keeps it for a late write', async () => {
+        const p = await legacy('legacy-kept');
+        const res = await pushAround('legacy-kept', p.scopeId, async () => {
+          await writeOn('v1', p.scopeId, 'n-late', 'written after the export');
+        });
+        expect(res.status).toBe(200);
+        expect(await hostFor('v1').keptCopyLocal(p.scopeId)).not.toBeNull();
+        expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['legacy data', 'written after the export']);
+        expect(await v1stub(p.scopeId).isCopy()).toBe(true);
+      });
+
+      it('a backfill that marks the source between the export and the wipe does not keep it', async () => {
+        const p = await legacy('backfill-mark');
+        const res = await pushAround('backfill-mark', p.scopeId, async () => {
+          expect(await v1stub(p.scopeId).markCopy()).toBe(true);
+        });
+        expect(res.status).toBe(200);
+        expect(await hostFor('v1').keptCopyLocal(p.scopeId)).toBeNull();
+        expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+        expect(await v1stub(p.scopeId).isCopy()).toBe(true);
+        expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['legacy data'] });
+      });
+
+      it('while a data write in the same window still keeps it', async () => {
+        const p = await legacy('backfill-and-write');
+        const res = await pushAround('backfill-and-write', p.scopeId, async () => {
+          expect(await v1stub(p.scopeId).markCopy()).toBe(true);
+          await writeOn('v1', p.scopeId, 'n-late', 'written after the export');
+        });
+        expect(res.status).toBe(200);
+        expect(await hostFor('v1').keptCopyLocal(p.scopeId)).not.toBeNull();
+        expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+        expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['legacy data', 'written after the export']);
+        expect(await v1stub(p.scopeId).isCopy()).toBe(true);
+      });
+
+      it('the bookkeeping path refuses a data write, which would otherwise move no revision', async () => {
+        const p = await fresh('bookkeeping-refuses', 'data');
+        const before = await hostFor('v1').loadMarkerLocal(p.scopeId);
+        await expect(v1stub(p.scopeId).testBookkeepingDataWrite('n-unrevised')).rejects.toThrow(/takes only copy-origin writes/);
+        expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['data']);
+        expect(await hostFor('v1').loadMarkerLocal(p.scopeId)).toEqual(before);
+      });
     });
 
     it('of two pushes that read the same binding, the second bind is refused and its copy is wiped', async () => {

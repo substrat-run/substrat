@@ -1401,6 +1401,7 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     revision: string | null,
     carriedAway: CarriedAway,
+    markCopy?: boolean,
   ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
   exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
@@ -1409,11 +1410,13 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     expectLoadStamp: string | null,
     carriedAway: CarriedAway,
-    expectRevision?: string | null,
-    protectIfChanged?: boolean,
+    opts?: { expectRevision?: string | null; protectIfChanged?: boolean; markCopy?: boolean },
   ): Promise<boolean>;
   /** #1722: clear a kept copy's marker where it is the live store, at the revision read. */
-  releaseKeptCopy(revision: string | null): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
+  releaseKeptCopy(
+    revision: string | null,
+    markCopy?: boolean,
+  ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
   /**
@@ -2690,8 +2693,11 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     revision: string | null,
     carriedAway: CarriedAway,
+    /** #2005: the directory's classification, sent when the scope is not primary. */
+    markCopy?: ScopeLineage,
   ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
-    return this.scopeStub(scopeId).discardKeptCopy(scopeId, revision, carriedAway);
+    if (markCopy) assertCopyLineage(markCopy);
+    return this.scopeStub(scopeId).discardKeptCopy(scopeId, revision, carriedAway, markCopy !== undefined);
   }
 
   /**
@@ -2713,20 +2719,33 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     expectLoadStamp: string | null,
     carriedAway: CarriedAway,
-    /** #1722: the write revision the carry's export read, so a write since refuses the wipe. */
-    expectRevision?: string | null,
-    /** #1722: the scope does not route here, so a copy changed in any way since is kept. */
-    protectIfChanged?: boolean,
+    opts: {
+      /** #1722: the write revision the carry's export read, so a write since refuses the wipe. */
+      expectRevision?: string | null;
+      /** #1722: the scope does not route here, so a copy changed in any way since is kept. */
+      protectIfChanged?: boolean;
+      /** #2005 (Codex #2008 r10): the directory's classification, sent when the scope is not
+       *  primary — so a copy made before the marker leaves this wipe marked, tombstoned or kept. */
+      markCopy?: ScopeLineage;
+    } = {},
   ): Promise<boolean> {
-    return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway, expectRevision, protectIfChanged);
+    if (opts.markCopy) assertCopyLineage(opts.markCopy);
+    return this.scopeStub(scopeId).wipeCarried(scopeId, expectLoadStamp, carriedAway, {
+      ...(opts.expectRevision !== undefined ? { expectRevision: opts.expectRevision } : {}),
+      ...(opts.protectIfChanged !== undefined ? { protectIfChanged: opts.protectIfChanged } : {}),
+      markCopy: opts.markCopy !== undefined,
+    });
   }
 
   /** Release a kept copy that is the live store after all (#1722), at the revision read. */
   async releaseKeptCopyLocal(
     scopeId: ScopeId,
     revision: string | null,
+    /** #2005: the directory's classification, sent when the scope is not primary. */
+    markCopy?: ScopeLineage,
   ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }> {
-    return this.scopeStub(scopeId).releaseKeptCopy(revision);
+    if (markCopy) assertCopyLineage(markCopy);
+    return this.scopeStub(scopeId).releaseKeptCopy(revision, markCopy !== undefined);
   }
 
   /**

@@ -286,7 +286,7 @@ import type {
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyOriginWrite, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -755,6 +755,8 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
 class WriteRevision {
   /** Whether the current run, in the current transaction scope, already holds a bump. */
   private covered = false;
+  /** Inside `bookkeeping`: the one path whose writes advance no revision. */
+  private keeping = false;
   /** A statement's text is almost always a constant, so its answer is remembered (bounded). */
   private readonly writes = new Map<string, boolean>();
   readonly sql: SqlStorage;
@@ -767,6 +769,14 @@ class WriteRevision {
     private readonly refusal: () => string | null,
   ) {
     const exec = (query: string, ...bindings: unknown[]) => {
+      if (this.keeping && this.isWrite(query)) {
+        // Bookkeeping takes the copy-origin marker and nothing else: a data write here would be
+        // a write the revision never saw, which is the hole this class exists to close.
+        if (!isCopyOriginWrite(query)) {
+          throw substratError('internal', `the bookkeeping path takes only copy-origin writes (#1722), not: ${query.slice(0, 80)}`);
+        }
+        return raw.exec(query, ...bindings);
+      }
       if (!this.suspended() && this.isWrite(query)) {
         const refused = this.refusal();
         if (refused) throw substratError('conflict', refused);
@@ -781,6 +791,23 @@ class WriteRevision {
         return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
       },
     });
+  }
+
+  /**
+   * Store bookkeeping that is not the scope's data: the copy-origin marker (#2005, Codex #2008
+   * r10). Marking a store a copy says what the store IS, so it advances no write revision: a
+   * backfill that marks a carry's source between its export and its wipe must not read as a
+   * write the carry did not copy (that would keep the copy for nothing). Enforced, not trusted:
+   * any write in here that is not a copy-origin write (`isCopyOriginWrite`) throws.
+   */
+  bookkeeping<T>(run: () => T): T {
+    const was = this.keeping;
+    this.keeping = true;
+    try {
+      return run();
+    } finally {
+      this.keeping = was;
+    }
   }
 
   /** `storage.transactionSync`, at a transaction boundary. */
@@ -4429,7 +4456,7 @@ export function defineScopeDO(
     markCopy(): boolean {
       let marked = false;
       this.revision.transactionSync(() => {
-        marked = markCopyOrigin(this.switchSql(), new Date().toISOString());
+        marked = this.revision.bookkeeping(() => markCopyOrigin(this.switchSql(), new Date().toISOString()));
       });
       return marked;
     }
@@ -4438,7 +4465,7 @@ export function defineScopeDO(
     clearCopyMark(): 'cleared' | 'absent' | 'carries-events' {
       let outcome: 'cleared' | 'absent' | 'carries-events' = 'absent';
       this.revision.transactionSync(() => {
-        outcome = clearCopyMarker(this.switchSql());
+        outcome = this.revision.bookkeeping(() => clearCopyMarker(this.switchSql()));
       });
       return outcome;
     }
@@ -5319,11 +5346,16 @@ export function defineScopeDO(
      * that protected its source when the route read elsewhere, while a rollback was about to bind
      * it. Clears the marker only, fenced on the write revision read; the data stays as it is.
      */
-    releaseKeptCopy(revision: string | null): { released: true } | { refused: 'changed' | 'not-kept' } {
+    releaseKeptCopy(
+      revision: string | null,
+      /** The directory says this scope is not primary (#2005): the released store is marked a copy. */
+      markCopy?: boolean,
+    ): { released: true } | { refused: 'changed' | 'not-kept' } {
       return this.revision.transactionSync(() => {
         if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' } as const;
         if (this.metaValue(WRITE_REVISION_KEY) !== revision) return { refused: 'changed' } as const;
         this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, KEPT_DIVERGENT_KEY);
+        if (markCopy) this.revision.bookkeeping(() => markCopyOrigin(this.switchSql(), new Date().toISOString()));
         return { released: true } as const;
       });
     }
@@ -5336,13 +5368,15 @@ export function defineScopeDO(
       scopeId: ScopeId,
       revision: string | null,
       carriedAway: CarriedAway,
+      /** The directory says this scope is not primary (#2005): as `wipeCarried`. */
+      markCopy?: boolean,
     ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }> {
       if (!this.metaValue(KEPT_DIVERGENT_KEY)) return { refused: 'not-kept' };
       try {
         await this.importDump(carriedAwayDump(carriedAway), scopeId, {
           sourceScopeId: scopeId,
           resolveKept: { revision },
-          markCopy: this.isCopy(), // #2005: as `wipeCarried` — a discarded copy is still a copy
+          markCopy: markCopy === true || this.isCopy(), // #2005: as `wipeCarried`
         });
         return { discarded: true };
       } catch (e) {
@@ -5379,24 +5413,41 @@ export function defineScopeDO(
       scopeId: ScopeId,
       expectLoadStamp: string | null,
       carriedAway: CarriedAway,
-      /** The write revision the carry's export read; absent from a platform that read none. */
-      expectRevision?: string | null,
-      /** The caller read that the scope does not route here (Codex #2008 r8): a copy that changed
-       *  in ANY way since the export, a load included, holds something the scope's live store may
-       *  not, so it is kept rather than left an unmarked orphan. */
-      protectIfChanged?: boolean,
+      {
+        expectRevision,
+        protectIfChanged,
+        markCopy,
+      }: {
+        /** The write revision the carry's export read; absent from a platform that read none. */
+        expectRevision?: string | null;
+        /** The caller read that the scope does not route here (Codex #2008 r8): a copy that changed
+         *  in ANY way since the export, a load included, holds something the scope's live store may
+         *  not, so it is kept rather than left an unmarked orphan. */
+        protectIfChanged?: boolean;
+        /** The directory says this scope is not primary (#2005, Codex #2008 r10): the store is a
+         *  copy whatever its own marker says, which a copy made before the marker does not carry. */
+        markCopy?: boolean;
+      } = {},
     ): Promise<boolean> {
+      // A store marked now stays one: the copy-origin row goes on the tombstone (the wipe), or
+      // on the copy kept (a refusal), and never counts as a data write (`bookkeeping`).
+      const copy = markCopy === true || this.isCopy();
       try {
         await this.importDump(carriedAwayDump(carriedAway), scopeId, {
           sourceScopeId: scopeId,
           expect: { loadStamp: expectLoadStamp, ...(expectRevision !== undefined ? { revision: expectRevision } : {}) },
           // #2005: a copy wiped is still a copy. The drop-and-replay takes the copy-origin row
           // with everything else, so it is written again, or the tombstone would read as primary.
-          markCopy: this.isCopy(),
+          markCopy: copy,
         });
         return true;
       } catch (e) {
         const code = errorCodeOf(e);
+        if (copy) {
+          this.revision.transactionSync(() =>
+            this.revision.bookkeeping(() => markCopyOrigin(this.switchSql(), carriedAway.at)),
+          );
+        }
         if (code === 'conflict') {
           // Already a kept copy, and the scope has been carried away from it again (Codex #2008
           // r9). That is recorded on the marker, which is a write: it advances the revision, so a

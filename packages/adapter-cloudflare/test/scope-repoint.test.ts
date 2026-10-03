@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
+import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scopeRepointContractSuite } from '@substrat-run/contract-tests';
 import {
@@ -244,8 +244,8 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
         ),
       loadMarker: (sid: ScopeId) => relay(() => host.loadMarkerLocal(sid)),
       keptCopy: (sid: ScopeId) => relay(() => host.keptCopyLocal(sid)),
-      releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null }) =>
-        relay(() => host.releaseKeptCopyLocal(input.scopeId, input.revision)),
+      releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null; markCopy?: ScopeLineage }) =>
+        relay(() => host.releaseKeptCopyLocal(input.scopeId, input.revision, input.markCopy)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
       // #1722: what a carry's cleanup calls once the bind lands.
       readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
@@ -257,15 +257,10 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
         protectIfChanged?: boolean;
         carriedTo: string;
         at: string;
+        markCopy?: ScopeLineage;
       }) =>
         relay(async () => ({
-          wiped: await host.wipeCarriedLocal(
-            input.scopeId,
-            input.expectLoadStamp,
-            { to: input.carriedTo, at: input.at },
-            input.expectRevision,
-            input.protectIfChanged,
-          ),
+          wiped: await host.wipeCarriedLocal(input.scopeId, input.expectLoadStamp, { to: input.carriedTo, at: input.at }, input),
         })),
     } as unknown as VerticalClient;
   };
