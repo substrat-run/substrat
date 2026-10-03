@@ -1056,9 +1056,9 @@ export class VerticalClient {
    *
    * `'unfenced'` is a deployment that cannot compare the stamp, and the only answer that lets
    * the caller fall back to an unconditional wipe: a 404 (built before the route), a 501 (a host
-   * without the method) or an SPA shell (a 200 that is not JSON) are the deployment's own proof
-   * that it wiped nothing. Everything else surfaces as the failure it is: the wipe may or may
-   * not have run.
+   * without the method) or the HTML shell an SPA fallback serves (`fencedAnswer`) are the
+   * deployment's own proof that it wiped nothing. Everything else, a truncated or malformed JSON
+   * answer included, surfaces as the failure it is: the wipe may or may not have run.
    */
   async wipeCarriedCopy(input: {
     scopeId: ScopeId;
