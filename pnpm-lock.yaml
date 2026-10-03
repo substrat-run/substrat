@@ -707,6 +707,9 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/attachment-extractors':
+        specifier: workspace:^
+        version: link:../../packages/attachment-extractors
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
@@ -814,6 +817,9 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/attachment-extractors':
+        specifier: workspace:^
+        version: link:../../packages/attachment-extractors
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
@@ -1013,6 +1019,9 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/attachment-extractors':
+        specifier: workspace:^
+        version: link:../../packages/attachment-extractors
       '@substrat-run/connector-scrive':
         specifier: workspace:^
         version: link:../../connectors/scrive
@@ -1126,6 +1135,9 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/attachment-extractors':
+        specifier: workspace:^
+        version: link:../../packages/attachment-extractors
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
@@ -2170,6 +2182,9 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../adapter-sqlite
+      '@substrat-run/attachment-extractors':
+        specifier: workspace:^
+        version: link:../attachment-extractors
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts

@@ -84,6 +84,7 @@
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-cloudflare": "workspace:^",
     "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/attachment-extractors": "workspace:^",
     "@substrat-run/connector-scrive": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
