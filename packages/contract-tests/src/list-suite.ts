@@ -18,7 +18,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  errorCodeOf,
   permissionKey,
+  PAGE_CURSOR_RESTART,
   platformActorId,
   principalId,
   scopeId,
@@ -148,6 +150,76 @@ export function listContractSuite(
       expect(seen).toHaveLength(6);
       expect(new Set(seen).size).toBe(6);
       expect(seen).toEqual([...(await walkAll({ sort: 'status' }, 50))].reverse());
+    });
+
+    /**
+     * #2001. A cursor replayed in a walk that did not mint it is refused, with the reason
+     * that tells a client to read the first page again — never answered with a page.
+     */
+    const expectRestart = async (call: Promise<unknown>): Promise<void> => {
+      const err = await call.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err, 'the replay was answered with a page').toBeDefined();
+      expect(errorCodeOf(err)).toBe('validation_failed');
+      expect((err as { extensions?: Record<string, unknown> }).extensions?.['reason']).toBe(
+        PAGE_CURSOR_RESTART,
+      );
+      expect(String((err as Error).message)).toMatch(/restart paging/);
+    };
+
+    it('serves a declared desc when the caller names no order, and walks it to the end', async () => {
+      const first = await stub.invoke<Page<Row>>('list/newest', { limit: 2 });
+      expect(first.entries.map((r) => r['number'])).toEqual(['1006', '1005']);
+      const seen = first.entries.map((r) => String(r['id']));
+      let cursor = first.nextCursor;
+      for (let guard = 0; cursor !== null && guard < 10; guard++) {
+        const next: Page<Row> = await stub.invoke<Page<Row>>('list/newest', { limit: 2, cursor });
+        seen.push(...next.entries.map((r) => String(r['id'])));
+        cursor = next.nextCursor;
+      }
+      expect(seen).toEqual(['01F', '01E', '01D', '01C', '01B', '01A']);
+    });
+
+    it('lets an explicit order override the declared one', async () => {
+      const got = await stub.invoke<Page<Row>>('list/newest', { limit: 50, order: 'asc' });
+      expect(got.entries.map((r) => r['number'])).toEqual(['1001', '1002', '1003', '1004', '1005', '1006']);
+    });
+
+    it('names the walk in the cursor', async () => {
+      expect((await page({ limit: 2 })).nextCursor).toBe('asc.number.1002|01B');
+      expect((await page({ limit: 1, sort: 'id', order: 'desc' })).nextCursor).toBe('desc.id.01F');
+    });
+
+    it('refuses a desc cursor replayed under asc, rather than re-serving rows already read', async () => {
+      const first = await page({ limit: 2, order: 'desc' });
+      await expectRestart(page({ limit: 2, order: 'asc', cursor: first.nextCursor }));
+      // …and the declared-desc read's cursor, replayed with an explicit asc, likewise.
+      const newest = await stub.invoke<Page<Row>>('list/newest', { limit: 2 });
+      await expectRestart(stub.invoke('list/newest', { limit: 2, order: 'asc', cursor: newest.nextCursor }));
+    });
+
+    it('refuses a cursor replayed under another sort', async () => {
+      const first = await page({ limit: 2, sort: 'number' });
+      await expectRestart(page({ limit: 2, sort: 'status', cursor: first.nextCursor }));
+    });
+
+    /**
+     * A bare position is a cursor minted before #2001, when every walk that took no order
+     * was ascending by the first declared sort. Exactly there it continues, so a walk in
+     * flight across the deploy keeps going; anywhere else it would replay silently, so it
+     * is refused — above all under a declared `desc` default it was never minted in.
+     */
+    it('continues a pre-#2001 cursor in the ascending default walk it came from', async () => {
+      const got = await page({ limit: 2, cursor: '1002|01B' });
+      expect(got.entries.map((r) => r['id'])).toEqual(['01C', '01D']);
+    });
+
+    it('refuses a pre-#2001 cursor anywhere but that default walk', async () => {
+      await expectRestart(stub.invoke('list/newest', { limit: 2, cursor: '1002|01B' }));
+      await expectRestart(page({ limit: 2, order: 'desc', cursor: '1002|01B' }));
+      await expectRestart(page({ limit: 2, sort: 'status', cursor: 'open|01B' }));
     });
 
     it('filters by a declared column, and the filter survives the whole walk', async () => {

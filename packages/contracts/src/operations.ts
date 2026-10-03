@@ -1585,7 +1585,8 @@ export function manifestOperations<const Ops extends Record<string, object>>(
  * out and hand every paged handler an unpaged request. Declared here once so
  * the two descriptions of the same four fields cannot drift.
  *
- * Every field is optional and none is defaulted: `listPageQuery` already
+ * Every field is optional and none is defaulted here — `order` gets its
+ * DECLARED default per operation in `operationInputsOf` (#2001). `listPageQuery` already
  * resolved the default and the ceiling at the wire, and an in-process caller
  * legitimately passes no page at all (`listLimitOf` is what answers then).
  * Re-defaulting here would make `limit` present for a caller who never sent it —
@@ -1642,7 +1643,7 @@ export function operationInputsOf<const Ops extends Record<string, object>>(
     const decl = op as {
       input?: z.ZodObject<z.ZodRawShape>;
       inputOptional?: boolean;
-      paged?: unknown;
+      paged?: { order?: 'asc' | 'desc' };
     };
     if (decl.paged) {
       // `inputOptional` on a paged read means the FILTERS are optional, not the
@@ -1650,7 +1651,20 @@ export function operationInputsOf<const Ops extends Record<string, object>>(
       // `ImplInput` says (`Partial<z.infer<I>> & PagedInput`), and saying it
       // twice is how the two would come to disagree.
       const filters = decl.input ?? z.object({});
-      const shape = (decl.inputOptional ? filters.partial() : filters).extend(pagedInputFields);
+      // #2001: the declared `order` is the default a caller gets by saying nothing — on
+      // every door, because every door parses here: the route, MCP, an in-process
+      // `invoke`, a seed, a schedule, on either adapter. It used to be read ONLY by the
+      // OpenAPI emitter, which advertised `desc` while `ctx.page` served `asc`. The one
+      // field that IS defaulted, unlike `limit` below: the declaration states it, so a
+      // value present for a caller who never sent it is the truth rather than a lie.
+      // An undeclared order stays absent, so a `sortKey` handler's own fallback still
+      // decides there.
+      const declaredOrder = decl.paged.order;
+      const paging =
+        declaredOrder === undefined
+          ? pagedInputFields
+          : { ...pagedInputFields, order: pagedInputFields.order.default(declaredOrder) };
+      const shape = (decl.inputOptional ? filters.partial() : filters).extend(paging);
       // A paged handler is never handed `undefined` — `ImplInput` types its
       // input as `… & PagedInput` with no undefined arm, because the PLATFORM
       // supplies the page "whether it declared one or not". Over HTTP that is

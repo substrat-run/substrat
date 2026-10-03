@@ -2237,7 +2237,9 @@ describe('the audit spine', () => {
     const anna = await at(world.substrat, 'agent');
     const page = (await anna.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
     const target = page.entries[0]!;
-    await anna.invoke('ticket0/tag-conversation', { conversationId: target.id, tag: 'billing' });
+    // A tag the seed never applies: tagging is idempotent, so a tag the conversation
+    // already carries announces nothing and the outbox would show some other row.
+    await anna.invoke('ticket0/tag-conversation', { conversationId: target.id, tag: 'audit-trail' });
 
     const evt = outbox(world.substrat, 'ticket0.conversation-tagged')!;
     expect(evt).toBeDefined();
@@ -2245,7 +2247,7 @@ describe('the audit spine', () => {
     expect(evt.entity_id).toBe(target.id);
     expect(JSON.parse(evt.payload!)).toEqual({
       conversation_id: target.id,
-      tag: 'billing',
+      tag: 'audit-trail',
       created_at: expect.any(String),
     });
   });
@@ -2567,7 +2569,8 @@ describe('closing the month', () => {
     const assistant = await at(world.substrat, 'assistant');
     const anna = await at(world.substrat, 'agent');
     const page = (await anna.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
-    const open = page.entries.find((c) => c.state !== 'closed')!;
+    // `record-answer` takes a conversation still being worked, so not a resolved one either.
+    const open = page.entries.find((c) => c.state === 'new' || c.state === 'open')!;
     await expect(
       assistant.invoke('ticket0/record-answer', {
         conversationId: open.id,

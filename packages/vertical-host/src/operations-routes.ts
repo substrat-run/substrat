@@ -446,7 +446,8 @@ export function mountOperations(
           limit: page.limit,
           ...(page.cursor === undefined ? {} : { cursor: page.cursor }),
           // `order` and `sort` are only forwarded when asked for, so the
-          // DECLARATION's defaults stay the answer when a caller says nothing.
+          // DECLARATION's defaults stay the answer when a caller says nothing —
+          // applied where every door's input is parsed, `operationInputsOf` (#2001).
           ...(page.order === undefined ? {} : { order: page.order }),
           ...(q[LIST_SORT_PARAM] === undefined ? {} : { sort: q[LIST_SORT_PARAM] }),
         };

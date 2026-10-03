@@ -1868,8 +1868,20 @@ export const listModManifest = moduleManifest.parse({
   ],
 });
 
+/**
+ * #2001: a paged read whose DECLARATION says `desc`, parsed the way every host
+ * parses a declared module — through `operationInputsOf`. Nothing in its handler
+ * names an order, so whatever direction it walks in came from the declaration.
+ */
+const listDeclaredOps = {
+  'list/newest': {
+    paged: { over: { entity: 'listorder', sortable: ['number', 'status', 'id'] }, order: 'desc' },
+  },
+} as const;
+
 export const listMod: ModuleRegistration = {
   manifest: listModManifest,
+  operationInputs: operationInputsOf(listDeclaredOps),
   migrations: [
     {
       version: '0001-init',
@@ -1904,6 +1916,12 @@ export const listMod: ModuleRegistration = {
       };
       return ctx.page<Record<string, unknown>>('listorder', i);
     }) as OperationHandler<never, unknown>,
+    // The declared-`desc` read: the parsed input goes straight through.
+    'list/newest': (async (ctx, input) =>
+      ctx.page<Record<string, unknown>>('listorder', input as { limit?: number })) as OperationHandler<
+      never,
+      unknown
+    >,
     // Takes the entity type from the caller, so the suite can ask for one no
     // module declared and see `NotListable` rather than a guess.
     'list/page-of': (async (ctx, input) => {
