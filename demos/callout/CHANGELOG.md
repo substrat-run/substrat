@@ -1,5 +1,37 @@
 # @substrat-run/demo-fsm
 
+## 0.3.54
+
+### Patch Changes
+
+- 3ed9e9d: Host-side exports start moving out of the kernel (part of #1978). Every existing import keeps working: the kernel still exports each one for this release, as the same binding, and marks it `@deprecated` with its new home.
+
+  - **Header names** move to `@substrat-run/contracts`: `PLATFORM_SECRET_HEADER`, `PLATFORM_REQUEST_HEADER`, `EXPORTED_EVENTS_HEADER`, `CONNECTOR_ATTACHMENT_RECORD_HEADER`, `LIVE_MODE_HEADER` and the `LiveRefusal` type. They are importable from the package root and from a new `@substrat-run/contracts/wire-headers` subpath, which imports nothing.
+  - **`@substrat-run/vertical-host`** now exports `invocationLog`, `withInvocationLog`, `invocationStampOf`, `INVOCATION_RECORD_KEY`, `readRoutedNode`, `RouterAssertionError`, `assertPlatformCall`, `PlatformCallError`, `kickFlags`, `isUpgradeRequest` and their types. Import them from there.
+  - **`@substrat-run/adapter-cloudflare`** now exports the Analytics Engine connector-call recorder: `analyticsEngineConnectorCallRecorder`, `CONNECTOR_CALL_DATA_POINT_LAYOUT`, `connectorCallDataPoint` and `AnalyticsEngineDatasetLike`. The neutral recorder interface stays in the kernel.
+  - **`@substrat-run/control-plane-api`** now exports `isTerminalDispatchFailure`, `isTerminalProviderError`, `providerErrorStatus` and `RETRYABLE_CLIENT_STATUSES`.
+  - `invocationLevelOf` and `InvocationLevel` were already defined in `@substrat-run/contracts`. The kernel's copies of those exports are deprecated in favour of contracts.
+
+  The scaffold template and the demos now import from the new homes. Nothing a deployed vertical sends, reads or logs changes.
+
+- Updated dependencies [4fdad69]
+- Updated dependencies [4964eb8]
+- Updated dependencies [3ed9e9d]
+- Updated dependencies [0c7699d]
+- Updated dependencies [7418e7e]
+  - @substrat-run/kernel@0.136.0
+  - @substrat-run/adapter-sqlite@0.136.0
+  - @substrat-run/adapter-cloudflare@0.136.0
+  - @substrat-run/vertical-host@0.136.0
+  - @substrat-run/control-plane-api@0.136.0
+  - @substrat-run/contracts@0.136.0
+  - @substrat-run/engine-invoicing@0.11.20
+  - @substrat-run/engine-protocol@0.13.21
+  - @substrat-run/engine-workorder@0.12.20
+  - @substrat-run/attachment-extractors@0.1.2
+  - @substrat-run/vertical-auth@0.18.5
+  - @substrat-run/dev-issuer@0.2.18
+
 ## 0.3.53
 
 ### Patch Changes
