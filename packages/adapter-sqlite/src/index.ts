@@ -519,7 +519,7 @@ import {
   unknownRoleError,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
-import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, spineColumnAdditions } from '@substrat-run/kernel';
+import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedIntents, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
 
@@ -3460,6 +3460,8 @@ export class SqliteScopeHost implements ScopeHost {
       // already holds here; which one survives is that function's rule too (#1882), judged
       // at this host's clock as the checker judges expiry.
       repointScopeGrants(switchSqlOf(db), scopeId, { scopeId: dump.scopeId, exact: dump.exact }, this.clock());
+      // #1686: a copy never runs the source's pending intents; a return leaves them pending.
+      settleCopiedIntents(switchSqlOf(db), scopeId, dump.scopeId, this.clock());
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);

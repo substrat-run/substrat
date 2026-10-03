@@ -6,6 +6,7 @@ import { scopeRepointContractSuite } from '@substrat-run/contract-tests';
 import {
   ControlPlaneError,
   createControlPlaneApi,
+  drainScopePlatformRequests,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   type VerticalClient,
@@ -333,6 +334,27 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
     expect((await push('pr-9', 'v2')).status).toBe(200);
     expect(capsIn(await hostFor('v2').exportScopeLocal(preview))).toEqual(held('pr-9'));
   });
+
+  it("#1686: the drain run on a preview fork executes none of prod's pending intents; on prod it runs them", async () => {
+    const intentId = ulid();
+    await hostFor('v1').restoreScopeLocal(prod, [...dumpFrom(prod), pendingIntent(intentId)], { sourceScopeId: prod });
+    const created = await push('pr-10', 'v1');
+    expect(created.status).toBe(201);
+    const preview = created.body.scopeId;
+    // The real drain, with the handler counting what it was asked to run.
+    const ran: string[] = [];
+    const drain = (sid: ScopeId) =>
+      drainScopePlatformRequests(
+        hostFor('v1'),
+        { tenantId: t, scopeId: sid, vertical: slug, versionId: version.v1 },
+        { 'provision-sibling': async (_ctx, r) => (ran.push(`${sid}:${r.id}`), { status: 'done' }) },
+      );
+    expect(await drain(preview)).toMatchObject({ drained: 0, done: 0 });
+    expect(ran).toEqual([]);
+    // The twin: prod's own drain runs it, once.
+    expect(await drain(prod)).toMatchObject({ drained: 1, done: 1 });
+    expect(ran).toEqual([`${prod}:${intentId}`]);
+  });
 });
 
 /**
@@ -366,6 +388,13 @@ const held = (marker: string) => ({
   _substrat_capability_sessions: [`session-${marker}`],
 });
 const none = { _substrat_capabilities: [], _substrat_capability_sessions: [] };
+/** A dumped intent journal holding one still-pending `provision-sibling` intent. */
+const pendingIntent = (id: string): ScopeDumpTable => ({
+  name: '_substrat_platform_requests',
+  ddl: 'CREATE TABLE _substrat_platform_requests (id TEXT PRIMARY KEY, kind TEXT, payload TEXT, requested_by TEXT, status TEXT, requested_at TEXT)',
+  columns: ['id', 'kind', 'payload', 'requested_by', 'status', 'requested_at'],
+  rows: [[id, 'provision-sibling', '{"slug":"twice","name":"Twice","owner":"gina"}', JSON.stringify(ulid()), 'pending', '2026-01-01T00:00:00.000Z']],
+});
 
 describe("the ScopeDO's importDump keeps capability rows in their scope (#1686)", () => {
   const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, secretBox });

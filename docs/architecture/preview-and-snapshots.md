@@ -123,6 +123,12 @@ slots straight in, alongside `forked_from`, `forked_at`, and a read-only flag fo
   them behind, and a load back into the scope the dump came from (a backup restore, a carry
   onto a new version) keeps them. `capabilitiesForLoad` is the rule both loaders apply; an
   unknown source counts as a copy.
+- **A copy never runs the source's pending intents** (#1686). The platform's drain walks every
+  active scope, forks and previews included, so a copy that brought an intent in still
+  `pending` would run it a second time. A load into another scope settles each one `failed`
+  ("not carried", attributed to the platform), so the copy's journal explains the event that
+  raised it; a load back into its own scope leaves them pending. `settleCopiedIntents` is the
+  rule.
 - **The local sink crosses the trust boundary.** Server-side forks stay in the governed
   environment; pulling to a laptop does not, and that is a different risk class:
   - **Residency.** Jurisdiction pins *execution*, not just storage (K-7/K-32) — the reason

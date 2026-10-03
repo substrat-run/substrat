@@ -137,34 +137,6 @@ export const CAPABILITY_DDL = `
     ON _substrat_capability_sessions (expires_at);
 `;
 
-/** The tables `CAPABILITY_DDL` builds, lowercased, as `capabilitiesForLoad` matches a dump's names. */
-const CAPABILITY_TABLES: ReadonlySet<string> = new Set(['_substrat_capabilities', '_substrat_capability_sessions']);
-
-/**
- * A dump's tables as a load into `destScopeId` takes them (#1686): **capability rows never
- * cross a scope id.** A copy into another scope (a fork, a snapshot, a preview, or one
- * scope's backup restored onto a different scope) loads both capability tables empty, so a
- * live link share opens production and never a copy of it. A load back into the scope the
- * dump came from (a backup restore, a carry onto a new version, adopt, rebind) keeps them,
- * because restoring a backup must not end the links that are live.
- *
- * The rows are dropped, not loaded as revoked: the copy never minted those links, so a
- * revocation recorded there would be evidence of something that did not happen in it.
- *
- * An unknown source (`sourceScopeId` or `destScopeId` absent) counts as a copy: a load that
- * cannot say where the dump came from cannot show the rows stay in their scope. Both
- * adapters' loaders call this one function, so the DO and the pure host drop the same rows.
- * Names are matched without case, as SQLite resolves a table name.
- */
-export function capabilitiesForLoad<T extends { name: string; rows: readonly unknown[] }>(
-  tables: readonly T[],
-  destScopeId: string | undefined,
-  sourceScopeId: string | undefined,
-): T[] {
-  if (destScopeId !== undefined && sourceScopeId === destScopeId) return [...tables];
-  return tables.map((t) => (CAPABILITY_TABLES.has(t.name.toLowerCase()) ? { ...t, rows: [] } : t));
-}
-
 /** One capability row as the spine stores it — snake_case, because that is what both adapters `SELECT`. */
 export interface CapabilityRow {
   id: string;

@@ -575,6 +575,70 @@ export function scopeHostContractSuite(
     });
 
     /**
+     * #1686. The platform's drain walks every active scope, and a fork, a snapshot or a preview
+     * is one, so an intent copied while still pending would be executed a second time from the
+     * copy: an email sent twice, a connector delivery repeated. `listPlatformRequests` is the
+     * drain's one read, so what it returns on the copy is exactly what a drain would run.
+     */
+    describe("a copy never runs the source's pending intents (#1686)", () => {
+      let source: ScopeId;
+      let id: string;
+      const pendingAt = async (s: ScopeId) => (await host.listPlatformRequests(t1, s)).map((r) => r.id);
+      const historyAt = async (s: ScopeId) => (await host.listPlatformRequestHistory(t1, s)).find((r) => r.id === id);
+      /** The copy: the intent is not drainable there, and its journal says why. */
+      const notCarriedAt = async (copy: ScopeId) => {
+        expect(await pendingAt(copy)).not.toContain(id);
+        expect(await historyAt(copy)).toMatchObject({
+          status: 'failed',
+          failure: { origin: 'platform', code: 'precondition_failed', permission: null },
+        });
+        expect((await historyAt(copy))?.lastError).toMatch(new RegExp(`^not carried: copied from scope ${source}`));
+        expect((await historyAt(copy))?.settledAt).not.toBeNull();
+        // The twin: the source still holds it pending, for its own drain.
+        expect(await pendingAt(source)).toContain(id);
+      };
+
+      beforeAll(async () => {
+        source = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: source, jurisdiction: 'eu', vertical: 'connector-vertical' });
+        await host.admin.activateScope(staff, t1, source);
+        id = await (await host.getScope(alice, t1, source)).invoke<string>('platform/request', {
+          kind: 'provision-sibling',
+          payload: { slug: 'copied' },
+        });
+        expect(await pendingAt(source)).toContain(id);
+      });
+
+      it('a fork (importScope) settles it not-carried; the source keeps it pending', async () => {
+        const fork = scopeId.parse(ulid());
+        await host.importScope(
+          staff,
+          { tenantId: t1, scopeId: fork, jurisdiction: 'eu', vertical: 'connector-vertical' },
+          await host.admin.exportScope(staff, t1, source),
+        );
+        await notCarriedAt(fork);
+      });
+
+      it('a snapshot (snapshotScope): the same', async () => {
+        await notCarriedAt(await host.snapshotScope(staff, t1, source, { kind: 'preview' }));
+      });
+
+      it("a restore of the source's backup onto another scope: the same", async () => {
+        const other = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: other, jurisdiction: 'eu', vertical: 'connector-vertical' });
+        await host.admin.activateScope(staff, t1, other);
+        await host.restoreScope(staff, t1, other, await host.admin.exportScope(staff, t1, source));
+        await notCarriedAt(other);
+      });
+
+      it('a restore into the scope the backup came from keeps it pending, payload and all', async () => {
+        await host.restoreScope(staff, t1, source, await host.admin.exportScope(staff, t1, source));
+        const back = (await host.listPlatformRequests(t1, source)).find((r) => r.id === id);
+        expect(back).toMatchObject({ status: 'pending', payload: { slug: 'copied' }, lastError: null, settledAt: null });
+      });
+    });
+
+    /**
      * #1588. Every read of the intent journal returns a LIST, and the row decode behind all
      * three was strict — so ONE row whose JSON would not parse threw out of the map and took
      * the scope's every other intent with it. The drain could not read its own queue, and the
