@@ -5357,8 +5357,20 @@ export function defineScopeDO(
         return true;
       } catch (e) {
         const code = errorCodeOf(e);
-        // Already a kept copy: it stays one.
-        if (code === 'conflict') return false;
+        if (code === 'conflict') {
+          // Already a kept copy, and the scope has been carried away from it again (Codex #2008
+          // r9). That is recorded on the marker, which is a write: it advances the revision, so a
+          // release (staff or a carry's auto-release) that read the revision before this, when the
+          // scope still routed here, fails its compare-and-set rather than clearing the marker of
+          // a copy the scope has just left.
+          this.revision.transactionSync(() => {
+            const raw = this.metaValue(KEPT_DIVERGENT_KEY);
+            if (!raw) return;
+            const kept = { ...(JSON.parse(raw) as KeptCopy), leftAgain: { to: carriedAway.to, at: carriedAway.at } };
+            this.sql.exec(`UPDATE _substrat_meta SET value = ? WHERE key = ?`, JSON.stringify(kept), KEPT_DIVERGENT_KEY);
+          });
+          return false;
+        }
         if (code !== 'precondition_failed') throw toRpcError(e);
         // Refused. When nothing was LOADED here since the export (the stamp is the one read) but
         // the store was WRITTEN (the revision moved), the copy holds a write the carry never

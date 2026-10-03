@@ -52,6 +52,8 @@ export interface KeptCopy {
   keptAt: string;
   /** The copy's write revision when it was kept. */
   revision: string | null;
+  /** The latest carry away from the copy after it was kept (#1722 r9), when there was one. */
+  leftAgain?: { to: string; at: string };
 }
 
 /** The refusal a load into a kept copy answers (409). */

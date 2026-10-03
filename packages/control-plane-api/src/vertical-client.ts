@@ -1135,7 +1135,14 @@ export class VerticalClient {
     if (!k || typeof k.carriedTo !== 'string' || typeof k.keptAt !== 'string' || !(k.revision === null || typeof k.revision === 'string')) {
       throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${scopeId} with an unexpected shape`);
     }
-    return { carriedTo: k.carriedTo, keptAt: k.keptAt, revision: k.revision };
+    return {
+      carriedTo: k.carriedTo,
+      keptAt: k.keptAt,
+      revision: k.revision,
+      ...(k.leftAgain && typeof k.leftAgain.to === 'string' && typeof k.leftAgain.at === 'string'
+        ? { leftAgain: { to: k.leftAgain.to, at: k.leftAgain.at } }
+        : {}),
+    };
   }
 
   /** Release the marker of a kept copy that is the live store after all (#1722), at the revision read. */

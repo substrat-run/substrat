@@ -46,7 +46,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // and hooks that hold one request at a chosen step so a test can interleave two of them.
   const unfenced = new Set<string>();
   type Hook = (ref: string, sid: ScopeId, tables?: ScopeDumpTable[]) => Promise<void>;
-  const hooks: { export?: Hook; marker?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook } = {};
+  const hooks: { export?: Hook; marker?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
     {
@@ -102,7 +102,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         }),
       keptCopy: async (sid: ScopeId) => (unfenced.has(ref) ? null : relay(() => host.keptCopyLocal(sid))),
       releaseKeptCopy: (input: { scopeId: ScopeId; revision: string | null }) =>
-        relay(() => host.releaseKeptCopyLocal(input.scopeId, input.revision)),
+        relay(async () => {
+          await hooks.release?.(ref, input.scopeId);
+          return host.releaseKeptCopyLocal(input.scopeId, input.revision);
+        }),
       discardKeptCopy: (input: { scopeId: ScopeId; revision: string | null; carriedTo: string; at: string }) =>
         relay(() => host.discardKeptCopyLocal(input.scopeId, input.revision, { to: input.carriedTo, at: input.at })),
       loadMarker: async (sid: ScopeId) => {
@@ -841,6 +844,67 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(logged).toMatchObject({ after: { action: 'release' } });
       // Nothing left to release.
       expect((await resolve(p.scopeId, { script: v1ref, action: 'release', acknowledge: { release: true } })).status).toBe(409);
+    });
+
+    // Codex #2008 r9: a release decided while the store was live must not clear the marker of a
+    // copy the scope has since left. The carry that leaves a kept copy records it there, which
+    // moves the revision every release is fenced on.
+    it('a staff release read while the copy was live fails once a carry has left it, and the late write stays kept', async () => {
+      const p = await fresh('rel-race', 'live data');
+      const v1ref = refOf.get(version.v1)!;
+      // v1 live and kept, as a carry's protection leaves it when a rollback binds right after.
+      expect(await hostFor('v1').wipeCarriedLocal(p.scopeId, 'not-the-stamp', { to: 'x', at: '2026-10-03T00:00:00.000Z' }, undefined, true)).toBe(false);
+      // A carry v1 → v2 has exported v1 and is held before restoring.
+      const carryHeld = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.marker = carryHeld.hook;
+      const carry = bindTo(p.scopeId, 'v2');
+      await carryHeld.reached;
+      // The late write, after the carry's export.
+      await writeOn('v1', p.scopeId, 'n-late', 'written after the export');
+      // Staff release reads v1 live at the revision after the write, and is held before acting.
+      const releaseHeld = holdFirst((ref, sid) => ref === v1ref && sid === p.scopeId);
+      hooks.release = releaseHeld.hook;
+      const releasing = resolve(p.scopeId, { script: v1ref, action: 'release', acknowledge: { release: true } });
+      await releaseHeld.reached;
+      // The carry binds v2, and its source wipe meets the kept marker.
+      carryHeld.release();
+      expect((await carry).status).toBe(200);
+      releaseHeld.release();
+      expect((await releasing).status).toBe(412);
+      // v1 still kept, holding the only copy of the late write; the scope serves v2 without it.
+      expect(await hostFor('v1').keptCopyLocal(p.scopeId)).toMatchObject({ leftAgain: { to: refOf.get(version.v2) } });
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['live data', 'written after the export']);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['live data'] });
+    });
+
+    it("a carry's auto-release read while the copy was live fails once another carry has left it", async () => {
+      const p = await fresh('auto-rel', 'rb data');
+      // A carries v1 → v2 and is held at its wipe of v1; R binds back to v1 whole.
+      const aWipe = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.wipe = aWipe.hook;
+      const a = bindTo(p.scopeId, 'v2');
+      await aWipe.reached;
+      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      // B carries v1 → v3 and is held after its export; then the late write lands on v1.
+      const bHeld = holdFirst((ref, sid) => ref === refOf.get(version.v3) && sid === p.scopeId);
+      hooks.marker = bHeld.hook;
+      const b = bindTo(p.scopeId, 'v3');
+      await bHeld.reached;
+      await writeOn('v1', p.scopeId, 'n-late', 'written after B exported');
+      // A resumes: its wipe is refused and keeps v1; it reads v1 live and goes to release it, held.
+      const aRelease = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.release = aRelease.hook;
+      aWipe.release();
+      await aRelease.reached;
+      // B lands on v3 and leaves v1, meeting the kept marker.
+      bHeld.release();
+      expect((await b).status).toBe(200);
+      // A's release now fails its revision check: v1 stays kept with the late write.
+      aRelease.release();
+      expect((await a).status).toBe(200);
+      expect(await hostFor('v1').keptCopyLocal(p.scopeId)).not.toBeNull();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['rb data', 'written after B exported']);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v3), bodies: ['rb data'] });
     });
 
     // Codex #2008 r7: a copy the carry wiped takes no write, so a stale request still routed to
