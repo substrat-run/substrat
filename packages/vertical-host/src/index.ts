@@ -722,12 +722,15 @@ export function mountPlatformSurface<Env extends object>(
 
   // The full dump behind a governed `scope pull` (preview-and-snapshots.md §8): the one
   // /internal verb that deliberately moves scope bytes out; the control plane is the gate.
-  // #1722: the store's load stamp rides a header, read with the dump in one DO call, so the body
-  // stays the bare table list every platform reads.
+  // #1722: `stamp=1` is a carry's export. The store's load stamp then rides a header, read with
+  // the dump in one DO call (and minted when the store has none, which is a write: only a carry
+  // asks for it), so the body stays the bare table list every platform reads.
   app.get('/internal/export', async (c) => {
     const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
     const host = deps.hostFor(c.env);
-    if (!host.exportScopeStampedLocal) return c.json(await host.exportScopeLocal(scopeId));
+    if (c.req.query('stamp') !== '1' || !host.exportScopeStampedLocal) {
+      return c.json(await host.exportScopeLocal(scopeId));
+    }
     const { tables, loadStamp } = await host.exportScopeStampedLocal(scopeId);
     if (loadStamp) c.header(LOAD_STAMP_HEADER, loadStamp);
     return c.json(tables);

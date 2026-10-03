@@ -990,7 +990,7 @@ export class VerticalClient {
    */
   async exportScopeStamped(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null }> {
     // `exportScope`'s request exactly, with the header read off the same response.
-    const path = `/internal/export?scopeId=${encodeURIComponent(scopeId)}`;
+    const path = `/internal/export?scopeId=${encodeURIComponent(scopeId)}&stamp=1`;
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const res = await this.reach('introspection', () =>
       this.options.fetch(`${base}${path}`, { headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret } }),

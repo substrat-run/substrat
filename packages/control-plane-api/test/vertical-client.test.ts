@@ -703,17 +703,22 @@ it('restoreScope sends the stamp a carry leaves on its copy, and none when not g
   ]);
 });
 
-it('exportScopeStamped reads the stamp off the export, and null from a deployment that sends none (#1722)', async () => {
+it('exportScopeStamped asks for the stamp and reads it off the export, null from a deployment that sends none (#1722)', async () => {
   const replies = [
     new Response('[]', { status: 200, headers: { 'x-substrat-load-stamp': 'stamp-3' } }),
     new Response('[]', { status: 200 }),
   ];
+  const urls: string[] = [];
   const client = new VerticalClient({
-    fetch: (async () => replies.shift()) as unknown as typeof fetch,
+    fetch: (async (u: string) => {
+      urls.push(u);
+      return replies.shift();
+    }) as unknown as typeof fetch,
     platformSecret: 'secret',
   });
   expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: 'stamp-3' });
   expect(await client.exportScopeStamped(s)).toEqual({ tables: [], loadStamp: null });
+  expect(urls.every((u) => new URL(u).searchParams.get('stamp') === '1')).toBe(true);
 });
 
 /**

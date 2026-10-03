@@ -395,10 +395,15 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const stamped = fakeHost({
       exportScopeStampedLocal: async () => ({ tables: [], loadStamp: 'stamp-7' }),
     });
-    const res = await appWith(stamped).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    const res = await appWith(stamped).request(`/internal/export?scopeId=${SCOPE}&stamp=1`, { headers: authed() }, ENV);
     expect(res.status).toBe(200);
     expect(res.headers.get('x-substrat-load-stamp')).toBe('stamp-7');
     expect(await res.json()).toEqual([]);
+    expect(stamped.calls).toEqual([]);
+    // Any other export (a pull, a snapshot) reads only: it never mints a stamp in the store.
+    const plain = await appWith(stamped).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(plain.headers.get('x-substrat-load-stamp')).toBeNull();
+    expect(stamped.calls).toEqual(['exportScopeLocal']);
     // A host without the stamped read answers the bare export, with no stamp to fence on.
     const older = await appWith(fakeHost()).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
     expect(older.headers.get('x-substrat-load-stamp')).toBeNull();
