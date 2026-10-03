@@ -60,6 +60,7 @@ import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
 import { ticket0Migrations } from '../../src/migrations.generated.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
+import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex } from '../desk-read-shapes.js';
 
 interface Conversation {
   id: string;
@@ -1658,4 +1659,128 @@ describe('ticket0 on workerd — participants, forwards and migration 0022 (#108
     console.log(`#1086 migration 0022 on ${CONVERSATIONS * 4} messages: ${Math.round(result.ms)} ms`);
     expect(result.ms).toBeLessThan(30_000);
   }, 120_000);
+});
+
+/**
+ * #1554's second index pass (0023) on the runtime a hosted desk runs. The node suite
+ * (`desk-read-indexes.test.ts`) holds each shape to what the handlers send and to its index on
+ * node's SQLite; this runs the same shapes against a Durable Object's, on a large desk upgraded
+ * from 0022, and reports what the migration costs: the time it takes inside the first request
+ * after a deploy, and the write cost of the hottest table it indexes.
+ */
+describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#1554)', () => {
+  it('0023 on a large desk: every row kept, every read seeks its index, the pages unmoved, and the cost measured', async () => {
+    const CONVERSATIONS = 30_000;
+    const WRITES = 2_000;
+    const lists = MODULES.find((m) => m.manifest.id === ticket0Manifest.id)!.manifest.lists ?? [];
+    const probe = env.SCOPE.get(env.SCOPE.idFromName(`migration-0023-${ulid()}`));
+    const result = await runInDurableObject(probe, async (_i, state) => {
+      const sql = state.storage.sql;
+      // The schema a desk held before this change. 0020 is a spine repair this bare probe has
+      // no spine for, and changes no ticket0 table.
+      for (const m of ticket0Migrations.filter((x) => x.version < '0023' && x.version !== '0020')) sql.exec(m.sql);
+      for (const m of listIndexMigrations(ticket0Manifest.id, lists)) sql.exec(m.sql);
+      const at = (i: number) => new Date(Date.UTC(2024, 0, 1) + i * 2_700_000).toISOString();
+      state.storage.transactionSync(() => {
+        sql.exec("INSERT INTO ticket0_contacts (id, created_at) VALUES ('k', '2024-01-01T00:00:00.000Z')");
+        for (let i = 0; i < CONVERSATIONS; i++) {
+          const id = i === 0 ? 'c-plan' : `c${String(i).padStart(6, '0')}`;
+          const live = i % 25 === 0;
+          const channel = i % 2 === 0 ? 'email' : 'widget';
+          sql.exec(
+            `INSERT INTO ticket0_conversations (id, contact_id, channel, subject, state, assignee, priority, created_at, updated_at, quarantine)
+             VALUES (?, 'k', ?, 'Before', ?, ?, ?, ?, ?, ?)`,
+            id, channel, live ? ['new', 'open', 'snoozed', 'resolved'][(i / 25) % 4]! : 'closed',
+            `agent-${i % 6}`, ['low', 'normal', 'urgent'][i % 3]!, at(i), at(i + 1),
+            i % 101 === 0 ? 'suspended' : i % 103 === 0 ? 'discarded' : null,
+          );
+          for (let j = 0; j < 3; j++) {
+            const mail = channel === 'email' && j !== 1 ? `<${id}-${j}@mail.example>` : null;
+            sql.exec(
+              `INSERT INTO ticket0_messages (id, conversation_id, author_kind, visibility, body_text, email_message_id, created_at)
+               VALUES (?, ?, ?, 'public', 'A message of an ordinary length, the kind a customer writes.', ?, ?)`,
+              `${id}-${j}`, id, j === 1 ? 'agent' : 'contact', mail, at(i),
+            );
+            if (mail) {
+              sql.exec(
+                `INSERT INTO ticket0_mail_deliveries (email_message_id, conversation_id, message_id, direction, recorded_at)
+                 VALUES (?, ?, ?, 'inbound', ?)`,
+                mail, id, `${id}-${j}`, at(i),
+              );
+            }
+            sql.exec(
+              `INSERT INTO ticket0_notifications (id, principal, kind, conversation_id, created_at) VALUES (?, ?, 'replied', ?, ?)`,
+              `${id}-n${j}`, `agent-${(i + j) % 6}`, id, at(i),
+            );
+          }
+          if (channel === 'widget') {
+            sql.exec(
+              `INSERT INTO ticket0_widget_sessions (id, conversation_id, contact_id, origin, token_hash, started_at, last_seen_at)
+               VALUES (?, ?, 'k', 'https://desk.example', ?, ?, ?)`,
+              `${id}-s`, id, `hash-${id}`, at(i), at(i + 1),
+            );
+          }
+          if (i % 3 === 0) sql.exec('INSERT INTO ticket0_conversation_follows (principal, conversation_id) VALUES (?, ?)', `agent-${i % 6}`, id);
+        }
+      });
+
+      const plan = (shape: { sql: string; args: readonly (string | number)[] }) =>
+        [...sql.exec(`EXPLAIN QUERY PLAN ${shape.sql}`, ...shape.args)].map((r) => String(r.detail));
+      const counts = () =>
+        Object.fromEntries(
+          ['ticket0_conversations', 'ticket0_messages', 'ticket0_mail_deliveries', 'ticket0_notifications', 'ticket0_widget_sessions', 'ticket0_conversation_follows'].map(
+            (table) => [table, [...sql.exec(`SELECT COUNT(*) AS n FROM ${table}`)][0]!.n],
+          ),
+        );
+      /**
+       * The hottest table this indexes, by rows written: a notification per recipient per event.
+       * Rolled back, so the desk is measured as it was. Microseconds per row.
+       */
+      const writeCost = () => {
+        const started = performance.now();
+        try {
+          state.storage.transactionSync(() => {
+            for (let n = 0; n < WRITES; n++) {
+              sql.exec(
+                `INSERT INTO ticket0_notifications (id, principal, kind, conversation_id, created_at) VALUES (?, ?, 'assigned', ?, ?)`,
+                `w-${n}`, `agent-${n % 6}`, `c${String(n * 7).padStart(6, '0')}`, at(CONVERSATIONS + n),
+              );
+            }
+            throw new Error('roll back');
+          });
+        } catch {
+          // The measurement is the point; the rows are not.
+        }
+        return ((performance.now() - started) * 1000) / WRITES;
+      };
+
+      const before = { counts: counts(), pages: Object.values(INBOX_PAGES).map(plan), writeUs: writeCost() };
+      const started = performance.now();
+      state.storage.transactionSync(() => {
+        sql.exec(ticket0Migrations.find((m) => m.version === '0023')!.sql);
+      });
+      const ms = performance.now() - started;
+      return {
+        ms,
+        before,
+        after: { counts: counts(), pages: Object.values(INBOX_PAGES).map(plan), writeUs: writeCost() },
+        reads: Object.entries(DESK_READS).map(([name, read]) => ({ name, verdict: planUsesIndex(read, plan(read)) })),
+        suspended: plan(SUSPENDED_QUEUE),
+      };
+    });
+    expect(result.after.counts).toEqual(result.before.counts);
+    expect(result.after.counts['ticket0_conversations']).toBe(CONVERSATIONS);
+    // Every shape seeks its index on the DO's SQLite, as on node's.
+    expect(result.reads.filter((r) => r.verdict !== null)).toEqual([]);
+    expect(result.after.pages).toEqual(result.before.pages);
+    expect(result.suspended).toContainEqual(expect.stringMatching(/USING INDEX ticket0_conversations_suspended\b/));
+    expect(result.suspended.some((d) => d.startsWith('USE TEMP B-TREE'))).toBe(false);
+    // Reported for the PR rather than asserted tightly: the runtime here is a laptop's workerd.
+    // The bound is the DO's default CPU limit for one request, 30 s.
+    console.log(
+      `#1554 migration 0023 on ${CONVERSATIONS} conversations: ${Math.round(result.ms)} ms; ` +
+        `notification insert ${result.before.writeUs.toFixed(1)} µs/row before, ${result.after.writeUs.toFixed(1)} µs/row after`,
+    );
+    expect(result.ms).toBeLessThan(30_000);
+  }, 240_000);
 });
