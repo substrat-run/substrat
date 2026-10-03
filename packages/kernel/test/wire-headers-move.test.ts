@@ -45,7 +45,7 @@ describe('wire header names, moved to contracts (#1978)', () => {
   });
 
   it('the values are the ones on the wire', () => {
-    expect(wireHeaders).toEqual({
+    expect({ ...wireHeaders }).toEqual({
       PLATFORM_SECRET_HEADER: 'x-substrat-platform',
       PLATFORM_REQUEST_HEADER: 'x-substrat-platform-request',
       EXPORTED_EVENTS_HEADER: 'x-substrat-exported-events',
