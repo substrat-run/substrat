@@ -5,6 +5,7 @@ import {
   dataSubjectId,
   domainEvent,
   errorCodeOf,
+  moduleId,
   SCOPE_GATE_REASONS,
   type SubstratError,
   eventId,
@@ -4481,7 +4482,7 @@ export function scopeHostContractSuite(
       });
 
       it('refuses to delete a primary scope (forkedFrom is null)', async () => {
-        await expect(host.deleteSnapshot(staff, t1, s1)).rejects.toThrow(/not a fork/);
+        await expectRefusal(host.deleteSnapshot(staff, t1, s1), 'forbidden', /not a fork/);
         // Still there, still readable.
         expect((await host.admin.getScopeRecord(staff, t1, s1))?.id).toBe(s1);
       });
@@ -6778,7 +6779,7 @@ export function scopeHostContractSuite(
           canonical: true,
         });
       await bind(holder);
-      await expect(bind(claimant)).rejects.toThrow(/already bound to another scope/);
+      await expectRefusal(bind(claimant), 'conflict', /already bound to another scope/);
 
       await host.admin.archiveScope(staff, t1, holder);
       await bind(claimant); // the holder released the name
@@ -6911,7 +6912,7 @@ export function scopeHostContractSuite(
     it('refuses to move a hostname to another scope', async () => {
       // A hostname routes to exactly one place. Silently rebinding would move
       // another tenant's traffic.
-      await expect(
+      await expectRefusal(
         host.admin.bindHostname(staff, {
           hostname: 'acme.example.com',
           tenantId: t2,
@@ -6920,7 +6921,9 @@ export function scopeHostContractSuite(
           region: null,
           canonical: false,
         }),
-      ).rejects.toThrow(/already bound to another scope/);
+        'conflict',
+        /already bound to another scope/,
+      );
     });
 
     it('carries the region, which is what Regional Services is set from', async () => {
@@ -8152,7 +8155,7 @@ export function scopeHostContractSuite(
       await host.provisionScope(staff, { tenantId: t3, scopeId: s, slug: 'reap-me', jurisdiction: 'eu' });
       await host.admin.activateScope(staff, t3, s);
       // Reap refuses a live (active) scope — only archived may be reaped.
-      await expect(host.admin.reapScope(staff, t3, s)).rejects.toThrow(/not archived/);
+      await expectRefusal(host.admin.reapScope(staff, t3, s), 'conflict', /not archived/);
 
       await host.admin.archiveScope(staff, t3, s);
       await host.admin.reapScope(staff, t3, s);
@@ -8172,10 +8175,10 @@ export function scopeHostContractSuite(
       await expect(
         host.admin.entityHistory(staff, t3, s, { entityType: 'test-thing', entityId: 'x1' }),
       ).rejects.toThrow(/reaped/);
-      await expect(host.admin.listScopeTables(staff, t3, s)).rejects.toThrow(/reaped/);
+      await expectRefusal(host.admin.listScopeTables(staff, t3, s), 'conflict', /reaped/);
       // #1524: a size read is refused BEFORE it reaches the storage. Addressing a reaped
       // DO to ask its size would recreate an empty database and report that as the scope.
-      await expect(host.admin.scopeDatabaseSize(staff, t3, s)).rejects.toThrow(/reaped/);
+      await expectRefusal(host.admin.scopeDatabaseSize(staff, t3, s), 'conflict', /reaped/);
       // Audited as reapScope against the right scope + actor.
       const reapEntry = (await host.admin.auditLog(staff, { tenantId: t3 })).find(
         (r) => r.action === 'reapScope' && r.scopeId === s,
@@ -8220,7 +8223,7 @@ export function scopeHostContractSuite(
 
       // Terminal: a reaped scope cannot be unarchived (bytes are gone) or reaped again.
       await expectRefusal(host.admin.unarchiveScope(staff, t3, s), 'conflict', /illegal scope transition/);
-      await expect(host.admin.reapScope(staff, t3, s)).rejects.toThrow(/not archived/);
+      await expectRefusal(host.admin.reapScope(staff, t3, s), 'conflict', /not archived/);
     });
 
     it('reap refuses while a hostname still resolves; unbind first, then it reaps (§4.4)', async () => {
@@ -8242,9 +8245,7 @@ export function scopeHostContractSuite(
       // Archive alone (the console path) leaves the hostname bound…
       await host.admin.archiveScope(staff, t3, s);
       // …so reap refuses, naming the offending hostname, and the row survives untouched.
-      await expect(host.admin.reapScope(staff, t3, s)).rejects.toThrow(
-        /still resolves hostname 'still-serving\.example\.com'/,
-      );
+      await expectRefusal(host.admin.reapScope(staff, t3, s), 'conflict', /still resolves hostname 'still-serving\.example\.com'/);
       expect((await host.admin.getScopeRecord(staff, t3, s))!.status).toBe('archived');
 
       // Unbinding is the visible, reversible step that clears the wall…
@@ -8298,7 +8299,7 @@ export function scopeHostContractSuite(
       expect((await host.admin.resolveIdentity(t, `oidc:reap-${t.toLowerCase()}`, 'x1'))?.principal).toBe(person);
 
       // Reap only follows the reversible delete state.
-      await expect(host.admin.reapTenant(staff, t)).rejects.toThrow(/not deleting/);
+      await expectRefusal(host.admin.reapTenant(staff, t), 'conflict', /not deleting/);
 
       // The caller reaps the scope first (the sweep/route orchestrates this above the
       // kernel); reapTenant itself is directory-side only.
@@ -8327,8 +8328,8 @@ export function scopeHostContractSuite(
       expect((reapEntry.after as { status: string }).status).toBe('reaped');
 
       // Terminal: `reaped` is unreachable via setTenantStatus and reapTenant refuses it.
-      await expect(host.admin.setTenantStatus(staff, t, 'reaped')).rejects.toThrow(/cannot be set to 'reaped'/);
-      await expect(host.admin.reapTenant(staff, t)).rejects.toThrow(/not deleting/);
+      await expectRefusal(host.admin.setTenantStatus(staff, t, 'reaped'), 'validation_failed', /cannot be set to 'reaped'/);
+      await expectRefusal(host.admin.reapTenant(staff, t), 'conflict', /not deleting/);
     });
 
     it('rejects reapTenant on an unknown tenant', async () => {
@@ -8356,6 +8357,27 @@ export function scopeHostContractSuite(
       const illegal = await host.admin.unarchiveScope(staff, t, sc).then(() => undefined, (e: unknown) => e);
       expect(errorCodeOf(illegal)).toBe('conflict');
       expect((illegal as SubstratError).extensions.reason).toBeUndefined();
+    });
+
+    it('refuses what used to answer the generic 500 with its own code (#113)', async () => {
+      const t = tenantId.parse(ulid());
+      const sc = scopeId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: `was500-${t.toLowerCase()}`, name: 'Was 500' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: sc });
+      await host.admin.activateScope(staff, t, sc);
+      // An unknown hostname, on both of its doors.
+      await expectRefusal(host.admin.setHostnameStatus(staff, `ghost-${t.toLowerCase()}.example.com`, 'active'), 'not_found', /unknown hostname/);
+      // A link into a pool nobody registered: its precondition is missing.
+      await expectRefusal(
+        host.admin.linkIdentity(staff, { provider: `oidc:ghost-${t.toLowerCase()}`, externalId: 'u1', principal: alice, tenantId: t }),
+        'conflict',
+        /is not registered/,
+      );
+      // A system door for a module this host never registered.
+      await expectRefusal(host.getSystemScope(moduleId.parse('@ghost/none'), t, sc), 'not_found', /module not registered/);
+      // A migration asked of a scope that is archived.
+      await host.admin.archiveScope(staff, t, sc);
+      await expectRefusal(host.migrateScope(t, sc), 'conflict', /not migratable \(status: archived\)/);
     });
 
     it('refuses to provision a scope under a non-active tenant, typed conflict (#113)', async () => {

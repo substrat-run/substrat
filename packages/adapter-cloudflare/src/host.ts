@@ -2795,7 +2795,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // K-3: a scope under another tenant is indistinguishable from one that does not exist.
     if (!rec) throw unknownScopeForTenant(tenantId, scopeId);
     if (rec.status !== 'active' && rec.status !== 'provisioning') {
-      throw new Error(`scope not migratable (status: ${rec.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not migratable (status: ${rec.status}): ${scopeId}`);
     }
     const stub = this.scopeStub(scopeId);
     try {
@@ -4005,7 +4005,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const rec = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!rec) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     if (!rec.forkedFrom && rec.kind !== 'preview') {
-      throw new Error(
+      throw substratError('forbidden',
         `scope ${scopeId} is not a fork or preview — only previews may be deleted; ` +
           `archive a primary scope instead`,
       );
@@ -4203,7 +4203,7 @@ export class CloudflareScopeHost implements ScopeHost {
     pass?: object,
   ): Promise<SystemDoor> {
     if (!this.moduleIds.has(moduleId)) {
-      throw new Error(`module not registered on this host: ${moduleId}`);
+      throw substratError('not_found', `module not registered on this host: ${moduleId}`);
     }
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
@@ -5050,7 +5050,7 @@ export class CloudflareScopeHost implements ScopeHost {
      */
     const requireOrg = async (tenant: TenantId, id: OrgId): Promise<void> => {
       if (!(await this.cp.readOrg(tenant, id))) {
-        throw new Error(`unknown org ${id} in tenant ${tenant}`);
+        throw substratError('not_found', `unknown org ${id} in tenant ${tenant}`);
       }
     };
 
@@ -6018,7 +6018,7 @@ export class CloudflareScopeHost implements ScopeHost {
           // another tenant's traffic. Exception: the holder is ARCHIVED or REAPED (a
           // deleted app, storage since wiped) — it has released the name, so the rebind
           // reclaims it.
-          throw new Error(`hostname '${parsed.hostname}' is already bound to another scope`);
+          throw substratError('conflict', `hostname '${parsed.hostname}' is already bound to another scope`);
         }
         // Exactly one canonical per (scope, surface).
         if (parsed.canonical) await this.cp.demoteCanonical(parsed.scopeId, parsed.surface);
@@ -6043,7 +6043,7 @@ export class CloudflareScopeHost implements ScopeHost {
       setHostnameStatus: async (actor, raw: string, status, note?: string) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
         const row = await this.cp.readHostname(hostname);
-        if (!row) throw new Error(`unknown hostname '${hostname}'`);
+        if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
         if (row.status === status) return; // idempotent, unaudited
         await this.cp.setHostnameStatus(hostname, status, note ?? null);
         await this.recordAdmin(
@@ -6057,7 +6057,7 @@ export class CloudflareScopeHost implements ScopeHost {
       setHostnameIssuance: async (actor, raw, fields) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
         const row = await this.cp.readHostname(hostname);
-        if (!row) throw new Error(`unknown hostname '${hostname}'`);
+        if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
         // A poll that finds nothing changed (same status, same records, id already set)
         // is not an event — skip the write and the audit entry, so the reconcile sweep
         // does not flood the admin log with no-op rows every interval.
@@ -7270,7 +7270,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const rec = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!rec) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (rec.status !== 'archived') {
-          throw new Error(
+          throw substratError('conflict',
             `scope ${scopeId} is ${rec.status}, not archived — only an archived scope may be reaped`,
           );
         }
@@ -7284,7 +7284,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // being released anyway; the interactive per-scope reap never sets it.
         const bound = opts?.force ? [] : await this.cp.listHostnames({ scopeId, limit: 1 });
         if (bound.length > 0) {
-          throw new Error(
+          throw substratError('conflict',
             `scope ${scopeId} still resolves hostname '${bound[0]!.hostname}' — ` +
               `unbind it before reaping (reap wipes storage and cannot be undone)`,
           );
@@ -7591,9 +7591,9 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       listIdentityTenants: async (actor, provider: string, externalId: string) => {
         const r = await this.cp.readPool(provider);
-        if (!r) throw new Error(`identity pool '${provider}' is not registered`);
+        if (!r) throw substratError('not_found', `identity pool '${provider}' is not registered`);
         if (r.topology !== 'central') {
-          throw new Error(
+          throw substratError('forbidden',
             `identity pool '${provider}' is tenant-bound — enumerating tenants is only ` +
               `meaningful on a central pool, where the same externalId is the same person`,
           );
@@ -7615,9 +7615,9 @@ export class CloudflareScopeHost implements ScopeHost {
           actor,
           at: new Date().toISOString(),
         });
-        if (topology === null) throw new Error(`identity pool '${provider}' is not registered`);
+        if (topology === null) throw substratError('not_found', `identity pool '${provider}' is not registered`);
         if (topology !== 'central') {
-          throw new Error(
+          throw substratError('forbidden',
             `identity pool '${provider}' is tenant-bound — enumerating tenants is only ` +
               `meaningful on a central pool, where the same externalId is the same person`,
           );
@@ -7826,14 +7826,14 @@ export class CloudflareScopeHost implements ScopeHost {
         const parsed = identityLink.parse(input);
         const pool = await this.cp.readPool(parsed.provider);
         if (!pool) {
-          throw new Error(
+          throw substratError('conflict',
             `identity pool '${parsed.provider}' is not registered — a pool must declare ` +
               `its topology before it may link (central vs tenant-bound decides whether ` +
               `the same externalId in two tenants is one person or two)`,
           );
         }
         if (pool.topology === 'tenant-bound' && pool.tenant_id !== parsed.tenantId) {
-          throw new Error(
+          throw substratError('conflict',
             `identity pool '${parsed.provider}' is bound to tenant ${pool.tenant_id} and cannot link into ${parsed.tenantId}`,
           );
         }
@@ -8427,7 +8427,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const row = await this.cp.getScopeRecord(tenantId, scopeId);
     if (!row) throw unknownScopeForTenant(tenantId, scopeId);
     if (row.status === 'reaped') {
-      throw new Error(`scope ${scopeId} is reaped — its storage is gone and cannot be read`);
+      throw substratError('conflict', `scope ${scopeId} is reaped — its storage is gone and cannot be read`);
     }
     return row;
   }

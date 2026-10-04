@@ -1817,7 +1817,7 @@ export class ControlPlaneDO extends DurableObject {
     // reapTenant, so a plain status flip cannot forge a tombstone over live data
     // (§4.8, the tenant analogue of reapScope's archived-only gate).
     if (status === 'reaped') {
-      throw new Error(
+      throw substratError('validation_failed',
         `tenant ${tenantId} cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`,
       );
     }
@@ -1856,7 +1856,7 @@ export class ControlPlaneDO extends DurableObject {
     const before = this.readTenant(tenantId);
     if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
     if (before.status !== 'deleting') {
-      throw new Error(
+      throw substratError('conflict',
         `tenant ${tenantId} is ${before.status}, not deleting — only a deleting tenant may be reaped`,
       );
     }

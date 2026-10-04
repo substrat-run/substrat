@@ -294,3 +294,39 @@ describe('mapError — the scope gate keeps its own answer on the control plane 
     expect(body.reason).toBe(refusal.extensions.reason);
   });
 });
+
+/**
+ * #113: refusals no pattern ever matched, so they answered the generic 500 — `internal error`,
+ * no detail — for a request the caller can fix. Typed at their throw sites now. The untyped
+ * twin is what each answered before.
+ */
+const WAS_500: readonly [sentence: string, status: number, code: ErrorCode][] = [
+  [`tenant 01T cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`, 400, 'validation_failed'],
+  ['tenant 01T is active, not deleting — only a deleting tenant may be reaped', 409, 'conflict'],
+  ['scope 01S is active, not archived — only an archived scope may be reaped', 409, 'conflict'],
+  [`scope 01S still resolves hostname 'app.example.com' — unbind it before reaping`, 409, 'conflict'],
+  ['scope 01S is not a fork or preview — only previews may be deleted; archive and reap a primary', 403, 'forbidden'],
+  [`hostname 'app.example.com' is already bound to another scope`, 409, 'conflict'],
+  [`unknown hostname 'ghost.example.com'`, 404, 'not_found'],
+  ['unknown org 01O in tenant 01T', 404, 'not_found'],
+  [`identity pool 'oidc:x' is not registered`, 404, 'not_found'],
+  [`identity pool 'oidc:x' is tenant-bound — enumerating tenants is only meaningful for a central pool`, 403, 'forbidden'],
+  [`identity pool 'oidc:x' is not registered — a pool must declare its topology before a login can link`, 409, 'conflict'],
+  [`identity pool 'oidc:x' is bound to tenant 01A and cannot link into 01B`, 409, 'conflict'],
+  ['module not registered on this host: @acme/none', 404, 'not_found'],
+  ['scope not migratable (status: archived): 01S', 409, 'conflict'],
+  ['scope 01S is reaped — its storage is gone and cannot be read', 409, 'conflict'],
+];
+
+describe('mapError — refusals that used to answer the generic 500 (#113)', () => {
+  it.each(WAS_500)('%s → %i %s', (sentence, status, code) => {
+    const mapped = mapError(substratError(code, sentence));
+    expect(mapped.status).toBe(status);
+    expect(mapped.body.code).toBe(code);
+    expect(mapped.body.detail).toBe(sentence);
+  });
+
+  it.each(WAS_500)('%s, untyped (as it was thrown before), is the generic 500', (sentence) => {
+    expect(mapError(new Error(sentence)).status).toBe(500);
+  });
+});

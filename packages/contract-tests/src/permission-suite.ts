@@ -1327,11 +1327,13 @@ export function permissionContractSuite(
       // succeeded and produced a tuple pointing at a phantom — granting nothing,
       // appearing in no listing, and reading in the permission diff as if access
       // had been conferred.
-      await expect(host.admin.addMember(staff, t1, kim, ghost)).rejects.toThrow(/unknown org/);
-      await expect(
+      await expectRefusal(host.admin.addMember(staff, t1, kim, ghost), 'not_found', /unknown org/);
+      await expectRefusal(
         host.admin.grantToOrg(staff, ghost, PERM_READ, { tenantId: t1, scopeId: s1 }),
-      ).rejects.toThrow(/unknown org/);
-      await expect(host.admin.listMembers(staff, t1, ghost)).rejects.toThrow(/unknown org/);
+        'not_found',
+        /unknown org/,
+      );
+      await expectRefusal(host.admin.listMembers(staff, t1, ghost), 'not_found', /unknown org/);
     });
 
     it("scopes orgs by tenant — another tenant's org reads as absent", async () => {
@@ -1561,12 +1563,16 @@ export function permissionContractSuite(
         topology: 'tenant-bound',
         tenantId: t1,
       });
-      await expect(
+      await expectRefusal(
         host.admin.listIdentityMemberships(staff, 'oidc:members-bound', 'z'),
-      ).rejects.toThrow(/tenant-bound/);
-      await expect(
+        'forbidden',
+        /tenant-bound/,
+      );
+      await expectRefusal(
         host.admin.listIdentityMemberships(staff, 'oidc:members-unregistered', 'z'),
-      ).rejects.toThrow(/not registered/);
+        'not_found',
+        /not registered/,
+      );
     });
 
     it('is idempotent on an identical pool registration, and refuses a conflicting one', async () => {
