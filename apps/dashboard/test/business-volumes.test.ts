@@ -61,6 +61,27 @@ describe('lifecycleMovesOf (#1750)', () => {
     for (const op of ['desk/ingest', 'desk/park', 'desk/flip']) expect(ops).not.toContain(op);
   });
 
+  it('keeps opening apart from reopening: one row out of the initial state, another back from later', () => {
+    const moves = lifecycleMovesOf({
+      ticket: {
+        field: 'state',
+        initial: 'new',
+        states: {
+          new: { on: { 'desk/open': 'open' } },
+          open: { on: { 'desk/wait': 'pending', 'desk/close': 'closed' } },
+          pending: { on: { 'desk/reopen': 'open', 'desk/close': 'closed' } },
+          closed: { terminal: true },
+        },
+      },
+    });
+    expect(moves.map((m) => [m.state, m.fromInitial, m.operations])).toEqual([
+      ['closed', false, ['desk/close']],
+      ['open', true, ['desk/open']],
+      ['open', false, ['desk/reopen']],
+      ['pending', false, ['desk/wait']],
+    ]);
+  });
+
   it('answers nothing for a model with no lifecycles', () => {
     expect(lifecycleMovesOf(undefined)).toEqual([]);
     expect(lifecycleMovesOf({})).toEqual([]);

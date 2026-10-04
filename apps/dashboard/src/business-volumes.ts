@@ -23,7 +23,13 @@ export interface LifecycleMove {
   entityType: string;
   state: string;
   terminal: boolean;
-  /** Every counted edge into this state leaves the initial state — what "opened" means. */
+  /**
+   * Every counted edge into this state leaves the initial state — what "opened" means. For a
+   * non-terminal state this splits the rows: the operations that open (out of the initial
+   * state) are one row, and the ones that come back to it from later (a reopen) another,
+   * so an opened count never carries reopens. A terminal state is one row however it was
+   * reached: closing is closing.
+   */
   fromInitial: boolean;
   operations: string[];
 }
@@ -32,7 +38,8 @@ export interface LifecycleMove {
  * The moves a declared lifecycle lets a GROUP BY count exactly (see `operation-series.ts` in contracts for why).
  *
  * An operation qualifies when every appearance of it in the declaration is an `on` edge
- * into one and the same state, from a different state, and it is in no `allow` list.
+ * into one and the same state, from a different state, and it is in no `allow` list. It
+ * opens when every one of its edges leaves the initial state.
  * States no qualifying operation reaches are left out rather than listed at zero: zero
  * would claim a count this read cannot make.
  */
@@ -55,20 +62,20 @@ export function lifecycleMovesOf(lifecycles: Record<string, EmittedLifecycle> | 
         sources.set(op, (sources.get(op) ?? new Set()).add(from));
       }
     }
-    const byState = new Map<string, string[]>();
+    const rows = new Map<string, LifecycleMove>();
     for (const [op, to] of target) {
       if (to === null || to === undefined) continue;
-      byState.set(to, [...(byState.get(to) ?? []), op]);
+      const terminal = lc.states[to]?.terminal === true;
+      const opens = [...(sources.get(op) ?? [])].every((s) => s === lc.initial);
+      const key = terminal ? to : `${to}\u001f${opens}`;
+      const row = rows.get(key) ?? { entityType, state: to, terminal, fromInitial: true, operations: [] };
+      row.fromInitial &&= opens;
+      row.operations.push(op);
+      rows.set(key, row);
     }
-    for (const [state, operations] of [...byState.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      out.push({
-        entityType,
-        state,
-        terminal: lc.states[state]?.terminal === true,
-        fromInitial: operations.every((op) => [...(sources.get(op) ?? [])].every((s) => s === lc.initial)),
-        operations: operations.sort(),
-      });
-    }
+    // By state, the opening row before the one that comes back to the same state.
+    const ordered = [...rows.values()].sort((a, b) => a.state.localeCompare(b.state) || Number(b.fromInitial) - Number(a.fromInitial));
+    for (const row of ordered) out.push({ ...row, operations: row.operations.sort() });
   }
   return out;
 }

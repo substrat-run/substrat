@@ -402,7 +402,7 @@ export function Pulse({
         {businessError ? <Note>Business volumes are unavailable right now.</Note> : business === null ? <Note>Reading business volumes…</Note> : business.rows.length ? (
           business.rows.map((row) => (
             <BusinessLine
-              key={`${row.scopeId}:${row.entityType}:${row.state}`}
+              key={`${row.scopeId}:${row.entityType}:${row.state}:${row.fromInitial}`}
               row={row}
               app={oneApp ? null : (apps.find((a) => a.app_scope_id === row.scopeId)?.name ?? null)}
               bucketMinutes={business.bucketMinutes}
