@@ -293,6 +293,22 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         await expectRefused(w, await asJoiner(w, joe, 'invitefix/accept', inv), joe, /not first accepted by/);
       });
 
+      it('replaying an invitation after the joiner was removed — one invitation, one join', async () => {
+        const joe = principalId.parse(ulid());
+        const inv = await send(w, w.alice, 'member');
+        expect((await asJoiner(w, joe, 'invitefix/accept', inv)).map((o) => o.outcome)).toEqual(['delivered']);
+        const node = { tenantId: w.t, scopeId: w.s };
+        await w.host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node });
+        await w.host.admin.removeMember(staff, w.t, joe, w.org);
+
+        // A fresh request, by the very person who first accepted, naming the same invitation.
+        const outcomes = await asJoiner(w, joe, 'invitefix/request', {
+          entityId: joe,
+          payload: { principal: joe, orgId: inv.orgId, tenantId: w.t, roleKey: 'member', invitationId: inv.invitationId },
+        });
+        await expectRefused(w, outcomes, joe, /invitation .* was already used/);
+      });
+
       it('with no request shape at all', async () => {
         const joe = principalId.parse(ulid());
         const outcomes = await asJoiner(w, joe, 'invitefix/request', { entityId: joe, payload: { principal: joe } });

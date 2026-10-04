@@ -33,7 +33,8 @@ import {
  * - An ADD is bounded by the inviter: the kernel-stamped `actor` of the invitation's own
  *   `invites.sent` event, asked through the K-21 set comparison NOW, at the node the role is
  *   assigned at. A sender demoted or removed since the send is refused. The joiner is the
- *   request's own actor, who must have made the invitation's first acceptance. The most a
+ *   request's own actor, who must have made the invitation's first acceptance, and the
+ *   request must be the first one naming that invitation: one invitation, one join. The most a
  *   module can do is make the principal who actually invoked it look like the sender — the
  *   same delegation bound `ctx.grant` has.
  * - A REMOVE is bounded by the remover, the request's own actor (§5.1: removal takes the
@@ -225,7 +226,18 @@ async function authorizeAdd(
   const inviter = principalId.safeParse(send.actor);
   if (!inviter.success) return refused(`invitation ${request.invitationId} was not sent by a principal`);
 
-  if (await removedSince(admin, actor, scope, event, request.principal)) {
+  // One invitation, one join. The request must follow the acceptance and be the FIRST
+  // request naming this invitation on the joiner's membership — outbox ids are kernel-minted
+  // and append-only, so the first request consumes the invitation for good, and a fresh one
+  // emitted later (after a removal, say) is refused however its payload reads.
+  if (first!.id > event.id) return refused(`the request precedes invitation ${request.invitationId}'s acceptance`);
+  const membership = await everything(scope, membershipEntity(request.principal));
+  const earlier = membership.find(
+    (e) => e.type === MEMBER_ADD_REQUESTED && e.id < event.id && invitationOf(e) === request.invitationId,
+  );
+  if (earlier) return refused(`invitation ${request.invitationId} was already used, by request ${earlier.id}`);
+
+  if (await removedSince(admin, actor, membership, event, request.principal)) {
     return refused(`${request.principal} was removed after this request was made`);
   }
   // The role AND the org: joining an org grants what the org holds, and its id is
@@ -256,11 +268,10 @@ async function authorizeRemove(
 async function removedSince(
   admin: HostAdmin,
   actor: PlatformActorId,
-  scope: ExecutorScope,
+  membership: readonly HistoryEntry[],
   event: DomainEvent,
   principal: PrincipalId,
 ): Promise<boolean> {
-  const membership = await everything(scope, membershipEntity(principal));
   if (membership.some((e) => e.type === MEMBER_REMOVE_REQUESTED && e.id > event.id)) return true;
   const revoked = await admin.auditLog(actor, {
     tenantId: event.tenantId,
@@ -270,6 +281,12 @@ async function removedSince(
   // Strictly after: `since` is inclusive, and a revoke stamped in the request's own
   // millisecond cannot be told apart from one made just before it.
   return revoked.some((row) => row.at > event.occurredAt && namesPrincipal(row, principal));
+}
+
+/** The invitation an add request names, read the way the executor reads a request. */
+function invitationOf(entry: HistoryEntry): string | undefined {
+  const parsed = memberAddRequested.safeParse(entry.payload);
+  return parsed.success ? parsed.data.invitationId : undefined;
 }
 
 /** A revoking admin row's subject: `unassignRole` records the assignment, `removeMember` the membership. */
