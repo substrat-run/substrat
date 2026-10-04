@@ -230,3 +230,44 @@ describe('mapError — a ScopeDO refusing a projection for another tenant (#1738
     expect(mapError(new Error('boom')).status).toBe(500);
   });
 });
+
+/**
+ * #113: the last families on `CODE_PATTERNS`, pinned by status AND code — one real sentence per
+ * throw-site wording, as the adapters write it. These are what a client of the control plane sees
+ * today, and typing the throw sites must not move a single one.
+ */
+const REMAINING: readonly [sentence: string, status: number, code: string][] = [
+  ['cannot provision scope under unknown tenant: 01T', 409, 'conflict'],
+  ['cannot provision tenant store under unknown tenant: 01T', 404, 'not_found'],
+  ['cannot provision blob store under unknown tenant: 01T', 404, 'not_found'],
+  ['cannot provision scope under non-active tenant (status: suspended): 01T', 409, 'conflict'],
+  ['cannot provision tenant store under non-active tenant (status: suspended): 01T', 409, 'conflict'],
+  ['cannot provision blob store under non-active tenant (status: deleting): 01T', 409, 'conflict'],
+  [`tenant slug 'acme' already taken by 01T (slugs are unique)`, 409, 'conflict'],
+  [`scope slug 'main' already taken under tenant 01T by 01S (slugs are unique within a tenant)`, 409, 'conflict'],
+  [`org slug 'ops' already taken by 01O (slugs are unique per tenant)`, 409, 'conflict'],
+  ['illegal scope transition for archive: reaped → archived (allowed from: active|suspended)', 409, 'conflict'],
+  ['applyProjection refused: this scope was provisioned for tenant 01A, and a projection for tenant 01B would re-point it', 409, 'conflict'],
+  ['tenant not active (status: suspended): 01T', 409, 'conflict'],
+  ['scope not active (status: archived): 01S', 409, 'conflict'],
+  [`vertical 'todo' is already registered as git`, 409, 'conflict'],
+  [`identity pool 'acme-pool' is already registered as shared for tenant 01T`, 409, 'conflict'],
+  ['promotion changes the permission surface (aaa → bbb) — acknowledge it explicitly to promote', 409, 'conflict'],
+  ['promotion changes migrations (aaa → bbb) — acknowledge it explicitly to promote', 409, 'conflict'],
+  ['unknown tenant: 01T', 404, 'not_found'],
+  ['unknown scope for tenant: (01T, 01S)', 404, 'not_found'],
+  ['unknown scope 01S in tenant 01T', 404, 'not_found'],
+  ['unknown scope for connection: 01S', 404, 'not_found'],
+  [`unknown table 'ghost'`, 404, 'not_found'],
+  ['read-only console: empty statement', 400, 'validation_failed'],
+  ['scope has no tenant record: (01T, 01S)', 404, 'not_found'],
+];
+
+describe('mapError — the last pattern families keep their status and code (#113)', () => {
+  it.each(REMAINING)('%s → %i %s', (sentence, status, code) => {
+    const mapped = mapError(new Error(sentence));
+    expect(mapped.status).toBe(status);
+    expect(mapped.body.code).toBe(code);
+    expect(mapped.body.detail).toBe(sentence);
+  });
+});

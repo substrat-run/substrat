@@ -157,3 +157,24 @@ describe('classifyError on a ScopeDO refusing a projection for another tenant (#
     expect(classifyError(new Error('boom'))).toBeUndefined();
   });
 });
+
+/**
+ * #113: the directory refusals that reach a vertical door too — the scope-access gate and the
+ * introspection read — pinned by the status and code a vertical answers with.
+ */
+describe('a vertical door on the gate and introspection refusals (#113)', () => {
+  const cases: readonly [sentence: string, status: number, code: string | undefined][] = [
+    ['tenant not active (status: suspended): 01T', 400, undefined],
+    ['scope not active (status: archived): 01S', 400, undefined],
+    ['scope has no tenant record: (01T, 01S)', 400, undefined],
+    [`unknown table 'ghost'`, 400, undefined],
+    ['read-only console: empty statement', 400, undefined],
+  ];
+
+  it.each(cases)('%s → %i', (sentence, status, code) => {
+    const { status: answered, body } = problemFor(new Error(sentence));
+    expect(answered).toBe(status);
+    expect(body.code).toBe(code);
+    expect(body.detail).toBe(sentence);
+  });
+});
