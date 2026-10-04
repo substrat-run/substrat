@@ -86,6 +86,19 @@ export async function landRewind(
     importDump(tables: ScopeDumpTable[], scopeId: string): Promise<unknown>;
   };
   await stub.importDump(atBookmark, scopeId);
+  // #1834: a dump restore fails a carried job run ("not carried": it runs in the scope that asked
+  // for it, never in a copy). PITR is no copy: the scope's own bytes come back, so a run that was
+  // `running` at the bookmark is `running` again. Put the rows back exactly as the bookmark had them.
+  const runs = atBookmark.find((table) => table.name === '_substrat_job_runs');
+  if (runs && runs.rows.length > 0) {
+    await runInDurableObject(ns.get(ns.idFromName(scopeId)), (_instance, state) => {
+      const marks = runs.columns.map(() => '?').join(', ');
+      state.storage.sql.exec('DELETE FROM _substrat_job_runs');
+      for (const row of runs.rows) {
+        state.storage.sql.exec(`INSERT INTO _substrat_job_runs (${runs.columns.join(', ')}) VALUES (${marks})`, ...(row as SqlStorageValue[]));
+      }
+    });
+  }
 }
 
 /** The deployment's hold object (`SWITCH_HOLDS_NAME`) in this namespace, typed for the tests. */

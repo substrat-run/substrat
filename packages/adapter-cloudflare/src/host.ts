@@ -4005,7 +4005,7 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /** The system door's invoke stub, over a door already opened (and gated). */
   private systemStub(door: SystemDoor): ScopeStub {
-    return this.buildStub(door.tenantId, door.scopeId, undefined, undefined, door.moduleId, undefined, undefined, undefined, undefined, door);
+    return this.buildStub(door.tenantId, door.scopeId, undefined, undefined, door);
   }
 
   /**
@@ -4514,7 +4514,11 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     principal?: PrincipalId,
     connectionId?: ConnectionId,
-    systemModuleId?: string,
+    /**
+     * #1834: the system door this stub acts through. The ONLY way to make a stub acting as
+     * `system:<moduleId>`: the module is the door's, and every invoke is gated and pinned by it.
+     */
+    systemDoor?: SystemDoor,
     options?: ScopeStubOptions,
     /**
      * K-42: the session this stub acts under. Re-read from the directory on
@@ -4535,10 +4539,9 @@ export class CloudflareScopeHost implements ScopeHost {
      * every invoke, inside its queue, and acknowledges it — the capability session's pattern.
      */
     verticalCaller?: VerticalCaller,
-    /** #1834: the system door this stub acts through — every invoke is gated and pinned by it. */
-    systemDoor?: SystemDoor,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
+    const systemModuleId = systemDoor?.moduleId;
     const cp = this.cp;
     const operationEntitlement = this.operationEntitlement;
     // The DO needs SOME principal-shaped value for `ctx.principal`; for a

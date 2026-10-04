@@ -1030,6 +1030,15 @@ export function splitSqlStatements(sql: string): string[] {
   return out;
 }
 
+/** #1834: the brand only `assertSystemDoor` sets, so nothing else can make a `SystemDoorPass`. */
+const SYSTEM_DOOR_PASSED: unique symbol = Symbol('system door passed');
+
+/** #1834: proof that this call passed the system door's check, naming the module it acts as. */
+interface SystemDoorPass {
+  readonly moduleId: string;
+  readonly [SYSTEM_DOOR_PASSED]: true;
+}
+
 export function defineScopeDO(
   modules: ModuleRegistration[],
   bareOps: Record<string, OperationHandler<never, unknown>>,
@@ -2434,7 +2443,7 @@ export function defineScopeDO(
         try {
         // #1834: before anything opens. This instance is the storage the call meets, for the
         // whole call: a restore restarts the object, so it cannot move under a running body.
-        this.assertSystemDoor(systemDoorInstance);
+        const systemDoor = this.assertSystemDoor(systemModuleId, systemDoorInstance);
         // #1672: the capability session, resolved on EVERY call and here — inside the queued
         // body, the one region where this call holds the DO to itself — so nothing can
         // revoke between this read and the transaction. Refuses a stale session, a revoked
@@ -2521,7 +2530,7 @@ export function defineScopeDO(
               scopeId,
               undefined,
               connectionId,
-              systemModuleId,
+              systemDoor,
               signals,
               impersonation,
               operation,
@@ -3209,8 +3218,9 @@ export function defineScopeDO(
       systemDoorInstance?: string,
     ): Promise<AttachmentRecord | null> {
       await this.ensureMigrations();
+      let systemDoor: SystemDoorPass;
       try {
-        this.assertSystemDoor(systemDoorInstance);
+        systemDoor = this.assertSystemDoor(moduleId, systemDoorInstance)!;
       } catch (err) {
         throw toRpcError(err);
       }
@@ -3223,7 +3233,7 @@ export function defineScopeDO(
       try {
         const ctx = this.operationContext(
           this.systemPrincipal, tenantId, scopeId, undefined, undefined,
-          moduleId, undefined, undefined, 'attachments.open',
+          systemDoor, undefined, undefined, 'attachments.open',
         );
         assertAllowed(await ctx.check(gate.read, record.entity));
       } catch (err) {
@@ -3510,17 +3520,29 @@ export function defineScopeDO(
     }
 
     /**
-     * #1834: refuse a system-door call pinned to another instance. A PITR restore always
-     * restarts this object, so a call landing on a new instance may meet rewound storage whose
-     * module the door's gate never checked against the rewind hold. Refused before anything
-     * opens, so the door can gate again and retry. Unpinned calls (no door) pass.
+     * #1834: the system door's check on this side, and the ONLY maker of the `SystemDoorPass`
+     * the operation context needs to act as `system:<moduleId>`. A call acting as a module must
+     * carry the instance the host's door gate read (refused without one: no door gated it), and
+     * is refused on any other instance. A PITR restore always restarts this object, so a call
+     * landing on a new instance may meet rewound storage whose module the gate never checked
+     * against the rewind hold. Both are refused before anything opens; the moved one carries
+     * `SYSTEM_DOOR_MOVED`, so the door gates again and retries. No module, no pass.
      */
-    private assertSystemDoor(expected: string | undefined): void {
-      if (expected === undefined || expected === this.instanceId) return;
-      throw substratError(
-        'unavailable',
-        `${SYSTEM_DOOR_MOVED}the scope restarted after the system door's gate read it; gate it again`,
-      );
+    private assertSystemDoor(moduleId: string | undefined, expected: string | undefined): SystemDoorPass | undefined {
+      if (moduleId === undefined) return undefined;
+      if (expected === undefined) {
+        throw substratError(
+          'forbidden',
+          `a call acting as module '${moduleId}' reached this scope without passing the system door`,
+        );
+      }
+      if (expected !== this.instanceId) {
+        throw substratError(
+          'unavailable',
+          `${SYSTEM_DOOR_MOVED}the scope restarted after the system door's gate read it; gate it again`,
+        );
+      }
+      return { moduleId, [SYSTEM_DOOR_PASSED]: true };
     }
 
     /**
@@ -6033,7 +6055,11 @@ export function defineScopeDO(
       scopeId: ScopeId,
       systemActor?: { system: string },
       connectionId?: string,
-      systemModuleId?: string,
+      /**
+       * #1834: the system subject, only as the door check hands it out (`assertSystemDoor`) — so
+       * no path can act as `system:<moduleId>` without passing that check.
+       */
+      systemDoor?: SystemDoorPass,
       /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
       signals?: { platformRequests: number },
       /**
@@ -6099,8 +6125,8 @@ export function defineScopeDO(
         ? peerSubject
         : capabilityId
         ? { kind: 'capability', id: capabilityId as CapabilityId }
-        : systemModuleId
-          ? { kind: 'system', id: systemModuleId as ModuleId }
+        : systemDoor
+          ? { kind: 'system', id: systemDoor.moduleId as ModuleId }
           : connectionId
             ? { kind: 'connection', id: connectionId }
             : { kind: 'principal', id: principal };

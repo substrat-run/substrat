@@ -22,7 +22,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -63,6 +63,7 @@ import {
   SWITCH_HOLD_SNAPSHOT_MS,
   SWITCH_HOLDS_NAME,
 } from '../src/host.js';
+import { SYSTEM_DOOR_REGATES } from '../src/system-door.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
 // (see do-warmup.ts) — file-level, so it runs before every suite below.
@@ -2286,8 +2287,9 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   };
 
   /** Switch off (or not), then rewind to a bookmark taken before that (the whole issue). */
-  const rewoundPastTheSwitch = async (switchOff = true): Promise<ScopeId> => {
+  const rewoundPastTheSwitch = async (switchOff = true, beforeBookmark?: (s: ScopeId) => Promise<unknown>): Promise<ScopeId> => {
     const s = await newScope();
+    await beforeBookmark?.(s);
     const atBookmark = await host.exportScopeLocal(s);
     if (switchOff) await off(s);
     await armRewind(env.SCOPE, s);
@@ -2312,6 +2314,153 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const s = await rewoundPastTheSwitch(false);
     expect(await heldOn(s)).toEqual([]);
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  /**
+   * #1834: a resumable job run acts through the same system door as a schedule, and the door is
+   * what gates now — its state read, then the hold, then every call pinned to the instance that
+   * read came from. The job's tick is `sched/tick`, which the scope's seated `system:` grant allows.
+   */
+  const jobDeployment = (ns: DurableObjectNamespace = env.SCOPE) => {
+    const h = deployment(ns);
+    h.registerJob(
+      SCHED,
+      'tick',
+      async (p: JobPassContext) => {
+        const scope = await p.scope();
+        await p.step('tick', () => scope.invoke('sched/tick'));
+        return { done: true };
+      },
+      { maxAttempts: 3, baseDelayMs: 0 },
+    );
+    return h;
+  };
+  /** The ticks the scope's storage holds: what actually ran through the door. */
+  const ticksIn = async (s: ScopeId) =>
+    (await host.exportScopeLocal(s)).find((table) => table.name === 'sched_ticks')?.rows.length ?? 0;
+  const startTick = (s: ScopeId) => jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'tick', instance: 'one', payload: {} });
+  const runOf = async (s: ScopeId, id: string) => (await host.jobRuns(t, s)).find((r) => r.id === id);
+
+  it('#1834: a job run of a held module is refused at the system door and kept, and runs once the switch is back', async () => {
+    let runId = '';
+    const s = await rewoundPastTheSwitch(true, async (sc) => (runId = (await startTick(sc)).id));
+    expect(await heldOn(s)).toEqual([SCHED]);
+    // Before any reconcile: the pass reaches the door, the door refuses, and nothing ticks.
+    const denied = await jobDeployment().runDueJobs(t, s);
+    expect(denied).toMatchObject({ attempted: 1, completed: 0, advanced: 0, failed: 0, retrying: 1 });
+    expect(denied.errors[0]?.error).toMatch(/held off on this scope/);
+    // Recorded on the run the way an OFF denial is (the driver's own failed-attempt record): still
+    // running, the refusal as its last error, retries left.
+    expect(await runOf(s, runId)).toMatchObject({ status: 'running', lastError: expect.stringMatching(/held off/) });
+    expect(await ticksIn(s)).toBe(0);
+    // The schedules, unchanged: skipped on the same hold.
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+
+    // ON is the operator's newer word: the hold goes, and the same run's next pass ticks and completes.
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({ completed: 1, errors: [] });
+    expect(await runOf(s, runId)).toMatchObject({ status: 'done' });
+    expect(await ticksIn(s)).toBe(1);
+  });
+
+  it('#1834 twin: nothing recorded off — the rewound job run passes the door and completes', async () => {
+    let runId = '';
+    const s = await rewoundPastTheSwitch(false, async (sc) => (runId = (await startTick(sc)).id));
+    expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1, errors: [] });
+    expect(await runOf(s, runId)).toMatchObject({ status: 'done' });
+    expect(await ticksIn(s)).toBe(1);
+  });
+
+  /**
+   * #1834's own argument: a pass opens the door once and then runs for as long as it runs. A door
+   * opened BEFORE the rewind gated pre-rewind storage, and its hold read predates the hold. The
+   * pin is what stops it: the rewound scope is a new instance, so the call is refused as moved,
+   * gated again, and that gate sees the hold. No clock is involved.
+   */
+  it('#1834: a system door opened before the rewind refuses a call that lands after it', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    const door = await host.getSystemScope(SCHED, t, s); // gated now: on, not held
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm-before-switch', { force: true });
+    await landRewind(env.SCOPE, s, atBookmark);
+    await expect(door.invoke('sched/tick')).rejects.toThrow(/held off on this scope/);
+    expect(await ticksIn(s)).toBe(0);
+  });
+
+  it('#1834 twin: nothing recorded off — the same door re-gates the restarted scope and the call runs', async () => {
+    const s = await newScope();
+    const atBookmark = await host.exportScopeLocal(s);
+    const door = await host.getSystemScope(SCHED, t, s);
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm', { force: true });
+    await landRewind(env.SCOPE, s, atBookmark);
+    await door.invoke('sched/tick');
+    expect(await ticksIn(s)).toBe(1);
+  });
+
+  it("#1834: a module's attachment open goes through the same door, and a held module's is refused", async () => {
+    // A bucket is resolved before any open; none is read, since nothing here gets that far.
+    const h = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      attachmentBuckets: () => ({}),
+    });
+    h.registerModule(scheduleMod);
+    const held = await rewoundPastTheSwitch();
+    const surface = await h.getSystemAttachments(SCHED, t, held);
+    await expect(surface.open('no-such-attachment')).rejects.toThrow(/held off on this scope/);
+    // Twin: a scope nothing holds answers the open (here: nothing to open).
+    const free = await newScope();
+    expect(await (await h.getSystemAttachments(SCHED, t, free)).open('no-such-attachment')).toBeNull();
+  });
+
+  it('#1834: a scope that keeps restarting under the door fails closed after a bounded number of gates', async () => {
+    const s = await newScope();
+    const moving = countingScopes(env.SCOPE);
+    const h = deployment(moving.ns);
+    moving.movingInstance = true;
+    const door = await h.getSystemScope(SCHED, t, s);
+    const refused = await door.invoke('sched/tick').then(() => null, (err: unknown) => err);
+    expect(String(refused)).toMatch(/kept restarting under the system door/);
+    expect(errorCodeOf(refused)).toBe('unavailable');
+    // The door's own gate, then one more per refusal, up to the bound — and no further.
+    expect(moving.doorGates).toBe(1 + SYSTEM_DOOR_REGATES);
+    expect(await ticksIn(s)).toBe(0);
+    // The schedule pass, on the same scope, fails closed the same way rather than firing.
+    moving.doorGates = 0;
+    expect(await h.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, failed: 2 });
+    expect(moving.doorGates).toBe(1 + 2 * SYSTEM_DOOR_REGATES); // the pass's gate, then each fire's re-gates
+    expect(await ticksIn(s)).toBe(0);
+    // Twin: the same host, once the instance holds still, runs the same call.
+    moving.movingInstance = false;
+    await (await h.getSystemScope(SCHED, t, s)).invoke('sched/tick');
+    expect(await ticksIn(s)).toBe(1);
+  });
+
+  /**
+   * #1834: the door is the only way in, on the wire too. The DO acts as `system:<moduleId>` only
+   * for a call carrying the instance a door's gate read — so a new host path that reached the DO
+   * with a module and no door would be refused here, whatever the host-side types allowed.
+   */
+  it('#1834: a system-subject call that reaches the DO without the door is refused; with the pin it runs', async () => {
+    const s = await newScope();
+    const raw = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+      invoke(...args: unknown[]): Promise<{ failure?: { message: string; code?: string } }>;
+      systemAttachmentAuthorize(...args: unknown[]): Promise<unknown>;
+      systemDoorState(moduleId: string): Promise<{ state: string; instance: string }>;
+    };
+    const asModule = (pin?: string) =>
+      raw.invoke('sched/tick', undefined, SCHED, t, s, undefined, undefined, SCHED, true, undefined, undefined, undefined, undefined, pin);
+    expect((await asModule()).failure).toMatchObject({ code: 'forbidden', message: expect.stringMatching(/without passing the system door/) });
+    await expect(raw.systemAttachmentAuthorize('no-such-attachment', SCHED, t, s)).rejects.toThrow(/without passing the system door/);
+    expect(await ticksIn(s)).toBe(0);
+    // Twin: pinned to the serving instance, the same call runs.
+    const { instance } = await raw.systemDoorState(SCHED);
+    expect((await asModule(instance)).failure).toBeUndefined();
+    expect(await raw.systemAttachmentAuthorize('no-such-attachment', SCHED, t, s, instance)).toBeNull();
+    expect(await ticksIn(s)).toBe(1);
   });
 
   it("the hold is this scope's only: another scope's module still fires while it holds", async () => {
@@ -3062,12 +3211,16 @@ function countingScopes(ns: DurableObjectNamespace) {
     aroundStatusRead: null as ((n: number, phase: 'before' | 'after') => Promise<void>) | null,
     scopeCalls: 0,
     failReads: false,
-    /** Hold one scope's `systemScheduleState` until `until` settles: to place a pass's state read. */
+    /** Hold one scope's state read (the system door's gate, #1834) until `until` settles: to place a pass's state read. */
     gateStateRead: null as { scopeId: string; until: Promise<void> } | null,
     /** Run after a scope's switch move completes, before its answer returns to the host. */
     afterMove: null as (() => Promise<void>) | null,
     /** Delay the NEXT hold read by this long, once: a slow read still in flight. */
     slowNextReadMs: 0,
+    /** #1834: answer every system-door gate with an instance that is never the serving one. */
+    movingInstance: false,
+    /** #1834: how many system-door gates were read while `movingInstance` was set. */
+    doorGates: 0,
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -3081,8 +3234,14 @@ function countingScopes(ns: DurableObjectNamespace) {
             : async (...args: unknown[]) => {
                 counts.scopeCalls += 1;
                 const gate = counts.gateStateRead;
-                if (prop === 'systemScheduleState' && gate && id.equals(ns.idFromName(gate.scopeId))) {
+                if (prop === 'systemDoorState' && gate && id.equals(ns.idFromName(gate.scopeId))) {
                   await gate.until;
+                }
+                // #1834: the gate answers an instance that never serves, so every pinned call is refused as moved.
+                if (prop === 'systemDoorState' && counts.movingInstance) {
+                  counts.doorGates += 1;
+                  const answer = (await real[prop]!(...args)) as { state: string; instance: string };
+                  return { ...answer, instance: crypto.randomUUID() };
                 }
                 const statusRead = prop === 'systemGrantsStatus' ? ++counts.statusReads : 0;
                 if (statusRead && counts.aroundStatusRead) await counts.aroundStatusRead(statusRead, 'before');
