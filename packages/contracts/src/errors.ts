@@ -521,10 +521,11 @@ export function problemForStatus(status: number, detail?: string, instance?: str
 /**
  * The statuses an operation can actually answer with today, for the emitted document.
  *
- * `precondition_failed` (412) and `rate_limited` (429) are declared in the taxonomy
- * so that `If-Match` (#129) and rate limiting (#130) add no vocabulary when they
- * land — but nothing raises them yet, and documenting a failure that cannot occur is
- * worse than documenting none. They join this list with the features that raise them.
+ * `precondition_failed` (412) was declared in the taxonomy so that `If-Match` (#129)
+ * added no vocabulary when it landed, and it is documented per operation, only where a
+ * precondition can be sent. `rate_limited` (429) joined this list with the feature that
+ * raises it (#130): the router counts every hosted request before any operation runs, so
+ * every operation can answer it.
  *
  * This narrows the RFC's §6 Q1 leaning ("emit the full set") on the same reasoning
  * that motivated the question.
@@ -536,6 +537,7 @@ export const DOCUMENTED_ERROR_CODES: readonly ErrorCode[] = [
   'forbidden',
   'not_found',
   'conflict',
+  'rate_limited',
   'unavailable',
   'internal',
 ];

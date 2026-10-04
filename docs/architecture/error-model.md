@@ -127,7 +127,7 @@ A tagged union in `@substrat-run/contracts`. Closed, because an open one is a su
 | `conflict` | 409 | Well-formed, but conflicts with current state: illegal transition, `already taken`, immutable-after-export, `not active`. Carries `reason`. |
 | `validation_failed` | 400 | Input did not parse. Carries `errors: [{ path, message }]`, mapped from the Zod issue list. |
 | `precondition_failed` | 412 | Reserved for `If-Match` (#129). Declared now, unused, so that feature adds no vocabulary. |
-| `rate_limited` | 429 | Reserved for #130. Carries `retryAfter`. |
+| `rate_limited` | 429 | Over a request budget (#130): the router, or `vertical-host`'s `rateLimit()` on a node host. Carries `retryAfter`, beside a `Retry-After` header. |
 | `unavailable` | 503 | A deployment fact, not a fault in the request — e.g. `SecretBoxUnconfiguredError`, a host started without a seal key. |
 | `internal` | 500 | Everything unmatched. **Generic body, always.** |
 

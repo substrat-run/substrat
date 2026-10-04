@@ -1855,6 +1855,7 @@ export * from './live.js';
 // platform-call check every deployed vertical mounts.
 export * from './invocation-log.js';
 export * from './routed-node.js';
+export * from './rate-limit.js';
 export * from './platform-call.js';
 export * from './scope-sweep-host.js';
 export {
