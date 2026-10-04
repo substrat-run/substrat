@@ -89,7 +89,7 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
   // A directory of this suite's own (#1899's pattern): the host addresses 'control-plane', and
   // this resolves it to a fresh directory object, so the restore cases below replace nothing
   // another suite reads, and the epoch starts at 0 whatever ran before.
-  const directoryName = `lifecycle-delivery-${ulid()}`;
+  let directoryName = `lifecycle-delivery-${ulid()}`;
   const directory = {
     idFromName: () => env.CONTROL_PLANE.idFromName(directoryName),
     get: (id: DurableObjectId) => env.CONTROL_PLANE.get(id),
@@ -276,6 +276,26 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       await expect(servedHere(t, s)).rejects.toThrow(/not active/);
       await restoreTo(liveCopy);
       await expect(servedHere(t, s)).resolves.toBeDefined();
+    });
+
+    it('a scope with NO receipt in the restored copy (activated silently, before any restore) still converges', async () => {
+      // A directory never restored, so the activation posts nothing and leaves no receipt.
+      const kept = directoryName;
+      directoryName = `lifecycle-fresh-${ulid()}`;
+      try {
+        await warmControlPlane(directory);
+        const t = await tenantOf();
+        const s = await hosted(t);
+        expect(activations.get(s)).toEqual([]);
+        const copy = await platform().admin.exportDirectory(actor); // no receipt row for s
+        await platform().admin.suspendScope(actor, t, s);
+        await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+        await restoreTo(copy);
+        // the copy says active and holds no receipt: after a restore, that is drift
+        await expect(servedHere(t, s)).resolves.toBeDefined();
+      } finally {
+        directoryName = kept;
+      }
     });
 
     it('a restore that leaves the statuses as they were still re-converges, so later transitions land', async () => {
