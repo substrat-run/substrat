@@ -160,7 +160,11 @@ export const PROBLEM_EXTENSIONS = {
     entity: entityRef.optional(),
   }),
   rate_limited: z.object({ retryAfter: z.number().int().nonnegative().optional() }),
-  unavailable: z.strictObject({}),
+  /**
+   * `reason` narrows a refusal a caller should wait out rather than report, as `forbidden`'s does:
+   * `system_door_wait` (#1834), a scope that kept restarting under a module's system door.
+   */
+  unavailable: z.object({ reason: z.string().min(1).optional() }),
   internal: z.strictObject({}),
 } as const satisfies Record<ErrorCode, z.ZodType>;
 

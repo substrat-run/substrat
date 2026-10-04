@@ -553,6 +553,9 @@ export {
   JOB_RUN_LIST_MAX,
   jobRunListLimit,
   JOB_STEP_REUSED,
+  SYSTEM_DOOR_WAIT,
+  JOB_DEFER_MS,
+  JOB_RUN_DUE_AT,
   assertQueueSafe,
   jobRunOf,
   runDueJobRuns,
@@ -560,6 +563,7 @@ export {
   startJobRun,
 } from './job-run.js';
 export type {
+  JobDueKey,
   JobDriveReport,
   JobHandler,
   JobPassContext,

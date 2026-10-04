@@ -7,6 +7,7 @@ import {
   platformActorId,
   principalId,
   scopeId,
+  substratError,
   tenantId,
   type PrincipalId,
   type ScopeId,
@@ -15,6 +16,7 @@ import {
   CANCELLED_JOB_NOTE,
   REDACTED_INTENT_MARKER,
   REDACTED_JOB_NOTE,
+  SYSTEM_DOOR_WAIT,
   ulid,
   type JobPassContext,
   type ScopeHost,
@@ -230,12 +232,52 @@ export function jobRunContractSuite(
         { maxAttempts: 2, baseDelayMs: 0 },
       );
 
+      // #1834: a job whose step throws the system door's PUBLIC "not now" shape itself. A host's
+      // door refusal defers a pass; this is not one, whatever it looks like, and must count.
+      host.registerJob(
+        JOBS_MODULE,
+        'mimic',
+        async (pass: JobPassContext) => {
+          await pass.step('mimic', () => {
+            throw substratError('forbidden', 'the system door says not now', { reason: SYSTEM_DOOR_WAIT });
+          });
+          return { done: true };
+        },
+        { maxAttempts: 2, baseDelayMs: 0 },
+      );
+
       await host.admin.createTenant(staff, { id: t, slug: 'jobs', name: 'Jobs' });
       await host.admin.grantEntitlement(staff, t, 'jobs');
     });
 
     afterAll(async () => {
       await fixture.cleanup();
+    });
+
+    /**
+     * #2028 review: the drive orders runs by when they became due, not by age. A run that failed and
+     * backed off became due again AFTER a run started meanwhile, so it queues behind that run rather
+     * than taking its turn on every drive.
+     */
+    it('a run due again after a failure queues behind one that was due before it, one run per drive (#1834)', async () => {
+      const s = await newScope();
+      const doomed = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'doomed', instance: 'first' });
+      const later = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'inert', instance: 'second' });
+      expect(later.id > doomed.id).toBe(true);
+      // A clock tick, so the retry below is due strictly after the later run started (no tie on time).
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      // The older run heads the first drive and fails; its retry is due after the later run's start.
+      expect(await host.runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, retrying: 1 });
+      expect(await host.runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, completed: 1 });
+      expect(await runOf(s, later.id)).toMatchObject({ status: 'done' });
+    });
+
+    it("a step throwing the system door's public reason is an ordinary failure: only a host's own door refusal defers (#1834)", async () => {
+      const s = await newScope();
+      const run = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'mimic', instance: 'mimic', payload: {} });
+      expect(await host.runDueJobs(t, s)).toMatchObject({ retrying: 1, deferred: 0 });
+      expect(await host.runDueJobs(t, s)).toMatchObject({ failed: 1, deferred: 0 });
+      expect(await runOf(s, run.id)).toMatchObject({ status: 'failed', lastError: expect.stringMatching(/not now/) });
     });
 
     it('keeps a declared subject when coalescing and refuses a different subject', async () => {

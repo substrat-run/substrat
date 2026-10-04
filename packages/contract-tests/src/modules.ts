@@ -1367,6 +1367,12 @@ export const scheduleMod: ModuleRegistration = {
     'sched/needs-admin': (async (ctx) => {
       assertAllowed(await ctx.check('sched:admin' as PermissionKey));
     }) as OperationHandler<never, unknown>,
+    // #1834: fails with whatever message it is handed, after the check the system door's caller
+    // passes. An operation's own error, whatever its text, must reach the caller as itself.
+    'sched/fail': (async (ctx, input: { message: string }) => {
+      assertAllowed(await ctx.check('sched:tick' as PermissionKey));
+      throw new Error(input.message);
+    }) as OperationHandler<never, unknown>,
     'sched/count': ((ctx) =>
       ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM sched_ticks')[0]!.n) as OperationHandler<
       never,

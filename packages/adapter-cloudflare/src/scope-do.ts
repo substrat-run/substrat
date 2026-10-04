@@ -1,4 +1,5 @@
 import { REWIND_REFUSED } from './rewind-refusal.js';
+import { SYSTEM_DOOR_MOVED, type SystemDoorMoved } from './system-door.js';
 import { DurableObject } from 'cloudflare:workers';
 import {
   ATTACHMENT_ADDED,
@@ -193,12 +194,15 @@ import {
   withheldNote,
   type ExportRow,
   JOB_RUN_DDL,
+  JOB_RUN_DUE_AT,
   jobRunListLimit,
+  SYSTEM_DOOR_WAIT,
   type EntityVersion,
   type EntityVersionRow,
   type JobRunFilter,
   type JobRunPatch,
   type JobRunRow,
+  type JobDueKey,
   type JobStepRow,
   type LiveChange,
   type ScheduleStateKind,
@@ -1032,6 +1036,22 @@ export function splitSqlStatements(sql: string): string[] {
   }
   if (cur.trim()) out.push(cur.trim());
   return out;
+}
+
+/**
+ * #1834: the pin missed. Thrown only by `assertSystemDoor`, and module-private, so no operation can
+ * throw one: the two RPCs a door call reaches turn it into the `SystemDoorMoved` ANSWER, by class
+ * identity, and an operation's own error, whatever its text, stays a failure.
+ */
+class SystemDoorMovedError extends Error {}
+
+/** #1834: the brand only `assertSystemDoor` sets, so nothing else can make a `SystemDoorPass`. */
+const SYSTEM_DOOR_PASSED: unique symbol = Symbol('system door passed');
+
+/** #1834: proof that this call passed the system door's check, naming the module it acts as. */
+interface SystemDoorPass {
+  readonly moduleId: string;
+  readonly [SYSTEM_DOOR_PASSED]: true;
 }
 
 export function defineScopeDO(
@@ -2214,6 +2234,13 @@ export function defineScopeDO(
        * placeholder, and the coordinator refuses a success without the acknowledgement.
        */
       verticalCaller?: VerticalCaller,
+      /**
+       * #1834: set on a system-door call — the instance whose state read the door's gate
+       * consulted the rewind hold against. On any other instance nothing runs and the answer is
+       * `systemDoorMoved` instead, because a PITR restore always restarts this object, so another
+       * instance may be rewound storage the gate never saw. The reply carries `systemDoor.honoured`.
+       */
+      systemDoorInstance?: string,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -2225,6 +2252,10 @@ export function defineScopeDO(
       capability?: { honoured: boolean };
       /** #1706: set iff this DO understood `verticalCaller`. */
       vertical?: { honoured: boolean };
+      /** #1834: set iff this DO understood `systemDoorInstance`. */
+      systemDoor?: { honoured: boolean };
+      /** #1834: the pin missed, so nothing ran — set only by `assertSystemDoor`, never by a failure. */
+      systemDoorMoved?: true;
       /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
       exported?: number;
       /**
@@ -2250,8 +2281,10 @@ export function defineScopeDO(
             impersonation,
             capabilitySession,
             verticalCaller,
+            systemDoorInstance,
           );
         } catch (err) {
+          if (err instanceof SystemDoorMovedError) return { result: undefined, platformRequests: 0, ...SYSTEM_DOOR_MOVED };
           throw toRpcError(err);
         }
       }
@@ -2269,8 +2302,11 @@ export function defineScopeDO(
           impersonation,
           capabilitySession,
           verticalCaller,
+          systemDoorInstance,
         );
       } catch (err) {
+        // #1834: the pin missed — an answer, never a failure an operation could have produced.
+        if (err instanceof SystemDoorMovedError) return { result: undefined, platformRequests: 0, ...SYSTEM_DOOR_MOVED };
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
         // coordinator. `toRpcError` is not applied — that exists to make a throw
         // survivable, and this is not a throw.
@@ -2295,6 +2331,8 @@ export function defineScopeDO(
       capabilitySession?: string,
       /** #1706: the calling vertical, as the platform named it. See `invoke` above. */
       verticalCaller?: VerticalCaller,
+      /** #1834: the instance the system door's gate read. See `invoke` above. */
+      systemDoorInstance?: string,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -2314,6 +2352,8 @@ export function defineScopeDO(
       capability?: { honoured: boolean };
       /** #1706: the acknowledgement for `verticalCaller`, on the same reasoning. */
       vertical?: { honoured: boolean };
+      /** #1834: the acknowledgement for `systemDoorInstance`, on the same reasoning. */
+      systemDoor?: { honoured: boolean };
       /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
       exported?: number;
       /**
@@ -2421,6 +2461,9 @@ export function defineScopeDO(
         // one call. Same placement as the SQLite adapter's actor task, for this reason.
         this.invocationId = invokeOptions?.invocationId ?? null;
         try {
+        // #1834: before anything opens. This instance is the storage the call meets, for the
+        // whole call: a restore restarts the object, so it cannot move under a running body.
+        const systemDoor = this.assertSystemDoor(systemModuleId, systemDoorInstance);
         // #1672: the capability session, resolved on EVERY call and here — inside the queued
         // body, the one region where this call holds the DO to itself — so nothing can
         // revoke between this read and the transaction. Refuses a stale session, a revoked
@@ -2507,7 +2550,7 @@ export function defineScopeDO(
               scopeId,
               undefined,
               connectionId,
-              systemModuleId,
+              systemDoor,
               signals,
               impersonation,
               operation,
@@ -2589,6 +2632,7 @@ export function defineScopeDO(
               impersonation: { honoured: true },
               ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
               ...(verticalCaller !== undefined ? { vertical: { honoured: true } } : {}),
+              ...(systemDoorInstance !== undefined ? { systemDoor: { honoured: true } } : {}),
               ...(idempotencyKey !== undefined
                 ? { idempotency: { keyHonoured: true, replayed } }
                 : {}),
@@ -2657,6 +2701,8 @@ export function defineScopeDO(
           ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
           // #1706: the same, for the peer door.
           ...(verticalCaller !== undefined ? { vertical: { honoured: true } } : {}),
+          // #1834: the same, for the system door's instance pin.
+          ...(systemDoorInstance !== undefined ? { systemDoor: { honoured: true } } : {}),
           // The acknowledgement the coordinator's skew check reads (#116), on the
           // same reasoning as `ifMatchChecked` below and with a sharper failure: a
           // DO too old to know about keys would EXECUTE THE OPERATION AGAIN and
@@ -3188,8 +3234,17 @@ export function defineScopeDO(
       moduleId: ModuleId,
       tenantId: TenantId,
       scopeId: ScopeId,
-    ): Promise<AttachmentRecord | null> {
+      /** #1834: the instance the system door's gate read; see `invoke`. */
+      systemDoorInstance?: string,
+    ): Promise<AttachmentRecord | null | SystemDoorMoved> {
       await this.ensureMigrations();
+      let systemDoor: SystemDoorPass;
+      try {
+        systemDoor = this.assertSystemDoor(moduleId, systemDoorInstance)!;
+      } catch (err) {
+        if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
+        throw toRpcError(err);
+      }
       if (!this.modules.has(moduleId)) {
         throw toRpcError(substratError('not_found', `module not registered in this scope: ${moduleId}`));
       }
@@ -3199,7 +3254,7 @@ export function defineScopeDO(
       try {
         const ctx = this.operationContext(
           this.systemPrincipal, tenantId, scopeId, undefined, undefined,
-          moduleId, undefined, undefined, 'attachments.open',
+          systemDoor, undefined, undefined, 'attachments.open',
         );
         assertAllowed(await ctx.check(gate.read, record.entity));
       } catch (err) {
@@ -3474,6 +3529,46 @@ export function defineScopeDO(
      */
     async systemScheduleState(moduleId: string): Promise<SystemScheduleState> {
       return systemScheduleState(this.switchSql(), moduleId, new Date().toISOString());
+    }
+
+    /**
+     * #1834: the system door's state read — `systemScheduleState`, and the instance that
+     * answered it. The door consults the rewind hold after this read and pins every call it
+     * then makes to this instance (`assertSystemDoor`).
+     */
+    async systemDoorState(moduleId: string): Promise<{ state: SystemScheduleState; instance: string }> {
+      return { state: await this.systemScheduleState(moduleId), instance: this.instanceId };
+    }
+
+    /**
+     * #1834: the system door's check on this side, and the ONLY maker of the `SystemDoorPass`
+     * the operation context needs to act as `system:<moduleId>`. A call acting as a module must
+     * carry the instance the host's door gate read (refused without one: no door gated it), and
+     * is refused on any other instance. A PITR restore always restarts this object, so a call
+     * landing on a new instance may meet rewound storage whose module the gate never checked
+     * against the rewind hold. Both are refused before anything opens; the moved one is the
+     * module-private `SystemDoorMovedError`, which the RPC answers as `SystemDoorMoved`, so the door
+     * gates again and retries. No module, no pass.
+     */
+    private assertSystemDoor(moduleId: string | undefined, expected: string | undefined): SystemDoorPass | undefined {
+      if (moduleId === undefined) return undefined;
+      // Strict, and deliberately so: no pin means no door gated this call, so it is refused rather
+      // than run unchecked. The one innocent caller is a worker a deploy behind, still running host
+      // code from before the pin, during a rolling deploy. Its refusal is transient: the host and this
+      // object ship in the same bundle, so the window lasts as long as the rollout. Nothing ran, and
+      // the reason says "not now" (`SYSTEM_DOOR_WAIT`) to whoever reads it: a schedule fires on the
+      // next pass, and a job run retries on its next drive.
+      if (expected === undefined) {
+        throw substratError(
+          'forbidden',
+          `a call acting as module '${moduleId}' reached this scope without passing the system door`,
+          { reason: SYSTEM_DOOR_WAIT },
+        );
+      }
+      if (expected !== this.instanceId) {
+        throw new SystemDoorMovedError("the scope restarted after the system door's gate read it; gate it again");
+      }
+      return { moduleId, [SYSTEM_DOOR_PASSED]: true };
     }
 
     /**
@@ -4204,6 +4299,23 @@ export function defineScopeDO(
           limit,
         )
         .toArray() as unknown as JobRunRow[];
+    }
+
+    /**
+     * #1834: the drive's ONE snapshot of due runs — keys only, in the order they became due
+     * (`JOB_RUN_DUE_AT`, then id). Spelled exactly as the pure adapter spells it. `jobRunsDue`
+     * above stays for a coordinator a deploy behind, which still pages by id.
+     */
+    async jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]> {
+      return this.sql
+        .exec(
+          `SELECT id, module_id, job FROM _substrat_job_runs
+            WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            ORDER BY ${JOB_RUN_DUE_AT}, id LIMIT ?`,
+          now,
+          max,
+        )
+        .toArray() as unknown as JobDueKey[];
     }
 
     /** The operator read, newest first. */
@@ -6011,7 +6123,11 @@ export function defineScopeDO(
       scopeId: ScopeId,
       systemActor?: { system: string },
       connectionId?: string,
-      systemModuleId?: string,
+      /**
+       * #1834: the system subject, only as the door check hands it out (`assertSystemDoor`) — so
+       * no path can act as `system:<moduleId>` without passing that check.
+       */
+      systemDoor?: SystemDoorPass,
       /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
       signals?: { platformRequests: number },
       /**
@@ -6077,8 +6193,8 @@ export function defineScopeDO(
         ? peerSubject
         : capabilityId
         ? { kind: 'capability', id: capabilityId as CapabilityId }
-        : systemModuleId
-          ? { kind: 'system', id: systemModuleId as ModuleId }
+        : systemDoor
+          ? { kind: 'system', id: systemDoor.moduleId as ModuleId }
           : connectionId
             ? { kind: 'connection', id: connectionId }
             : { kind: 'principal', id: principal };
