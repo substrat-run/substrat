@@ -2350,16 +2350,18 @@ export function scopeHostContractSuite(
       it('counts every call that made the move, inside the window', async () => {
         const stub = await host.getScope(alice, t1, s1);
         const w = window();
+        const earlier = { ...w, since: new Date(Date.parse(w.since) - 120_000).toISOString(), until: w.since };
         const before = total(await host.admin.operationSeries(staff, t1, s1, w));
+        const beforeEarlier = total(await host.admin.operationSeries(staff, t1, s1, earlier));
         await stub.invoke('test/move', { entityId: 'v1', state: 'draft' });
         await stub.invoke('test/move', { entityId: 'v1', state: 'live' });
         await stub.invoke('test/move', { entityId: 'v2', state: 'draft' });
         const after = await host.admin.operationSeries(staff, t1, s1, w);
         expect(total(after)).toBe(before + 3);
         expect(after.series[0]!.buckets.every((b) => Date.parse(b.start) >= Date.parse(w.since))).toBe(true);
-        // The twin: a window that closed before the calls ran counts none of them.
-        const earlier = { ...w, since: new Date(Date.parse(w.since) - 120_000).toISOString(), until: w.since };
-        expect(total(await host.admin.operationSeries(staff, t1, s1, earlier))).toBe(0);
+        // The twin: a window that closed before the calls ran counts none of them. Compared
+        // with itself, not with zero: earlier cases in this scope may have moved inside it.
+        expect(total(await host.admin.operationSeries(staff, t1, s1, earlier))).toBe(beforeEarlier);
       });
 
       it("answers only for the tenant's own scope: a mismatched pair is refused, another tenant's scope counts none of it", async () => {
