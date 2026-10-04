@@ -1,5 +1,6 @@
 import { env as ambientEnv } from 'cloudflare:workers';
 import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
+import { isSystemDoorMoved, SYSTEM_DOOR_REGATES } from './system-door.js';
 import {
   delegatedReadParams,
   fromWireFailure,
@@ -1041,6 +1042,11 @@ interface ScopeStubRpc {
      * coordinator refuses any success without `vertical`.
      */
     verticalCaller?: VerticalCaller,
+    /**
+     * #1834: the instance the system door's gate read. The DO refuses the call on any other
+     * instance (`SYSTEM_DOOR_MOVED`), and acknowledges with `systemDoor`.
+     */
+    systemDoorInstance?: string,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -1086,6 +1092,8 @@ interface ScopeStubRpc {
     capability?: { honoured: boolean };
     /** #1706: present iff the DO understood `verticalCaller`, on the same reasoning. */
     vertical?: { honoured: boolean };
+    /** #1834: present iff the DO understood `systemDoorInstance`, on the same reasoning. */
+    systemDoor?: { honoured: boolean };
     /** #1705 PR 2: exported-type rows the commit added; absent means none (or an older DO). */
     exported?: number;
     /**
@@ -1111,6 +1119,8 @@ interface ScopeStubRpc {
   /** Where a module's schedules stand on this scope (#383, #1666) — the kernel's
    *  `systemScheduleState`, run in the scope's own storage. */
   systemScheduleState(moduleId: string): Promise<SystemScheduleState>;
+  /** #1834: the system door's state read, and the instance that answered it. */
+  systemDoorState(moduleId: string): Promise<{ state: SystemScheduleState; instance: string }>;
   /** Move a module's schedule switch on this scope (#1666) — the kernel's
    *  `switchSystemSchedules`, as one serialized unit. */
   switchSystemSchedules(
@@ -1287,6 +1297,8 @@ interface ScopeStubRpc {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    /** #1834: the instance the system door's gate read; refused on any other. */
+    systemDoorInstance?: string,
   ): Promise<AttachmentRecord | null>;
   attachmentRemove(
     attachmentId: string,
@@ -1998,6 +2010,25 @@ export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
  */
 function ambientAttachmentBucket(tenantId: string): unknown {
   return (ambientEnv as unknown as Record<string, unknown>)[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)] ?? null;
+}
+
+/** #1834: what the system door's gate read: the module's state, the instance, the hold. */
+interface SystemDoorGate {
+  state: SystemScheduleState;
+  /** The scope instance that answered the state read; every call through the door is pinned to it. */
+  instance: string;
+  /** The rewind hold keeps the module off (#1819). Only consulted for a module that is `on`. */
+  held: boolean;
+  /** The hold could not be read; the gate failed open, as `switchHeld` documents. */
+  error?: string;
+}
+
+/** #1834: an opened system door. `through` runs one call gated and pinned (`openSystemDoor`). */
+interface SystemDoor {
+  moduleId: ModuleId;
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  through<T>(call: (instance: string) => Promise<T>): Promise<T>;
 }
 
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
@@ -3453,15 +3484,17 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<Pick<ScopeAttachments, 'open'>> {
-    // Reuse the system invoke door's module, tenant and lifecycle gate. The DO
-    // authorizes each open against the attachment target's read permission as
+    // Reuse the system invoke door's module, tenant and lifecycle gate, and its rewind gate
+    // (#1834). The DO authorizes each open against the attachment target's read permission as
     // system:<moduleId>; the worker reads bytes only after that gate succeeds.
-    await this.getSystemScope(moduleId, tenantId, scopeId);
+    const door = await this.openSystemDoor(moduleId, tenantId, scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     const stub = this.scopeStub(scopeId);
     return {
       open: async (attachmentId) => {
-        const record = await stub.systemAttachmentAuthorize(attachmentId, moduleId, tenantId, scopeId);
+        const record = await door.through((instance) =>
+          stub.systemAttachmentAuthorize(attachmentId, moduleId, tenantId, scopeId, instance),
+        );
         return record ? this.openAttachmentBytes(store, scopeId, record) : null;
       },
     };
@@ -3967,12 +4000,88 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<ScopeStub> {
+    return this.systemStub(await this.openSystemDoor(moduleId, tenantId, scopeId));
+  }
+
+  /** The system door's invoke stub, over a door already opened (and gated). */
+  private systemStub(door: SystemDoor): ScopeStub {
+    return this.buildStub(door.tenantId, door.scopeId, undefined, undefined, door.moduleId, undefined, undefined, undefined, undefined, door);
+  }
+
+  /**
+   * #1834: the system door — the ONE place every entry acting as `system:<moduleId>` passes
+   * through: a schedule's fire, a job run's `pass.scope()`, a module's attachment open. The
+   * module must be registered here and the scope live, as before. Then the door GATES: the
+   * scope's own state read for the module, and after it the rewind hold (#1819), in the order
+   * `SWITCH_HOLD_SETTLE_MS` relies on. A module the hold keeps off is refused here, as a
+   * schedule pass skips it.
+   *
+   * A gate read is about the instance that answered it, and a door can be held for as long as
+   * a job pass runs. So every call through the door is PINNED to that instance: the DO refuses
+   * one that lands on another (`SYSTEM_DOOR_MOVED`), since a PITR restore always restarts the
+   * object, and the door gates again and retries. A restart within one call's round trip is
+   * rare, so past `SYSTEM_DOOR_REGATES` it fails closed (`unavailable`). No clock is involved:
+   * the gate and the call meet the same storage, or the call does not run.
+   */
+  private async openSystemDoor(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    gated?: SystemDoorGate,
+  ): Promise<SystemDoor> {
     if (!this.moduleIds.has(moduleId)) {
       throw new Error(`module not registered on this host: ${moduleId}`);
     }
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    return this.buildStub(tenantId, scopeId, undefined, undefined, moduleId);
+    // A gate this door reads itself reports a hold it could not read; one handed in was the
+    // caller's to report (`runDueSchedules` puts it on its pass report).
+    const regate = async (): Promise<SystemDoorGate> => {
+      const fresh = await this.systemDoorGate(scopeId, moduleId);
+      if (fresh.error) console.error(`substrat: system door ${moduleId} on ${scopeId}: ${fresh.error}`);
+      return fresh;
+    };
+    let gate = gated ?? (await regate());
+    return {
+      moduleId,
+      tenantId,
+      scopeId,
+      through: async <T>(call: (instance: string) => Promise<T>): Promise<T> => {
+        for (let regates = 0; ; regates += 1) {
+          if (gate.held) {
+            throw substratError(
+              'forbidden',
+              `module '${moduleId}' is held off on this scope: it was rewound to before its schedule ` +
+                'switch was turned off, and it stays off until the switch is applied again',
+            );
+          }
+          try {
+            return await call(gate.instance);
+          } catch (err) {
+            if (!isSystemDoorMoved(err)) throw err;
+            if (regates >= SYSTEM_DOOR_REGATES) {
+              throw substratError(
+                'unavailable',
+                `the scope kept restarting under the system door of module '${moduleId}' ` +
+                  `(${regates + 1} attempts); nothing ran. Retry later`,
+              );
+            }
+            gate = await regate();
+          }
+        }
+      },
+    };
+  }
+
+  /**
+   * #1834: the system door's gate — the scope's state read for the module, the instance that
+   * answered it, and then (only for a module the scope has on) the rewind hold (#1819). The
+   * hold is read AFTER the state, which is the order `switchHeld` needs.
+   */
+  private async systemDoorGate(scopeId: ScopeId, moduleId: ModuleId): Promise<SystemDoorGate> {
+    const { state, instance } = await this.scopeStub(scopeId).systemDoorState(moduleId);
+    const hold = state === 'on' ? await this.switchHeld(scopeId, moduleId) : { held: false };
+    return { state, instance, held: hold.held, ...(hold.error ? { error: hold.error } : {}) };
   }
 
   /**
@@ -4319,13 +4428,14 @@ export class CloudflareScopeHost implements ScopeHost {
     // never held the module's grant (a foreign vertical's) is a quiet no-op, exactly as
     // before. A scope switched OFF reports every schedule `skipped`, never `failed`, and
     // does not touch its cadence rows — so a restore fires a due schedule on the next pass.
-    const state = await stub.systemScheduleState(moduleId);
+    // #1819: a scope rewound to before its switch was pulled answers `on`, and the rewind held
+    // the module outside the scope. Both are read by the system door's own gate (#1834), which
+    // every fire below then goes through, pinned to the instance this read came from.
+    const gate = await this.systemDoorGate(scopeId, moduleId);
+    const { state } = gate;
     if (state === 'ungranted') return report;
-    // #1819: a scope rewound to before its switch was pulled answers `on`. The rewind held the
-    // module outside the scope; read AFTER the state, which is the order `switchHeld` needs.
-    const hold = state === 'on' ? await this.switchHeld(scopeId, moduleId) : { held: false };
-    if (hold.error) report.errors.push({ operation: 'switch-hold', error: hold.error });
-    if (state === 'off' || hold.held) {
+    if (gate.error) report.errors.push({ operation: 'switch-hold', error: gate.error });
+    if (state === 'off' || gate.held) {
       for (const schedule of schedules) {
         report.skipped += 1;
         report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
@@ -4335,6 +4445,7 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     const now = Date.now();
     const lines = asyncLinePass();
+    let door: SystemDoor | undefined;
     for (const schedule of schedules) {
       const last = await stub.scheduleLastRun(schedule.operation);
       const lastRun = last ? Date.parse(last) : null;
@@ -4354,7 +4465,10 @@ export class CloudflareScopeHost implements ScopeHost {
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
       try {
-        const scope = await this.getSystemScope(moduleId, tenantId, scopeId);
+        // The gate above already answered for this pass; a fire that meets a restarted scope
+        // is gated again by the door (#1834).
+        door ??= await this.openSystemDoor(moduleId, tenantId, scopeId, gate);
+        const scope = this.systemStub(door);
         await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         report.fired += 1;
       } catch (err) {
@@ -4421,6 +4535,8 @@ export class CloudflareScopeHost implements ScopeHost {
      * every invoke, inside its queue, and acknowledges it — the capability session's pattern.
      */
     verticalCaller?: VerticalCaller,
+    /** #1834: the system door this stub acts through — every invoke is gated and pinned by it. */
+    systemDoor?: SystemDoor,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const cp = this.cp;
@@ -4497,21 +4613,32 @@ export class CloudflareScopeHost implements ScopeHost {
         // K-42: resolved per invoke, so expiry and `endImpersonation` both bite.
         const session =
           sessionId === undefined ? undefined : await this.resolveImpersonation(sessionId, tenantId, scopeId);
-        const envelope = await stub.invoke(
-          operation,
-          input,
-          asPrincipalId,
-          tenantId,
-          scopeId,
-          connectionId,
-          requiredKey,
-          systemModuleId,
-          true,
-          invokeOptions,
-          session,
-          capabilitySession,
-          verticalCaller,
-        );
+        const send = (systemDoorInstance?: string) =>
+          stub.invoke(
+            operation,
+            input,
+            asPrincipalId,
+            tenantId,
+            scopeId,
+            connectionId,
+            requiredKey,
+            systemModuleId,
+            true,
+            invokeOptions,
+            session,
+            capabilitySession,
+            verticalCaller,
+            systemDoorInstance,
+          );
+        // #1834: through the system door, pinned to the instance its gate read. The DO's
+        // refusal comes back as a failure envelope, so it is rethrown for the door to re-gate.
+        const envelope = systemDoor
+          ? await systemDoor.through(async (instance) => {
+              const sent = await send(instance);
+              if (sent.failure && isSystemDoorMoved(sent.failure)) throw fromWireFailure(sent.failure);
+              return sent;
+            })
+          : await send();
         // The operation failed and the DO handed the error back as DATA — so it still
         // has its code and extensions, which a throw across this boundary would have
         // stripped down to a message (#113 §3). Rethrown here, where the caller expects
@@ -4570,6 +4697,15 @@ export class CloudflareScopeHost implements ScopeHost {
           throw substratError(
             'unavailable',
             `${operation} ran on a scope host that did not understand peer callers. ` +
+              'Retry once the scope has been migrated',
+          );
+        }
+        // #1834, the same shape: a DO too old to know the system door's pin ran the call
+        // without checking it met the storage the door's gate read.
+        if (systemDoor !== undefined && envelope.systemDoor?.honoured !== true) {
+          throw substratError(
+            'unavailable',
+            `${operation} ran on a scope host that did not understand the system door's pin. ` +
               'Retry once the scope has been migrated',
           );
         }

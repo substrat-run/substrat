@@ -1,4 +1,5 @@
 import { REWIND_REFUSED } from './rewind-refusal.js';
+import { SYSTEM_DOOR_MOVED } from './system-door.js';
 import { DurableObject } from 'cloudflare:workers';
 import {
   ATTACHMENT_ADDED,
@@ -2209,6 +2210,13 @@ export function defineScopeDO(
        * placeholder, and the coordinator refuses a success without the acknowledgement.
        */
       verticalCaller?: VerticalCaller,
+      /**
+       * #1834: set on a system-door call — the instance whose state read the door's gate
+       * consulted the rewind hold against. Refused (`SYSTEM_DOOR_MOVED`) on any other instance,
+       * because a PITR restore always restarts this object, so another instance may be rewound
+       * storage the gate never saw. The reply carries `systemDoor.honoured`.
+       */
+      systemDoorInstance?: string,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -2220,6 +2228,8 @@ export function defineScopeDO(
       capability?: { honoured: boolean };
       /** #1706: set iff this DO understood `verticalCaller`. */
       vertical?: { honoured: boolean };
+      /** #1834: set iff this DO understood `systemDoorInstance`. */
+      systemDoor?: { honoured: boolean };
       /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
       exported?: number;
       /**
@@ -2245,6 +2255,7 @@ export function defineScopeDO(
             impersonation,
             capabilitySession,
             verticalCaller,
+            systemDoorInstance,
           );
         } catch (err) {
           throw toRpcError(err);
@@ -2264,6 +2275,7 @@ export function defineScopeDO(
           impersonation,
           capabilitySession,
           verticalCaller,
+          systemDoorInstance,
         );
       } catch (err) {
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
@@ -2290,6 +2302,8 @@ export function defineScopeDO(
       capabilitySession?: string,
       /** #1706: the calling vertical, as the platform named it. See `invoke` above. */
       verticalCaller?: VerticalCaller,
+      /** #1834: the instance the system door's gate read. See `invoke` above. */
+      systemDoorInstance?: string,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -2309,6 +2323,8 @@ export function defineScopeDO(
       capability?: { honoured: boolean };
       /** #1706: the acknowledgement for `verticalCaller`, on the same reasoning. */
       vertical?: { honoured: boolean };
+      /** #1834: the acknowledgement for `systemDoorInstance`, on the same reasoning. */
+      systemDoor?: { honoured: boolean };
       /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
       exported?: number;
       /**
@@ -2416,6 +2432,9 @@ export function defineScopeDO(
         // one call. Same placement as the SQLite adapter's actor task, for this reason.
         this.invocationId = invokeOptions?.invocationId ?? null;
         try {
+        // #1834: before anything opens. This instance is the storage the call meets, for the
+        // whole call: a restore restarts the object, so it cannot move under a running body.
+        this.assertSystemDoor(systemDoorInstance);
         // #1672: the capability session, resolved on EVERY call and here — inside the queued
         // body, the one region where this call holds the DO to itself — so nothing can
         // revoke between this read and the transaction. Refuses a stale session, a revoked
@@ -2584,6 +2603,7 @@ export function defineScopeDO(
               impersonation: { honoured: true },
               ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
               ...(verticalCaller !== undefined ? { vertical: { honoured: true } } : {}),
+              ...(systemDoorInstance !== undefined ? { systemDoor: { honoured: true } } : {}),
               ...(idempotencyKey !== undefined
                 ? { idempotency: { keyHonoured: true, replayed } }
                 : {}),
@@ -2652,6 +2672,8 @@ export function defineScopeDO(
           ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
           // #1706: the same, for the peer door.
           ...(verticalCaller !== undefined ? { vertical: { honoured: true } } : {}),
+          // #1834: the same, for the system door's instance pin.
+          ...(systemDoorInstance !== undefined ? { systemDoor: { honoured: true } } : {}),
           // The acknowledgement the coordinator's skew check reads (#116), on the
           // same reasoning as `ifMatchChecked` below and with a sharper failure: a
           // DO too old to know about keys would EXECUTE THE OPERATION AGAIN and
@@ -3183,8 +3205,15 @@ export function defineScopeDO(
       moduleId: ModuleId,
       tenantId: TenantId,
       scopeId: ScopeId,
+      /** #1834: the instance the system door's gate read; see `invoke`. */
+      systemDoorInstance?: string,
     ): Promise<AttachmentRecord | null> {
       await this.ensureMigrations();
+      try {
+        this.assertSystemDoor(systemDoorInstance);
+      } catch (err) {
+        throw toRpcError(err);
+      }
       if (!this.modules.has(moduleId)) {
         throw toRpcError(substratError('not_found', `module not registered in this scope: ${moduleId}`));
       }
@@ -3469,6 +3498,29 @@ export function defineScopeDO(
      */
     async systemScheduleState(moduleId: string): Promise<SystemScheduleState> {
       return systemScheduleState(this.switchSql(), moduleId, new Date().toISOString());
+    }
+
+    /**
+     * #1834: the system door's state read — `systemScheduleState`, and the instance that
+     * answered it. The door consults the rewind hold after this read and pins every call it
+     * then makes to this instance (`assertSystemDoor`).
+     */
+    async systemDoorState(moduleId: string): Promise<{ state: SystemScheduleState; instance: string }> {
+      return { state: systemScheduleState(this.switchSql(), moduleId, new Date().toISOString()), instance: this.instanceId };
+    }
+
+    /**
+     * #1834: refuse a system-door call pinned to another instance. A PITR restore always
+     * restarts this object, so a call landing on a new instance may meet rewound storage whose
+     * module the door's gate never checked against the rewind hold. Refused before anything
+     * opens, so the door can gate again and retry. Unpinned calls (no door) pass.
+     */
+    private assertSystemDoor(expected: string | undefined): void {
+      if (expected === undefined || expected === this.instanceId) return;
+      throw substratError(
+        'unavailable',
+        `${SYSTEM_DOOR_MOVED}the scope restarted after the system door's gate read it; gate it again`,
+      );
     }
 
     /**
