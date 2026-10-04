@@ -925,7 +925,7 @@ interface ScopeStubRpc {
    * Same return contract as `migrate()`.
    */
   retryMigrations(): Promise<number | null>;
-  /** Whether the scope was loaded as a copy (#2005): what a CP-less coordinator reads for primacy. */
+  /** Whether the scope is classified a copy (#2005, #2009): what a CP-less coordinator reads for primacy. */
   isCopy(): Promise<boolean>;
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
@@ -2277,8 +2277,9 @@ export class CloudflareScopeHost implements ScopeHost {
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects, so its deliveries are journaled terminal with the reason and no
     // handler runs. Asked of the directory where there is one. A CP-less host has none, so it
-    // asks the scope's own storage whether it was loaded as a copy (`_substrat_copy_origin`,
-    // which every copy holds) — a preview and a snapshot reach a hosted vertical as restores.
+    // asks the scope's own storage whether it is classified a copy (`_substrat_copy_origin`'s
+    // `is_copy`, #2009, set on the directory's word) — a preview and a snapshot reach a hosted
+    // vertical as restores the platform marks.
     // Asked on the first due event, once per pass: most passes have none, and the directory
     // is one global object.
     let inert: Promise<boolean> | undefined;
