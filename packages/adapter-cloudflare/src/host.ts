@@ -941,8 +941,14 @@ interface ScopeStubRpc {
   markCopy(): Promise<boolean>;
   /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
   lifecycle(): Promise<StoredScopeLifecycle | null>;
-  /** Store a delivered lifecycle unless a newer one is held (#1713, `writeLifecycle`). */
-  setLifecycle(next: ScopeLifecycle): Promise<LifecycleDelivery>;
+  /** #2016: whether `tenantId` is foreign to the scope, and its lifecycle — one door's read. */
+  admission(tenantId: TenantId): Promise<{ foreign: boolean; lifecycle: StoredScopeLifecycle | null }>;
+  /** Store a delivered lifecycle unless a newer one is held (#1713, `writeLifecycle`); #2016: a
+   *  scope `tenantId` is foreign to refuses it, a legacy one records its receipt. */
+  setLifecycle(
+    next: ScopeLifecycle,
+    tenantId?: TenantId,
+  ): Promise<LifecycleDelivery | { refused: 'tenant'; message: string }>;
   /** Clear a mistaken copy classification (#2005); a load's copied-events mark is kept (#2009). */
   clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'changed'>;
   /**
@@ -1402,6 +1408,8 @@ interface ScopeStubRpc {
       loadStamp?: string;
       /** #2005: the directory says the scope is not primary — mark it a copy. */
       markCopy?: boolean;
+      /** #2016: the tenant the platform says the scope belongs to, recorded as its receipt. */
+      provisionedFor?: TenantId;
     },
   ): Promise<SwitchedOff[]>;
   /** #1722: what a carry's restore into this store expects to find unchanged. */
@@ -1417,8 +1425,11 @@ interface ScopeStubRpc {
       loadStamp?: string;
       expect?: LoadMarker;
       markCopy?: boolean;
+      provisionedFor?: TenantId;
     },
-  ): Promise<{ refused: 'changed' | 'kept' } | { refused: false; switchedOff: SwitchedOff[] }>;
+  ): Promise<
+    { refused: 'changed' | 'kept' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }
+  >;
   /** #1722: the kept-copy marker, or null. */
   keptCopy(): Promise<KeptCopy | null>;
   /** #1722: discard a kept copy at the revision the operator acted on. */
@@ -2745,15 +2756,28 @@ export class CloudflareScopeHost implements ScopeHost {
    * activation, version bind) stays on the control plane's side. Because source and
    * destination sit in the same SCOPE namespace, no scope bytes ever leave the
    * deployment — the §9 property the trust line rests on.
+   *
+   * #2016: `tenantId`, the tenant the platform snapshots for (absent from an older platform). The
+   * source must not be foreign to it — a copy never reads another tenant's scope — and the fork
+   * records it as its own receipt, not the source's.
    */
   async snapshotScopeLocal(
     sourceScopeId: ScopeId,
     destScopeId: ScopeId,
+    tenantId?: TenantId,
   ): Promise<{ tables: number }> {
+    if (tenantId !== undefined && (await this.scopeStub(sourceScopeId).admission(tenantId)).foreign) {
+      throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${sourceScopeId})`);
+    }
     const tables = await this.scopeStub(sourceScopeId).exportDump();
     // #2009: a snapshot is a fork by construction (the control plane's row names `forkedFrom`, so
     // the directory never calls it primary), and a load classifies nothing by itself: marked here.
-    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId, exact: true, markCopy: true });
+    await this.scopeStub(destScopeId).importDump(tables, destScopeId, {
+      sourceScopeId,
+      exact: true,
+      markCopy: true,
+      ...(tenantId !== undefined ? { provisionedFor: tenantId } : {}),
+    });
     return { tables: tables.length };
   }
 
@@ -2773,7 +2797,9 @@ export class CloudflareScopeHost implements ScopeHost {
      *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, for a fenced wipe later,
      *  and `expect`, the marker the carry read here: the load is refused if the store moved since.
      *  #2005: `markCopy` — the directory's classification of the scope, sent when it is not
-     *  primary; the restore then marks it a copy. Refused if it classifies a primary. */
+     *  primary; the restore then marks it a copy. Refused if it classifies a primary.
+     *  #2016: `tenantId`, the tenant the platform restores for: recorded as the scope's receipt in
+     *  the load's own transaction, and a store provisioned for another tenant refuses the load. */
     opts?: {
       switchedOff?: readonly ModuleId[];
       sourceScopeId?: ScopeId;
@@ -2781,6 +2807,7 @@ export class CloudflareScopeHost implements ScopeHost {
       loadStamp?: string;
       expect?: LoadMarker;
       markCopy?: ScopeLineage;
+      tenantId?: TenantId;
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     if (opts?.markCopy) assertCopyLineage(opts.markCopy);
@@ -2790,6 +2817,7 @@ export class CloudflareScopeHost implements ScopeHost {
       exact: opts?.exact,
       loadStamp: opts?.loadStamp,
       markCopy: opts?.markCopy !== undefined,
+      ...(opts?.tenantId !== undefined ? { provisionedFor: opts.tenantId } : {}),
     };
     // Both refusals come back as values (a throw over the RPC carries only its message) and are
     // thrown here, in the vertical's own isolate, so its route answers 409 or 412, not a fault.
@@ -2801,6 +2829,7 @@ export class CloudflareScopeHost implements ScopeHost {
       return { tables: tables.length, ...(opts?.switchedOff ? { switchedOff: out.switchedOff } : {}) };
     }
     if (out.refused === 'kept') throw substratError('conflict', KEPT_COPY_REFUSAL);
+    if (out.refused === 'tenant') throw substratError('conflict', out.message);
     // A retry of a load that already committed (its answer was lost on the way back) is
     // refused by the marker that load itself moved. The store holding THIS request's stamp
     // says so: no other load writes it. Answered as applied, without `switchedOff`, so the
@@ -2896,12 +2925,22 @@ export class CloudflareScopeHost implements ScopeHost {
    * the vertical's `/internal/lifecycle`. Kept unless the scope already holds a newer one, so a
    * push that arrives late cannot undo a later transition. `applied` is what the platform's heal
    * sweep records as delivered; `changed` says the gate's answer moved.
+   *
+   * #2016: `tenantId`, the tenant the directory delivered it for (absent from an older platform).
+   * A scope provisioned for another tenant refuses the delivery (`conflict`) and stores nothing;
+   * a scope provisioned before the tenant receipt existed records it here, its role rows agreeing.
    */
   async setLifecycleLocal(
     scopeId: ScopeId,
     next: ScopeLifecycle,
+    tenantId?: TenantId,
   ): Promise<LifecycleDelivery> {
-    return lifecycleDelivery.parse(await this.scopeStub(scopeId).setLifecycle(scopeLifecycle.parse(next)));
+    const out = await this.scopeStub(scopeId).setLifecycle(
+      scopeLifecycle.parse(next),
+      ...(tenantId !== undefined ? [tenantId] : []),
+    );
+    if ('refused' in out) throw substratError('conflict', out.message);
+    return lifecycleDelivery.parse(out);
   }
 
   /**
@@ -3715,6 +3754,8 @@ export class CloudflareScopeHost implements ScopeHost {
       sourceScopeId: dump.scopeId as ScopeId,
       // A fork: its callers (snapshotScope) hand it a dump the platform exported.
       exact: true,
+      // #2016: the fork's own tenant, from the directory row just written — never the dump's.
+      provisionedFor: input.tenantId,
     });
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     await this.recordAdmin(
@@ -3745,6 +3786,8 @@ export class CloudflareScopeHost implements ScopeHost {
     const switchedOff = await this.scopeStub(scopeId).importDump(dump.tables, scopeId, {
       switchOff: recordedOff.length ? { moduleIds: recordedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId ?? (dump.scopeId as ScopeId),
+      // #2016: the directory's pair, checked just above; a store provisioned for another refuses.
+      provisionedFor: tenantId,
     });
     await this.recordAdmin(
       actor,
@@ -7756,13 +7799,31 @@ export class CloudflareScopeHost implements ScopeHost {
    * The getScope gate (control-plane.md §4.1/§4.2) — the pair check, then the tenant's and
    * the scope's lifecycle — thrown on THIS side of the RPC (#1718). The ControlPlaneDO
    * answers its refusal as data, because an error thrown there arrives here flattened, with
-   * no code; a record crosses intact. A CP-less host's null control plane answers nothing,
-   * so the gate passes: the router already made it from the shared directory.
+   * no code; a record crosses intact.
+   *
+   * A CP-less host's null control plane answers nothing: the router made the pair check from
+   * the shared directory. The scope's own storage then makes it again (#2016), against the
+   * tenant it was provisioned for (`ScopeDO.admission`), so a vertical that passes a scope id
+   * under the wrong tenant meets K-3's refusal at the door instead of relying on the permission
+   * gate's grant data to deny it.
    */
   private async validateScopeAccess(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    await this.admit(tenantId, scopeId);
+  }
+
+  /**
+   * `validateScopeAccess`, answering with the lifecycle the CP-less scope holds (#1713) — read in
+   * the same DO call as its pair check (#2016), so a door costs one round-trip, as before. Null
+   * with a directory, whose refusal already covered the lifecycle.
+   */
+  private async admit(tenantId: TenantId, scopeId: ScopeId): Promise<StoredScopeLifecycle | null> {
     const refusal = await this.cp.scopeAccessRefusal(tenantId, scopeId);
-    if (!refusal) return;
-    throw refusal.code ? substratError(refusal.code, refusal.message) : new Error(refusal.message);
+    if (refusal) throw refusal.code ? substratError(refusal.code, refusal.message) : new Error(refusal.message);
+    if (!this.cpLess) return null;
+    const { foreign, lifecycle } = await this.scopeStub(scopeId).admission(tenantId);
+    // K-3's wording: a scope of another tenant is the same answer as one that does not exist.
+    if (foreign) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    return lifecycle;
   }
 
   /**
@@ -7781,15 +7842,14 @@ export class CloudflareScopeHost implements ScopeHost {
    * grants) keep `validateScopeAccess` alone: an operator still reads a suspended scope.
    */
   private async assertLive(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
-    await this.validateScopeAccess(tenantId, scopeId);
-    const refusal = await this.cpLessRefusal(scopeId, { tenantId, scopeId });
+    const refusal = lifecycleRefusal(await this.admit(tenantId, scopeId), { tenantId, scopeId });
     if (refusal) throw new Error(refusal);
   }
 
   /** The delivered lifecycle's refusal on a CP-less host (#1713); always null with a directory. */
-  private async cpLessRefusal(scopeId: ScopeId, ids?: { tenantId: TenantId; scopeId: ScopeId }): Promise<string | null> {
+  private async cpLessRefusal(scopeId: ScopeId): Promise<string | null> {
     if (!this.cpLess) return null;
-    return lifecycleRefusal(await this.scopeStub(scopeId).lifecycle(), ids);
+    return lifecycleRefusal(await this.scopeStub(scopeId).lifecycle());
   }
 
   /**

@@ -716,6 +716,9 @@ export class VerticalClient {
   async setLifecycle(input: {
     scopeId: ScopeId;
     lifecycle: ScopeLifecycle;
+    /** #2016: the tenant the directory holds the scope under; the deployment refuses a scope
+     *  provisioned for another, and records it on a scope that predates its tenant receipt. */
+    tenantId?: TenantId;
   }): Promise<LifecycleDelivery> {
     const verb = 'lifecycle';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
@@ -960,6 +963,8 @@ export class VerticalClient {
   async snapshotScope(input: {
     sourceScopeId: ScopeId;
     newScopeId: ScopeId;
+    /** #2016: the tenant snapshotted for — the source must be its, and the copy records it. */
+    tenantId?: TenantId;
   }): Promise<{ tables: number }> {
     return this.postInternal<{ tables: number }>('/internal/snapshot', input, 'snapshot');
   }

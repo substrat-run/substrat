@@ -4210,7 +4210,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       forkedAt: new Date().toISOString(),
       expiresAt: opts.expiresAt,
     });
-    await retryTransient(() => vertical.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId }));
+    await retryTransient(() => vertical.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId, tenantId }));
     await c.var.admin.activateScope(actor, tenantId, snapId);
     // Bound to the SOURCE's current version: source and fork share a deployment, so
     // the fork resolves to the DO namespace its bytes actually live in.

@@ -934,7 +934,7 @@ function lifecycleDelegationFor(env: Env): LifecycleDelegation | undefined {
             `cannot deliver its lifecycle`,
         );
       }
-      return client.setLifecycle({ scopeId: a.scopeId, lifecycle: a.lifecycle });
+      return client.setLifecycle({ scopeId: a.scopeId, lifecycle: a.lifecycle, tenantId: a.tenantId });
     },
   };
 }
