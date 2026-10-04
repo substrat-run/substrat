@@ -137,21 +137,6 @@ export function upstreamStatusOf(e: unknown): number | undefined {
 }
 
 /**
- * The facts the push-time sweeper decision reads (#1902): whether the version declares
- * schedules, the sweeper classes the push found in the vertical's source — passed through as
- * absent when the push carried none, which is not the same as `[]` — and its bindings.
- */
-export function sweeperFactsOf(
-  manifest: Pick<DeployManifest, 'schedules' | 'sweeperClasses' | 'bindings'>,
-): { declaresSchedules?: boolean; sweeperClasses?: string[]; bindings: DeclaredBinding[] } {
-  return {
-    ...(manifest.schedules?.length ? { declaresSchedules: true } : {}),
-    ...(manifest.sweeperClasses ? { sweeperClasses: manifest.sweeperClasses } : {}),
-    bindings: manifest.bindings,
-  };
-}
-
-/**
  * Download the module contents of a script already in the namespace — what promote and
  * backout re-upload from (the archive script is the platform's bundle store; nothing
  * else retains the built bytes). Host-injected like `DeployVerticalFn`.

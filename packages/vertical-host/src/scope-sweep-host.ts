@@ -25,7 +25,9 @@
 
 const HOSTS = Symbol.for('substrat.scope-sweep-host');
 
-/** The env var the uploader sets to the binding of the sweeper it supplied (#1902). */
+/** The env var the uploader sets to the binding of the sweeper it supplied (#1902). Contracts'
+ *  `PLATFORM_SWEEPER_VAR`, spelled out because this file imports nothing; control-plane-api's
+ *  `platform-entry.test.ts` holds the two equal. */
 export const PLATFORM_SWEEPER_VAR = 'SUBSTRAT_SCOPE_SWEEPER';
 
 /** Builds this deployment's scope host from the worker env — `mountPlatformSurface`'s `hostFor`. */

@@ -114,15 +114,9 @@ export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } 
 export {
   withPlatformEntry,
   platformEntrySkipReason,
-  platformSweeperPlan,
   platformSweeperDecision,
   PLATFORM_ENTRY_MODULE,
-  PLATFORM_SWEEPER_BINDING,
-  PLATFORM_SWEEPER_CLASS,
   PLATFORM_SWEEPER_MODULE,
-  PLATFORM_SWEEPER_VAR,
-  type SweeperFacts,
-  type SweeperPlan,
 } from './platform-entry.js';
 export type {
   WfpUploaderOptions,

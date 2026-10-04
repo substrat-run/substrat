@@ -29,23 +29,23 @@
  * `platformSweeperDecision` says when, from the push's declaration alone, and the version
  * keeps that answer for every later upload.
  */
+import {
+  PLATFORM_SWEEPER_BINDING,
+  PLATFORM_SWEEPER_CLASS,
+  PLATFORM_SWEEPER_VAR,
+  sweeperConflict,
+  type DeployManifest,
+} from '@substrat-run/contracts';
 import type { VerticalBundle } from './deploy.js';
 import {
   PLATFORM_ENTRY_MODULE,
   PLATFORM_ENTRY_PLACEHOLDER,
   PLATFORM_ENTRY_SOURCE,
-  PLATFORM_SWEEPER_CLASS,
   PLATFORM_SWEEPER_MODULE,
   PLATFORM_SWEEPER_SOURCE,
 } from './platform-entry.generated.js';
 
-export { PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_CLASS, PLATFORM_SWEEPER_MODULE };
-
-/** The binding the supplied sweeper is reached by — the template's and both demos' name. */
-export const PLATFORM_SWEEPER_BINDING = 'SWEEPER';
-/** Names that binding for `mountPlatformSurface` (`@substrat-run/vertical-host`'s
- *  `PLATFORM_SWEEPER_VAR`), which is what tells it the roster is its to keep. */
-export const PLATFORM_SWEEPER_VAR = 'SUBSTRAT_SCOPE_SWEEPER';
+export { PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE };
 
 const PLATFORM_MODULES = new Set([PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE]);
 
@@ -74,34 +74,19 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
     const text = decoder.decode(m.content);
     writes ||= WRITES_THE_LINE.test(text);
     shares ||= text.includes(SHARES_THE_STAMP);
+    if (writes && shares) break; // a current kernel: nothing further could change the answer
   }
   if (writes && !shares) return 'the bundle writes the invocation line with a kernel that predates the platform stamp';
   return undefined;
 }
 
-/** The facts the sweeper decision reads — all of them declared, none read from the bytes. */
-export interface SweeperFacts {
-  /** The version declares recurring `schedules` — what makes it owe a sweeper. */
-  declaresSchedules?: boolean;
-  /** The manifest's `sweeperClasses`: the vertical's own sweeper classes, `[]` for none,
-   *  absent when a CLI from before the field pushed it. */
-  sweeperClasses?: string[];
-  /** The bindings the version declares. */
-  bindings?: VerticalBundle['bindings'];
-}
-
-/** What {@link platformSweeperPlan} decided: supply the platform's sweeper, or not and why — or refuse the push. */
-export type SweeperPlan = { supply: true } | { supply: false; why: string } | { refuse: string };
-
 /**
- * Whether the platform supplies a version's scope sweeper (#1902), from what its push
- * DECLARED: the manifest's `schedules` and `sweeperClasses`, and the deploy config's bindings.
- *
- * Decided ONCE, at push, and recorded with the version (the stored manifest's
- * `platformSweeper`): every later upload of it — promote, re-serve, backout — reuses the
- * record rather than calling this again. A refusal can therefore only ever stop a push, never
- * the promotion or rollback of a version that was accepted, and a version pushed before the
- * decision existed keeps exactly what it had.
+ * Whether the platform supplies a version's scope sweeper (#1902) — decided ONCE, by the push
+ * route, from what the push DECLARED (`schedules`, `sweeperClasses`, `bindings`), and recorded
+ * with the version (the stored manifest's `platformSweeper`). Every later upload of the version
+ * — promote, re-serve, backout — reuses the record rather than calling this again, so a refusal
+ * can only ever stop a push, never the promotion or rollback of a version that was accepted, and
+ * a version pushed before the decision existed keeps exactly what it had.
  *
  * Why it is the sweeper's names (`SweeperDO` bound as `SWEEPER`) that the platform takes:
  * they are what the template and both hosted demos exported by hand, so a vertical that drops
@@ -109,79 +94,69 @@ export type SweeperPlan = { supply: true } | { supply: false; why: string } | { 
  * its roster and its armed alarm — and the in-place migration delta is empty. Any other name
  * would be a class rename, which is a migration the uploader does not write.
  *
- * The bundle's bytes are deliberately not consulted: an export's name, or a method name
- * inside a minified build, says nothing reliable about which class is a sweeper. A push from
- * a CLI that predates `sweeperClasses` falls back to the convention — `SWEEPER` bound to
+ * The wiring is judged by contracts' `sweeperConflict`, the rule `substrat push` checks too.
+ * The bundle's bytes are deliberately not consulted for it: an export's name, or a method name
+ * inside a minified build, says nothing reliable about which class is a sweeper. A push from a
+ * CLI that predates `sweeperClasses` falls back to the convention — `SWEEPER` bound to
  * `SweeperDO` is the vertical's own, neither name bound means it has none — and refuses the
  * half-matches it cannot tell apart, rather than guessing either way: a wrong "it has one"
- * leaves the schedules unrun, and a wrong "it has none" runs them twice.
+ * leaves the schedules unrun, and a wrong "it has none" runs them twice. Last, a bundle the
+ * platform entry would not wrap (`platformEntrySkipReason`) cannot carry the sweeper the entry
+ * re-exports, and recording "supplied" for it would be a lie every later upload repeats.
  */
-export function platformSweeperPlan(facts: SweeperFacts): SweeperPlan {
-  if (!facts.declaresSchedules) return { supply: false, why: 'the version declares no schedules' };
-  const bindings = facts.bindings ?? [];
-  const own = facts.sweeperClasses;
+export function platformSweeperDecision(
+  /** The push's manifest, or the part of it the decision reads: only whether it declares schedules. */
+  declared: { schedules?: readonly unknown[]; bindings: DeployManifest['bindings']; sweeperClasses?: string[] },
+  bundle: Pick<VerticalBundle, 'entry' | 'modules'>,
+): { supply: boolean } | { refuse: string } {
+  if (!declared.schedules?.length) return { supply: false };
+  const refuse = (why: string) => ({ refuse: `cannot run this version's declared schedules: ${why}` });
   // Bindings, not `doClasses`: a class stays in a config's migration history after its export
   // is deleted (migrations are append-only), and only a binding is a live use of a name.
-  const boundClasses = bindings.filter((b) => b.type === 'durable_object_namespace').map((b) => b.class_name);
-  const byName = bindings.find((b) => b.name === PLATFORM_SWEEPER_BINDING);
-  const byClass = boundClasses.includes(PLATFORM_SWEEPER_CLASS);
-  const refuse = (why: string): SweeperPlan => ({ refuse: `cannot run this version's declared schedules: ${why}` });
-  if (own && own.length > 0) {
-    const bound = own.filter((c) => boundClasses.includes(c));
-    if (bound.length === 0) {
+  const wiring = {
+    boundClassNames: declared.bindings.filter((b) => b.type === 'durable_object_namespace').map((b) => b.class_name),
+    boundBindingNames: declared.bindings.map((b) => b.name),
+  };
+  const own = declared.sweeperClasses;
+  if (own) {
+    const conflict = sweeperConflict(own, wiring);
+    if (conflict?.kind === 'own-unbound') {
       return refuse(
         `the worker entry exports its own sweeper (${own.join(', ')}), but no Durable Object binding names ` +
           `that class, so Cloudflare never instantiates it and its alarm never runs. Bind it as a store, ` +
           `or delete it and let the platform supply one`,
       );
     }
-    return { supply: false, why: `the vertical brings its own sweeper (${bound.join(', ')})` };
-  }
-  if (own) {
-    // The push read no sweeper in the source: the platform's goes in, under names nothing else may hold.
-    if (byName || byClass) {
+    if (conflict) {
       return refuse(
         `the platform supplies a sweeper as class '${PLATFORM_SWEEPER_CLASS}' bound to '${PLATFORM_SWEEPER_BINDING}', and ` +
-          `this version already binds ${byName ? `the name '${PLATFORM_SWEEPER_BINDING}'` : `the class '${PLATFORM_SWEEPER_CLASS}'`} ` +
+          `this version already binds ${conflict.kind === 'binding-taken' ? `the name '${PLATFORM_SWEEPER_BINDING}'` : `the class '${PLATFORM_SWEEPER_CLASS}'`} ` +
           `to something that is not a defineScopeSweeperDO class. If it is a sweeper you have since deleted, drop ` +
           `its binding — the platform adds its own — and otherwise rename it`,
       );
     }
-    return { supply: true };
+    if (own.length > 0) return { supply: false };
+  } else {
+    // A CLI from before `sweeperClasses`: the convention is all there is to read.
+    const byName = declared.bindings.find((b) => b.name === PLATFORM_SWEEPER_BINDING);
+    if (byName?.type === 'durable_object_namespace' && byName.class_name === PLATFORM_SWEEPER_CLASS) {
+      return { supply: false };
+    }
+    const conflict = sweeperConflict([], wiring);
+    if (conflict) {
+      return refuse(
+        `this push carries no sweeperClasses (its CLI predates them), and its config binds ` +
+          `${conflict.kind === 'binding-taken' ? `the name '${PLATFORM_SWEEPER_BINDING}' to another class` : `the class '${PLATFORM_SWEEPER_CLASS}' under another name`}, ` +
+          `so whether it brings its own sweeper cannot be told. Push again with a current @substrat-run/cli`,
+      );
+    }
   }
-  // A CLI from before `sweeperClasses`: the convention is all there is to read.
-  if (byName?.type === 'durable_object_namespace' && byName.class_name === PLATFORM_SWEEPER_CLASS) {
-    return { supply: false, why: `the vertical binds '${PLATFORM_SWEEPER_CLASS}' as '${PLATFORM_SWEEPER_BINDING}', the conventional own sweeper` };
-  }
-  if (!byName && !byClass) return { supply: true };
-  return refuse(
-    `this push carries no sweeperClasses (its CLI predates them), and its config binds ` +
-      `${byName ? `the name '${PLATFORM_SWEEPER_BINDING}' to another class` : `the class '${PLATFORM_SWEEPER_CLASS}' under another name`}, ` +
-      `so whether it brings its own sweeper cannot be told. Push again with a current @substrat-run/cli`,
-  );
-}
-
-/**
- * The push-time decision, whole (#1902): {@link platformSweeperPlan}, plus the one thing the
- * plan alone cannot know — that the platform's entry, which re-exports the sweeper, will
- * wrap this bundle at all. A bundle the entry skips could not carry it, and recording
- * "supplied" for it would be a lie every later upload repeats, so that case refuses too.
- */
-export function platformSweeperDecision(
-  facts: SweeperFacts,
-  bundle: Pick<VerticalBundle, 'entry' | 'modules'>,
-): { supply: boolean } | { refuse: string } {
-  const plan = platformSweeperPlan(facts);
-  if ('refuse' in plan) return plan;
-  if (!plan.supply) return { supply: false };
   const skip = platformEntrySkipReason(bundle);
   if (skip !== undefined) {
-    return {
-      refuse:
-        `cannot run this version's declared schedules: the platform supplies a sweeper through its entry ` +
-        `module, and this bundle cannot take one (${skip}). Update @substrat-run/kernel and ` +
-        `@substrat-run/vertical-host, or export your own sweeper`,
-    };
+    return refuse(
+      `the platform supplies a sweeper through its entry module, and this bundle cannot take one (${skip}). ` +
+        `Update @substrat-run/kernel and @substrat-run/vertical-host, or export your own sweeper`,
+    );
   }
   return { supply: true };
 }

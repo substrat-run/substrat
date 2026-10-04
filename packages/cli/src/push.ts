@@ -1122,9 +1122,11 @@ export function assertSchedulesAreSwept(
   schedules: readonly ScheduleRef[] | undefined,
   allow = false,
   log: (message: string) => void = console.log,
+  /** The entry's sweeper classes, when the caller has already read them (`sweeperClassesOf`). */
+  known?: string[],
 ): void {
   if (!schedules || schedules.length === 0) return;
-  const exportedNames = sweeperClassesOf(dir, cfg);
+  const exportedNames = known ?? sweeperClassesOf(dir, cfg);
   if (!exportedNames) {
     // The build would fail on this anyway; say what this check could not do rather than
     // refusing a sweeper it never got to look for.
@@ -1532,8 +1534,8 @@ export async function push(
   // entry, and a vertical's entry may import something its own build produces. Still before
   // anything is uploaded; a vertical that wants the refusal in a second runs
   // `substrat push --check`, which makes the same check with no build at all.
-  assertSchedulesAreSwept(opts.dir, cfg, schedules, opts.allowUnsweptSchedules);
   const sweeperClasses = sweeperClassesOf(opts.dir, cfg);
+  assertSchedulesAreSwept(opts.dir, cfg, schedules, opts.allowUnsweptSchedules, console.log, sweeperClasses);
   // #1902: leaving the sweeper out is safe only where the platform puts one in. Asked of the
   // plane itself, before the build is uploaded — a plane that predates it would accept the
   // version and never run its schedules.

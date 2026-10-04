@@ -159,7 +159,6 @@ import {
   stableDeploymentRefFor,
   nextMigrationTag,
   upstreamStatusOf,
-  sweeperFactsOf,
 } from './deploy.js';
 import type {
   AssetUpload,
@@ -1342,23 +1341,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // The CLI version advisory (#971), stamped on EVERY response — including the 401 the
   // auth middleware below answers with, since a CLI too old to authenticate is exactly
   // the one that needs to hear it. Registered first so nothing can return around it.
-  // Nothing configured ⇒ no header touched, byte-identical to before this existed.
+  // Nothing configured ⇒ no advisory header.
+  //
+  // Beside it, the capability half of the same handshake (#1902): what this plane provides
+  // that a CLI may leave out on its strength. Stamped unconfigured, because it is a fact about
+  // this code rather than about a deployment — the uploader this package ships supplies the
+  // scope sweeper. The CLI asks before omitting one and refuses on silence, which is what an
+  // older plane answers.
   const advisory = options.cliAdvisory;
-  if (advisory?.minVersion || advisory?.latestVersion) {
-    app.use('*', async (c, next) => {
-      await next();
-      if (advisory.minVersion) c.header(CLI_MIN_VERSION_HEADER, advisory.minVersion);
-      if (advisory.latestVersion) c.header(CLI_LATEST_VERSION_HEADER, advisory.latestVersion);
-    });
-  }
-
-  // #1902: what this plane provides that a CLI may leave out on its strength — stamped on
-  // EVERY response, unconfigured, because it is a fact about this code rather than about a
-  // deployment: the uploader this package ships supplies the scope sweeper. The CLI asks
-  // before omitting one and refuses on silence, which is what an older plane answers.
   app.use('*', async (c, next) => {
     await next();
     c.header(PLATFORM_FEATURES_HEADER, PLATFORM_FEATURE_SCOPE_SWEEPER);
+    if (advisory?.minVersion) c.header(CLI_MIN_VERSION_HEADER, advisory.minVersion);
+    if (advisory?.latestVersion) c.header(CLI_LATEST_VERSION_HEADER, advisory.latestVersion);
   });
 
   // Fail closed, before any route runs: no principal, no reach.
@@ -7028,7 +7023,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // ONCE, before anything is uploaded, and recorded with the version below so every later
     // upload of it reuses the answer. A declaration that contradicts itself is refused now,
     // while it is still a push; it can never become a promote or a backout that refuses.
-    const sweeper = platformSweeperDecision(sweeperFactsOf(manifest), { entry: manifest.entry, modules });
+    const sweeper = platformSweeperDecision(manifest, { entry: manifest.entry, modules });
     if ('refuse' in sweeper) return c.json({ error: sweeper.refuse }, 422);
 
     // Mint the version id first: the deploymentRef (the dispatch script name) is keyed

@@ -29,7 +29,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { declaredStoresOf, deriveDeclaredSurface, resolveWranglerConfig, sweeperClassesOf } from '@substrat-run/cli/dist/push.js';
+import { declaredStoresOf, resolveWranglerConfig } from '@substrat-run/cli/dist/push.js';
+import { declaredSweeper } from '../../../tools/workerd-as-uploaded.mjs';
 import { assertSandboxContract, createWfpUploader, platformSweeperDecision } from '@substrat-run/control-plane-api';
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -44,10 +45,9 @@ const entry = { entry: 'worker.js', modules: [{ name: 'worker.js', content: new 
 /** What the push route decides for ticket0, from what its push declares (#1902). */
 async function decision() {
   const cfg = resolveWranglerConfig(dir).cfg;
-  const { schedules } = await deriveDeclaredSurface(dir);
-  const sweeperClasses = sweeperClassesOf(dir, cfg);
+  const { schedules, sweeperClasses } = await declaredSweeper(dir, cfg);
   return platformSweeperDecision(
-    { ...(schedules?.length ? { declaresSchedules: true } : {}), ...(sweeperClasses ? { sweeperClasses } : {}), bindings: declared().bindings },
+    { schedules, bindings: declared().bindings, ...(sweeperClasses ? { sweeperClasses } : {}) },
     entry,
   );
 }

@@ -26,6 +26,24 @@ import { deriveDeclaredSurface, sweeperClassesOf } from '../packages/cli/dist/pu
 import { platformSweeperDecision, withPlatformEntry } from '../packages/control-plane-api/dist/platform-entry.js';
 
 /**
+ * What a push of `dir` declares about its sweeper (#1902): the schedules its modules declare
+ * (`deriveDeclaredSurface`, which bundles and imports the permission entry) and the sweeper
+ * classes its entry exports — memoized per directory, since that build is the slow part.
+ *
+ * @param {string} dir  the vertical's directory
+ * @param {Record<string, any>} cfg  its deploy config
+ */
+export function declaredSweeper(dir, cfg) {
+  let found = memo.get(dir);
+  if (!found) {
+    found = deriveDeclaredSurface(dir).then(({ schedules }) => ({ schedules, sweeperClasses: sweeperClassesOf(dir, cfg) }));
+    memo.set(dir, found);
+  }
+  return found;
+}
+const memo = new Map();
+
+/**
  * @param {string} dir  the vertical's directory
  * @param {Record<string, any>} derived  its wrangler config, as `resolveWranglerConfig` derived it
  * @returns {Promise<Record<string, any>>} the config to hand the workers pool
@@ -34,8 +52,7 @@ export async function asUploaded(dir, derived) {
   const cacheDir = join(dir, '.workerd-uploaded');
   mkdirSync(cacheDir, { recursive: true });
   const main = resolve(dir, String(derived.main));
-  const { schedules } = await deriveDeclaredSurface(dir);
-  const sweeperClasses = sweeperClassesOf(dir, derived);
+  const { schedules, sweeperClasses } = await declaredSweeper(dir, derived);
   const doBindings = derived.durable_objects?.bindings ?? [];
   const migrations = derived.migrations ?? [];
   // The vertical's entry, named by its path from where the platform's modules are written —
@@ -44,10 +61,7 @@ export async function asUploaded(dir, derived) {
   const modules = [{ name: entry, content: new Uint8Array(), contentType: 'application/javascript+module' }];
   const bindings = doBindings.map((b) => ({ type: 'durable_object_namespace', name: b.name, class_name: b.class_name }));
   // The decision the control plane makes once, at push, from the same declaration.
-  const decision = platformSweeperDecision(
-    { ...(schedules?.length ? { declaresSchedules: true } : {}), ...(sweeperClasses ? { sweeperClasses } : {}), bindings },
-    { entry, modules },
-  );
+  const decision = platformSweeperDecision({ schedules, bindings, ...(sweeperClasses ? { sweeperClasses } : {}) }, { entry, modules });
   if ('refuse' in decision) throw new Error(`the control plane would refuse this push: ${decision.refuse}`);
   const uploaded = withPlatformEntry({
     entry,

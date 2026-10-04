@@ -7,16 +7,18 @@ import { invocationLog } from '@substrat-run/vertical-host';
 import { createWfpUploader } from '../src/wfp.js';
 import type { VerticalBundle } from '../src/deploy.js';
 import {
-  PLATFORM_ENTRY_MODULE,
   PLATFORM_SWEEPER_BINDING,
   PLATFORM_SWEEPER_CLASS,
-  PLATFORM_SWEEPER_MODULE,
   PLATFORM_SWEEPER_VAR,
+  type DeployManifest,
+} from '@substrat-run/contracts';
+import { PLATFORM_SWEEPER_VAR as VERTICAL_HOST_SWEEPER_VAR } from '@substrat-run/vertical-host';
+import {
+  PLATFORM_ENTRY_MODULE,
+  PLATFORM_SWEEPER_MODULE,
   platformEntrySkipReason,
   platformSweeperDecision,
-  platformSweeperPlan,
   withPlatformEntry,
-  type SweeperFacts,
 } from '../src/platform-entry.js';
 
 /**
@@ -218,81 +220,86 @@ describe('the generated entry, run (#1893)', () => {
 describe('the platform supplies the scope sweeper (#1902)', () => {
   const scope = { type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' };
   const ownSweeper = { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'SweeperDO' };
-  const facts = (f: SweeperFacts = {}): SweeperFacts => ({ bindings: [scope], ...f });
-  const refusal = (f: SweeperFacts) => {
-    const plan = platformSweeperPlan(facts(f));
-    if (!('refuse' in plan)) throw new Error(`expected a refusal, got ${JSON.stringify(plan)}`);
-    return plan.refuse;
+  const SCHEDULES: DeployManifest['schedules'] = [{ moduleId: 'm', operation: 'm/tick', cadence: { everyMinutes: 5 }, permissions: [] }];
+  type Declared = Parameters<typeof platformSweeperDecision>[0];
+  /** What a push declared; `scheduled` stands in for `schedules` so a case reads as the old facts did. */
+  const decide = ({ scheduled, ...f }: Partial<Declared> & { scheduled?: boolean } = {}) =>
+    platformSweeperDecision({ bindings: [scope], ...(scheduled ? { schedules: SCHEDULES } : {}), ...f }, bundle());
+  const refusal = (f: Parameters<typeof decide>[0]) => {
+    const decided = decide(f);
+    if (!('refuse' in decided)) throw new Error(`expected a refusal, got ${JSON.stringify(decided)}`);
+    return decided.refuse;
   };
   const vertical = (extra: Partial<VerticalBundle> = {}) => ({ ...bundle(), doClasses: ['ScopeDO'], bindings: [scope], ...extra });
 
+  it('spells the platform’s names one way, here and in the vertical-host copy that must import nothing', () => {
+    expect(VERTICAL_HOST_SWEEPER_VAR).toBe(PLATFORM_SWEEPER_VAR);
+  });
+
   describe('the decision, from the push’s declaration', () => {
     it('supplies one when the push declared schedules and no sweeper of its own', () => {
-      expect(platformSweeperPlan(facts({ declaresSchedules: true, sweeperClasses: [] }))).toEqual({ supply: true });
+      expect(decide({ scheduled: true, sweeperClasses: [] })).toEqual({ supply: true });
     });
 
     it('gives a version with no schedules none, whatever else it declares', () => {
       for (const sweeperClasses of [[], undefined]) {
-        expect(platformSweeperPlan(facts({ sweeperClasses }))).toMatchObject({ supply: false });
+        expect(decide({ sweeperClasses })).toEqual({ supply: false });
       }
     });
 
     it('keeps a vertical’s own sweeper, by whatever name the push read', () => {
-      expect(platformSweeperPlan(facts({ declaresSchedules: true, sweeperClasses: ['SweeperDO'], bindings: [scope, ownSweeper] }))).toEqual({
-        supply: false,
-        why: expect.stringContaining('its own sweeper (SweeperDO)'),
-      });
+      expect(decide({ scheduled: true, sweeperClasses: ['SweeperDO'], bindings: [scope, ownSweeper] })).toEqual({ supply: false });
       const timer = { type: 'durable_object_namespace', name: 'TIMER', class_name: 'Timer' };
-      expect(platformSweeperPlan(facts({ declaresSchedules: true, sweeperClasses: ['Timer'], bindings: [scope, timer] }))).toMatchObject({
+      expect(decide({ scheduled: true, sweeperClasses: ['Timer'], bindings: [scope, timer] })).toMatchObject({
         supply: false,
       });
     });
 
     it('refuses an own sweeper no binding names — its alarm would never run', () => {
-      expect(refusal({ declaresSchedules: true, sweeperClasses: ['SweeperDO'] })).toMatch(
+      expect(refusal({ scheduled: true, sweeperClasses: ['SweeperDO'] })).toMatch(
         /exports its own sweeper \(SweeperDO\), but no Durable Object binding names that class/,
       );
     });
 
     it('refuses to supply under names the version already binds to something else', () => {
       expect(
-        refusal({ declaresSchedules: true, sweeperClasses: [], bindings: [scope, { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'Other' }] }),
+        refusal({ scheduled: true, sweeperClasses: [], bindings: [scope, { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'Other' }] }),
       ).toMatch(/already binds the name 'SWEEPER'/);
       expect(
-        refusal({ declaresSchedules: true, sweeperClasses: [], bindings: [scope, { type: 'durable_object_namespace', name: 'X', class_name: 'SweeperDO' }] }),
+        refusal({ scheduled: true, sweeperClasses: [], bindings: [scope, { type: 'durable_object_namespace', name: 'X', class_name: 'SweeperDO' }] }),
       ).toMatch(/already binds the class 'SweeperDO'/);
     });
 
     describe('a push from a CLI that predates sweeperClasses', () => {
       it('reads SWEEPER bound to SweeperDO as the vertical’s own', () => {
-        expect(platformSweeperPlan(facts({ declaresSchedules: true, bindings: [scope, ownSweeper] }))).toMatchObject({ supply: false });
+        expect(decide({ scheduled: true, bindings: [scope, ownSweeper] })).toMatchObject({ supply: false });
       });
 
       it('supplies one when neither name is bound', () => {
-        expect(platformSweeperPlan(facts({ declaresSchedules: true }))).toEqual({ supply: true });
+        expect(decide({ scheduled: true })).toEqual({ supply: true });
       });
 
       it('refuses the half-matches it cannot tell apart', () => {
         expect(
-          refusal({ declaresSchedules: true, bindings: [scope, { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'Timer' }] }),
+          refusal({ scheduled: true, bindings: [scope, { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'Timer' }] }),
         ).toMatch(/predates them.*binds the name 'SWEEPER' to another class/);
         expect(
-          refusal({ declaresSchedules: true, bindings: [scope, { type: 'durable_object_namespace', name: 'TIMER', class_name: 'SweeperDO' }] }),
+          refusal({ scheduled: true, bindings: [scope, { type: 'durable_object_namespace', name: 'TIMER', class_name: 'SweeperDO' }] }),
         ).toMatch(/binds the class 'SweeperDO' under another name/);
       });
     });
 
     it('never reads the bytes: a bundle full of sweeper code changes nothing', () => {
       const code = js('worker.js', 'class S { noteScope(){} forgetScope(){} sweepNow(){} ensureArmed(){} } export default {}');
-      expect(platformSweeperDecision(facts({ declaresSchedules: true }), bundle([code]))).toEqual({ supply: true });
+      expect(platformSweeperDecision({ bindings: [scope], schedules: SCHEDULES }, bundle([code]))).toEqual({ supply: true });
     });
 
     it('refuses to record "supplied" for a bundle the platform entry would not wrap', () => {
       const old = bundle([js('worker.js', 'console.log(JSON.stringify({ substrat: "invocation", status }))')]);
-      const decision = platformSweeperDecision(facts({ declaresSchedules: true, sweeperClasses: [] }), old);
+      const decision = platformSweeperDecision({ bindings: [scope], schedules: SCHEDULES, sweeperClasses: [] }, old);
       expect(decision).toEqual({ refuse: expect.stringMatching(/cannot take one \(the bundle writes the invocation line/) });
       // …and a bundle that needs nothing from the platform is not refused for it.
-      expect(platformSweeperDecision(facts({}), old)).toEqual({ supply: false });
+      expect(platformSweeperDecision({ bindings: [scope] }, old)).toEqual({ supply: false });
     });
   });
 

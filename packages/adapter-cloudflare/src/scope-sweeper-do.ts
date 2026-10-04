@@ -23,7 +23,7 @@ export const SCOPE_SWEEPER_NAME = 'scope-sweeper';
  * `scopeId` schemas accept. Checked with the pattern rather than through those schemas since
  * #1902, because this file is bundled into the sweeper the platform supplies to every upload
  * that needs one, and a runtime import of contracts pulls zod in with it (the #1893 reason
- * `routed-node.ts` gives). `scope-sweeper-id.test.ts` holds it to the schemas.
+ * `routed-node.ts` gives). `test/scope-sweeper.test.ts` holds it to the schemas.
  */
 export const SWEEPER_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 

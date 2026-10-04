@@ -33,8 +33,8 @@ const SOURCE = 'packages/kernel/src/invocation-log.ts';
 const PLACEHOLDER = '__SUBSTRAT_VERTICAL_ENTRY__';
 const SWEEPER_SOURCE = 'packages/adapter-cloudflare/src/scope-sweeper-do.ts';
 const SWEEP_HOST_SOURCE = 'packages/vertical-host/src/scope-sweep-host.ts';
-/** The export the template and both hosted demos gave their own sweeper (#1902). */
-const SWEEPER_CLASS = 'SweeperDO';
+/** The export the template and both hosted demos gave their own sweeper (#1902) — contracts' name. */
+const { PLATFORM_SWEEPER_CLASS: SWEEPER_CLASS } = await import('../packages/contracts/dist/manifest.js');
 const SWEEPER_INTERVAL_MS = 120_000;
 /** Refuse a bundle past this: it would mean a runtime dependency crept in. */
 const CEILING_BYTES = 32_000;
@@ -146,10 +146,6 @@ export const PLATFORM_ENTRY_SOURCE: string = ${JSON.stringify(js)};
  * re-exports its class, when a vertical declares schedules and brings no sweeper of its own.
  */
 export const PLATFORM_SWEEPER_MODULE = 'substrat-platform-sweeper.js';
-
-/** The class it exports — the name the template and the demos always used, so a vertical that
- *  drops its own keeps the same Durable Object namespace, roster and alarm. */
-export const PLATFORM_SWEEPER_CLASS = '${SWEEPER_CLASS}';
 
 /** The sweeper itself — ${sweeper.length} bytes of ESM. */
 export const PLATFORM_SWEEPER_SOURCE: string = ${JSON.stringify(sweeper)};

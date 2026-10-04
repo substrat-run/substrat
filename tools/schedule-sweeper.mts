@@ -6,7 +6,7 @@
  * entry exports none, and `mountPlatformSurface` hands it the vertical's host and keeps its
  * roster. So "no sweeper" is no longer the offence. What still is (`sweeperOffence` in
  * `@substrat-run/cli`): an own sweeper nothing binds, the platform's names bound to something
- * else (the upload would refuse), and a `@substrat-run/vertical-host` too old to register the
+ * else (the control plane refuses the push), and a `@substrat-run/vertical-host` too old to register the
  * host — which in this workspace means an unbuilt one. The history below is why the gate
  * exists at all; its two halves now hold an OWN sweeper, and a vertical with none passes.
  *
@@ -158,19 +158,12 @@ export const parseExportedSweeperNames = exportedSweeperNames;
 export const offense = sweeperOffence;
 
 /**
- * `class_name`s a committed `wrangler.jsonc` binds as a Durable Object — JSONC-tolerant
- * (block/line comments blanked, same string-aware scan `tools/wrangler-config-check.mjs`
+ * Every Durable Object binding a committed `wrangler.jsonc` declares, name and class —
+ * JSONC-tolerant (block/line comments blanked, same string-aware scan `tools/wrangler-config-check.mjs`
  * uses, so a `//` inside a quoted value is never mistaken for a comment), trailing commas
  * stripped, then `JSON.parse`d. Returns `[]` for a config with no `durable_objects` block
  * rather than treating that as a parse failure — plenty of wrangler configs bind none.
  */
-export function parseWranglerBindingClasses(text: string): string[] {
-  return parseWranglerBindings(text)
-    .map((b) => b.class_name)
-    .filter((c): c is string => Boolean(c));
-}
-
-/** Every Durable Object binding a committed `wrangler.jsonc` declares, name and class. */
 export function parseWranglerBindings(text: string): { name?: string; class_name?: string }[] {
   let stripped = '';
   let i = 0;

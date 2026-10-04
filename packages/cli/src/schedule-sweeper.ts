@@ -15,7 +15,7 @@
  *      exports and instantiates only a bound one, so its alarm never runs (Copilot review on
  *      #1873 found the unexported-const variant);
  *   2. no own sweeper, but the platform's names — class `SweeperDO`, binding `SWEEPER` — used
- *      for something else, which the upload refuses;
+ *      for something else, which the control plane refuses at push;
  *   3. no own sweeper, and a `@substrat-run/vertical-host` too old to register the host the
  *      platform's sweeper runs.
  *
@@ -38,6 +38,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { parse } from '@babel/parser';
+import { PLATFORM_SWEEPER_BINDING, PLATFORM_SWEEPER_CLASS, sweeperConflict } from '@substrat-run/contracts';
 
 type Program = ReturnType<typeof parse>['program'];
 type Statement = Program['body'][number];
@@ -254,48 +255,45 @@ export function platformCanSupplySweeper(dir: string): boolean | undefined {
   }
 }
 
-/** The class and binding the platform's sweeper takes (`platformSweeperPlan` in control-plane-api). */
-export const PLATFORM_SWEEPER_CLASS = 'SweeperDO';
-export const PLATFORM_SWEEPER_BINDING = 'SWEEPER';
-
 /**
  * The offence in one vertical, or `null` when it is fine. No schedules declared means no
  * sweeper is owed, whatever the wiring looks like.
  *
  * Since #1902 a vertical that brings no sweeper is given the platform's at upload, so "no
  * sweeper" is no longer the offence. What is: an own sweeper nothing binds (Cloudflare never
- * instantiates it), the platform's names taken by something else (the upload would refuse),
- * and a vertical-host too old to hand the platform's sweeper a host.
+ * instantiates it), the platform's names taken by something else (the control plane refuses
+ * the push), and a vertical-host too old to hand the platform's sweeper a host. The first two
+ * are contracts' `sweeperConflict`, the rule the control plane judges by too.
  */
 export function sweeperOffence(schedules: readonly ScheduleRef[], wiring: SweeperWiring): string | null {
   if (schedules.length === 0) return null;
   const named = schedules.map((s) => `${s.moduleId} → ${s.operation}`).join(', ');
-  if (wiring.exportedNames.length > 0) {
-    const bound = wiring.exportedNames.filter((n) => wiring.boundClassNames.includes(n));
-    if (bound.length > 0) return null;
+  const conflict = sweeperConflict(wiring.exportedNames, {
+    boundClassNames: wiring.boundClassNames,
+    boundBindingNames: wiring.boundBindingNames ?? [],
+  });
+  if (conflict?.kind === 'own-unbound') {
     return (
-      `exports a sweeper (${wiring.exportedNames.join(', ')}) for schedules it declares (${named}), ` +
+      `exports a sweeper (${conflict.own.join(', ')}) for schedules it declares (${named}), ` +
       `but no deploy config binds it as a Durable Object class — checked wrangler.jsonc's ` +
       `durable_objects.bindings and package.json's substrat.runtimeNeeds.stores, and neither ` +
-      `names ${wiring.exportedNames.join(' or ')}. The class exists in the bundle but ` +
+      `names ${conflict.own.join(' or ')}. The class exists in the bundle but ` +
       `Cloudflare never instantiates it, so its alarm never runs. Bind it, or delete it: the ` +
       `platform supplies a sweeper to a vertical that exports none.`
     );
   }
-  const taken = (wiring.boundBindingNames ?? []).includes(PLATFORM_SWEEPER_BINDING)
-    ? `the binding '${PLATFORM_SWEEPER_BINDING}'`
-    : wiring.boundClassNames.includes(PLATFORM_SWEEPER_CLASS)
-      ? `the class name '${PLATFORM_SWEEPER_CLASS}'`
-      : undefined;
-  if (taken) {
+  if (conflict) {
+    const taken =
+      conflict.kind === 'binding-taken' ? `the binding '${PLATFORM_SWEEPER_BINDING}'` : `the class name '${PLATFORM_SWEEPER_CLASS}'`;
     return (
       `declares schedules (${named}) and exports no sweeper, so the platform supplies one at upload ` +
       `as class '${PLATFORM_SWEEPER_CLASS}' bound to '${PLATFORM_SWEEPER_BINDING}' — but the deploy config ` +
-      `already uses ${taken} for something that is not a \`defineScopeSweeperDO\` class, and the upload ` +
-      `would be refused. If it is a sweeper you have since deleted, drop its binding — the platform ` +
-      `adds its own — and otherwise rename it.`
+      `already uses ${taken} for something that is not a \`defineScopeSweeperDO\` class, and the control ` +
+      `plane would refuse the push. If it is a sweeper you have since deleted, drop its binding — the ` +
+      `platform adds its own — and otherwise rename it.`
     );
   }
+  if (wiring.exportedNames.length > 0) return null;
   if (wiring.platformCanSupply === false) {
     return (
       `declares schedules (${named}) and exports no sweeper. The platform supplies one at upload, ` +

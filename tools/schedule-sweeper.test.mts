@@ -5,7 +5,6 @@ import {
   deployables,
   offense,
   parseExportedSweeperNames,
-  parseWranglerBindingClasses,
   parseWranglerBindings,
   type ScheduleRef,
 } from './schedule-sweeper.mts';
@@ -100,7 +99,7 @@ test('parseExportedSweeperNames: an unrelated export is not mistaken for a sweep
   assert.deepEqual(parseExportedSweeperNames(src), []);
 });
 
-test('parseWranglerBindingClasses: reads durable_objects.bindings, JSONC comments and all', () => {
+test('parseWranglerBindings: reads durable_objects.bindings, JSONC comments and all', () => {
   const src = `{
     // a comment
     "durable_objects": {
@@ -110,11 +109,11 @@ test('parseWranglerBindingClasses: reads durable_objects.bindings, JSONC comment
       ]
     }
   }`;
-  assert.deepEqual(parseWranglerBindingClasses(src).sort(), ['ScopeDO', 'SweeperDO']);
+  assert.deepEqual(parseWranglerBindings(src).map((b) => b.class_name).sort(), ['ScopeDO', 'SweeperDO']);
 });
 
-test('parseWranglerBindingClasses: a config with no durable_objects block is empty, not a failure', () => {
-  assert.deepEqual(parseWranglerBindingClasses('{ "name": "x" }'), []);
+test('parseWranglerBindings: a config with no durable_objects block is empty, not a failure', () => {
+  assert.deepEqual(parseWranglerBindings('{ "name": "x" }'), []);
 });
 
 test('every current deployable vertical loads, and every schedule it declares (composed or not) has a sweeper to run it', async () => {
