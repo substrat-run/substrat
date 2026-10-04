@@ -35,7 +35,7 @@ import type { HistoryEntry } from '@substrat-run/contracts';
  * module can do is make it look as though the principal who actually invoked it sent the
  * invite, which bounds it by that principal's authority, the same delegation `ctx.grant`
  * applies. The joiner is the event's own kernel-stamped actor, and the invitation must show
- * exactly one send and exactly one acceptance, by that actor.
+ * exactly one send, and its first acceptance by that actor.
  *
  * A refusal is terminal (`refuseDelivery`): it is journaled with its reason, never retried,
  * and listed by `executorDeadLetters`. The emitting call learns of it through
@@ -131,9 +131,12 @@ async function authorize(event: DomainEvent, scope: ExecutorScope, level: 'scope
   if (!sendFacts.success || sendFacts.data.orgId !== request.orgId || sendFacts.data.roleKey !== request.roleKey) {
     return refused(`the request does not match invitation ${request.invitationId} as it was sent`);
   }
-  const acceptance = accepted.length === 1 ? acceptedFacts.safeParse(accepted[0]!.payload) : null;
-  if (!acceptance?.success || accepted[0]!.actor !== event.actor || acceptance.data.principal !== request.principal) {
-    return refused(`invitation ${request.invitationId} has no single acceptance by ${request.principal}`);
+  // Single use: the FIRST acceptance decides who joins. A later one — by anyone — joins
+  // nobody, and cannot unseat the first, whose delivery may still be retrying.
+  const first = accepted[0];
+  const acceptance = first ? acceptedFacts.safeParse(first.payload) : null;
+  if (!acceptance?.success || first!.actor !== event.actor || acceptance.data.principal !== request.principal) {
+    return refused(`invitation ${request.invitationId} was not first accepted by ${request.principal}`);
   }
   const inviter = principalId.safeParse(send.actor);
   if (!inviter.success) return refused(`invitation ${request.invitationId} was not sent by a principal`);

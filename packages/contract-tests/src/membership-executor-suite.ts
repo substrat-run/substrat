@@ -251,7 +251,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         const inv = await send(w, w.alice, 'member');
         expect((await asJoiner(w, first, 'invitefix/accept', inv)).map((o) => o.outcome)).toEqual(['delivered']);
         const second = principalId.parse(ulid());
-        await expectRefused(w, await asJoiner(w, second, 'invitefix/accept', inv), second, /no single acceptance/);
+        await expectRefused(w, await asJoiner(w, second, 'invitefix/accept', inv), second, /not first accepted by/);
       });
 
       it('with no request shape at all', async () => {
