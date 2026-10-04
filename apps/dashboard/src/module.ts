@@ -1090,8 +1090,9 @@ const acceptInviteInput = z.object({
  * member yet, so there is no permission to check — the identifier hash IS the
  * authority, per the invites engine). Composes `acceptInvite` (verifies the hash,
  * transitions state, emits invites.accepted + member.add-requested) and flips the
- * roster row to active in the SAME transaction. The kernel role assignment + identity
- * link are effected by the worker afterwards (they need platform authority / the sub).
+ * roster row to active in the SAME transaction. The role assignment and org membership
+ * are effected after the commit by the membership executor (#1184, `membership.ts`), the
+ * identity link by the worker (it needs the sub).
  */
 const acceptInviteOp: OperationHandler<z.infer<typeof acceptInviteInput>, { roleKey: string }> = async (ctx, raw) => {
   const input = acceptInviteInput.parse(raw);
@@ -1101,6 +1102,23 @@ const acceptInviteOp: OperationHandler<z.infer<typeof acceptInviteInput>, { role
     [ctx.principal, ctx.now(), input.invitationId],
   );
   return { roleKey: invitation.role_key };
+};
+
+const withdrawRefusedAcceptInput = z.object({ invitationId: z.string().min(1) });
+
+/**
+ * Take back the roster row an accept flipped to active when the membership executor then
+ * REFUSED it (#1184) — the sender no longer held what the invite grants, so no role was ever
+ * assigned. The worker calls this only on that refusal; without it the roster would show a
+ * member who holds nothing. No permission check, like `accept-invite`: the caller is the
+ * joiner, who holds no role, and the row it touches is only the one it just accepted as itself.
+ */
+const withdrawRefusedAcceptOp: OperationHandler<z.infer<typeof withdrawRefusedAcceptInput>, void> = async (ctx, raw) => {
+  const input = withdrawRefusedAcceptInput.parse(raw);
+  ctx.sql.exec(
+    `UPDATE dashboard_members SET status = 'revoked' WHERE invitation_id = ? AND principal = ? AND status = 'active'`,
+    [input.invitationId, ctx.principal],
+  );
 };
 
 const previewInviteInput = z.object({ invitationId: z.string().min(1) });
@@ -1270,7 +1288,10 @@ const removeMemberInput = z.object({ memberId: z.string().min(1) });
  * owner cannot be removed. Returns the removed principal + role so the worker knows
  * what to unassign; a no-match (already gone, or the owner) returns null.
  */
-const removeMemberOp: OperationHandler<z.infer<typeof removeMemberInput>, { principal: string; roleKey: string } | null> = async (ctx, raw) => {
+const removeMemberOp: OperationHandler<
+  z.infer<typeof removeMemberInput>,
+  { principal: string; roleKey: string; orgId: string } | null
+> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.manageMembers));
   const input = removeMemberInput.parse(raw);
   const row = ctx.sql.query<DashboardMemberRow>(
@@ -1279,7 +1300,9 @@ const removeMemberOp: OperationHandler<z.infer<typeof removeMemberInput>, { prin
   )[0];
   if (!row || !row.principal) return null;
   ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE id = ?`, [input.memberId]);
-  return { principal: row.principal, roleKey: row.role_key };
+  const team = ctx.sql.query<{ org_id: string }>('SELECT org_id FROM dashboard_team LIMIT 1')[0];
+  if (!team) throw new Error('team not initialised');
+  return { principal: row.principal, roleKey: row.role_key, orgId: team.org_id };
 };
 
 const beginConnectionInput = z.object({ provider: z.string().min(1).max(64) });
@@ -1475,6 +1498,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/init-team': initTeamOp as OperationHandler<never, unknown>,
     'dashboard/invite-member': inviteMemberOp as OperationHandler<never, unknown>,
     'dashboard/accept-invite': acceptInviteOp as OperationHandler<never, unknown>,
+    'dashboard/withdraw-refused-accept': withdrawRefusedAcceptOp as OperationHandler<never, unknown>,
     'dashboard/preview-invite': previewInviteOp as OperationHandler<never, unknown>,
     'dashboard/resend-invite': resendInviteOp as OperationHandler<never, unknown>,
     'dashboard/invite-link': inviteLinkOp as OperationHandler<never, unknown>,
