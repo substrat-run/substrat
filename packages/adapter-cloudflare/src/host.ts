@@ -2381,20 +2381,6 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * Drain this scope's outbox into the registered executors (K-22 §4.2).
-   *
-   * Runs on the coordinator because executors act through `HostAdmin`, which the
-   * ScopeDO cannot reach. Prompt: called inline after the operation returns, so the
-   * common case completes inside the request.
-   *
-   * **Failure is contained here (#100).** A throwing handler used to escape
-   * `invoke()` after the scope had already committed, reporting an error for work
-   * that succeeded. It now records a failed attempt, backs off, dead-letters at
-   * `maxAttempts`, and isolates each event and each executor so one poison
-   * delivery cannot wedge the ones behind it. At-least-once still requires
-   * idempotent handlers.
-   */
-  /**
    * #1184: the scope reads an executor's handler may make. Plain RPCs to the ScopeDO: the
    * handler runs here on the coordinator, after the DO's own task has returned.
    */
@@ -2411,6 +2397,20 @@ export class CloudflareScopeHost implements ScopeHost {
     };
   }
 
+  /**
+   * Drain this scope's outbox into the registered executors (K-22 §4.2).
+   *
+   * Runs on the coordinator because executors act through `HostAdmin`, which the
+   * ScopeDO cannot reach. Prompt: called inline after the operation returns, so the
+   * common case completes inside the request.
+   *
+   * **Failure is contained here (#100).** A throwing handler used to escape
+   * `invoke()` after the scope had already committed, reporting an error for work
+   * that succeeded. It now records a failed attempt, backs off, dead-letters at
+   * `maxAttempts`, and isolates each event and each executor so one poison
+   * delivery cannot wedge the ones behind it. At-least-once still requires
+   * idempotent handlers.
+   */
   private async drainExecutors(
     tenantId: TenantId,
     scopeId: ScopeId,

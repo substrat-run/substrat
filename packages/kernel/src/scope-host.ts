@@ -975,7 +975,9 @@ export interface ExecutorScope {
   covers(principal: PrincipalId, roleKey: string, level: 'scope' | 'tenant'): Promise<Coverage>;
 }
 
-const REFUSAL = Symbol('substrat.delivery-refusal');
+// `Symbol.for`, so an adapter built against one copy of the kernel recognises a refusal made
+// by another — two installed copies is a state this repo has shipped before.
+const REFUSAL = Symbol.for('substrat.delivery-refusal');
 
 /** What an executor returns to refuse an event terminally (#1184). Build it with `refuseDelivery`. */
 export interface DeliveryRefusal {
