@@ -195,8 +195,7 @@ function run(cmd, args, cwd, env) {
   return new Promise((done, fail) => {
     const child = spawn(cmd, args, { cwd, env });
     let output = '';
-    child.stdout.on('data', (chunk) => (output += chunk));
-    child.stderr.on('data', (chunk) => (output += chunk));
+    for (const stream of [child.stdout, child.stderr]) stream.on('data', (chunk) => (output += chunk));
     child.on('error', fail);
     child.on('close', (status) => done({ status, output }));
   });
