@@ -1,3 +1,5 @@
+import { substratError } from '@substrat-run/contracts';
+
 /**
  * The textual gate in front of the scope SQL console (`HostAdmin.queryScope`, #219).
  *
@@ -86,13 +88,13 @@ export function assertReadOnlyQuery(sql: string): string {
         }
         i += 1;
       }
-      if (statementEnded) throw new Error('read-only console: only a single statement is allowed');
+      if (statementEnded) throw substratError('validation_failed', 'read-only console: only a single statement is allowed');
       continue;
     }
     if (c === '[') {
       while (i < n && sql[i] !== ']') i += 1;
       i += 1;
-      if (statementEnded) throw new Error('read-only console: only a single statement is allowed');
+      if (statementEnded) throw substratError('validation_failed', 'read-only console: only a single statement is allowed');
       continue;
     }
     if (c === ';') {
@@ -104,23 +106,23 @@ export function assertReadOnlyQuery(sql: string): string {
     if (/[A-Za-z_]/.test(c)) {
       let j = i;
       while (j < n && /[A-Za-z0-9_]/.test(sql[j]!)) j += 1;
-      if (statementEnded) throw new Error('read-only console: only a single statement is allowed');
+      if (statementEnded) throw substratError('validation_failed', 'read-only console: only a single statement is allowed');
       tokens.push(sql.slice(i, j).toLowerCase());
       i = j;
       continue;
     }
-    if (statementEnded && /\S/.test(c)) throw new Error('read-only console: only a single statement is allowed');
+    if (statementEnded && /\S/.test(c)) throw substratError('validation_failed', 'read-only console: only a single statement is allowed');
     i += 1;
   }
 
   const first = tokens[0];
-  if (!first) throw new Error('read-only console: empty statement');
+  if (!first) throw substratError('validation_failed', 'read-only console: empty statement');
   if (!FIRST_KEYWORDS.has(first)) {
-    throw new Error(`read-only console: statement must start with SELECT, WITH, VALUES, or EXPLAIN (got '${first.toUpperCase()}')`);
+    throw substratError('validation_failed', `read-only console: statement must start with SELECT, WITH, VALUES, or EXPLAIN (got '${first.toUpperCase()}')`);
   }
   for (const t of tokens) {
     if (FORBIDDEN.has(t)) {
-      throw new Error(
+      throw substratError('validation_failed',
         `read-only console: '${t.toUpperCase()}' is not allowed (quote it if it names a column or table)`,
       );
     }

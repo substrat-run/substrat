@@ -2652,10 +2652,10 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
       .get(input.tenantId) as { status: string } | undefined;
     if (!tenantRow) {
-      throw new Error(`cannot provision scope under unknown tenant: ${input.tenantId}`);
+      throw substratError('conflict', `cannot provision scope under unknown tenant: ${input.tenantId}`);
     }
     if (tenantRow.status !== 'active') {
-      throw new Error(
+      throw substratError('conflict',
         `cannot provision scope under non-active tenant (status: ${tenantRow.status}): ${input.tenantId}`,
       );
     }
@@ -2679,7 +2679,7 @@ export class SqliteScopeHost implements ScopeHost {
         )
         .get(input.tenantId, record.slug) as { scope_id: string } | undefined;
       if (slugOwner) {
-        throw new Error(
+        throw substratError('conflict',
           `scope slug '${record.slug}' already taken under tenant ${input.tenantId} ` +
             `by ${slugOwner.scope_id} (slugs are unique within a tenant)`,
         );
@@ -2836,10 +2836,10 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
       .get(input.tenantId) as { status: string } | undefined;
     if (!tenantRow) {
-      throw new Error(`cannot provision tenant store under unknown tenant: ${input.tenantId}`);
+      throw substratError('not_found', `cannot provision tenant store under unknown tenant: ${input.tenantId}`);
     }
     if (tenantRow.status !== 'active') {
-      throw new Error(
+      throw substratError('conflict',
         `cannot provision tenant store under non-active tenant (status: ${tenantRow.status}): ${input.tenantId}`,
       );
     }
@@ -2930,10 +2930,10 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
       .get(input.tenantId) as { status: string } | undefined;
     if (!tenantRow) {
-      throw new Error(`cannot provision blob store under unknown tenant: ${input.tenantId}`);
+      throw substratError('not_found', `cannot provision blob store under unknown tenant: ${input.tenantId}`);
     }
     if (tenantRow.status !== 'active') {
-      throw new Error(
+      throw substratError('conflict',
         `cannot provision blob store under non-active tenant (status: ${tenantRow.status}): ${input.tenantId}`,
       );
     }
@@ -3650,10 +3650,10 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
       .get(tenantId) as { status: string } | undefined;
     if (!tenantRow) {
-      throw new Error(`scope has no tenant record: (${tenantId}, ${scopeId})`);
+      throw substratError('not_found', `scope has no tenant record: (${tenantId}, ${scopeId})`);
     }
     if (tenantRow.status !== 'active') {
-      throw new Error(`tenant not active (status: ${tenantRow.status}): ${tenantId}`);
+      throw substratError('conflict', `tenant not active (status: ${tenantRow.status}): ${tenantId}`);
     }
     // `provisioning` is handled BELOW rather than here, because a scope that never
     // finished setting up should still retry its migrations when touched — that lazy
@@ -3662,7 +3662,7 @@ export class SqliteScopeHost implements ScopeHost {
     // deliberate states, and running migrations for them would be work on behalf of a
     // request that is going to be refused anyway.
     if (row.status !== 'active' && row.status !== 'provisioning') {
-      throw new Error(`scope not active (status: ${row.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`);
     }
 
     const rt = this.runtime(tenantId, scopeId);
@@ -3673,7 +3673,7 @@ export class SqliteScopeHost implements ScopeHost {
       // the scope exists on the vertical's side (K-31). Refused, but only after the
       // retry above has had its chance — and if THAT is what failed, it threw with
       // the migration's own message, which is the one an operator needs.
-      throw new Error(`scope not active (status: ${row.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`);
     }
     return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options);
   }
@@ -3712,7 +3712,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
     }
     if (scope.status !== 'active') {
-      throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
     }
     const rt = this.runtime(conn.tenant_id as TenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -3746,7 +3746,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
     }
     if (scope.status !== 'active') {
-      throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
     }
     const rt = this.runtime(conn.tenant_id as TenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -3787,7 +3787,7 @@ export class SqliteScopeHost implements ScopeHost {
       throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     if (scope.status !== 'active') {
-      throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
     }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -3813,7 +3813,7 @@ export class SqliteScopeHost implements ScopeHost {
       throw substratError('not_found', `unknown scope: ${scopeId}`);
     }
     if (scope.status !== 'active') {
-      throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
     }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -4124,10 +4124,10 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
       .get(tenantId) as { status: string } | undefined;
     if (!tenant || tenant.status !== 'active') {
-      throw new Error(`tenant not active (status: ${tenant?.status ?? 'missing'}): ${tenantId}`);
+      throw substratError('conflict', `tenant not active (status: ${tenant?.status ?? 'missing'}): ${tenantId}`);
     }
     if (scope.status !== 'active') {
-      throw new Error(`scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
     }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -6393,7 +6393,7 @@ export class SqliteScopeHost implements ScopeHost {
         throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
       }
       if (!from.includes(row.status as ScopeStatus)) {
-        throw new Error(
+        throw substratError('conflict',
           `illegal scope transition for ${action}: ${row.status} → ${to} ` +
             `(allowed from: ${from.join('|')})`,
         );
@@ -7546,7 +7546,7 @@ export class SqliteScopeHost implements ScopeHost {
               `vertical '${parsed.slug}' is owned by ${existing.ownerTenant ?? 'the platform'}, not ${parsed.ownerTenant ?? 'the platform'}`,
             );
           }
-          throw new Error(
+          throw substratError('conflict',
             `vertical '${parsed.slug}' is already registered as ${existing.source}`,
           );
         }
@@ -7818,13 +7818,13 @@ export class SqliteScopeHost implements ScopeHost {
         // gate is about change, not about existence.
         if (outgoing) {
           if (outgoing.permissionDigest !== incoming.permissionDigest && !ack.permissionChange) {
-            throw new Error(
+            throw substratError('conflict',
               `promotion changes the permission surface (${outgoing.permissionDigest} → ` +
                 `${incoming.permissionDigest}) — acknowledge it explicitly to promote`,
             );
           }
           if (outgoing.migrationDigest !== incoming.migrationDigest && !ack.migrationChange) {
-            throw new Error(
+            throw substratError('conflict',
               `promotion changes migrations (${outgoing.migrationDigest} → ` +
                 `${incoming.migrationDigest}) — acknowledge it explicitly to promote`,
             );
@@ -8492,7 +8492,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT org_id FROM orgs WHERE tenant_id = ? AND slug = ?')
           .get(parsed.tenantId, parsed.slug) as { org_id: string } | undefined;
         if (slugOwner) {
-          throw new Error(
+          throw substratError('conflict',
             `org slug '${parsed.slug}' already taken by ${slugOwner.org_id} (slugs are unique per tenant)`,
           );
         }
@@ -8577,7 +8577,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT tenant_id FROM tenants WHERE slug = ?')
           .get(parsed.slug) as { tenant_id: string } | undefined;
         if (slugOwner) {
-          throw new Error(
+          throw substratError('conflict',
             `tenant slug '${parsed.slug}' already taken by ${slugOwner.tenant_id} (slugs are unique)`,
           );
         }
@@ -8597,7 +8597,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       setTenantStatus: async (actor: PlatformActorId, tenantId: TenantId, status: TenantStatus) => {
         const before = readTenant(tenantId);
-        if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+        if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
         // `reaped` is terminal and destroys data — it is unreachable here and only
         // ever set by reapTenant, so a plain status flip cannot forge a tombstone
         // over live data (§4.8, the tenant analogue of reapScope's archived-only gate).
@@ -8628,7 +8628,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       setTenantName: async (actor: PlatformActorId, tenantId: TenantId, name: string) => {
         const before = readTenant(tenantId);
-        if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+        if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
         if (before.name === name) return; // no-op is not audited — nothing changed
         this.directory.prepare('UPDATE tenants SET name = ? WHERE tenant_id = ?').run(name, tenantId);
         this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before.name }, { name });
@@ -8815,7 +8815,7 @@ export class SqliteScopeHost implements ScopeHost {
             }[]
           ).map((r) => r.name),
         );
-        if (!known.has(input.table)) throw new Error(`unknown table '${input.table}'`);
+        if (!known.has(input.table)) throw substratError('not_found', `unknown table '${input.table}'`);
         // The ceiling clamps; a bound SQLite would misread (NaN, non-finite, fractional,
         // negative) is refused instead of reaching LIMIT / OFFSET (#1632).
         const limit = Math.min(assertRowLimit('limit', input.limit ?? SCOPE_TABLE_PAGE_DEFAULT), SCOPE_TABLE_PAGE_MAX);
@@ -8842,7 +8842,7 @@ export class SqliteScopeHost implements ScopeHost {
         // Layer 2, authoritative: sqlite3_stmt_readonly via better-sqlite3. prepare()
         // itself rejects multi-statement strings and bad SQL with the driver's message.
         const stmt = db.prepare(sql);
-        if (!stmt.readonly) throw new Error('read-only console: statement is not read-only');
+        if (!stmt.readonly) throw substratError('validation_failed', 'read-only console: statement is not read-only');
         if (!stmt.reader) return { columns: [], rows: [], truncated: false };
         stmt.raw(true);
         const rows: unknown[][] = [];
@@ -9294,7 +9294,7 @@ export class SqliteScopeHost implements ScopeHost {
         // and flips the row to a `reaped` tombstone. Only a `deleting` tenant may be
         // reaped — an illegal source fails closed, like reapScope's archived-only gate.
         const before = readTenant(tenantId);
-        if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+        if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
         if (before.status !== 'deleting') {
           throw new Error(
             `tenant ${tenantId} is ${before.status}, not deleting — only a deleting tenant may be reaped`,
@@ -9494,7 +9494,7 @@ export class SqliteScopeHost implements ScopeHost {
           if (existing.topology === parsed.topology && existing.tenantId === parsed.tenantId) {
             return;
           }
-          throw new Error(
+          throw substratError('conflict',
             `identity pool '${parsed.provider}' is already registered as ${existing.topology}` +
               `${existing.tenantId ? ` for tenant ${existing.tenantId}` : ''}`,
           );

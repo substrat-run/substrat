@@ -244,6 +244,7 @@ import {
   type LiveRefusal,
   type LiveSubscription,
 } from './live-reads.js';
+import { replyOf, type DoReply } from './do-reply.js';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql, doBuiltColumnsOf, doRedactionSql, doSpineSql } from './sql.js';
 import {
@@ -5093,6 +5094,19 @@ export function defineScopeDO(
 
     /** A bounded page of one table. Unknown table names throw — never queried blind. */
     introspectTable(table: string, limit: number, offset: number): ScopeTablePage {
+      try {
+        return this.tablePage(table, limit, offset);
+      } catch (e) {
+        throw toRpcError(e);
+      }
+    }
+
+    /** `introspectTable`, its refusal answered as DATA so its code survives the hop (#113). */
+    introspectTableReply(table: string, limit: number, offset: number): Promise<DoReply<ScopeTablePage>> {
+      return replyOf(() => this.tablePage(table, limit, offset));
+    }
+
+    private tablePage(table: string, limit: number, offset: number): ScopeTablePage {
       const known = new Set(
         (
           this.sql
@@ -5100,7 +5114,7 @@ export function defineScopeDO(
             .toArray() as unknown as { name: string }[]
         ).map((r) => r.name),
       );
-      if (!known.has(table)) throw new Error(`unknown table '${table}'`);
+      if (!known.has(table)) throw substratError('not_found', `unknown table '${table}'`);
       // The ceiling clamps; a bound SQLite would misread (NaN, non-finite, fractional,
       // negative) is refused instead of reaching LIMIT / OFFSET (#1632).
       const l = Math.min(assertRowLimit('limit', limit), SCOPE_TABLE_PAGE_MAX);
@@ -5124,6 +5138,19 @@ export function defineScopeDO(
      * at SCOPE_QUERY_ROW_MAX with `truncated` set, never an error.
      */
     async introspectQuery(sql: string): Promise<ScopeQueryResult> {
+      try {
+        return await this.readOnlyQuery(sql);
+      } catch (e) {
+        throw toRpcError(e);
+      }
+    }
+
+    /** `introspectQuery`, its refusal answered as DATA so its code survives the hop (#113). */
+    introspectQueryReply(sql: string): Promise<DoReply<ScopeQueryResult>> {
+      return replyOf(() => this.readOnlyQuery(sql));
+    }
+
+    private async readOnlyQuery(sql: string): Promise<ScopeQueryResult> {
       const stmt = assertReadOnlyQuery(sql);
       let result: ScopeQueryResult | undefined;
       const rollback = new Error('read-only console rollback');
@@ -5145,7 +5172,7 @@ export function defineScopeDO(
           throw rollback;
         });
       } catch (e) {
-        if (e !== rollback) throw toRpcError(e);
+        if (e !== rollback) throw e;
       }
       return result!;
     }
@@ -6817,6 +6844,11 @@ export function defineScopeDO(
      * and the reconciliation sweep both call it (scope-local-permissions.md Phase 2).
      * One enqueued unit, so no half-applied projection is ever visible to a check.
      */
+    /** `applyProjection`, its refusal answered as DATA so its code survives the hop (#113). */
+    applyProjectionReply(...args: Parameters<ScopeDO['applyProjection']>): Promise<DoReply<SwitchedOff[]>> {
+      return replyOf(() => this.applyProjection(...args));
+    }
+
     async applyProjection(
       tenantId: string,
       roles: { role_key: string; permissions: string; source: string }[],

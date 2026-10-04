@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AUTO_ADMISSION_NOTE, substratError } from '@substrat-run/contracts';
+import { AUTO_ADMISSION_NOTE, substratError, type ErrorCode } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { mapError } from '../src/errors.js';
 
@@ -215,19 +215,19 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
 });
 
 describe('mapError — a ScopeDO refusing a projection for another tenant (#1738)', () => {
-  // As it arrives across the Durable Object hop: a plain Error, the code only in the text.
-  const refusal = new Error(
-    'Substrat.conflict: applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it',
-  );
+  const sentence =
+    'applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it';
 
-  it('answers 409, with its text intact, not a generic 500', () => {
-    const { status, body } = mapError(refusal);
+  it('answers 409 from the code the DO reply carried, with its text intact', () => {
+    const { status, body } = mapError(substratError('conflict', sentence));
     expect(status).toBe(409);
-    expect(JSON.stringify(body)).toContain('would re-point it');
+    expect(body.detail).toBe(sentence);
   });
 
-  it('the twin: an unrelated plain Error is still the generic 500', () => {
-    expect(mapError(new Error('boom')).status).toBe(500);
+  it('the flattened form a throw across the hop arrives as is no longer matched (#113)', () => {
+    // The coordinator reads the refusal from `applyProjectionReply` now; only a coordinator
+    // calling a DO from before that change could still see this, and it gets the generic 500.
+    expect(mapError(new Error(`Substrat.conflict: ${sentence}`)).status).toBe(500);
   });
 });
 
@@ -264,10 +264,20 @@ const REMAINING: readonly [sentence: string, status: number, code: string][] = [
 ];
 
 describe('mapError — the last pattern families keep their status and code (#113)', () => {
+  // Every row is typed at its throw site now (both adapters, the contract suite asserts the code),
+  // so the status comes from the declaration and the pattern table is gone.
   it.each(REMAINING)('%s → %i %s', (sentence, status, code) => {
-    const mapped = mapError(new Error(sentence));
+    const mapped = mapError(substratError(code as ErrorCode, sentence));
     expect(mapped.status).toBe(status);
     expect(mapped.body.code).toBe(code);
     expect(mapped.body.detail).toBe(sentence);
+  });
+
+  it.each(REMAINING)('%s, untyped, is an unreviewed throw: the generic 500', (sentence) => {
+    // What makes the deletion real: a future untyped refusal answers `internal error` in its
+    // first test instead of being quietly matched by a row that guessed its code.
+    const mapped = mapError(new Error(sentence));
+    expect(mapped.status).toBe(500);
+    expect(mapped.body.detail).toBeUndefined();
   });
 });

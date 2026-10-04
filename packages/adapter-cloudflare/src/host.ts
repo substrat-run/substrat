@@ -5,6 +5,7 @@ import { isSystemDoorMoved, SYSTEM_DOOR_MOVED, SYSTEM_DOOR_REGATES, type SystemD
 import {
   delegatedReadParams,
   fromWireFailure,
+  type ErrorCode,
   type WireFailure,
   exportReadInput,
   exportedBatch,
@@ -430,7 +431,9 @@ import type {
   VersionRow,
   VersionListRow,
   LifecycleTargetRow,
+  RepliedMethod,
 } from './control-plane-do.js';
+import { unwrapReply, type DoReply } from './do-reply.js';
 
 /**
  * `CloudflareScopeHost` — the coordinator (design doc §5.7). It runs in the
@@ -499,6 +502,11 @@ const toConnection = (r: ConnectionDoRow): Connection =>
   });
 
 interface ControlPlaneStub {
+  /** #113: one of `REPLIED_METHODS`, its refusal answered as data (`ControlPlaneDO.reply`). */
+  reply<M extends RepliedMethod>(
+    method: M,
+    args: Parameters<ControlPlaneStub[M]>,
+  ): Promise<DoReply<Awaited<ReturnType<ControlPlaneStub[M]>>>>;
   /** #1713: hosted scopes and their directory lifecycle (`ControlPlaneDO.lifecycleTargets`). */
   lifecycleTargets(filter: {
     tenantId?: string;
@@ -597,7 +605,7 @@ interface ControlPlaneStub {
   scopeAccessRefusal(
     tenantId: string,
     scopeId: string,
-  ): Promise<{ code: 'not_found' | null; message: string } | null | undefined>;
+  ): Promise<{ code: ErrorCode | null; message: string } | null | undefined>;
   /** A scope lifecycle transition, its refusal answered as data (#1718). */
   transitionScopeOrRefusal(
     tenantId: string,
@@ -607,7 +615,7 @@ interface ControlPlaneStub {
     action: string,
   ): Promise<
     | { ok: true; status: string; vertical: string | null }
-    | { ok: false; code: 'not_found' | null; message: string }
+    | { ok: false; code: ErrorCode | null; message: string }
   >;
   defineRole(tenantId: string, role: RoleDefinition): Promise<RoleDefinition | null>;
   listRoles(filter: { tenantId?: string; source?: string } & ListPage): Promise<RoleRow[]>;
@@ -938,6 +946,14 @@ type CapabilityAttachmentReply<T> = { value: T; failure?: undefined } | { failur
 function unwrapCapabilityReply<T>(reply: CapabilityAttachmentReply<T>): T {
   if (reply.failure) throw fromWireFailure(reply.failure);
   return reply.value as T;
+}
+
+/** `applyProjection` with its refusal's code kept across the DO hop (#113). */
+async function projectOnto(
+  stub: ScopeStubRpc,
+  ...args: Parameters<ScopeStubRpc['applyProjection']>
+): Promise<SwitchedOff[]> {
+  return unwrapReply(await stub.applyProjectionReply(...args));
 }
 
 interface ScopeStubRpc {
@@ -1402,6 +1418,8 @@ interface ScopeStubRpc {
     switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
     serviceSubjects?: readonly string[],
   ): Promise<SwitchedOff[]>;
+  /** #113: `applyProjection`, its refusal answered as data. */
+  applyProjectionReply(...args: Parameters<ScopeStubRpc['applyProjection']>): Promise<DoReply<SwitchedOff[]>>;
   /** Resolve an external identity from this scope's projected links (#406) — the CP-less auth read. */
   resolveProjectedIdentity(
     tenantId: string,
@@ -1411,8 +1429,12 @@ interface ScopeStubRpc {
   /** Read-only introspection of this scope's DB (§5.4 admin-query RPC). */
   introspectTables(): Promise<ScopeTable[]>;
   introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage>;
+  /** #113: `introspectTable`, its refusal answered as data. */
+  introspectTableReply(table: string, limit: number, offset: number): Promise<DoReply<ScopeTablePage>>;
   /** One read-only SQL statement, gated + rolled back inside the DO (#219). */
   introspectQuery(sql: string): Promise<ScopeQueryResult>;
+  /** #113: `introspectQuery`, its refusal answered as data. */
+  introspectQueryReply(sql: string): Promise<DoReply<ScopeQueryResult>>;
   /** The K-35 denial log, read back (#867) — raw rows and the bucketed view. */
   listDenials(filter?: DenialFilter): Promise<PermissionDenial[]>;
   summarizeDenials(filter?: DenialFilter): Promise<DenialSummary>;
@@ -2012,15 +2034,21 @@ function nullControlPlane(): ControlPlaneStub {
     // #1823: no tenant tuples here either — the platform reads them and sends `tenantHeld`.
     tenantHeldSystemModules: async () => [],
   };
+  const unavailable = (method: string) =>
+    new Error(
+      `control plane unavailable: '${method}' — this host is scope-local / CP-less ` +
+        `(docs/architecture/scope-local-permissions.md, Phase 3)`,
+    );
+  // A directory write through `reply` (#113) is named for the write it carries, not for `reply`.
+  passthrough.reply = async (method: unknown) => {
+    throw unavailable(String(method));
+  };
   return new Proxy({} as ControlPlaneStub, {
     get: (_t, prop) =>
       typeof prop === 'string' && prop in passthrough
         ? passthrough[prop]
         : async () => {
-            throw new Error(
-              `control plane unavailable: '${String(prop)}' — this host is scope-local / CP-less ` +
-                `(docs/architecture/scope-local-permissions.md, Phase 3)`,
-            );
+            throw unavailable(String(prop));
           },
   });
 }
@@ -2822,12 +2850,12 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
-    return this.scopeStub(scopeId).introspectTable(input.table, input.limit, input.offset);
+    return unwrapReply(await this.scopeStub(scopeId).introspectTableReply(input.table, input.limit, input.offset));
   }
 
   /** The SQL console's CP-less path (#219) — same trust line as the pair above. */
   async introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
-    return this.scopeStub(scopeId).introspectQuery(input.sql);
+    return unwrapReply(await this.scopeStub(scopeId).introspectQueryReply(input.sql));
   }
 
   /**
@@ -3132,7 +3160,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     roles: RoleDefinition[],
   ): Promise<void> {
-    await this.scopeStub(scopeId).applyProjection(
+    await projectOnto(this.scopeStub(scopeId),
       tenantId,
       roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source })),
       [],
@@ -3381,7 +3409,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const record = resolveScopeRecord(input);
     // Fail-closed tenant gate throws out of the awaited cp call BEFORE migrate
     // or audit, so a rejected provision creates nothing and writes no audit row.
-    const created = await this.cp.provisionScope(
+    const created = await this.directory('provisionScope',
       input.tenantId,
       input.scopeId,
       record,
@@ -3476,10 +3504,10 @@ export class CloudflareScopeHost implements ScopeHost {
     // inside the DO's ledger write, which is the serialization point that actually holds.
     const tenant = await this.cp.getTenant(input.tenantId);
     if (!tenant) {
-      throw new Error(`cannot provision tenant store under unknown tenant: ${input.tenantId}`);
+      throw substratError('not_found', `cannot provision tenant store under unknown tenant: ${input.tenantId}`);
     }
     if (tenant.status !== 'active') {
-      throw new Error(
+      throw substratError('conflict',
         `cannot provision tenant store under non-active tenant (status: ${tenant.status}): ${input.tenantId}`,
       );
     }
@@ -3495,7 +3523,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // the source of truth, carrying the D1 database_id Cloudflare assigned as the ref.
     const name = await tenantStoreDatabaseName(input.tenantId, input.vertical, input.binding);
     const ref = await d1.create(name);
-    const stored = await this.cp.putTenantStore({
+    const stored = await this.directory('putTenantStore', {
       tenantId: input.tenantId,
       vertical: input.vertical,
       binding: input.binding,
@@ -3564,10 +3592,10 @@ export class CloudflareScopeHost implements ScopeHost {
     );
     const tenant = await this.cp.getTenant(input.tenantId);
     if (!tenant) {
-      throw new Error(`cannot provision blob store under unknown tenant: ${input.tenantId}`);
+      throw substratError('not_found', `cannot provision blob store under unknown tenant: ${input.tenantId}`);
     }
     if (tenant.status !== 'active') {
-      throw new Error(
+      throw substratError('conflict',
         `cannot provision blob store under non-active tenant (status: ${tenant.status}): ${input.tenantId}`,
       );
     }
@@ -3575,7 +3603,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (existing) return { binding: input.binding, kind: 'blob', ref: existing.ref };
     const name = await blobStoreBucketName(input.tenantId, input.vertical, input.binding);
     const ref = await r2.create(name);
-    const stored = await this.cp.putBlobStore({
+    const stored = await this.directory('putBlobStore', {
       tenantId: input.tenantId,
       vertical: input.vertical,
       binding: input.binding,
@@ -6153,7 +6181,7 @@ export class CloudflareScopeHost implements ScopeHost {
               `vertical '${parsed.slug}' is owned by ${existing.owner_tenant ?? 'the platform'}, not ${parsed.ownerTenant ?? 'the platform'}`,
             );
           }
-          throw new Error(`vertical '${parsed.slug}' is already registered as ${existing.source}`);
+          throw substratError('conflict', `vertical '${parsed.slug}' is already registered as ${existing.source}`);
         }
         await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
         await this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
@@ -6348,13 +6376,13 @@ export class CloudflareScopeHost implements ScopeHost {
         // nothing to diff against — the gate is about change, not existence.
         if (outgoing) {
           if (outgoing.permission_digest !== incoming.permission_digest && !ack.permissionChange) {
-            throw new Error(
+            throw substratError('conflict',
               `promotion changes the permission surface (${outgoing.permission_digest} → ` +
                 `${incoming.permission_digest}) — acknowledge it explicitly to promote`,
             );
           }
           if (outgoing.migration_digest !== incoming.migration_digest && !ack.migrationChange) {
-            throw new Error(
+            throw substratError('conflict',
               `promotion changes migrations (${outgoing.migration_digest} → ` +
                 `${incoming.migration_digest}) — acknowledge it explicitly to promote`,
             );
@@ -6645,7 +6673,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);
-        const created = await this.cp.createOrg(
+        const created = await this.directory('createOrg',
           parsed.id,
           parsed.tenantId,
           parsed.slug,
@@ -6709,7 +6737,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       createTenant: async (actor, input: CreateTenantInput) => {
         const parsed = createTenantInput.parse(input);
-        const created = await this.cp.createTenant(
+        const created = await this.directory('createTenant',
           parsed.id,
           parsed.slug,
           parsed.name,
@@ -6721,13 +6749,13 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, 'createTenant', { tenantId: parsed.id }, null, created);
       },
       setTenantStatus: async (actor, tenantId, status: TenantStatus) => {
-        const before = await this.cp.setTenantStatus(tenantId, status);
+        const before = await this.directory('setTenantStatus', tenantId, status);
         await this.recordAdmin(actor, 'setTenantStatus', { tenantId }, { status: before }, { status });
         // #1713: every hosted scope under the tenant holds or resumes its work by this.
         await this.deliverLifecycles(actor, { tenantId });
       },
       setTenantName: async (actor, tenantId, name: string) => {
-        const before = await this.cp.setTenantName(tenantId, name);
+        const before = await this.directory('setTenantName', tenantId, name);
         if (before === name) return; // no-op is not audited — nothing changed
         await this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before }, { name });
       },
@@ -6736,7 +6764,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // first (archive-if-needed → reapScope in the vertical deployment); the DO clears
         // the tenant's PII/config rows and flips the row to a `reaped` tombstone, keeping
         // the row + admin log. Only a `deleting` tenant may be reaped (checked in the DO).
-        const before = await this.cp.reapTenant(tenantId);
+        const before = await this.directory('reapTenant', tenantId);
         await this.recordAdmin(actor, 'reapTenant', { tenantId }, { status: before }, { status: 'reaped' });
       },
       listTenants: async (actor, page): Promise<Tenant[]> => {
@@ -7080,7 +7108,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // Checked here as well as in the ScopeDO, so the refusal keeps its code across the hop.
         assertRowLimit('limit', input.limit);
         assertRowOffset('offset', input.offset);
-        const page = await this.scopeStub(scopeId).introspectTable(input.table, input.limit, input.offset);
+        const page = unwrapReply(await this.scopeStub(scopeId).introspectTableReply(input.table, input.limit, input.offset));
         await this.recordAccess(
           actor,
           'readScopeTable',
@@ -7158,7 +7186,7 @@ export class CloudflareScopeHost implements ScopeHost {
         input: QueryScopeInput,
       ): Promise<ScopeQueryResult> => {
         await this.scopeRecordForRead(tenantId, scopeId);
-        const result = await this.scopeStub(scopeId).introspectQuery(input.sql);
+        const result = unwrapReply(await this.scopeStub(scopeId).introspectQueryReply(input.sql));
         // The statement is the logged argument: the access log is the evidence trail,
         // and for a console read the SQL is the whole story.
         await this.recordAccess(actor, 'queryScope', { tenantId, scopeId }, { sql: input.sql }, result.rows.length);
@@ -7558,7 +7586,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       registerIdentityPool: async (actor, input: IdentityPool) => {
         const parsed = identityPool.parse(input);
-        const created = await this.cp.registerIdentityPool(
+        const created = await this.directory('registerIdentityPool',
           parsed.provider,
           parsed.topology,
           parsed.tenantId,
@@ -8163,6 +8191,14 @@ export class CloudflareScopeHost implements ScopeHost {
    * without the lifecycle half pays the one DO call the pair check needs. Null with a directory,
    * whose refusal already covered the lifecycle.
    */
+  /** A directory write whose refusal must keep its code across the DO hop (#113). */
+  private async directory<M extends RepliedMethod>(
+    method: M,
+    ...args: Parameters<ControlPlaneStub[M]>
+  ): Promise<Awaited<ReturnType<ControlPlaneStub[M]>>> {
+    return unwrapReply(await this.cp.reply(method, args));
+  }
+
   private async validateScopeAccess(tenantId: TenantId, scopeId: ScopeId): Promise<StoredScopeLifecycle | null> {
     const refusal = await this.cp.scopeAccessRefusal(tenantId, scopeId);
     if (refusal) throw refusal.code ? substratError(refusal.code, refusal.message) : new Error(refusal.message);
@@ -8194,7 +8230,7 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private async assertLive(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const refusal = lifecycleRefusal(await this.validateScopeAccess(tenantId, scopeId), { tenantId, scopeId });
-    if (refusal) throw new Error(refusal);
+    if (refusal) throw substratError('conflict', refusal);
   }
 
   /**
@@ -9060,7 +9096,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!scope) throw unknownScopeForTenant(tenantId, scopeId);
     const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
     const connectionKeys = await this.connectionKeyRows(tenantId, scope.vertical);
-    await this.scopeStub(scopeId).applyProjection(
+    await projectOnto(this.scopeStub(scopeId),
       tenantId,
       roles,
       tuples,
@@ -9121,7 +9157,7 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!keysByVertical.has(vertical)) {
           keysByVertical.set(vertical, this.connectionKeyRows(tenantId, s.vertical));
         }
-        await this.scopeStub(s.scope_id as ScopeId).applyProjection(
+        await projectOnto(this.scopeStub(s.scope_id as ScopeId),
           tenantId,
           roles,
           tuples,
@@ -9208,7 +9244,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
-    const switchedOff = await stub.applyProjection(
+    const switchedOff = await projectOnto(stub,
       input.tenantId,
       input.roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source })),
       [], // no tenant-level tuples — a CP-less vertical grants at scope level only

@@ -1364,9 +1364,11 @@ export function permissionContractSuite(
       await host.admin.createOrg(staff, { id: first, tenantId: t1, slug: 'taken', name: 'One' });
       // Fails closed rather than swallowing it: a silent no-op here would report
       // success while not creating the org the caller asked for.
-      await expect(
+      await expectRefusal(
         host.admin.createOrg(staff, { id: second, tenantId: t1, slug: 'taken', name: 'Two' }),
-      ).rejects.toThrow(/already taken/);
+        'conflict',
+        /already taken/,
+      );
       expect(await host.admin.getOrg(staff, t1, second)).toBeUndefined();
     });
 

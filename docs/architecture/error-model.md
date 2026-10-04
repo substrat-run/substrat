@@ -8,7 +8,8 @@ description: One error model — RFC 9457 problem+json, a closed code taxonomy, 
 
 Status: **built** (v0.4 — phases 1–4 shipped: the registry, `SubstratError` and `toProblem`
 live in `@substrat-run/contracts` `errors.ts`, failures cross the ScopeDO hop as a value, and
-every vertical serves `application/problem+json`; phase 5, the cleanup, is the open remainder)
+every vertical serves `application/problem+json`; phase 5's pattern half is done — the control
+plane matches no message — and the `error` duplicate and `SlotUnavailable` are what remains)
 
 > Answers issue [#113](https://github.com/substrat-run/substrat/issues/113), the first item
 > of the [#132](https://github.com/substrat-run/substrat/issues/132) tracking list — and the
@@ -248,9 +249,16 @@ mechanical, lower traffic.
      demo's `routes.ts` answered it by hand and said why. The demo is gone (2026-09), so no
      in-repo route answers it today — the next vertical composing `booking` inherits the
      same hand-answer until the engine retypes it.
-5. **Cleanup — open.** Contract-suite assertions migrate from message text to `code`; the
-   regex fallback and the `error` duplicate are deleted. `SlotUnavailable` gets its
-   dual-emit here.
+5. **Cleanup — the patterns are gone; the rest is open.** Every `HostAdmin` refusal the
+   control plane used to match by message is typed where it is thrown, on both adapters, and
+   the contract suite asserts its code; `mapError` has no table left, so an untyped throw is
+   the generic 500 and a new one is visible in its first test. Typing a refusal raised INSIDE
+   a Durable Object needed the §3 envelope as well as the code: `ControlPlaneDO.reply` and
+   the ScopeDO's `…Reply` methods answer a failure as data, and the coordinator throws it.
+   Three families also reached a vertical's own surface untyped, where the vertical answered
+   the caller's 400; typed, a vertical now answers what the control plane answers (a
+   non-active tenant or scope `409`, a scope with no tenant record or an unknown table
+   `404`). Still open: the `error` duplicate, and `SlotUnavailable`'s dual-emit.
 
 **The constraint phase 4 had to respect, and did:** the contract suite asserts on roughly
 thirty message patterns (`/already taken/`, `/illegal scope transition/`, `/not active/`, …)

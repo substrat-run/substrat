@@ -6,6 +6,7 @@ import {
   problemTypeFor,
   substratError,
   toWireFailure,
+  type ErrorCode,
 } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
 import { classifyError, problemFor } from '../src/errors.js';
@@ -145,34 +146,34 @@ describe('problemFor renders the body', () => {
 });
 
 describe('classifyError on a ScopeDO refusing a projection for another tenant (#1738)', () => {
-  const refusal = new Error(
-    'Substrat.conflict: applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it',
-  );
+  const sentence =
+    'applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it';
 
-  it('answers 409 rather than the caller\'s 400', () => {
-    expect(classifyError(refusal)?.status).toBe(409);
+  it('answers 409 rather than the caller\'s 400, read from the code', () => {
+    expect(classifyError(substratError('conflict', sentence))?.status).toBe(409);
   });
 
-  it('the twin: an unrelated plain Error keeps no opinion', () => {
-    expect(classifyError(new Error('boom'))).toBeUndefined();
+  it('the flattened form keeps no opinion now that the pattern is gone (#113)', () => {
+    expect(classifyError(new Error(`Substrat.conflict: ${sentence}`))).toBeUndefined();
   });
 });
 
 /**
  * #113: the directory refusals that reach a vertical door too — the scope-access gate and the
- * introspection read — pinned by the status and code a vertical answers with.
+ * introspection read — pinned by the status and code a vertical answers with. Typed now, so a
+ * vertical answers what the control plane answers; untyped they were the caller's 400.
  */
 describe('a vertical door on the gate and introspection refusals (#113)', () => {
-  const cases: readonly [sentence: string, status: number, code: string | undefined][] = [
-    ['tenant not active (status: suspended): 01T', 400, undefined],
-    ['scope not active (status: archived): 01S', 400, undefined],
-    ['scope has no tenant record: (01T, 01S)', 400, undefined],
-    [`unknown table 'ghost'`, 400, undefined],
-    ['read-only console: empty statement', 400, undefined],
+  const cases: readonly [sentence: string, code: ErrorCode, status: number][] = [
+    ['tenant not active (status: suspended): 01T', 'conflict', 409],
+    ['scope not active (status: archived): 01S', 'conflict', 409],
+    ['scope has no tenant record: (01T, 01S)', 'not_found', 404],
+    [`unknown table 'ghost'`, 'not_found', 404],
+    ['read-only console: empty statement', 'validation_failed', 400],
   ];
 
-  it.each(cases)('%s → %i', (sentence, status, code) => {
-    const { status: answered, body } = problemFor(new Error(sentence));
+  it.each(cases)('%s → %s %i', (sentence, code, status) => {
+    const { status: answered, body } = problemFor(substratError(code, sentence));
     expect(answered).toBe(status);
     expect(body.code).toBe(code);
     expect(body.detail).toBe(sentence);
