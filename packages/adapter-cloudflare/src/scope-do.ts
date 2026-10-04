@@ -152,7 +152,10 @@ import {
   IDEMPOTENCY_DDL,
   REFUSALS_DDL,
   refusalInsert,
-  refusedTransitionOf,
+  refusalOf,
+  markGuardRefusal,
+  REFUSALS_REBUILD,
+  refusalsAdmitGuards,
   assertIdempotencyKey,
   assertPermissionKey,
   idempotencyLookupQuery,
@@ -4318,7 +4321,14 @@ export function defineScopeDO(
               `before '${operation}'; no registered module contributes it (operation blocked)`,
           );
         }
-        await predicate.handler(ctx, guard.config, input);
+        try {
+          await predicate.handler(ctx, guard.config, input);
+        } catch (err) {
+          // #1745: a guard refusing is recorded after the rollback, as a transition is —
+          // marked here, where which guard threw is still known. Always rethrown.
+          markGuardRefusal(err, guard.predicate, operation);
+          throw err;
+        }
       }
     }
 
@@ -5132,6 +5142,23 @@ export function defineScopeDO(
       // both adapters by the query-plan test rather than by that gate.
       this.sql.exec('CREATE INDEX IF NOT EXISTS _substrat_outbox_invocation ON _substrat_outbox (invocation_id, id)');
       this.ensureScheduleStateKind();
+      this.ensureRefusalsAdmitGuards();
+    }
+
+    /**
+     * #1745: `_substrat_refusals`, rebuilt to admit a guard row (a nullable `from_state`, plus
+     * `guard` and `reason`) on a scope DO whose table predates it. The kernel's statements, so
+     * the pure adapter rebuilds byte-identically; detected and wrapped as
+     * `ensureScheduleStateKind` below is, for the reasons it gives.
+     */
+    private ensureRefusalsAdmitGuards(): void {
+      const row = this.sql
+        .exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, '_substrat_refusals')
+        .toArray()[0] as { sql: string } | undefined;
+      if (!row || refusalsAdmitGuards(row.sql)) return;
+      this.revision.transactionSync(() => {
+        for (const stmt of splitSqlStatements(REFUSALS_REBUILD)) this.sql.exec(stmt);
+      });
     }
 
     /**
@@ -5897,7 +5924,7 @@ export function defineScopeDO(
      * survives — the whole point, since the denial is the write the operation could not make.
      */
     /** K-42: the session a refused call ran under travels with the denial row. */
-    /** #1745: a refused transition the operation failed with, written after its rollback. */
+    /** #1745: a refused transition or refusing guard the operation failed with, written after its rollback. */
     private recordRefusal(
       subject: CheckSubject,
       tenantId: TenantId,
@@ -5907,7 +5934,7 @@ export function defineScopeDO(
       invocationId: string | null,
       impersonation?: ImpersonationSession,
     ): void {
-      const refused = refusedTransitionOf(err);
+      const refused = refusalOf(err);
       if (!refused) return;
       const q = refusalInsert({
         tenantId,

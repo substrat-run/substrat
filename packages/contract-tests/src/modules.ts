@@ -17,6 +17,7 @@ import {
   permissionKey,
   principalId,
   assertTransition,
+  nameRefusedRecord,
   type LifecycleDef,
   z,
   type EntityRef,
@@ -50,6 +51,33 @@ const REFUSE_LIFECYCLE = {
     done: { terminal: true },
   },
 } as unknown as LifecycleDef;
+
+/**
+ * #1745: `_substrat_refusals` as #1928 shipped it — `from_state NOT NULL`, no `guard` or
+ * `reason` — so each adapter can wake over a store that predates guard refusals and show
+ * `REFUSALS_REBUILD` keeps every row and the index. Frozen: it is what deployed scopes hold.
+ */
+export const PRE_GUARD_REFUSALS_DDL = `
+  CREATE TABLE _substrat_refusals (
+    id TEXT PRIMARY KEY,
+    -- 'transition' today; a guard refusal (K-38) is the next kind, recorded the same way.
+    kind TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    scope_id TEXT,
+    entity_type TEXT,
+    entity_id TEXT,
+    from_state TEXT NOT NULL,
+    attempted_state TEXT,
+    operation TEXT NOT NULL,
+    invoked_operation TEXT,
+    actor TEXT NOT NULL,
+    impersonation TEXT,
+    invocation_id TEXT,
+    at TEXT NOT NULL,
+    drained_at TEXT
+  );
+  CREATE INDEX _substrat_refusals_entity_at ON _substrat_refusals (entity_type, at);
+`;
 
 // -- manifests ---------------------------------------------------------------
 
@@ -269,6 +297,9 @@ export const guardedModManifest = moduleManifest.parse({
     // A guard whose predicate NO module contributes: the operation must fail
     // closed, never run unguarded.
     { before: 'guarded/orphan', predicate: 'gate/does-not-exist', config: {} },
+    // #1745: a guard that REFUSES — the platform's conflict, naming its record — so the
+    // kernel records it after the rollback, beside refused transitions.
+    { before: 'guarded/open', predicate: 'gate/must-be-open', config: {} },
   ],
 });
 
@@ -1549,6 +1580,9 @@ export const guardedMod: ModuleRegistration = {
       });
     }) as OperationHandler<never, unknown>,
     'guarded/orphan': (() => 'ran') as OperationHandler<never, unknown>,
+    'guarded/open': ((ctx, input: { id: string }) => {
+      ctx.sql.exec('INSERT INTO guarded_t (v) VALUES (?)', [`opened ${input.id}`]);
+    }) as OperationHandler<never, unknown>,
     'guarded/rows': ((ctx) =>
       ctx.sql.query<{ v: string }>('SELECT v FROM guarded_t').map((r) => r.v)) as OperationHandler<
       never,
@@ -1570,6 +1604,19 @@ export const gateMod: ModuleRegistration = {
       const got = (input as { flag?: string } | undefined)?.flag;
       if (got !== want)
         throw new Error(`guard: expected flag '${String(want)}', got '${String(got)}'`);
+    },
+    // #1745: refuses with a conflict unless the input says `open`. It writes first, so a
+    // case can see the rollback took the predicate's own write too, and its message quotes
+    // the input's `note` — which a recorded refusal must never carry.
+    'gate/must-be-open': (ctx, _config, input) => {
+      const { id, open, note } = input as { id: string; open?: boolean; note?: string };
+      ctx.sql.exec('INSERT INTO guarded_t (v) VALUES (?)', [`gate saw ${id}`]);
+      if (!open) {
+        throw nameRefusedRecord(
+          substratError('conflict', `gate closed for ${id}: ${String(note)}`, { reason: 'gate_closed' }),
+          { entityType: 'guarded-thing', entityId: id },
+        );
+      }
     },
   },
 };

@@ -495,7 +495,10 @@ import {
   IDEMPOTENCY_DDL,
   REFUSALS_DDL,
   refusalInsert,
-  refusedTransitionOf,
+  refusalOf,
+  markGuardRefusal,
+  REFUSALS_REBUILD,
+  refusalsAdmitGuards,
   assertIdempotencyKey,
   idempotencyLookupQuery,
   idempotencyPruneStatement,
@@ -4965,7 +4968,14 @@ export class SqliteScopeHost implements ScopeHost {
             `before '${operation}'; no registered module contributes it (operation blocked)`,
         );
       }
-      await predicate.handler(ctx, guard.config, input);
+      try {
+        await predicate.handler(ctx, guard.config, input);
+      } catch (err) {
+        // #1745: a guard refusing is recorded after the rollback, as a transition is —
+        // marked here, where which guard threw is still known. Always rethrown.
+        markGuardRefusal(err, guard.predicate, operation);
+        throw err;
+      }
     }
   }
 
@@ -5765,8 +5775,9 @@ export class SqliteScopeHost implements ScopeHost {
    * point, since the denial is exactly the write the rolled-back operation could not make.
    */
   /**
-   * #1745: record a refused transition the operation failed with, after its rollback — the
-   * denial's discipline (above), for the lifecycle's refusals. Anything else is not one.
+   * #1745: record a refused transition or refusing guard the operation failed with, after its
+   * rollback — the denial's discipline (above), for the lifecycle's and the guards' refusals.
+   * Anything else is not one.
    */
   private recordRefusal(
     rt: ScopeRuntime,
@@ -5776,7 +5787,7 @@ export class SqliteScopeHost implements ScopeHost {
     invocationId: string | null,
     impersonation?: ImpersonationSession,
   ): void {
-    const refused = refusedTransitionOf(err);
+    const refused = refusalOf(err);
     if (!refused) return;
     const q = refusalInsert({
       tenantId: rt.tenantId,
@@ -10588,6 +10599,19 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
+   * #1745: `_substrat_refusals`, rebuilt to admit a guard row on a scope db whose table
+   * predates it — `REFUSALS_REBUILD`, the DO adapter's statements, detected and wrapped the
+   * way `ensureScheduleStateKind` is above and for the same reasons.
+   */
+  private ensureRefusalsAdmitGuards(db: Database.Database): void {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get('_substrat_refusals') as { sql: string } | undefined;
+    if (!row || refusalsAdmitGuards(row.sql)) return;
+    db.transaction(() => db.exec(REFUSALS_REBUILD))();
+  }
+
+  /**
    * #1573: run a create-copy-drop-rename against the directory as ONE transaction.
    * `exec` of four statements is four autocommits, and the state between DROP and
    * RENAME is the one to fear: the next open runs the bootstrap first, whose `CREATE
@@ -11643,6 +11667,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #1288: not an ensureColumn, because `kind` joins the schedule-state PRIMARY KEY
     // and no ALTER can widen a key. Rebuilt instead, from the kernel's statements.
     this.ensureScheduleStateKind(db);
+    // #1745: likewise a rebuild — `from_state` loses its NOT NULL, which no ALTER can do.
+    this.ensureRefusalsAdmitGuards(db);
     // #1525: the invocation a fired schedule ran in, on a scope DB created before the
     // column. Nullable, and the null is honestly "no call was carried" for every legacy
     // row — a past run's id cannot be recovered afterwards, exactly as the other #1525

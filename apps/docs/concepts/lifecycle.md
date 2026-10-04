@@ -129,7 +129,22 @@ argument, `{ entityType, entityId }`, so the attempt counts against it. Without 
 refusal is still recorded, with the record unknown. The process map draws these as red
 stubs out of the state the record was in, and the details never reach the HTTP caller:
 the response is the same `conflict` it always was. The rows themselves are read through
-`HostAdmin.listRefusals`, narrowed by record, actor or call, the way the denial log is.
+`HostAdmin.listRefusals`, narrowed by record, actor, call or kind, the way the denial log is.
+
+A guard that refuses is recorded the same way. When a [manifest-declared
+guard](/concepts/modules) throws a `conflict` before the operation it stands before, the kernel
+writes a row of kind `guard`: the predicate's name, the operation, the `reason` it refused with
+(`protocol_required`), the actor and the call. The row has no state, because the kernel ran
+the guard and does not know what state the record behind it was in. A predicate names its
+record with `nameRefusedRecord(err, { entityType, entityId })` on the error it throws, as
+`protocol/all-signed` does. Only a `conflict` counts as a refusal. A predicate that fails some
+other way, or a guard whose predicate no module contributes, still blocks the operation but
+leaves no row. A guard a vertical composes into its own operation (calling `requireSigned`
+itself) is the vertical's code, and its `conflict` is not told apart from any other.
+
+Neither kind of row carries the error's message, the operation's input or a guard's config,
+so there is nothing in one for a subject erasure to rewrite. Like denials, the rows drain
+rather than expire.
 
 **Review.** `pnpm lint:model` re-emits the machine into `model.json`, and CI re-emits with
 `--check`. A redirected edge or a state that stops admitting substates has to appear in a PR

@@ -57,6 +57,8 @@ interface Refusal {
   attempted?: string | null;
   entityType?: string;
   actor?: string;
+  /** A guard's refusal instead of a transition's (K-38): no from-state to draw a stub from. */
+  guard?: string;
 }
 
 function readerOver(evs: Ev[], refusals: Refusal[] = []): Pick<ScopedSql, 'query'> {
@@ -68,7 +70,10 @@ function readerOver(evs: Ev[], refusals: Refusal[] = []): Pick<ScopedSql, 'query
     const q = refusalInsert({
       tenantId: 't',
       scopeId: 's',
-      refused: { entityType: f.entityType ?? 'conversation', entityId: 'c1', from: f.from, operation: f.operation, attempted: f.attempted ?? null },
+      refused:
+        f.guard === undefined
+          ? { entityType: f.entityType ?? 'conversation', entityId: 'c1', from: f.from, operation: f.operation, attempted: f.attempted ?? null }
+          : { kind: 'guard', predicate: f.guard, operation: f.operation, reason: null, entityType: f.entityType ?? 'conversation', entityId: 'c1' },
       invokedOperation: f.operation,
       actor: f.actor ?? '"prin_ada"',
       impersonation: null,
@@ -384,6 +389,8 @@ describe('readLifecycleFlow (#1744)', () => {
         // Outside the window, and another entity type: neither is counted.
         { at: '2026-08-01T00:00:00.000Z', from: 'closed', operation: 'desk/ingest', attempted: 'open' },
         { at: at(3), from: 'closed', operation: 'desk/ingest', attempted: 'open', entityType: 'contact' },
+        // A guard's refusal is the row read's, not a stub: it has no from-state.
+        { at: at(3), from: '', operation: 'desk/close', guard: 'protocol/all-signed' },
       ],
     );
     expect(r.refused).toEqual([

@@ -496,7 +496,17 @@ export {
   type ImpersonationRow,
 } from './impersonation.js';
 export { readLifecycleFlow } from './lifecycle-flow.js';
-export { REFUSALS_DDL, refusalInsert, refusedTransitionOf, type RefusalRow } from './refusals.js';
+export {
+  REFUSALS_DDL,
+  REFUSALS_REBUILD,
+  markGuardRefusal,
+  refusalInsert,
+  refusalOf,
+  refusalsAdmitGuards,
+  refusedTransitionOf,
+  type RefusalRow,
+  type RefusedGuard,
+} from './refusals.js';
 export { REFUSAL_COLUMNS, mapRefusalRow, refusalListQuery, type RefusalDbRow } from './refusal-query.js';
 export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
 export type { ScopeWalkPage } from './timeline.js';

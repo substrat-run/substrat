@@ -192,11 +192,14 @@ The refused-check log's shapes (K-35): `permissionDenial` / `PermissionDenial`,
 
 ## Refusals (`refusal.ts`)
 
-The refused-transition log's read shapes (#1745), the denial log's sibling: `refusalRecord` /
-`RefusalRecord` (the record, `fromState`, `attemptedState`, `operation`, the actor and its
-`actorKind`, the problem code as `reason`, the `invocationId`), `refusalFilter` (record, actor,
-operation, call, `since`/`until`), and `DEFAULT_REFUSAL_LIMIT` / `REFUSAL_LIMIT_MAX`. Read
-through `HostAdmin.listRefusals`. See [A refusal is recorded](/concepts/lifecycle).
+The refusal log's read shapes (#1745), the denial log's sibling: `refusalRecord` /
+`RefusalRecord` (its `kind`, `transition` or `guard`; the record, `fromState`, `attemptedState`,
+`operation`, the `guard` predicate on a guard row, the actor and its `actorKind`, the problem
+code as `reason`, the `invocationId`), `refusalFilter` (kind, record, actor, operation, call,
+`since`/`until`), and `DEFAULT_REFUSAL_LIMIT` / `REFUSAL_LIMIT_MAX`. `fromState` is null on a
+guard row. `nameRefusedRecord(err, ref)` / `refusedRecordOf(err)` let a guard predicate name the
+record its refusal is about. Read through `HostAdmin.listRefusals`. See
+[A refusal is recorded](/concepts/lifecycle).
 
 ## Events (`events.ts`)
 
