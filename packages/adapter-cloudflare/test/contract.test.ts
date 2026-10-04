@@ -23,7 +23,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_RUN_DUE_AT, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_LEASE_MIN_MS, JOB_RUN_DUE_AT, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -2524,6 +2524,8 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     );
     // A run that never opens the door: on a held scope it has nothing to wait for.
     h.registerJob(SCHED, 'idle', () => ({ done: true }));
+    // #2034: the same, counted, on the shortest lease a job can hold.
+    h.registerJob(SCHED, 'brief', () => ((briefPasses += 1), { done: true }), undefined, { leaseMs: JOB_LEASE_MIN_MS });
     // #2028 review: a handler that KEEPS the door's refusal and throws it again on a later pass,
     // raw or (with `inStep`) as the step's wrapper the driver handed back.
     h.registerJob(
@@ -2547,6 +2549,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     return h;
   };
   let hoarded: unknown = null;
+  let briefPasses = 0;
   /** The deferral's deadline, passed: each waiting run on the scope became due just now. */
   const deadlinePassed = (s: ScopeId) =>
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
@@ -2652,6 +2655,37 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await setNext(b.id, null);
     expect(await h.runDueJobs(t, s, { limit: 2 })).toMatchObject({ attempted: 1, completed: 1 });
     expect(await runOf(s, b.id)).toMatchObject({ status: 'done' });
+  });
+
+  /**
+   * #2034 (#2042 review r1): a claim's answer that comes back after its lease ran out is not
+   * entered. The claim is written in the DO; before its answer reaches the drive, the lease
+   * expires and another drive takes the run over and finishes it. The late drive runs nothing.
+   */
+  it('#2034: a claim answered after its lease ran out runs nothing; another drive has the run', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    let rival: unknown = null;
+    counting.afterJobClaim = async () => {
+      counting.afterJobClaim = null;
+      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      rival = await jobDeployment().runDueJobs(t, s);
+    };
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1, completed: 0 });
+    expect(rival).toMatchObject({ attempted: 1, completed: 1 });
+    expect(briefPasses).toBe(1);
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', leaseOwner: null });
+  });
+
+  it('#2034: twin — a claim answered in time runs its pass once', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'prompt', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
+    expect(briefPasses).toBe(1);
   });
 
   /** #2028 review: the due order is served by its own index on the DO's SQLite, with no sort step. */
@@ -3591,6 +3625,8 @@ function countingScopes(ns: DurableObjectNamespace) {
     invokes: 0,
     /** #1834 (#2028 r3): runs after a drive's due-key snapshot is read, before it returns: a concurrent drive's window. */
     afterDueKeys: null as (() => Promise<void>) | null,
+    /** #2034 (#2042 r1): runs after a claim was written in the scope, before its answer returns: a slow answer. */
+    afterJobClaim: null as (() => Promise<void>) | null,
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -3621,6 +3657,7 @@ function countingScopes(ns: DurableObjectNamespace) {
                 if (statusRead && counts.aroundStatusRead) await counts.aroundStatusRead(statusRead, 'after');
                 if (prop === 'switchSystemSchedules' && counts.afterMove) await counts.afterMove();
                 if (prop === 'jobRunsDueKeys' && counts.afterDueKeys) await counts.afterDueKeys();
+                if (prop === 'jobRunClaim' && counts.afterJobClaim) await counts.afterJobClaim();
                 return answer;
               },
       },

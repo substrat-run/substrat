@@ -87,9 +87,17 @@ import { ulid } from './ulid.js';
  * The expiry has to outlast the longest stretch a pass spends between two steps, which
  * is the job's own number: `registerJob`'s `leaseMs`, default `JOB_LEASE_MS`.
  *
- * What the lease does NOT cover: work a stale holder had already started when its
- * lease was taken over. A step body is at-least-once (see `JobPassContext.step`), and
- * a holder whose lease expired mid-step finishes that step's effect before it learns.
+ * A pass is ENTERED only if its claim's answer arrives with more than
+ * `JOB_LEASE_ENTRY_MARGIN` of the lease left: an answer that came back late may have
+ * expired on the way, and the run may be someone else's already.
+ *
+ * What the lease does NOT cover, by construction: a pass whose lease expires while it
+ * is working — past the claim, between two step boundaries, longer than the lease. Once
+ * it expires another drive may take the run over, and until the stale pass reaches its
+ * next step boundary or its outcome (where it learns, and stops), both are running.
+ * That stretch is at-least-once, like a step body (see `JobPassContext.step`); the
+ * job's `leaseMs` is what keeps it from happening, so it must outlast the longest
+ * stretch a pass spends between two steps.
  *
  * ## What this is NOT
  *
@@ -371,17 +379,29 @@ export function jobRunListLimit(limit: number | undefined): number {
  */
 export const JOB_LEASE_MS = 15 * 60_000;
 
+/** #2034: the shortest `leaseMs` a job may register — below it, the entry margin is noise. */
+export const JOB_LEASE_MIN_MS = 100;
+
+/**
+ * #2034: the share of its lease a claim must still have left when the drive gets its answer, or the
+ * pass is not entered. Time spent between the claim's write and its answer — a slow round trip, a
+ * paused isolate — is time another drive can spend taking the run over once the lease has expired.
+ */
+export const JOB_LEASE_ENTRY_MARGIN = 0.25;
+
 /** #2034: `last_error` of a run whose expired lease a later claim took over. */
 export const JOB_LEASE_EXPIRED_NOTE =
   'interrupted: the pass holding this run stopped reporting, and its lease expired';
 
-/** #2034: a job's `leaseMs`, refused at registration unless it is a positive integer. */
+/** #2034: a job's `leaseMs`, refused at registration unless it is an integer of at least `JOB_LEASE_MIN_MS`. */
 export function assertLeaseMs(leaseMs: number | undefined): void {
   if (leaseMs === undefined) return;
-  if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) {
-    throw substratError('validation_failed', `leaseMs must be a positive integer of milliseconds, got ${String(leaseMs)}`, {
-      errors: [{ path: 'leaseMs', message: 'must be a positive integer' }],
-    });
+  if (!Number.isSafeInteger(leaseMs) || leaseMs < JOB_LEASE_MIN_MS) {
+    throw substratError(
+      'validation_failed',
+      `leaseMs must be an integer of at least ${JOB_LEASE_MIN_MS} milliseconds, got ${String(leaseMs)}`,
+      { errors: [{ path: 'leaseMs', message: `must be an integer of at least ${JOB_LEASE_MIN_MS}` }] },
+    );
   }
 }
 
@@ -489,7 +509,9 @@ export interface JobDriveReport {
   /**
    * #2034: passes whose outcome was refused because the run was no longer theirs — their
    * lease expired and another drive took the run over, or it was settled meanwhile (an
-   * erasure). Nothing the pass produced was written; whoever holds the run reports it.
+   * erasure) — and claims whose answer came back with too little of the lease left to start
+   * a pass safely (`JOB_LEASE_ENTRY_MARGIN`), which ran nothing. Nothing the pass produced was
+   * written; whoever holds the run reports it.
    */
   superseded: number;
   /**
@@ -1250,12 +1272,31 @@ export async function runDueJobRuns(options: {
     report[outcome.status] += 1;
     if (outcome.error !== undefined && outcome.status !== 'deferred') report.errors.push({ runId, error: outcome.error });
   };
-  /** #2034: claim `id` for one pass, under an owner minted for that pass alone. */
+  /**
+   * #2034: claim `id` for one pass, under an owner minted for that pass alone — and ENTER it only
+   * if the lease the claim wrote (its own `RETURNING` row) still has more than
+   * `JOB_LEASE_ENTRY_MARGIN` of its length left by this drive's clock now. A claim whose answer
+   * came back late may have expired on the way, and another drive may hold the run already; the
+   * write alone cannot say so, the time left can. A late claim releases the run, due now, if it
+   * still holds it, runs nothing and counts `superseded`.
+   */
   const claim = async (id: string, leaseMs: number) => {
     const owner = ulid();
     const at = options.now();
     const won = await options.store.claim(id, owner, at, plusMs(at, leaseMs));
-    return won && { ...won, owner };
+    if (!won) return null;
+    const now = options.now();
+    if (Date.parse(won.run.next_attempt_at!) - Date.parse(now) > leaseMs * JOB_LEASE_ENTRY_MARGIN) {
+      return { ...won, owner };
+    }
+    await settle(options.store, won.run, owner, now, {
+      status: 'running',
+      attempts: won.run.attempts,
+      lastError: won.run.last_error,
+      nextAttemptAt: now,
+    });
+    report.superseded += 1;
+    return null;
   };
 
   for (const key of picked) {

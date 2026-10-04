@@ -11,7 +11,8 @@ import {
  * An in-memory `JobRunStore` holding the same lines the adapters' SQL holds: the due read, the
  * claim's compare-and-set (#2034), and every write conditional on `running` and on the lease.
  * Hooks let a test stop a drive at a precise point: `afterSnapshot` runs once a snapshot is taken
- * (and may be async, to hold two drives there together); `duplicate` repeats a key in it.
+ * (and may be async, to hold two drives there together); `duplicate` repeats a key in it;
+ * `afterClaim` holds a won claim's answer back.
  */
 export function memoryJobStore(
   rows: JobRunRow[],
@@ -20,6 +21,8 @@ export function memoryJobStore(
     duplicate?: string;
     /** Every claim attempt, won or not, in order. */
     claims?: { id: string; owner: string; won: boolean }[];
+    /** Runs after a won claim is written, before its answer reaches the drive: a slow answer. */
+    afterClaim?: (id: string) => unknown;
   } = {},
 ) {
   const table = new Map<string, JobRunRow>(rows.map((r) => [r.id, { ...r, lease_owner: r.lease_owner ?? null }]));
@@ -79,6 +82,7 @@ export function memoryJobStore(
         last_error: takeover ? JOB_LEASE_EXPIRED_NOTE : r.last_error,
       };
       table.set(id, claimed);
+      await opts.afterClaim?.(id);
       return { run: { ...claimed }, takeover };
     },
     list: async () => [...table.values()],

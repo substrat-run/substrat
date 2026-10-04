@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { ScopeStub } from '../src/scope-host.js';
 import {
   JOB_DEFER_MS,
+  JOB_LEASE_ENTRY_MARGIN,
   JOB_LEASE_EXPIRED_NOTE,
+  JOB_LEASE_MIN_MS,
   JOB_LEASE_MS,
+  assertLeaseMs,
   runDueJobRuns,
   type JobHandler,
   type JobRunRow,
@@ -265,6 +268,79 @@ describe('#2034: a due run is claimed before its handler runs', () => {
     expect(ran).toEqual(['stale:one', 'fresh:two']);
     expect(table.get('A')).toMatchObject({ status: 'done' });
     expect(steps.size).toBe(0);
+  });
+
+  describe('a claim whose answer comes back late is not entered (#2042 review r1)', () => {
+    it('another drive took the run over while the answer was on its way: the late drive runs nothing', async () => {
+      const clock = { ms: T0 };
+      let invoked = 0;
+      const handler = () => {
+        invoked += 1;
+        return { done: true };
+      };
+      let rival: Promise<unknown> | null = null;
+      const { store, table } = memoryJobStore([rowOf('A')], {
+        afterClaim: async () => {
+          if (rival) return; // the rival's own claim answers at once
+          clock.ms += JOB_LEASE_MS; // the first claim's lease ran out on the way back
+          rival = driver(store, clock, handler)();
+          await rival;
+        },
+      });
+      const late = await driver(store, clock, handler)();
+      expect(invoked).toBe(1); // the rival's pass, and only it
+      expect(late).toMatchObject({ attempted: 0, superseded: 1, completed: 0 });
+      expect(await rival).toMatchObject({ attempted: 1, completed: 1 });
+      expect(table.get('A')).toMatchObject({ status: 'done', lease_owner: null });
+    });
+
+    it('twin: an answer back with most of its lease left enters the pass', async () => {
+      const clock = { ms: T0 };
+      let invoked = 0;
+      const { store } = memoryJobStore([rowOf('A')], {
+        afterClaim: () => (clock.ms += JOB_LEASE_MS * (1 - JOB_LEASE_ENTRY_MARGIN) - 1),
+      });
+      const report = await driver(store, clock, () => {
+        invoked += 1;
+        return { done: true };
+      })();
+      expect(invoked).toBe(1);
+      expect(report).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
+    });
+
+    it('a late answer that still holds the run releases it, due now and no attempt spent', async () => {
+      const clock = { ms: T0 };
+      let invoked = 0;
+      let slow = true;
+      const { store, table } = memoryJobStore([rowOf('A', { attempts: 1, last_error: 'earlier' })], {
+        afterClaim: () => {
+          if (slow) clock.ms += JOB_LEASE_MS * (1 - JOB_LEASE_ENTRY_MARGIN);
+          slow = false;
+        },
+      });
+      const drive = driver(store, clock, () => {
+        invoked += 1;
+        return { done: true };
+      });
+      expect(await drive()).toMatchObject({ attempted: 0, superseded: 1 });
+      expect(invoked).toBe(0);
+      expect(table.get('A')).toMatchObject({
+        status: 'running',
+        lease_owner: null,
+        attempts: 1,
+        last_error: 'earlier',
+        next_attempt_at: iso(clock.ms),
+      });
+      expect(await drive()).toMatchObject({ attempted: 1, completed: 1 });
+      expect(invoked).toBe(1);
+    });
+  });
+
+  it('a lease shorter than JOB_LEASE_MIN_MS is refused at registration', () => {
+    expect(() => assertLeaseMs(JOB_LEASE_MIN_MS - 1)).toThrow(/at least/);
+    expect(() => assertLeaseMs(1.5)).toThrow(/at least/);
+    expect(() => assertLeaseMs(JOB_LEASE_MIN_MS)).not.toThrow();
+    expect(() => assertLeaseMs(undefined)).not.toThrow();
   });
 
   it('every claim mints its own owner, including a second pass in the same drive', async () => {

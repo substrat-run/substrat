@@ -14,6 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   CANCELLED_JOB_NOTE,
+  JOB_LEASE_MIN_MS,
   JOB_LEASE_MS,
   REDACTED_INTENT_MARKER,
   REDACTED_JOB_NOTE,
@@ -105,6 +106,8 @@ export function jobRunContractSuite(
       return false;
     };
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    /** Wait past the shortest lease a job can hold, which the `brief` jobs hold. */
+    const outlastBriefLease = () => sleep(JOB_LEASE_MIN_MS + 50);
 
     /**
      * A spine envelope as a job would hold a copy of one: what #1600's predicate keys on
@@ -278,7 +281,7 @@ export function jobRunContractSuite(
       );
 
       // #2034: a pass that may wait at the gate, then fails or finishes as its payload says.
-      // `leased` holds the default lease; `brief` a lease of 1 ms, so the next drive takes over.
+      // `leased` holds the default lease; `brief` the shortest one, so the next drive can take over.
       const leased = async (pass: JobPassContext) => {
         const n = leasedPasses.push(pass.run.id);
         await takeGate();
@@ -287,9 +290,9 @@ export function jobRunContractSuite(
         return { cursor: n, done: done !== false };
       };
       host.registerJob(JOBS_MODULE, 'leased', leased, { maxAttempts: 3, baseDelayMs: 0 });
-      host.registerJob(JOBS_MODULE, 'brief', leased, { maxAttempts: 3, baseDelayMs: 0 }, { leaseMs: 1 });
+      host.registerJob(JOBS_MODULE, 'brief', leased, { maxAttempts: 3, baseDelayMs: 0 }, { leaseMs: JOB_LEASE_MIN_MS });
       // #2034: steps that each take longer than half the lease and, together, longer than all of it;
-      // `stepped-brief` waits at the gate between its two steps, on a lease of 1 ms.
+      // `stepped-brief` waits at the gate between its two steps, on the shortest lease.
       host.registerJob(
         JOBS_MODULE,
         'stepped',
@@ -318,11 +321,11 @@ export function jobRunContractSuite(
           return { cursor: who, done: false };
         },
         { maxAttempts: 3, baseDelayMs: 0 },
-        { leaseMs: 1 },
+        { leaseMs: JOB_LEASE_MIN_MS },
       );
 
       // #2034: one step, then the gate (the pass that takes it goes on to commit), or a failure
-      // that keeps the ledger. Lease of 1 ms.
+      // that keeps the ledger. The shortest lease.
       host.registerJob(
         JOBS_MODULE,
         'ledgered',
@@ -337,7 +340,7 @@ export function jobRunContractSuite(
           return { done: true };
         },
         { maxAttempts: 3, baseDelayMs: 0 },
-        { leaseMs: 1 },
+        { leaseMs: JOB_LEASE_MIN_MS },
       );
 
       await host.admin.createTenant(staff, { id: t, slug: 'jobs', name: 'Jobs' });
@@ -431,7 +434,7 @@ export function jobRunContractSuite(
         const { reached, open } = setGate();
         const silent = host.runDueJobs(t, s);
         await reached;
-        await sleep(5); // its 1 ms lease is over, and it has not reported
+        await outlastBriefLease(); // its lease is over, and it has not reported
         expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, retrying: 1 });
         expect(leasedPasses).toEqual([run.id, run.id]);
         // One for the pass that went silent, one for the pass that failed.
@@ -448,7 +451,7 @@ export function jobRunContractSuite(
         const { reached, open } = setGate();
         const stale = host.runDueJobs(t, s);
         await reached;
-        await sleep(5);
+        await outlastBriefLease();
         // The takeover commits cursor 2 and leaves the run going.
         expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, advanced: 1 });
         open();
@@ -480,8 +483,8 @@ export function jobRunContractSuite(
         const run = await startLeased(s, 'stepped-brief', {});
         const { reached, open } = setGate();
         const stale = host.runDueJobs(t, s);
-        await reached; // its step `one` is recorded; its lease of 1 ms runs out between the steps
-        await sleep(5);
+        await reached; // its step `one` is recorded; its lease runs out between the steps
+        await outlastBriefLease();
         expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, advanced: 1 });
         open();
         expect(await stale).toMatchObject({ superseded: 1 });
@@ -496,7 +499,7 @@ export function jobRunContractSuite(
         const { reached, open } = setGate();
         const stale = host.runDueJobs(t, s);
         await reached; // its step `one` is recorded; it will commit once the gate opens
-        await sleep(5);
+        await outlastBriefLease();
         // The takeover replays `one`, then fails: a failed pass keeps its ledger for the next one.
         failNext = true;
         expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, retrying: 1 });
