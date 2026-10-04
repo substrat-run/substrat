@@ -146,7 +146,10 @@ Neither kind of row carries the error's message, the operation's input or a guar
 so there is nothing in one for a subject erasure to rewrite. What a row does carry is held to
 the model's own vocabulary. The state is kept only when the lifecycle declares it: a record
 whose status column holds anything else is recorded as `undeclared`, never as what the column
-held. The reason is kept only when it is a code (the snake_case problem codes are written in,
+held. The record's type is kept only when it is spelled as an entity type (the grammar
+`ctx.link` holds one to, at most 64 characters), and `undeclared` otherwise; the record's id
+is kept as given, because it is the key every log joins on. The reason is kept only when it
+is a code (the snake_case problem codes are written in,
 at most 64 characters), and `unrecognized` otherwise. Like denials, the rows drain rather than
 expire.
 

@@ -199,7 +199,8 @@ code as `reason`, the `invocationId`), `refusalFilter` (kind, record, actor, ope
 `since`/`until`), and `DEFAULT_REFUSAL_LIMIT` / `REFUSAL_LIMIT_MAX`. `fromState` is null on a
 guard row, and `undeclared` (`UNDECLARED_STATE`, from `lifecycle.ts`) when the record was in no
 declared state. A reason outside `problemReason` (in `errors.ts`, the grammar every problem code is
-written in) is kept as `unrecognized` (`UNRECOGNIZED_REFUSAL_REASON`). `nameRefusedRecord(err, ref)` / `refusedRecordOf(err)` let a guard predicate name the
+written in) is kept as `unrecognized` (`UNRECOGNIZED_REFUSAL_REASON`). A record type that is not spelled as
+an entity type is kept as `undeclared` (`refusalEntityType`, `UNDECLARED_ENTITY_TYPE`). `nameRefusedRecord(err, ref)` / `refusedRecordOf(err)` let a guard predicate name the
 record its refusal is about. Read through `HostAdmin.listRefusals`. See
 [A refusal is recorded](/concepts/lifecycle).
 
