@@ -105,6 +105,7 @@ export {
   requiredEntitlementFor,
   backoffAt,
   globalFetch,
+  executorOutcomeOf,
   isDeliveryRefusal,
   refuseDelivery,
   refusalJournalText,
@@ -762,6 +763,7 @@ export {
 export { attributedHost } from './attribution.js';
 export {
   MEMBER_ADD_REQUESTED,
+  MEMBERSHIP_EXECUTOR_ID,
   registerMembershipExecutor,
   type MembershipExecutorOptions,
 } from './membership-executor.js';

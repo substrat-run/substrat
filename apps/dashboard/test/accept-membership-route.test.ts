@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { orgId, platformActorId, principalId, scopeId, tenantId, type OrgId, type PrincipalId } from '@substrat-run/contracts';
+import { orgId, platformActorId, principalId, scopeId, tenantId, type OrgId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ulid, type HostAdmin, type ScopeHost } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { DASHBOARD_CP_ACTOR, registerDashboardMembership } from '../src/membership.js';
@@ -117,8 +117,8 @@ afterEach(async () => {
 });
 
 interface Team {
-  tenant: ReturnType<typeof tenantId.parse>;
-  dashScope: ReturnType<typeof scopeId.parse>;
+  tenant: TenantId;
+  dashScope: ScopeId;
   owner: PrincipalId;
   org: OrgId;
 }
@@ -157,10 +157,16 @@ const principalOf = (t: Team, sub: string) => host.admin.resolveIdentity(t.tenan
 
 const roster = async (t: Team) =>
   (await (await host.getScope(t.owner, t.tenant, t.dashScope)).invoke('dashboard/list-members', {})) as {
+    id: string;
     email: string;
     status: string;
-    principal: string | null;
   }[];
+
+/** The owner removes the roster row for `email` through the worker. */
+async function remove(t: Team, email: string): Promise<Response> {
+  const row = (await roster(t)).find((m) => m.email === email)!;
+  return app.request('/api/members/remove', { method: 'POST', headers: json('sub-owner'), body: JSON.stringify({ memberId: row.id }) }, env);
+}
 
 /** Whether `p` can read the team — what any dashboard role confers. */
 async function canRead(t: Team, p: PrincipalId): Promise<boolean> {
@@ -226,10 +232,7 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     const first = await invite('sub-owner', 'ada@team.test', 'admin');
     expect((await accept('sub-ada', 'ada@team.test', first.token)).status).toBe(200);
     const second = await invite('sub-ada', 'ben@team.test', 'member');
-    const adaRow = (await (await host.getScope(t.owner, t.tenant, t.dashScope)).invoke('dashboard/list-members', {}) as { id: string; email: string }[])
-      .find((m) => m.email === 'ada@team.test')!;
-    const removed = await app.request('/api/members/remove', { method: 'POST', headers: json('sub-owner'), body: JSON.stringify({ memberId: adaRow.id }) }, env);
-    expect(removed.status).toBe(204);
+    expect((await remove(t, 'ada@team.test')).status).toBe(204);
 
     const res = await accept('sub-ben', 'ben@team.test', second.token);
     expect(res.status).toBe(409);
@@ -241,9 +244,7 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     const { token } = await invite('sub-owner', 'rae@team.test', 'member');
     expect((await accept('sub-rae', 'rae@team.test', token)).status).toBe(200);
     const rae = (await principalOf(t, 'sub-rae'))!.principal;
-    const row = (await (await host.getScope(t.owner, t.tenant, t.dashScope)).invoke('dashboard/list-members', {}) as { id: string; email: string }[])
-      .find((m) => m.email === 'rae@team.test')!;
-    expect((await app.request('/api/members/remove', { method: 'POST', headers: json('sub-owner'), body: JSON.stringify({ memberId: row.id }) }, env)).status).toBe(204);
+    expect((await remove(t, 'rae@team.test')).status).toBe(204);
     expect((await host.admin.listMembers(staff, t.tenant, t.org)).map((m) => m.principal)).not.toContain(rae);
     expect(await canRead(t, rae)).toBe(false);
   });
@@ -252,7 +253,6 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     const t = await team();
     const { token } = await invite('sub-owner', 'rae@team.test', 'member');
     failNextAdds = 1;
-    noteScope.mockClear(); // the invite enrolled it too; this asks whether the ACCEPT does
     const res = await accept('sub-rae', 'rae@team.test', token);
     expect(res.status, await res.clone().text()).toBe(202);
     expect(await res.json()).toEqual({ teamId: t.tenant, pending: true });
@@ -267,11 +267,5 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     const pass = await host.drainDue(t.tenant, t.dashScope);
     expect(pass.delivered).toBe(1);
     expect(await canRead(t, rae)).toBe(true);
-  });
-
-  it('enrolls the team scope with the sweeper when a team invites', async () => {
-    const t = await team();
-    await invite('sub-owner', 'rae@team.test', 'member');
-    expect(noteScope).toHaveBeenCalledWith(t.tenant, t.dashScope);
   });
 });

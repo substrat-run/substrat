@@ -15,7 +15,7 @@ import type { ModuleRegistration, OperationContext, OperationHandler } from '@su
 export const INVITEFIX_A = 'invitefix:a' as PermissionKey;
 export const INVITEFIX_B = 'invitefix:b' as PermissionKey;
 
-export const membershipFixtureManifest = moduleManifest.parse({
+const membershipFixtureManifest = moduleManifest.parse({
   id: '@test/invitefix',
   version: '1.0.0',
   kernelContract: '^0.0.1',

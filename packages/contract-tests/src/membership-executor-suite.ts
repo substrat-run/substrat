@@ -12,6 +12,7 @@ import {
   type ScopeId,
 } from '@substrat-run/contracts';
 import {
+  MEMBERSHIP_EXECUTOR_ID,
   registerMembershipExecutor,
   ulid,
   type ExecutorOutcome,
@@ -42,7 +43,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       t: tenantId.parse(ulid()),
       s: scopeId.parse(ulid()),
       s2: scopeId.parse(ulid()),
-      org: orgId.parse(ulid()) as OrgId,
+      org: orgId.parse(ulid()),
       alice: principalId.parse(ulid()), // lead, tenant-wide
       bob: principalId.parse(ulid()), // member, tenant-wide
     };
@@ -103,7 +104,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
     expect(outcomes[0]!.outcome).toBe('refused');
     expect(outcomes[0]!.error).toMatch(reason);
     const dead = (await w.host.executorDeadLetters(w.t, w.s)).find((d) => d.eventId === outcomes[0]!.eventId);
-    expect(dead?.executorId).toBe('membership');
+    expect(dead?.executorId).toBe(MEMBERSHIP_EXECUTOR_ID);
     expect(dead?.error).toMatch(/^refused: /);
     expect(dead?.error).toMatch(reason);
     expect(dead?.attempts).toBe(1);

@@ -1014,6 +1014,23 @@ export interface ExecutorOutcome {
   readonly error?: string;
 }
 
+/** One delivery's `ExecutorOutcome` — the one builder both adapters report through. */
+export function executorOutcomeOf(
+  executorId: string,
+  event: DomainEvent,
+  outcome: ExecutorOutcome['outcome'],
+  error?: unknown,
+): ExecutorOutcome {
+  return {
+    executorId,
+    eventId: event.id,
+    eventType: event.type,
+    entity: `${event.entity.entityType}:${event.entity.entityId}`,
+    outcome,
+    ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }),
+  };
+}
+
 /**
  * How hard the host tries before it gives up on one delivery (#100).
  *

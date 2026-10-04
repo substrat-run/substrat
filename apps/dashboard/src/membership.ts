@@ -1,5 +1,5 @@
 import { platformActorId, type PrincipalId } from '@substrat-run/contracts';
-import { MEMBER_ADD_REQUESTED, registerMembershipExecutor, type ExecutorOutcome, type ScopeHost } from '@substrat-run/kernel';
+import { MEMBER_ADD_REQUESTED, MEMBERSHIP_EXECUTOR_ID, registerMembershipExecutor, type ExecutorOutcome, type ScopeHost } from '@substrat-run/kernel';
 
 /**
  * The dashboard's half of a team invite after the accept commits (#1184).
@@ -34,7 +34,7 @@ export type AcceptVerdict =
  */
 export function acceptVerdict(outcomes: readonly ExecutorOutcome[], principal: PrincipalId): AcceptVerdict {
   const mine = outcomes.find(
-    (o) => o.executorId === 'membership' && o.eventType === MEMBER_ADD_REQUESTED && o.entity === `membership:${principal}`,
+    (o) => o.executorId === MEMBERSHIP_EXECUTOR_ID && o.eventType === MEMBER_ADD_REQUESTED && o.entity === `membership:${principal}`,
   );
   if (mine?.outcome === 'delivered') return { kind: 'joined' };
   if (mine?.outcome === 'refused' || mine?.outcome === 'dead-lettered') {

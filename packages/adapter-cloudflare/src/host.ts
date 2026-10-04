@@ -280,6 +280,7 @@ import {
   type MigrationFrontier,
   backoffAt,
   resolveRetryPolicy,
+  executorOutcomeOf,
   isDeliveryRefusal,
   refusalJournalText,
   isSecretBoxConfigured,
@@ -2454,6 +2455,7 @@ export class CloudflareScopeHost implements ScopeHost {
     outcomes: ExecutorOutcome[] | undefined,
   ): Promise<void> {
     const stub = this.scopeStub(scopeId);
+    const scope = this.executorScope(tenantId, scopeId);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects, so its deliveries are journaled terminal with the reason and no
     // handler runs. Asked of the directory where there is one. A CP-less host has none, so it
@@ -2497,15 +2499,8 @@ export class CloudflareScopeHost implements ScopeHost {
         attempt,
         startedAt: Date.now(),
       });
-      const outcomeOf = (event: DomainEvent, outcome: ExecutorOutcome['outcome'], error?: string): void => {
-        outcomes?.push({
-          executorId: id,
-          eventId: event.id,
-          eventType: event.type,
-          entity: `${event.entity.entityType}:${event.entity.entityId}`,
-          outcome,
-          ...(error === undefined ? {} : { error }),
-        });
+      const outcomeOf = (event: DomainEvent, outcome: ExecutorOutcome['outcome'], error?: unknown): void => {
+        outcomes?.push(executorOutcomeOf(id, event, outcome, error));
       };
       for (const bad of undecodable) {
         report.attempted += 1;
@@ -2558,21 +2553,21 @@ export class CloudflareScopeHost implements ScopeHost {
             outcomeOf(event, 'delivered');
             lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           } else {
-            const result = await executor.handler(this.admin, event, this.executorScope(tenantId, scopeId));
-            if (isDeliveryRefusal(result)) {
-              // #1184: the handler's own terminal decision — journaled with its reason, no
-              // next attempt, and listed by `executorDeadLetters` beside an exhausted one.
-              const text = refusalJournalText(result);
-              const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, text, null, invocationId);
+            const result = await executor.handler(this.admin, event, scope);
+            // #1184: a refusal is the handler's own terminal decision — journaled with its
+            // reason, no next attempt, listed by `executorDeadLetters` beside an exhausted one.
+            const refused = isDeliveryRefusal(result) ? result : null;
+            const text = refused && refusalJournalText(refused);
+            const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, text, null, invocationId);
+            if (refused) {
               report.deadLettered += 1;
-              outcomeOf(event, 'refused', result.reason);
+              outcomeOf(event, 'refused', refused.reason);
               lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'dead-lettered', error: text });
-              continue;
+            } else {
+              report.delivered += 1;
+              outcomeOf(event, 'delivered');
+              lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
             }
-            const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
-            report.delivered += 1;
-            outcomeOf(event, 'delivered');
-            lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           }
         } catch (err) {
           const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
@@ -2590,7 +2585,7 @@ export class CloudflareScopeHost implements ScopeHost {
           );
           if (exhausted) report.deadLettered += 1;
           else report.retrying += 1;
-          outcomeOf(event, exhausted ? 'dead-lettered' : 'retrying', err instanceof Error ? err.message : String(err));
+          outcomeOf(event, exhausted ? 'dead-lettered' : 'retrying', err);
           lines.write({
             ...unitOf(event.id, attempts),
             startedAt,

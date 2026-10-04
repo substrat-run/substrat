@@ -76,7 +76,6 @@ inertScopeContractSuite('adapter-sqlite', async () => {
   };
 });
 
-// The permission suite runs against the DEFAULT checker (the tuple engine).
 // #1184: the membership executor, on the DEFAULT checker — its bound is a permission-set
 // comparison, which an allow-all checker would answer "covered" for everything.
 membershipExecutorContractSuite('adapter-sqlite', async () => {
@@ -94,6 +93,7 @@ membershipExecutorContractSuite('adapter-sqlite', async () => {
   };
 });
 
+// The permission suite runs against the DEFAULT checker (the tuple engine).
 permissionContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-perm-'));
   const host = new SqliteScopeHost({

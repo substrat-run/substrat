@@ -307,7 +307,7 @@ export function App() {
           if (!live) return;
           window.history.replaceState(null, '', '/');
           const refusal = err instanceof ApiError && err.status === 409 ? err.message : undefined;
-          setInviteBlock({ token, teamName: preview?.teamName, invitedEmail: preview?.email, signedInAs: (who as { email?: string | null }).email ?? undefined, ...(refusal ? { refusal } : {}) });
+          setInviteBlock({ token, teamName: preview?.teamName, invitedEmail: preview?.email, signedInAs: (who as { email?: string | null }).email ?? undefined, refusal });
           return;
         }
       }

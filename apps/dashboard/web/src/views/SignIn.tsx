@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { Button, Input } from '@substrat-run/ui';
 import { StrataGlyph } from '../lib/icons';
 import { signIn } from '../lib/api';
@@ -39,6 +39,10 @@ export function SignIn({ error }: { error?: boolean }) {
   );
 }
 
+/** The page and card both invite blocks render in. */
+const INVITE_PAGE: CSSProperties = { minHeight: '100vh', background: 'var(--surface-page)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 };
+const INVITE_CARD: CSSProperties = { width: 380, maxWidth: '100%', background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, boxShadow: 'var(--shadow-sm)', padding: 24, display: 'flex', flexDirection: 'column', gap: 14, boxSizing: 'border-box' };
+
 /**
  * Shown when someone follows an invite link while signed in as the WRONG account —
  * the accept was refused because the verified email doesn't match the invited one.
@@ -63,8 +67,8 @@ export function InviteBlocked({
 }) {
   if (refusal) {
     return (
-      <div style={{ minHeight: '100vh', background: 'var(--surface-page)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 }}>
-        <div style={{ width: 380, maxWidth: '100%', background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, boxShadow: 'var(--shadow-sm)', padding: 24, display: 'flex', flexDirection: 'column', gap: 14, boxSizing: 'border-box' }}>
+      <div style={INVITE_PAGE}>
+        <div style={INVITE_CARD}>
           <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>
             {teamName ? <>This invite to <strong>{teamName}</strong> can’t be applied</> : 'This invite can’t be applied'}
           </div>
@@ -77,12 +81,12 @@ export function InviteBlocked({
     );
   }
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--surface-page)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 }}>
+    <div style={INVITE_PAGE}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <StrataGlyph size={20} />
         <span style={{ fontSize: 17, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>substrat</span>
       </div>
-      <div style={{ width: 380, maxWidth: '100%', background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, boxShadow: 'var(--shadow-sm)', padding: 24, display: 'flex', flexDirection: 'column', gap: 14, boxSizing: 'border-box' }}>
+      <div style={INVITE_CARD}>
         <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>
           This invite is for a different email
         </div>

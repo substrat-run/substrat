@@ -378,6 +378,7 @@ import {
   newImpersonationSession,
   type ImpersonationRow,
   resolveRetryPolicy,
+  executorOutcomeOf,
   isDeliveryRefusal,
   refusalJournalText,
   isSecretBoxConfigured,
@@ -5135,15 +5136,8 @@ export class SqliteScopeHost implements ScopeHost {
           lines.write({ ...unit, attempt: attempts, outcome: 'dead-lettered' });
           continue;
         }
-        const outcomeOf = (outcome: ExecutorOutcome['outcome'], error?: string): void => {
-          outcomes?.push({
-            executorId: id,
-            eventId: event.id,
-            eventType: event.type,
-            entity: `${event.entity.entityType}:${event.entity.entityId}`,
-            outcome,
-            ...(error === undefined ? {} : { error }),
-          });
+        const outcomeOf = (outcome: ExecutorOutcome['outcome'], error?: unknown): void => {
+          outcomes?.push(executorOutcomeOf(id, event, outcome, error));
         };
         if (isInert()) {
           const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, TERMINAL_RETRY, invocationId);
@@ -5163,20 +5157,22 @@ export class SqliteScopeHost implements ScopeHost {
           } else {
             result = await executor.handler(this.admin, event, scope);
           }
-          if (isDeliveryRefusal(result)) {
-            // #1184: the handler's own terminal decision — journaled with its reason, never
-            // retried, and visible in `executorDeadLetters` beside an exhausted delivery.
-            const text = refusalJournalText(result);
-            const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, text, TERMINAL_RETRY, invocationId);
+          // #1184: a refusal is the handler's own terminal decision — journaled with its
+          // reason, never retried, and listed by `executorDeadLetters` beside an exhausted one.
+          const refused = isDeliveryRefusal(result) ? result : null;
+          const text = refused && refusalJournalText(refused);
+          const { attempts } = this.recordExecutorDelivery(
+            rt, row.id, deliveryId, text, refused ? TERMINAL_RETRY : executor.retry, invocationId,
+          );
+          if (refused) {
             report.deadLettered += 1;
-            outcomeOf('refused', result.reason);
+            outcomeOf('refused', refused.reason);
             lines.write({ ...unit, attempt: attempts, outcome: 'dead-lettered', error: text });
-            continue;
+          } else {
+            report.delivered += 1;
+            outcomeOf('delivered');
+            lines.write({ ...unit, attempt: attempts, outcome: 'delivered' });
           }
-          const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, null, executor.retry, invocationId);
-          report.delivered += 1;
-          outcomeOf('delivered');
-          lines.write({ ...unit, attempt: attempts, outcome: 'delivered' });
         } catch (err) {
           const { dead, attempts } = this.recordExecutorDelivery(
             rt,
@@ -5188,7 +5184,7 @@ export class SqliteScopeHost implements ScopeHost {
           );
           if (dead) report.deadLettered += 1;
           else report.retrying += 1;
-          outcomeOf(dead ? 'dead-lettered' : 'retrying', err instanceof Error ? err.message : String(err));
+          outcomeOf(dead ? 'dead-lettered' : 'retrying', err);
           lines.write({ ...unit, attempt: attempts, outcome: dead ? 'dead-lettered' : 'retrying', error: err });
         } finally {
           this.causedBy = null;

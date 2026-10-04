@@ -3,6 +3,7 @@ import {
   principalId,
   z,
   type DomainEvent,
+  type HistoryEntry,
   type PlatformActorId,
   type PrincipalId,
 } from '@substrat-run/contracts';
@@ -14,7 +15,6 @@ import {
   type ExecutorScope,
   type ScopeHost,
 } from './scope-host.js';
-import type { HistoryEntry } from '@substrat-run/contracts';
 
 /**
  * The membership executor (K-22 §4.2, membership.md §4.2; #1184) — the out-of-band half of
@@ -54,6 +54,9 @@ import type { HistoryEntry } from '@substrat-run/contracts';
 /** The event this executor consumes, and the version it reads. */
 export const MEMBER_ADD_REQUESTED = 'member.add-requested';
 
+/** The delivery-journal id a mount uses unless it names another (`executor:membership`). */
+export const MEMBERSHIP_EXECUTOR_ID = 'membership';
+
 /** The executor's own parse of the request (D-19: never the producer's types). */
 const memberAddRequested = z.object({
   principal: principalId,
@@ -68,7 +71,7 @@ const invitationFacts = z.object({ orgId: z.string(), roleKey: z.string() });
 const acceptedFacts = z.object({ principal: z.string() });
 
 export interface MembershipExecutorOptions {
-  /** The delivery-journal id (`executor:<id>`). Default `membership`. */
+  /** The delivery-journal id (`executor:<id>`). Default `MEMBERSHIP_EXECUTOR_ID`. */
   id?: string;
   /** The platform identity the admin rows record as having executed the write. */
   actor: PlatformActorId;
@@ -84,7 +87,7 @@ export interface MembershipExecutorOptions {
 /** Mount the membership executor on a host. One call, at host construction. */
 export function registerMembershipExecutor(host: ScopeHost, options: MembershipExecutorOptions): void {
   host.registerExecutor(
-    options.id ?? 'membership',
+    options.id ?? MEMBERSHIP_EXECUTOR_ID,
     MEMBER_ADD_REQUESTED,
     async (_admin, event, scope) => {
       const decided = await authorize(event, scope, options.level);

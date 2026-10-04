@@ -513,8 +513,14 @@ function secretBoxFor(env: Env): SecretBox | undefined {
   return webCryptoSecretBox(env.SECRET_BOX_KEY_ID ?? 'sb1', key);
 }
 
-/** The coordinator is stateless — rebuilt per request; durable state lives in the DOs + D1. */
-function hostFor(env: Env): CloudflareScopeHost {
+/**
+ * The coordinator is stateless — rebuilt per request; durable state lives in the DOs + D1.
+ *
+ * `membership` mounts the membership executor (#1184), which only the accept route and the
+ * sweeper need. A host with any executor drains on every write it makes, so mounting it on
+ * every request would add that drain to every route for an event only the accept emits.
+ */
+function hostFor(env: Env, opts: { membership?: boolean } = {}): CloudflareScopeHost {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
@@ -526,7 +532,7 @@ function hostFor(env: Env): CloudflareScopeHost {
     scopeLocalPermissions: env.SCOPE_LOCAL_PERMISSIONS === '1',
   });
   for (const m of MODULES) host.registerModule(m);
-  registerDashboardMembership(host);
+  if (opts.membership) registerDashboardMembership(host);
   hostMemo.set(host, resolveMemoFor(env.CONTROL_PLANE));
   return host;
 }
@@ -538,13 +544,13 @@ function hostFor(env: Env): CloudflareScopeHost {
  * sweeper is supplied to it — it wires the same `defineScopeSweeperDO` a pushed vertical
  * gets, by hand. Its modules declare no schedules, so a pass is a drain.
  */
-export const SweeperDO = defineScopeSweeperDO<Env>({ intervalMs: 120_000, host: hostFor });
+export const SweeperDO = defineScopeSweeperDO<Env>({ intervalMs: 120_000, host: (env) => hostFor(env, { membership: true }) });
 
 /**
  * Put a team scope on the sweeper's roster. Idempotent, and best-effort: a missed enroll
- * costs only the backstop for that scope until the next enroll, never the request. Called
- * where a team can come to hold a due delivery — its creation, an invite, an accept. Team
- * scopes are never forked, so enrolling from a request cannot enroll a copy.
+ * costs only the backstop for that scope until the next enroll, never the request. Called by
+ * the accept, the one route that emits what the executor effects. Team scopes are never
+ * forked, so enrolling from a request cannot enroll a copy.
  */
 async function enrollTeamScope(env: Env, tenant: TenantId, scope: ScopeId): Promise<void> {
   if (!env.SWEEPER) return;
@@ -699,7 +705,6 @@ async function createTeam(host: ScopeHost, env: Env, user: SessionUser, name: st
   // Mirror the owner into the shared plane's directory so `substrat push` can
   // resolve this workspace immediately (see mirrorBuilderIdentity).
   await mirrorBuilderIdentity(env, host, user.id, t);
-  await enrollTeamScope(env, t, s);
   return { tenantId: t, scopeId: s, principal: owner };
 }
 
@@ -1237,7 +1242,6 @@ app.post('/api/members/invite', async (c) => {
   const body = inviteMemberBody.parse(await c.req.json());
   const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const { invitationId } = (await scope.invoke('dashboard/invite-member', body)) as { invitationId: string };
-  await enrollTeamScope(c.env, node.tenantId, node.scopeId);
   const { acceptUrl, emailDelivered } = await mailInvite(
     c.env,
     host,
@@ -1405,7 +1409,7 @@ app.post('/api/invites/accept', async (c) => {
   const t = tenantId.parse(claim.tenantId);
   const s = scopeId.parse(claim.scopeId);
 
-  const host = hostFor(c.env);
+  const host = hostFor(c.env, { membership: true });
   await ensureIdentityPool(host, STAFF, resolveMemoFor(c.env.CONTROL_PLANE));
   // Already in this team? Nothing to accept — just switch to it (idempotent link click).
   if (await host.admin.resolveIdentity(t, PROVIDER, user.id)) {
