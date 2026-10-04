@@ -314,6 +314,93 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
     });
 
+    /**
+     * Codex round 2: a restore onto a FRESH directory object has only the clock as its floor, and
+     * the epoch a scope already holds may be ahead of it (the old directory ran on a fast clock, or
+     * restored in the same millisecond). The scope refuses the new directory as older; the
+     * directory then learns past the held epoch and delivers again, so it converges anyway.
+     */
+    describe('a fresh-directory restore behind an epoch the scope already holds', () => {
+      /** Restore `copy` onto a brand-new directory object, run `between`, then heal; restores the suite's directory after. */
+      const ontoFresh = async (copy: Parameters<typeof restoreTo>[0], between: () => Promise<void> = async () => {}) => {
+        const kept = directoryName;
+        directoryName = `lifecycle-fresh-${ulid()}`;
+        await warmControlPlane(directory);
+        await platform().admin.restoreDirectory(actor, copy);
+        await between();
+        await platform().healLifecycles(actor, { limit: 1000 });
+        return () => {
+          directoryName = kept;
+        };
+      };
+      const farAhead = (state: { scope: 'active' | 'suspended' }, epoch: number) => ({
+        scope: state.scope,
+        tenant: 'active' as const,
+        at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'],
+        revision: { epoch, scope: 50, tenant: 50 },
+      });
+
+      it('the directory says suspended: the hold reaches a scope holding a higher epoch as active', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        await platform().admin.suspendScope(actor, t, s);
+        const copy = await platform().admin.exportDirectory(actor);
+        // The old history delivered active at an epoch a backward clock will not reach.
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, Date.now() + 10 ** 9));
+        await expect(servedHere(t, s)).resolves.toBeDefined();
+        const back = await ontoFresh(copy);
+        try {
+          await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+        } finally {
+          back();
+        }
+      });
+
+      it('the directory says active: the lift reaches a scope holding a higher epoch as suspended', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        const copy = await platform().admin.exportDirectory(actor);
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'suspended' }, Date.now() + 10 ** 9));
+        await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+        const back = await ontoFresh(copy);
+        try {
+          await expect(servedHere(t, s)).resolves.toBeDefined();
+        } finally {
+          back();
+        }
+      });
+
+      it('two restores in the same millisecond: an EQUAL epoch with other counters converges too', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        await platform().admin.suspendScope(actor, t, s);
+        const copy = await platform().admin.exportDirectory(actor);
+        const back = await ontoFresh(copy, async () => {
+          // the other history minted the very same epoch and delivered active at higher counters
+          const [row] = (await (env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+            lifecycleTargets(f: object): Promise<{ epoch: number }[]>;
+          }).lifecycleTargets({ scopeId: s })) as { epoch: number }[];
+          await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, row!.epoch));
+        });
+        try {
+          await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+        } finally {
+          back();
+        }
+      });
+
+      it('the raise only ever moves the epoch up, whatever order concurrent heals learn in', async () => {
+        const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`lifecycle-raise-${ulid()}`)) as unknown as {
+          raiseLifecycleEpoch(atLeast: number): Promise<number>;
+        };
+        expect(await dir.raiseLifecycleEpoch(10)).toBe(10);
+        expect(await dir.raiseLifecycleEpoch(7)).toBe(10);
+        const raced = await Promise.all([dir.raiseLifecycleEpoch(12), dir.raiseLifecycleEpoch(11), dir.raiseLifecycleEpoch(13)]);
+        expect(Math.max(...raced)).toBe(13);
+        expect(await dir.raiseLifecycleEpoch(0)).toBe(13);
+      });
+    });
+
     it('each restore mints an epoch newer than the last, and a second heal has nothing to redo', async () => {
       const t = await tenantOf();
       const s = await hosted(t);
