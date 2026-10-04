@@ -3516,7 +3516,7 @@ export function defineScopeDO(
      * then makes to this instance (`assertSystemDoor`).
      */
     async systemDoorState(moduleId: string): Promise<{ state: SystemScheduleState; instance: string }> {
-      return { state: systemScheduleState(this.switchSql(), moduleId, new Date().toISOString()), instance: this.instanceId };
+      return { state: await this.systemScheduleState(moduleId), instance: this.instanceId };
     }
 
     /**

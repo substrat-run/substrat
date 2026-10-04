@@ -1116,10 +1116,8 @@ interface ScopeStubRpc {
   revokeCapabilityAsPlatform(id: string, actor: PlatformActorId): Promise<CapabilityRecord | null>;
   /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
   listCapabilities(filter?: CapabilityFilter): Promise<CapabilityPage>;
-  /** Where a module's schedules stand on this scope (#383, #1666) — the kernel's
-   *  `systemScheduleState`, run in the scope's own storage. */
-  systemScheduleState(moduleId: string): Promise<SystemScheduleState>;
-  /** #1834: the system door's state read, and the instance that answered it. */
+  /** #1834: the system door's state read — where a module's schedules stand on this scope
+   *  (#383, #1666), the kernel's `systemScheduleState` — and the instance that answered it. */
   systemDoorState(moduleId: string): Promise<{ state: SystemScheduleState; instance: string }>;
   /** Move a module's schedule switch on this scope (#1666) — the kernel's
    *  `switchSystemSchedules`, as one serialized unit. */
@@ -2026,8 +2024,6 @@ interface SystemDoorGate {
 /** #1834: an opened system door. `through` runs one call gated and pinned (`openSystemDoor`). */
 interface SystemDoor {
   moduleId: ModuleId;
-  tenantId: TenantId;
-  scopeId: ScopeId;
   through<T>(call: (instance: string) => Promise<T>): Promise<T>;
 }
 
@@ -4000,12 +3996,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<ScopeStub> {
-    return this.systemStub(await this.openSystemDoor(moduleId, tenantId, scopeId));
-  }
-
-  /** The system door's invoke stub, over a door already opened (and gated). */
-  private systemStub(door: SystemDoor): ScopeStub {
-    return this.buildStub(door.tenantId, door.scopeId, undefined, undefined, door);
+    return this.buildStub(tenantId, scopeId, undefined, undefined, await this.openSystemDoor(moduleId, tenantId, scopeId));
   }
 
   /**
@@ -4044,8 +4035,6 @@ export class CloudflareScopeHost implements ScopeHost {
     let gate = gated ?? (await regate());
     return {
       moduleId,
-      tenantId,
-      scopeId,
       through: async <T>(call: (instance: string) => Promise<T>): Promise<T> => {
         for (let regates = 0; ; regates += 1) {
           if (gate.held) {
@@ -4432,10 +4421,9 @@ export class CloudflareScopeHost implements ScopeHost {
     // the module outside the scope. Both are read by the system door's own gate (#1834), which
     // every fire below then goes through, pinned to the instance this read came from.
     const gate = await this.systemDoorGate(scopeId, moduleId);
-    const { state } = gate;
-    if (state === 'ungranted') return report;
+    if (gate.state === 'ungranted') return report;
     if (gate.error) report.errors.push({ operation: 'switch-hold', error: gate.error });
-    if (state === 'off' || gate.held) {
+    if (gate.state === 'off' || gate.held) {
       for (const schedule of schedules) {
         report.skipped += 1;
         report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
@@ -4468,7 +4456,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // The gate above already answered for this pass; a fire that meets a restarted scope
         // is gated again by the door (#1834).
         door ??= await this.openSystemDoor(moduleId, tenantId, scopeId, gate);
-        const scope = this.systemStub(door);
+        const scope = this.buildStub(tenantId, scopeId, undefined, undefined, door);
         await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         report.fired += 1;
       } catch (err) {
@@ -4638,7 +4626,8 @@ export class CloudflareScopeHost implements ScopeHost {
         const envelope = systemDoor
           ? await systemDoor.through(async (instance) => {
               const sent = await send(instance);
-              if (sent.failure && isSystemDoorMoved(sent.failure)) throw fromWireFailure(sent.failure);
+              const moved = sent.failure && fromWireFailure(sent.failure);
+              if (moved && isSystemDoorMoved(moved)) throw moved;
               return sent;
             })
           : await send();

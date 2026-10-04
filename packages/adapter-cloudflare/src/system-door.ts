@@ -9,8 +9,7 @@ export const SYSTEM_DOOR_MOVED = 'system door moved: ';
 
 /** Is this the DO's refusal of a system-door call that landed on another instance? */
 export function isSystemDoorMoved(err: unknown): boolean {
-  const text = err instanceof Error ? err.message : typeof err === 'object' && err !== null ? (err as { message?: unknown }).message : null;
-  return typeof text === 'string' && text.startsWith(SYSTEM_DOOR_MOVED);
+  return err instanceof Error && err.message.startsWith(SYSTEM_DOOR_MOVED);
 }
 
 /**
