@@ -252,7 +252,10 @@ the directory's own revisions and never by a clock: each scope transition bumps 
 scope's revision, and each tenant status change the tenant's, in the same transaction as
 the change. The scope keeps a delivery only when it is strictly newer on one revision and
 older on neither, so two transitions' overlapping deliveries settle on the later one
-whichever lands last.
+whichever lands last. A directory restore rolls those counters back with everything else,
+so every restore also mints a newer **epoch**, compared before the counters: the restored
+directory's deliveries outrank whatever the history it replaced delivered. The epoch
+describes the directory's store, not its data, so no dump carries it.
 
 - **One gate.** The CP-less host's `assertLive` reads it at every door that runs the scope's
   work: a request's stub, attachments, a capability or impersonation session, a peer call,
@@ -267,8 +270,9 @@ whichever lands last.
 - **A missed delivery heals.** A failed delivery never refuses the transition: the directory
   moves and the router refuses at once. Instead, the failure lands as an ops-failure row and
   no receipt is written. The cron's heal pass re-delivers to every hosted scope whose
-  receipt (`scope_lifecycle_receipts`) differs from the directory, and again to every scope
-  held now. That second rule puts a hold back on a store that a carry or a restore landed
+  receipt (`scope_lifecycle_receipts`: the statuses and the full revision the deployment
+  acknowledged) differs from the directory, to every scope with no receipt once the directory
+  has been restored, and again to every scope held now. That second rule puts a hold back on a store that a carry or a restore landed
   without one.
 - **The platform's own drain waits too.** A held scope's platform intents (a connector
   delivery the control plane runs on the vertical's behalf, a sibling to provision) are
