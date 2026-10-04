@@ -6,6 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { orgId, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
+import { registerDashboardMembership } from '../src/membership.js';
 
 /**
  * Every dashboard route where a session's ADDRESS becomes who someone is (#1359), driven
@@ -25,13 +26,15 @@ const shared = vi.hoisted(() => ({
 vi.mock('cloudflare:workers', () => ({ DurableObject: class {} }));
 vi.mock('@substrat-run/adapter-cloudflare', () => ({
   defineScopeDO: () => class {},
+  defineScopeSweeperDO: () => class {},
+  SCOPE_SWEEPER_NAME: 'scope-sweeper',
   ControlPlaneDO: class {},
   CloudflareScopeHost: class {
     constructor() {
       const target = shared.host as object;
       return new Proxy(target, {
         get(t, key) {
-          if (key === 'registerModule') return () => undefined;
+          if (key === 'registerModule' || key === 'registerExecutor') return () => undefined;
           const v = Reflect.get(t, key) as unknown;
           return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
         },
@@ -76,6 +79,8 @@ beforeEach(async () => {
   shared.host = host;
   shared.sessions.clear();
   for (const m of MODULES) host.registerModule(m);
+  // The worker's host mounts it per request; the proxy above no-ops that, so it is mounted once here.
+  registerDashboardMembership(host);
   env = {
     SCOPE: {},
     CONTROL_PLANE: {},
