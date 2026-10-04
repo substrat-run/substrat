@@ -18158,6 +18158,76 @@
           }
         }
       }
+    },
+    "/api/widget/sessions/{sessionId}/watch": {
+      "get": {
+        "operationId": "ticket0-widget-watch",
+        "summary": "Prove a widget session token, for the session’s live feed",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Proves a session token before the widget’s live feed opens.",
+        "tags": [
+          "Widget"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessionId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sessionId"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
     }
   },
   "components": {

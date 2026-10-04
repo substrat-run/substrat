@@ -205,6 +205,8 @@ import {
   type JobDueKey,
   type JobStepRow,
   type LiveChange,
+  type LiveNudge,
+  reachesWithin,
   type ScheduleStateKind,
 } from '@substrat-run/kernel';
 import type {
@@ -241,6 +243,8 @@ import {
   LIVE_SCOPE_HEADER,
   LIVE_SUBSCRIBE_PATH,
   LIVE_TENANT_HEADER,
+  LIVE_WITHIN_HEADER,
+  decodeLiveWithin,
   type LiveRefusal,
   type LiveSubscription,
 } from './live-reads.js';
@@ -299,7 +303,7 @@ import type {
   ScopeLifecycle,
   StoredScopeLifecycle,
 } from '@substrat-run/contracts';
-import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
+import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
@@ -2864,6 +2868,14 @@ export function defineScopeDO(
           status: 500,
         });
       }
+      // A narrowing the coordinator sent but this end cannot read is refused, never
+      // dropped: dropping it would open the whole scope's feed — to a vouched
+      // subscriber, one the principal's check was never going to filter (#1853).
+      const withinHeader = request.headers.get(LIVE_WITHIN_HEADER);
+      const within = withinHeader === null ? undefined : decodeLiveWithin(withinHeader);
+      if (withinHeader !== null && !within) {
+        return new Response('live reads: unreadable within narrowing', { status: 500 });
+      }
       // A subscriber arriving before the scope's migrations have run would be told
       // about events against a schema it cannot read back through. Same gate every
       // other entry point takes, for the same reason.
@@ -2889,6 +2901,7 @@ export function defineScopeDO(
         tenantId: tenantIdOf.parse(tenantId),
         scopeId: scopeIdOf.parse(scopeId),
         since: new Date().toISOString(),
+        ...(within ? { within } : {}),
       } satisfies LiveSubscription);
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -3023,6 +3036,11 @@ export function defineScopeDO(
      * to nobody. Knowing that a row exists and changed at 14:02 is information about
      * that row, so the empty payload is not what makes this safe; this is.
      *
+     * *Narrowed, when the subscription asked to be* (#1853). A socket opened `within` an
+     * entity hears only rows that reach it through live parent edges — the walk is
+     * memoised per (entity, root) for the pass, so many sockets on one root cost one walk
+     * per row. A vouched root replaces the check above, and its frames are `LiveNudge`s.
+     *
      * *Never able to fail the operation.* The write has committed and the caller has
      * its answer. A socket that has gone away mid-fan-out, or a check that cannot be
      * evaluated, costs a subscriber its live update — which it survives, because the
@@ -3055,6 +3073,28 @@ export function defineScopeDO(
       const announceable = rows.filter((r) => this.liveTargets.has(r.entity_type));
       if (announceable.length === 0) return;
 
+      /**
+       * Is a row's entity beneath a `within` root (#1853)? Memoised per (entity, root)
+       * for this one pass, so a hundred widget sockets on one session cost one walk per
+       * row rather than a hundred. Post-commit state, read once: a `ctx.relink` in the
+       * same operation has already moved the edge the walk follows.
+       */
+      const parents = scopeTupleReader(this.sql);
+      const now = new Date().toISOString();
+      const reached = new Map<string, Promise<boolean>>();
+      const reaches = (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
+        const key = JSON.stringify([row.entity_type, row.entity_id, root.entityType, root.entityId]);
+        let hit = reached.get(key);
+        if (!hit) {
+          // A walk that cannot answer is a frame not sent — the same fail-closed rule as the check.
+          hit = reachesWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, root, now).catch(
+            () => false,
+          );
+          reached.set(key, hit);
+        }
+        return hit;
+      };
+
       for (const ws of sockets) {
         let subscription: LiveSubscription | null = null;
         try {
@@ -3070,9 +3110,11 @@ export function defineScopeDO(
         // the frames are filtered against an explicit precondition rather than an
         // assumption about how the subscription was created.
         if (subscription.tenantId !== tenantId || subscription.scopeId !== scopeId) continue;
+        const { within } = subscription;
 
         // One context per subscriber, not per event: `ctx.check` is the expensive part
-        // and the context is only the subject it is evaluated for.
+        // and the context is only the subject it is evaluated for. Built on first use, so
+        // a vouched subscriber — whose frames the walk alone decides — never builds one.
         //
         // A frame this subscriber does not pass is NOT recorded as a denial (K-35),
         // and that is deliberate: `recordDenial` is called on a refused REQUEST, where
@@ -3083,43 +3125,56 @@ export function defineScopeDO(
         //
         // The operation name is carried anyway, for the events a fan-out cannot emit
         // but a future reader of this context might.
-        const ctx = this.operationContext(
-          subscription.principal,
-          tenantId,
-          scopeId,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          'live.subscribe',
-        );
+        let ctx: OperationContext | undefined;
+        const contextFor = (principal: PrincipalId) =>
+          (ctx ??= this.operationContext(
+            principal,
+            tenantId,
+            scopeId,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            'live.subscribe',
+          ));
         for (const row of announceable) {
-          // Non-null: `announceable` is exactly the rows whose type is in the map.
-          const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
-          let allowed = false;
-          try {
-            const decision = await ctx.check(permission, {
+          // Narrowing first: it is memoised across sockets, and a row outside the root
+          // is out whatever the principal holds.
+          if (within && !(await reaches(row, within))) continue;
+          let frame: LiveChange | LiveNudge;
+          if (within?.vouched !== undefined) {
+            // The vertical vouched for the root, so the walk above was the whole filter
+            // — and the subscriber holds no read on this row, so it is told only that
+            // something beneath its root changed. Never which row, never how.
+            frame = { kind: 'nudge', id: row.id, at: row.occurred_at };
+          } else {
+            // Non-null: `announceable` is exactly the rows whose type is in the map.
+            const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
+            let allowed = false;
+            try {
+              const decision = await contextFor(subscription.principal).check(permission, {
+                entityType: row.entity_type,
+                entityId: row.entity_id,
+              });
+              allowed = decision.allowed;
+            } catch {
+              // A check that cannot answer is a check that refuses. The alternative —
+              // treating an evaluator failure as an allow — turns an outage in the
+              // permission path into a disclosure, which is the one failure mode this
+              // surface must not have.
+              allowed = false;
+            }
+            if (!allowed) continue;
+            frame = {
+              kind: 'change',
+              id: row.id,
+              type: row.type,
               entityType: row.entity_type,
               entityId: row.entity_id,
-            });
-            allowed = decision.allowed;
-          } catch {
-            // A check that cannot answer is a check that refuses. The alternative —
-            // treating an evaluator failure as an allow — turns an outage in the
-            // permission path into a disclosure, which is the one failure mode this
-            // surface must not have.
-            allowed = false;
+              at: row.occurred_at,
+            };
           }
-          if (!allowed) continue;
-          const frame: LiveChange = {
-            kind: 'change',
-            id: row.id,
-            type: row.type,
-            entityType: row.entity_type,
-            entityId: row.entity_id,
-            at: row.occurred_at,
-          };
           try {
             ws.send(JSON.stringify(frame));
           } catch {

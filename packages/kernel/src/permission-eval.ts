@@ -176,7 +176,7 @@ async function switchedOff(subject: CheckSubject, node: Node, scope: ScopeTupleR
  * entity grant (or less far) would be a second algebra.
  */
 async function walkParents<R>(
-  scope: ScopeTupleReader,
+  scope: Pick<ScopeTupleReader, 'parents'>,
   start: string,
   now: string,
   probe: (ref: string, chain: RelationTuple[]) => Promise<R | undefined>,
@@ -208,6 +208,28 @@ async function walkParents<R>(
     frontier = next;
   }
   return undefined;
+}
+
+/**
+ * Is `entity` the `root`, or does it lie beneath it along live declared `parent` edges?
+ *
+ * The walk a capability check makes to its own root (`checkCapability` above), with no
+ * subject and no grant: a live read narrowed `within` an entity (#1853) asks exactly this
+ * of every frame, so it travels the same edges to the same depth, skipping the same
+ * revoked ones. A row linked to two parents (`ctx.link` twice) reaches either root; a row
+ * `ctx.relink`ed away from one reaches only the other (#1864).
+ */
+export async function reachesWithin(
+  scope: Pick<ScopeTupleReader, 'parents'>,
+  entity: EntityRef,
+  root: EntityRef,
+  now: string,
+): Promise<boolean> {
+  const target = `${root.entityType}:${root.entityId}`;
+  const hit = await walkParents(scope, `${entity.entityType}:${entity.entityId}`, now, async (ref) =>
+    ref === target ? true : undefined,
+  );
+  return hit === true;
 }
 
 /**

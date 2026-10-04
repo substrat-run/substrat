@@ -23,9 +23,9 @@ import {
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
 } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox, type LiveChange } from '@substrat-run/kernel';
+import { ulid, vouchedWithin, webCryptoSecretBox, type LiveChange, type LiveFrame, type VouchedWithin } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
-import { LIVE_MODE_HEADER, O2O_HEADER } from '../src/live-reads.js';
+import { LIVE_MODE_HEADER, O2O_HEADER, readSubscription } from '../src/live-reads.js';
 import { warmControlPlane } from './do-warmup.js';
 
 const staff = platformActorId.parse(ulid());
@@ -342,6 +342,204 @@ describe('live reads: the permission filter (#938)', () => {
       entity: { entityType: 'note', entityId: NOTE_A },
       grantedBy: writer,
     });
+  });
+});
+
+describe('live reads: narrowed within an entity (#1853)', () => {
+  let host: CloudflareScopeHost;
+  const sw = scopeIdOf.parse(ulid());
+  /** Holds `live:read` on IN_F1 and IN_F2 — both notes, so only `within` can tell them apart. */
+  const reader = principalId.parse(ulid());
+  /** Holds nothing at all. What it hears, it hears because a vertical vouched for it. */
+  const stranger = principalId.parse(ulid());
+  const F1 = '01JLIVEF100000000000000001';
+  const F2 = '01JLIVEF200000000000000002';
+  const IN_F1 = '01JLIVEN100000000000000001';
+  const IN_F2 = '01JLIVEN200000000000000002';
+  const IN_BOTH = '01JLIVEN300000000000000003';
+  const MOVED = '01JLIVEN400000000000000004';
+  const folder = (entityId: string) => ({ entityType: 'folder', entityId });
+  const open: { close(): void }[] = [];
+
+  async function watchWithin(
+    principal: typeof reader,
+    within: { entityType: string; entityId: string } | VouchedWithin,
+  ): Promise<{ frames: LiveFrame[] }> {
+    const response = await host.liveReads.subscribe({ tenantId: t, scopeId: sw, principal, request: upgrade(), within });
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    const frames: LiveFrame[] = [];
+    ws.accept();
+    ws.addEventListener('message', (event) => {
+      const data = String((event as MessageEvent).data);
+      if (data !== 'pong') frames.push(JSON.parse(data) as LiveFrame);
+    });
+    open.push({ close: () => ws.close(1000, 'test over') });
+    return { frames };
+  }
+
+  const as = async (op: string, input: Record<string, unknown>) =>
+    (await host.getScope(writer, t, sw)).invoke(op, input);
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.LIVE_SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    await host.provisionScope(staff, { tenantId: t, scopeId: sw, vertical: 'live-vertical' });
+    await host.admin.activateScope(staff, t, sw);
+    await host.admin.grant(staff, { principalId: writer, permission: WRITE, node: { tenantId: t, scopeId: sw }, grantedBy: writer });
+    for (const noteId of [IN_F1, IN_F2]) {
+      await host.admin.grant(staff, {
+        principalId: reader,
+        permission: READ,
+        node: { tenantId: t, scopeId: sw },
+        entity: { entityType: 'note', entityId: noteId },
+        grantedBy: writer,
+      });
+    }
+    await as('live/file', { noteId: IN_F1, folderId: F1 });
+    await as('live/file', { noteId: IN_F2, folderId: F2 });
+    // Two parent edges, as ticket0 gives a public message: one to its conversation, one
+    // to the widget session that may see it.
+    await as('live/file', { noteId: IN_BOTH, folderId: F1 });
+    await as('live/file', { noteId: IN_BOTH, folderId: F2 });
+    await as('live/file', { noteId: MOVED, folderId: F1 });
+  });
+
+  afterAll(async () => {
+    for (const w of open) w.close();
+    await host.close();
+  });
+
+  // -- narrowing: ANDed with the principal's own check ------------------------
+
+  it('sends nothing about an entity outside the root, though the subscriber may read it', async () => {
+    const seen = await watchWithin(reader, folder(F1));
+    await as('live/touch', { noteId: IN_F2 });
+    await settle();
+    // `reader` holds `live:read` on IN_F2, so an unnarrowed feed would carry this frame.
+    expect(seen.frames).toEqual([]);
+  });
+
+  it('sends a change beneath the root — the positive twin', async () => {
+    const seen = await watchWithin(reader, folder(F1));
+    await as('live/touch', { noteId: IN_F1 });
+    await as('live/touch', { noteId: IN_F2 });
+    await settle();
+    expect(seen.frames).toHaveLength(1);
+    expect(seen.frames[0]).toMatchObject({ kind: 'change', type: 'live.note-touched', entityType: 'note', entityId: IN_F1 });
+  });
+
+  it('treats the root itself as within', async () => {
+    const seen = await watchWithin(reader, { entityType: 'note', entityId: IN_F1 });
+    await as('live/touch', { noteId: IN_F1 });
+    await as('live/touch', { noteId: IN_F2 });
+    await settle();
+    expect(seen.frames.map((f) => (f as LiveChange).entityId)).toEqual([IN_F1]);
+  });
+
+  it('never widens: a plain `within` still needs the principal to pass the check', async () => {
+    // The stranger holds nothing, so a plain root changes nothing for it. Only the
+    // vouched form below drops the check, and only by being asked for by name.
+    const seen = await watchWithin(stranger, folder(F1));
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(seen.frames).toEqual([]);
+  });
+
+  // -- vouched: the walk is the whole filter, and the frame names nothing ------
+
+  it('nudges a vouched subscriber about a change beneath its root, naming no entity', async () => {
+    const seen = await watchWithin(stranger, vouchedWithin(folder(F1), { because: 'test vouches' }));
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(seen.frames).toHaveLength(1);
+    expect(Object.keys(seen.frames[0]!).sort()).toEqual(['at', 'id', 'kind']);
+    expect(seen.frames[0]!.kind).toBe('nudge');
+  });
+
+  it('sends a vouched subscriber nothing from outside its root — the negative twin', async () => {
+    const seen = await watchWithin(stranger, vouchedWithin(folder(F1), { because: 'test vouches' }));
+    await as('live/touch', { noteId: IN_F2 });
+    await as('live/touch-ledger', { ledgerId: LEDGER });
+    await settle();
+    expect(seen.frames).toEqual([]);
+  });
+
+  it('refuses a value that only looks vouched — the replacing mode is reachable by vouchedWithin alone', async () => {
+    const forged = { entity: folder(F1), because: 'trust me' } as unknown as VouchedWithin;
+    await expect(
+      host.liveReads.subscribe({ tenantId: t, scopeId: sw, principal: stranger, request: upgrade(), within: forged }),
+    ).rejects.toThrow(/vouchedWithin/);
+    const spread = { ...vouchedWithin(folder(F1), { because: 'copied' }) } as unknown as VouchedWithin;
+    await expect(
+      host.liveReads.subscribe({ tenantId: t, scopeId: sw, principal: stranger, request: upgrade(), within: spread }),
+    ).rejects.toThrow(/vouchedWithin/);
+    const flagged = { ...folder(F1), vouched: 'trust me' } as unknown as VouchedWithin;
+    await expect(
+      host.liveReads.subscribe({ tenantId: t, scopeId: sw, principal: stranger, request: upgrade(), within: flagged }),
+    ).rejects.toThrow(/vouchedWithin/);
+  });
+
+  // -- more than one parent, and a move ---------------------------------------
+
+  it('reaches every root a multi-parent entity sits under', async () => {
+    const one = await watchWithin(stranger, vouchedWithin(folder(F1), { because: 'test vouches' }));
+    const two = await watchWithin(stranger, vouchedWithin(folder(F2), { because: 'test vouches' }));
+    await as('live/touch', { noteId: IN_BOTH });
+    await settle();
+    expect(one.frames).toHaveLength(1);
+    expect(two.frames).toHaveLength(1);
+  });
+
+  it('follows a move: the old root stops hearing the moved row, the new one starts', async () => {
+    const left = await watchWithin(stranger, vouchedWithin(folder(F1), { because: 'test vouches' }));
+    const joined = await watchWithin(stranger, vouchedWithin(folder(F2), { because: 'test vouches' }));
+    await as('live/touch', { noteId: MOVED });
+    await settle();
+    expect(left.frames).toHaveLength(1);
+    expect(joined.frames).toEqual([]);
+
+    // The move's own `entity.relinked` is walked against the state it committed, so it
+    // already belongs to the new root and not the old one.
+    await as('live/move', { noteId: MOVED, from: F1, to: F2 });
+    await as('live/touch', { noteId: MOVED });
+    await settle();
+    expect(left.frames).toHaveLength(1);
+    expect(joined.frames).toHaveLength(2);
+  });
+});
+
+describe('live reads: a socket whose narrowing cannot be read fails closed (#1853)', () => {
+  const base = { principal: ulid(), tenantId: ulid(), scopeId: ulid(), since: new Date().toISOString() };
+
+  it('keeps a socket with no narrowing (one opened before #1853) unnarrowed', () => {
+    expect(readSubscription(base)).toMatchObject(base);
+    expect(readSubscription(base)).not.toHaveProperty('within');
+  });
+
+  it('keeps a readable narrowing, vouched or not', () => {
+    expect(readSubscription({ ...base, within: { entityType: 'folder', entityId: 'f' } })?.within).toEqual({
+      entityType: 'folder',
+      entityId: 'f',
+    });
+    expect(readSubscription({ ...base, within: { entityType: 'folder', entityId: 'f', vouched: 'why' } })?.within).toEqual({
+      entityType: 'folder',
+      entityId: 'f',
+      vouched: 'why',
+    });
+  });
+
+  it.each([
+    ['a non-object', 'folder:f'],
+    ['no type', { entityId: 'f' }],
+    ['an empty id', { entityType: 'folder', entityId: '' }],
+    ['an empty reason', { entityType: 'folder', entityId: 'f', vouched: ' ' }],
+    ['a non-string reason', { entityType: 'folder', entityId: 'f', vouched: true }],
+  ])('drops a socket whose narrowing has %s, rather than widening it', (_label, within) => {
+    expect(readSubscription({ ...base, within })).toBeNull();
   });
 });
 

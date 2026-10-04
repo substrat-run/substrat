@@ -48,6 +48,8 @@ export type {
   FreshnessRegistration,
   FreshnessReport,
   LiveChange,
+  LiveFrame,
+  LiveNudge,
   LiveReadSurface,
   LiveUpgradeRequest,
   OperationEntitlement,
@@ -116,6 +118,9 @@ export {
   EMITTED_REPORT_CAP,
   /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
   isUpgradeRequest,
+  isVouchedWithin,
+  vouchedWithin,
+  type VouchedWithin,
 } from './scope-host.js';
 export {
   /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
@@ -159,7 +164,7 @@ export {
 } from './permission-checker.js';
 export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
-export { createTupleEvaluator } from './permission-eval.js';
+export { createTupleEvaluator, reachesWithin } from './permission-eval.js';
 export type {
   PermissionTupleReader,
   PermissionTupleRow,

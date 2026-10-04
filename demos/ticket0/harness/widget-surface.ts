@@ -1,5 +1,5 @@
 /**
- * The widget's public surface — ticket0's three routes, and nothing else.
+ * The widget's public surface — ticket0's routes, and nothing else.
  *
  * The platform half used to live here: unauthenticated mount, hand-rolled async CORS,
  * the preflight, and refusing an unlisted origin before the handler rather than beside
@@ -25,11 +25,16 @@ import {
   clientContextOf,
   substratError,
   toProblem,
+  LIVE_MODE_HEADER,
   PROBLEM_CONTENT_TYPE,
   type ClientContext,
+  type LiveRefusal,
 } from '@substrat-run/contracts';
+import { vouchedWithin, type LiveReadSurface } from '@substrat-run/kernel';
 import {
+  isUpgradeRequest,
   mountPublicSurface,
+  type LiveSubscriber,
   type PublicServiceActor,
   type ResolvePublicActor,
 } from '@substrat-run/vertical-host';
@@ -52,6 +57,15 @@ export type WidgetDesk = PublicServiceActor & {
    * page could spend a neighbour's `start` allowance on it.
    */
   readonly deskKey: string;
+  /**
+   * How to hand this desk's visitors a live feed (#1853): the host's live-read surface, and
+   * the desk's widget service as the subscriber. Absent on a host with no live reads (the
+   * dev server), where the live route answers `501` and the widget keeps polling.
+   */
+  readonly live?: {
+    readonly surface: LiveReadSurface<Request, Response>;
+    readonly subscriber: LiveSubscriber;
+  };
 };
 
 /**
@@ -401,6 +415,53 @@ export function mountWidgetSurface(
           token,
         });
         return c.json(entries);
+      });
+
+      /**
+       * The visitor's live feed (#1853): a WebSocket that says "your thread changed", so
+       * the widget re-reads `messages` above instead of polling it.
+       *
+       * The visitor has no principal, and the widget service they act through holds no
+       * read on any conversation — so this subscribes with `vouchedWithin`, which replaces
+       * the principal's check with the scope's walk. What earns the vouch is
+       * `widget-watch` proving the token, as every other route here proves it, and what
+       * keeps it narrow is the root: the visitor's SESSION, under which hang exactly the
+       * public messages `widget-thread` would show them (`seatSession` in the module). A
+       * vouched feed is told only that something changed, never which row or how.
+       *
+       * The Origin gate is `mountPublicSurface`'s: a browser sends `Origin` on a WebSocket
+       * handshake as it does on a fetch, so the allowlist decides here exactly as there.
+       */
+      route.get('/sessions/:sessionId/live', async (c, { actor, origin }) => {
+        if (!isUpgradeRequest(c.req.raw)) {
+          return c.json({ error: 'the live feed is a WebSocket' }, 426, {
+            [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal,
+          });
+        }
+        const token = c.req.query('token');
+        // Out of the same budget as a thread read: opening the feed is one read, and a
+        // reconnect loop must not be cheaper than the poll it replaces.
+        const bucket = bucketOf(actor, 'read');
+        const wait = spend(bucket, callerKey(bucket, token, origin), WIDGET_RATE_LIMITS.read);
+        if (wait) return tooManyRequests(c, wait);
+        const desk = deskOf(actor);
+        if (!desk.live) {
+          return c.json({ error: 'live updates are not available here; poll instead' }, 501, {
+            [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal,
+          });
+        }
+        // The route's own pattern names it; the type cannot know that.
+        const sessionId = c.req.param('sessionId') as string;
+        // Throws on a wrong token or an origin no longer embedded — before any socket exists.
+        await desk.invoke('ticket0/widget-watch', { sessionId, token });
+        return desk.live.surface.subscribe({
+          ...desk.live.subscriber,
+          request: c.req.raw,
+          within: vouchedWithin(
+            { entityType: 'widgetSession', entityId: sessionId },
+            { because: 'ticket0/widget-watch proved this session’s token' },
+          ),
+        });
       });
     },
   });

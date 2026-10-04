@@ -213,7 +213,9 @@ export const ticket0Manifest = moduleManifest.parse({
    *   still say that a note was written, when, and what its id is.
    * - So staff (scope-wide) hear everything, a follower (narrowed onto one
    *   conversation, #1086) hears that thread and its messages, and a portal customer
-   *   and the widget's service principal hear nothing and keep polling, as they did.
+   *   and the widget's service principal hear nothing on `/api/live` and keep polling.
+   *   A widget VISITOR has its own feed (#1853), vouched and rooted at its session, which
+   *   these keys do not gate: see `harness/widget-surface.ts`.
    */
   ...manifestEntities(ticket0Entities, {
     searchables: [{ entityType: 'kbArticle', fields: ['title', 'body'] }],

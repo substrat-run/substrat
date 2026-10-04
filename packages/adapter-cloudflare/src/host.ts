@@ -402,6 +402,9 @@ import {
   LIVE_SCOPE_HEADER,
   LIVE_SUBSCRIBE_PATH,
   LIVE_TENANT_HEADER,
+  LIVE_WITHIN_HEADER,
+  encodeLiveWithin,
+  liveWithinOf,
   type LiveRefusal,
 } from './live-reads.js';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
@@ -8903,7 +8906,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * arrive as a different class of answer just because the caller asked for a socket.
    */
   readonly liveReads: LiveReadSurface<Request, Response> = {
-    subscribe: async ({ tenantId, scopeId, principal, request }) => {
+    subscribe: async ({ tenantId, scopeId, principal, request, within }) => {
+      // Decided before anything else, and thrown: a `within` that is neither a plain
+      // EntityRef nor a value `vouchedWithin` built is a caller bug, and the two ways of
+      // guessing at it both open a feed wider than was asked for (#1853).
+      const narrowed = liveWithinOf(within);
       if (!isUpgradeRequest(request)) {
         return new Response('live reads are a WebSocket surface', {
           status: 426,
@@ -8964,6 +8971,8 @@ export class CloudflareScopeHost implements ScopeHost {
       headers.set(LIVE_PRINCIPAL_HEADER, principal);
       headers.set(LIVE_TENANT_HEADER, tenantId);
       headers.set(LIVE_SCOPE_HEADER, scopeId);
+      headers.delete(LIVE_WITHIN_HEADER);
+      if (narrowed) headers.set(LIVE_WITHIN_HEADER, encodeLiveWithin(narrowed));
       const forwarded = new Request(
         new URL(LIVE_SUBSCRIBE_PATH, 'https://scope.substrat.internal'),
         // `new Request(url, { …, headers })` rather than `new Request(request, …)`:
