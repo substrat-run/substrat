@@ -213,6 +213,47 @@ describe('the schedule switch record (#1674)', () => {
     });
   });
 
+  describe('OFF is written before the scope moves, so its undo is a compare-and-set too (#1823)', () => {
+    const write = (over: Partial<{ reason: string; operationId: string }> = {}) => ({
+      tenantId: T, scopeId: S, moduleId: M, actor: 'staff', reason: 'incident', operationId: '01A', at: '2026-09-01T00:00:00.000Z',
+      ...over,
+    });
+
+    it('a first OFF that held nothing is removed again: no row is left saying off', () => {
+      const { db, sql } = fresh();
+      create(db);
+      const prior = recordSystemSwitchedOff(sql, write());
+      expect(prior).toBeNull();
+      expect(switchedOffModulesOf(sql, T, S)).toEqual([M]); // off from the first instant
+      restoreSystemSwitchRecord(sql, { tenantId: T, scopeId: S, moduleId: M, operationId: '01A' }, prior);
+      expect(listSystemSwitchRecords(sql)).toEqual([]);
+    });
+
+    it('an OFF over an `on` row answers it, and its undo puts it back', () => {
+      const { db, sql } = fresh();
+      create(db);
+      recordSystemSwitchedOff(sql, write());
+      recordSystemSwitchedOn(sql, write({ reason: 'fixed', operationId: '01B' }));
+      const prior = recordSystemSwitchedOff(sql, write({ reason: 'again', operationId: '01C' }));
+      expect(prior).toMatchObject({ position: 'on', reason: 'fixed', operationId: '01B' });
+      restoreSystemSwitchRecord(sql, { tenantId: T, scopeId: S, moduleId: M, operationId: '01C' }, prior);
+      expect(listSystemSwitchRecords(sql)).toEqual([
+        expect.objectContaining({ position: 'on', reason: 'fixed', operationId: '01B' }),
+      ]);
+    });
+
+    it('the removal is keyed on the call: a newer OFF that landed in between is kept', () => {
+      const { db, sql } = fresh();
+      create(db);
+      const prior = recordSystemSwitchedOff(sql, write());
+      recordSystemSwitchedOff(sql, write({ reason: 'second operator', operationId: '01B' }));
+      restoreSystemSwitchRecord(sql, { tenantId: T, scopeId: S, moduleId: M, operationId: '01A' }, prior);
+      expect(listSystemSwitchRecords(sql)).toEqual([
+        expect.objectContaining({ position: 'off', reason: 'second operator', operationId: '01B' }),
+      ]);
+    });
+  });
+
   describe('the fleet read', () => {
     const seed = () => {
       const { db, sql } = fresh();

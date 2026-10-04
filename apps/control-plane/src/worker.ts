@@ -896,7 +896,7 @@ function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined
             `cannot switch its schedules ${a.to}`,
         );
       }
-      return client.systemSwitch({ scopeId: a.scopeId, moduleId: a.moduleId, to: a.to });
+      return client.systemSwitch({ scopeId: a.scopeId, moduleId: a.moduleId, to: a.to, tenantHeld: a.tenantHeld });
     },
     status: async (a) => {
       const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });

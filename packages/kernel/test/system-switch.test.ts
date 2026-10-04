@@ -6,6 +6,8 @@ import {
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
+  switchRecordedOff,
+  tenantHoldsSystemGrant,
   tenantSystemSwitchedOffMessage,
   type SwitchSql,
 } from '../src/index.js';
@@ -50,11 +52,11 @@ describe('switchSystemSchedules (#1666)', () => {
     grant(db, 'a:run', '2026-09-01T00:00:00.000Z'); // A: revoked on its own, before the switch
     grant(db, 'b:run'); // B: live when the switch is pulled
 
-    expect(move(sql, 'off')).toEqual({ held: true, changed: true, permissions: ['b:run'] });
+    expect(move(sql, 'off')).toEqual({ held: true, changed: true, permissions: ['b:run'], deniesTenantGrants: true });
     expect(revokedAt(db, 'a:run')).toBe('2026-09-01T00:00:00.000Z'); // untouched by OFF
     expect(revokedAt(db, 'b:run')).toBe('2026-09-21T10:00:00.000Z');
 
-    expect(move(sql, 'on', '2026-09-21T11:00:00.000Z')).toEqual({ held: true, changed: true, permissions: ['b:run'] });
+    expect(move(sql, 'on', '2026-09-21T11:00:00.000Z')).toEqual({ held: true, changed: true, permissions: ['b:run'], deniesTenantGrants: true });
     expect(revokedAt(db, 'a:run')).toBe('2026-09-01T00:00:00.000Z'); // still revoked, same instant
     expect(revokedAt(db, 'b:run')).toBeNull();
     expect(systemScheduleState(sql, M, '2026-09-21T12:00:00.000Z')).toBe('on');
@@ -82,6 +84,86 @@ describe('switchSystemSchedules (#1666)', () => {
     expect(systemSwitchedOff(sql, '@m/other')).toBe(false);
     move(sql, 'on');
     expect(systemSwitchedOff(sql, M)).toBe(false);
+  });
+
+  it('a module held only by the tenant (#1823): OFF writes the marker and tombstones nothing; ON takes it back', () => {
+    const { sql } = fresh();
+    const tenantMove = (to: 'on' | 'off') =>
+      switchSystemSchedules(sql, { moduleId: M, scopeId: S, to, at: '2026-09-21T10:00:00.000Z', tenantHeld: true });
+    expect(tenantMove('off')).toEqual({ held: true, changed: true, permissions: [], deniesTenantGrants: true });
+    expect(systemSwitchedOff(sql, M)).toBe(true);
+    expect(tenantMove('off')).toEqual({ held: true, changed: false, permissions: [], deniesTenantGrants: true });
+    expect(tenantMove('on')).toEqual({ held: true, changed: true, permissions: [], deniesTenantGrants: true });
+    expect(systemSwitchedOff(sql, M)).toBe(false);
+    // Still held while the tenant grant is: a repeat ON is a no-op, not a refusal.
+    expect(tenantMove('on')).toEqual({ held: true, changed: false, permissions: [], deniesTenantGrants: true });
+  });
+
+  it('twin: without the tenant, the same empty scope holds nothing and writes nothing', () => {
+    const { sql } = fresh();
+    expect(move(sql, 'off')).toEqual({ held: false, changed: false, permissions: [], deniesTenantGrants: true });
+    expect(systemSwitchedOff(sql, M)).toBe(false);
+  });
+
+  it('switchRecordedOff holds exactly the modules it is told the tenant holds', () => {
+    const { sql } = fresh();
+    const out = switchRecordedOff(sql, { scopeId: S, moduleIds: [M, '@m/y'], at: 'x', tenantHeld: [M] });
+    expect(out.map((o) => [o.moduleId, o.held])).toEqual([
+      [M, true],
+      ['@m/y', false],
+    ]);
+    expect(systemSwitchedOff(sql, M)).toBe(true);
+    expect(systemSwitchedOff(sql, '@m/y')).toBe(false);
+  });
+});
+
+describe('tenantHoldsSystemGrant (#1823)', () => {
+  const T = 't1';
+  const M = '@m/x';
+  const NOW = '2026-09-21T10:00:00.000Z';
+  const fresh = () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`CREATE TABLE _substrat_tenant_tuples (
+      tenant_id TEXT NOT NULL, subject TEXT NOT NULL, relation TEXT NOT NULL, object TEXT NOT NULL,
+      expires_at TEXT, revoked_at TEXT, PRIMARY KEY (tenant_id, subject, relation, object)
+    )`);
+    const sql: SwitchSql = {
+      all: (q, ...p) => db.prepare(q).all(...p) as Record<string, unknown>[],
+      run: (q, ...p) => {
+        db.prepare(q).run(...p);
+      },
+    };
+    const put = (row: { tenant?: string; subject?: string; relation?: string; object?: string; expires?: string | null; revoked?: string | null }) =>
+      db
+        .prepare(`INSERT OR REPLACE INTO _substrat_tenant_tuples VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(
+          row.tenant ?? T,
+          row.subject ?? `system:${M}`,
+          row.relation ?? 'granted:x:run',
+          row.object ?? `tenant:${row.tenant ?? T}`,
+          row.expires ?? null,
+          row.revoked ?? null,
+        );
+    return { sql, put };
+  };
+
+  it('a live tenant-level grant holds; nothing, of course, does not', () => {
+    const { sql, put } = fresh();
+    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(false);
+    put({});
+    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(true);
+  });
+
+  it('only a live grant of THIS module, tenant and tenant node counts', () => {
+    const { sql, put } = fresh();
+    put({ revoked: '2026-01-01T00:00:00.000Z' });
+    put({ relation: 'granted:x:old', expires: '2026-01-01T00:00:00.000Z' });
+    put({ subject: 'system:@m/other' });
+    put({ tenant: 't2' });
+    put({ relation: 'role:admin' });
+    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(false);
+    put({ relation: 'granted:x:later', expires: '2027-01-01T00:00:00.000Z' });
+    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(true);
   });
 });
 

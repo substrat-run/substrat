@@ -2158,7 +2158,7 @@ export function defineScopeDO(
      */
     async seatTuples(
       tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
-      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
     ): Promise<SwitchedOff[]> {
       return this.queue.enqueue(() =>
         this.revision.transactionSync(() => {
@@ -3697,9 +3697,12 @@ export function defineScopeDO(
       scopeId: string,
       to: 'on' | 'off',
       at: string,
+      tenantHeld = false,
     ): Promise<SwitchOutcome & { instance: string }> {
       const outcome = await this.queue.enqueue(() =>
-        this.revision.transactionSync(() => switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at })),
+        this.revision.transactionSync(() =>
+          switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at, tenantHeld }),
+        ),
       );
       // #1819: the instance that applied it, which the rewind hold's release rule reads.
       return { ...outcome, instance: this.instanceId };
@@ -5417,7 +5420,7 @@ export function defineScopeDO(
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
          *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
-        switchOff?: { moduleIds: readonly string[]; at: string };
+        switchOff?: { moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] };
         /** The scope the dump was captured FROM (#1869), whose grants the re-point moves. */
         sourceScopeId?: ScopeId;
         /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
@@ -6857,7 +6860,7 @@ export function defineScopeDO(
       /** The directory's recorded-off modules (#1742), switched off in THIS unit right after the
        *  seat, so no sweep can run the grants the seat just re-created. `scopeId` is the scope
        *  this projection provisions (the object of `scopeTuples`), never another. */
-      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
       /** Declared service subjects excluded only from human lockout repair (#1896). */
       serviceSubjects?: readonly string[],
     ): Promise<SwitchedOff[]> {

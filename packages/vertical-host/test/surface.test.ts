@@ -1367,7 +1367,22 @@ describe('mountPlatformSurface — the schedule switch (#1666)', () => {
     const res = await post(host, body);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ held: true, changed: true, permissions: ['absence:expire-stale'] });
-    expect(got).toEqual([SCOPE, '@substrat-run/engine-absence', 'off']);
+    expect(got).toEqual([SCOPE, '@substrat-run/engine-absence', 'off', { tenantHeld: undefined }]);
+  });
+
+  it("carries the platform's tenantHeld through to the host (#1823), and refuses one that is not a boolean", async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({
+      systemSwitchLocal: async (...args: unknown[]) => {
+        got = args;
+        return { held: true, changed: true, permissions: [] } as never;
+      },
+    });
+    expect((await post(host, { ...body, tenantHeld: true })).status).toBe(200);
+    expect(got).toEqual([SCOPE, '@substrat-run/engine-absence', 'off', { tenantHeld: true }]);
+    got = [];
+    expect((await post(host, { ...body, tenantHeld: 'yes' })).status).toBe(400);
+    expect(got).toEqual([]);
   });
 
   it('a module the scope never held is a 200 with held: false, not a 404', async () => {
@@ -1765,14 +1780,14 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     );
   /** A host that records what the provision and restore halves were handed, and answers a move. */
   const recording = () => {
-    const seen: { verb: string; scopeId: string; switchedOff: unknown }[] = [];
+    const seen: { verb: string; scopeId: string; switchedOff: unknown; tenantHeld?: unknown }[] = [];
     const host = fakeHost({
       provisionScopeLocal: async (input) => {
-        seen.push({ verb: 'provision', scopeId: input.scopeId, switchedOff: input.switchedOff });
+        seen.push({ verb: 'provision', scopeId: input.scopeId, switchedOff: input.switchedOff, tenantHeld: input.tenantHeld });
         return input.switchedOff ? { switchedOff: [moved] } : undefined;
       },
       restoreScopeLocal: async (scopeId, _tables, opts) => {
-        seen.push({ verb: 'restore', scopeId, switchedOff: opts?.switchedOff });
+        seen.push({ verb: 'restore', scopeId, switchedOff: opts?.switchedOff, tenantHeld: opts?.tenantHeld });
         return { tables: 0, ...(opts?.switchedOff ? { switchedOff: [moved] } : {}) };
       },
     });
@@ -1793,6 +1808,19 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
       { verb: 'provision', scopeId: SCOPE, switchedOff: [SCHED] },
       { verb: 'restore', scopeId: SCOPE, switchedOff: [SCHED] },
     ]);
+  });
+
+  it('hands the host the tenant-held modules beside the list, on all three routes (#1823)', async () => {
+    const { host, seen } = recording();
+    const carry = { switchedOff: [SCHED], tenantHeld: [SCHED] };
+    await post(host, '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER, ...carry });
+    await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, ...carry });
+    await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], ...carry });
+    expect(seen.map((x) => x.tenantHeld)).toEqual([[SCHED], [SCHED], [SCHED]]);
+    // A malformed one is refused before the host is called.
+    const bad = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], switchedOff: [SCHED], tenantHeld: 'all' });
+    expect(bad.status).toBe(400);
+    expect(seen).toHaveLength(3);
   });
 
   it('a body without the list hands the host none, and the answer carries none — the pre-#1742 shape', async () => {

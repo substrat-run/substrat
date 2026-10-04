@@ -33,7 +33,7 @@ await stub.invoke('workorder/create', input);
 await host.close();
 ```
 
-### The four options
+### The options
 
 | option | default | why it is shaped that way |
 |---|---|---|
@@ -41,6 +41,11 @@ await host.close();
 | `checker` | the built-in tuple checker | deny-by-default on empty tuples. The permissive one is called `UNSAFE_allowAllChecker` because the name is the warning |
 | `secretBox` | *unconfigured* | seals per-tenant credentials at rest. Omitted, the host **refuses to store a credential at all** rather than storing it in the clear — every other surface keeps working, so a deployment using no connectors needs no key |
 | `fetch` | the runtime's `fetch` | egress for connectors, injectable so a test or a dev server can stand a provider up in memory. It is the only way to exercise a connector end to end before real credentials exist, and it stays the way to test failure paths a real provider will not produce on demand |
+| `clock` | the wall clock | what `ctx.now()` reads, and what the host judges elapsed time against: tuple and session expiry, entitlement expiry, schedule cadence. Hand in a frozen or scripted clock and an expiry becomes assertable without waiting. Rows that only stamp *when* something happened (an outbox row, an admin-log entry) stay on the real clock |
+| `attachmentExtractors` | none | the parsers attachment text is extracted with, e.g. `defaultAttachmentExtractors()` from [`@substrat-run/attachment-extractors`](/reference/attachment-extractors). The adapter parses no file format itself; omitted, every upload records `unsupported`, which is a valid configuration |
+| `logSink` · `invocationLineSink` | the console | where `ctx.log` lines and the per-delivery / per-schedule-run invocation lines go, one JSON line each. A test passes a collector |
+| `connectorCalls` | a no-op | where each connector call's data point goes. Self-host keeps the same shape and writes nothing; the hosted platform records them instead |
+| `versionId` | none | the registry id of the vertical version this host runs, stamped into every outbox row's `version`. Handed in by the harness, never read from the directory; omitted, rows read `NULL` |
 
 ## How the semantics map
 

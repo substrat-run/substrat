@@ -22,6 +22,7 @@ import {
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
   scopesSwitchedOffFor,
+  tenantHoldsSystemGrant,
   switchedOffModulesOf,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,
@@ -3674,9 +3675,9 @@ export class ControlPlaneDO extends DurableObject {
 
   // -- the schedule switch's record (#1674) — `system-switch-record.ts` is the whole rule ---
 
-  /** OFF's write, after the scope's switch held. */
-  recordSystemSwitchedOff(row: SystemSwitchRecordWrite): void {
-    recordSystemSwitchedOff(this.kernelSql, row);
+  /** OFF's write, before the scope's switch moves (#1823). Answers the row as it was. */
+  recordSystemSwitchedOff(row: SystemSwitchRecordWrite): SystemSwitchRecordPrior {
+    return recordSystemSwitchedOff(this.kernelSql, row);
   }
 
   /** ON's write, before the scope moves. Answers the row as it was, for a failed ON to restore. */
@@ -3684,12 +3685,21 @@ export class ControlPlaneDO extends DurableObject {
     return recordSystemSwitchedOn(this.kernelSql, row);
   }
 
-  /** Put a row back as `recordSystemSwitchedOn` found it — the ON that followed it failed. */
+  /** Put a row back as the switch call's record write found it — the move that followed it failed. */
   restoreSystemSwitchRecord(
     key: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
     prior: SystemSwitchRecordPrior,
   ): void {
     restoreSystemSwitchRecord(this.kernelSql, key, prior);
+  }
+
+  /**
+   * #1823: which of these modules the tenant holds a live TENANT-level grant for — what the
+   * switch passes the scope as `tenantHeld`, so a module whose only authority there is a tenant
+   * tuple is still switchable. Read here, where the tenant tuples live.
+   */
+  tenantHeldSystemModules(tenantId: string, moduleIds: readonly string[], now: string): string[] {
+    return moduleIds.filter((m) => tenantHoldsSystemGrant(this.kernelSql, tenantId, m, now));
   }
 
   /** The fleet read. */

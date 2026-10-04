@@ -390,6 +390,7 @@ export { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERG
 export { LEGACY_SCOPE_ROWS_BACKFILL, assertDirectoryTablesBuilt, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, spineColumnAdditions, spineRowsInsert, type KernelColumnsOf } from './spine-restore.js';
 export {
   SYSTEM_SWITCH_OFF_PREDICATE,
+  SYSTEM_SWITCH_OFF_QUERY,
   SYSTEM_SWITCH_OFF_RELATION,
   subjectSwitchedOff,
   switchRecordedOff,
@@ -423,6 +424,7 @@ export {
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
   scopesSwitchedOffFor,
+  tenantHoldsSystemGrant,
   switchedOffModulesOf,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,

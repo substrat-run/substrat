@@ -12,6 +12,7 @@ import {
 } from '@substrat-run/contracts';
 import type { PermissionChecker } from './permission-checker.js';
 import { capabilityGrantOf, capabilityLive, type CapabilityRow } from './capability.js';
+import { isSwitchableSubjectKind } from './system-switch.js';
 
 /**
  * The built-in constrained relationship-tuple evaluator (design doc §4.2, plan D-23),
@@ -78,6 +79,15 @@ export interface ScopeTupleReader {
    * means every capability check DENIES, never that one is waved through.
    */
   capability?(id: string): MaybePromise<CapabilityRow | undefined>;
+  /**
+   * Is a kill switch holding `subject` (`system:<module>`, `vertical:<slug>`) off on this
+   * scope (#1666, #1706)? While it answers true the evaluator denies that subject here
+   * whatever grants it holds, scope- or tenant-level (#1823). Both adapters answer it today
+   * from the scope's own OFF marker, with `SYSTEM_SWITCH_OFF_QUERY` — the spelling the
+   * schedule gate and the grant refusal share. Required, so no reader can leave it out and
+   * fail open.
+   */
+  switchedOff(subject: string): MaybePromise<boolean>;
 }
 
 /**
@@ -136,6 +146,26 @@ const nodeObjectsOf = (node: Node): { obj: string; scoped: boolean }[] =>
         { obj: `tenant:${node.tenantId}`, scoped: false },
       ]
     : [{ obj: `tenant:${node.tenantId}`, scoped: false }];
+
+/**
+ * "Is this subject switched off on this scope?" — asked before any tuple is read, by `check`
+ * and `covers` alike, so a switched-off subject is denied on the scope whatever it holds
+ * (#1823). OFF tombstones the subject's SCOPE-level grants, but a TENANT-level grant lives in
+ * the directory (and, on the Durable-Object adapter, in every scope's projection of it), and
+ * OFF touches neither: without this, a tenant grant made before the switch was pulled kept the
+ * module's authority alive on a scope its operator had switched off. Asking the scope, rather
+ * than tombstoning the tenant tuple, is what confines the denial to the ONE scope (the algebra
+ * has no per-scope negative tuple), and what makes it survive a re-projection: no projection
+ * writes the switch's state.
+ *
+ * The answer is the reader's `switchedOff` — one seam, so where the switch's state is read
+ * from is the adapter's decision and the rule is the evaluator's. Fails CLOSED when a scope
+ * node has no reachable store: the switch cannot be read, so no grant can be vouched for.
+ */
+async function switchedOff(subject: CheckSubject, node: Node, scope: ScopeTupleReader | undefined): Promise<boolean> {
+  if (!isSwitchableSubjectKind(subject.kind) || !node.scopeId) return false;
+  return scope ? await scope.switchedOff(subjectRef(subject)) : true;
+}
 
 /**
  * Rule 3's walk, as ONE function: from `start`, look for a hit at each frontier object, then
@@ -299,6 +329,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     const now = reader.now();
     const deny: Decision = { allowed: false, checked: permission, node };
     const scope = reader.scopeFor(node);
+    if (await switchedOff(subject, node, scope)) return deny;
     const getRole = roleReaderFor(node.tenantId);
 
     // Rule 4 — membership: the subject set is the caller plus its orgs. Shared with
@@ -412,6 +443,9 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
 
       const now = reader.now();
       const scope = reader.scopeFor(node);
+      if (await switchedOff(subject, node, scope)) {
+        return { covered: false, missing: [...new Set(required)] as [PermissionKey, ...PermissionKey[]] };
+      }
       const subjects = await subjectsOf(subject, node, now);
       const getRole = roleReaderFor(node.tenantId);
 

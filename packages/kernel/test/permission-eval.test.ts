@@ -63,6 +63,9 @@ const readerFor = (world: World): PermissionTupleReader => {
         (r) => r.subject === subject && r.relation === relation && r.object === object,
       ),
     parents: (object) => scopeRows.filter((r) => r.subject === object && r.relation === 'parent'),
+    // `SYSTEM_SWITCH_OFF_PREDICATE`, over rows: a live `switch:off` tuple naming the subject.
+    switchedOff: (subject) =>
+      scopeRows.some((r) => r.subject === subject && r.relation === 'switch:off' && r.revoked_at === null),
   };
   return {
     now: () => world.now ?? '2026-01-01T00:00:00.000Z',
@@ -374,4 +377,76 @@ describe('a camelCase entity type (#1856)', () => {
       ]);
     },
   );
+});
+
+describe('a switched-off subject (#1823)', () => {
+  const MOD = '@test/sched';
+  const sched: CheckSubject = { kind: 'system', id: MOD } as CheckSubject;
+  const peer: CheckSubject = { kind: 'vertical', id: 'acme/board-room', scope: S } as CheckSubject;
+  const TICK = p('sched:tick');
+  const tenantGrant = (subject: string) => row(subject, 'granted:sched:tick', `tenant:${T}`);
+  const marker = (subject: string, revoked_at: string | null = null) =>
+    row(subject, 'switch:off', `scope:${S}`, { revoked_at });
+
+  it('a live OFF marker denies a TENANT-level grant on that scope, for check and covers alike', async () => {
+    const checker = createTupleEvaluator(
+      readerFor({ tenant: [tenantGrant(`system:${MOD}`)], scope: [marker(`system:${MOD}`)] }),
+    );
+    expect(await checker.check(sched, TICK, NODE)).toEqual({ allowed: false, checked: TICK, node: NODE });
+    expect(await checker.covers(sched, [TICK], NODE)).toEqual({ covered: false, missing: [TICK] });
+  });
+
+  it('twin: the same tenant grant allows once the marker is tombstoned (restored)', async () => {
+    const checker = createTupleEvaluator(
+      readerFor({ tenant: [tenantGrant(`system:${MOD}`)], scope: [marker(`system:${MOD}`, '2026-01-01T00:00:00.000Z')] }),
+    );
+    expect((await checker.check(sched, TICK, NODE)).allowed).toBe(true);
+    expect(await checker.covers(sched, [TICK], NODE)).toEqual({ covered: true, missing: [] });
+  });
+
+  it('denies a live SCOPE-level grant beside the marker too — the marker wins whatever is live', async () => {
+    const checker = createTupleEvaluator(
+      readerFor({ scope: [row(`system:${MOD}`, 'granted:sched:tick', `scope:${S}`), marker(`system:${MOD}`)] }),
+    );
+    expect((await checker.check(sched, TICK, NODE)).allowed).toBe(false);
+  });
+
+  it('a peer vertical is switched the same way (#1706)', async () => {
+    const ref = 'vertical:acme/board-room';
+    const off = createTupleEvaluator(readerFor({ tenant: [tenantGrant(ref)], scope: [marker(ref)] }));
+    expect((await off.check(peer, TICK, NODE)).allowed).toBe(false);
+    const on = createTupleEvaluator(readerFor({ tenant: [tenantGrant(ref)] }));
+    expect((await on.check(peer, TICK, NODE)).allowed).toBe(true);
+  });
+
+  it('the marker names one subject: another module, and a principal, are untouched', async () => {
+    const other: CheckSubject = { kind: 'system', id: '@test/jobs' } as CheckSubject;
+    const checker = createTupleEvaluator(
+      readerFor({
+        tenant: [tenantGrant('system:@test/jobs'), row(`principal:${ALICE}`, 'granted:sched:tick', `tenant:${T}`)],
+        scope: [marker(`system:${MOD}`), marker(`principal:${ALICE}`)],
+      }),
+    );
+    expect((await checker.check(other, TICK, NODE)).allowed).toBe(true);
+    // A principal is never a switched kind, so even a marker-shaped row naming one is ignored.
+    expect((await checker.check(alice, TICK, NODE)).allowed).toBe(true);
+  });
+
+  it('a TENANT node has no scope to switch: the tenant grant still allows there', async () => {
+    const checker = createTupleEvaluator(
+      readerFor({ tenant: [tenantGrant(`system:${MOD}`)], scope: [marker(`system:${MOD}`)] }),
+    );
+    expect((await checker.check(sched, TICK, TENANT_NODE)).allowed).toBe(true);
+  });
+
+  it('fails CLOSED for a switched kind on a scope whose store is unreachable; a principal does not', async () => {
+    const checker = createTupleEvaluator(
+      readerFor({
+        tenant: [tenantGrant(`system:${MOD}`), row(`principal:${ALICE}`, 'granted:sched:tick', `tenant:${T}`)],
+        noScope: true,
+      }),
+    );
+    expect((await checker.check(sched, TICK, NODE)).allowed).toBe(false);
+    expect((await checker.check(alice, TICK, NODE)).allowed).toBe(true);
+  });
 });

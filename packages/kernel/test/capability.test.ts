@@ -100,6 +100,7 @@ const readerFor = (opts: {
     grant: (subject, relation, object) =>
       rows.find((r) => r.subject === subject && r.relation === relation && r.object === object),
     parents: (object) => rows.filter((r) => r.subject === object && r.relation === 'parent'),
+    switchedOff: () => false,
     ...(opts.withCapabilityRead === false
       ? {}
       : { capability: (id: string) => (opts.cap && opts.cap.id === id ? opts.cap : undefined) }),

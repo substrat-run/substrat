@@ -6,6 +6,7 @@ import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-
 import {
   connectionId,
   errorCodeOf,
+  instant,
   toProblem,
   moduleId,
   orgId,
@@ -266,6 +267,19 @@ systemSwitchContractSuite('adapter-cloudflare', async () => {
   return { host, cleanup: async () => host.close() };
 });
 
+// #1823: the same suite with tenant tuples PROJECTED into each scope, as production runs.
+// A tenant-level system grant then lives in the scope's own storage too, and every
+// tenant-level write re-projects it — which must not bring a switched-off module back.
+systemSwitchContractSuite('adapter-cloudflare, scope-local permissions', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    scopeLocalPermissions: true,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
 /**
  * #1666 on the SHARED control plane's host: `systemSwitchDelegation` set, as
  * `apps/control-plane` sets it. A hosted scope's grants live in its vertical's deployment,
@@ -280,10 +294,10 @@ systemSwitchContractSuite('adapter-cloudflare', async () => {
 describe('#1666 — the switch is moved in the serving deployment, and audited here', () => {
   const staff = platformActorId.parse(ulid());
   const SCHED = moduleId.parse('@test/sched');
-  type Call = { tenantId: string; scopeId: string; moduleId: string; to: 'on' | 'off' };
+  type Call = { tenantId: string; scopeId: string; moduleId: string; to: 'on' | 'off'; tenantHeld?: boolean };
 
   const setup = async (
-    answer: (call: Call) => { held: boolean; changed: boolean; permissions: string[] },
+    answer: (call: Call) => { held: boolean; changed: boolean; permissions: string[]; deniesTenantGrants?: true },
     /** `null` provisions a scope bound to no vertical. */
     vertical: string | null = 'sched-vertical',
   ) => {
@@ -337,7 +351,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
       changed: true,
       permissions: ['sched:tick'],
     });
-    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off' }]);
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off', tenantHeld: false }]);
     // The placeholder DO still holds its live grant and no marker: nothing was written here.
     expect((await host.runDueSchedules(SCHED, t, s)).fired).toBe(2);
     const common = { action: 'revokeFromSystem', vertical: 'sched-vertical', operationId: result.operationId, moduleId: SCHED, schedules: 'off' };
@@ -347,13 +361,124 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     ]);
 
     await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'ok' });
-    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, moduleId: SCHED, to: 'on' });
+    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, moduleId: SCHED, to: 'on', tenantHeld: false });
     expect((await rows(audit)).map((r) => [r.action, r.phase])).toEqual([
       ['revokeFromSystem', 'intent'],
       ['revokeFromSystem', 'applied'],
       ['restoreToSystem', 'intent'],
       ['restoreToSystem', 'applied'],
     ]);
+  });
+
+  it('tells the deployment when the directory holds a live tenant-level grant for the module (#1823)', async () => {
+    const { host, t, s, calls } = await setup(() => ({ held: true, changed: true, permissions: [], deniesTenantGrants: true }));
+    const tenantGrant = (key: string, module = SCHED, expiresAt?: string) =>
+      host.admin.grantToSystem(staff, {
+        moduleId: module,
+        permission: permissionKey.parse(key),
+        node: { tenantId: t, scopeId: null },
+        grantedBy: staff,
+        ...(expiresAt ? { expiresAt: instant.parse(expiresAt) } : {}),
+      });
+    // An expired tenant grant, and a live one of ANOTHER module, hold nothing for this one.
+    await tenantGrant('sched:tick', SCHED, '2020-01-01T00:00:00.000Z');
+    await tenantGrant('jobs:write', moduleId.parse('@test/jobs'));
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' });
+    expect(calls.at(-1)).toMatchObject({ to: 'off', tenantHeld: false });
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'ok' });
+    // A live one does, and the deployment is told so on both moves.
+    await tenantGrant('sched:tick');
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' });
+    expect(calls.at(-1)).toMatchObject({ to: 'off', tenantHeld: true });
+    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'ok' });
+    expect(calls.at(-1)).toMatchObject({ to: 'on', tenantHeld: true });
+  });
+
+  /**
+   * #1823: `held: true` says the marker landed, not that anything reads it for a tenant-level
+   * grant. A deployment built before #1823 drops `tenantHeld`, switches the module's scope-level
+   * grants, answers `held: true` — and its evaluator still authorizes the tenant-level grant. So
+   * an OFF of a tenant-held module needs the far end's `deniesTenantGrants`, or it is refused.
+   */
+  describe('an OFF of a tenant-held module needs the deployment to attest the tenant-grant denial', () => {
+    /** `old`: a deployment built before #1823. `onFails`: its ON throws. */
+    const far = { old: true, onFails: false, changed: true };
+    const answer = (call: Call) => {
+      if (call.to === 'on' && far.onFails) throw new Error('deployment down');
+      return { held: true, changed: far.changed, permissions: ['sched:tick'], ...(far.old ? {} : { deniesTenantGrants: true as const }) };
+    };
+    const tenantHeld = async () => {
+      Object.assign(far, { old: true, onFails: false, changed: true });
+      const fx = await setup(answer);
+      await fx.host.admin.grantToSystem(staff, {
+        moduleId: SCHED,
+        permission: permissionKey.parse('sched:tick'),
+        node: { tenantId: fx.t, scopeId: null },
+        grantedBy: staff,
+      });
+      const node = { tenantId: fx.t, scopeId: fx.s };
+      const position = async () =>
+        (await fx.host.admin.listSystemSwitches(staff, { tenantId: fx.t })).filter((r) => r.scopeId === fx.s).map((r) => r.position);
+      return { ...fx, node, position };
+    };
+
+    it('an old deployment is refused, its move put back, and nothing recorded', async () => {
+      const { host, node, calls, audit, position } = await tenantHeld();
+      const e = await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' }).then(() => null, (x: unknown) => x);
+      expect(errorCodeOf(e)).toBe('precondition_failed');
+      expect(String((e as Error).message)).toMatch(/predates the kill switch's tenant-grant denial.*Redeploy the vertical.*Nothing was switched\./);
+      // The OFF landed there, so ON gives back exactly what it took.
+      expect(calls.map((c) => [c.to, c.tenantHeld])).toEqual([['off', true], ['on', true]]);
+      expect(await position()).toEqual([]);
+      expect((await rows(audit)).map((r) => r.phase)).toEqual(['intent', 'refused']);
+    });
+
+    it('an old deployment that changed nothing has nothing put back, and is refused the same', async () => {
+      const { host, node, calls, position } = await tenantHeld();
+      // A far end already off answers `changed: false`: no move of this call to undo.
+      far.changed = false;
+      await expect(host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).rejects.toThrow(
+        /Nothing was switched\./,
+      );
+      expect(calls.map((c) => c.to)).toEqual(['off']);
+      expect(await position()).toEqual([]);
+    });
+
+    it('a deployment that attests it is recorded OFF', async () => {
+      const { host, node, calls, position } = await tenantHeld();
+      far.old = false;
+      await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+      expect(calls.map((c) => c.to)).toEqual(['off']);
+      expect(await position()).toEqual(['off']);
+    });
+
+    it('a put-back ON that fails leaves the scope off, so the record is kept off', async () => {
+      const { host, node, calls, position } = await tenantHeld();
+      far.onFails = true;
+      await expect(host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).rejects.toThrow(
+        /predates the kill switch's tenant-grant denial/,
+      );
+      expect(calls.map((c) => c.to)).toEqual(['off', 'on']);
+      expect(await position()).toEqual(['off']);
+    });
+
+    it("a re-assert against an old deployment throws, so a carry's reconcile records no receipt", async () => {
+      const { host, node, position } = await tenantHeld();
+      far.old = false;
+      await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+      // The scope's version rolled back to a deployment built before #1823.
+      far.old = true;
+      await expect(host.admin.reassertSystemSwitches(staff, node)).rejects.toThrow(/predates the kill switch's tenant-grant denial/);
+      expect(await position()).toEqual(['off']);
+    });
+
+    it('a module that is not tenant-held needs no attestation, on an old deployment too', async () => {
+      Object.assign(far, { old: true, onFails: false, changed: true });
+      const { host, t, s, calls } = await setup(answer);
+      await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' });
+      expect(calls.map((c) => [c.to, c.tenantHeld])).toEqual([['off', false]]);
+      await host.admin.reassertSystemSwitches(staff, { tenantId: t, scopeId: s });
+    });
   });
 
   it('a far end that holds nothing is a 404 audited as refused, and a no-op is still audited', async () => {
@@ -470,7 +595,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     await expect(
       host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' }),
     ).rejects.toThrow(/no deployment serving scope/);
-    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off' }]);
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off', tenantHeld: false }]);
     expect((await rows(audit)).map((r) => r.phase)).toEqual(['intent', 'failed']);
   });
 
@@ -861,13 +986,14 @@ describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', (
 });
 
 /**
- * #1674 review #5 — a directory record write that fails AFTER the scope moved is retried
- * once, and a failure of both is never swallowed: it lands on the outcome row as
- * `recordError`, and the call does not answer plain success. The control plane's stub is
+ * #1674 review #5, and #1823 — the switch's directory record is written BEFORE the scope
+ * moves, both ways, so a failed record write fails the call with nothing moved; the record's
+ * UNDO (after a move that threw or held nothing) is retried once, and a failure of both is
+ * never swallowed: it lands on the outcome row as `recordError`. The control plane's stub is
  * wrapped so one named method fails a set number of times; every other call goes to the
  * real directory DO (through an arrow on the real stub — never `.bind` on a stub proxy).
  */
-describe('#1674 — a failed switch-record write is retried once, then answered, never swallowed', () => {
+describe('#1674 — a failed switch-record write is answered, never swallowed', () => {
   const staff = platformActorId.parse(ulid());
   const SCHED = moduleId.parse('@test/sched');
 
@@ -891,13 +1017,21 @@ describe('#1674 — a failed switch-record write is retried once, then answered,
         });
       },
     } as unknown as DurableObjectNamespace;
-    const deployment = { position: 'on' as 'on' | 'off', fail: false };
+    const deployment = {
+      position: 'on' as 'on' | 'off',
+      fail: false,
+      calls: 0,
+      /** #1823: run inside the move — the window between the record write and the scope moving. */
+      during: undefined as (() => Promise<void>) | undefined,
+    };
     const host = new CloudflareScopeHost({
       scope: env.SCOPE,
       controlPlane: flaky,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       systemSwitchDelegation: {
         switch: async (a) => {
+          deployment.calls++;
+          await deployment.during?.();
           if (deployment.fail) throw new Error('vertical unreachable during system-switch');
           const changed = deployment.position !== a.to;
           deployment.position = a.to;
@@ -921,24 +1055,45 @@ describe('#1674 — a failed switch-record write is retried once, then answered,
     return { host, node, deployment, outcomes, records };
   };
 
-  it('an OFF whose record write fails once is retried, recorded, and answered as success', async () => {
-    const { host, node, outcomes, records } = await setup('recordSystemSwitchedOff', 1);
-    expect(await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).toMatchObject({ schedules: 'off' });
+  it('an OFF whose record write fails moves nothing: the call fails, audited, and a repeat records and moves (#1823)', async () => {
+    const { host, node, deployment, outcomes, records } = await setup('recordSystemSwitchedOff', 1);
+    const e = await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' }).then(() => null, (x: unknown) => x);
+    expect(String(e)).toMatch(/control plane unreachable/);
+    expect(deployment.calls).toBe(0);
+    expect(deployment.position).toBe('on');
+    expect(await records()).toEqual([]);
+    expect((await outcomes()).map((o) => o.phase)).toEqual(['failed']);
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    expect(deployment.position).toBe('off');
     expect(await records()).toEqual([expect.objectContaining({ position: 'off' })]);
-    expect((await outcomes()).map((o) => [o.phase, o.recordError])).toEqual([['applied', undefined]]);
   });
 
-  it('an OFF whose record write fails twice: the switch moved, the outcome row says so AND names the record failure, and the call throws', async () => {
-    const { host, node, deployment, outcomes, records } = await setup('recordSystemSwitchedOff', 2);
-    const e = await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' }).then(() => null, (x: unknown) => x);
-    expect(errorCodeOf(e)).toBe('unavailable');
-    expect(String(e)).toMatch(/switched off .* could not be written .* repeat the call/);
-    expect(deployment.position).toBe('off');
-    expect(await records()).toEqual([]);
-    expect((await outcomes()).map((o) => [o.phase, o.recordError])).toEqual([['applied', 'control plane unreachable']]);
-    // Repeating the call — the remedy the error names — records it.
+  it('the record is written before the scope moves: a tenant grant issued in between is refused (#1823)', async () => {
+    const { host, node, deployment, records } = await setup('none', 0);
+    let during: unknown = 'not reached';
+    deployment.during = async () => {
+      // Inside the move: the scope has not switched yet, and the record already says off.
+      expect(await records()).toEqual([expect.objectContaining({ position: 'off' })]);
+      during = await host.admin
+        .grantToSystem(staff, {
+          moduleId: SCHED,
+          permission: permissionKey.parse('sched:tick'),
+          node: { tenantId: node.tenantId, scopeId: null },
+          grantedBy: staff,
+        })
+        .then(() => null, (x: unknown) => x);
+    };
     await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
-    expect(await records()).toEqual([expect.objectContaining({ position: 'off' })]);
+    expect(errorCodeOf(during)).toBe('conflict');
+    expect(String(during)).toContain(node.scopeId);
+  });
+
+  it('an OFF whose move throws takes its record back, so nothing records a switch that did not happen (#1823)', async () => {
+    const { host, node, deployment, outcomes, records } = await setup('none', 0);
+    deployment.fail = true;
+    await expect(host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).rejects.toThrow(/unreachable/);
+    expect(await records()).toEqual([]);
+    expect((await outcomes()).map((o) => [o.phase, o.recordError])).toEqual([['failed', undefined]]);
   });
 
   it("a failed ON whose record undo fails twice names it on the failed row, rather than dropping it", async () => {
@@ -1945,7 +2100,7 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
   afterAll(async () => host.close());
 
   /** The reconcile's kernel half, as `/internal/reconcile` calls it. */
-  const reconcile = (s: ScopeId, extra: { switchedOff?: ModuleId[] } = {}, on = host) =>
+  const reconcile = (s: ScopeId, extra: { switchedOff?: ModuleId[]; tenantHeld?: ModuleId[] } = {}, on = host) =>
     on.provisionScopeLocal({ tenantId: t, scopeId: s, owner, roles, ownerRoleKey: 'office-admin', ...extra });
   const newScope = async (): Promise<ScopeId> => {
     const s = scopeId.parse(ulid());
@@ -1956,7 +2111,40 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
   /** The scope's storage, gone: an empty restore re-asserts the bare spine (#321). */
   const wipe = (s: ScopeId) => host.restoreScopeLocal(s, []);
   const pass = (s: ScopeId) => host.runDueSchedules(SCHED, t, s);
-  const tookBack = { moduleId: SCHED, held: true, changed: true, permissions: ['sched:tick'] };
+  const tookBack = { moduleId: SCHED, held: true, changed: true, permissions: ['sched:tick'], deniesTenantGrants: true };
+
+  // #1823: a module whose only authority on the scope is a TENANT-level grant has nothing here
+  // for the in-unit OFF to find. The platform names it in `tenantHeld`, and the unit holds it.
+  // Read IMMEDIATELY after the call, before any re-assert: that is the window the carry closes.
+  const TENANT_ONLY = moduleId.parse('@test/tenant-only');
+  const tenantOnlyOff = { moduleId: TENANT_ONLY, held: true, changed: true, permissions: [], deniesTenantGrants: true };
+  const offIn = async (s: ScopeId) =>
+    (await host.systemGrantsStatusLocal(s)).filter((e) => e.moduleId === TENANT_ONLY).map((e) => e.schedules);
+
+  it('a reconcile carrying tenantHeld switches a tenant-only module off in its own unit (#1823)', async () => {
+    const s = await newScope();
+    expect(await reconcile(s, { switchedOff: [TENANT_ONLY], tenantHeld: [TENANT_ONLY] })).toEqual({
+      switchedOff: [tenantOnlyOff],
+    });
+    expect(await offIn(s)).toEqual(['off']);
+  });
+
+  it('twin: the same carry without tenantHeld holds nothing for that module, and writes nothing (#1823)', async () => {
+    const s = await newScope();
+    expect(await reconcile(s, { switchedOff: [TENANT_ONLY] })).toEqual({
+      switchedOff: [{ moduleId: TENANT_ONLY, held: false, changed: false, permissions: [], deniesTenantGrants: true }],
+    });
+    expect(await offIn(s)).toEqual([]);
+  });
+
+  it('a restore carrying tenantHeld lands the tenant-only module off in the replay (#1823)', async () => {
+    const s = await newScope();
+    const before = await host.exportScopeLocal(s);
+    expect(await host.restoreScopeLocal(s, before, { switchedOff: [TENANT_ONLY], tenantHeld: [TENANT_ONLY] })).toMatchObject({
+      switchedOff: [tenantOnlyOff],
+    });
+    expect(await offIn(s)).toEqual(['off']);
+  });
 
   it('a wiped scope reconciled WITH its off list runs nothing on the very next pass, and ON gives back what the unit took', async () => {
     const s = await newScope();
@@ -1973,6 +2161,7 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
       held: true,
       changed: true,
       permissions: ['sched:tick'],
+      deniesTenantGrants: true,
     });
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
@@ -2002,7 +2191,7 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
     await off(s);
     // Not wiped: the marker survived, so the seat seated nothing and the unit moves nothing.
     expect(await reconcile(s, { switchedOff: [SCHED, SCHED] })).toEqual({
-      switchedOff: [{ moduleId: SCHED, held: true, changed: false, permissions: [] }],
+      switchedOff: [{ moduleId: SCHED, held: true, changed: false, permissions: [], deniesTenantGrants: true }],
     });
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
   });
@@ -2013,8 +2202,8 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
     // A version without the module: its seat holds nothing for it, so OFF writes nothing.
     expect(await reconcile(s, { switchedOff: [SCHED, NOT_HELD] }, older)).toEqual({
       switchedOff: [
-        { moduleId: SCHED, held: false, changed: false, permissions: [] },
-        { moduleId: NOT_HELD, held: false, changed: false, permissions: [] },
+        { moduleId: SCHED, held: false, changed: false, permissions: [], deniesTenantGrants: true },
+        { moduleId: NOT_HELD, held: false, changed: false, permissions: [], deniesTenantGrants: true },
       ],
     });
     expect(await host.systemGrantsStatusLocal(s)).toEqual([]);
@@ -2656,7 +2845,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   it("the re-assert clears the hold: OFF is back in the scope's own storage, and still nothing fires", async () => {
     const s = await rewoundPastTheSwitch();
     // `/internal/system-switch`'s far end, which the platform's re-assert lands on.
-    expect(await off(s)).toEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(await off(s)).toEqual({ held: true, changed: true, permissions: ['sched:tick'], deniesTenantGrants: true });
     expect(await heldOn(s)).toEqual([]);
     expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
@@ -2771,7 +2960,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await armRewind(env.SCOPE, s, { holdAbort: true });
     await host.rewindScopeLocal(s, 'bm', { force: true });
     // The armed instance still serves: this OFF is written where the restart discards it.
-    expect(await off(s)).toStrictEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(await off(s)).toStrictEqual({ held: true, changed: true, permissions: ['sched:tick'], deniesTenantGrants: true });
     expect(await claimsOn(s)).toMatchObject([{ state: 'armed', doomed: expect.any(String) }]);
     await restartNow(env.SCOPE, s);
     await landRewind(env.SCOPE, s, atBookmark);
@@ -2975,14 +3164,14 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     // The wire answer names no instance.
     expect(await host.rewindScopeLocal(s, 'bm', { force: true })).toStrictEqual({ rewindingTo: 'bm' });
     // The armed instance is still serving: its write is discarded at the restart.
-    expect(await off(s)).toStrictEqual({ held: true, changed: false, permissions: [] });
+    expect(await off(s)).toStrictEqual({ held: true, changed: false, permissions: [], deniesTenantGrants: true });
     expect(await heldOn(s)).toEqual([SCHED]);
     expect((await claimsOn(s))[0]).toMatchObject({ state: 'armed', doomed: expect.any(String) });
     // It is evicted before its own abort: the next instance is a new id, on restored storage.
     await restartNow(env.SCOPE, s);
     await landRewind(env.SCOPE, s, atBookmark);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
-    expect(await off(s)).toStrictEqual({ held: true, changed: true, permissions: ['sched:tick'] });
+    expect(await off(s)).toStrictEqual({ held: true, changed: true, permissions: ['sched:tick'], deniesTenantGrants: true });
     expect(await heldOn(s)).toEqual([]);
   });
 
@@ -3390,6 +3579,9 @@ function countingScopes(ns: DurableObjectNamespace) {
     afterMove: null as (() => Promise<void>) | null,
     /** Delay the NEXT hold read by this long, once: a slow read still in flight. */
     slowNextReadMs: 0,
+    /** #1823: make the switch's claim read throw. `switchInScope` reads it, moves the scope, and
+     *  only then throws, so this is a failure AFTER the scope's switch committed. */
+    failClaimReads: false,
     /** #1834: answer every system-door gate with an instance that is never the serving one. */
     movingInstance: false,
     /** #1834: how many system-door gates were read while `movingInstance` was set. */
@@ -3450,6 +3642,7 @@ function countingScopes(ns: DurableObjectNamespace) {
                   return real.switchHoldsAll!();
                 }
               : async (...args: unknown[]) => {
+                  if (prop === 'switchHoldClaims' && counts.failClaimReads) throw new Error('hold claims down');
                   if (prop === 'switchHoldYoungestMs') {
                     if (counts.beforeAgeRead) await counts.beforeAgeRead();
                     counts.ageReads += 1;
@@ -3468,6 +3661,115 @@ function countingScopes(ns: DurableObjectNamespace) {
   } as unknown as DurableObjectNamespace;
   return Object.assign(counts, { ns: counting });
 }
+
+/**
+ * #1823: an OFF whose move throws AFTER the scope's switch committed keeps the directory's
+ * record. The record is written before the move, and a throw does not say the scope did not
+ * move, so it is undone only when the scope reads back not off. Otherwise a first OFF could
+ * leave the scope off with no record, and a wipe or restore would have nothing to re-assert.
+ */
+describe('#1823 — an OFF that throws after the scope moved keeps its record', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+
+  it('a hold read that fails after the move leaves the scope off AND recorded off; a tenant grant is still refused', async () => {
+    const counting = countingScopes(env.SCOPE);
+    const host = new CloudflareScopeHost({
+      scope: counting.ns,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `kept-${t.slice(-10).toLowerCase()}`, name: 'Kept' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    await host.admin.activateScope(staff, t, s);
+    const node = { tenantId: t, scopeId: s };
+
+    counting.failClaimReads = true;
+    await expect(host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'incident' })).rejects.toThrow(
+      /hold claims down/,
+    );
+    counting.failClaimReads = false;
+
+    // The scope did switch, and the record says so.
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+    const failed = (await host.admin.auditLog(staff, { scopeId: s, action: ['revokeFromSystem'] }))
+      .map((e) => e.after as { phase: string; recordKept?: boolean })
+      .filter((a) => a.phase === 'failed');
+    expect(failed).toEqual([expect.objectContaining({ phase: 'failed', recordKept: true })]);
+    // So #1743's refusal still has the record to read.
+    const e = await host.admin
+      .grantToSystem(staff, { moduleId: SCHED, permission: permissionKey.parse('sched:tick'), node: { tenantId: t, scopeId: null }, grantedBy: staff })
+      .then(() => null, (x: unknown) => x);
+    expect(errorCodeOf(e)).toBe('conflict');
+    await host.close();
+  });
+
+  /** A scope switched OFF cleanly, through a host whose scope calls the test can fail. */
+  const offScope = async () => {
+    const counting = countingScopes(env.SCOPE);
+    const host = new CloudflareScopeHost({
+      scope: counting.ns,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `on-${t.slice(-10).toLowerCase()}`, name: 'On' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    await host.admin.activateScope(staff, t, s);
+    const node = { tenantId: t, scopeId: s };
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'incident' });
+    const failedOn = async () =>
+      (await host.admin.auditLog(staff, { scopeId: s, action: ['restoreToSystem'] }))
+        .map((e) => e.after as { phase: string; recordKept?: boolean })
+        .filter((a) => a.phase === 'failed');
+    return { counting, host, node, failedOn };
+  };
+
+  it('an ON that throws after the scope moved keeps its record ON, so no re-assert undoes it', async () => {
+    const { counting, host, node, failedOn } = await offScope();
+    counting.failClaimReads = true;
+    await expect(host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'all clear' })).rejects.toThrow(
+      /hold claims down/,
+    );
+    counting.failClaimReads = false;
+
+    // The scope switched on, and the record says so — not flipped back to `off` beside it.
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'on']]);
+    expect(await failedOn()).toEqual([expect.objectContaining({ phase: 'failed', recordKept: true })]);
+    // And the re-assert a wipe or restore runs reads `on`, so it leaves the module on.
+    await host.admin.reassertSystemSwitches(staff, node);
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => e.schedules)).toEqual(['on']);
+    await host.close();
+  });
+
+  it('an ON that throws and cannot be read back is undone to OFF — the side a re-assert completes', async () => {
+    const { counting, host, node, failedOn } = await offScope();
+    counting.failClaimReads = true;
+    counting.aroundStatusRead = async (_n, phase) => {
+      if (phase === 'before') throw new Error('status down');
+    };
+    await expect(host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'all clear' })).rejects.toThrow(
+      /hold claims down/,
+    );
+    counting.failClaimReads = false;
+    counting.aroundStatusRead = null;
+
+    // The scope did move on, but nothing could say so: the record went back to `off`, unkept…
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'off']]);
+    expect(await failedOn()).toEqual([expect.not.objectContaining({ recordKept: true })]);
+    // …and the re-assert completes it toward off rather than leaving a module running unrecorded.
+    await host.admin.reassertSystemSwitches(staff, node);
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+    await host.close();
+  });
+});
 
 /**
  * #355 regression: `provisionScopeLocal` must apply the bundled modules' migrations

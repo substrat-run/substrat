@@ -448,6 +448,7 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
       held: true,
       changed: true,
       permissions: ['absence:approve'],
+      deniesTenantGrants: true,
     });
 
     // The runbook's confirm step, on DO SQLite: the scope's read-only SQL console, as the
@@ -482,6 +483,7 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
       held: false,
       changed: false,
       permissions: [],
+      deniesTenantGrants: true,
     });
 
     // The twin: restored, the very next pass fires — the cadence clock was never touched.
@@ -489,6 +491,7 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
       held: true,
       changed: true,
       permissions: ['absence:approve'],
+      deniesTenantGrants: true,
     });
     report = await sweep();
     expect(report.errors).toEqual([]);

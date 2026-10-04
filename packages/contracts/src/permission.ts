@@ -234,6 +234,13 @@ export const systemSwitchOutcome = z.object({
   changed: z.boolean(),
   /** The grants this call tombstoned (off) or restored (on), by permission key. */
   permissions: z.array(permissionKey),
+  /**
+   * #1823: the answering code's evaluator denies the module on a switched-off scope whatever
+   * grants it holds, tenant-level ones included. A deployment built before #1823 omits it, and
+   * the platform refuses an OFF of a module it found tenant-held without it: `held: true`
+   * alone says the marker landed, not that anything reads it for a tenant-level grant.
+   */
+  deniesTenantGrants: z.literal(true).optional(),
 });
 export type SystemSwitchOutcome = z.infer<typeof systemSwitchOutcome>;
 

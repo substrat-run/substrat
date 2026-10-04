@@ -3,6 +3,7 @@ import type { Node, RoleDefinition } from '@substrat-run/contracts';
 import {
   capabilityByIdQuery,
   createTupleEvaluator,
+  SYSTEM_SWITCH_OFF_QUERY,
   type CapabilityRow,
   type Clock,
   type PermissionChecker,
@@ -56,6 +57,7 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
   let grantStmt: Database.Statement | undefined;
   let parentsStmt: Database.Statement | undefined;
   let capabilityStmt: Database.Statement | undefined;
+  let switchedOffStmt: Database.Statement | undefined;
   return {
     tuples: (subject, relationPrefix) =>
       (tuplesStmt ??= db.prepare(
@@ -78,6 +80,10 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
       (capabilityStmt ??= db.prepare(capabilityByIdQuery(id).sql)).get(
         ...capabilityByIdQuery(id).params,
       ) as CapabilityRow | undefined,
+    // #1823: the kill switch's OFF marker, in this scope's own spine — the gate's predicate.
+    switchedOff: (subject) =>
+      Number(((switchedOffStmt ??= db.prepare(SYSTEM_SWITCH_OFF_QUERY)).get(subject) as { off: number } | undefined)?.off) ===
+      1,
   };
 };
 
