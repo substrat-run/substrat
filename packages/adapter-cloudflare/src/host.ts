@@ -8867,6 +8867,9 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     upload: AttachmentUploadInput,
   ): Promise<AttachmentRecord> {
+    // The lifecycle gate every attachments door takes (#1713), ahead of the bucket: a held
+    // scope's provider bytes wait for the delivery's retry rather than land (#1995).
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).upload(upload);
@@ -8886,6 +8889,8 @@ export class CloudflareScopeHost implements ScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<OpenedAttachment | null> {
+    // Same gate as the upload leg: a held scope's bytes are not read out of its bucket.
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface(
