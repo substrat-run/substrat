@@ -18,6 +18,8 @@ import { DASHBOARD_CP_ACTOR, registerDashboardMembership } from '../src/membersh
  */
 const shared = vi.hoisted(() => ({
   host: null as unknown,
+  /** The executor ids each per-request host mounted — recorded, not registered (see below). */
+  mounted: [] as string[],
   sessions: new Map<string, { id: string; email: string; name: string; emailVerified: boolean }>(),
 }));
 
@@ -32,7 +34,10 @@ vi.mock('@substrat-run/adapter-cloudflare', () => ({
       const target = shared.host as object;
       return new Proxy(target, {
         get(t, key) {
-          if (key === 'registerModule' || key === 'registerExecutor') return () => undefined;
+          if (key === 'registerModule') return () => undefined;
+          // Recorded rather than registered: the SQLite host underneath is shared across
+          // requests and mounts the executor once, in `beforeEach`.
+          if (key === 'registerExecutor') return (id: string) => void shared.mounted.push(id);
           const v = Reflect.get(t, key) as unknown;
           return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
         },
@@ -92,6 +97,7 @@ beforeEach(async () => {
   host = new SqliteScopeHost({ dir });
   shared.host = host;
   shared.sessions.clear();
+  shared.mounted.length = 0;
   failNextAdds = 0;
   for (const m of MODULES) host.registerModule(m);
   // The worker mounts it on every per-request host; the proxy above no-ops that, so once here.
@@ -247,6 +253,14 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     expect((await remove(t, 'rae@team.test')).status).toBe(204);
     expect((await host.admin.listMembers(staff, t.tenant, t.org)).map((m) => m.principal)).not.toContain(rae);
     expect(await canRead(t, rae)).toBe(false);
+  });
+
+  it('the accept route mounts the membership executor, and a route that never emits its event does not', async () => {
+    await team();
+    const { token } = await invite('sub-owner', 'rae@team.test', 'member');
+    expect(shared.mounted).toEqual([]);
+    expect((await accept('sub-rae', 'rae@team.test', token)).status).toBe(200);
+    expect(shared.mounted).toEqual(['membership']);
   });
 
   it('202: accepted with access pending when the inline attempt fails — and the backstop lands it', async () => {
