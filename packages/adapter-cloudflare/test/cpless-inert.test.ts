@@ -186,14 +186,14 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
    */
   const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'] = 'active'): ScopeLifecycle => {
     revision += 1;
-    return { scope, tenant, at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'], revision: { scope: revision, tenant: revision } };
+    return { scope, tenant, at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'], revision: { epoch: 0, scope: revision, tenant: revision } };
   };
   /** A delivery at exact directory revisions (scope `sr`, tenant `tr`). */
   const at = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'], sr: number, tr: number): ScopeLifecycle => ({
     scope,
     tenant,
     at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'],
-    revision: { scope: sr, tenant: tr },
+    revision: { epoch: 0, scope: sr, tenant: tr },
   });
 
   const hostFor = () => {

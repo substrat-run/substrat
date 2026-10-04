@@ -1628,7 +1628,12 @@ export class ControlPlaneDO extends DurableObject {
       )
       .toArray() as unknown as { name: string; sql: string }[];
     return defs.map(({ name, sql }) => {
-      const cursor = this.sql.exec(`SELECT * FROM "${name}"`);
+      // #1713: the directory's epoch describes THIS store's history, not its data, so it never
+      // leaves in a dump. A restore mints its own from the store it lands in (`importDump`).
+      const cursor =
+        name === 'lifecycle_revisions'
+          ? this.sql.exec(`SELECT * FROM "${name}" WHERE subject <> 'directory:epoch'`)
+          : this.sql.exec(`SELECT * FROM "${name}"`);
       const columns = cursor.columnNames;
       const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
       return { name, ddl: sql, columns, rows };
@@ -1687,8 +1692,9 @@ export class ControlPlaneDO extends DurableObject {
         },
       });
       // #1713: a restore is a new history. Its lifecycle counters went back with it, so it
-      // mints an epoch newer than the one it replaced and the one the dump carried — and than
-      // any minted on a directory this store no longer remembers, since an epoch is a time.
+      // mints an epoch newer than the one this store was in — and than any minted on a store it
+      // no longer remembers (a fresh directory restored from a copy), since an epoch is a time.
+      // A dump never carries one (`exportDump`); a hand-made dump that does is outranked too.
       // Every deployment then takes this history's deliveries, whatever its counters say.
       this.sql.exec(
         "INSERT OR REPLACE INTO lifecycle_revisions (subject, revision) VALUES ('directory:epoch', ?)",
@@ -4203,8 +4209,9 @@ export class ControlPlaneDO extends DurableObject {
     // revision. No receipt is drift only after a restore (epoch > 0), when what the deployment
     // holds is unknown; before any, a live scope with no receipt runs as its deployment does.
     const acked =
-      "s.status || '/' || t.status || '@' || ? || '.' || COALESCE(rs.revision, 0) || '.' || COALESCE(rt.revision, 0)";
-    const drifted = `(r.delivered IS NULL AND ? > 0) OR r.delivered <> ${acked}`;
+      "s.status || '/' || t.status || '@' || CAST(? AS INTEGER) || '.' || COALESCE(rs.revision, 0) || '.' || COALESCE(rt.revision, 0)";
+    // CAST: a bound JS number reaches DO SQLite as a REAL, and would concatenate as '0.0'.
+    const drifted = `(r.delivered IS NULL AND CAST(? AS INTEGER) > 0) OR r.delivered <> ${acked}`;
     const driftParams = [epoch, epoch];
     if (filter.drift) {
       where.push(`(${drifted} OR s.status NOT IN ('active', 'archived') OR t.status <> 'active')`);

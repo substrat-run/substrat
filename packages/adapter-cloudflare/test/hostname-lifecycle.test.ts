@@ -86,9 +86,19 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       return deployment().setLifecycleLocal(s, lifecycle);
     },
   };
-  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, lifecycleDelegation });
+  // A directory of this suite's own (#1899's pattern): the host addresses 'control-plane', and
+  // this resolves it to a fresh directory object, so the restore cases below replace nothing
+  // another suite reads, and the epoch starts at 0 whatever ran before.
+  const directoryName = `lifecycle-delivery-${ulid()}`;
+  const directory = {
+    idFromName: () => env.CONTROL_PLANE.idFromName(directoryName),
+    get: (id: DurableObjectId) => env.CONTROL_PLANE.get(id),
+  } as unknown as DurableObjectNamespace;
+  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: directory, lifecycleDelegation });
+  beforeAll(() => warmControlPlane(directory));
   const USE = permissionKey.parse('perm:use');
 
+  const activations = new Map<ScopeId, string[]>();
   const deliveredTo = (s: ScopeId) => deliveries.filter((d) => d.scopeId === s).map((d) => `${d.scope}/${d.tenant}`);
   const tenantOf = async () => {
     const t = tenantId.parse(ulid());
@@ -106,9 +116,10 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
       ownerRoleKey: 'office-admin',
     });
-    // Activation is a transition too, but a live scope its deployment already runs live has
-    // nothing to receive, so nothing is posted (a deployment without the route logs nothing).
-    expect(deliveredTo(s)).toEqual([]);
+    // Activation is a transition too. Counted from here, whatever it delivered: before any
+    // restore it delivers nothing (the first test pins that), after one it delivers once.
+    activations.set(s, deliveredTo(s));
+    deliveries.splice(0, deliveries.length, ...deliveries.filter((d) => d.scopeId !== s));
     return s;
   };
   const servedHere = (t: TenantId, s: ScopeId) => deployment().getScope(owner, t, s);
@@ -116,6 +127,9 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
   it('a suspend reaches the deployment, which then refuses in the directory\'s words; unsuspend lifts it', async () => {
     const t = await tenantOf();
     const s = await hosted(t);
+    // A directory never restored: the activation of a live scope posts nothing, so a deployment
+    // built before the route logs nothing for it.
+    expect(activations.get(s)).toEqual([]);
     await platform().admin.suspendScope(actor, t, s);
     expect(deliveredTo(s)).toEqual(['suspended/active']);
     await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
@@ -192,10 +206,10 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
     const revs = deliveries.filter((d) => d.scopeId === s).map((d) => d.lifecycle.revision);
     // activate made the scope revision 1; each change after it moves exactly its own counter
     expect(revs).toEqual([
-      { scope: 2, tenant: 0 },
-      { scope: 2, tenant: 1 },
-      { scope: 3, tenant: 1 },
-      { scope: 3, tenant: 2 },
+      { epoch: 0, scope: 2, tenant: 0 },
+      { epoch: 0, scope: 2, tenant: 1 },
+      { epoch: 0, scope: 3, tenant: 1 },
+      { epoch: 0, scope: 3, tenant: 2 },
     ]);
   });
 
@@ -228,6 +242,75 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
     await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
     await platform().admin.unsuspendScope(actor, t, s);
     await expect(servedHere(t, s)).resolves.toBeDefined();
+  });
+
+  /**
+   * A directory restore (`restoreDirectory` → `importDump`) rolls the directory's lifecycle
+   * counters back with everything else. Each restore mints a newer epoch, so the restored
+   * directory's deliveries outrank whatever the replaced history delivered, and the heal pass
+   * re-converges every hosted scope on what the directory now says — in BOTH directions.
+   */
+  describe('after a directory restore, the heal converges on the restored directory', () => {
+    const restoreTo = async (dump: Awaited<ReturnType<ReturnType<typeof platform>['admin']['exportDirectory']>>) => {
+      await platform().admin.restoreDirectory(actor, dump);
+      await platform().healLifecycles(actor, { limit: 1000 });
+    };
+
+    it('a scope live in its deployment, restored to a directory that says suspended, is held', async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      await platform().admin.suspendScope(actor, t, s);
+      const suspendedCopy = await platform().admin.exportDirectory(actor);
+      await platform().admin.unsuspendScope(actor, t, s); // the deployment now holds active, at a HIGHER counter
+      await expect(servedHere(t, s)).resolves.toBeDefined();
+      await restoreTo(suspendedCopy);
+      await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+      expect(deliveredTo(s).at(-1)).toBe('suspended/active');
+    });
+
+    it('a scope held in its deployment, restored to a directory that says active, runs again', async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      const liveCopy = await platform().admin.exportDirectory(actor);
+      await platform().admin.suspendScope(actor, t, s);
+      await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+      await restoreTo(liveCopy);
+      await expect(servedHere(t, s)).resolves.toBeDefined();
+    });
+
+    it('a restore that leaves the statuses as they were still re-converges, so later transitions land', async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      const copy = await platform().admin.exportDirectory(actor); // active, low counters
+      await platform().admin.suspendScope(actor, t, s);
+      await platform().admin.unsuspendScope(actor, t, s); // active again, higher counters
+      await restoreTo(copy);
+      const healed = deliveries.filter((d) => d.scopeId === s).at(-1)!.lifecycle;
+      expect(healed.scope).toBe('active');
+      expect(healed.revision.epoch).toBeGreaterThan(0);
+      // The suspend after the restore carries a LOWER scope counter than the deployment saw
+      // before it; the newer epoch is what lets it land.
+      await platform().admin.suspendScope(actor, t, s);
+      await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+    });
+
+    it('each restore mints an epoch newer than the last, and a second heal has nothing to redo', async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      await platform().admin.suspendScope(actor, t, s);
+      const copy = await platform().admin.exportDirectory(actor);
+      await restoreTo(copy);
+      const first = deliveries.filter((d) => d.scopeId === s).at(-1)!.lifecycle.revision.epoch;
+      await restoreTo(copy);
+      const second = deliveries.filter((d) => d.scopeId === s).at(-1)!.lifecycle.revision.epoch;
+      expect(second).toBeGreaterThan(first);
+      const settled = deliveredTo(s).length;
+      await platform().healLifecycles(actor, { limit: 1000 });
+      // held scopes are re-delivered every pass by design; the receipt now matches, and the
+      // delivery is refused as equal rather than moving anything
+      expect(deliveredTo(s).length).toBe(settled + 1);
+      await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+    });
   });
 
   it('the next case along: a failed UNsuspend is healed too, so a scope never stays held after the directory lifts it', async () => {

@@ -188,7 +188,7 @@ describe('connector write-back (#574)', () => {
         scope,
         tenant: 'active',
         at: '2026-10-01T00:00:00.000Z' as never,
-        revision: { scope: rev, tenant: 0 },
+        revision: { epoch: 0, scope: rev, tenant: 0 },
       });
     let landed: string;
 

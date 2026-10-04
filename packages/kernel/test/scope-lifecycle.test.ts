@@ -30,11 +30,11 @@ describe('scope lifecycle (#1713)', () => {
     };
   };
   /** A delivery at directory revisions (scope `s`, tenant `t`). `at` is fixed: it is never compared. */
-  const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'], s: number, t = 0): ScopeLifecycle => ({
+  const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'], s: number, t = 0, epoch = 0): ScopeLifecycle => ({
     scope,
     tenant,
     at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'],
-    revision: { scope: s, tenant: t },
+    revision: { epoch, scope: s, tenant: t },
   });
 
   describe('lifecycleRefusal — the directory\'s gate, in its words', () => {
@@ -108,6 +108,17 @@ describe('scope lifecycle (#1713)', () => {
       // the scope lifted next (s2): newer on scope, equal on tenant — kept
       expect(writeLifecycle(sql, life('active', 'active', 2, 2))).toMatchObject({ applied: true, changed: true });
     });
+    it('a newer epoch (a restored directory) wins whatever its counters; an older one loses whatever its counters', () => {
+      const sql = fresh();
+      writeLifecycle(sql, life('active', 'active', 9, 9, 0)); // the replaced history, far along
+      // the restored directory says suspended at LOWER counters, in a newer epoch: kept
+      expect(writeLifecycle(sql, life('suspended', 'active', 1, 0, 5))).toMatchObject({ applied: true, changed: true });
+      // the replaced history's next delivery straggles in: older epoch, refused despite its counters
+      expect(writeLifecycle(sql, life('active', 'active', 10, 10, 0)).applied).toBe(false);
+      // within the new epoch the counters order as before
+      expect(writeLifecycle(sql, life('active', 'active', 1, 0, 5)).applied).toBe(false);
+      expect(writeLifecycle(sql, life('active', 'active', 2, 0, 5)).applied).toBe(true);
+    });
     it('a row stored before revisions is older than any revisioned delivery, and still holds by its status', () => {
       const sql = fresh();
       const legacy = { scope: 'suspended', tenant: 'active', at: '2026-09-30T00:00:00.000Z' };
@@ -163,8 +174,13 @@ describe('scope lifecycle (#1713)', () => {
     });
   });
 
-  it('lifecycleReceipt is the statuses, never the read time', () => {
-    expect(lifecycleReceipt(life('suspended', 'active', 1))).toBe('suspended/active');
-    expect(lifecycleReceipt(life('suspended', 'active', 1))).toBe(lifecycleReceipt(life('suspended', 'active', 9)));
+  it('lifecycleReceipt is the statuses and the full revision, never the read time', () => {
+    expect(lifecycleReceipt(life('suspended', 'active', 1, 2, 3))).toBe('suspended/active@3.1.2');
+    // a restore that left the statuses alone still reads as a different receipt
+    expect(lifecycleReceipt(life('active', 'active', 1, 0, 0))).not.toBe(lifecycleReceipt(life('active', 'active', 1, 0, 7)));
+    const readLater: ScopeLifecycle = { ...life('active', 'active', 1), at: '2026-12-31T00:00:00.000Z' as ScopeLifecycle['at'] };
+    expect(lifecycleReceipt(readLater)).toBe(lifecycleReceipt(life('active', 'active', 1)));
+    // a row stored before revisions carries none
+    expect(lifecycleReceipt({ scope: 'suspended', tenant: 'active' })).toBe('suspended/active');
   });
 });
