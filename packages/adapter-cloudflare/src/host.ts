@@ -326,6 +326,7 @@ import {
   type AttachmentExtractor,
   type ExtractionOutcome,
   type JobDriveReport,
+  type JobDueKey,
   type JobHandler,
   type JobRun,
   type JobRunFilter,
@@ -1228,7 +1229,7 @@ interface ScopeStubRpc {
   ): Promise<JobRunRow>;
   jobRunById(id: string): Promise<JobRunRow | null>;
   jobRunInsert(row: JobRunRow): Promise<void>;
-  jobRunsDue(now: string, limit: number, afterId?: string, afterAt?: string): Promise<JobRunRow[]>;
+  jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]>;
   jobRunList(filter: JobRunFilter): Promise<JobRunRow[]>;
   jobRunPatch(id: string, patch: JobRunPatch): Promise<void>;
   jobCommitPass(id: string, patch: JobRunPatch): Promise<void>;
@@ -2517,7 +2518,7 @@ export class CloudflareScopeHost implements ScopeHost {
     return {
       startOrJoin: (key, row) => stub.jobRunStartOrJoin(key.moduleId, key.job, key.instance, row),
       get: (id) => stub.jobRunById(id),
-      due: (now, limit, afterId, afterAt) => stub.jobRunsDue(now, limit, afterId, afterAt),
+      dueKeys: (now, max) => stub.jobRunsDueKeys(now, max),
       list: (filter) => stub.jobRunList(filter),
       patch: (id, patch) => stub.jobRunPatch(id, patch),
       commitPass: (id, patch) => stub.jobCommitPass(id, patch),

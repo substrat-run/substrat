@@ -2427,6 +2427,44 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, deferred: 1 });
   });
 
+  /**
+   * #2028 review r3: one snapshot per drive, re-read at each claim, on the DO. Between the snapshot
+   * and the claims, a concurrent drive's window, one picked run is moved past now and one unpicked
+   * run becomes due. The moved one is skipped and runs on the next drive; the newly due one is not
+   * lost, the next drive runs it; nothing runs twice.
+   */
+  it('#1834: a drive acts on its one snapshot, re-reading each run as it claims it', async () => {
+    const s = await newScope();
+    const start = (instance: string) =>
+      jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance, payload: {} });
+    const a = await start('a');
+    const b = await start('b');
+    const c = await start('c');
+    const setNext = (id: string, at: string | null) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
+        state.storage.sql.exec('UPDATE _substrat_job_runs SET next_attempt_at = ? WHERE id = ?', at, id);
+      });
+    await setNext(c.id, new Date(Date.now() + 3_600_000).toISOString()); // not due at the snapshot
+    const counting = countingScopes(env.SCOPE);
+    let moves = 0;
+    counting.afterDueKeys = async () => {
+      if (moves++ > 0) return;
+      await setNext(b.id, new Date(Date.now() + 3_600_000).toISOString()); // picked, then moved past now
+      await setNext(c.id, null); // unpicked, then due
+    };
+    const h = jobDeployment(counting.ns);
+    expect(await h.runDueJobs(t, s, { limit: 2 })).toMatchObject({ attempted: 1, completed: 1 });
+    expect(await runOf(s, a.id)).toMatchObject({ status: 'done' });
+    expect(await runOf(s, b.id)).toMatchObject({ status: 'running', attempts: 0 });
+    expect(await runOf(s, c.id)).toMatchObject({ status: 'running', attempts: 0 });
+    // The next drive: C, due since the last snapshot, runs; B once its wait is over.
+    expect(await h.runDueJobs(t, s, { limit: 2 })).toMatchObject({ attempted: 1, completed: 1 });
+    expect(await runOf(s, c.id)).toMatchObject({ status: 'done' });
+    await setNext(b.id, null);
+    expect(await h.runDueJobs(t, s, { limit: 2 })).toMatchObject({ attempted: 1, completed: 1 });
+    expect(await runOf(s, b.id)).toMatchObject({ status: 'done' });
+  });
+
   /** #2028 review: the due order is served by its own index on the DO's SQLite, with no sort step. */
   it('#1834: the due read seeks _substrat_job_runs_due_at and sorts nothing', async () => {
     const s = await newScope();
@@ -3359,6 +3397,8 @@ function countingScopes(ns: DurableObjectNamespace) {
     /** #1834: every system-door state read, and every `invoke` sent to a scope. */
     doorStateReads: 0,
     invokes: 0,
+    /** #1834 (#2028 r3): runs after a drive's due-key snapshot is read, before it returns: a concurrent drive's window. */
+    afterDueKeys: null as (() => Promise<void>) | null,
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -3388,6 +3428,7 @@ function countingScopes(ns: DurableObjectNamespace) {
                 const answer = await real[prop]!(...args);
                 if (statusRead && counts.aroundStatusRead) await counts.aroundStatusRead(statusRead, 'after');
                 if (prop === 'switchSystemSchedules' && counts.afterMove) await counts.afterMove();
+                if (prop === 'jobRunsDueKeys' && counts.afterDueKeys) await counts.afterDueKeys();
                 return answer;
               },
       },

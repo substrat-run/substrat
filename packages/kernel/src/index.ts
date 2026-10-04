@@ -551,6 +551,7 @@ export {
   startJobRun,
 } from './job-run.js';
 export type {
+  JobDueKey,
   JobDriveReport,
   JobHandler,
   JobPassContext,

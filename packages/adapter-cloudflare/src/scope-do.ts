@@ -198,6 +198,7 @@ import {
   type JobRunFilter,
   type JobRunPatch,
   type JobRunRow,
+  type JobDueKey,
   type JobStepRow,
   type LiveChange,
   type ScheduleStateKind,
@@ -4276,26 +4277,40 @@ export function defineScopeDO(
      * those rows head every batch forever (`runDueJobRuns`). `afterId` is LAST, as
      * every argument added to an RPC on this interface must be.
      */
-    async jobRunsDue(now: string, limit: number, afterId?: string, afterAt?: string): Promise<JobRunRow[]> {
+    async jobRunsDue(now: string, limit: number, afterId?: string): Promise<JobRunRow[]> {
       return this.sql
         .exec(
-          // `afterAt` bound THREE times rather than as `?2`: mixing anonymous and numbered
+          // `afterId` bound TWICE rather than as `?2`: mixing anonymous and numbered
           // parameters makes the anonymous ones resume from the highest index used,
           // which is a footgun for the next person to add a clause. Spelled exactly
-          // as the pure adapter spells it. #1834: in the order runs became due
-          // (`JOB_RUN_DUE_AT`, then id), with the cursor on the same key.
+          // as the pure adapter spells it.
           `SELECT * FROM _substrat_job_runs
             WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-              AND (? IS NULL OR ${JOB_RUN_DUE_AT} > ? OR (${JOB_RUN_DUE_AT} = ? AND id > ?))
-            ORDER BY ${JOB_RUN_DUE_AT}, id LIMIT ?`,
+              AND (? IS NULL OR id > ?)
+            ORDER BY id LIMIT ?`,
           now,
-          afterAt ?? null,
-          afterAt ?? null,
-          afterAt ?? null,
+          afterId ?? null,
           afterId ?? null,
           limit,
         )
         .toArray() as unknown as JobRunRow[];
+    }
+
+    /**
+     * #1834: the drive's ONE snapshot of due runs — keys only, in the order they became due
+     * (`JOB_RUN_DUE_AT`, then id). Spelled exactly as the pure adapter spells it. `jobRunsDue`
+     * above stays for a coordinator a deploy behind, which still pages by id.
+     */
+    async jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]> {
+      return this.sql
+        .exec(
+          `SELECT id, module_id, job FROM _substrat_job_runs
+            WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            ORDER BY ${JOB_RUN_DUE_AT}, id LIMIT ?`,
+          now,
+          max,
+        )
+        .toArray() as unknown as JobDueKey[];
     }
 
     /** The operator read, newest first. */

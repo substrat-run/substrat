@@ -481,6 +481,7 @@ import {
   runDueJobRuns,
   startJobRun,
   type JobDriveReport,
+  type JobDueKey,
   type JobHandler,
   type JobRun,
   type JobRunFilter,
@@ -5282,16 +5283,15 @@ export class SqliteScopeHost implements ScopeHost {
       startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
       get: (id: string) =>
         turn(() => row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id))),
-      // #1834: in the order runs became due (`JOB_RUN_DUE_AT`), with the cursor on the same key.
-      due: (now: string, limit: number, afterId?: string, afterAt?: string) =>
+      // #1834: the drive's one snapshot — keys only, in the order runs became due.
+      dueKeys: (now: string, max: number) =>
         turn(() => db
           .prepare(
-            `SELECT * FROM _substrat_job_runs
+            `SELECT id, module_id, job FROM _substrat_job_runs
               WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                AND (? IS NULL OR ${JOB_RUN_DUE_AT} > ? OR (${JOB_RUN_DUE_AT} = ? AND id > ?))
               ORDER BY ${JOB_RUN_DUE_AT}, id LIMIT ?`,
           )
-          .all(now, afterAt ?? null, afterAt ?? null, afterAt ?? null, afterId ?? null, limit) as JobRunRow[]),
+          .all(now, max) as JobDueKey[]),
       list: (filter: JobRunFilter) => turn(() => {
         const where: string[] = [];
         const params: SqlValue[] = [];

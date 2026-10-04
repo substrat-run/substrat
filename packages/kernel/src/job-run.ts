@@ -424,6 +424,13 @@ export interface JobRunRow {
   readonly ended_at: string | null;
 }
 
+/** #1834: what a drive's snapshot holds of one due run — enough to pick it, never to act on it. */
+export interface JobDueKey {
+  readonly id: string;
+  readonly module_id: string;
+  readonly job: string;
+}
+
 /** The `_substrat_job_steps` row, as both adapters' SQL returns it. */
 export interface JobStepRow {
   readonly step: string;
@@ -479,16 +486,14 @@ export interface JobRunStore {
   /** One run by id, whatever its status. */
   get(id: string): Promise<JobRunRow | null>;
   /**
-   * `running` runs whose `next_attempt_at` has passed (or is NULL), in the order they became due
-   * (`JOB_RUN_DUE_AT`, then id), starting strictly after `(afterAt, afterId)` when given. `afterAt`
-   * is LAST, as every argument added to this port must be.
+   * #1834: ONE snapshot of the keys of up to `max` `running` runs whose `next_attempt_at` has passed
+   * (or is NULL), in the order they became due (`JOB_RUN_DUE_AT`, then id), read in ONE query.
    *
-   * The cursor exists for starvation, not for paging convenience: the driver skips
-   * runs whose job this host does not register, and without a cursor those rows sit
-   * at the head of every batch forever, so a scope holding `limit` of them never
-   * drives anything newer. See `runDueJobRuns`.
+   * Keys, not rows: the driver reads each row again when it claims it (`get`), so what it acts on is
+   * never older than that claim. And one read, not pages: a cursor across separate reads met rows
+   * that a concurrent drive moved in between, and a drive then saw a run twice, or never.
    */
-  due(now: string, limit: number, afterId?: string, afterAt?: string): Promise<JobRunRow[]>;
+  dueKeys(now: string, max: number): Promise<JobDueKey[]>;
   list(filter: JobRunFilter): Promise<JobRunRow[]>;
   patch(id: string, patch: JobRunPatch): Promise<void>;
   /**
@@ -534,11 +539,6 @@ export const SYSTEM_DOOR_WAIT = 'system_door_wait';
  * due for longer. Spelled exactly as the `_substrat_job_runs_due_at` index spells it.
  */
 export const JOB_RUN_DUE_AT = 'COALESCE(next_attempt_at, started_at)';
-
-/** The due order's key of one row: `JOB_RUN_DUE_AT`, computed on this side for the cursor. */
-function dueAt(row: JobRunRow): string {
-  return row.next_attempt_at ?? row.started_at;
-}
 
 /**
  * #1834: a pass that a host's door told to wait, carrying the pass it belongs to. Kernel-private,
@@ -1000,8 +1000,15 @@ export async function runJobPass(options: {
  * when the budget was applied to the query instead, a scope holding `limit` such rows
  * at the head of the due order returned the same unrunnable batch on every call —
  * nothing newer was ever reached, and the report said `attempted: 0` forever with no
- * indication why. So the read pages past them, bounded by `JOB_DRIVE_SCAN_MAX` rows
+ * indication why. So the read looks past them, bounded by `JOB_DRIVE_SCAN_MAX` rows
  * examined so one scope full of orphans cannot turn a tick into a table scan.
+ *
+ * **Selection is ONE snapshot per drive** (#1834). The drive reads the keys of up to
+ * `JOB_DRIVE_SCAN_MAX` due runs in a single query, picks up to `limit` runnable ones
+ * (each id once), and re-reads each row as it claims it, skipping one that is no longer
+ * `running` or no longer due. A cursor across several reads met rows a concurrent drive
+ * had moved in between, and ran one twice or skipped it. A run that moves, or becomes
+ * due, after the snapshot is the NEXT drive's business, never this one's.
  *
  * The starvation was spotted while re-reading this file, judged unlikely and left
  * alone — and then found independently by a reviewer. The judgement may even have
@@ -1012,7 +1019,7 @@ export async function runJobPass(options: {
 export async function runDueJobRuns(options: {
   store: JobRunStore;
   /** job name → its handler and policy, as `registerJob` recorded them. */
-  handlerFor: (run: JobRunRow) => { handler: JobHandler; retry?: ExecutorRetryPolicy } | undefined;
+  handlerFor: (run: Pick<JobRunRow, 'module_id' | 'job'>) => { handler: JobHandler; retry?: ExecutorRetryPolicy } | undefined;
   now: () => string;
   openScope: (run: JobRunRow, pass: object) => Promise<ScopeStub>;
   /** #1834: the host's own system-door refusals on one pass, by identity (`runJobPass`). */
@@ -1033,29 +1040,26 @@ export async function runDueJobRuns(options: {
   // Bound for the store's `LIMIT` (#1632): refused, not normalized, when it is not a positive integer.
   const want = options.limit === undefined ? JOB_DRIVE_LIMIT : assertRowLimit('limit', options.limit);
 
-  // Page the due read until `want` RUNNABLE runs have been gathered, or the scope
-  // runs out, or the scan cap is hit. A run whose job this host does not register —
-  // another deployment's, or one whose registration was removed — is stepped over
-  // and NOT failed: failing it would destroy a resumable run because the wrong
-  // process happened to look at it.
-  const runnable: JobRunRow[] = [];
-  let scanned = 0;
-  let afterId: string | undefined;
-  let afterAt: string | undefined;
-  while (runnable.length < want && scanned < JOB_DRIVE_SCAN_MAX) {
-    const batch = await options.store.due(options.now(), want, afterId, afterAt);
-    if (batch.length === 0) break;
-    scanned += batch.length;
-    for (const row of batch) {
-      if (options.handlerFor(row) && runnable.length < want) runnable.push(row);
-    }
-    afterId = batch[batch.length - 1]!.id;
-    afterAt = dueAt(batch[batch.length - 1]!);
-    // A short batch is the end of the due set; another round trip would read nothing.
-    if (batch.length < want) break;
+  // ONE snapshot of the due keys, then up to `want` RUNNABLE ones from it, each id once. A
+  // run whose job this host does not register — another deployment's, or one whose
+  // registration was removed — is stepped over and NOT failed: failing it would destroy
+  // a resumable run because the wrong process happened to look at it.
+  const picked: JobDueKey[] = [];
+  const seen = new Set<string>();
+  for (const key of await options.store.dueKeys(options.now(), JOB_DRIVE_SCAN_MAX)) {
+    if (picked.length >= want) break;
+    if (seen.has(key.id)) continue;
+    seen.add(key.id);
+    if (options.handlerFor(key)) picked.push(key);
   }
 
-  for (const row of runnable) {
+  for (const key of picked) {
+    // The claim: the row as it is NOW. One a concurrent drive finished, or moved past this
+    // moment, is skipped; it is the next drive's.
+    const row = await options.store.get(key.id);
+    if (!row || row.status !== 'running' || (row.next_attempt_at !== null && row.next_attempt_at > options.now())) {
+      continue;
+    }
     const registered = options.handlerFor(row)!;
     report.attempted += 1;
     let run = row;
