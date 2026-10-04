@@ -453,7 +453,7 @@ async function enforceRateLimits(
     return { policyHeader: null };
   }
   const { refusal, policyHeader, unavailable } = await evaluateRateLimits({
-    subject: { ...at, headers: request.headers, clientIp: request.headers.get('cf-connecting-ip') },
+    subject: { ...at, headers: request.headers, clientIp: request.headers.get('cf-connecting-ip'), method: request.method },
     policies,
     limiters,
     instance: new URL(request.url).pathname,

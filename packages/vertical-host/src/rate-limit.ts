@@ -60,7 +60,7 @@ export function rateLimit(options: RateLimitOptions): MiddlewareHandler {
   return async (c, next) => {
     const at = await options.nodeOf(c);
     const { refusal, policyHeader, unavailable } = await evaluateRateLimits({
-      subject: { ...at, headers: c.req.raw.headers, clientIp: options.clientIp?.(c) },
+      subject: { ...at, headers: c.req.raw.headers, clientIp: options.clientIp?.(c), method: c.req.method },
       policies,
       limiters,
       instance: c.req.path,

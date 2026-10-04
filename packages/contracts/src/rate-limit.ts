@@ -51,7 +51,7 @@ export const RATE_LIMIT_HEADER = 'RateLimit';
  * documents. An unexposed `Retry-After` is the one that matters: a frontend that cannot
  * read it cannot back off by it.
  */
-export const RATE_LIMIT_EXPOSED_HEADERS = [RETRY_AFTER_HEADER, RATE_LIMIT_POLICY_HEADER, RATE_LIMIT_HEADER] as const;
+export const RATE_LIMIT_EXPOSED_HEADERS = [RETRY_AFTER_HEADER, RATE_LIMIT_HEADER, RATE_LIMIT_POLICY_HEADER] as const;
 
 /**
  * The counter seam. Exactly the shape of Cloudflare's rate-limit binding, so the binding IS
@@ -122,6 +122,8 @@ export interface RateLimitSubject {
   readonly headers: Headers;
   /** The client address, when the host knows one. Absent ⇒ one shared anonymous budget. */
   readonly clientIp?: string | null | undefined;
+  /** The request method. An `OPTIONS` preflight is never counted (see {@link evaluateRateLimits}). */
+  readonly method?: string;
 }
 
 /**
@@ -202,6 +204,10 @@ export async function evaluateRateLimits(input: {
   /** The request path, for the problem's `instance`. */
   readonly instance?: string;
 }): Promise<RateLimitEvaluation> {
+  // A CORS preflight is never counted, so never refused: a refused preflight is opaque to the
+  // page whatever headers it carries, so the page could not read the 429 its real request
+  // would have met. It reaches the vertical's own preflight handler instead.
+  if (input.subject.method === 'OPTIONS') return { policyHeader: null };
   const buckets = RATE_LIMIT_BUCKETS.filter((bucket) => input.limiters[bucket]);
   if (buckets.length === 0) return { policyHeader: null };
   const results = await Promise.all(
@@ -230,7 +236,14 @@ export async function evaluateRateLimits(input: {
   return {
     policyHeader,
     ...(unavailable ? { unavailable } : {}),
-    ...(refused ? { refusal: refusalFor(refused, input.policies[refused], policyHeader, input.instance) } : {}),
+    ...(refused
+      ? {
+          refusal: refusalFor(refused, input.policies[refused], policyHeader, {
+            instance: input.instance,
+            origin: input.subject.headers.get('origin'),
+          }),
+        }
+      : {}),
   };
 }
 
@@ -247,7 +260,7 @@ function refusalFor(
   bucket: RateLimitBucket,
   policy: RateLimitPolicy,
   policyHeader: string,
-  instance: string | undefined,
+  { instance, origin }: { instance: string | undefined; origin: string | null },
 ): RateLimitedRefusal {
   const retryAfter = policy.period;
   const body = toProblem(
@@ -266,7 +279,31 @@ function refusalFor(
       [RETRY_AFTER_HEADER]: String(retryAfter),
       [RATE_LIMIT_POLICY_HEADER]: policyHeader,
       [RATE_LIMIT_HEADER]: `"${bucket}";r=0;t=${retryAfter}`,
+      ...(origin ? refusalCors(origin) : {}),
     },
     body,
+  };
+}
+
+/**
+ * CORS for the refusal, and only for it.
+ *
+ * A refusal is answered before the vertical runs, so the vertical's own CORS policy never
+ * sees it. Without these headers a cross-origin page reads a network error rather than a
+ * 429, and cannot back off by `Retry-After` — the polling loop this exists to stop keeps
+ * polling. The route names no origin allowlist to follow, so the refusal reflects whichever
+ * origin asked, credentials included.
+ *
+ * That is safe for THIS response and would not be for any other: the body and headers are
+ * the requester's own rate state — the budget that refused and when to retry — and no vertical
+ * data, which is why the policy is built here and never applied to a response the vertical
+ * gave.
+ */
+function refusalCors(origin: string): Record<string, string> {
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-credentials': 'true',
+    'access-control-expose-headers': RATE_LIMIT_EXPOSED_HEADERS.join(', '),
+    vary: 'Origin',
   };
 }

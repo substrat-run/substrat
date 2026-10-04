@@ -187,6 +187,44 @@ describe('router rate limiting (#130)', () => {
     expect(errors.some((e) => e.includes('rate-limit-unavailable'))).toBe(true);
   });
 
+  it('lets a cross-origin, credentialed page READ its 429 and the headers it backs off by', async () => {
+    // What a browser needs from a refusal the vertical never saw: the origin allowed with
+    // credentials, and the rate-limit headers exposed. Without them the page sees a CORS
+    // failure, not a delay, and keeps polling.
+    const { env } = envWith({ RATE_LIMIT_CREDENTIAL: counter(0).limiter });
+    const res = await call(env, 'acme.example.com', { origin: 'https://app.example.org', cookie: 'sb_session=alice' });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.org');
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('access-control-expose-headers')).toBe('Retry-After, RateLimit, RateLimit-Policy');
+    expect(res.headers.get('vary')).toBe('Origin');
+    expect(res.headers.get('Retry-After')).toBe('60');
+  });
+
+  it('never counts or refuses a CORS preflight: it reaches the vertical', async () => {
+    const credential = counter(0);
+    const ip = counter(0);
+    const { env, dispatched } = envWith({ RATE_LIMIT_CREDENTIAL: credential.limiter, RATE_LIMIT_IP: ip.limiter });
+    const preflight = new Request('https://acme.example.com/api/repairs', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://app.example.org', 'access-control-request-method': 'POST', 'cf-connecting-ip': '203.0.113.7' },
+    });
+    const res = await worker.fetch(preflight, env);
+    expect(res.status).toBe(200);
+    expect(dispatched).toHaveLength(1);
+    expect([...credential.keys(), ...ip.keys()]).toEqual([]);
+  });
+
+  it('leaves a response the vertical gave to the vertical: no CORS from the router on a non-429', async () => {
+    // The twin of the refusal policy. Reflecting any origin is safe only for a body holding
+    // the requester's own rate state; on a vertical's response it would hand any site its data.
+    const { env } = envWith({ RATE_LIMIT_CREDENTIAL: counter(5).limiter });
+    const res = await call(env, 'acme.example.com', { origin: 'https://evil.example', cookie: 'sb_session=alice' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+  });
+
   it('counts nothing and says nothing when no limiter is bound', async () => {
     const { env } = envWith({ RATE_LIMITS: undefined });
     const res = await call(env, 'acme.example.com');

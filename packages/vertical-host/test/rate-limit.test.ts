@@ -76,6 +76,19 @@ describe('vertical-host rateLimit (#130)', () => {
     expect((await request({ cookie: 'sb_session=bob' })).status).toBe(200);
   });
 
+  it('makes its 429 readable cross-origin, and never refuses a preflight', async () => {
+    const { request } = app({ limits: { credential: { limit: 0, period: 60 }, ip: { limit: 0, period: 60 } } });
+    const refused = await request({ origin: 'https://app.example.org', cookie: 'sb_session=alice' });
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get('access-control-allow-origin')).toBe('https://app.example.org');
+    expect(refused.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(refused.headers.get('access-control-expose-headers')).toBe('Retry-After, RateLimit, RateLimit-Policy');
+    const a = new Hono();
+    a.use('*', rateLimit({ nodeOf: () => ({ tenantId: T1, scopeId: S }), limits: { credential: { limit: 0, period: 60 }, ip: { limit: 0, period: 60 } } }));
+    a.options('/api/things', (c) => c.body(null, 204));
+    expect((await a.request('/api/things', { method: 'OPTIONS', headers: { origin: 'https://app.example.org' } })).status).toBe(204);
+  });
+
   it('fails OPEN when a counter throws, with a line naming the bucket', async () => {
     const errors: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((line: string) => void errors.push(line));
