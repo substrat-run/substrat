@@ -10,6 +10,7 @@ import {
   requestChips,
   requestReadQuery,
   resultLabel,
+  rowLabel,
   toggleFacet,
   whereOf,
 } from '../src/lib/requests';
@@ -69,6 +70,21 @@ describe('request facets in the URL', () => {
     expect(durationLabel(2100)).toBe('2.1 s');
     expect(bucketWidthLabel(120_000)).toBe('2 min');
     expect(bucketWidthLabel(30_000)).toBe('30 s');
+  });
+
+  it('#1901: filters on kind, and reads async work by its outcome — never as a request that threw', () => {
+    expect(whereOf({ kind: 'consumer,schedule' })).toEqual({ kind: ['consumer', 'schedule'] });
+    expect(requestReadQuery({ kind: 'request' }, { hours: 1 }).getAll('kind')).toEqual(['request']);
+    expect(requestChips({ kind: 'consumer' })).toEqual([{ key: 'kind', value: 'event consumer', clears: ['kind'] }]);
+    const async = { status: null, threw: true, problemCode: 'unavailable', kind: 'consumer' };
+    expect(resultLabel({ ...async, outcome: 'retrying', level: 'error', attempt: 2 })).toEqual({ text: 'retrying #2 unavailable', tone: 'error' });
+    expect(resultLabel({ ...async, threw: false, problemCode: null, outcome: 'inert', level: 'warn', attempt: 1 })).toEqual({ text: 'inert', tone: 'warn' });
+    expect(resultLabel({ status: null, threw: false, problemCode: null, kind: 'schedule', outcome: 'ok', level: 'info' })).toEqual({ text: 'ok', tone: 'ok' });
+    // A row from a plane older than #1901 carries no kind, and is a request as before.
+    expect(resultLabel({ status: null, threw: true, problemCode: null })).toEqual({ text: 'threw', tone: 'error' });
+    expect(rowLabel({ kind: 'consumer', operation: 'executor:notify', eventType: 'ticket.replied', method: null, path: null })).toBe('executor:notify ← ticket.replied');
+    expect(rowLabel({ kind: 'schedule', operation: 'desk/wake', method: null, path: null })).toBe('desk/wake');
+    expect(rowLabel({ operation: null, method: 'GET', path: '/x' })).toBe('GET /x');
   });
 
   it('dates an axis end once the window is long enough for two clocks to collide', () => {

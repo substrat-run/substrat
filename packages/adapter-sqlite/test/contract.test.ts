@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox, type ModuleLogLine } from '@substrat-run/kernel';
+import { UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   atomicContractSuite,
@@ -28,6 +28,7 @@ import {
   concurrencyContractSuite,
   emittedReportContractSuite,
   moduleLogContractSuite,
+  asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
   inputParseContractSuite,
@@ -468,6 +469,27 @@ emittedReportContractSuite('adapter-sqlite', async () => {
   const host = new SqliteScopeHost({ dir });
   return {
     host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1901: async work's invocation lines, read off both sinks a deployment leaves at the console.
+asyncLogContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-asynclog-'));
+  const lines: InvocationLogLine[] = [];
+  const logs: ModuleLogLine[] = [];
+  const host = new SqliteScopeHost({
+    dir,
+    logSink: (line) => logs.push(line),
+    invocationLineSink: (line) => lines.push(line),
+  });
+  return {
+    host,
+    lines: () => lines,
+    logs: () => logs,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

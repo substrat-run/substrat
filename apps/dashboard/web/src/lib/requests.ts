@@ -11,7 +11,7 @@ import type { ObsQuery } from './observability-query';
  */
 
 /** The plane's facet keys, in the order the sidebar lists them: business facets first. */
-export type RequestFacetKey = 'operation' | 'problemCode' | 'principalKind' | 'status' | 'surface' | 'level';
+export type RequestFacetKey = 'operation' | 'problemCode' | 'principalKind' | 'status' | 'surface' | 'level' | 'kind';
 export const REQUEST_FACETS: { key: RequestFacetKey; url: keyof ObsQuery; label: string; mono: boolean }[] = [
   { key: 'operation', url: 'op', label: 'Operation', mono: true },
   { key: 'problemCode', url: 'code', label: 'Problem code', mono: true },
@@ -19,6 +19,8 @@ export const REQUEST_FACETS: { key: RequestFacetKey; url: keyof ObsQuery; label:
   { key: 'status', url: 'status', label: 'Status', mono: true },
   { key: 'surface', url: 'surface', label: 'Surface', mono: true },
   { key: 'level', url: 'lvl', label: 'Level', mono: false },
+  // #1901: a request, or work the app ran on its own — an event consumer, a schedule.
+  { key: 'kind', url: 'kind', label: 'Kind', mono: false },
 ];
 
 const facetOf = (key: RequestFacetKey) => REQUEST_FACETS.find((f) => f.key === key)!;
@@ -54,7 +56,7 @@ export function requestChips(q: ObsQuery): { key: string; value: string; clears:
   return REQUEST_FACETS.flatMap((f) => {
     const values = selected(q, f.key);
     if (values.length === 0) return [];
-    const shown = f.key === 'principalKind' ? values.map(principalKindLabel) : values;
+    const shown = values.map((v) => facetValueLabel(f.key, v));
     return [{ key: f.label.toLowerCase(), value: shown.join(' or '), clears: [f.url] }];
   });
 }
@@ -107,7 +109,29 @@ export function principalKindLabel(kind: string): string {
 
 /** How a facet value reads in the sidebar. */
 export function facetValueLabel(key: RequestFacetKey, value: string | number): string {
-  return key === 'principalKind' ? principalKindLabel(String(value)) : String(value);
+  if (key === 'principalKind') return principalKindLabel(String(value));
+  if (key === 'kind') return kindLabel(String(value));
+  return String(value);
+}
+
+/** #1901: what kind of work a row is, in the page's words. */
+export function kindLabel(kind: string): string {
+  return kind === 'consumer' ? 'event consumer' : kind;
+}
+
+/**
+ * What a row names: the operation a request ran (or its method and path), the consumer and
+ * the event it was handed, or the schedule (#1901).
+ */
+export function rowLabel(r: {
+  kind?: string;
+  operation: string | null;
+  method: string | null;
+  path: string | null;
+  eventType?: string | null;
+}): string {
+  if (r.kind === 'consumer') return `${r.operation ?? '—'} ← ${r.eventType ?? '?'}`;
+  return r.operation ?? (r.method && r.path ? `${r.method} ${r.path}` : '—');
 }
 
 /** The level colours the histogram stacks and the rows mark with — the design's. */
@@ -122,10 +146,33 @@ export const LEVEL_COLORS: Record<'info' | 'warn' | 'error' | 'unrecorded', stri
  * A request's result, as its row says it: the status and the problem code when there is
  * one (`409 conflict`), `threw` for an escaped crash. `tone` picks the colour.
  */
-export function resultLabel(r: { status: number | null; threw: boolean; problemCode: string | null }): {
+/** #1901: the async outcomes that mean the work was done. Anything else is never green. */
+const ASYNC_SUCCESS = new Set(['delivered', 'ok', 'routed']);
+
+export function resultLabel(r: {
+  status: number | null;
+  threw: boolean;
+  problemCode: string | null;
+  kind?: string;
+  outcome?: string | null;
+  level?: string | null;
+  attempt?: number | null;
+}): {
   text: string;
   tone: 'ok' | 'warn' | 'error';
 } {
+  // #1901: async work answered no caller, so it has no status: its outcome is the result,
+  // and its level says how loud — `inert` and a dead letter are warnings, a throw an error.
+  if (r.kind && r.kind !== 'request') {
+    const outcome = r.outcome ?? '—';
+    const retried = r.attempt && r.attempt > 1 ? ` #${r.attempt}` : '';
+    const text = `${outcome}${retried}${r.problemCode ? ` ${r.problemCode}` : ''}`;
+    if (r.threw || r.level === 'error') return { text, tone: 'error' };
+    // Never green unless the work was done: an outcome that is not success is a warning
+    // even on a line whose level went missing.
+    if (r.level === 'warn' || !ASYNC_SUCCESS.has(outcome)) return { text, tone: 'warn' };
+    return { text, tone: 'ok' };
+  }
   if (r.threw || r.status === null) return { text: 'threw', tone: 'error' };
   const text = r.problemCode ? `${r.status} ${r.problemCode}` : r.status < 400 ? `${r.status} ok` : String(r.status);
   if (r.status >= 500) return { text, tone: 'error' };

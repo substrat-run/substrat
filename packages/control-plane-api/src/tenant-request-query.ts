@@ -4,7 +4,7 @@
  * things, and so the count, the histogram and the list beside it always describe one set.
  */
 import { z, tenantId as tenantIdSchema } from '@substrat-run/contracts';
-import { REQUEST_FACET_KEYS, type RequestFacetKey, type RequestWhere, type TenantRequestScope } from './observability.js';
+import { INVOCATION_KINDS, REQUEST_FACET_KEYS, type RequestFacetKey, type RequestWhere, type TenantRequestScope } from './observability.js';
 import { stableDeploymentRefFor } from './deploy.js';
 
 /** The widest window a tenant-grain read may cover — the same three days `hours` caps at. */
@@ -63,6 +63,8 @@ const facetValue: Record<RequestFacetKey, z.ZodType<string>> = {
   principalKind: z.string().min(1).max(40),
   problemCode: z.string().min(1).max(80),
   surface: z.string().min(1).max(80),
+  // #1901: what kind of work a line is about; `request` matches the lines that carry none.
+  kind: z.enum(INVOCATION_KINDS),
 };
 
 /** A query-string reader — Hono's `c.req.query` / `c.req.queries`, taken structurally. */

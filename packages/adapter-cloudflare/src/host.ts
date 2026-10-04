@@ -383,6 +383,10 @@ import {
   lifecycleRefusal,
   isPrimaryScope,
   isPrimaryScopeRow,
+  asyncInvocationId,
+  asyncLinePass,
+  type AsyncLinePass,
+  type EmittedReport,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -2294,6 +2298,24 @@ export class CloudflareScopeHost implements ScopeHost {
       routedToPlatform: 0,
     };
     if (this.executors.size === 0) return report;
+    // #1901: one line per attempt, capped per pass. Written on the coordinator, where the
+    // attempt runs — the DO only journals it.
+    const lines = asyncLinePass();
+    try {
+      await this.drainExecutorsPass(tenantId, scopeId, invocationId, report, lines);
+    } finally {
+      lines.end();
+    }
+    return report;
+  }
+
+  private async drainExecutorsPass(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    invocationId: string | null,
+    report: ExecutorDrainReport,
+    lines: AsyncLinePass,
+  ): Promise<void> {
     const stub = this.scopeStub(scopeId);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects, so its deliveries are journaled terminal with the reason and no
@@ -2326,17 +2348,33 @@ export class CloudflareScopeHost implements ScopeHost {
         report.lifecycleHeld = true;
         break drain;
       }
+      // #1901: an attempt's line. The attempt number is the one the journal is about to record.
+      const unitOf = (eventId: string, attempt: number) => ({
+        kind: 'consumer' as const,
+        tenantId,
+        scopeId,
+        invocationId: asyncInvocationId(invocationId),
+        operation: deliveryId,
+        eventType: executor.eventType,
+        eventId,
+        attempt,
+        startedAt: Date.now(),
+      });
       for (const bad of undecodable) {
         report.attempted += 1;
-        await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
+        const attempt = await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
         report.deadLettered += 1;
+        lines.write({ ...unitOf(bad.eventId, attempt), outcome: 'dead-lettered' });
       }
       for (const event of events) {
         report.attempted += 1;
+        const startedAt = Date.now();
         if (await isInert()) {
           // No next attempt, like an undecodable row: a scope does not become primary.
-          await stub.recordExecutorAttempt(event.id, deliveryId, INERT_SCOPE_REASON, null, invocationId);
+          const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, INERT_SCOPE_REASON, null, invocationId);
           report.inert = (report.inert ?? 0) + 1;
+          // Its own outcome, never `delivered`: no handler ran (#2005).
+          lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'inert' });
           continue;
         }
         this.causedBy = event.id;
@@ -2359,17 +2397,21 @@ export class CloudflareScopeHost implements ScopeHost {
               invocationId,
             );
             report.routedToPlatform! += 1;
+            // Handed on, not run here: the platform's drain owns its attempts from now on.
+            lines.write({ ...unitOf(event.id, 1), startedAt, outcome: 'routed' });
           } else if (executor.kind === 'connector') {
             await executor.handler(
               await this.connectorContext(tenantId, scopeId, executor.timeoutMs, event.id),
               event,
             );
-            await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
+            const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
+            lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           } else {
             await executor.handler(this.admin, event);
-            await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
+            const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
+            lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           }
         } catch (err) {
           const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
@@ -2387,12 +2429,17 @@ export class CloudflareScopeHost implements ScopeHost {
           );
           if (exhausted) report.deadLettered += 1;
           else report.retrying += 1;
+          lines.write({
+            ...unitOf(event.id, attempts),
+            startedAt,
+            outcome: exhausted ? 'dead-lettered' : 'retrying',
+            error: err,
+          });
         } finally {
           this.causedBy = null;
         }
       }
     }
-    return report;
   }
 
   async drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport> {
@@ -4287,6 +4334,7 @@ export class CloudflareScopeHost implements ScopeHost {
       return report;
     }
     const now = Date.now();
+    const lines = asyncLinePass();
     for (const schedule of schedules) {
       const last = await stub.scheduleLastRun(schedule.operation);
       const lastRun = last ? Date.parse(last) : null;
@@ -4301,18 +4349,36 @@ export class CloudflareScopeHost implements ScopeHost {
       // produces either way carries it, and so does the row below.
       const invocationId = ulid();
       let status: 'ok' | 'failed' = 'ok';
+      // #1901: the run's line, under the call's own id — the one its `ctx.log` lines carry.
+      const startedAt = Date.now();
+      let emitted: EmittedReport | undefined;
+      let failure: { error: unknown } | undefined;
       try {
         const scope = await this.getSystemScope(moduleId, tenantId, scopeId);
-        await scope.invoke(schedule.operation, schedule.input, { invocationId });
+        await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         report.fired += 1;
       } catch (err) {
         status = 'failed';
+        failure = { error: err };
         report.failed += 1;
         report.errors.push({
           operation: schedule.operation,
           error: err instanceof Error ? err.message : String(err),
         });
       }
+      lines.write({
+        kind: 'schedule',
+        tenantId,
+        scopeId,
+        invocationId,
+        operation: schedule.operation,
+        startedAt,
+        outcome: status,
+        ...failure,
+        dueAt: lastRun === null ? null : new Date(dueAt).toISOString(),
+        latenessMs: lastRun === null ? null : now - dueAt,
+        ...(emitted ? { emitted } : {}),
+      });
       // #1288: 'schedule', whatever this operation happens to be called — including
       // `freshness:<something>`, which is exactly the row the evaluator no longer eats.
       await stub.recordScheduleRun(
@@ -4324,6 +4390,7 @@ export class CloudflareScopeHost implements ScopeHost {
       );
       report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
+    lines.end();
     return report;
   }
 

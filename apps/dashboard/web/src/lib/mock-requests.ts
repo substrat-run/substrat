@@ -64,6 +64,33 @@ function fixture(now = Date.now()): RequestRecord[] {
     const reads = operation.includes('list');
     const eventCount = status === 200 && !reads ? 1 + Math.floor(next() * 2) : 0;
     const id = `T${String(i).padStart(4, '0')}`;
+    // #1901: the snooze sweep is a schedule, not a request — no method, path or status.
+    if (operation === 'ticket0/wake-snoozed') {
+      rows.push({
+        timestamp: t,
+        invocationId: `01J8Z${String(i).padStart(21, '0')}`,
+        scopeId: null,
+        vertical: null,
+        surface: null,
+        method: null,
+        path: null,
+        status: null,
+        threw: false,
+        durationMs: Math.round(20 + next() * 80),
+        level: 'info',
+        operation,
+        problemCode: null,
+        principalKind,
+        eventCount: 0,
+        eventTypes: [],
+        entities: [],
+        versionId: null,
+        kind: 'schedule',
+        outcome: 'ok',
+        latenessMs: Math.round(next() * 4000),
+      });
+      continue;
+    }
     rows.push({
       timestamp: t,
       invocationId: `01J8Z${String(i).padStart(21, '0')}`,
@@ -84,7 +111,40 @@ function fixture(now = Date.now()): RequestRecord[] {
       eventTypes: eventCount > 0 ? [operation === 'ticket0/reply' ? 'ticket.replied' : 'ticket.updated'] : [],
       entities: eventCount > 0 ? [`ticket:${id}`] : [],
       versionId: t >= deploy ? 'ticket0@2.15.0' : 'ticket0@2.14.3',
+      kind: 'request',
     });
+    // #1901: a reply's notification goes out through an executor, under the reply's call id;
+    // the mail provider refuses a few, which retry and now and then dead-letter.
+    if (operation === 'ticket0/reply' && eventCount > 0) {
+      const bounced = next() < 0.08;
+      const attempt = bounced ? 1 + Math.floor(next() * 3) : 1;
+      const dead = bounced && attempt === 3;
+      rows.push({
+        timestamp: t + 5,
+        invocationId: `01J8Z${String(i).padStart(21, '0')}`,
+        scopeId: null,
+        vertical: null,
+        surface: null,
+        method: null,
+        path: null,
+        status: null,
+        threw: bounced,
+        durationMs: Math.round(60 + next() * 400),
+        level: bounced ? 'error' : 'info',
+        operation: 'executor:notify-email',
+        problemCode: bounced ? 'unavailable' : null,
+        principalKind: 'system',
+        eventCount: null,
+        eventTypes: [],
+        entities: [],
+        versionId: null,
+        kind: 'consumer',
+        outcome: dead ? 'dead-lettered' : bounced ? 'retrying' : 'delivered',
+        eventType: 'ticket.replied',
+        eventId: `01J9A${String(i).padStart(21, '0')}`,
+        attempt,
+      });
+    }
   }
   rows.sort((a, b) => b.timestamp! - a.timestamp!);
   cache = { anchor, rows };
@@ -95,6 +155,7 @@ type Where = Partial<Record<RequestFacetKey, string[]>>;
 
 /** The row's value for a facet, as the plane would group it. */
 function valueOf(r: RequestRecord, key: RequestFacetKey): string | null {
+  if (key === 'kind') return r.kind ?? 'request';
   const v = r[key];
   return v === null || v === undefined ? null : String(v);
 }

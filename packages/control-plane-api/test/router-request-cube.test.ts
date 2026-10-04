@@ -12,10 +12,16 @@ const T = '01TENANTOURS';
 const SINCE = '2026-09-28T12:00:00Z';
 const since = Date.parse(SINCE);
 
-/** Stub both APIs: Analytics Engine SQL gets `ae`, the telemetry query answers empty. */
-function stub(ae: (sql: string) => Array<Record<string, unknown>>) {
+/** The async-only telemetry query (#1901): its filters carry the `kind` group. */
+const isAsyncQuery = (b: { parameters: { filters: unknown[] } }) => JSON.stringify(b.parameters.filters).includes('"key":"kind"');
+
+/** Stub both APIs: Analytics Engine SQL gets `ae`, the telemetry query answers `logs` (empty). */
+function stub(
+  ae: (sql: string) => Array<Record<string, unknown>>,
+  logs: (body: { parameters: { filters: unknown[] } }) => unknown[] = () => [],
+) {
   const sqls: string[] = [];
-  const telemetry: Array<{ timeframe: { from: number; to: number } }> = [];
+  const telemetry: Array<{ timeframe: { from: number; to: number }; parameters: { filters: unknown[] } }> = [];
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init: { body?: string }) => {
@@ -23,8 +29,9 @@ function stub(ae: (sql: string) => Array<Record<string, unknown>>) {
         sqls.push(init.body ?? '');
         return new Response(JSON.stringify({ data: ae(init.body ?? '') }));
       }
-      telemetry.push(JSON.parse(init.body ?? '{}'));
-      return new Response(JSON.stringify({ success: true, result: { calculations: [{ series: [] }] } }));
+      const body = JSON.parse(init.body ?? '{}');
+      telemetry.push(body);
+      return new Response(JSON.stringify({ success: true, result: { calculations: [{ series: logs(body) }] } }));
     }),
   );
   return { sqls, telemetry };
@@ -66,7 +73,9 @@ describe('the router request cube (#1904)', () => {
       to: from + 60 * 60_000,
     });
 
-    expect(telemetry).toHaveLength(0);
+    // #1901: past the cut the only log read is the async lines', which no route meters.
+    expect(telemetry.filter((b) => !isAsyncQuery(b))).toHaveLength(0);
+    expect(telemetry.filter(isAsyncQuery)).toHaveLength(1);
     expect(sqls).toHaveLength(1);
     expect(sqls[0]).toContain(`index1 = '${T}'`);
     expect(sqls[0]).toContain('FROM substrat_router');
@@ -80,6 +89,46 @@ describe('the router request cube (#1904)', () => {
       ]),
     );
     expect(f.facets.status).toEqual(expect.arrayContaining([{ value: 409, count: 3 }]));
+  });
+
+  it('#1901: past the cut, adds the async lines the router never sees', async () => {
+    const at = '2026-09-28T13:05:00Z';
+    const { telemetry } = stub(
+      () => [aeRow({ requests: '3' })],
+      (b) =>
+        isAsyncQuery(b)
+          ? [
+              {
+                time: at,
+                data: [
+                  {
+                    groups: [
+                      { key: 'tenantId', value: T },
+                      { key: 'level', value: 'warn' },
+                      { key: 'operation', value: 'executor:notify' },
+                      { key: 'kind', value: 'consumer' },
+                    ],
+                    value: 2,
+                    count: 2,
+                  },
+                ],
+              },
+            ]
+          : [],
+    );
+    const from = since + 60 * 60_000;
+    const f = await reader({ requestsFromRouterSince: SINCE }).tenantRequestFacets!({
+      tenantId: T,
+      services: ['acme-widgets'],
+      from,
+      to: from + 60 * 60_000,
+    });
+    expect(telemetry.every(isAsyncQuery)).toBe(true);
+    expect(f.total).toBe(5);
+    expect(f.facets.kind).toEqual([
+      { value: 'request', count: 3 },
+      { value: 'consumer', count: 2 },
+    ]);
   });
 
   it('asks Analytics Engine once for a tenant-wide read, however many families the tenant runs', async () => {
@@ -114,7 +163,9 @@ describe('the router request cube (#1904)', () => {
     expect(sqls).toHaveLength(1);
     expect(sqls[0]).toContain(`toDateTime(${since / 1000})`);
     expect(telemetry.length).toBeGreaterThan(0);
-    expect(Math.max(...telemetry.map((b) => b.timeframe.to))).toBeLessThanOrEqual(since);
+    // Requests come from the router past the cut; only the async read reaches beyond it.
+    expect(Math.max(...telemetry.filter((b) => !isAsyncQuery(b)).map((b) => b.timeframe.to))).toBeLessThanOrEqual(since);
+    expect(Math.min(...telemetry.filter(isAsyncQuery).map((b) => b.timeframe.from))).toBeGreaterThanOrEqual(since);
     expect(v.buckets.reduce((n, b) => n + b.info, 0)).toBe(5);
   });
 

@@ -44,6 +44,11 @@ export interface RequestCubeRow {
   principalKind: string | null;
   surface: string | null;
   status: number | null;
+  /**
+   * #1901: the line's `kind` — absent or `null` is a request. Optional, because a block
+   * cached before the field existed and the router's datapoints (requests only) carry none.
+   */
+  kind?: string | null;
   count: number;
 }
 
@@ -91,6 +96,12 @@ export interface CubeQuery {
 export interface AggregateSource {
   requests(q: CubeQuery): Promise<Cube<RequestCubeRow>>;
   patterns(q: CubeQuery): Promise<Cube<PatternCubeRow>>;
+  /**
+   * #1901: the request cube's ASYNC lines alone — a consumer's or a schedule's, never a
+   * request's. What `cutOverSource` adds to the router's datapoints, which meter requests
+   * and nothing else. Optional: a source that cannot narrow so is never asked.
+   */
+  asyncRequests?(q: CubeQuery): Promise<Cube<RequestCubeRow>>;
 }
 
 /** The grains a cube is cut at. Finer grains serve narrower windows. */
@@ -149,7 +160,7 @@ export function memoryCubeStore(): CubeStore & { size(): number } {
 }
 
 /** The cache key of one block. The grain is in it: a block at 5 min is not one at 1 h. */
-export function blockKey(kind: 'requests' | 'patterns', service: string, grainMs: number, start: number): string {
+export function blockKey(kind: 'requests' | 'patterns' | 'async-requests', service: string, grainMs: number, start: number): string {
   return `${kind}|${service}|${grainMs}|${start}`;
 }
 
@@ -179,7 +190,7 @@ export function cachedSource(
   const lag = opts.lagMs ?? CLOSE_LAG_MS;
 
   const read = async <Row extends { bucket: number }>(
-    kind: 'requests' | 'patterns',
+    kind: 'requests' | 'patterns' | 'async-requests',
     q: CubeQuery,
     count: (q: CubeQuery) => Promise<Cube<Row>>,
   ): Promise<Cube<Row>> => {
@@ -216,9 +227,11 @@ export function cachedSource(
     };
   };
 
+  const asyncRequests = inner.asyncRequests?.bind(inner);
   return {
     requests: (q) => read('requests', q, (b) => inner.requests(b)),
     patterns: (q) => read('patterns', q, (b) => inner.patterns(b)),
+    ...(asyncRequests ? { asyncRequests: (q: CubeQuery) => read('async-requests', q, (b) => asyncRequests(b)) } : {}),
   };
 }
 
@@ -231,23 +244,28 @@ export function cachedSource(
  * The cut is rounded UP to a grain, so a grain the instant falls inside is counted whole from
  * `before`, which has every line of it, rather than partly from each. Patterns are always
  * `before`'s: the router meters requests, not `ctx.log` lines.
+ *
+ * #1901: nor does the router see async work — a consumer delivery or a schedule run reaches
+ * no route. So past the cut the cube is the router's requests PLUS `before`'s async lines
+ * alone (`asyncRequests`), a narrow read of a small share of the lines; without them every
+ * consumer and schedule row would vanish from the histogram at the cut-over instant.
  */
 export function cutOverSource(before: AggregateSource, after: Pick<AggregateSource, 'requests'>, since: number): AggregateSource {
+  const merge = (cubes: Cube<RequestCubeRow>[]): Cube<RequestCubeRow> => ({
+    rows: cubes.flatMap((c) => c.rows),
+    estimated: cubes.some((c) => c.estimated),
+    ...(cubes.some((c) => c.complete === false) ? { complete: false } : {}),
+  });
+  const recent = async (q: CubeQuery): Promise<Cube<RequestCubeRow>> =>
+    merge(await Promise.all([after.requests(q), ...(before.asyncRequests ? [before.asyncRequests(q)] : [])]));
   return {
     async requests(q) {
       const cut = Math.ceil(since / q.grainMs) * q.grainMs;
       if (q.to <= cut) return before.requests(q);
-      if (q.from >= cut) return after.requests(q);
-      const [old, recent] = await Promise.all([
-        before.requests({ ...q, to: cut }),
-        after.requests({ ...q, from: cut }),
-      ]);
-      return {
-        rows: [...old.rows, ...recent.rows],
-        estimated: old.estimated || recent.estimated,
-        ...(old.complete === false || recent.complete === false ? { complete: false } : {}),
-      };
+      if (q.from >= cut) return recent(q);
+      return merge(await Promise.all([before.requests({ ...q, to: cut }), recent({ ...q, from: cut })]));
     },
     patterns: (q) => before.patterns(q),
+    ...(before.asyncRequests ? { asyncRequests: before.asyncRequests.bind(before) } : {}),
   };
 }
