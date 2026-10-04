@@ -850,6 +850,10 @@ export function capabilityAttachmentWriteRefused(
 export const plausibleSessionToken = (token: unknown): token is string =>
   plausible(token, CAPABILITY_SESSION_PREFIX);
 
+/** Is `secret` shaped like a capability secret at all — the exchange's own first check (#1686). */
+export const plausibleCapabilitySecret = (secret: unknown): secret is string =>
+  plausible(secret, CAPABILITY_SECRET_PREFIX);
+
 /**
  * The platform's mint (`HostAdmin.mintCapability`) — a `become` capability, which is the
  * only kind the platform mints and the only way one is minted in this first cut (see

@@ -18,6 +18,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
+import { capabilityTokenHash } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
 import { OWNER_CLAIM_TTL_MS } from './owner-seat.js';
 
@@ -109,7 +110,7 @@ export async function mintOwnerClaimLink(
   if (minted.expiresAt === null) throw new Error('a become capability always expires — the host answered none');
   const recorded = await deps.directory.recordOwnerClaim(ref.scopeId, principal, {
     capabilityId: minted.id,
-    tokenHash: await sha256Hex(minted.secret),
+    tokenHash: await capabilityTokenHash(minted.secret),
     expiresAt: Date.parse(minted.expiresAt),
   });
   if (!recorded) {

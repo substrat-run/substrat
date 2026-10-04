@@ -563,8 +563,8 @@ mountInviteRoutes(app, {
  */
 mountOwnerClaim(app, {
   nodeFor,
-  authProvider: (env, req) => authProviderFor(env, req),
-  directory: (env, node) => identityDo(env, node),
+  authProvider: authProviderFor,
+  directory: identityDo,
   host: hostFor,
 });
 

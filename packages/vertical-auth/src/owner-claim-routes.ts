@@ -30,16 +30,12 @@
 
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import {
-  CAPABILITY_SECRET_PREFIX,
-  z,
-  type CapabilityExchange,
-  type ScopeId,
-  type TenantId,
-} from '@substrat-run/contracts';
+import { z, type CapabilityExchange, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { capabilityTokenHash, plausibleCapabilitySecret } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
 import { sha256Hex } from './owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from './provider.js';
+import { bodyOf } from './request-body.js';
 
 /** The slice of the identity directory the redemption touches. */
 export type OwnerClaimDirectory = Pick<IdentityStub, 'ownerClaimMatches' | 'claimOwnerByCapability' | 'claimOwner'>;
@@ -91,50 +87,37 @@ const REFUSED = 'this claim link is invalid, expired, or already used';
 
 /**
  * Mount `POST /api/claim-owner` → `{ ok: true, principal }` on a vertical's Hono app. 401 for
- * nobody signed in, 400 for a body that is not `{ token }` and for every refused link. Errors the
- * route raises itself are `HTTPException`s, so the vertical's own `onError` renders them; what its
- * deps throw is passed through untouched.
+ * nobody signed in, 400 for a body that is not `{ token }` (`bodyOf`, as the invite routes) and
+ * for every refused link. Errors the route raises itself are `HTTPException`s, so the vertical's
+ * own `onError` renders them; what its deps throw is passed through untouched.
  */
 export function mountOwnerClaim<E extends object, N extends { tenantId: TenantId; scopeId: ScopeId }>(
   app: Hono<{ Bindings: E }>,
   deps: OwnerClaimRouteDeps<E, N>,
 ): void {
+  /**
+   * The capability path, steps 2–4: refused before the exchange unless the secret is the
+   * scope's current link, so a stale or unrelated secret keeps its use.
+   */
+  const redeem = async (env: E, node: N, directory: OwnerClaimDirectory, sub: string, secret: string): Promise<string | null> => {
+    if (!(await directory.ownerClaimMatches(node.scopeId, await capabilityTokenHash(secret)))) return null;
+    const exchanged = await deps.host(env).exchangeCapability(node.tenantId, node.scopeId, secret, { mode: 'become' });
+    if (exchanged?.kind !== 'principal') return null;
+    return directory.claimOwnerByCapability(node.scopeId, sub, exchanged.capabilityId, exchanged.principal);
+  };
+
   app.post('/api/claim-owner', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     const subject = await (await deps.authProvider(c.env, c.req.raw)).resolve(c.req.raw.headers);
     if (!subject) {
       throw new HTTPException(401, { message: `sign in before claiming this ${deps.noun ?? 'workspace'}` });
     }
-    let raw: unknown;
-    try {
-      raw = await c.req.json();
-    } catch {
-      throw new HTTPException(400, { message: 'the request body must be JSON' });
-    }
-    const body = claimOwnerBody.safeParse(raw);
-    if (!body.success) throw new HTTPException(400, { message: 'invalid request body — token: required' });
-    const { token } = body.data;
+    const { token } = await bodyOf(c, claimOwnerBody);
     const directory = deps.directory(c.env, node);
-    const tokenHash = await sha256Hex(token);
-
-    let principal: string | null;
-    if (token.startsWith(CAPABILITY_SECRET_PREFIX)) {
-      principal = null;
-      if (await directory.ownerClaimMatches(node.scopeId, tokenHash)) {
-        const exchanged = await deps.host(c.env).exchangeCapability(node.tenantId, node.scopeId, token, { mode: 'become' });
-        if (exchanged?.kind === 'principal') {
-          principal = await directory.claimOwnerByCapability(
-            node.scopeId,
-            subject.sub,
-            exchanged.capabilityId,
-            exchanged.principal,
-          );
-        }
-      }
-    } else {
-      // LEGACY — a link minted before #1686. Remove with `claimOwner` (see the header).
-      principal = await directory.claimOwner(node.scopeId, subject.sub, tokenHash);
-    }
+    const principal = plausibleCapabilitySecret(token)
+      ? await redeem(c.env, node, directory, subject.sub, token)
+      : // LEGACY — a link minted before #1686. Remove with `claimOwner` (see the header).
+        await directory.claimOwner(node.scopeId, subject.sub, await sha256Hex(token));
     if (!principal) throw new HTTPException(400, { message: REFUSED });
     await deps.onClaimed?.(c, { node, principal, subject });
     return c.json({ ok: true, principal });

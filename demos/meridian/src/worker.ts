@@ -16,7 +16,7 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, z,
+import { principalId, scopeId, tenantId,
   isPage,
   nextPageLink,
   PAGE_LINK_HEADER,
@@ -429,8 +429,8 @@ mountInviteRoutes(app, {
  */
 mountOwnerClaim(app, {
   nodeFor,
-  authProvider: (env, req) => authProviderFor(env, req),
-  directory: (env, node) => identityDo(env, node),
+  authProvider: authProviderFor,
+  directory: identityDo,
   host: hostFor,
 });
 
