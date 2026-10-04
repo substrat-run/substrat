@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { lifecycleMovesOf, operationSeriesInput, type OperationSeriesInput } from '@substrat-run/contracts';
+import { operationSeriesInput, type OperationSeriesInput } from '@substrat-run/contracts';
 import { createUlid, readOperationSeries, type ScopedSql } from '../src/index.js';
 
 /**
@@ -148,37 +148,5 @@ describe('operationSeriesInput (#1750)', () => {
     expect(operationSeriesInput.safeParse({ ...base, since: '2026-10-03T00:00:00.500Z' }).success).toBe(false);
     expect(operationSeriesInput.safeParse({ ...base, until: base.since }).success).toBe(false);
     expect(operationSeriesInput.safeParse({ ...base, moves: Array.from({ length: 65 }, () => CLOSE) }).success).toBe(false);
-  });
-});
-
-describe('lifecycleMovesOf (#1750)', () => {
-  it('keeps an operation only when every appearance of it is an edge into one state', () => {
-    const moves = lifecycleMovesOf({
-      conversation: {
-        field: 'state',
-        initial: 'new',
-        states: {
-          new: { on: { 'desk/assign': 'open', 'desk/close': 'closed', 'desk/resolve': 'resolved' } },
-          open: { on: { 'desk/resolve': 'resolved', 'desk/close': 'closed', 'desk/park': 'open' }, allow: ['desk/ingest'] },
-          resolved: { on: { 'desk/ingest': 'open', 'desk/close': 'closed', 'desk/flip': 'open' } },
-          snoozed: { on: { 'desk/flip': 'closed' } },
-          closed: { terminal: true },
-        },
-      },
-    });
-    expect(moves).toEqual([
-      { entityType: 'conversation', state: 'closed', terminal: true, fromInitial: false, operations: ['desk/close'] },
-      { entityType: 'conversation', state: 'open', terminal: false, fromInitial: true, operations: ['desk/assign'] },
-      { entityType: 'conversation', state: 'resolved', terminal: false, fromInitial: false, operations: ['desk/resolve'] },
-    ]);
-    // Left out, each for its reason: `desk/ingest` is also merely allowed; `desk/park` is a
-    // self-loop; `desk/flip` leads to two different states.
-    const ops = moves.flatMap((m) => m.operations);
-    for (const op of ['desk/ingest', 'desk/park', 'desk/flip']) expect(ops).not.toContain(op);
-  });
-
-  it('answers nothing for a model with no lifecycles', () => {
-    expect(lifecycleMovesOf(undefined)).toEqual([]);
-    expect(lifecycleMovesOf({})).toEqual([]);
   });
 });

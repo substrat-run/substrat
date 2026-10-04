@@ -1,4 +1,4 @@
-import type { LifecycleMove, OperationSeriesResult } from '@substrat-run/contracts';
+import type { EmittedLifecycle, OperationSeriesResult } from '@substrat-run/contracts';
 
 /**
  * Pulse's "Business today" (#1750), as pure arithmetic: which grid one read is asked for,
@@ -14,6 +14,64 @@ import type { LifecycleMove, OperationSeriesResult } from '@substrat-run/contrac
  */
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
+
+/**
+ * One state a lifecycle can be counted into: the entity, the state, and the operations
+ * whose every call on that entity is a move into it.
+ */
+export interface LifecycleMove {
+  entityType: string;
+  state: string;
+  terminal: boolean;
+  /** Every counted edge into this state leaves the initial state — what "opened" means. */
+  fromInitial: boolean;
+  operations: string[];
+}
+
+/**
+ * The moves a declared lifecycle lets a GROUP BY count exactly (see `operation-series.ts` in contracts for why).
+ *
+ * An operation qualifies when every appearance of it in the declaration is an `on` edge
+ * into one and the same state, from a different state, and it is in no `allow` list.
+ * States no qualifying operation reaches are left out rather than listed at zero: zero
+ * would claim a count this read cannot make.
+ */
+export function lifecycleMovesOf(lifecycles: Record<string, EmittedLifecycle> | undefined): LifecycleMove[] {
+  const out: LifecycleMove[] = [];
+  for (const [entityType, lc] of Object.entries(lifecycles ?? {})) {
+    const target = new Map<string, string | null>();
+    const sources = new Map<string, Set<string>>();
+    const disqualify = (op: string) => target.set(op, null);
+    for (const [from, state] of Object.entries(lc.states)) {
+      for (const op of state.allow ?? []) disqualify(op);
+      for (const [op, to] of Object.entries(state.on ?? {})) {
+        const seen = target.get(op);
+        if (seen === null) continue;
+        if (to === from || (seen !== undefined && seen !== to)) {
+          disqualify(op);
+          continue;
+        }
+        target.set(op, to);
+        sources.set(op, (sources.get(op) ?? new Set()).add(from));
+      }
+    }
+    const byState = new Map<string, string[]>();
+    for (const [op, to] of target) {
+      if (to === null || to === undefined) continue;
+      byState.set(to, [...(byState.get(to) ?? []), op]);
+    }
+    for (const [state, operations] of [...byState.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      out.push({
+        entityType,
+        state,
+        terminal: lc.states[state]?.terminal === true,
+        fromInitial: operations.every((op) => [...(sources.get(op) ?? [])].every((s) => s === lc.initial)),
+        operations: operations.sort(),
+      });
+    }
+  }
+  return out;
+}
 
 /**
  * The read's window: ends at `until` (rounded UP to the whole second the read's anchor needs,
@@ -70,17 +128,14 @@ export function businessRows(
   const step = read.bucketMinutes * MINUTE;
   const end = Date.parse(read.until);
   const from = Date.parse(window.since);
-  const counts = new Map<string, Map<number, number>>();
-  for (const s of read.series) {
-    const key = `${s.entityType}\u001f${s.operation}`;
-    const bins = counts.get(key) ?? new Map<number, number>();
-    for (const b of s.buckets) bins.set(Date.parse(b.start), (bins.get(Date.parse(b.start)) ?? 0) + b.count);
-    counts.set(key, bins);
-  }
   return moves.map((m) => {
     const bins = new Map<number, number>();
-    for (const op of m.operations) {
-      for (const [at, n] of counts.get(`${m.entityType}\u001f${op}`) ?? []) bins.set(at, (bins.get(at) ?? 0) + n);
+    for (const sr of read.series) {
+      if (sr.entityType !== m.entityType || !m.operations.includes(sr.operation)) continue;
+      for (const b of sr.buckets) {
+        const at = Date.parse(b.start);
+        bins.set(at, (bins.get(at) ?? 0) + b.count);
+      }
     }
     let today = 0;
     let yesterday = 0;

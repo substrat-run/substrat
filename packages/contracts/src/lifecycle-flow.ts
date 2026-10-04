@@ -21,8 +21,8 @@ export const LIFECYCLE_FLOW_EVENT_BUDGET = 20_000;
 /** Longest-stuck instances returned per state. */
 export const LIFECYCLE_FLOW_STUCK_MAX = 20;
 
-/** An instant `Date.parse` reads — refused at the boundary, not deep inside the replay. */
-const instant = z
+/** An instant `Date.parse` reads — refused at the boundary, not deep inside a read. Shared with `operation-series.ts`. */
+export const windowInstant = z
   .string()
   .min(1)
   .max(64)
@@ -43,12 +43,12 @@ export const lifecycleFlowInput = z.object({
     { message: 'lifecycle is larger than any declared one: at most 64 states and 256 operations per state' },
   ),
   /** The window, half-open: events at or after `since` and before `until` are counted. */
-  since: instant,
+  since: windowInstant,
   /**
    * Required: the read has no clock of its own. It is also the instant "now" means —
    * events after it are not replayed, so `current` is the state as of `until`.
    */
-  until: instant,
+  until: windowInstant,
   stuckLimit: z.number().int().positive().max(LIFECYCLE_FLOW_STUCK_MAX).optional(),
 });
 /**

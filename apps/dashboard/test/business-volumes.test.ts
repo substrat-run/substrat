@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { LifecycleMove } from '@substrat-run/contracts';
-import { businessGrid, businessRows } from '../src/business-volumes.js';
+import { businessGrid, businessRows, lifecycleMovesOf, type LifecycleMove } from '../src/business-volumes.js';
 
 /** Pulse's business rows (#1750): the grid one read is asked for, and its answer as rows. */
 describe('businessGrid', () => {
@@ -33,5 +32,37 @@ describe('businessRows', () => {
     expect(row!.buckets).toHaveLength(24);
     expect(row!.buckets[0]).toEqual({ start: '2026-10-03T12:00:00.000Z', count: 5 });
     expect(row!.buckets.slice(1).every((b) => b.count === 0)).toBe(true);
+  });
+});
+
+describe('lifecycleMovesOf (#1750)', () => {
+  it('keeps an operation only when every appearance of it is an edge into one state', () => {
+    const moves = lifecycleMovesOf({
+      conversation: {
+        field: 'state',
+        initial: 'new',
+        states: {
+          new: { on: { 'desk/assign': 'open', 'desk/close': 'closed', 'desk/resolve': 'resolved' } },
+          open: { on: { 'desk/resolve': 'resolved', 'desk/close': 'closed', 'desk/park': 'open' }, allow: ['desk/ingest'] },
+          resolved: { on: { 'desk/ingest': 'open', 'desk/close': 'closed', 'desk/flip': 'open' } },
+          snoozed: { on: { 'desk/flip': 'closed' } },
+          closed: { terminal: true },
+        },
+      },
+    });
+    expect(moves).toEqual([
+      { entityType: 'conversation', state: 'closed', terminal: true, fromInitial: false, operations: ['desk/close'] },
+      { entityType: 'conversation', state: 'open', terminal: false, fromInitial: true, operations: ['desk/assign'] },
+      { entityType: 'conversation', state: 'resolved', terminal: false, fromInitial: false, operations: ['desk/resolve'] },
+    ]);
+    // Left out, each for its reason: `desk/ingest` is also merely allowed; `desk/park` is a
+    // self-loop; `desk/flip` leads to two different states.
+    const ops = moves.flatMap((m) => m.operations);
+    for (const op of ['desk/ingest', 'desk/park', 'desk/flip']) expect(ops).not.toContain(op);
+  });
+
+  it('answers nothing for a model with no lifecycles', () => {
+    expect(lifecycleMovesOf(undefined)).toEqual([]);
+    expect(lifecycleMovesOf({})).toEqual([]);
   });
 });

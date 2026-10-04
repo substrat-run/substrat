@@ -246,7 +246,8 @@ export function Pulse({
   const loading = health === undefined || metrics === undefined;
   const stamp = pulseStamp(window.to);
   const range = RANGES.find((r) => Number(r.value) === hours);
-  const bins = series?.bucketMinutes ? (series.bucketMinutes < 60 ? `${series.bucketMinutes} min` : `${series.bucketMinutes / 60} h`) : null;
+  const bins = series?.bucketMinutes ? binLabel(series.bucketMinutes) : null;
+  const notYet = (business?.apps ?? []).filter((a) => a.unavailable === 'not-yet-available');
 
   // Drag-to-zoom on the sparkline column: any row's sparkline is a handle on the card's
   // one clock. A drag shorter than a click leaves the row's own link to work.
@@ -397,7 +398,7 @@ export function Pulse({
             <ConnectorLine key={row.provider} row={row} bucketMinutes={connectorBucketMinutes} window={window} handle={handle} />
           )) : <Note>No connector calls in this window.</Note>
         ) : <Note>{connectorError ? 'Connector calls are unavailable right now.' : 'Connector call analytics are not available on this plane.'}</Note>}
-        <SectionHead cells={['Business today', 'Today', 'Yesterday', 'Change', business ? `Moves per ${business.bucketMinutes < 60 ? `${business.bucketMinutes} min` : `${business.bucketMinutes / 60} h`}` : 'Moves per bucket', '']} />
+        <SectionHead cells={['Business today', 'Today', 'Yesterday', 'Change', business ? `Moves per ${binLabel(business.bucketMinutes)}` : 'Moves per bucket', '']} />
         {businessError ? <Note>Business volumes are unavailable right now.</Note> : business === null ? <Note>Reading business volumes…</Note> : business.rows.length ? (
           business.rows.map((row) => (
             <BusinessLine
@@ -428,10 +429,10 @@ export function Pulse({
       {oneApp && !!overlays?.incompleteSources?.length && <Footnote>Partial change history: {overlays.incompleteSources.join(', ')}. Older records may be omitted.</Footnote>}
       {oneApp && overlayError && <Footnote>Change overlays are unavailable. Traffic is still shown.</Footnote>}
       {oneApp && !!overlays?.unavailableSources?.length && <Footnote>Unavailable change sources: {overlays.unavailableSources.join(', ')}.</Footnote>}
-      {!!business?.apps.some((a) => a.unavailable === 'not-yet-available') && (
+      {notYet.length > 0 && (
         <Footnote>
           Business volumes need a re-push of{' '}
-          {business.apps.filter((a) => a.unavailable === 'not-yet-available').map((a) => apps.find((x) => x.app_scope_id === a.scopeId)?.name ?? a.scopeId).join(', ')}.
+          {notYet.map((a) => apps.find((x) => x.app_scope_id === a.scopeId)?.name ?? a.scopeId).join(', ')}.
         </Footnote>
       )}
       {metrics === null && <Footnote>Per-app requests, errors and p95 could not be read.</Footnote>}
@@ -443,6 +444,9 @@ export function Pulse({
     </Page>
   );
 }
+
+/** A bin's width as the card's headers say it. */
+const binLabel = (minutes: number) => (minutes < 60 ? `${minutes} min` : `${minutes / 60} h`);
 
 const caps: CSSProperties = { fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)' };
 const num: CSSProperties = { textAlign: 'right', paddingRight: 16, fontFamily: 'var(--font-mono)', fontSize: 13 };

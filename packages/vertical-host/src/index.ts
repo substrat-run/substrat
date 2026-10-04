@@ -83,7 +83,8 @@ import {
   invocationEventsInput,
   deadLettersInput,
   lifecycleFlowInput,
-  operationSeriesInput,
+  operationSeriesShape,
+  operationSeriesWindow,
   type EntityHistoryInput,
   type EventFacetInput,
   type EventCauseInput,
@@ -1254,11 +1255,7 @@ export function mountPlatformSurface<Env extends object>(
   // #1750: business volumes per bucket over a scope THIS vertical holds — Pulse's
   // business rows. POST, like the process map's read, because the pairs travel in the body.
   app.post('/internal/operation-series', async (c) => {
-    // Two parses rather than `.extend`: the input schema carries refinements, and the
-    // object parse strips `scopeId` on its own.
-    const body: unknown = await c.req.json();
-    const scopeId = scopeIdOf.parse((body as { scopeId?: unknown } | null)?.scopeId);
-    const input = operationSeriesInput.parse(body);
+    const { scopeId, ...input } = operationSeriesShape.extend({ scopeId: scopeIdOf }).superRefine(operationSeriesWindow).parse(await c.req.json());
     return c.json(await deps.hostFor(c.env).operationSeriesLocal(scopeId, input));
   });
 

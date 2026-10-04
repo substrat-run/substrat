@@ -33,6 +33,17 @@ export interface PageOpts {
   cursor?: string;
 }
 
+/** A team-grain observability read's query: which apps, and the window. */
+const obsWindowQs = (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string }): string => {
+  const p = new URLSearchParams();
+  for (const s of q.scopeIds ?? []) p.append('scopeId', s);
+  if (q.hours) p.set('hours', String(q.hours));
+  if (q.since) p.set('since', q.since);
+  if (q.until) p.set('until', q.until);
+  const qs = p.toString();
+  return qs ? `?${qs}` : '';
+};
+
 const pageQs = (opts?: PageOpts): string => {
   const q = new URLSearchParams();
   if (opts?.limit != null) q.set('limit', String(opts.limit));
@@ -1918,30 +1929,16 @@ export const api = {
    * series per app, every scope asked for present whether it served or not. No
    * `scopeIds` means every app this team has installed — resolved by the worker.
    */
-  teamTraffic: (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) => {
-    const p = new URLSearchParams();
-    for (const s of q.scopeIds ?? []) p.append('scopeId', s);
-    if (q.hours) p.set('hours', String(q.hours));
-    if (q.since) p.set('since', q.since);
-    if (q.until) p.set('until', q.until);
-    const qs = p.toString();
-    return call<TeamTrafficSeries>(`/observability/traffic${qs ? `?${qs}` : ''}`);
-  },
+  teamTraffic: (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) =>
+    call<TeamTrafficSeries>(`/observability/traffic${obsWindowQs(q)}`),
   connectorCalls: (q: { hours?: number; since?: string; until?: string } = {}) =>
     call<ConnectorCallsView>(`/observability/connector-calls?${new URLSearchParams({
       ...(q.hours ? { hours: String(q.hours) } : {}),
       ...(q.since ? { since: q.since } : {}),
       ...(q.until ? { until: q.until } : {}),
     })}`),
-  businessVolumes: (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) => {
-    const p = new URLSearchParams();
-    for (const s of q.scopeIds ?? []) p.append('scopeId', s);
-    if (q.hours) p.set('hours', String(q.hours));
-    if (q.since) p.set('since', q.since);
-    if (q.until) p.set('until', q.until);
-    const qs = p.toString();
-    return call<BusinessVolumesView>(`/observability/business-volumes${qs ? `?${qs}` : ''}`);
-  },
+  businessVolumes: (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) =>
+    call<BusinessVolumesView>(`/observability/business-volumes${obsWindowQs(q)}`),
   /** `since`/`until` are the chart's time cursor — a window ending in the past, which
    *  `hours` cannot name. Sent instead of `hours`, never beside it. */
   appTenantLogs: (
