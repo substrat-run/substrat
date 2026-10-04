@@ -3595,6 +3595,10 @@ describe('#1819 — the co-located rewind holds, and the CP-full switch releases
    * subject the scope does not already have off.
    */
   describe('a module held only by a tenant-level grant (#2029 × #1823)', () => {
+    // A tenant of its own: the cases above leave SCHED switched off on scopes of `t`, and a
+    // tenant-level grant is refused while any scope of the tenant has it off (#1743).
+    const t = tenantId.parse(ulid());
+    const node = (s: ScopeId) => ({ tenantId: t, scopeId: s });
     const tick = async (s: ScopeId) => (await host.getSystemScope(SCHED, t, s)).invoke('sched/tick');
     /** Provisioned by a host that registers no module, so the scope seats no `system:` grant at all. */
     const bareScope = async (): Promise<ScopeId> => {
@@ -3609,6 +3613,8 @@ describe('#1819 — the co-located rewind holds, and the CP-full switch releases
       return s;
     };
     beforeAll(async () => {
+      await host.admin.createTenant(staff, { id: t, slug: `hold-tw-${t.slice(-10).toLowerCase()}`, name: 'Hold TW' });
+      await host.admin.grantEntitlement(staff, t, 'sched');
       await host.admin.grantToSystem(staff, {
         moduleId: SCHED,
         permission: permissionKey.parse('sched:tick'),
