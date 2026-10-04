@@ -8844,7 +8844,8 @@ export class CloudflareScopeHost implements ScopeHost {
   // side before the call; what runs HERE is the half only this deployment can
   // enforce: the scope's own permission check against its delivered
   // `connection:<id>` tuple, in the scope's own DO. Fail closed — no grant, no
-  // effect — exactly as for any other caller.
+  // effect — exactly as for any other caller. And the lifecycle delivered to the
+  // scope (#1713): a held scope's invoke and bytes doors refuse, as every other door does.
 
   /** Invoke ONE operation in this deployment as a CONNECTION (#574). */
   async connectorInvokeLocal(
@@ -8854,6 +8855,7 @@ export class CloudflareScopeHost implements ScopeHost {
     operation: string,
     input?: unknown,
   ): Promise<unknown> {
+    await this.assertLive(tenantId, scopeId); // #1713: a held scope runs no connector work either
     await this.migrateAndRecord(scopeId);
     return this.buildStub(tenantId, scopeId, undefined, connectionId).invoke(operation, input);
   }
@@ -8865,6 +8867,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     upload: AttachmentUploadInput,
   ): Promise<AttachmentRecord> {
+    await this.assertLive(tenantId, scopeId); // #1713: a held scope runs no connector work either
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).upload(upload);
@@ -8884,6 +8887,7 @@ export class CloudflareScopeHost implements ScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<OpenedAttachment | null> {
+    await this.assertLive(tenantId, scopeId); // #1713: a held scope runs no connector work either
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface(
