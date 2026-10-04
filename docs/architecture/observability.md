@@ -416,8 +416,12 @@ for a scope it was asked about by tenant (`async-invocation-log.ts`):
   the histogram, facets and patterns count async work with no other change. The router's
   datapoints meter requests only, so past `REQUESTS_FROM_ROUTER_SINCE` the cube is the
   router's requests **plus** a telemetry cube of the async lines alone (`asyncRequests`,
-  filtered on `kind`). `request` is a value no line spells, so the Requests list applies that
-  one selection to the answer rather than the query.
+  filtered on `kind`). `request` is a value no line spells, so the Requests list matches it
+  in the query by what every request line carries and no async line does — a `method` — and
+  narrows before its limit, so a window full of consumer lines still pages its requests.
+- **Entities.** An async line counts what a run emitted (`eventCount`, the declared
+  `eventTypes`) and never names the entities: an entity id is the vertical's data. Its
+  `entities` is always `[]`.
 - **Ships with the vertical, not the platform.** This is scope-host code, which a vertical
   bundles. A vertical writes these lines from the release of its adapter that has them, on
   its next push after upgrading — unlike the request line, which the platform's entry adds
