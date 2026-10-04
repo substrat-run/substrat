@@ -27,7 +27,13 @@ describe('widget session edges, for desks that predate them (#1853)', () => {
       tuple.run('widgetSession:moved', 'conversation:follow-up');
       tuple.run('widgetSession:quiet', 'conversation:other');
 
-      db.exec(ticket0Migrations.find((m) => m.version === '0024')!.sql);
+      const sql = ticket0Migrations.find((m) => m.version === '0024')!.sql;
+      const all = () => db.prepare(`SELECT * FROM _substrat_tuples ORDER BY subject, object`).all();
+      db.exec(sql);
+      const once = all();
+      // Idempotent: a second run finds no live stale edge and inserts nothing new.
+      db.exec(sql);
+      expect(all()).toEqual(once);
 
       const live = db
         .prepare(`SELECT subject, object FROM _substrat_tuples WHERE revoked_at IS NULL ORDER BY subject, object`)
