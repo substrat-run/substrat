@@ -309,8 +309,12 @@ attributes a report by the ROUTER's line, never by the vertical's:
 
 - one tenant, the caller's, and one app, with no every-tenant spelling;
 - a report counts only when its `fieldCoverageId` matches a router request line, read from the
-  router's own services only (`ROUTER_SERVICES`, by `$metadata.service`), that names this
-  tenant and this app; each id counts once;
+  router's own scripts only (`ROUTER_SCRIPT_NAMES`, by `$metadata.service`), that names this
+  tenant and this app; each id counts once. Workers Logs name a line's writer by script name
+  alone, with nothing that tells a dispatch-namespace script from a top-level worker, so the
+  platform's script names (`PLATFORM_SCRIPT_NAMES`, in contracts) are reserved: a vertical slug
+  that would deploy under one is refused at registration and at deploy, and the tally refuses
+  an app whose own scripts would be named like the router's;
 - vertical lines from the app's own script family only;
 - reports refused whole when malformed, duplicated, past the declared half's 200-name cap, or
   (given the declaration) naming a field or operation it lacks;
