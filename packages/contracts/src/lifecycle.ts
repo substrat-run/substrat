@@ -347,7 +347,9 @@ export function assertTransition(
   (err as unknown as Record<symbol, RefusedTransition>)[REFUSED_TRANSITION] = {
     entityType: ref?.entityType ?? null,
     entityId: ref?.entityId ?? null,
-    from,
+    // The caller's `from` is usually a record's status column, which can hold anything; only
+    // the lifecycle's own vocabulary is kept, so a durable refusal row never copies it.
+    from: Object.prototype.hasOwnProperty.call(lc.states, from) ? from : UNDECLARED_STATE,
     operation,
     attempted: targets.size === 1 ? [...targets][0]! : null,
   };
@@ -366,13 +368,22 @@ export interface RefusedTransition {
   /** Null when the caller of `assertTransition` did not name the record. */
   entityType: string | null;
   entityId: string | null;
+  /** A state the lifecycle declares, or `UNDECLARED_STATE` when the record was in none. */
   from: string;
   operation: string;
-  /** The state the operation leads to where it is legal — null when that is not one state. */
+  /** The state the operation leads to where it is legal — null when that is not one state.
+   *  Always a declared state: it is read off the lifecycle, never from the caller. */
   attempted: string | null;
 }
 
 const REFUSED_TRANSITION = Symbol.for('substrat.refused-transition');
+
+/**
+ * What a refused transition records as its `from` when the record was in no state the
+ * lifecycle declares (#1745). The literal is not kept: it is whatever the record's column
+ * held, which the lifecycle never vouched for and which may be anything a person typed.
+ */
+export const UNDECLARED_STATE = 'undeclared';
 
 /** The refused transition an error carries, when `assertTransition` threw it. */
 export function refusedTransitionOf(err: unknown): RefusedTransition | null {

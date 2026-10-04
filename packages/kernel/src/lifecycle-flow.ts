@@ -358,9 +358,10 @@ export function readLifecycleFlow(ctx: TimelineReader, input: LifecycleFlowInput
 
   // #1745: the moves the lifecycle refused in the window — recorded after each rollback, so
   // they are a separate, bounded read rather than part of the replay (nothing committed).
+  // Transitions only: a guard row has no from-state to draw a stub from.
   const refusedRows = ctx.sql.query<{ from_state: string; attempted_state: string | null; operation: string; actor: string }>(
     `SELECT from_state, attempted_state, operation, actor FROM _substrat_refusals
-      WHERE entity_type = ? AND at >= ? AND at < ?
+      WHERE entity_type = ? AND kind = 'transition' AND at >= ? AND at < ?
       ORDER BY at LIMIT ?`,
     [input.entityType, since, until, LIFECYCLE_FLOW_EVENT_BUDGET],
   );

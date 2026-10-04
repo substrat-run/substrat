@@ -23,7 +23,7 @@ import { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
 /** Every column of `_substrat_refusals`, in the order `mapRefusalRow` expects. */
 export const REFUSAL_COLUMNS =
   'id, kind, tenant_id, scope_id, entity_type, entity_id, from_state, attempted_state, operation,' +
-  ' invoked_operation, actor, impersonation, invocation_id, at, drained_at';
+  ' invoked_operation, guard, reason, actor, impersonation, invocation_id, at, drained_at';
 
 /** The raw row shape, as either adapter hands it back. */
 export interface RefusalDbRow {
@@ -33,10 +33,13 @@ export interface RefusalDbRow {
   scope_id: string | null;
   entity_type: string | null;
   entity_id: string | null;
-  from_state: string;
+  from_state: string | null;
   attempted_state: string | null;
   operation: string;
   invoked_operation: string | null;
+  guard: string | null;
+  /** NULL on a row written before the column; the kind implies it there. */
+  reason: string | null;
   actor: string;
   impersonation: string | null;
   invocation_id: string | null;
@@ -44,7 +47,7 @@ export interface RefusalDbRow {
   drained_at: string | null;
 }
 
-/** The problem code each recorded kind was refused with — the 409's `reason`. */
+/** The problem code a row written before the `reason` column was refused with, by kind. */
 const REASON_OF_KIND: Readonly<Record<string, string>> = { transition: INVALID_TRANSITION };
 
 /**
@@ -59,14 +62,15 @@ export function mapRefusalRow(row: RefusalDbRow): RefusalRecord {
   return d.finish<RefusalRecord>({
     id: d.required<string>('id', shape.id, row.id),
     kind,
-    reason: REASON_OF_KIND[kind] ?? null,
+    reason: d.nullable('reason', shape.reason, row.reason ?? null) ?? REASON_OF_KIND[kind] ?? null,
+    guard: d.nullable('guard', shape.guard, row.guard ?? null),
     actor: d.json('actor', shape.actor, row.actor, UNDECODED_ACTOR),
     actorKind: actorKindOf(row.actor),
     tenantId: d.required('tenant_id', shape.tenantId, row.tenant_id),
     scopeId: d.nullable('scope_id', shape.scopeId, row.scope_id ?? null),
     entityType: d.nullable('entity_type', shape.entityType, row.entity_type ?? null),
     entityId: d.nullable('entity_id', shape.entityId, row.entity_id ?? null),
-    fromState: d.required<string>('from_state', shape.fromState, row.from_state),
+    fromState: d.nullable('from_state', shape.fromState, row.from_state ?? null),
     attemptedState: d.nullable('attempted_state', shape.attemptedState, row.attempted_state ?? null),
     operation: d.required<string>('operation', shape.operation, row.operation),
     invokedOperation: d.nullable('invoked_operation', shape.invokedOperation, row.invoked_operation ?? null),
@@ -87,6 +91,7 @@ export function refusalListQuery(filter?: RefusalFilter): { sql: string; params:
     parts.push(`${column} = ?`);
     params.push(value);
   };
+  eq('kind', f.kind);
   eq('entity_type', f.entityType);
   eq('entity_id', f.entityId);
   eq('actor', f.actor === undefined ? undefined : storedActor(f.actor));

@@ -25,6 +25,7 @@ import {
   listsDeclaredBy,
   mapPage,
   moduleManifest,
+  nameRefusedRecord,
   operationInputsOf,
   pageOf,
   permissionKey,
@@ -917,9 +918,14 @@ export function requireSigned(ctx: OperationContext, entity: EntityRef, template
     [entity.entityType, entity.entityId, templateKey],
   )[0];
   if (!signed) {
-    throw conflict('protocol_required', 
-      `protocol required: '${templateKey}' must be signed before this transition ` +
-        `(${entity.entityType} ${entity.entityId})`,
+    // #1745: named, so a refusal by the `protocol/all-signed` guard is counted against the record.
+    throw nameRefusedRecord(
+      conflict(
+        'protocol_required',
+        `protocol required: '${templateKey}' must be signed before this transition ` +
+          `(${entity.entityType} ${entity.entityId})`,
+      ),
+      entity,
     );
   }
 }
@@ -945,9 +951,14 @@ export function requireCountersigned(
     [entity.entityType, entity.entityId, templateKey],
   )[0];
   if (!counter) {
-    throw conflict('protocol_required', 
-      `protocol required: '${templateKey}' must be counter-signed before this transition ` +
-        `(${entity.entityType} ${entity.entityId})`,
+    // #1745: named, so a refusal by the `protocol/all-signed` guard is counted against the record.
+    throw nameRefusedRecord(
+      conflict(
+        'protocol_required',
+        `protocol required: '${templateKey}' must be counter-signed before this transition ` +
+          `(${entity.entityType} ${entity.entityId})`,
+      ),
+      entity,
     );
   }
 }

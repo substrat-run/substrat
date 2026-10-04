@@ -2299,6 +2299,12 @@ export function scopeHostContractSuite(
         drainedAt: null,
       });
       expect(rows[0]!.decodeError).toBeUndefined();
+      expect(rows[0]!.guard).toBeNull();
+
+      // A move the lifecycle allows records nothing.
+      const allowed = ulid();
+      await stub.invoke('test/move', { entityId: 'r2-ok', state: 'draft' }, { invocationId: allowed });
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: allowed })).toEqual([]);
 
       // The row survived the operation's rollback — and the operation itself left nothing
       // behind in the outbox for that call.
@@ -2317,6 +2323,16 @@ export function scopeHostContractSuite(
       const logged = await host.admin.accessLog(staff, { tenantId: t1, method: 'listRefusals' });
       expect(logged.length).toBeGreaterThan(0);
       await expect(host.admin.listRefusals(staff, t2, s1)).rejects.toThrow();
+
+      // A record whose status column holds arbitrary text: the refusal is recorded, with the
+      // state as the marker — the lifecycle never vouched for that text, so it is not kept.
+      const undeclared = ulid();
+      await expect(
+        stub.invoke('test/refuse', { entityId: 'r2-odd', from: 'call ada@example.com' }, { invocationId: undeclared }),
+      ).rejects.toThrow(/invalid transition/);
+      const [oddRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: undeclared });
+      expect(oddRow).toMatchObject({ kind: 'transition', fromState: 'undeclared', entityId: 'r2-odd', operation: 'test/move' });
+      expect(JSON.stringify(oddRow)).not.toMatch(/ada@example\.com|call ada/);
     });
 
     // -- scope data introspection: the §5.4 admin-query RPC --------------------
@@ -6929,6 +6945,94 @@ export function scopeHostContractSuite(
     it('leaves unguarded operations untouched', async () => {
       const stub = await host.getScope(alice, t1, s1);
       await expect(stub.invoke<string[]>('guarded/rows')).resolves.toEqual(['go']);
+    });
+
+    it('records a guard refusal once, after the rollback, with no message or input on the row (#1745)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const rowsBefore = await stub.invoke<string[]>('guarded/rows');
+      const call = ulid();
+      const note = 'call me at ada@example.com';
+      await expect(
+        stub.invoke('guarded/open', { id: 'g-refused', note }, { invocationId: call }),
+      ).rejects.toThrow(/gate closed/);
+      // The caller's answer is the predicate's own 409, unchanged by being recorded.
+      await expect(stub.invoke('guarded/open', { id: 'g-refused', note })).rejects.toMatchObject({
+        code: 'conflict',
+      });
+
+      const rows = await host.admin.listRefusals(staff, t1, s1, { invocationId: call });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        kind: 'guard',
+        guard: 'gate/must-be-open',
+        reason: 'gate_closed',
+        actor: alice,
+        actorKind: 'principal',
+        tenantId: t1,
+        scopeId: s1,
+        entityType: 'guarded-thing',
+        entityId: 'g-refused',
+        // A guard stands before an operation; the kernel does not know the record's state.
+        fromState: null,
+        attemptedState: null,
+        operation: 'guarded/open',
+        invokedOperation: 'guarded/open',
+        impersonation: null,
+        invocationId: call,
+        drainedAt: null,
+      });
+      expect(rows[0]!.decodeError).toBeUndefined();
+      // Keys and vocabulary only: neither the input nor the message the caller saw.
+      expect(JSON.stringify(rows[0])).not.toMatch(/ada@example\.com|gate closed|call me/);
+      // Both attempts recorded, each once, and as guards.
+      expect(await host.admin.listRefusals(staff, t1, s1, { kind: 'guard', entityId: 'g-refused' })).toHaveLength(2);
+      expect(await host.admin.listRefusals(staff, t1, s1, { kind: 'transition', entityId: 'g-refused' })).toEqual([]);
+
+      // The wire takes any non-empty string as a conflict's reason, so a predicate can put
+      // request text there; the row keeps a code or the fixed marker, never the text.
+      const leaked = ulid();
+      await expect(
+        stub.invoke('guarded/open', { id: 'g-leak', reason: 'call ada@example.com' }, { invocationId: leaked }),
+      ).rejects.toThrow(/gate closed/);
+      const [leakRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: leaked });
+      expect(leakRow).toMatchObject({ kind: 'guard', reason: 'unrecognized', entityId: 'g-leak' });
+      expect(JSON.stringify(leakRow)).not.toMatch(/ada@example\.com|call ada/);
+
+      // The same for the record's type, which a predicate names from whatever it was handed:
+      // kept only when spelled as an entity type. The id stays — it is the record's key.
+      const typed = ulid();
+      await expect(
+        stub.invoke('guarded/open', { id: 'g-typed', entityType: 'ada@example.com' }, { invocationId: typed }),
+      ).rejects.toThrow(/gate closed/);
+      const [typedRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: typed });
+      expect(typedRow).toMatchObject({ kind: 'guard', entityType: 'undeclared', entityId: 'g-typed' });
+      expect(JSON.stringify(typedRow)).not.toMatch(/ada@example\.com/);
+
+      // The rollback took the predicate's own write with it, and the handler never ran —
+      // the refusal row is the one write that survived.
+      expect(await stub.invoke<string[]>('guarded/rows')).toEqual(rowsBefore);
+    });
+
+    it('records nothing for a guard that passes, or one that throws something other than a refusal (#1745)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const rowsBefore = await stub.invoke<string[]>('guarded/rows');
+      const passed = ulid();
+      await stub.invoke('guarded/open', { id: 'g-open', open: true }, { invocationId: passed });
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: passed })).toEqual([]);
+      expect(await stub.invoke<string[]>('guarded/rows')).toEqual([...rowsBefore, 'gate saw g-open', 'opened g-open']);
+
+      // A bare Error is a guard failing, not a guard refusing: blocked, never recorded.
+      const failed = ulid();
+      await expect(stub.invoke('guarded/act', { flag: 'stop' }, { invocationId: failed })).rejects.toThrow(
+        /expected flag/,
+      );
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: failed })).toEqual([]);
+      // And a guard whose predicate is missing fails closed, also unrecorded.
+      const orphan = ulid();
+      await expect(stub.invoke('guarded/orphan', {}, { invocationId: orphan })).rejects.toThrow(
+        /unknown guard predicate/,
+      );
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: orphan })).toEqual([]);
     });
 
     // -- operation withdrawal (K-17) -----------------------------------------

@@ -14,6 +14,7 @@ import { errorCodeOf } from '../src/errors.js';
 import {
   assertTransition,
   refusedTransitionOf,
+  UNDECLARED_STATE,
   defineLifecycles,
   emitLifecycles,
   operationsOf,
@@ -284,6 +285,19 @@ describe('the evaluator', () => {
     // The problem document stays what it was: the record's id and state are the scope's.
     expect((caught as { extensions: Record<string, unknown> }).extensions).toEqual({ reason: 'invalid_transition' });
     expect(JSON.stringify(caught)).not.toContain('o1');
+  });
+
+  it('keeps only a declared state as the refused move\'s from — never what the record\'s column held (#1745)', () => {
+    for (const held of ['call ada@example.com', 'constructor', '__proto__', '']) {
+      let caught: unknown;
+      try {
+        assertTransition(order, 'order', held, 'shop/complete', { entityType: 'order', entityId: 'o1' });
+      } catch (err) {
+        caught = err;
+      }
+      expect(refusedTransitionOf(caught), held).toMatchObject({ from: UNDECLARED_STATE, attempted: 'completed' });
+      expect(JSON.stringify(refusedTransitionOf(caught))).not.toContain('ada@example.com');
+    }
   });
 
   it('still records a refusal from a caller that did not name the record — with the record unknown', () => {

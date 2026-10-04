@@ -150,9 +150,13 @@ import {
   type AttachmentRowShape,
   type ExtractionOutcome,
   IDEMPOTENCY_DDL,
-  REFUSALS_DDL,
+  REFUSALS_TABLE_DDL,
+  REFUSALS_INDEX,
   refusalInsert,
-  refusedTransitionOf,
+  refusalOf,
+  markGuardRefusal,
+  REFUSALS_REBUILD,
+  refusalsAdmitGuards,
   assertIdempotencyKey,
   assertPermissionKey,
   idempotencyLookupQuery,
@@ -691,7 +695,8 @@ const KERNEL_DDL = `
   -- #116: the request-dedupe table, kernel-owned so no vertical migrates for it.
   ${IDEMPOTENCY_DDL}
   -- #1745: refused transitions, recorded after the rollback like a denial. Kernel-owned.
-  ${REFUSALS_DDL}
+  ${REFUSALS_TABLE_DDL}
+  ${REFUSALS_INDEX}
   -- #1672: capabilities — authority carried by a secret (a link share), and the sessions
   -- an exchange trades that secret for. Shared with the pure adapter from
   -- @substrat-run/kernel so the two cannot part company; the column comments are there.
@@ -4318,7 +4323,14 @@ export function defineScopeDO(
               `before '${operation}'; no registered module contributes it (operation blocked)`,
           );
         }
-        await predicate.handler(ctx, guard.config, input);
+        try {
+          await predicate.handler(ctx, guard.config, input);
+        } catch (err) {
+          // #1745: a guard refusing is recorded after the rollback, as a transition is —
+          // marked here, where which guard threw is still known. Always rethrown.
+          markGuardRefusal(err, guard.predicate, operation);
+          throw err;
+        }
       }
     }
 
@@ -5132,6 +5144,15 @@ export function defineScopeDO(
       // both adapters by the query-plan test rather than by that gate.
       this.sql.exec('CREATE INDEX IF NOT EXISTS _substrat_outbox_invocation ON _substrat_outbox (invocation_id, id)');
       this.ensureScheduleStateKind();
+      this.ensureRefusalsAdmitGuards();
+    }
+
+    /**
+     * #1745: `_substrat_refusals`, rebuilt to admit a guard row (a nullable `from_state`, plus
+     * `guard` and `reason`) on a scope DO whose table predates it.
+     */
+    private ensureRefusalsAdmitGuards(): void {
+      this.rebuildIfStale('_substrat_refusals', refusalsAdmitGuards, REFUSALS_REBUILD);
     }
 
     /**
@@ -5144,18 +5165,27 @@ export function defineScopeDO(
      * the stored DDL is the one probe both adapters can make.
      */
     private ensureScheduleStateKind(): void {
+      this.rebuildIfStale('_substrat_schedule_state', scheduleStateHasKind, SCHEDULE_STATE_REBUILD);
+    }
+
+    /**
+     * Run a kernel create-copy-drop-rename `script` over `table` when the stored DDL fails
+     * `isCurrent` — the one shape `ensureScheduleStateKind` and `ensureRefusalsAdmitGuards`
+     * share, so the pure adapter's twin rebuilds byte-identically.
+     */
+    private rebuildIfStale(table: string, isCurrent: (tableSql: string) => boolean, script: string): void {
       const row = this.sql
-        .exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, '_substrat_schedule_state')
+        .exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table)
         .toArray()[0] as { sql: string } | undefined;
-      if (!row || scheduleStateHasKind(row.sql)) return;
-      // In a transaction, for the reason the kernel constant spells out: create-copy-
+      if (!row || isCurrent(row.sql)) return;
+      // In a transaction, for the reason the kernel constants spell out: create-copy-
       // drop-rename has two intermediate states and both are unrecoverable on the next
       // wake. `transactionSync`, not the async one every operation uses — the DO
       // runtime forbids a manual BEGIN through `sql.exec`, and this body is wholly
       // synchronous, which is the one case the sync API is for (it commits at the
       // first await, and there is none). It also has to be sync because the caller is.
       this.revision.transactionSync(() => {
-        for (const stmt of splitSqlStatements(SCHEDULE_STATE_REBUILD)) this.sql.exec(stmt);
+        for (const stmt of splitSqlStatements(script)) this.sql.exec(stmt);
       });
     }
 
@@ -5897,7 +5927,7 @@ export function defineScopeDO(
      * survives — the whole point, since the denial is the write the operation could not make.
      */
     /** K-42: the session a refused call ran under travels with the denial row. */
-    /** #1745: a refused transition the operation failed with, written after its rollback. */
+    /** #1745: a refused transition or refusing guard the operation failed with, written after its rollback. */
     private recordRefusal(
       subject: CheckSubject,
       tenantId: TenantId,
@@ -5907,7 +5937,7 @@ export function defineScopeDO(
       invocationId: string | null,
       impersonation?: ImpersonationSession,
     ): void {
-      const refused = refusedTransitionOf(err);
+      const refused = refusalOf(err);
       if (!refused) return;
       const q = refusalInsert({
         tenantId,
