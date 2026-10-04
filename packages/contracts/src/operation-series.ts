@@ -31,6 +31,17 @@ export const OPERATION_SERIES_MAX_BUCKETS = 400;
 export const OPERATION_SERIES_MAX_MOVES = 64;
 
 /**
+ * An instant the read's primary-key seek can encode: a ULID carries 48 bits of epoch
+ * milliseconds, so the window must sit between the epoch and 10889 AD. Refused here, with
+ * a validation error, rather than as a `RangeError` from `ulidFloor` inside the read.
+ */
+const MAX_ULID_TIME = 2 ** 48 - 1;
+const seekable = windowInstant.refine(
+  (v) => Date.parse(v) >= 0 && Date.parse(v) <= MAX_ULID_TIME,
+  { message: 'instant is outside what an event id can encode (the epoch to 10889 AD)' },
+);
+
+/**
  * The input's fields, unrefined, so a route that adds its own (the vertical's `scopeId`) can
  * `.extend` it and apply `operationSeriesWindow` after, as `operationSeriesInput` does.
  */
@@ -45,8 +56,8 @@ export const operationSeriesShape = z.object({
      * whole days counted can line them up with any instant it likes.
      */
     // Bucket edges are computed in whole seconds, so the anchor is one.
-    since: windowInstant.refine((v) => Date.parse(v) % 1000 === 0, { message: 'since must be a whole second' }),
-    until: windowInstant,
+    since: seekable.refine((v) => Date.parse(v) % 1000 === 0, { message: 'since must be a whole second' }),
+    until: seekable,
     bucketMinutes: z.number().int().positive().max(1440),
 });
 

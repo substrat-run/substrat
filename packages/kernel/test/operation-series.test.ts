@@ -149,4 +149,19 @@ describe('operationSeriesInput (#1750)', () => {
     expect(operationSeriesInput.safeParse({ ...base, until: base.since }).success).toBe(false);
     expect(operationSeriesInput.safeParse({ ...base, moves: Array.from({ length: 65 }, () => CLOSE) }).success).toBe(false);
   });
+
+  it('refuses an instant an event id cannot encode as a validation error, and takes the epoch itself', () => {
+    const epoch = { ...base, since: '1970-01-01T00:00:00.000Z', until: '1970-01-02T00:00:00.000Z' };
+    expect(operationSeriesInput.safeParse(epoch).success).toBe(true);
+    // The read's seek would otherwise throw a RangeError from `ulidFloor` past the boundary.
+    expect(() => readOperationSeries({ sql: readerOver([]).reader }, operationSeriesInput.parse(epoch))).not.toThrow();
+    for (const bad of [
+      { ...epoch, since: '1969-12-31T23:59:59.000Z' },
+      { ...epoch, since: '1969-12-31T00:00:00.000Z', until: '1969-12-31T23:59:59.999Z' },
+    ]) {
+      const r = operationSeriesInput.safeParse(bad);
+      expect(r.success).toBe(false);
+      expect(JSON.stringify(r.error?.issues)).toContain('outside what an event id can encode');
+    }
+  });
 });
