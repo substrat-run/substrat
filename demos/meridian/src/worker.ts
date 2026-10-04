@@ -23,8 +23,11 @@ import { principalId, scopeId, tenantId, z,
 } from '@substrat-run/contracts';
 import {
   defineScopeDO,
+  defineScopeSweeperDO,
   CloudflareScopeHost,
   type CloudflareScopeHostOptions,
+  SCOPE_SWEEPER_NAME,
+  type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
 import {
   kickFlags,
@@ -55,16 +58,31 @@ export const ScopeDO = defineScopeDO(MODULES, {});
 /** The per-tenant identity DO (shared @substrat-run/vertical-auth) — bound as AUTH; wrangler needs the export. */
 export { IdentityDO };
 
-/*
- * The deployment's timer is the platform's (#1902): engine-absence declares
- * `absence/expire-stale` (a leave still `requested` past its start date is cancelled,
- * attributed to the engine), so the upload adds a scope sweeper, bound as `SWEEPER` under
- * the `SweeperDO` class this file used to export — the same namespace, so the roster and
- * the alarm the hand-wired one kept carry over. `mountPlatformSurface` below hands it
- * `hostFor` and keeps its roster. The schedule runs as the absence module, so it needs the
- * tenant to hold `absence`, which a standard install does not grant: there it fires and
- * fails (#1654).
+/**
+ * The deployment's own timer (#461, #1646): a roster-keeping singleton whose alarm runs
+ * each provisioned scope's due recurring work — executor retries and every schedule the
+ * bundled modules declare, which today is engine-absence's `absence/expire-stale` (a
+ * leave still `requested` past its start date is cancelled, attributed to the engine).
+ * That schedule runs as the absence module, so it needs the tenant to hold `absence`,
+ * which a standard install does not grant: there it fires and fails (#1654).
+ *
+ * Nothing else fires it on a hosted deploy: the control plane's cron sweeps a host that
+ * registers no modules, and a dispatch script's `triggers.crons` is not honoured
+ * (scheduler.md §3.3). The roster is kept by the platform hooks below — provision and
+ * reconcile note a scope, delete-scope forgets it — and never from request traffic, which
+ * would enrol a routed preview fork of somebody's real data.
  */
+export const SweeperDO = defineScopeSweeperDO<Env>({
+  // #1232: the pass reports the version whose code actually ran (the deploy-injected binding).
+  versionId: (env) => env.SUBSTRAT_VERSION_ID ?? null,
+  intervalMs: 120_000,
+  host: hostFor,
+});
+
+/** The sweeper singleton's stub — one roster and one alarm per deployment. */
+function sweeper(env: Env): DurableObjectStub & ScopeSweeperDo {
+  return env.SWEEPER.get(env.SWEEPER.idFromName(SCOPE_SWEEPER_NAME)) as DurableObjectStub & ScopeSweeperDo;
+}
 
 /** The (tenant, scope) a request is addressed to. */
 export interface CompanyNode {
@@ -85,12 +103,16 @@ const DEV_NODE: CompanyNode = {
 
 interface Env {
   // A sandbox-clean vertical (scope-local-permissions.md Phase 3): its ONLY durable stores
-  // are its OWN DO classes — SCOPE (business data, per scope) and AUTH (identity, per
-  // tenant); the timer is the platform's, added at upload (#1902). No shared D1 `AUTH_DB`, no
+  // are its OWN DO classes — SCOPE (business data, per scope), AUTH (identity, per tenant)
+  // and SWEEPER (the deployment's timer, one per deployment). No shared D1 `AUTH_DB`, no
   // CONTROL_PLANE binding, no service binding — the last two refused by
   // assertSandboxContract. Each being an OWN class is what keeps it legal.
   SCOPE: DurableObjectNamespace;
   AUTH: DurableObjectNamespace<IdentityDO>;
+  /** The roster-keeping sweep singleton — the deployment's own timer (#461). Its own class too. */
+  SWEEPER: DurableObjectNamespace;
+  /** Injected at deploy (#1242); absent locally — the sweep record then reads NULL. */
+  SUBSTRAT_VERSION_ID?: string;
   /**
    * Which auth the app runs — the config section. OIDC-only (oidc-only-demos.md): there is
    * no builtin credential store, so `oidc` verifies a bearer token against an OIDC issuer
@@ -269,6 +291,17 @@ mountPlatformSurface<Env>(app, {
   ownerRoleKey: 'hr-admin',
   onProvision: async (env, b) => {
     await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner);
+    // Onto the sweep roster, so the scope's schedules run (#1646). This hook also runs on
+    // `/internal/reconcile`, which is how a scope provisioned before the sweeper existed
+    // joins. Meridian is a listed vertical, so a promote moves none of its installs'
+    // versions; #1172's reconcile follows the version each install RUNS (#1653), so every
+    // install is reconciled after a promote anyway, a bounded batch per control-plane pass
+    // (scheduler.md §3.3). Which is also why everything here must stay idempotent.
+    await sweeper(env).noteScope(b.tenantId, b.scopeId);
+  },
+  // A reaped scope's alarm must never wake it again.
+  onDeleteScope: async (env, s) => {
+    await sweeper(env).forgetScope(s);
   },
   resolveOwner: async (env, ref) => {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);

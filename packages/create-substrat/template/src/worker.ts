@@ -2,13 +2,10 @@
  * This vertical as a deployable Cloudflare Worker — SANDBOX-CLEAN and
  * control-plane-less: the shape `substrat push` deploys into the platform's
  * dispatch namespace. Its only durable stores are its OWN DO classes — `SCOPE`
- * (kernel + engines + this vertical, bundled) and `CONFIG` (per-instance settings
- * delivered by the platform); no CONTROL_PLANE binding, no service bindings, no
- * ASSETS binding — the platform refuses those.
- *
- * No timer to wire either: when your modules declare `manifest.schedules`, the
- * platform adds the deployment's scope sweeper at upload (#1902), and
- * `mountPlatformSurface` below hands it this worker's host and keeps its roster.
+ * (kernel + engines + this vertical, bundled), `SWEEPER` (the deployment's own
+ * timer, #461) and `CONFIG` (per-instance settings delivered by the platform);
+ * no CONTROL_PLANE binding, no service bindings, no ASSETS binding — the
+ * platform refuses those.
  *
  * `substrat push` derives the deploy config from `substrat.runtimeNeeds` in
  * package.json (entry = this file, stores = the DO classes exported here) —
@@ -43,7 +40,13 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { CloudflareScopeHost, defineScopeDO } from '@substrat-run/adapter-cloudflare';
+import {
+  CloudflareScopeHost,
+  defineScopeDO,
+  defineScopeSweeperDO,
+  SCOPE_SWEEPER_NAME,
+  type ScopeSweeperDo,
+} from '@substrat-run/adapter-cloudflare';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
@@ -64,10 +67,31 @@ export const ScopeDO = defineScopeDO(MODULES, {});
 /**
  * The per-instance config store (`config-do.ts`) — one per tenant, rows keyed by scope.
  * Declared as a store in package.json `substrat.runtimeNeeds.stores`, like `ScopeDO`
- * above. Re-exported because workerd resolves a DO class from the
+ * above and `SweeperDO` below. Re-exported because workerd resolves a DO class from the
  * ENTRY module's exports; defining it in another file is fine, hiding it here is not.
  */
 export { ConfigDO };
+
+/**
+ * The deployment's own timer (#461): a roster-keeping singleton whose alarm runs
+ * each provisioned scope's due recurring work — executor retries and any
+ * `manifest.schedules` your modules declare — with no control plane anywhere.
+ * `/internal/provision` and `/internal/reconcile` add scopes to the roster;
+ * `/internal/delete-scope` removes them. Costs nothing while the roster is empty.
+ */
+export const SweeperDO = defineScopeSweeperDO<Env>({
+  // #1232: the pass reports the version whose code actually ran (the deploy-injected binding).
+  versionId: (env) => env.SUBSTRAT_VERSION_ID ?? null,
+  intervalMs: 120_000,
+  host: hostFor,
+});
+
+/** The sweeper singleton's stub — one roster and one alarm per deployment. */
+function sweeper(env: Env): DurableObjectStub & ScopeSweeperDo {
+  return env.SWEEPER.get(
+    env.SWEEPER.idFromName(SCOPE_SWEEPER_NAME),
+  ) as DurableObjectStub & ScopeSweeperDo;
+}
 
 interface Node {
   tenantId: TenantId;
@@ -87,8 +111,12 @@ const DEV_NODE: Node = {
 };
 
 interface Env {
+  /** Injected at deploy (#1242); absent locally — the sweep record then reads NULL. */
+  SUBSTRAT_VERSION_ID?: string;
   /** One DO per scope — the vertical's only durable store (sandbox-clean). */
   SCOPE: DurableObjectNamespace;
+  /** The roster-keeping sweep singleton — the deployment's own timer (#461). */
+  SWEEPER: DurableObjectNamespace;
   /** Per-instance config delivered by the platform (`/internal/configure`). */
   CONFIG: DurableObjectNamespace;
   /** Local `wrangler dev` only: when 'true', fall back to DEV_NODE if no router
@@ -265,9 +293,9 @@ mountApi(app, stub);
 // and bookmarks/rewind — plus the guaranteed { error } envelope is authored ONCE
 // in @substrat-run/vertical-host (issue #510); mount it and it cannot drift.
 //
-// The surface also keeps the platform's scope sweeper (#1902) in step — a newly
-// provisioned scope joins its roster, so its schedules run, and a deleted one leaves
-// it — and hands it `hostFor`, so there is no hook to write for either. Reconcile needs a durable owner-of-record to heal from — this starter keeps none
+// This starter's hooks keep the deployment's sweep roster (#461) in step: a newly
+// provisioned scope joins it (so its schedules run), and a deleted one leaves it.
+// Reconcile needs a durable owner-of-record to heal from — this starter keeps none
 // (that lives with real auth, the auth seam), so `resolveOwner` is omitted and
 // /internal/reconcile answers 501 until you wire auth and supply one.
 mountPlatformSurface<Env>(app, {
@@ -275,6 +303,15 @@ mountPlatformSurface<Env>(app, {
   hostFor,
   roles: ROLES,
   ownerRoleKey: OWNER_ROLE_KEY,
+  // Both hooks are `Promise<void>`: the roster's own count is its business, and
+  // returning it here would make the platform's response shape depend on what a
+  // vertical happens to hand back. Await, discard.
+  onProvision: async (env, b) => {
+    await sweeper(env).noteScope(b.tenantId, b.scopeId);
+  },
+  onDeleteScope: async (env, s) => {
+    await sweeper(env).forgetScope(s);
+  },
   // Per-instance config delivery (the dashboard's Settings → Env and Identity tabs).
   // WITHOUT this hook `/internal/configure` answers 501 for the life of the app: the
   // dashboard saves the setting, reports `delivered: false`, and the running worker

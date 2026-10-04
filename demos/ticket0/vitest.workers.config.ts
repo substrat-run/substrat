@@ -18,7 +18,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 import { resolveWranglerConfig } from '@substrat-run/cli/dist/push.js';
-import { asUploaded } from '../../tools/workerd-as-uploaded.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /**
@@ -34,14 +33,11 @@ const installEntitlements = pkg.substrat.entitlements?.length ? pkg.substrat.ent
 const { build: _build, assets: _assets, ...derived } = resolveWranglerConfig(here).cfg;
 const config = join(here, 'node_modules/.cache/workerd-test/wrangler.json');
 mkdirSync(dirname(config), { recursive: true });
-// The worker as the platform uploads it (#1902): the platform's entry in front, and — this
-// vertical declaring schedules and exporting no sweeper — the platform's sweeper beside it,
-// bound as `SWEEPER`. `src/worker.ts` alone has no timer; production never runs it alone.
-const uploaded = await asUploaded(here, { ...derived, main: resolve(here, String(derived.main)) });
 writeFileSync(
   config,
   JSON.stringify({
-    ...uploaded,
+    ...derived,
+    main: resolve(here, String(derived.main)),
     // The one field NOT taken from the derivation. The platform baseline is newer than the
     // workerd this pool bundles can run (it falls back to its own latest), and at those
     // dates workerd serves real `node:vm`/`node:console` modules that shadow the pool
@@ -52,7 +48,6 @@ writeFileSync(
     // The two shared secrets the platform and the router present, and the version the
     // deploy injects (#1242). Test values; a real deploy injects its own.
     vars: {
-      ...uploaded.vars,
       PLATFORM_SECRET: 'test-platform-secret',
       ROUTER_SECRET: 'test-router-secret',
       SUBSTRAT_VERSION_ID: '01JTESTVRSN0000000000000T0',

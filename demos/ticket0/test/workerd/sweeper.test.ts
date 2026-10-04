@@ -9,11 +9,8 @@
  *
  * This suite drives the worker the way the platform does — `/internal/provision`,
  * `/internal/reconcile`, `/internal/restore`, `/internal/delete-scope`, with the platform
- * secret — and then runs a pass of the deployment's sweeper, the one its alarm runs every
- * two minutes. Since #1902 that sweeper is the PLATFORM's, supplied at upload: the suite
- * runs the worker as the uploader ships it (`tools/workerd-as-uploaded.mjs`), so the cases
- * below hold the supplied sweeper and `mountPlatformSurface`'s roster calls, not a timer
- * this desk wired itself. What it holds:
+ * secret — and then runs a pass of the deployment's own sweeper, the one its alarm runs
+ * every two minutes. What it holds:
  *
  *   - a provisioned desk is on the roster, and a pass wakes its due snooze while a snooze
  *     that is not due yet stays put;

@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run -c vitest.supplied-sweeper.config.ts",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {

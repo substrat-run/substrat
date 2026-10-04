@@ -7,13 +7,9 @@
  * actor. Until #1646 the hosted worker ran nothing on a timer, so that never happened on
  * a pushed deploy.
  *
- * This suite drives the worker the way the platform does — `/internal/provision`,
+ * This suite drives `src/worker.ts` the way the platform does — `/internal/provision`,
  * `/internal/reconcile`, `/internal/delete-scope`, with the platform secret — and runs a
- * pass of the deployment's sweeper, the one its alarm runs. Since #1902 that sweeper is the
- * PLATFORM's: `src/worker.ts` exports none, and the suite runs the worker as the uploader
- * ships it (`tools/workerd-as-uploaded.mjs`) — the platform's entry in front, its generated
- * sweeper beside it — so every case below is also the proof that the supplied one runs a
- * schedule, keeps its roster from the platform's own calls, and leaves a restored copy alone. Two tenants, one entitled
+ * pass of the deployment's own sweeper, the one its alarm runs. Two tenants, one entitled
  * beyond a standard install and one holding exactly it:
  *
  *   - one whose entitlements include `absence`: the stale leave is cancelled, and a leave
