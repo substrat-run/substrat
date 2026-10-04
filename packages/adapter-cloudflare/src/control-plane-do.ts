@@ -4243,6 +4243,22 @@ export class ControlPlaneDO extends DurableObject {
     return row?.revision ?? 0;
   }
 
+  /**
+   * #1713: raise the directory's epoch to at least `atLeast`, never lower it, and answer the epoch
+   * now. One statement, so concurrent heals that each learned a held epoch settle on the highest.
+   * Called when a scope refuses this directory's delivery while holding an epoch another history
+   * of the directory minted (a fresh-directory restore whose clock ran behind the old one's).
+   */
+  raiseLifecycleEpoch(atLeast: number): number {
+    if (!Number.isSafeInteger(atLeast) || atLeast < 0) throw new Error(`not an epoch: ${atLeast}`);
+    this.sql.exec(
+      `INSERT INTO lifecycle_revisions (subject, revision) VALUES ('directory:epoch', ?)
+         ON CONFLICT (subject) DO UPDATE SET revision = MAX(revision, excluded.revision)`,
+      atLeast,
+    );
+    return this.lifecycleEpoch();
+  }
+
   /** #1713: count one lifecycle change of a scope or a tenant. Call inside the change's transaction. */
   private bumpLifecycleRevision(subject: string): void {
     this.sql.exec(

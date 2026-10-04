@@ -491,6 +491,8 @@ interface ControlPlaneStub {
   lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): Promise<LifecycleTargetRow[]>;
   /** #1713: what a scope's deployment acknowledged holding. */
   recordLifecycleReceipt(scopeId: string, delivered: string, at: string): Promise<void>;
+  /** #1713: raise the directory's epoch to at least this; answers the epoch now. */
+  raiseLifecycleEpoch(atLeast: number): Promise<number>;
   createTenant(
     id: string,
     slug: string,
@@ -7736,22 +7738,17 @@ export class CloudflareScopeHost implements ScopeHost {
       console.error('substrat: could not read the scopes to deliver a lifecycle to (#1713)', err);
       return report;
     }
-    for (const t of targets) {
-      const tenantId = t.tenant_id as TenantId;
-      const scopeId = t.scope_id as ScopeId;
-      const parsed = scopeLifecycle.safeParse({
-        scope: t.scope_status,
-        tenant: t.tenant_status,
-        at: new Date().toISOString(),
-        revision: { epoch: t.epoch, scope: t.scope_rev, tenant: t.tenant_rev },
-      });
-      if (!parsed.success) {
+    for (const first of targets) {
+      const tenantId = first.tenant_id as TenantId;
+      const scopeId = first.scope_id as ScopeId;
+      let t = first;
+      let lifecycle = this.lifecycleOfTarget(t);
+      if (!lifecycle) {
         // A status this code does not know (a newer directory): delivering a guess could lift a hold.
         report.failed += 1;
-        console.error(`substrat: scope ${scopeId} has a lifecycle this code cannot read (#1713)`, parsed.error);
+        console.error(`substrat: scope ${scopeId} has a lifecycle this code cannot read (#1713)`);
         continue;
       }
-      const lifecycle = parsed.data;
       // A live scope whose deployment already acknowledged exactly this has nothing to receive,
       // and neither does one with no receipt in a directory never restored: a deployment holding
       // no lifecycle runs live. That keeps an activation, and every transition before a
@@ -7763,7 +7760,29 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       report.attempted += 1;
       try {
-        const answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+        let answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+        // The scope refused us as OLDER while holding a revision this directory's history did not
+        // write: an epoch ahead of ours, or ours with other counters. Only another history of the
+        // directory delivers those — the one a fresh-directory restore replaced, whose epoch a
+        // clock running behind (or a restore in the same millisecond) cannot outrank. A scope only
+        // ever holds epochs a directory minted, so this directory learns past it: its epoch is
+        // raised above the one held (monotonic, one statement), and the scope is delivered again.
+        const held = answer.lifecycle.revision;
+        if (
+          !answer.applied &&
+          held &&
+          (held.epoch > lifecycle.revision.epoch ||
+            (held.epoch === lifecycle.revision.epoch && lifecycleReceipt(answer.lifecycle) !== lifecycleReceipt(lifecycle)))
+        ) {
+          await this.cp.raiseLifecycleEpoch(held.epoch + 1);
+          const [again] = await this.cp.lifecycleTargets({ scopeId });
+          const next = again ? this.lifecycleOfTarget(again) : null;
+          if (again && next) {
+            t = again;
+            lifecycle = next;
+            answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+          }
+        }
         // The receipt is what the scope HOLDS: a newer delivery it kept instead is the truth.
         await this.cp.recordLifecycleReceipt(scopeId, lifecycleReceipt(answer.lifecycle), new Date().toISOString());
         report.delivered += 1;
@@ -7786,6 +7805,17 @@ export class CloudflareScopeHost implements ScopeHost {
       }
     }
     return report;
+  }
+
+  /** One directory row as the lifecycle a delivery carries (#1713), or null for a status this code does not know. */
+  private lifecycleOfTarget(t: LifecycleTargetRow): ScopeLifecycle | null {
+    const parsed = scopeLifecycle.safeParse({
+      scope: t.scope_status,
+      tenant: t.tenant_status,
+      at: new Date().toISOString(),
+      revision: { epoch: t.epoch, scope: t.scope_rev, tenant: t.tenant_rev },
+    });
+    return parsed.success ? parsed.data : null;
   }
 
   /**
