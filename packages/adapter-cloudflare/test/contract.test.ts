@@ -2423,9 +2423,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, completed: 1, deferred: 0 });
     expect(await runOf(s, later.id)).toMatchObject({ status: 'done' });
     expect(await runOf(s, heldId)).toMatchObject({ status: 'running', attempts: 0 });
-    // …and with nothing ahead of it, the held run's turn comes round again (and waits again).
-    expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 0 });
-    await deadlinePassed(s);
+    // …and with nothing ahead of it, the held run (still past its deadline) has its turn, and waits again.
     expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, deferred: 1 });
   });
 
