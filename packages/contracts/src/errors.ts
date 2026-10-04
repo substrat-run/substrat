@@ -137,7 +137,7 @@ export const PROBLEM_EXTENSIONS = {
   }),
   forbidden: z.object({ reason: z.string().min(1).optional() }),
   /** `reason` narrows a refusal one surface answers differently: `scope_unrecorded` (#113). */
-  not_found: z.object({ reason: z.string().min(1).optional() }),
+  not_found: z.strictObject({ reason: z.string().min(1).optional() }),
   conflict: z.object({ reason: z.string().min(1).optional() }),
   validation_failed: z.object({
     errors: z.array(validationIssue).optional(),
