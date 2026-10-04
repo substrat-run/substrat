@@ -2323,6 +2323,16 @@ export function scopeHostContractSuite(
       const logged = await host.admin.accessLog(staff, { tenantId: t1, method: 'listRefusals' });
       expect(logged.length).toBeGreaterThan(0);
       await expect(host.admin.listRefusals(staff, t2, s1)).rejects.toThrow();
+
+      // A record whose status column holds arbitrary text: the refusal is recorded, with the
+      // state as the marker — the lifecycle never vouched for that text, so it is not kept.
+      const undeclared = ulid();
+      await expect(
+        stub.invoke('test/refuse', { entityId: 'r2-odd', from: 'call ada@example.com' }, { invocationId: undeclared }),
+      ).rejects.toThrow(/invalid transition/);
+      const [oddRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: undeclared });
+      expect(oddRow).toMatchObject({ kind: 'transition', fromState: 'undeclared', entityId: 'r2-odd', operation: 'test/move' });
+      expect(JSON.stringify(oddRow)).not.toMatch(/ada@example\.com|call ada/);
     });
 
     // -- scope data introspection: the §5.4 admin-query RPC --------------------
