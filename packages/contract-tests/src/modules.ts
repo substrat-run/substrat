@@ -23,6 +23,7 @@ import {
   type ListPage,
   type PermissionKey,
   KERNEL_AUTHORED_EVENT_TYPES,
+  substratError,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -2725,6 +2726,69 @@ export const loggedMod: ModuleRegistration = {
   },
 };
 
+// -- #1901: async work's invocation lines -------------------------------------
+
+export const asyncLogModManifest = moduleManifest.parse({
+  id: '@test/asynclog',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'asynclog:tick', description: 'run the async-log fixture schedules' }],
+  events: {
+    emits: [{ type: 'asynclog.acted', schemaVersion: 1 }],
+    consumes: [{ type: 'asynclog.acted', schemaVersion: 1 }],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'asynclog',
+  schedules: [
+    { operation: 'asynclog/tick', cadence: { everyMinutes: 60 }, permissions: ['asynclog:tick'] },
+    { operation: 'asynclog/tick-fails', cadence: { everyMinutes: 60 }, permissions: ['asynclog:tick'] },
+  ],
+});
+
+/** The text a refusing handler throws with — which no invocation line may carry (#1901). */
+export const ASYNC_LOG_SECRET_TEXT = 'payload-quoted-in-an-error';
+
+/**
+ * The module the async-log suite drives (#1901). `asynclog/act` emits one event per tag; the
+ * consumer logs and, for a tag the call marked `fail`, refuses with a coded error whose text
+ * quotes the event, so the suite can show the line keeps the code and drops the text. The two
+ * schedules log, and the second then refuses.
+ */
+export const asyncLogMod: ModuleRegistration = {
+  manifest: asyncLogModManifest,
+  operations: {
+    'asynclog/act': ((ctx, input: { tags: string[]; fail?: boolean }) => {
+      for (const tag of input.tags) {
+        ctx.emit({
+          type: 'asynclog.acted',
+          schemaVersion: 1,
+          entity: { entityType: 'asynclog-thing', entityId: tag },
+          piiClass: 'none',
+          payload: { tag, fail: input.fail === true },
+        });
+      }
+      return { ok: true };
+    }) as OperationHandler<never, unknown>,
+    'asynclog/tick': (async (ctx) => {
+      assertAllowed(await ctx.check('asynclog:tick' as PermissionKey));
+      ctx.log.info('ticked');
+    }) as OperationHandler<never, unknown>,
+    'asynclog/tick-fails': (async (ctx) => {
+      assertAllowed(await ctx.check('asynclog:tick' as PermissionKey));
+      ctx.log.info('ticking, about to refuse');
+      throw substratError('conflict', `tick refused: ${ASYNC_LOG_SECRET_TEXT}`);
+    }) as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    'asynclog.acted': ((ctx, event) => {
+      const { tag, fail } = event.payload as { tag: string; fail: boolean };
+      ctx.log.info('consumed {tag}', { tag });
+      if (fail) throw substratError('precondition_failed', `refused ${tag}: ${ASYNC_LOG_SECRET_TEXT}`);
+    }) as ConsumerHandler,
+  },
+};
+
 export const contractTestModules: ModuleRegistration[] = [
   ...contractTestInitialModules,
   lateMod,
@@ -2768,6 +2832,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // #1746/#1747: the ctx.log suite's module. Its consumer reacts only to its own
   // `logged.acted`, so it is inert for every other suite.
   loggedMod,
+  // #1901: the async-log suite's module. Its consumer reacts only to its own
+  // `asynclog.acted`, and its schedules run only on a host that registers it.
+  asyncLogMod,
 ];
 
 // -- live reads (#938) -------------------------------------------------------
