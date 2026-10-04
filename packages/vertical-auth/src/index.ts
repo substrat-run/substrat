@@ -4,8 +4,17 @@ export { oidcRpAuthProvider, type OidcRpConfig } from './oidc-rp-provider.js';
 export { IdentityDO, doAuthProvider, type IdentityDoEnv, type IdentityStub } from './identity-do.js';
 export { resolveCookieDomain } from './cookie-domain.js';
 export { FIRST_SIGN_IN_WINDOW_MS, OWNER_CLAIM_TTL_MS, type OwnerSeat, type OwnerTransfer } from './owner-seat.js';
-export { invitePath, mintOwnerClaimLink, ownerClaimPath, sha256Hex } from './owner-claim-link.js';
-// `mountInviteRoutes` is deliberately NOT re-exported here. It is the one module in this
+export {
+  OWNER_CLAIM_LABEL,
+  UNATTRIBUTED_PLATFORM_ACTOR,
+  invitePath,
+  mintOwnerClaimLink,
+  ownerClaimPath,
+  sha256Hex,
+  type OwnerClaimMintDirectory,
+  type OwnerClaimMintHost,
+} from './owner-claim-link.js';
+// `mountInviteRoutes` (and `mountOwnerClaim`, on `./owner-claim-routes`) is deliberately NOT re-exported here. It is the one module in this
 // package that imports `hono` at runtime, and a barrel re-export would make every
 // `import '@substrat-run/vertical-auth'` evaluate it — so a consumer that wants only an
 // `AuthProvider` or the OIDC helpers would resolve a peer it never uses. It lives on the

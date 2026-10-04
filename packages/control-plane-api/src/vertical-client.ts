@@ -7,6 +7,7 @@ import type {
   EntitlementGrant,
   ModuleId,
   PermissionKey,
+  PlatformActorId,
   PlatformRequest,
   PlatformRequestFilter,
   PlatformRequestId,
@@ -535,7 +536,13 @@ export class VerticalClient {
    * stored: `provisionResultFrom` drops secret-shaped keys from an ack that installers
    * persist, and this is the deliberate opposite — a credential that lives one exchange.
    */
-  async mintOwnerClaim(input: { tenantId: TenantId; scopeId: ScopeId; origin: string }): Promise<OwnerClaimLink> {
+  async mintOwnerClaim(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    origin: string;
+    /** Who asked (#1686) — the vertical records it as the claim link's minter. */
+    actor?: PlatformActorId;
+  }): Promise<OwnerClaimLink> {
     return ownerClaimLink.parse(await this.postInternal<unknown>('/internal/owner-claim', input, 'owner-claim'));
   }
 

@@ -78,10 +78,10 @@ import {
   observePlace,
   placesReporter,
   reportScopeMembers,
-  sha256Hex,
   type AuthProvider,
   type InstanceAuth,
 } from '@substrat-run/vertical-auth';
+import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { API_DOCUMENT } from './api.js';
 import { T0_PERM, TICKET0_ENV, ticket0Manifest } from './manifest.js';
 import {
@@ -554,36 +554,30 @@ app.get('/api/me', async (c) => {
 
 /**
  * Claim the owner seat by link (#925): the installer signed in at the issuer and now
- * presents the token the dashboard minted for this desk. Binds their subject → the owner
- * principal, which already holds `desk-admin` from provision. One answer for every way it
- * can fail, so a probe learns nothing about which.
+ * presents the link the dashboard minted for this desk. The route is vertical-auth's one
+ * mount (#1686); the desk's own part is that the owner is its first colleague.
  */
-app.post('/api/claim-owner', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
-  if (!subject) throw new HTTPException(401, { message: 'sign in before claiming this desk' });
-  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
-  const principal = await identityDo(c.env, node).claimOwner(
-    node.scopeId,
-    subject.sub,
-    await sha256Hex(token),
-  );
-  if (!principal) throw new HTTPException(400, { message: 'this claim link is invalid, expired, or already used' });
+mountOwnerClaim(app, {
+  nodeFor,
+  authProvider: (env, req) => authProviderFor(env, req),
+  directory: (env, node) => identityDo(env, node),
+  host: hostFor,
+  noun: 'desk',
   /**
    * The owner is the desk's first colleague, so they go in its directory (#1149).
    * Without this the one human on a fresh hosted desk was missing from `list-agents`,
    * which made the assignee picker they were shown empty and their own name a ULID.
    */
-  await recordStaffProfile(
-    async (p, operation, input) =>
-      (await hostFor(c.env).getScope(principalId.parse(p), node.tenantId, node.scopeId)).invoke(
-        operation,
-        input,
-      ),
-    principal,
-    subject,
-  );
-  return c.json({ ok: true, principal });
+  onClaimed: (c, { node, principal, subject }) =>
+    recordStaffProfile(
+      async (p, operation, input) =>
+        (await hostFor(c.env).getScope(principalId.parse(p), node.tenantId, node.scopeId)).invoke(
+          operation,
+          input,
+        ),
+      principal,
+      subject,
+    ),
 });
 
 // ── Invites — the only way a second person reaches a hosted desk ─────────────
@@ -1189,7 +1183,8 @@ mountPlatformSurface<Env>(app, {
   // sits empty after the first-sign-in window (#925). Both read the same directory the
   // provision hook above writes.
   ownerSeat: (env, ref) => identityDo(env, ref).ownerSeat(ref.scopeId),
-  mintOwnerClaim: (env, ref, input) => mintOwnerClaimLink(identityDo(env, ref), ref.scopeId, input.origin),
+  mintOwnerClaim: (env, ref, input) =>
+    mintOwnerClaimLink({ directory: identityDo(env, ref), host: hostFor(env) }, ref, input.origin, input.actor),
   // The owner hand-over (#1665): moves the record the reconcile above re-sources its owner from.
   transferOwner: (env, ref, input) =>
     identityDo(env, ref).transferOwner(ref.scopeId, input.from, input.to, input.toHoldsRole),

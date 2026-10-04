@@ -1683,6 +1683,24 @@ describe('mountPlatformSurface — the owner seat (#925)', () => {
     expect(bareHost.status).toBe(400);
     expect(seen).toHaveLength(1);
 
+    // The platform actor who asked is forwarded when the control plane names one (#1686) — and
+    // parsed, so a body naming something that is not a platform actor id is refused.
+    const ACTOR = '01J00000000000000000000ACT';
+    const withActor = await app.request(
+      '/internal/owner-claim',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, origin: 'https://desk.example.test', actor: ACTOR }) },
+      ENV,
+    );
+    expect(withActor.status).toBe(201);
+    expect(seen[1]).toEqual({ ref: REF, input: { origin: 'https://desk.example.test', actor: ACTOR } });
+    const badActor = await app.request(
+      '/internal/owner-claim',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, origin: 'https://desk.example.test', actor: 'someone' }) },
+      ENV,
+    );
+    expect(badActor.status).toBe(400);
+    expect(seen).toHaveLength(2);
+
     // Already claimed: the hook says null, the surface says 409 with the reason.
     const claimed = appWith(fakeHost(), { mintOwnerClaim: async () => null });
     const conflict = await claimed.request(

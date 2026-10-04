@@ -57,9 +57,13 @@ emit), and bound later by a verified subject — two ways:
   the app seconds later. After that a plain sign-in binds nobody: an instance nobody opened (a CI
   deploy, an issuer with open sign-up) is no longer a seat anyone can take, indefinitely.
 - **A claim link.** The platform asks `mintOwnerClaim` under its secret and the dashboard hands
-  the installer a short-lived `/?claim=<token>` link; `claimOwner` binds the subject that
-  presents it. Only the token's hash is stored, and minting again retires the earlier link.
-  `mintOwnerClaimLink` does the token + hash + URL once, so a vertical's hook is a one-liner.
+  the installer a short-lived `/?claim=<secret>` link. The link is a `become` capability in the
+  scope's own Durable Object: it expires after `OWNER_CLAIM_TTL_MS` (15 minutes), works once,
+  and its exchange is on the spine. The identity directory records which capability is the
+  current link, so minting again retires the earlier one (and revokes it in the scope).
+  `mintOwnerClaimLink` mints, records and revokes in one call, so a vertical's hook is a
+  one-liner. `mountOwnerClaim` (`@substrat-run/vertical-auth/owner-claim-routes`) is the
+  redemption, `POST /api/claim-owner`: one route, so a vertical does not write its own.
 
 A closed window is not a lost desk: the seat stays pending (`needsSetup` keeps saying so, and
 `ownerSeat` says *why* — open, closed, or already claimed) until a claim binds it. A re-provision

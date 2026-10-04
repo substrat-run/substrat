@@ -36,7 +36,7 @@ mountPlatformSurface(app, {
   resolveOwner: (env, r) => identityDo(env, r).getOwnerOfRecord(r.scopeId),
   onConfigure:  (env, b) => identityDo(env, b).putConfig(b.scopeId, b.entries),
   ownerSeat:      (env, r) => identityDo(env, r).ownerSeat(r.scopeId),
-  mintOwnerClaim: (env, r, i) => mintOwnerClaimLink(identityDo(env, r), r.scopeId, i.origin),
+  mintOwnerClaim: (env, r, i) => mintOwnerClaimLink({ directory: identityDo(env, r), host: hostFor(env) }, r, i.origin, i.actor),
   transferOwner:  (env, r, i) => identityDo(env, r).transferOwner(r.scopeId, i.from, i.to, i.toHoldsRole),
   completeOwnerTransfer: (env, r, i) => identityDo(env, r).completeOwnerTransfer(r.scopeId, i.from, i.to),
   abandonOwnerTransfer: (env, r, i) => identityDo(env, r).abandonOwnerTransfer(r.scopeId, i.from, i.to, i.toHoldsRole),

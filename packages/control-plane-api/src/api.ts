@@ -4017,7 +4017,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
     try {
-      return c.json(await vertical.mintOwnerClaim({ tenantId, scopeId, origin: `https://${host.hostname}` }), 201);
+      return c.json(await vertical.mintOwnerClaim({ tenantId, scopeId, origin: `https://${host.hostname}`, actor }), 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       throw e;

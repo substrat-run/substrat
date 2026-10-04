@@ -169,13 +169,19 @@ including the two OIDC ones where Better Auth stays dormant:
 - `resolvePrincipal` — the per-request lookup that turns a verified `sub` into the
   `PrincipalId` the kernel checks permissions against (and performs the first-sign-in claim
   while the window is open).
-- `ownerSeat` / `mintOwnerClaim` / `claimOwner` — the claim link. Once the window has closed
-  (or instead of relying on it), the platform mints a short-lived `/?claim=<token>` link under
-  its secret — the dashboard's *Owner seat* card — and `claimOwner` binds the subject that
-  presents it. Only the token's hash is stored; minting again retires the earlier link.
-  `mintOwnerClaimLink` does the token, the hash and the URL in one call, so the vertical's
-  `mintOwnerClaim` hook is a one-liner. A closed window is not a lost instance: the seat stays
-  pending — `needsSetup` keeps saying so, and `ownerSeat` says *why* — until a claim binds it.
+- `ownerSeat` / `recordOwnerClaim` / `claimOwnerByCapability` — the claim link. Once the window
+  has closed (or instead of relying on it), the platform asks for a short-lived
+  `/?claim=<secret>` link under its secret — the dashboard's *Owner seat* card. The link is a
+  `become` capability in the scope's own storage: it expires after 15 minutes, works once, can be
+  revoked, and its use is recorded on the scope's event log. The directory records which
+  capability is the current link, so minting again retires the earlier one.
+  `mintOwnerClaimLink` mints the capability, records it and revokes the previous one in one call,
+  so the vertical's `mintOwnerClaim` hook is a one-liner. `mountOwnerClaim`, from
+  `@substrat-run/vertical-auth/owner-claim-routes`, is the redemption route
+  (`POST /api/claim-owner`): it checks the secret is the current link, exchanges it, and binds the
+  signed-in subject, with one refusal for every failure. A closed window is not a lost instance:
+  the seat stays pending — `needsSetup` keeps saying so, and `ownerSeat` says *why* — until a
+  claim binds it.
 - `transferOwner(scopeId, from, to)` — the owner hand-over. Moves the owner of record, which
   `setPendingOwner` never does after its first write, and which a reconcile re-seats when a
   scope is locked out. It refuses, changing nothing, when the seat is still unclaimed, `from`

@@ -23,8 +23,12 @@ import {
   needsSetup as needsSetupRow,
   ownerSeat as ownerSeatRow,
   resolvePrincipal as resolvePrincipalRow,
-  mintOwnerClaim as mintOwnerClaimRow,
+  ownerClaimTarget as ownerClaimTargetRow,
+  recordOwnerClaim as recordOwnerClaimRow,
+  ownerClaimMatches as ownerClaimMatchesRow,
+  claimOwnerByCapability as claimOwnerByCapabilityRow,
   claimOwner as claimOwnerRow,
+  type OwnerClaimLinkRow,
   unbindSubject as unbindSubjectRow,
   unbindPrincipal as unbindPrincipalRow,
   subjectsOf as subjectsOfRows,
@@ -85,8 +89,10 @@ const SCHEMA_STATEMENTS: string[] = [
   // `pending_owner` (claimed and consumed), `owner_of_record` (#332, never consumed: the
   // vertical's own durable memory of the owner, in this per-tenant DO rather than the scope's
   // data DO, so it survives a scope-DO wipe and a reconcile can re-grant from it) and
-  // `owner_claim` (the claim link's hash, #925). The tables and the rules over them live in
-  // `owner-seat.ts` so they are unit-tested without a DO; the methods below delegate there.
+  // `owner_claim_capability` (which `become` capability is the current claim link, #1686; the
+  // legacy `owner_claim` hash rows of #925 are redeem-only until they expire). The tables and
+  // the rules over them live in `owner-seat.ts` so they are unit-tested without a DO; the
+  // methods below delegate there.
   ...OWNER_SEAT_DDL,
   // Outstanding member invites (the post-setup join path). Each is a pre-minted principal +
   // role the admin already granted at scope level, waiting for a login to claim it by token.
@@ -288,17 +294,38 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /**
-   * Mint a claim link for an unclaimed seat: the platform asks for this under its secret and
-   * the dashboard hands the installer the link. Only `tokenHash` reaches the DO; a new mint
-   * replaces the previous link. Null ⇒ the seat is already claimed (nothing to mint).
+   * The principal a claim link would bind — the pending owner — or null when the seat is not
+   * pending (#1686). What a mint reads before asking the scope for a `become` capability.
    */
-  async mintOwnerClaim(scopeId: string, tokenHash: string): Promise<{ expiresAt: string } | null> {
-    return mintOwnerClaimRow(this.registrySql, scopeId, tokenHash, Date.now());
+  async ownerClaimTarget(scopeId: string): Promise<string | null> {
+    return ownerClaimTargetRow(this.registrySql, scopeId);
   }
 
   /**
-   * Claim the seat by link: bind this verified subject to the owner principal if the token's
-   * hash matches the live claim. Consumes the seat and the link. Null ⇒ invalid or expired.
+   * Record a minted `become` capability as the scope's one claim link (#1686), replacing the
+   * previous link. Returns the previous capability id for the caller to revoke; null (nothing
+   * written) when the seat is no longer pending for `principal`.
+   */
+  async recordOwnerClaim(scopeId: string, principal: string, link: OwnerClaimLinkRow): Promise<{ previous: string | null } | null> {
+    return recordOwnerClaimRow(this.registrySql, scopeId, principal, link);
+  }
+
+  /** Is `tokenHash` the scope's live claim link? Asked before an exchange spends a use (#1686). */
+  async ownerClaimMatches(scopeId: string, tokenHash: string): Promise<boolean> {
+    return ownerClaimMatchesRow(this.registrySql, scopeId, tokenHash, Date.now());
+  }
+
+  /**
+   * Claim the seat with an exchanged claim-link capability (#1686): binds the subject when the
+   * capability is the recorded live link and names the pending owner. Null otherwise.
+   */
+  async claimOwnerByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null> {
+    return claimOwnerByCapabilityRow(this.registrySql, scopeId, sub, capabilityId, principal, Date.now());
+  }
+
+  /**
+   * LEGACY — claim the seat with a link minted before #1686, by its token's hash. Redeem-only;
+   * remove with `claimOwner` in owner-seat.ts (see the date there).
    */
   async claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null> {
     return claimOwnerRow(this.registrySql, scopeId, sub, tokenHash, Date.now());
@@ -482,7 +509,10 @@ export type IdentityStub = {
   needsSetup(scopeId: string): Promise<boolean>;
   ownerSeat(scopeId: string): Promise<OwnerSeat>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;
-  mintOwnerClaim(scopeId: string, tokenHash: string): Promise<{ expiresAt: string } | null>;
+  ownerClaimTarget(scopeId: string): Promise<string | null>;
+  recordOwnerClaim(scopeId: string, principal: string, link: OwnerClaimLinkRow): Promise<{ previous: string | null } | null>;
+  ownerClaimMatches(scopeId: string, tokenHash: string): Promise<boolean>;
+  claimOwnerByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
   claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
   createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;
   listInvites(scopeId: string): Promise<InviteRow[]>;

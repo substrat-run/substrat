@@ -895,10 +895,10 @@ describe('control-plane API', () => {
     });
     const owner = principalId.parse(ulid());
     const seat = { state: 'unclaimed', owner, firstSignIn: { open: false, until: '2026-08-28T12:15:00.000Z' }, claimLink: null };
-    const minted: { origin: string }[] = [];
+    const minted: { origin: string; actor?: string }[] = [];
     const fakeVertical = {
       ownerSeat: async () => seat,
-      mintOwnerClaim: async (input: { origin: string }) => {
+      mintOwnerClaim: async (input: { origin: string; actor?: string }) => {
         minted.push(input);
         return { claimUrl: `${input.origin}/?claim=tok`, expiresAt: '2026-08-28T12:30:00.000Z' };
       },
@@ -914,6 +914,8 @@ describe('control-plane API', () => {
     expect(await claimRes.json()).toEqual({ claimUrl: 'https://desk.global.substrat.run/?claim=tok', expiresAt: '2026-08-28T12:30:00.000Z' });
     // The origin came from the platform's own hostname directory, canonical first — never a body.
     expect(minted.map((m) => m.origin)).toEqual(['https://desk.global.substrat.run']);
+    // …and the actor who asked rides along, for the vertical to record as the link's minter (#1686).
+    expect(platformActorId.safeParse(minted[0]!.actor).success).toBe(true);
 
     // Cross-tenant fails closed (K-3): another tenant's pair reads as absent.
     expect((await delegated.request(`/tenants/${t2}/scopes/${sO}/owner-seat`, { headers: auth })).status).toBe(404);

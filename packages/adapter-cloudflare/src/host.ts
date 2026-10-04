@@ -54,6 +54,7 @@ import {
   verticalVersion,
   connection,
   capabilityExchange,
+  mintedCapability,
   capabilityGrant,
   principalId,
   connectionGrant,
@@ -2735,6 +2736,38 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage> {
     return this.scopeStub(scopeId).listCapabilities(filter);
+  }
+
+  /**
+   * The platform's `become` mint on the CP-less path (#1686) — `HostAdmin.mintCapability`'s
+   * ScopeDO half, for the deployment that serves the scope. Its one caller is an owner claim
+   * link, minted on the platform's instruction behind the vertical's platform-gated
+   * `/internal/owner-claim`; the control plane made the K-3 check and keeps the admin log before
+   * it called. Not a module verb: a module mints through `ctx.capabilities`, which mints `act`
+   * capabilities only. Same lifecycle gate as the exchange, so a held scope mints nothing.
+   */
+  async mintCapabilityLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: BecomeCapabilityInput,
+    actor: PlatformActorId,
+  ): Promise<MintedCapability> {
+    // Checked on this side too, as `HostAdmin.mintCapability` does: a typed refusal thrown
+    // across the RPC arrives as a bare message.
+    checkBecomeInput(input, new Date().toISOString() as Instant);
+    await this.assertLive(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return mintedCapability.parse(await this.scopeStub(scopeId).mintBecomeCapability(input, actor));
+  }
+
+  /**
+   * The platform's revoke on the CP-less path (#1686) — how a re-minted claim link retires the
+   * previous one. True when the scope held the capability (revoked now, or already); false when
+   * it holds no such capability. No lifecycle gate: a revoke only narrows, so a held scope still
+   * takes one. Idempotent.
+   */
+  async revokeCapabilityLocal(scopeId: ScopeId, capabilityId: CapabilityId, actor: PlatformActorId): Promise<boolean> {
+    return (await this.scopeStub(scopeId).revokeCapabilityAsPlatform(capabilityId, actor)) !== null;
   }
 
   /**

@@ -247,7 +247,7 @@ mountPlatformSurface(app, {
   // that sits empty after the first-sign-in window (omit either ⇒ 501)
   ownerSeat: (env, ref) => identityDo(env, ref).ownerSeat(ref.scopeId),
   mintOwnerClaim: (env, ref, input) =>
-    mintOwnerClaimLink(identityDo(env, ref), ref.scopeId, input.origin),
+    mintOwnerClaimLink({ directory: identityDo(env, ref), host: hostFor(env) }, ref, input.origin, input.actor),
   // The owner hand-over: moves the owner of record a reconcile re-seats (omit ⇒ 501)
   transferOwner: (env, ref, input) =>
     identityDo(env, ref).transferOwner(ref.scopeId, input.from, input.to, input.toHoldsRole),
@@ -275,8 +275,9 @@ window is not a lost instance — the seat stays **pending** until a claim binds
 dashboard's [Owner seat card](/platform/dashboard#owner-seat) mints a short-lived claim link
 (under the platform secret, through your `mintOwnerClaim` hook) that only its holder can use.
 A re-provision keeps whatever window the seat has and never re-opens a claimed one.
-`mintOwnerClaimLink` does the token, the hash and the URL in one call, which is why the hook is
-a one-liner; the full rule is on the [vertical-auth reference](/reference/vertical-auth#the-identity-directory).
+The link expires after 15 minutes and works once. `mintOwnerClaimLink` mints it and retires the
+previous one in one call, which is why the hook is a one-liner, and `mountOwnerClaim` is the route
+that redeems it; the full rule is on the [vertical-auth reference](/reference/vertical-auth#the-identity-directory).
 
 A push then:
 
