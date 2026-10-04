@@ -140,6 +140,17 @@ describe('readOperationSeries (#1750)', () => {
     expect(r.series[0]!.total).toBe(0);
   });
 
+  it('reads a schema-valid window at the end of what a ULID encodes, where the slack would pass it', () => {
+    const max = 2 ** 48 - 1;
+    const input = operationSeriesInput.parse({ moves: [CLOSE], since: '+010889-08-02T05:30:50Z', until: '+010889-08-02T05:31:50.655Z', bucketMinutes: 1 });
+    expect(Date.parse(input.until)).toBe(max);
+    expect(read([], input).series[0]!.total).toBe(0);
+    // The twin, at the max itself: an id carrying the largest instant a mint can stamp is
+    // inside the range, so the bound sits above every ULID rather than below the last one.
+    const r = read([{ at: new Date(max - 1).toISOString(), op: 'desk/close', idAt: new Date(max).toISOString() }], input);
+    expect(r.series[0]!.total).toBe(1);
+  });
+
   it('plans a closed range of the primary key: a minute years ago visits only its own rows', () => {
     const db = new DatabaseSync(':memory:');
     db.exec(DDL);
