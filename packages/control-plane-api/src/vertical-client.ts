@@ -76,6 +76,9 @@ import {
   peerGrantsEntry,
   peerSwitchOutcome,
   systemSwitchOutcome,
+  lifecycleDelivery,
+  type LifecycleDelivery,
+  type ScopeLifecycle,
   systemScheduleEntry,
   switchedOffInUnit,
   type SwitchedOffInUnit,
@@ -688,6 +691,38 @@ export class VerticalClient {
     expiresAt?: string;
   }): Promise<void> {
     await this.postInternal<unknown>('/internal/connector-grant', input, 'connector-grant');
+  }
+
+  /**
+   * Deliver one scope's lifecycle to the deployment serving it (#1713). Throws on anything but
+   * a parsed answer, a deployment built before the route (404/501) included, so the caller
+   * records no receipt and the heal sweep asks again.
+   */
+  async setLifecycle(input: {
+    scopeId: ScopeId;
+    lifecycle: ScopeLifecycle;
+  }): Promise<LifecycleDelivery> {
+    const verb = 'lifecycle';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const res = await this.reach(verb, () =>
+      this.options.fetch(`${base}/internal/lifecycle`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(input),
+      }),
+    );
+    if (res.status === 404) {
+      throw new ControlPlaneError(
+        501,
+        `the deployment serving scope ${input.scopeId} predates the lifecycle delivery (#1713) — redeploy the vertical`,
+      );
+    }
+    if (!res.ok) throw await this.refusal(verb, res);
+    const parsed = lifecycleDelivery.safeParse(await res.json().catch(() => null));
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `vertical answered ${verb} for scope ${input.scopeId} with an unexpected shape`);
+    }
+    return parsed.data;
   }
 
   /**

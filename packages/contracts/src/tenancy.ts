@@ -90,6 +90,32 @@ export const scopeStatus = z.enum([
 ]);
 export type ScopeStatus = z.infer<typeof scopeStatus>;
 
+/**
+ * A scope's lifecycle as the directory holds it, delivered to the deployment that serves the
+ * scope (#1713). A CP-less vertical has no directory to read, so the platform pushes this on
+ * every transition and its heal sweep re-pushes any scope whose last delivered state differs.
+ * It is a STATE, never a toggle: `at` is when the platform read it from the directory, and the
+ * deployment keeps the newest it has seen, so a push that arrives late cannot undo a later one.
+ */
+export const scopeLifecycle = z.object({
+  scope: scopeStatus,
+  tenant: tenantStatus,
+  at: instant,
+});
+export type ScopeLifecycle = z.infer<typeof scopeLifecycle>;
+
+/**
+ * What a deployment answers a lifecycle delivery with (#1713). `applied`: the delivery is now the
+ * stored state (false when the scope already held a newer one). `changed`: whether the scope's
+ * work is held now moved with it. `lifecycle`: what the scope holds after the call.
+ */
+export const lifecycleDelivery = z.object({
+  applied: z.boolean(),
+  changed: z.boolean(),
+  lifecycle: scopeLifecycle,
+});
+export type LifecycleDelivery = z.infer<typeof lifecycleDelivery>;
+
 // §5.2 of the design doc: A = DO-embedded SQLite is primary; B = DO control plane + D1
 export const storageShape = z.enum(['A', 'B']);
 export type StorageShape = z.infer<typeof storageShape>;

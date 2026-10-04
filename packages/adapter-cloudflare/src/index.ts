@@ -21,6 +21,8 @@ export type {
   PeerSwitchDelegation,
   ImportCursorDelegation,
   SystemSwitchDelegation,
+  LifecycleDelegation,
+  LifecycleDeliveryReport,
 } from './host.js';
 export { defineScopeDO } from './scope-do.js';
 export { ControlPlaneDO } from './control-plane-do.js';

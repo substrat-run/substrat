@@ -624,6 +624,16 @@ export interface AdminEntryInput {
  * Keeping the copies and gating them, rather than moving the DDL into the kernel, is the
  * recorded answer to #969; `docs/architecture/kernel-design.md` §8 says why.
  */
+/** #1713: one hosted scope, its directory lifecycle, and what its deployment last acknowledged. */
+export interface LifecycleTargetRow {
+  tenant_id: string;
+  scope_id: string;
+  scope_status: string;
+  tenant_status: string;
+  /** `lifecycleReceipt` of the acknowledged state, or null when none was. */
+  delivered: string | null;
+}
+
 const DIRECTORY_DDL = `
   -- The ';' in this comment is a deliberate tripwire; the DDL must go through
   -- splitSqlStatements, and a naive split(';') fails the directory at construction.
@@ -1121,6 +1131,16 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
+  -- #1713: the lifecycle each hosted scope's deployment last acknowledged, as
+  -- "<scope status>/<tenant status>" (lifecycleReceipt). A CP-less deployment has no
+  -- directory, so the platform delivers a scope's lifecycle to it, and the heal sweep
+  -- re-delivers wherever this differs from the directory. No row reads as active/active,
+  -- which is what a deployment holding no lifecycle runs as.
+  CREATE TABLE IF NOT EXISTS scope_lifecycle_receipts (
+    scope_id TEXT PRIMARY KEY,
+    delivered TEXT NOT NULL,
+    at TEXT NOT NULL
+  );
 `;
 
 /**
@@ -4120,6 +4140,58 @@ export class ControlPlaneDO extends DurableObject {
           onBehalfOf: r.on_behalf_of ? JSON.parse(r.on_behalf_of) : null,
           at: r.at,
         }) as AdminLogEntry,
+    );
+  }
+
+  /**
+   * #1713: the scopes whose lifecycle a deployment must hold, with their lifecycle as this
+   * directory holds it. A scope with a vertical (only a deployment serves one), past provisioning
+   * and not reaped (a reaped store must not be recreated by a delivery), under a tenant that is
+   * not reaped. `scopeId` narrows it to one scope and `tenantId` to one tenant's scopes, the
+   * fan-out of a tenant transition. With `drift`, only the scopes the heal sweep must deliver to:
+   * a receipt that differs from the directory, and every scope held now. Re-delivering a held
+   * scope every pass is what puts a hold back on a store a carry or a restore landed without it,
+   * and held scopes are few. Drifted rows first, so held ones never starve them.
+   */
+  lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): LifecycleTargetRow[] {
+    const where = [
+      's.vertical IS NOT NULL',
+      "s.status NOT IN ('provisioning', 'reaped')",
+      "t.status <> 'reaped'",
+    ];
+    const params: (string | number)[] = [];
+    if (filter.tenantId) {
+      where.push('s.tenant_id = ?');
+      params.push(filter.tenantId);
+    }
+    if (filter.scopeId) {
+      where.push('s.scope_id = ?');
+      params.push(filter.scopeId);
+    }
+    const drifted = "COALESCE(r.delivered, 'active/active') <> s.status || '/' || t.status";
+    if (filter.drift) where.push(`(${drifted} OR s.status NOT IN ('active', 'archived') OR t.status <> 'active')`);
+    params.push(filter.limit ?? 1000);
+    return this.sql
+      .exec(
+        `SELECT s.tenant_id, s.scope_id, s.status AS scope_status, t.status AS tenant_status, r.delivered
+           FROM scopes s
+           JOIN tenants t ON t.tenant_id = s.tenant_id
+           LEFT JOIN scope_lifecycle_receipts r ON r.scope_id = s.scope_id
+          WHERE ${where.join(' AND ')}
+          ORDER BY CASE WHEN ${drifted} THEN 0 ELSE 1 END, s.scope_id
+          LIMIT ?`,
+        ...params,
+      )
+      .toArray() as unknown as LifecycleTargetRow[];
+  }
+
+  /** #1713: record what a scope's deployment acknowledged holding (`lifecycleReceipt`). */
+  recordLifecycleReceipt(scopeId: string, delivered: string, at: string): void {
+    this.sql.exec(
+      'INSERT OR REPLACE INTO scope_lifecycle_receipts (scope_id, delivered, at) VALUES (?, ?, ?)',
+      scopeId,
+      delivered,
+      at,
     );
   }
 
