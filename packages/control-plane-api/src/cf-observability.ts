@@ -16,6 +16,13 @@ import type {
 } from './observability.js';
 import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, INVOCATION_KINDS, invocationKindOf } from './observability.js';
 
+/**
+ * #1901: a request's line, as a filter. Every request line carries its HTTP method — the
+ * lines written before `kind` existed included — and an async line's `method` is `null`,
+ * so this is the `kind = request` the lines themselves cannot spell.
+ */
+const REQUEST_LINE_FILTER: TelemetryFilter = { key: 'method', operation: 'regex', type: 'string', value: '^[A-Z]+$' };
+
 /** #1901: the kinds of async work a scope host logs — every kind but a request. */
 const ASYNC_KINDS = INVOCATION_KINDS.filter((k) => k !== 'request');
 
@@ -46,9 +53,15 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
     const values = scope.where?.[key] ?? [];
     if (values.length === 0) continue;
     // #1901: `request` is a kind no line spells — a request's line has no `kind` — so it is
-    // not a filter this API can express. A selection naming it is applied to the answer
-    // instead (`kindMatches`); one naming only async kinds narrows here, as any facet does.
-    if (key === 'kind' && values.includes('request')) continue;
+    // matched by what every request line has and no async line does: a method. Narrowed
+    // HERE, before the limit, so a window full of async lines still pages its requests.
+    if (key === 'kind') {
+      const kinds: TelemetryFilter[] = values.map((v) =>
+        v === 'request' ? REQUEST_LINE_FILTER : { key: 'kind', operation: 'eq', type: 'string', value: v },
+      );
+      filters.push(kinds.length === 1 ? kinds[0]! : { kind: 'group', filterCombination: 'or', filters: kinds });
+      continue;
+    }
     const leaves: TelemetryFilter[] = values.map((v) =>
       key === 'status'
         ? { key, operation: 'eq', type: 'number', value: Number(v) }
@@ -1090,7 +1103,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     async tenantRequests(input) {
       const events = await queryRaw(requestFilters(input), { from: input.from, to: input.to }, input.limit);
       return events
-        // #1901: a `request` selection is applied here, the one facet the query cannot carry.
+        // #1901: the query narrowed on kind already; this holds the answer to the same
+        // reading (a missing `kind` is a request) whatever the backend did with the filter.
         .filter((e) => kindMatches(e, input))
         .sort((a, b) => rawTime(b) - rawTime(a))
         .slice(0, input.limit)

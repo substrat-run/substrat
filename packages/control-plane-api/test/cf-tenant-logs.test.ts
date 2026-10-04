@@ -1047,9 +1047,42 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect(keyed(sent.at(-1)!, 'kind')).toEqual({ key: 'kind', operation: 'eq', type: 'string', value: 'consumer' });
     expect(consumers.map((r) => r.kind)).toEqual(['consumer']);
 
-    // `request` is spelled by no line, so it is applied to the answer instead of the query.
+    // `request` is spelled by no line, so the query matches what every request line has.
     const requests = await reader.tenantRequests!({ ...scope, where: { kind: ['request'] } });
     expect(keyed(sent.at(-1)!, 'kind')).toBeUndefined();
+    expect(keyed(sent.at(-1)!, 'method')).toEqual({ key: 'method', operation: 'regex', type: 'string', value: '^[A-Z]+$' });
     expect(requests.map((r) => r.kind)).toEqual(['request']);
+  });
+
+  /** The backend, as far as these filters go: leaves ANDed, groups ORed, then the limit. */
+  const matches = (source: Record<string, unknown>, f: Record<string, unknown>): boolean => {
+    if (f['kind'] === 'group') {
+      const inner = f['filters'] as Array<Record<string, unknown>>;
+      return f['filterCombination'] === 'or' ? inner.some((g) => matches(source, g)) : inner.every((g) => matches(source, g));
+    }
+    const key = String(f['key']);
+    if (key.startsWith('$metadata')) return true;
+    const v = source[key];
+    if (f['operation'] === 'regex') return typeof v === 'string' && new RegExp(String(f['value'])).test(v);
+    return v === f['value'];
+  };
+
+  it('pages requests from behind more async lines than the limit, filtered before it', async () => {
+    // Newest first, as the backend answers: 60 consumer lines, then the window's one request.
+    const lines = [
+      ...Array.from({ length: 60 }, (_, i) => ({ ...consumer({}, `01C${i}`), timestamp: 10_000 - i })),
+      { ...invocation({}, '01RQ'), timestamp: 1_000 },
+    ];
+    const { reader } = readerOver((filters, limit) =>
+      lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit),
+    );
+    const scope = { tenantId: '01TENANT', from: 0, to: 20_000, limit: 50 };
+    expect((await reader.tenantRequests!({ ...scope, where: { kind: ['request'] } })).map((r) => r.kind)).toEqual(['request']);
+    // Both kinds at once: the alternatives are one OR group, so the request is still found.
+    const both = await reader.tenantRequests!({ ...scope, limit: 100, where: { kind: ['request', 'consumer'] } });
+    expect(both.filter((r) => r.kind === 'request')).toHaveLength(1);
+    expect(both.filter((r) => r.kind === 'consumer')).toHaveLength(60);
+    // The twin: a consumer selection pages consumers, never the request.
+    expect((await reader.tenantRequests!({ ...scope, where: { kind: ['consumer'] } })).every((r) => r.kind === 'consumer')).toBe(true);
   });
 });
