@@ -190,6 +190,7 @@ import {
   withheldNote,
   type ExportRow,
   JOB_RUN_DDL,
+  JOB_RUN_DUE_AT,
   jobRunListLimit,
   SYSTEM_DOOR_WAIT,
   type EntityVersion,
@@ -4275,19 +4276,22 @@ export function defineScopeDO(
      * those rows head every batch forever (`runDueJobRuns`). `afterId` is LAST, as
      * every argument added to an RPC on this interface must be.
      */
-    async jobRunsDue(now: string, limit: number, afterId?: string): Promise<JobRunRow[]> {
+    async jobRunsDue(now: string, limit: number, afterId?: string, afterAt?: string): Promise<JobRunRow[]> {
       return this.sql
         .exec(
-          // `afterId` bound TWICE rather than as `?2`: mixing anonymous and numbered
+          // `afterAt` bound THREE times rather than as `?2`: mixing anonymous and numbered
           // parameters makes the anonymous ones resume from the highest index used,
           // which is a footgun for the next person to add a clause. Spelled exactly
-          // as the pure adapter spells it.
+          // as the pure adapter spells it. #1834: in the order runs became due
+          // (`JOB_RUN_DUE_AT`, then id), with the cursor on the same key.
           `SELECT * FROM _substrat_job_runs
             WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-              AND (? IS NULL OR id > ?)
-            ORDER BY id LIMIT ?`,
+              AND (? IS NULL OR ${JOB_RUN_DUE_AT} > ? OR (${JOB_RUN_DUE_AT} = ? AND id > ?))
+            ORDER BY ${JOB_RUN_DUE_AT}, id LIMIT ?`,
           now,
-          afterId ?? null,
+          afterAt ?? null,
+          afterAt ?? null,
+          afterAt ?? null,
           afterId ?? null,
           limit,
         )

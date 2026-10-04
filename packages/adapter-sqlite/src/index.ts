@@ -475,6 +475,7 @@ import {
   withheldNote,
   type ExportRow,
   JOB_RUN_DDL,
+  JOB_RUN_DUE_AT,
   jobRunListLimit,
   jobRunOf,
   runDueJobRuns,
@@ -5281,15 +5282,16 @@ export class SqliteScopeHost implements ScopeHost {
       startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
       get: (id: string) =>
         turn(() => row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id))),
-      due: (now: string, limit: number, afterId?: string) =>
+      // #1834: in the order runs became due (`JOB_RUN_DUE_AT`), with the cursor on the same key.
+      due: (now: string, limit: number, afterId?: string, afterAt?: string) =>
         turn(() => db
           .prepare(
             `SELECT * FROM _substrat_job_runs
               WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                AND (? IS NULL OR id > ?)
-              ORDER BY id LIMIT ?`,
+                AND (? IS NULL OR ${JOB_RUN_DUE_AT} > ? OR (${JOB_RUN_DUE_AT} = ? AND id > ?))
+              ORDER BY ${JOB_RUN_DUE_AT}, id LIMIT ?`,
           )
-          .all(now, afterId ?? null, afterId ?? null, limit) as JobRunRow[]),
+          .all(now, afterAt ?? null, afterAt ?? null, afterAt ?? null, afterId ?? null, limit) as JobRunRow[]),
       list: (filter: JobRunFilter) => turn(() => {
         const where: string[] = [];
         const params: SqlValue[] = [];

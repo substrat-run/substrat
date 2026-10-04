@@ -2335,8 +2335,37 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     );
     // A run that never opens the door: on a held scope it has nothing to wait for.
     h.registerJob(SCHED, 'idle', () => ({ done: true }));
+    // #2028 review: a handler that KEEPS the door's refusal and throws it again on a later pass,
+    // raw or (with `inStep`) as the step's wrapper the driver handed back.
+    h.registerJob(
+      SCHED,
+      'hoard',
+      async (p: JobPassContext) => {
+        const { inStep } = p.payload as { inStep: boolean };
+        if (hoarded) throw hoarded;
+        const scope = await p.scope();
+        try {
+          if (inStep) await p.step('tick', () => scope.invoke('sched/tick'));
+          else await scope.invoke('sched/tick');
+        } catch (err) {
+          hoarded = err;
+          throw err;
+        }
+        return { done: true };
+      },
+      { maxAttempts: 3, baseDelayMs: 0 },
+    );
     return h;
   };
+  let hoarded: unknown = null;
+  /** The deferral's deadline, passed: each waiting run on the scope became due just now. */
+  const deadlinePassed = (s: ScopeId) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE _substrat_job_runs SET next_attempt_at = ? WHERE status = 'running' AND next_attempt_at IS NOT NULL`,
+        new Date().toISOString(),
+      );
+    });
   /** The deferral's wait, skipped: every running run on the scope is due now. */
   const dueNow = (s: ScopeId) =>
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
@@ -2387,12 +2416,43 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     let heldId = '';
     const s = await rewoundPastTheSwitch(true, async (sc) => (heldId = (await startTick(sc)).id));
     const later = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance: 'later', payload: {} });
-    expect(later.id > heldId).toBe(true); // the held run is first in the due order
+    expect(later.id > heldId).toBe(true); // older by id AND by start: it heads the first drive
     expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, deferred: 1 });
-    expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, completed: 1 });
+    // Its deadline passes: both are due now, and the held one became due LAST, so it queues behind.
+    await deadlinePassed(s);
+    expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, completed: 1, deferred: 0 });
     expect(await runOf(s, later.id)).toMatchObject({ status: 'done' });
     expect(await runOf(s, heldId)).toMatchObject({ status: 'running', attempts: 0 });
+    // …and with nothing ahead of it, the held run's turn comes round again (and waits again).
+    expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 0 });
+    await deadlinePassed(s);
+    expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, deferred: 1 });
   });
+
+  /**
+   * #2028 review: a mark proves the door threw it, and only for the pass it threw on. A handler that
+   * keeps a real refusal from a hold and throws it again after the switch is back gets no wait out
+   * of it: that pass counts, as any failure does — raw, or as the step wrapper the driver gave it.
+   */
+  for (const inStep of [false, true]) {
+    it(`#1834: a door refusal kept and thrown again on a later pass is an ordinary failure there${inStep ? ' (from a step)' : ''}`, async () => {
+      hoarded = null;
+      let runId = '';
+      const h = jobDeployment(); // ONE host for every pass: its marks are what a stale throw would reuse
+      const s = await rewoundPastTheSwitch(true, async (sc) =>
+        (runId = (await h.startJobRun(t, sc, { moduleId: SCHED, job: 'hoard', instance: 'keep', payload: { inStep } })).id),
+      );
+      // The real refusal, during the hold: deferred, and the handler keeps it.
+      expect(await h.runDueJobs(t, s)).toMatchObject({ deferred: 1, retrying: 0 });
+      expect(hoarded).not.toBeNull();
+      // The switch is back, and the handler throws the same object again.
+      await host.systemSwitchLocal(s, SCHED, 'on');
+      await dueNow(s);
+      expect(await h.runDueJobs(t, s)).toMatchObject({ deferred: 0, retrying: 1 });
+      expect(await runOf(s, runId)).toMatchObject({ status: 'running', attempts: 1, lastError: expect.stringMatching(/held off/) });
+      hoarded = null;
+    });
+  }
 
   it('#1834 twin: nothing recorded off — the rewound job run passes the door and completes', async () => {
     let runId = '';

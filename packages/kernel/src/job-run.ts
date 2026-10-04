@@ -140,6 +140,10 @@ export const JOB_RUN_DDL = `
   -- table that RETAINS every finished run, so the cost tracks how much is in flight
   -- rather than how much the scope has ever imported.
   CREATE INDEX IF NOT EXISTS _substrat_job_runs_due ON _substrat_job_runs (status, next_attempt_at, id);
+  -- #1834: the drive's ORDER -- by when each run became due (JOB_RUN_DUE_AT), then id -- so a run
+  -- that waited (a deferral, a backoff) queues behind work that was due before it, instead of
+  -- heading every drive by its age. The expression is spelled exactly as the query spells it.
+  CREATE INDEX IF NOT EXISTS _substrat_job_runs_due_at ON _substrat_job_runs (status, COALESCE(next_attempt_at, started_at), id);
   -- Coalescing's read, and the operator read's filter.
   CREATE INDEX IF NOT EXISTS _substrat_job_runs_key ON _substrat_job_runs (module_id, job, instance, id);
   -- The step ledger of the pass currently in flight. Rows are written as each step
@@ -475,15 +479,16 @@ export interface JobRunStore {
   /** One run by id, whatever its status. */
   get(id: string): Promise<JobRunRow | null>;
   /**
-   * `running` runs whose `next_attempt_at` has passed (or is NULL), oldest first,
-   * starting strictly after `afterId` when one is given.
+   * `running` runs whose `next_attempt_at` has passed (or is NULL), in the order they became due
+   * (`JOB_RUN_DUE_AT`, then id), starting strictly after `(afterAt, afterId)` when given. `afterAt`
+   * is LAST, as every argument added to this port must be.
    *
    * The cursor exists for starvation, not for paging convenience: the driver skips
    * runs whose job this host does not register, and without a cursor those rows sit
    * at the head of every batch forever, so a scope holding `limit` of them never
    * drives anything newer. See `runDueJobRuns`.
    */
-  due(now: string, limit: number, afterId?: string): Promise<JobRunRow[]>;
+  due(now: string, limit: number, afterId?: string, afterAt?: string): Promise<JobRunRow[]>;
   list(filter: JobRunFilter): Promise<JobRunRow[]>;
   patch(id: string, patch: JobRunPatch): Promise<void>;
   /**
@@ -521,6 +526,33 @@ export const JOB_STEP_REUSED = 'job_step_reused';
  * says which refusals are its own).
  */
 export const SYSTEM_DOOR_WAIT = 'system_door_wait';
+
+/**
+ * #1834: when a run became due — its `next_attempt_at`, or when it started if it has none — and the
+ * key the drive orders by. Ordering by id instead let an older run that keeps waiting (a deferral, a
+ * backoff) head every drive the moment it was due again, and take the turn of a run that had been
+ * due for longer. Spelled exactly as the `_substrat_job_runs_due_at` index spells it.
+ */
+export const JOB_RUN_DUE_AT = 'COALESCE(next_attempt_at, started_at)';
+
+/** The due order's key of one row: `JOB_RUN_DUE_AT`, computed on this side for the cursor. */
+function dueAt(row: JobRunRow): string {
+  return row.next_attempt_at ?? row.started_at;
+}
+
+/**
+ * #1834: a pass that a host's door told to wait, carrying the pass it belongs to. Kernel-private,
+ * and checked against the CURRENT pass, so a handler that catches one and throws it again on a
+ * later pass is an ordinary failure there, not a wait.
+ */
+class PassDeferred extends Error {
+  constructor(
+    readonly pass: object,
+    readonly cause: unknown,
+  ) {
+    super(message(cause));
+  }
+}
 
 /**
  * #1834: how long a deferred run waits before it is due again. Not an attempt: nothing counts and
@@ -763,18 +795,28 @@ export async function runJobPass(options: {
   /** The job's own retry policy — a step may narrow it, none may widen past its own. */
   retry?: ExecutorRetryPolicy;
   now: () => string;
-  /** Opens the system door for this run's module. Called at most once per pass. */
-  openScope: () => Promise<ScopeStub>;
   /**
-   * #1834: is this thrown value the host's own system door saying "not now"? The HOST answers, by
-   * the identity of what its door threw, never by an error's shape: a step or an operation can throw
-   * any public shape, and a pass that could defer itself would wait forever without spending a retry.
-   * Absent: nothing defers.
+   * Opens the system door for this run's module. Called at most once per pass, with this pass's
+   * token: a fresh object per pass, which the host ties its door's refusals to.
    */
-  deferral?: (err: unknown) => boolean;
+  openScope: (pass: object) => Promise<ScopeStub>;
+  /**
+   * #1834: did the host's own system door, on THIS pass (`pass`, the token `openScope` was handed),
+   * throw this value to say "not now"? The HOST answers, by the identity of what its door threw for
+   * this pass, never by an error's shape: a step or an operation can throw any public shape, and a
+   * pass that could defer itself would wait forever without spending a retry. The host consumes
+   * the mark as it answers yes. Absent: nothing defers.
+   */
+  deferral?: (err: unknown, pass: object) => boolean;
 }): Promise<JobPassOutcome> {
   const { store, run, handler, now, openScope } = options;
-  const deferred = (err: unknown): boolean => options.deferral?.(err) === true;
+  // This pass's token, and nothing else's: the door's refusals are tied to it.
+  const passToken = {};
+  /** Asked once per refusal, since the host consumes its mark; the answer then travels as `PassDeferred`. */
+  const deferral = (err: unknown): PassDeferred | null => {
+    if (err instanceof PassDeferred) return err.pass === passToken ? err : null;
+    return options.deferral?.(err, passToken) === true ? new PassDeferred(passToken, err) : null;
+  };
   const jobPolicy = resolveRetryPolicy(options.retry);
   const usedThisPass = new Set<string>();
   let scope: Promise<ScopeStub> | null = null;
@@ -810,7 +852,7 @@ export async function runJobPass(options: {
       count: (name, by = 1) => {
         counters[name] = (counters[name] ?? 0) + by;
       },
-      scope: () => (scope ??= openScope()),
+      scope: () => (scope ??= openScope(passToken)),
       step: async <T>(name: string, fn: () => T | Promise<T>, retry?: ExecutorRetryPolicy): Promise<T> => {
         if (usedThisPass.has(name)) {
           // The determinism rule's mechanical half. The second call would read the
@@ -846,7 +888,8 @@ export async function runJobPass(options: {
           value = await fn();
         } catch (err) {
           // #1834: the door's "not now" is not this step's failure, so it is not one of its attempts.
-          if (deferred(err)) throw err;
+          const wait = deferral(err);
+          if (wait) throw wait;
           const cause = message(err);
           await store.recordStep(run.id, name, null, attempts, cause, now());
           throw new JobStepFailure(name, attempts, policy, cause);
@@ -904,7 +947,7 @@ export async function runJobPass(options: {
   } catch (err) {
     // #1834: the host's system door said wait, so the call did not run. The run keeps what the last
     // commit wrote (its attempts and its last error included); only when it is next due moves.
-    if (deferred(err)) {
+    if (deferral(err)) {
       const at = now();
       await store.patch(run.id, {
         status: 'running',
@@ -971,9 +1014,9 @@ export async function runDueJobRuns(options: {
   /** job name → its handler and policy, as `registerJob` recorded them. */
   handlerFor: (run: JobRunRow) => { handler: JobHandler; retry?: ExecutorRetryPolicy } | undefined;
   now: () => string;
-  openScope: (run: JobRunRow) => Promise<ScopeStub>;
-  /** #1834: the host's own system-door refusals, by identity (`runJobPass`). */
-  deferral?: (err: unknown) => boolean;
+  openScope: (run: JobRunRow, pass: object) => Promise<ScopeStub>;
+  /** #1834: the host's own system-door refusals on one pass, by identity (`runJobPass`). */
+  deferral?: (err: unknown, pass: object) => boolean;
   maxPasses?: number;
   limit?: number;
 }): Promise<JobDriveReport> {
@@ -998,14 +1041,16 @@ export async function runDueJobRuns(options: {
   const runnable: JobRunRow[] = [];
   let scanned = 0;
   let afterId: string | undefined;
+  let afterAt: string | undefined;
   while (runnable.length < want && scanned < JOB_DRIVE_SCAN_MAX) {
-    const batch = await options.store.due(options.now(), want, afterId);
+    const batch = await options.store.due(options.now(), want, afterId, afterAt);
     if (batch.length === 0) break;
     scanned += batch.length;
     for (const row of batch) {
       if (options.handlerFor(row) && runnable.length < want) runnable.push(row);
     }
     afterId = batch[batch.length - 1]!.id;
+    afterAt = dueAt(batch[batch.length - 1]!);
     // A short batch is the end of the due set; another round trip would read nothing.
     if (batch.length < want) break;
   }
@@ -1021,7 +1066,7 @@ export async function runDueJobRuns(options: {
         handler: registered.handler,
         retry: registered.retry,
         now: options.now,
-        openScope: () => options.openScope(run),
+        openScope: (pass) => options.openScope(run, pass),
         deferral: options.deferral,
       });
       if (outcome.status === 'completed') {

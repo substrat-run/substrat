@@ -1228,7 +1228,7 @@ interface ScopeStubRpc {
   ): Promise<JobRunRow>;
   jobRunById(id: string): Promise<JobRunRow | null>;
   jobRunInsert(row: JobRunRow): Promise<void>;
-  jobRunsDue(now: string, limit: number, afterId?: string): Promise<JobRunRow[]>;
+  jobRunsDue(now: string, limit: number, afterId?: string, afterAt?: string): Promise<JobRunRow[]>;
   jobRunList(filter: JobRunFilter): Promise<JobRunRow[]>;
   jobRunPatch(id: string, patch: JobRunPatch): Promise<void>;
   jobCommitPass(id: string, patch: JobRunPatch): Promise<void>;
@@ -2517,7 +2517,7 @@ export class CloudflareScopeHost implements ScopeHost {
     return {
       startOrJoin: (key, row) => stub.jobRunStartOrJoin(key.moduleId, key.job, key.instance, row),
       get: (id) => stub.jobRunById(id),
-      due: (now, limit, afterId) => stub.jobRunsDue(now, limit, afterId),
+      due: (now, limit, afterId, afterAt) => stub.jobRunsDue(now, limit, afterId, afterAt),
       list: (filter) => stub.jobRunList(filter),
       patch: (id, patch) => stub.jobRunPatch(id, patch),
       commitPass: (id, patch) => stub.jobCommitPass(id, patch),
@@ -2577,9 +2577,12 @@ export class CloudflareScopeHost implements ScopeHost {
       handlerFor: (run) =>
         isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
       now: () => new Date().toISOString(),
-      openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
+      // #1834: the door is opened FOR this pass, so its "not now" is tied to this pass alone.
+      openScope: async (run, pass) =>
+        this.buildStub(tenantId, scopeId, undefined, undefined,
+          await this.openSystemDoor(run.module_id as ModuleId, tenantId, scopeId, undefined, pass)),
       // #1834: only this host's own door refusals defer a pass, recognised by identity.
-      deferral: (err) => typeof err === 'object' && err !== null && this.doorWaits.has(err),
+      deferral: (err, pass) => this.takeDoorWait(err, pass),
       maxPasses: options?.maxPasses,
       limit: options?.limit,
     });
@@ -4028,6 +4031,8 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     gated?: SystemDoorGate,
+    /** #1834: the job pass this door is opened for; its "not now" refusals are tied to it. */
+    pass?: object,
   ): Promise<SystemDoor> {
     if (!this.moduleIds.has(moduleId)) {
       throw new Error(`module not registered on this host: ${moduleId}`);
@@ -4049,7 +4054,7 @@ export class CloudflareScopeHost implements ScopeHost {
           if (gate.held) {
             // The hold ends when the switch is applied again: a job run waits it out without
             // spending its retries, because the driver defers on THIS refusal (`doorWait`).
-            throw this.doorWait(
+            throw this.doorWait(pass,
               substratError(
                 'forbidden',
                 `module '${moduleId}' is held off on this scope: it was rewound to before its schedule ` +
@@ -4061,7 +4066,7 @@ export class CloudflareScopeHost implements ScopeHost {
           const answer = await call(gate.instance);
           if (!isSystemDoorMoved(answer)) return answer;
           if (regates >= SYSTEM_DOOR_REGATES) {
-            throw this.doorWait(
+            throw this.doorWait(pass,
               substratError(
                 'unavailable',
                 `the scope kept restarting under the system door of module '${moduleId}' ` +
@@ -4078,15 +4083,25 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * #1834: the refusals this host's system door threw that mean "not now" (a hold, a scope that
-   * kept restarting), by identity. The job driver defers a pass only on one of these, never on an
-   * error's shape, which any step or operation could copy. Held weakly: an error nobody holds goes.
+   * kept restarting), each tied by identity to the job pass whose door threw it. The job driver
+   * defers a pass only on one of these, never on an error's shape, which any step or operation
+   * could copy. A mark is ORIGIN and FRESHNESS together: it is consumed when the driver takes it,
+   * and only the pass it names can take it, so a handler that keeps a refusal and throws it again
+   * on a later pass is an ordinary failure there. Held weakly: an error nobody holds goes.
    */
-  private readonly doorWaits = new WeakSet<object>();
+  private readonly doorWaits = new WeakMap<object, object>();
 
-  /** #1834: mark one of this door's own refusals as "not now", and hand it back to throw. */
-  private doorWait(err: Error): Error {
-    this.doorWaits.add(err);
+  /** #1834: mark this door's own refusal as "not now" for the pass it was opened for, and hand it back. */
+  private doorWait(pass: object | undefined, err: Error): Error {
+    if (pass) this.doorWaits.set(err, pass);
     return err;
+  }
+
+  /** #1834: is `err` a "not now" this host's door threw on `pass`? Consumes the mark when it is. */
+  private takeDoorWait(err: unknown, pass: object): boolean {
+    if (typeof err !== 'object' || err === null || this.doorWaits.get(err) !== pass) return false;
+    this.doorWaits.delete(err);
+    return true;
   }
 
   /**

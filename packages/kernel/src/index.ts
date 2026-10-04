@@ -543,6 +543,7 @@ export {
   JOB_STEP_REUSED,
   SYSTEM_DOOR_WAIT,
   JOB_DEFER_MS,
+  JOB_RUN_DUE_AT,
   assertQueueSafe,
   jobRunOf,
   runDueJobRuns,
