@@ -363,13 +363,13 @@ import {
   type RecordedOffCarry,
   type SwitchCarryWire,
   recordedOffFromWire,
-  PEER_SUBJECT_PREFIX,
+  peerSubjectRef,
   SWITCH_KINDS,
   reassertActionOf,
-  reportKeyOf,
+  reassertEntry,
+  reassertOffRow,
   switchActionOf,
   switchAuditSubject,
-  switchKeyField,
   switchNotFoundMessage,
   withRecorded,
   type SystemScheduleState,
@@ -2186,8 +2186,14 @@ const rememberClearInstance = (key: string): void => {
   CLEAR_SCOPE_INSTANCES.add(key);
 };
 
+/** #2029: how a door's refusals and a re-assert's name each kind of subject. */
+const DOOR_WORDS = {
+  system: { what: (key: string) => `module '${key}'`, door: 'system door', switchName: 'schedule', switched: 'schedules' },
+  peer: { what: (key: string) => `peer vertical '${key}'`, door: 'peer door', switchName: 'peer', switched: 'peers' },
+} as const satisfies Record<SwitchKind, { what(key: string): string; door: string; switchName: string; switched: string }>;
+
 /** #2029: the rewind hold's key for one subject — a module's id, bare as #1819 stored it, or `vertical:<slug>`. */
-const holdKeyOf = (kind: SwitchKind, key: string): string => (kind === 'system' ? key : `${PEER_SUBJECT_PREFIX}${key}`);
+const holdKeyOf = (kind: SwitchKind, key: string): string => (kind === 'system' ? key : peerSubjectRef(key));
 
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
 export interface SwitchHoldClaim {
@@ -4017,16 +4023,28 @@ export class CloudflareScopeHost implements ScopeHost {
    * grant (#1823, #2030). Undefined when nothing is recorded off, so such a unit is unchanged.
    */
   private async recordedOffCarry(tenantId: TenantId, scopeId: ScopeId, at: string): Promise<RecordedOffCarry | undefined> {
-    const [moduleIds, verticals] = await Promise.all([
-      this.cp.switchedOffOf('system', tenantId, scopeId),
-      this.cp.switchedOffOf('peer', tenantId, scopeId),
+    const [modules, peers] = await Promise.all([
+      this.recordedOff('system', tenantId, scopeId, at),
+      this.recordedOff('peer', tenantId, scopeId, at),
     ]);
-    if (!moduleIds.length && !verticals.length) return undefined;
-    const [tenantHeld, tenantHeldVerticals] = await Promise.all([
-      moduleIds.length ? this.cp.tenantHeldOf('system', tenantId, moduleIds, at) : [],
-      verticals.length ? this.cp.tenantHeldOf('peer', tenantId, verticals, at) : [],
-    ]);
-    return { moduleIds, tenantHeld, verticals, tenantHeldVerticals };
+    if (!modules.keys.length && !peers.keys.length) return undefined;
+    return {
+      moduleIds: modules.keys,
+      tenantHeld: modules.tenantHeld,
+      verticals: peers.keys,
+      tenantHeldVerticals: peers.tenantHeld,
+    };
+  }
+
+  /** The subjects of one kind the directory records OFF on the scope, and of those the tenant-held ones. */
+  private async recordedOff(
+    kind: SwitchKind,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    at: string,
+  ): Promise<{ keys: string[]; tenantHeld: string[] }> {
+    const keys = await this.cp.switchedOffOf(kind, tenantId, scopeId);
+    return { keys, tenantHeld: keys.length ? await this.cp.tenantHeldOf(kind, tenantId, keys, at) : [] };
   }
 
   async snapshotScope(
@@ -4273,21 +4291,16 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * #2029: the peer door's gate and pin — `openSystemDoor`'s for a peer vertical. A PITR rewind to
-   * before a peer was switched off brings its grants back live and its OFF marker gone, so the
-   * rewind holds it outside the scope (`rewindHolding`, as for a module), and every peer entry —
-   * an invoke, a delivery, a coverage read — reads that hold after the scope's own state, pinned
-   * to the instance the state came from. The caller has already run `peerScopeGate`.
-   */
-  private async openPeerDoor(vertical: string, scopeId: ScopeId): Promise<SubjectDoor> {
-    return this.openDoor('peer', vertical, scopeId);
-  }
-
-  /**
    * #1834: one door, for either kind of switched subject (#2029). The gate is read here unless the
    * caller read it (`runDueSchedules` reports a hold it could not read on its pass report); a held
    * subject is refused, and a call landing on another instance than the gate's re-gates, at most
    * `SYSTEM_DOOR_REGATES` times, then fails closed.
+   *
+   * The peer door (`kind: 'peer'`) is the system door's for a peer vertical. A PITR rewind to before
+   * a peer was switched off brings its grants back live and its OFF marker gone, so the rewind holds
+   * it outside the scope (`rewindHolding`, as for a module), and every peer entry — an invoke, a
+   * delivery, a coverage read, an export read for it as consumer — opens this door after
+   * `peerScopeGate`.
    */
   private async openDoor(
     kind: SwitchKind,
@@ -4296,8 +4309,8 @@ export class CloudflareScopeHost implements ScopeHost {
     gated?: SubjectDoorGate,
     pass?: object,
   ): Promise<SubjectDoor> {
-    const what = kind === 'system' ? `module '${key}'` : `peer vertical '${key}'`;
-    const doorName = kind === 'system' ? 'system door' : 'peer door';
+    const words = DOOR_WORDS[kind];
+    const what = words.what(key);
     // A gate this door reads itself reports a hold it could not read; one handed in was the
     // caller's to report.
     const regate = async (): Promise<SubjectDoorGate> => {
@@ -4317,7 +4330,7 @@ export class CloudflareScopeHost implements ScopeHost {
             const held = substratError(
               'forbidden',
               `${what} is held off on this scope: it was rewound to before its ` +
-                `${kind === 'system' ? 'schedule' : 'peer'} switch was turned off, and it stays off until ` +
+                `${words.switchName} switch was turned off, and it stays off until ` +
                 'the switch is applied again',
               { reason: SYSTEM_DOOR_WAIT },
             );
@@ -4330,7 +4343,7 @@ export class CloudflareScopeHost implements ScopeHost {
             throw this.doorWait(pass,
               substratError(
                 'unavailable',
-                `the scope kept restarting under the ${doorName} of ${what} ` +
+                `the scope kept restarting under the ${words.door} of ${what} ` +
                   `(${regates + 1} attempts); nothing ran. Retry later`,
                 { reason: SYSTEM_DOOR_WAIT },
               ),
@@ -4410,7 +4423,7 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.peerScopeGate(tenantId, scopeId, 'deliverToPeer');
     // #2029: the producer is a peer, so the delivery goes through its door: a producer the rewind
     // hold keeps off pauses the edge, exactly as a switched-off one does inside the DO.
-    const door = await this.openPeerDoor(batch.source.vertical, scopeId);
+    const door = await this.openDoor('peer', batch.source.vertical, scopeId);
     let applied: ImportResult;
     try {
       applied = await door.through((instance) => this.scopeStub(scopeId).importApply(batch, tenantId, scopeId, instance));
@@ -4493,7 +4506,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const parsed = verticalCaller.parse(caller);
     await this.peerScopeGate(tenantId, scopeId, 'getVerticalScope');
     // #2029: gated against the rewind hold and pinned, as the system door is.
-    const door = await this.openPeerDoor(parsed.vertical, scopeId);
+    const door = await this.openDoor('peer', parsed.vertical, scopeId);
     return this.buildStub(tenantId, scopeId, undefined, undefined, door, options, undefined, undefined, parsed);
   }
 
@@ -4510,7 +4523,7 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.peerScopeGate(tenantId, scopeId, 'peerCovers');
     const slug = verticalSlug.parse(vertical);
     // #2029: a peer the rewind hold keeps off holds nothing here, as a switched-off one doesn't.
-    const door = await this.openPeerDoor(slug, scopeId);
+    const door = await this.openDoor('peer', slug, scopeId);
     try {
       return peerCoverage
         .array()
@@ -4864,7 +4877,7 @@ export class CloudflareScopeHost implements ScopeHost {
     /**
      * #1834: the door this stub acts through. The ONLY way to make a stub acting as
      * `system:<moduleId>`: the module is the door's, and every invoke is gated and pinned by it.
-     * #2029: a peer stub's door too (`openPeerDoor`), gating and pinning each invoke the same way.
+     * #2029: a peer stub's door too (`openDoor('peer', …)`), gating and pinning each invoke the same way.
      */
     door?: SubjectDoor,
     options?: ScopeStubOptions,
@@ -5382,14 +5395,10 @@ export class CloudflareScopeHost implements ScopeHost {
        */
       const isOff = async (key: string): Promise<boolean> => {
         if (kind === 'system') {
-          const rows = systemDelegation
-            ? await systemDelegation.status({ tenantId, scopeId })
-            : systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
+          const rows = await (systemDelegation?.status({ tenantId, scopeId }) ?? this.systemGrantsStatusLocal(scopeId));
           return rows.some((r) => r.moduleId === key && r.schedules === 'off');
         }
-        const rows = peerDelegation
-          ? await peerDelegation.status({ tenantId, scopeId })
-          : peerGrantsEntry.array().parse(await this.scopeStub(scopeId).peerGrantsStatus());
+        const rows = await (peerDelegation?.status({ tenantId, scopeId }) ?? this.peerGrantsStatusLocal(scopeId));
         return rows.some((r) => r.vertical === key && r.calls === 'off');
       };
       return { vertical, delegated, move, isOff };
@@ -5719,7 +5728,7 @@ export class CloudflareScopeHost implements ScopeHost {
         throw substratError(
           'unavailable',
           `no delegation configured for hosted scope ${scopeId} (vertical '${vertical}') — cannot re-assert ` +
-            `its switched-off ${kind === 'system' ? 'schedules' : 'peers'} in the deployment serving it`,
+            `its switched-off ${DOOR_WORDS[kind].switched} in the deployment serving it`,
         );
       }
       const at = new Date().toISOString();
@@ -5739,31 +5748,24 @@ export class CloudflareScopeHost implements ScopeHost {
         }
       }
       // Read AFTER the reverts: an OFF that landed meanwhile is switched off below.
-      const keys = await this.cp.switchedOffOf(kind, tenantId, scopeId);
+      const { keys, tenantHeld } = await this.recordedOff(kind, tenantId, scopeId, at);
       // #1742: what the deployment already switched off inside its own unit, audited here —
-      // the move below answers `changed: false` for it and would write no row.
-      // A move the revert above undid is not credited as an in-unit OFF.
-      const applied = opts?.appliedInUnit?.filter((a) => {
-        const key = reportKeyOf(kind, a);
-        return key === undefined || !reverted.has(key);
-      });
-      for (const row of inUnitMovesToAudit(kind, keys, applied)) {
+      // the move below answers `changed: false` for it and would write no row. A move the
+      // revert above undid is not credited as an in-unit OFF.
+      for (const row of inUnitMovesToAudit(kind, keys, opts?.appliedInUnit, reverted)) {
         await this.recordAdmin(actor, action, { tenantId, scopeId, vertical }, null, { operationId: ulid(), ...row });
       }
       const results: SystemSwitchReassert[] = [];
-      const tenantHeld = new Set(keys.length ? await this.cp.tenantHeldOf(kind, tenantId, keys, at) : []);
+      const held = new Set(tenantHeld);
       for (const key of keys) {
-        const outcome = await move(key, 'off', at, tenantHeld.has(key));
+        const outcome = await move(key, 'off', at, held.has(key));
         if (outcome.changed) {
           await this.recordAdmin(actor, action, { tenantId, scopeId, vertical }, null, {
             operationId: ulid(),
-            ...switchAuditSubject(kind, key, 'off'),
-            phase: 'applied',
-            changed: true,
-            permissions: outcome.permissions,
+            ...reassertOffRow(kind, key, outcome.permissions),
           });
         }
-        results.push({ ...switchKeyField(kind, key), held: outcome.held, changed: outcome.changed } as SystemSwitchReassert);
+        results.push(reassertEntry(kind, key, outcome));
       }
       return results;
     };
@@ -6066,10 +6068,12 @@ export class CloudflareScopeHost implements ScopeHost {
         return held as ModuleId[];
       },
       peerSwitchCarry: async (actor: PlatformActorId, node: { tenantId: TenantId; scopeId: ScopeId }) => {
-        const switchedOffPeers = await this.cp.switchedOffOf('peer', node.tenantId, node.scopeId);
-        const tenantHeldPeers = switchedOffPeers.length
-          ? await this.cp.tenantHeldOf('peer', node.tenantId, switchedOffPeers, new Date().toISOString())
-          : [];
+        const { keys: switchedOffPeers, tenantHeld: tenantHeldPeers } = await this.recordedOff(
+          'peer',
+          node.tenantId,
+          node.scopeId,
+          new Date().toISOString(),
+        );
         await this.recordAccess(actor, 'peerSwitchCarry', node, null, switchedOffPeers.length);
         return { switchedOffPeers, tenantHeldPeers };
       },
@@ -9797,7 +9801,7 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private async readExportsThroughDoor(input: ExportReadInput, tenantId: TenantId, scopeId: ScopeId): Promise<ExportedBatch> {
     const stub = this.scopeStub(scopeId);
-    const door = await this.openPeerDoor(input.consumer, scopeId);
+    const door = await this.openDoor('peer', input.consumer, scopeId);
     try {
       return exportedBatch.parse(await door.through((instance) => stub.exportedEventsRead(input, tenantId, scopeId, { instance })));
     } catch (err) {

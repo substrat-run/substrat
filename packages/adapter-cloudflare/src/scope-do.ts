@@ -1543,14 +1543,8 @@ export function defineScopeDO(
        */
       door?: { instance: string } | { held: true },
     ): Promise<ExportedBatch | SystemDoorMoved> {
-      if (!door || !('held' in door)) {
-        try {
-          this.assertDoorPin(`vertical '${input.consumer}'`, 'peer door', door?.instance);
-        } catch (err) {
-          if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
-          throw err;
-        }
-      }
+      const held = door !== undefined && 'held' in door;
+      if (!held && this.peerDoorMoved(input.consumer, door?.instance)) return SYSTEM_DOOR_MOVED;
       await this.ensureMigrations();
       const plan = exportReadPlan(this.crossVertical.exports(), input.wants);
       const quiet: ExportedBatch = {
@@ -1562,8 +1556,7 @@ export function defineScopeDO(
         more: false,
       };
       if (plan.types.length === 0) return quiet;
-      const missing =
-        door && 'held' in door
+      const missing = held
           ? (plan.keys as PermissionKey[])
           : (await this.peerCoverage(tenantId, scopeId, input.consumer, plan.keys as PermissionKey[]))
               .filter((c) => !c.held)
@@ -1723,12 +1716,7 @@ export function defineScopeDO(
       doorInstance?: string,
     ): Promise<ImportResult | SystemDoorMoved> {
       const source = batch.source;
-      try {
-        this.assertDoorPin(`vertical '${source.vertical}'`, 'peer door', doorInstance);
-      } catch (err) {
-        if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
-        throw err;
-      }
+      if (this.peerDoorMoved(source.vertical, doorInstance)) return SYSTEM_DOOR_MOVED;
       await this.ensureMigrations();
       return await this.queue.enqueue(async () => {
         const liveSince = this.liveHighWaterMark();
@@ -2601,7 +2589,7 @@ export function defineScopeDO(
         let peerSubject: CheckSubject | undefined;
         if (verticalCaller !== undefined) {
           // #2029: pinned to the instance the peer door's gate read against the rewind hold.
-          this.assertDoorPin(`vertical '${verticalCaller.vertical}'`, 'peer door', systemDoorInstance);
+          this.assertPeerDoor(verticalCaller.vertical, systemDoorInstance);
           peerSubject = admitPeer(this.switchSql(), this.peers, verticalCaller, operation);
           idempotencySubjectRef = peerSubject;
         }
@@ -3674,6 +3662,25 @@ export function defineScopeDO(
       return { moduleId, [SYSTEM_DOOR_PASSED]: true };
     }
 
+    /** #2029: the peer door's pin, for a call acting as `vertical:<slug>` — `assertDoorPin`. */
+    private assertPeerDoor(vertical: string, expected: string | undefined): void {
+      this.assertDoorPin(`vertical '${vertical}'`, 'peer door', expected);
+    }
+
+    /**
+     * #2029: the peer door's pin for an RPC that answers a missed pin as `SystemDoorMoved` rather
+     * than through `invoke`'s envelope: true when it missed. A call with no pin still throws.
+     */
+    private peerDoorMoved(vertical: string, expected: string | undefined): boolean {
+      try {
+        this.assertPeerDoor(vertical, expected);
+        return false;
+      } catch (err) {
+        if (err instanceof SystemDoorMovedError) return true;
+        throw err;
+      }
+    }
+
     /**
      * #1834's pin, for any door (#2029: the peer door's too). A call acting as a switched subject
      * must carry the instance the host's door gate read, and is refused on any other instance —
@@ -3814,12 +3821,7 @@ export function defineScopeDO(
       /** #2029: the instance the peer door's gate read; on another, nothing is read. */
       doorInstance?: string,
     ): Promise<PeerCoverage[] | SystemDoorMoved> {
-      try {
-        this.assertDoorPin(`vertical '${vertical}'`, 'peer door', doorInstance);
-      } catch (err) {
-        if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
-        throw err;
-      }
+      if (this.peerDoorMoved(vertical, doorInstance)) return SYSTEM_DOOR_MOVED;
       return this.peerCoverage(tenantId, scopeId, vertical, permissions);
     }
 

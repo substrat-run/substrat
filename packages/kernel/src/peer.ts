@@ -49,6 +49,7 @@ import { isPrimaryScope } from './platform-sweep.js';
 import {
   PEER_SUBJECT_PREFIX,
   SYSTEM_SWITCH_OFF_RELATION,
+  peerSubjectRef,
   subjectGrantState,
   subjectSwitchedOff,
   moveSwitch,
@@ -56,10 +57,8 @@ import {
   type SwitchSql,
 } from './system-switch.js';
 
-export { PEER_SUBJECT_PREFIX };
+export { PEER_SUBJECT_PREFIX, peerSubjectRef };
 
-/** The tuple subject a peer's grants are seated under. The slug only, never the instance. */
-export const peerSubjectRef = (vertical: string): string => `${PEER_SUBJECT_PREFIX}${vertical}`;
 
 /** One peer vertical as every registered module declares it, together. */
 export interface PeerDeclaration {

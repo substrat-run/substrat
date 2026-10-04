@@ -86,6 +86,9 @@ export type SwitchKind = 'system' | 'peer';
 /** The tuple-subject prefix of a peer vertical (#1706) — `vertical:acme/board-room`. Re-exported by `peer.ts`. */
 export const PEER_SUBJECT_PREFIX = 'vertical:';
 
+/** The tuple subject a peer's grants are seated under. The slug only, never the instance. Re-exported by `peer.ts`. */
+export const peerSubjectRef = (vertical: string): string => `${PEER_SUBJECT_PREFIX}${vertical}`;
+
 /**
  * "Is this subject's OFF marker live?", as a SQL predicate over ONE bound parameter (the
  * subject). The one spelling the gate, the grant refusal and the provisioning seat share,
@@ -348,7 +351,7 @@ export function moveSwitch(
   const { key, ...rest } = input;
   return kind === 'system'
     ? switchSystemSchedules(db, { moduleId: key, ...rest })
-    : switchSubjectGrants(db, { subject: `${PEER_SUBJECT_PREFIX}${key}`, ...rest });
+    : switchSubjectGrants(db, { subject: peerSubjectRef(key), ...rest });
 }
 
 /**

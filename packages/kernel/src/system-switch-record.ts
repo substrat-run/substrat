@@ -47,49 +47,7 @@ export type { SwitchKind };
 /** The record's table name, as the DDL below spells it. */
 export const SYSTEM_SWITCHES_TABLE = '_substrat_system_switches';
 /** The peer switch's record (#2029), as `PEER_SWITCHES_DDL` spells it. */
-export const PEER_SWITCHES_TABLE = '_substrat_peer_switches';
-
-/** Where each kind is recorded, and how its switch calls are written to the admin log. */
-const RECORDS = {
-  system: {
-    table: SYSTEM_SWITCHES_TABLE,
-    key: 'module_id',
-    subjectPrefix: 'system:',
-    actions: ['revokeFromSystem', 'restoreToSystem'],
-    payloadKey: 'moduleId',
-  },
-  peer: {
-    table: PEER_SWITCHES_TABLE,
-    key: 'vertical',
-    subjectPrefix: PEER_SUBJECT_PREFIX,
-    actions: ['revokeFromPeer', 'restoreToPeer'],
-    payloadKey: 'vertical',
-  },
-} as const satisfies Record<
-  SwitchKind,
-  { table: string; key: string; subjectPrefix: string; actions: readonly [string, string]; payloadKey: string }
->;
-
-/** Every kind, for the passes that walk them all (a scope's reap, a directory restore). */
-export const SWITCH_KINDS: readonly SwitchKind[] = ['system', 'peer'];
-
-/** The admin-log action a switch call of this kind writes its intent and outcome rows under. */
-export const switchActionOf = (
-  kind: SwitchKind,
-  to: 'on' | 'off',
-): 'revokeFromSystem' | 'restoreToSystem' | 'revokeFromPeer' | 'restoreToPeer' => RECORDS[kind].actions[to === 'off' ? 0 : 1];
-
-/** The `not_found` a switch call that held nothing answers — one wording per kind, both adapters. */
-export function switchNotFoundMessage(kind: SwitchKind, scopeId: string, key: string, to: 'on' | 'off'): string {
-  return kind === 'system'
-    ? `scope ${scopeId} holds no system grant for module '${key}' — nothing to switch ${to} ` +
-        `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`
-    : `scope ${scopeId} holds no grant for peer '${key}' — nothing to switch ${to} ` +
-        `(check the slug: it is the calling vertical's registry id, as the target's \`peers\` names it)`;
-}
-
-/** The record table of one kind. */
-export const switchesTableOf = (kind: SwitchKind): string => RECORDS[kind].table;
+const PEER_SWITCHES_TABLE = '_substrat_peer_switches';
 
 /**
  * The table. Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees the
@@ -137,8 +95,57 @@ export const PEER_SWITCHES_DDL = `
   );
 `;
 
+/**
+ * Everything that differs between the two kinds, in one place: where each is recorded, how its
+ * switch calls and re-asserts are written to the admin log, and how a call that held nothing is
+ * refused. Every function below reads this table; none branches on the kind itself.
+ */
+const RECORDS = {
+  system: {
+    table: SYSTEM_SWITCHES_TABLE,
+    ddl: SYSTEM_SWITCHES_DDL,
+    key: 'module_id',
+    subjectPrefix: 'system:',
+    actions: ['revokeFromSystem', 'restoreToSystem'],
+    reassertAction: 'reassertSystemSwitch',
+    /** The payload fields naming the subject and its position (`moduleId` + `schedules`). */
+    payloadKey: 'moduleId',
+    positionField: 'schedules',
+    notFound: (scopeId: string, key: string, to: string) =>
+      `scope ${scopeId} holds no system grant for module '${key}' — nothing to switch ${to} ` +
+      `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')`,
+  },
+  peer: {
+    table: PEER_SWITCHES_TABLE,
+    ddl: PEER_SWITCHES_DDL,
+    key: 'vertical',
+    subjectPrefix: PEER_SUBJECT_PREFIX,
+    actions: ['revokeFromPeer', 'restoreToPeer'],
+    reassertAction: 'reassertPeerSwitch',
+    payloadKey: 'vertical',
+    positionField: 'calls',
+    notFound: (scopeId: string, key: string, to: string) =>
+      `scope ${scopeId} holds no grant for peer '${key}' — nothing to switch ${to} ` +
+      `(check the slug: it is the calling vertical's registry id, as the target's \`peers\` names it)`,
+  },
+} as const;
+
+/** Every kind, for the passes that walk them all (a scope's reap, a directory restore). */
+export const SWITCH_KINDS: readonly SwitchKind[] = ['system', 'peer'];
+
+/** The admin-log action a switch call of this kind writes its intent and outcome rows under. */
+export const switchActionOf = (kind: SwitchKind, to: 'on' | 'off'): (typeof RECORDS)[SwitchKind]['actions'][number] =>
+  RECORDS[kind].actions[to === 'off' ? 0 : 1];
+
+/** The `not_found` a switch call that held nothing answers — one wording per kind, both adapters. */
+export const switchNotFoundMessage = (kind: SwitchKind, scopeId: string, key: string, to: 'on' | 'off'): string =>
+  RECORDS[kind].notFound(scopeId, key, to);
+
+/** The record table of one kind. */
+export const switchesTableOf = (kind: SwitchKind): string => RECORDS[kind].table;
+
 /** Each kind's DDL, for a pass that creates a table with its backfill. */
-export const switchesDdlOf = (kind: SwitchKind): string => (kind === 'system' ? SYSTEM_SWITCHES_DDL : PEER_SWITCHES_DDL);
+export const switchesDdlOf = (kind: SwitchKind): string => RECORDS[kind].ddl;
 
 /**
  * The one-time backfill from the admin log: every switch moved before the record existed.
@@ -199,9 +206,6 @@ export function switchesBackfillSqlOf(kind: SwitchKind): string {
    WHERE latest = 1 AND ever_off = 1
 `;
 }
-
-/** The module switch's backfill — `switchesBackfillSqlOf('system')`. */
-export const SYSTEM_SWITCHES_BACKFILL_SQL = switchesBackfillSqlOf('system');
 
 /**
  * Does a dump carry this kind's record table? A directory restore builds the table either way,
@@ -386,6 +390,11 @@ export function tenantHoldsGrant(db: SwitchSql, kind: SwitchKind, tenantId: stri
   return Number(row?.held) === 1;
 }
 
+/** Of `keys`, those the tenant holds a live tenant-level grant for (`tenantHoldsGrant`), in order. */
+export function tenantHeldOf(db: SwitchSql, kind: SwitchKind, tenantId: string, keys: readonly string[], now: string): string[] {
+  return keys.filter((key) => tenantHoldsGrant(db, kind, tenantId, key, now));
+}
+
 /** What one switch call writes into the record. `key` is the module id, or the peer's slug. */
 export interface SwitchRecordWrite {
   kind: SwitchKind;
@@ -427,13 +436,9 @@ export interface SystemSwitchReassertOptions {
 export type InUnitReport = Pick<SwitchedOff, 'changed' | 'permissions'> &
   ({ moduleId: string; vertical?: never } | { vertical: string; moduleId?: never });
 
-/** How a report or a re-assert answer names its subject: `moduleId` for a module, `vertical` for a peer. */
-export const switchKeyField = (kind: SwitchKind, key: string): { moduleId: string } | { vertical: string } =>
-  kind === 'system' ? { moduleId: key } : { vertical: key };
-
 /** The subject an in-unit report names, if it is of this kind. */
 export const reportKeyOf = (kind: SwitchKind, report: InUnitReport): string | undefined =>
-  kind === 'system' ? report.moduleId : report.vertical;
+  report[RECORDS[kind].payloadKey];
 
 /**
  * The fields an audit row names its subject and position with — the shape each kind's switch
@@ -444,12 +449,29 @@ export function switchAuditSubject(
   key: string,
   position: 'on' | 'off',
 ): { moduleId: string; schedules: 'on' | 'off' } | { vertical: string; calls: 'on' | 'off' } {
-  return kind === 'system' ? { moduleId: key, schedules: position } : { vertical: key, calls: position };
+  const { payloadKey, positionField } = RECORDS[kind];
+  return { [payloadKey]: key, [positionField]: position } as ReturnType<typeof switchAuditSubject>;
 }
 
 /** The admin-log action a re-assert of this kind writes its rows under. */
-export const reassertActionOf = (kind: SwitchKind): 'reassertSystemSwitch' | 'reassertPeerSwitch' =>
-  kind === 'system' ? 'reassertSystemSwitch' : 'reassertPeerSwitch';
+export const reassertActionOf = (kind: SwitchKind): (typeof RECORDS)[SwitchKind]['reassertAction'] =>
+  RECORDS[kind].reassertAction;
+
+/** One re-assert answer entry: the subject by its kind's field, and what the move did. */
+export const reassertEntry = (
+  kind: SwitchKind,
+  key: string,
+  outcome: { held: boolean; changed: boolean },
+): SystemSwitchReassert =>
+  ({ [RECORDS[kind].payloadKey]: key, held: outcome.held, changed: outcome.changed }) as unknown as SystemSwitchReassert;
+
+/** The audit row (less its `operationId`) for a re-assert's own OFF that moved something — both adapters. */
+export const reassertOffRow = (kind: SwitchKind, key: string, permissions: readonly string[]) => ({
+  ...switchAuditSubject(kind, key, 'off'),
+  phase: 'applied' as const,
+  changed: true as const,
+  permissions: [...permissions],
+});
 
 /**
  * The re-assert's audit rows (less their `operationId`) for the in-unit moves of one kind:
@@ -462,12 +484,15 @@ export function inUnitMovesToAudit(
   kind: SwitchKind,
   recordedOff: readonly string[],
   applied: SystemSwitchReassertOptions['appliedInUnit'],
+  /** Subjects this re-assert's stale-carry pass switched back on: their in-unit move is not credited. */
+  reverted: ReadonlySet<string> = new Set(),
 ): (ReturnType<typeof switchAuditSubject> & { phase: 'applied'; changed: true; permissions: string[]; inUnit: true })[] {
   const off = new Set(recordedOff);
   const moves = new Map<string, string[]>();
   for (const a of applied ?? []) {
     const key = reportKeyOf(kind, a);
-    if (key !== undefined && a.changed && off.has(key) && !moves.has(key)) moves.set(key, [...a.permissions]);
+    if (key === undefined || reverted.has(key)) continue;
+    if (a.changed && off.has(key) && !moves.has(key)) moves.set(key, [...a.permissions]);
   }
   return [...moves].map(([key, permissions]) => ({
     ...switchAuditSubject(kind, key, 'off'),

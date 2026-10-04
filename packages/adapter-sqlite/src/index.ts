@@ -326,19 +326,20 @@ import {
   listSystemSwitchRecords,
   moveSwitch,
   reassertActionOf,
+  reassertEntry,
+  reassertOffRow,
   recordSwitchedOff,
   recordSwitchedOn,
-  reportKeyOf,
   restoreSwitchRecord,
   scopesSwitchedOffFor,
   switchActionOf,
   switchAuditSubject,
-  switchKeyField,
   switchNotFoundMessage,
   switchRecordsOf,
   switchedOffOf,
   switchesBackfillSqlOf,
   switchesTableExists,
+  tenantHeldOf,
   tenantHoldsGrant,
   inUnitMovesToAudit,
   staleCarryRevertRow,
@@ -2815,26 +2816,16 @@ export class SqliteScopeHost implements ScopeHost {
       }
       const recordedOff = switchedOffOf(directorySql, kind, tenantId, scopeId);
       // #1742: what a deployment already switched off inside its own unit, audited here — the
-      // switch below answers `changed: false` for it and would write no row.
-      // A move the revert above undid is not credited as an in-unit OFF.
-      const applied = opts?.appliedInUnit?.filter((a) => {
-        const key = reportKeyOf(kind, a);
-        return key === undefined || !reverted.has(key);
-      });
-      for (const row of inUnitMovesToAudit(kind, recordedOff, applied)) audit(action, { operationId: ulid(), ...row });
+      // switch below answers `changed: false` for it and would write no row. A move the revert
+      // above undid is not credited as an in-unit OFF.
+      for (const row of inUnitMovesToAudit(kind, recordedOff, opts?.appliedInUnit, reverted)) {
+        audit(action, { operationId: ulid(), ...row });
+      }
       for (const key of recordedOff) {
         // #1823 (#2030): a subject whose only authority here is a tenant-level grant is held too.
         const outcome = move(key, 'off', tenantHoldsGrant(directorySql, kind, tenantId, key, this.clock()));
-        if (outcome.changed) {
-          audit(action, {
-            operationId: ulid(),
-            ...switchAuditSubject(kind, key, 'off'),
-            phase: 'applied',
-            changed: true,
-            permissions: outcome.permissions,
-          });
-        }
-        results.push({ ...switchKeyField(kind, key), held: outcome.held, changed: outcome.changed } as SystemSwitchReassert);
+        if (outcome.changed) audit(action, { operationId: ulid(), ...reassertOffRow(kind, key, outcome.permissions) });
+        results.push(reassertEntry(kind, key, outcome));
       }
     }
     return results;
@@ -7103,15 +7094,14 @@ export class SqliteScopeHost implements ScopeHost {
       },
       tenantHeldSystemModules: async (actor: PlatformActorId, tenantId: TenantId, moduleIds: readonly ModuleId[]) => {
         const now = this.clock();
-        const held = moduleIds.filter((m) => tenantHoldsGrant(switchSqlOf(this.directory), 'system', tenantId, m, now));
+        const held = tenantHeldOf(switchSqlOf(this.directory), 'system', tenantId, moduleIds, now) as ModuleId[];
         this.recordAccess(actor, 'tenantHeldSystemModules', { tenantId }, { moduleIds: [...moduleIds] }, held.length);
         return held;
       },
       peerSwitchCarry: async (actor: PlatformActorId, node: { tenantId: TenantId; scopeId: ScopeId }) => {
         const directorySql = switchSqlOf(this.directory);
         const switchedOffPeers = switchedOffOf(directorySql, 'peer', node.tenantId, node.scopeId);
-        const now = this.clock();
-        const tenantHeldPeers = switchedOffPeers.filter((v) => tenantHoldsGrant(directorySql, 'peer', node.tenantId, v, now));
+        const tenantHeldPeers = tenantHeldOf(directorySql, 'peer', node.tenantId, switchedOffPeers, this.clock());
         this.recordAccess(actor, 'peerSwitchCarry', node, null, switchedOffPeers.length);
         return { switchedOffPeers, tenantHeldPeers };
       },

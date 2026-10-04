@@ -416,9 +416,7 @@ export type {
 } from './system-switch.js';
 export {
   PEER_SWITCHES_DDL,
-  PEER_SWITCHES_TABLE,
   SWITCH_KINDS,
-  SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
   SYSTEM_SWITCHES_TABLE,
   dumpCarriesSwitches,
@@ -426,6 +424,8 @@ export {
   inUnitMovesToAudit,
   listSystemSwitchRecords,
   reassertActionOf,
+  reassertEntry,
+  reassertOffRow,
   recordSwitchedOff,
   recordSwitchedOn,
   restoreSwitchRecord,
@@ -434,7 +434,6 @@ export {
   staleCarryReverts,
   reportKeyOf,
   switchActionOf,
-  switchKeyField,
   switchAuditSubject,
   switchNotFoundMessage,
   switchRecordsOf,
@@ -443,6 +442,7 @@ export {
   switchesDdlOf,
   switchesTableExists,
   switchesTableOf,
+  tenantHeldOf,
   tenantHoldsGrant,
   withRecorded,
 } from './system-switch-record.js';

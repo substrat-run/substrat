@@ -28,7 +28,7 @@ import {
   switchesDdlOf,
   switchesTableExists,
   switchesTableOf,
-  tenantHoldsGrant,
+  tenantHeldOf,
   VERSION_MIGRATIONS_DDL,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -3746,7 +3746,7 @@ export class ControlPlaneDO extends DurableObject {
    * there is a tenant tuple is still switchable. Read here, where the tenant tuples live.
    */
   tenantHeldOf(kind: SwitchKind, tenantId: string, keys: readonly string[], now: string): string[] {
-    return keys.filter((k) => tenantHoldsGrant(this.kernelSql, kind, tenantId, k, now));
+    return tenantHeldOf(this.kernelSql, kind, tenantId, keys, now);
   }
 
   /** The fleet read. */

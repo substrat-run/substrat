@@ -2,7 +2,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
   PEER_SWITCHES_DDL,
-  SYSTEM_SWITCHES_BACKFILL_SQL,
   SYSTEM_SWITCHES_DDL,
   forgetSwitchesOf,
   switchesBackfillSqlOf,
@@ -73,7 +72,7 @@ describe('the schedule switch record (#1674)', () => {
       audit(db, { to: 'on', outcome: 'applied', reason: 'fixed' });
       const last = audit(db, { to: 'off', outcome: 'applied', reason: 'again' });
       create(db);
-      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      db.exec(switchesBackfillSqlOf('system'));
       expect(rows(sql)).toEqual([{ scopeId: S, moduleId: M, position: 'off', reason: 'again' }]);
       expect(listSystemSwitchRecords(sql)[0]).toMatchObject({ operationId: last, actor: 'staff', tenantId: T });
     });
@@ -83,7 +82,7 @@ describe('the schedule switch record (#1674)', () => {
       audit(db, { to: 'off', outcome: 'applied', reason: 'incident' });
       audit(db, { to: 'on', outcome: 'applied', reason: 'fixed' });
       create(db);
-      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      db.exec(switchesBackfillSqlOf('system'));
       expect(rows(sql)).toEqual([{ scopeId: S, moduleId: M, position: 'on', reason: 'fixed' }]);
     });
 
@@ -93,7 +92,7 @@ describe('the schedule switch record (#1674)', () => {
       audit(db, { to: 'off', outcome: 'refused', reason: 'typo', module: '@m/y' });
       audit(db, { to: 'on', outcome: 'applied', reason: 'no-op restore', module: '@m/y' });
       create(db);
-      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      db.exec(switchesBackfillSqlOf('system'));
       expect(rows(sql)).toEqual([]);
     });
 
@@ -102,7 +101,7 @@ describe('the schedule switch record (#1674)', () => {
       audit(db, { to: 'off', outcome: 'refused', reason: 'typo', module: '@m/typo' });
       audit(db, { to: 'off', outcome: 'failed', reason: 'unreachable', module: '@m/down' });
       create(db);
-      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      db.exec(switchesBackfillSqlOf('system'));
       expect(rows(sql)).toEqual([]);
     });
 
@@ -111,7 +110,7 @@ describe('the schedule switch record (#1674)', () => {
       audit(db, { to: 'off', outcome: 'applied', reason: 'incident' });
       audit(db, { to: 'on', outcome: 'failed', reason: 'tried to restore' });
       create(db);
-      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      db.exec(switchesBackfillSqlOf('system'));
       expect(rows(sql)).toEqual([{ scopeId: S, moduleId: M, position: 'off', reason: 'incident' }]);
     });
 
@@ -122,8 +121,8 @@ describe('the schedule switch record (#1674)', () => {
       recordSwitchedOff(sql, {
         kind: 'system', tenantId: T, scopeId: S, key: M, actor: 'staff', reason: 'written live', operationId: '01LIVE', at: '2026-09-20T00:00:00.000Z',
       });
-      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
-      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      db.exec(switchesBackfillSqlOf('system'));
+      db.exec(switchesBackfillSqlOf('system'));
       expect(rows(sql)).toEqual([{ scopeId: S, moduleId: M, position: 'off', reason: 'written live' }]);
     });
 
@@ -134,7 +133,7 @@ describe('the schedule switch record (#1674)', () => {
       audit(db, { to: 'off', outcome: 'applied', reason: 'c', scope: 'scope-2' });
       audit(db, { to: 'on', outcome: 'applied', reason: 'd', scope: 'scope-2' });
       create(db);
-      db.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      db.exec(switchesBackfillSqlOf('system'));
       expect(rows(sql)).toEqual([
         { scopeId: S, moduleId: M, position: 'off', reason: 'a' },
         { scopeId: S, moduleId: '@m/y', position: 'off', reason: 'b' },
