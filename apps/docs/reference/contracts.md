@@ -197,7 +197,9 @@ The refusal log's read shapes (#1745), the denial log's sibling: `refusalRecord`
 `operation`, the `guard` predicate on a guard row, the actor and its `actorKind`, the problem
 code as `reason`, the `invocationId`), `refusalFilter` (kind, record, actor, operation, call,
 `since`/`until`), and `DEFAULT_REFUSAL_LIMIT` / `REFUSAL_LIMIT_MAX`. `fromState` is null on a
-guard row. `nameRefusedRecord(err, ref)` / `refusedRecordOf(err)` let a guard predicate name the
+guard row, and `undeclared` (`UNDECLARED_STATE`, from `lifecycle.ts`) when the record was in no
+declared state. A reason outside `problemReason` (in `errors.ts`, the grammar every problem code is
+written in) is kept as `unrecognized` (`UNRECOGNIZED_REFUSAL_REASON`). `nameRefusedRecord(err, ref)` / `refusedRecordOf(err)` let a guard predicate name the
 record its refusal is about. Read through `HostAdmin.listRefusals`. See
 [A refusal is recorded](/concepts/lifecycle).
 

@@ -143,8 +143,12 @@ leaves no row. A guard a vertical composes into its own operation (calling `requ
 itself) is the vertical's code, and its `conflict` is not told apart from any other.
 
 Neither kind of row carries the error's message, the operation's input or a guard's config,
-so there is nothing in one for a subject erasure to rewrite. Like denials, the rows drain
-rather than expire.
+so there is nothing in one for a subject erasure to rewrite. What a row does carry is held to
+the model's own vocabulary. The state is kept only when the lifecycle declares it: a record
+whose status column holds anything else is recorded as `undeclared`, never as what the column
+held. The reason is kept only when it is a code (the snake_case problem codes are written in,
+at most 64 characters), and `unrecognized` otherwise. Like denials, the rows drain rather than
+expire.
 
 **Review.** `pnpm lint:model` re-emits the machine into `model.json`, and CI re-emits with
 `--check`. A redirected edge or a state that stops admitting substates has to appear in a PR
