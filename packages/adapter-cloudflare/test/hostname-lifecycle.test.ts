@@ -714,5 +714,8 @@ describe('the tenant-record walk rotates past deployments that never answer (#20
     await platform().healLifecycles(actor);
     expect(asked.length - before).toBe(TENANT_UNRECORDED_PER_PASS);
     expect(asked.filter((s) => s === copy)).toHaveLength(1);
-  });
+    // A full slice is the point of the case: fifty provisions and three passes of about fifty
+    // deliveries each, against the real directory. Under a loaded full suite that outruns the
+    // default 5 s, though it takes under a second alone.
+  }, 60_000);
 });
