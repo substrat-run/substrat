@@ -1,5 +1,39 @@
 # @substrat-run/contract-tests
 
+## 0.137.0
+
+### Minor Changes
+
+- 21055d5: A manifest-declared guard that refuses an operation is now recorded, beside refused lifecycle moves (#1745).
+
+  When a guard predicate the kernel runs before an operation throws a `conflict`, both adapters write a row of kind `guard` to the scope's refusal log after the rollback, the way a refused transition is recorded. The row holds the predicate's name, the operation, the problem's `reason`, the record when the predicate named it, the actor and the call. It holds no state, and never the error's message, the operation's input or the guard's config. Any other throw from a predicate, and a guard whose predicate no module contributes, still blocks the operation and records nothing. A guard a vertical composes into its own operation is not recorded.
+
+  A refusal row now keeps only the model's own vocabulary. A transition's from-state is recorded only when the lifecycle declares it, and as `undeclared` otherwise, never as whatever the record's status column held. A reason is recorded only when it is a code, and as `unrecognized` otherwise. A record's type is recorded only when it is spelled as an entity type, and as `undeclared` otherwise; its id is kept.
+
+  - **contracts**: `problemReason`, the snake_case grammar every problem code is written in (at most `PROBLEM_REASON_MAX`, 64), `UNRECOGNIZED_REFUSAL_REASON`, `UNDECLARED_STATE`, and `refusalEntityType` / `UNDECLARED_ENTITY_TYPE` / `REFUSAL_ENTITY_TYPE_MAX`. `assertTransition` carries a declared `from` or `UNDECLARED_STATE`. `refusalRecord.fromState` is now nullable (null on a guard row), and the record gains `guard`. `refusalFilter` takes an optional `kind`. New `nameRefusedRecord(err, { entityType, entityId })` and `refusedRecordOf(err)`, which let a predicate name the record its refusal is about.
+  - **kernel**: `markGuardRefusal`, `refusalOf`, the `RefusedGuard` type, and `REFUSALS_REBUILD` / `refusalsAdmitGuards`. `refusalInsert` accepts a guard refusal and now writes the `reason` column for both kinds. `readLifecycleFlow`'s `refused` counts transition rows only.
+  - **adapters**: `_substrat_refusals` gains `guard` and `reason`, and `from_state` drops its NOT NULL. A scope that holds the old table rebuilds it on its next wake, in one transaction, keeping every row and the index. `listRefusals` reads both kinds.
+  - **engine-protocol**: `requireSigned` and `requireCountersigned` name the record on their `protocol_required` refusal, so a `protocol/all-signed` guard refusal counts against it.
+
+### Patch Changes
+
+- b641075: The schedule kill switch now takes back a tenant-wide system grant on the scopes it switches off.
+
+  **A switched-off module has no authority on that scope.** Switching a module off on a scope used to revoke only the module's grants on that scope. A tenant-wide system grant that already existed kept working there: the schedules stopped, but a system-door invoke or a job run acting as the module still passed its permission check. Now the permission evaluator checks the scope's switch before it reads any grant. While the switch is off, it denies the module on that scope whatever the module holds, tenant-wide grants included, on both adapters. Other scopes are not affected. Re-projecting tenant permissions into the scope does not bring the authority back. Restore is still the only lever: once the module is restored, the tenant-wide grant applies there again. The same rule covers a peer vertical switched off with `revokeFromPeer`. `ScopeTupleReader` gains a required `switchedOff(subject)`, which both adapters answer from the scope's own switch.
+
+  **A module held only by a tenant-wide grant can be switched off.** `revokeFromSystem` used to answer `not_found` for a module that had no grant on the scope itself, even when a tenant-wide grant gave it authority there. Now the switch asks the directory: if the tenant holds a live grant for the module, OFF writes the scope's switch (there is nothing on the scope to revoke) and `restoreToSystem` takes it back. A wiped or restored scope gets the switch back for such a module as it does for any other. A module with no authority on the scope at all is still refused as `not_found`. For a hosted scope, the platform sends `tenantHeld` with `/internal/system-switch`, and `systemSwitchLocal` takes it as `opts.tenantHeld`. It also sends the field with a hosted provision, reconcile or restore (`/internal/provision`, `/internal/reconcile`, `/internal/restore`), so the deployment switches such a module back off in the same unit, not only at the platform's re-assert afterwards. `HostAdmin.tenantHeldSystemModules` is the platform's read for this. A deployment built before this ignores the field and answers `not_found` for such a module, as it did before. A deployment built before this would also switch off a module held both on the scope and tenant-wide while its permission check still let the tenant-wide grant through, so every switch answer now carries `deniesTenantGrants: true`, and the platform refuses an OFF of a tenant-held module whose deployment's answer lacks it. `revokeFromSystem` then fails with `precondition_failed` (redeploy the vertical), switches the scope back on and takes the record back, so nothing is switched or recorded. A re-assert against such a deployment fails the same way, so a reconcile records no receipt.
+
+  **No window between the switch and its record.** `revokeFromSystem` now writes the directory's `off` record before it moves the scope, not after. It takes the record back if the move fails or the scope holds nothing to switch off. Before, a tenant-wide grant issued while the scope was moving could get past the refusal added in the previous release. An error during the move does not prove the scope stayed where it was, so the record is taken back only when the scope reads back in the other position, in both directions. A `restoreToSystem` that switched the scope on before it failed keeps its `on` record, so the next re-assert does not switch the module back off. If that read also fails, the scope counts as off: an OFF keeps its record, which the next re-assert completes, and an ON's record goes back to `off`. If the record write itself fails, the call fails with nothing moved. Before, the scope moved and the call reported the record error afterwards. `recordSystemSwitchedOff` returns the prior row. `restoreSystemSwitchRecord` removes a row the failed call created.
+
+- Updated dependencies [7559e1a]
+- Updated dependencies [21055d5]
+- Updated dependencies [b641075]
+- Updated dependencies [7adf5c7]
+- Updated dependencies [1c411fc]
+- Updated dependencies [fcb587d]
+  - @substrat-run/contracts@0.137.0
+  - @substrat-run/kernel@0.137.0
+
 ## 0.136.0
 
 ### Minor Changes
@@ -5191,7 +5225,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
