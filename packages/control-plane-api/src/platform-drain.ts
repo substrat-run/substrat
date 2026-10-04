@@ -30,9 +30,8 @@ import {
   type PlatformRequestFailure,
   type Scope,
   type ScopeId,
-  type ScopeStatus,
+  type ScopeLifecycle,
   type TenantId,
-  type TenantStatus,
   sweepRunsPayload,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -80,7 +79,7 @@ export interface PlatformDrainContext extends PlatformRequestContext {
    * again runs them. Required for the reason `scope` is: a caller that forgot would drain a held
    * scope's intents with platform authority.
    */
-  lifecycle: { scope: ScopeStatus; tenant: TenantStatus };
+  lifecycle: Pick<ScopeLifecycle, 'scope' | 'tenant'>;
 }
 
 /**
