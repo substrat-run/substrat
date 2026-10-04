@@ -266,6 +266,11 @@ late delivery cannot undo a later transition.
   receipt (`scope_lifecycle_receipts`) differs from the directory, and again to every scope
   held now. That second rule puts a hold back on a store that a carry or a restore landed
   without one.
+- **The platform's own drain waits too.** A held scope's platform intents (a connector
+  delivery the control plane runs on the vertical's behalf, a sibling to provision) are
+  listed, so the backlog still counts them, but never run or settled, so no attempt counts
+  toward the give-up ceiling. `PlatformDrainContext.lifecycle` carries the scope's and the
+  tenant's status from the directory, and the drain is the one place that judges it.
 - **Loads.** The stored lifecycle travels with a dump onto the same scope. A load keeps the
   newer of the store's and the dump's, so restoring a backup taken before a suspension does
   not lift it. A copy never inherits its source's lifecycle.
