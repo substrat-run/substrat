@@ -162,6 +162,18 @@ export function platformSweeperDecision(
 }
 
 /**
+ * The Durable Object classes an upload of a version actually DEPLOYS (#1902): the ones its
+ * manifest declares, plus the platform's sweeper class when the version's recorded decision
+ * supplies it. The one answer for every reader — `withPlatformEntry` builds the upload from
+ * it, and the serving record (`verticalServing`) stores it and derives each in-place
+ * migration delta from it — so the record can never name fewer classes than the script holds,
+ * and a later upload never re-declares one that is already live.
+ */
+export function deployedDoClasses(doClasses: readonly string[], supplySweeper: boolean | undefined): string[] {
+  return supplySweeper ? [...new Set([...doClasses, PLATFORM_SWEEPER_CLASS])] : [...doClasses];
+}
+
+/**
  * The bundle as uploaded: the platform's entry module added (or refreshed) and named as
  * the script's main module, importing the vertical's own entry — and, when the version's
  * recorded decision says so (`supplySweeper`), the platform's sweeper beside it: its module,
@@ -194,7 +206,7 @@ export function withPlatformEntry<
       ? {
           // Deduplicated: a vertical that dropped its own `SweeperDO` keeps the class in its
           // migration history, and the class must be declared once.
-          doClasses: [...new Set([...(bundle.doClasses ?? []), PLATFORM_SWEEPER_CLASS])],
+          doClasses: deployedDoClasses(bundle.doClasses ?? [], true),
           bindings: [
             ...(bundle.bindings ?? []),
             { type: 'durable_object_namespace', name: PLATFORM_SWEEPER_BINDING, class_name: PLATFORM_SWEEPER_CLASS },

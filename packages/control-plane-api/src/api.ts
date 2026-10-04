@@ -202,7 +202,7 @@ import type {
   ScopeBackupStore,
 } from './backups.js';
 import { backupDirectoryIfDue } from './directory-backup.js';
-import { platformSweeperDecision } from './platform-entry.js';
+import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
 import {
   isCustomHostname,
@@ -6438,6 +6438,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
     const manifest = storedDeployManifest.parse(JSON.parse(manifestJson));
+    // #1902: the classes this upload DEPLOYS — the manifest's, plus the platform's sweeper when
+    // the version's recorded decision supplies it. The upload, the migration delta and the
+    // serving record below all read this one set; the manifest's own `doClasses` would leave
+    // the record a class short of the script, and the next serve re-declaring a live class.
+    const doClasses = deployedDoClasses(manifest.doClasses, manifest.platformSweeper);
     const serving = await host.admin.verticalServing(actor, slug);
     const ref = serving?.ref ?? stableDeploymentRefFor(slug);
     const modules = await options.fetchVerticalModules(version.deploymentRef);
@@ -6465,7 +6470,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityDate: manifest.compatibilityDate,
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
-        doClasses: manifest.doClasses,
+        doClasses,
         bindings: [...manifest.bindings, ...storeBindings],
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
@@ -6505,18 +6510,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }
         : undefined,
     );
-    const addedClasses = serving
-      ? manifest.doClasses.some((cls) => !serving.doClasses.includes(cls))
-      : false;
+    const addedClasses = serving ? doClasses.some((cls) => !serving.doClasses.includes(cls)) : false;
     await admin.setVerticalServing(actor, slug, {
       ref,
       versionId,
       // The serving script's class set only ever GROWS (DO classes cannot be deleted
       // while their storage lives), so record the union, and the tag only moves when
       // a migration actually rode the upload.
-      doClasses: serving
-        ? [...new Set([...serving.doClasses, ...manifest.doClasses])]
-        : manifest.doClasses,
+      doClasses: serving ? [...new Set([...serving.doClasses, ...doClasses])] : doClasses,
       migrationTag: serving
         ? addedClasses
           ? nextMigrationTag(serving.migrationTag)
