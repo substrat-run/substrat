@@ -70,14 +70,7 @@ export function systemSwitchContractSuite(
       host.admin.restoreToSystem(staff, { moduleId: module, node: { tenantId: tn, scopeId: s }, reason: 'resolved' });
     const ticks = async (s: ScopeId): Promise<number> =>
       (await (await host.getScope(reader, t, s)).invoke('sched/count')) as number;
-    const grant = (s: ScopeId, key: string, module = SCHED) =>
-      host.admin.grantToSystem(staff, {
-        moduleId: module,
-        permission: permissionKey.parse(key),
-        node: { tenantId: t, scopeId: s },
-        grantedBy: staff,
-      });
-    const grantAt = (tn: TenantId, s: ScopeId, key: string, module = SCHED) =>
+    const grant = (s: ScopeId, key: string, module = SCHED, tn: TenantId = t) =>
       host.admin.grantToSystem(staff, {
         moduleId: module,
         permission: permissionKey.parse(key),
@@ -733,7 +726,7 @@ export function systemSwitchContractSuite(
       await tn.grant('jobs:write', JOBS);
       // JOBS declares no schedule, so nothing seats it at the scope: a scope-level grant of a
       // permission the job never checks is what gives the scope something of JOBS to switch.
-      await grantAt(tn.tenant, s, 'jobs:admin', JOBS);
+      await grant(s, 'jobs:admin', JOBS, tn.tenant);
       await tn.off(s);
       await tn.off(s, JOBS);
       const tick = async (scope: ScopeId) => (await host.getSystemScope(SCHED, tn.tenant, scope)).invoke('sched/tick');

@@ -3,7 +3,7 @@ import type { Node, RoleDefinition } from '@substrat-run/contracts';
 import {
   capabilityByIdQuery,
   createTupleEvaluator,
-  SYSTEM_SWITCH_OFF_PREDICATE,
+  SYSTEM_SWITCH_OFF_QUERY,
   type CapabilityRow,
   type Clock,
   type PermissionChecker,
@@ -82,10 +82,8 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
       ) as CapabilityRow | undefined,
     // #1823: the kill switch's OFF marker, in this scope's own spine — the gate's predicate.
     switchedOff: (subject) =>
-      Number(
-        ((switchedOffStmt ??= db.prepare(`SELECT ${SYSTEM_SWITCH_OFF_PREDICATE} AS off`)).get(subject) as { off: number })
-          .off,
-      ) === 1,
+      Number(((switchedOffStmt ??= db.prepare(SYSTEM_SWITCH_OFF_QUERY)).get(subject) as { off: number } | undefined)?.off) ===
+      1,
   };
 };
 

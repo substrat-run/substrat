@@ -25,6 +25,7 @@
  * The admin log is still the history. This is only the current position.
  */
 import type { ListPage } from '@substrat-run/contracts';
+import { liveTupleSql } from './permission-eval.js';
 import type { SwitchSql, SwitchedOff, SystemScheduleState } from './system-switch.js';
 
 /** The record's table name, as the DDL below spells it. */
@@ -282,7 +283,7 @@ export function tenantHoldsSystemGrant(db: SwitchSql, tenantId: string, moduleId
   const row = db.all(
     `SELECT EXISTS (SELECT 1 FROM _substrat_tenant_tuples
        WHERE tenant_id = ? AND subject = ? AND object = ? AND substr(relation, 1, 8) = 'granted:'
-         AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)) AS held`,
+         AND ${liveTupleSql()}) AS held`,
     tenantId,
     `system:${moduleId}`,
     `tenant:${tenantId}`,

@@ -147,13 +147,26 @@ export function systemSwitchedOff(db: SwitchSql, moduleId: string): boolean {
   return subjectSwitchedOff(db, subjectOf(moduleId));
 }
 
+/**
+ * `SYSTEM_SWITCH_OFF_PREDICATE` as a whole statement answering `off` (0/1), over the one bound
+ * subject — what `subjectSwitchedOff` runs, and what each adapter's permission reader prepares
+ * once and runs on every check of a switchable subject (#1823).
+ */
+export const SYSTEM_SWITCH_OFF_QUERY = `SELECT ${SYSTEM_SWITCH_OFF_PREDICATE} AS off`;
+
 /** Is this subject's OFF marker live on the scope `db` is? Any subject — see `switchSubjectGrants`. */
 export function subjectSwitchedOff(db: SwitchSql, subject: string): boolean {
-  const row = db.all(`SELECT ${SYSTEM_SWITCH_OFF_PREDICATE} AS off`, subject)[0] as
-    | { off: number }
-    | undefined;
+  const row = db.all(SYSTEM_SWITCH_OFF_QUERY, subject)[0] as { off: number } | undefined;
   return Number(row?.off) === 1;
 }
+
+/**
+ * The subject kinds a kill switch can name: a module's system authority (#1666, `system:`) and
+ * a peer vertical's (#1706, `vertical:`). A principal, connection or capability never carries a
+ * marker, so the evaluator asks the switch only for these (#1823).
+ */
+const SWITCHABLE_KINDS: ReadonlySet<string> = new Set(['system', 'vertical']);
+export const isSwitchableSubjectKind = (kind: string): boolean => SWITCHABLE_KINDS.has(kind);
 
 /** How many scopes a tenant-level refusal names before it says "and N more". */
 const NAMED_SCOPES = 5;

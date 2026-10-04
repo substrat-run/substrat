@@ -4968,11 +4968,17 @@ export class CloudflareScopeHost implements ScopeHost {
       // hold here too. A delegated move releases in the deployment serving the scope.
       // #1823: a module whose only authority on the scope is a TENANT-level grant has nothing in
       // the scope's storage for the switch to find, so the directory says whether it is held.
-      const move = async (moduleId: ModuleId, to: 'on' | 'off', at: string): Promise<SwitchOutcome> => {
-        const tenantHeld = (await this.cp.tenantHeldSystemModules(tenantId, [moduleId], at)).length > 0;
+      // A caller moving several modules reads them in one call and passes each answer in.
+      const move = async (
+        moduleId: ModuleId,
+        to: 'on' | 'off',
+        at: string,
+        tenantHeld?: boolean,
+      ): Promise<SwitchOutcome> => {
+        const held = tenantHeld ?? (await this.cp.tenantHeldSystemModules(tenantId, [moduleId], at)).length > 0;
         return delegation
-          ? delegation.switch({ tenantId, scopeId, moduleId, to, tenantHeld })
-          : this.switchInScope(scopeId, moduleId, to, at, tenantHeld);
+          ? delegation.switch({ tenantId, scopeId, moduleId, to, tenantHeld: held })
+          : this.switchInScope(scopeId, moduleId, to, at, held);
       };
       return { vertical, move };
     };
@@ -5237,8 +5243,9 @@ export class CloudflareScopeHost implements ScopeHost {
         });
       }
       const results: SystemSwitchReassert[] = [];
+      const tenantHeld = new Set(modules.length ? await this.cp.tenantHeldSystemModules(tenantId, modules, at) : []);
       for (const moduleId of modules) {
-        const outcome = await move(moduleId as ModuleId, 'off', at);
+        const outcome = await move(moduleId as ModuleId, 'off', at, tenantHeld.has(moduleId));
         if (outcome.changed) {
           await this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId, vertical }, null, {
             operationId: ulid(),

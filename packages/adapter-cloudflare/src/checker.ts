@@ -2,7 +2,7 @@ import type { EntitlementView, RoleDefinition } from '@substrat-run/contracts';
 import {
   capabilityByIdQuery,
   createTupleEvaluator,
-  SYSTEM_SWITCH_OFF_PREDICATE,
+  SYSTEM_SWITCH_OFF_QUERY,
   type CapabilityRow,
   type PermissionChecker,
   type PermissionTupleReader,
@@ -152,7 +152,7 @@ const scopeReader = (sql: SqlStorage): ScopeTupleReader => ({
   },
   // #1823: the kill switch's OFF marker, in this ScopeDO's own spine — the gate's predicate.
   switchedOff: (subject) =>
-    Number((sql.exec(`SELECT ${SYSTEM_SWITCH_OFF_PREDICATE} AS off`, subject).one() as { off: number }).off) === 1,
+    Number((sql.exec(SYSTEM_SWITCH_OFF_QUERY, subject).toArray()[0] as { off: number } | undefined)?.off) === 1,
 });
 
 export function createDoTupleChecker(deps: DoCheckerDeps): PermissionChecker {
