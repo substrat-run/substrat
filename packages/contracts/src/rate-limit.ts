@@ -11,10 +11,11 @@
  * ## Why the policy lives here
  *
  * Both of those choke points derive the same keys, speak the same headers and refuse with
- * the same problem. This file is that grammar and nothing else: which counter remembers a
- * key is the caller's ({@link RateLimiter}), so the router binds Cloudflare's native
- * rate-limit binding and a node host binds `memoryRateLimiter`, and the two cannot disagree
- * about what a key or a 429 looks like.
+ * the same problem — through one call, {@link evaluateRateLimits}. This file is that grammar
+ * and nothing else: which counter remembers a key is the caller's ({@link RateLimiter}), so
+ * the router binds Cloudflare's native rate-limit binding and a node host binds
+ * vertical-host's `memoryRateLimiter`, and the two cannot disagree about what a key or a 429
+ * looks like.
  *
  * ## The keys
  *
@@ -86,8 +87,7 @@ export const DEFAULT_RATE_LIMITS: Readonly<Record<RateLimitBucket, RateLimitPoli
  * well-formed set. Strict on purpose: a typo in a limit must be loud (the caller logs and
  * fails open), never a silently different budget.
  */
-export function parseRateLimits(raw: unknown): Record<RateLimitBucket, RateLimitPolicy> | undefined {
-  const value = typeof raw === 'string' ? safeJson(raw) : raw;
+export function parseRateLimits(value: unknown): Record<RateLimitBucket, RateLimitPolicy> | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
   const out = {} as Record<RateLimitBucket, RateLimitPolicy>;
   for (const bucket of RATE_LIMIT_BUCKETS) {
@@ -99,14 +99,6 @@ export function parseRateLimits(raw: unknown): Record<RateLimitBucket, RateLimit
 }
 
 const isPositiveInt = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0;
-
-function safeJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * The cookies that ARE a signed-in browser's credential: the platform session (oidc-rp's
@@ -133,17 +125,13 @@ export interface RateLimitSubject {
 }
 
 /**
- * The key per bucket for one request. Async because a credential is hashed (Web Crypto)
- * before it goes anywhere.
+ * The key one request is counted under in one bucket. Async because a credential is hashed
+ * (Web Crypto) before it goes anywhere — and only when the credential bucket is counted.
  */
-export async function rateLimitKeys(subject: RateLimitSubject): Promise<Record<RateLimitBucket, string>> {
-  const prefix = `${subject.tenantId}:${subject.scopeId}`;
+export async function rateLimitKey(bucket: RateLimitBucket, subject: RateLimitSubject): Promise<string> {
   const address = subject.clientIp ? `ip:${subject.clientIp}` : 'anon';
-  const credential = await credentialOf(subject.headers);
-  return {
-    credential: `${prefix}:credential:${credential ?? address}`,
-    ip: `${prefix}:ip:${address}`,
-  };
+  const caller = bucket === 'credential' ? ((await credentialOf(subject.headers)) ?? address) : address;
+  return `${subject.tenantId}:${subject.scopeId}:${bucket}:${caller}`;
 }
 
 /**
@@ -179,53 +167,6 @@ async function digest(text: string): Promise<string> {
   return hex;
 }
 
-/** One bucket to count a request in: its budget, its counter, and the request's key. */
-export interface RateLimitCheck {
-  readonly bucket: RateLimitBucket;
-  readonly policy: RateLimitPolicy;
-  readonly limiter: RateLimiter;
-  readonly key: string;
-}
-
-export type RateLimitVerdict =
-  | { readonly outcome: 'allowed'; readonly failures: readonly RateLimitFailure[] }
-  | { readonly outcome: 'limited'; readonly refused: RateLimitCheck; readonly failures: readonly RateLimitFailure[] };
-
-/** A counter that could not answer — counted as a pass (fail open), and reported for a log line. */
-export interface RateLimitFailure {
-  readonly bucket: RateLimitBucket;
-  readonly error: unknown;
-}
-
-/**
- * Count a request in every bucket. All of them are counted, even once one refuses, so a
- * caller that is over one budget still spends the others: the counts stay true to the
- * traffic rather than to the order the buckets were asked in. The verdict names the first
- * bucket (in `checks` order) that refused.
- */
-export async function checkRateLimits(checks: readonly RateLimitCheck[]): Promise<RateLimitVerdict> {
-  const results = await Promise.all(
-    checks.map(async (check) => {
-      try {
-        return { check, success: (await check.limiter.limit({ key: check.key })).success };
-      } catch (error) {
-        return { check, success: true, error };
-      }
-    }),
-  );
-  const failures = results.flatMap((r) => ('error' in r ? [{ bucket: r.check.bucket, error: r.error }] : []));
-  const refused = results.find((r) => !r.success)?.check;
-  return refused ? { outcome: 'limited', refused, failures } : { outcome: 'allowed', failures };
-}
-
-/** `"credential";q=1200;w=60, "ip";q=6000;w=60` — every policy a response was judged against. */
-export function rateLimitPolicyHeader(policies: Partial<Record<RateLimitBucket, RateLimitPolicy>>): string {
-  return RATE_LIMIT_BUCKETS.flatMap((bucket) => {
-    const p = policies[bucket];
-    return p ? [`"${bucket}";q=${p.limit};w=${p.period}`] : [];
-  }).join(', ');
-}
-
 /** A 429, as the parts a host's own `Response` is built from. */
 export interface RateLimitedRefusal {
   readonly status: 429;
@@ -233,26 +174,87 @@ export interface RateLimitedRefusal {
   readonly body: Problem;
 }
 
+/** What one request's count decided, for the host to answer and log. */
+export interface RateLimitEvaluation {
+  /** The 429 to answer instead of serving the request, when a bucket refused it. */
+  readonly refusal?: RateLimitedRefusal;
+  /** `RateLimit-Policy` for the response the request goes on to get; null when nothing counted it. */
+  readonly policyHeader: string | null;
+  /**
+   * Set when a counter threw and the request was let through anyway (fail open): the fields of
+   * the host's `rate-limit-unavailable` log line. Never a key — even a digest has no business
+   * in a log line.
+   */
+  readonly unavailable?: { readonly reason: string; readonly buckets: RateLimitBucket[]; readonly error: string[] };
+}
+
+/**
+ * Count one request in every bucket that has a counter — the whole decision both hosts make.
+ *
+ * Every bucket is counted, even once one refuses, so a caller over one budget still spends
+ * the others: the counts stay true to the traffic rather than to the order the buckets were
+ * asked in. The refusal names the first bucket (in `RATE_LIMIT_BUCKETS` order) that refused.
+ */
+export async function evaluateRateLimits(input: {
+  readonly subject: RateLimitSubject;
+  readonly policies: Readonly<Record<RateLimitBucket, RateLimitPolicy>>;
+  readonly limiters: Readonly<Partial<Record<RateLimitBucket, RateLimiter>>>;
+  /** The request path, for the problem's `instance`. */
+  readonly instance?: string;
+}): Promise<RateLimitEvaluation> {
+  const buckets = RATE_LIMIT_BUCKETS.filter((bucket) => input.limiters[bucket]);
+  if (buckets.length === 0) return { policyHeader: null };
+  const results = await Promise.all(
+    buckets.map(async (bucket) => {
+      try {
+        const key = await rateLimitKey(bucket, input.subject);
+        return { bucket, success: (await input.limiters[bucket]!.limit({ key })).success };
+      } catch (error) {
+        return { bucket, success: true, error: error instanceof Error ? error.message : String(error) };
+      }
+    }),
+  );
+  const policyHeader = buckets
+    .map((bucket) => `"${bucket}";q=${input.policies[bucket].limit};w=${input.policies[bucket].period}`)
+    .join(', ');
+  const failed = results.filter((r) => r.error !== undefined);
+  const unavailable =
+    failed.length > 0
+      ? {
+          reason: 'the rate limiter threw; the request was let through',
+          buckets: failed.map((r) => r.bucket),
+          error: failed.map((r) => r.error!),
+        }
+      : undefined;
+  const refused = results.find((r) => !r.success)?.bucket;
+  return {
+    policyHeader,
+    ...(unavailable ? { unavailable } : {}),
+    ...(refused ? { refusal: refusalFor(refused, input.policies[refused], policyHeader, input.instance) } : {}),
+  };
+}
+
 /**
  * The refusal: 429 `application/problem+json` with code `rate_limited`, and the headers a
- * client backs off by. Parts rather than a `Response`, as the rest of this package hands
- * out data: each host builds its own.
+ * client backs off by. Parts rather than a `Response`, as the rest of this package hands out
+ * data: each host builds its own.
  *
  * `Retry-After` is the bucket's whole period. A counter that cannot say where in its window
  * a key sits (Cloudflare's binding cannot) makes the period the only bound that is never
  * too short, and a retry that is too early is just another 429.
  */
-export function rateLimitedRefusal(
-  refused: { bucket: RateLimitBucket; policy: RateLimitPolicy },
-  policies: Partial<Record<RateLimitBucket, RateLimitPolicy>>,
-  instance?: string,
+function refusalFor(
+  bucket: RateLimitBucket,
+  policy: RateLimitPolicy,
+  policyHeader: string,
+  instance: string | undefined,
 ): RateLimitedRefusal {
-  const retryAfter = refused.policy.period;
+  const retryAfter = policy.period;
   const body = toProblem(
     substratError(
       'rate_limited',
-      `Too many requests for this ${refused.bucket === 'ip' ? 'client address' : 'credential'}: ` +
-        `at most ${refused.policy.limit} every ${refused.policy.period} seconds. Retry after ${retryAfter} seconds.`,
+      `Too many requests for this ${bucket === 'ip' ? 'client address' : 'credential'}: ` +
+        `at most ${policy.limit} every ${policy.period} seconds. Retry after ${retryAfter} seconds.`,
       { retryAfter },
     ),
     instance,
@@ -262,40 +264,9 @@ export function rateLimitedRefusal(
     headers: {
       'content-type': PROBLEM_CONTENT_TYPE,
       [RETRY_AFTER_HEADER]: String(retryAfter),
-      [RATE_LIMIT_POLICY_HEADER]: rateLimitPolicyHeader(policies),
-      [RATE_LIMIT_HEADER]: `"${refused.bucket}";r=0;t=${retryAfter}`,
+      [RATE_LIMIT_POLICY_HEADER]: policyHeader,
+      [RATE_LIMIT_HEADER]: `"${bucket}";r=0;t=${retryAfter}`,
     },
     body,
-  };
-}
-
-/**
- * A fixed-window counter in this process's memory — the {@link RateLimiter} for a node host
- * with no router in front.
- *
- * Exact for ONE process. Several replicas behind a balancer each count their own share, so
- * the effective budget is the limit times the replica count; a deployment like that wants a
- * shared counter behind the same interface. Expired windows are swept as keys are touched,
- * so memory is bounded by the keys seen in one period.
- */
-export function memoryRateLimiter(policy: RateLimitPolicy, now: () => number = Date.now): RateLimiter {
-  const windows = new Map<string, { start: number; count: number }>();
-  const periodMs = policy.period * 1000;
-  let lastSweep = now();
-  return {
-    async limit({ key }) {
-      const t = now();
-      if (t - lastSweep >= periodMs) {
-        for (const [k, w] of windows) if (t - w.start >= periodMs) windows.delete(k);
-        lastSweep = t;
-      }
-      let w = windows.get(key);
-      if (!w || t - w.start >= periodMs) {
-        w = { start: t, count: 0 };
-        windows.set(key, w);
-      }
-      w.count += 1;
-      return { success: w.count <= policy.limit };
-    },
   };
 }

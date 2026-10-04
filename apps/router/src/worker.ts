@@ -31,13 +31,9 @@ import {
   peerCallResponse,
   peerCaller,
   type PeerCaller,
-  checkRateLimits,
+  evaluateRateLimits,
   parseRateLimits,
   RATE_LIMIT_POLICY_HEADER,
-  rateLimitedRefusal,
-  rateLimitKeys,
-  rateLimitPolicyHeader,
-  type RateLimitCheck,
   type RateLimiter,
   type RouteTarget,
 } from '@substrat-run/contracts';
@@ -291,14 +287,16 @@ const isReplayable = (request: Request): boolean => request.body === null;
 const resolverFor = (env: Env): RouteResolver => createRouteResolver(env.CONTROL_PLANE);
 
 /**
- * A response without one header. A dispatched response's headers are immutable, so it is
- * rebuilt around the same body and status — except an upgrade, which carries a socket a
- * rebuilt response would drop; that one is answered as it came, header and all.
+ * A response with headers changed. A dispatched response's headers are immutable, so it is
+ * rebuilt around the same body and status — once, however many headers change — except an
+ * upgrade, which carries a socket a rebuilt response would drop; that one is answered as it
+ * came, headers and all.
  */
-function withoutHeader(response: Response, name: string): Response {
+function withHeaders(response: Response, change: { set?: Record<string, string>; remove?: string[] }): Response {
   if (response.status === 101 || (response as Response & { webSocket?: unknown }).webSocket) return response;
   const out = new Response(response.body, response);
-  out.headers.delete(name);
+  for (const name of change.remove ?? []) out.headers.delete(name);
+  for (const [name, value] of Object.entries(change.set ?? {})) out.headers.set(name, value);
   return out;
 }
 
@@ -442,57 +440,27 @@ async function enforceRateLimits(
 ): Promise<{ refused: Response } | { policyHeader: string | null }> {
   const limiters = { credential: env.RATE_LIMIT_CREDENTIAL, ip: env.RATE_LIMIT_IP };
   if (!limiters.credential && !limiters.ip) return { policyHeader: null };
+  const at = { tenantId: target.tenantId, scopeId: target.scopeId };
   const policies = parseRateLimits(env.RATE_LIMITS);
   if (!policies) {
     console.error(
       JSON.stringify({
         router: 'rate-limit-unavailable',
+        ...at,
         reason: 'RATE_LIMITS is missing or malformed; requests are not being limited',
-        tenantId: target.tenantId,
-        scopeId: target.scopeId,
       }),
     );
     return { policyHeader: null };
   }
-  const keys = await rateLimitKeys({
-    tenantId: target.tenantId,
-    scopeId: target.scopeId,
-    headers: request.headers,
-    clientIp: request.headers.get('cf-connecting-ip'),
+  const { refusal, policyHeader, unavailable } = await evaluateRateLimits({
+    subject: { ...at, headers: request.headers, clientIp: request.headers.get('cf-connecting-ip') },
+    policies,
+    limiters,
+    instance: new URL(request.url).pathname,
   });
-  const checks: RateLimitCheck[] = [];
-  for (const bucket of ['credential', 'ip'] as const) {
-    const limiter = limiters[bucket];
-    if (limiter) checks.push({ bucket, policy: policies[bucket], limiter, key: keys[bucket] });
-  }
-  const counted = Object.fromEntries(checks.map((c) => [c.bucket, c.policy]));
-  const verdict = await checkRateLimits(checks);
-  if (verdict.failures.length > 0) {
-    // Never the key: it is a digest, but a log line has no business holding even that.
-    console.error(
-      JSON.stringify({
-        router: 'rate-limit-unavailable',
-        reason: 'the rate limiter threw; the request was let through',
-        tenantId: target.tenantId,
-        scopeId: target.scopeId,
-        buckets: verdict.failures.map((f) => f.bucket),
-        error: verdict.failures.map((f) => (f.error instanceof Error ? f.error.message : String(f.error))),
-      }),
-    );
-  }
-  if (verdict.outcome === 'limited') {
-    const refusal = rateLimitedRefusal(verdict.refused, counted, new URL(request.url).pathname);
-    return { refused: new Response(JSON.stringify(refusal.body), refusal) };
-  }
-  return { policyHeader: rateLimitPolicyHeader(counted) };
-}
-
-/** A response with one header set, rebuilt the way {@link withoutHeader} rebuilds one. */
-function withHeader(response: Response, name: string, value: string): Response {
-  if (response.status === 101 || (response as Response & { webSocket?: unknown }).webSocket) return response;
-  const out = new Response(response.body, response);
-  out.headers.set(name, value);
-  return out;
+  if (unavailable) console.error(JSON.stringify({ router: 'rate-limit-unavailable', ...at, ...unavailable }));
+  if (refusal) return { refused: new Response(JSON.stringify(refusal.body), refusal) };
+  return { policyHeader };
 }
 
 async function dispatch(
@@ -602,12 +570,14 @@ export default {
       let response = await dispatch(env, request, target, hostname, fieldCoverageId);
       status = response.status;
       threw = false;
-      if (limit.policyHeader) response = withHeader(response, RATE_LIMIT_POLICY_HEADER, limit.policyHeader);
       // #1904: the vertical's record of what ran, for the datapoint — and never for the caller.
       const carried = response.headers.get(INVOCATION_RECORD_HEADER);
-      if (carried !== null) {
-        invocation = decodeInvocationRecord(carried);
-        response = withoutHeader(response, INVOCATION_RECORD_HEADER);
+      if (carried !== null) invocation = decodeInvocationRecord(carried);
+      if (carried !== null || limit.policyHeader) {
+        response = withHeaders(response, {
+          ...(carried !== null ? { remove: [INVOCATION_RECORD_HEADER] } : {}),
+          ...(limit.policyHeader ? { set: { [RATE_LIMIT_POLICY_HEADER]: limit.policyHeader } } : {}),
+        });
       }
       // The vertical just enqueued a platform intent, or committed an event another vertical
       // imports (#1705), and flagged the response. Kick the control plane out of band so it

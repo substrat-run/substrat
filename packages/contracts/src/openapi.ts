@@ -180,19 +180,24 @@ const ERROR_RESPONSES: Readonly<Record<string, unknown>> = Object.fromEntries(
   ]),
 );
 
-/** What a 429 carries besides its body (#130) — the header a client backs off by, foremost. */
-const RATE_LIMITED_HEADERS: Readonly<Record<string, unknown>> = {
-  [RETRY_AFTER_HEADER]: {
-    description: 'Seconds to wait before retrying.',
-    schema: { type: 'integer', minimum: 0 },
-  },
-  [RATE_LIMIT_HEADER]: {
-    description: 'The budget that refused: `"<bucket>";r=0;t=<seconds until it resets>`.',
-    schema: { type: 'string' },
-  },
-  [RATE_LIMIT_POLICY_HEADER]: {
-    description: 'Every budget the request was counted against: `"<bucket>";q=<limit>;w=<window seconds>`, comma-separated.',
-    schema: { type: 'string' },
+/**
+ * What a failure carries besides its body, per documented status. Only the 429 has any
+ * (#130): the header a client backs off by, foremost.
+ */
+const ERROR_RESPONSE_HEADERS: Readonly<Record<number, Readonly<Record<string, unknown>>>> = {
+  429: {
+    [RETRY_AFTER_HEADER]: {
+      description: 'Seconds to wait before retrying.',
+      schema: { type: 'integer', minimum: 0 },
+    },
+    [RATE_LIMIT_HEADER]: {
+      description: 'The budget that refused: `"<bucket>";r=0;t=<seconds until it resets>`.',
+      schema: { type: 'string' },
+    },
+    [RATE_LIMIT_POLICY_HEADER]: {
+      description: 'Every budget the request was counted against: `"<bucket>";q=<limit>;w=<window seconds>`, comma-separated.',
+      schema: { type: 'string' },
+    },
   },
 };
 
@@ -205,7 +210,7 @@ const ERROR_RESPONSE_COMPONENTS: Readonly<Record<string, unknown>> = Object.from
       ERROR_RESPONSE_NAME[status] as string,
       {
         description: `${ERROR_STATUS_PROSE[status]} Carries \`code\`: ${codeList}.`,
-        ...(status === 429 ? { headers: RATE_LIMITED_HEADERS } : {}),
+        ...(ERROR_RESPONSE_HEADERS[status] ? { headers: ERROR_RESPONSE_HEADERS[status] } : {}),
         content: { 'application/problem+json': { schema: { $ref: PROBLEM_SCHEMA_REF } } },
       },
     ];

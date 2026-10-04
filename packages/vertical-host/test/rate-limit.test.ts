@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { isSessionCookie, memoryRateLimiter, PROBLEM_CONTENT_TYPE, type RateLimiter } from '@substrat-run/contracts';
-import { CAPABILITY_COOKIE, rateLimit, type RateLimitOptions } from '../src/index.js';
+import { isSessionCookie, PROBLEM_CONTENT_TYPE, type RateLimiter } from '@substrat-run/contracts';
+import { CAPABILITY_COOKIE, memoryRateLimiter, rateLimit, type RateLimitOptions } from '../src/index.js';
 
 /**
  * #130 on a host with no router: the same keys, headers and refusal as the router's, from a
