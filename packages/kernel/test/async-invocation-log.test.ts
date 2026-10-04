@@ -62,6 +62,34 @@ describe('asyncInvocationLine', () => {
     expect(asyncInvocationLine(unit({ outcome: 'retrying', error: new Error('x') }))).toMatchObject({ problemCode: null, threw: true });
   });
 
+  it('counts what a run emitted by declared type, and never names an entity — an id is the vertical\'s data', () => {
+    const line = asyncInvocationLine({
+      kind: 'schedule',
+      tenantId: 'T1',
+      scopeId: 'S1',
+      invocationId: 'RUN1',
+      operation: 'digest/send',
+      startedAt: Date.now(),
+      outcome: 'ok',
+      emitted: {
+        total: 2,
+        events: [
+          { type: 'digest.sent', entity: 'customer:alice@example.com' },
+          { type: 'digest.sent', entity: 'customer:bob@example.com' },
+        ],
+      } as never,
+    });
+    expect(line).toMatchObject({ eventCount: 2, eventTypes: ['digest.sent'], entities: [] });
+    expect(JSON.stringify(line)).not.toContain('@example.com');
+    // The twin: a request's line still names its entities, from the same builder.
+    expect(
+      invocationLine({
+        tenantId: 'T1', scopeId: 'S1', invocationId: 'CALL1', threw: false, durationMs: 0, level: 'info',
+        emitted: { total: 1, events: [{ type: 'x.y', entity: 'thing:1' }] } as never,
+      }).entities,
+    ).toEqual(['thing:1']);
+  });
+
   it('carries a schedule its due time and lateness, and no consumer fields', () => {
     const line = asyncInvocationLine({
       kind: 'schedule',

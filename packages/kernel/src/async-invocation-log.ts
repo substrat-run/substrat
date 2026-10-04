@@ -23,7 +23,16 @@
  * No payload, no error message, no stack: a handler's error text can quote the event it
  * failed on, and the log store is read by a wider audience than the scope's own data. The
  * error stays where it already is, on the delivery journal row the line's `eventId` names.
- * The kernel's `errorCode` of a thrown error is the one thing taken from it.
+ * The kernel's `errorCode` of a thrown error is the one thing taken from it. And no entity
+ * id either: a schedule's emitted report names the entities it touched, and an entity id is
+ * whatever the vertical chose — an email address is a valid one. The line keeps the count
+ * and the declared event types.
+ *
+ * Field by field: `tenantId`, `scopeId`, `invocationId`, `eventId` are platform-minted ids;
+ * `operation` is a declared consumer, executor or schedule name; `eventType` and
+ * `eventTypes` are declared types; `problemCode` is the kernel's closed `errorCode`
+ * vocabulary; `principalKind`, `outcome` and `kind` are closed sets; the rest are numbers
+ * and times.
  *
  * ## Bounded
  *
@@ -120,7 +129,10 @@ export function asyncInvocationLine(unit: AsyncUnit): InvocationLogLine {
     operation: unit.operation,
     problemCode: threw ? (errorCodeOf(unit.error) ?? null) : null,
     principalKind: unit.principalKind ?? 'system',
+    // The count and the declared event types only: never the entities, whose ids are the
+    // vertical's data (see the header).
     ...(unit.emitted ? { emitted: unit.emitted } : {}),
+    withEntities: false,
     versionId: unit.versionId ?? null,
     async: {
       outcome: unit.outcome,

@@ -17,7 +17,7 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { ASYNC_LOG_SECRET_TEXT, asyncLogMod } from './modules.js';
+import { ASYNC_LOG_SECRET_ENTITY, ASYNC_LOG_SECRET_TEXT, asyncLogMod } from './modules.js';
 
 const ASYNC_MODULE = moduleId.parse('@test/asynclog');
 const EFFECTOR = 'asynclog-effector';
@@ -218,6 +218,12 @@ export function asyncLogContractSuite(adapterName: string, makeFixture: () => Pr
         path: null,
       });
       expect(fixture.logs().find((l) => l.template === 'ticked' && l.scopeId === s)?.invocationId).toBe(ok!.invocationId);
+      // What the run emitted is counted by declared type; the entity — an email — is not named,
+      // on its line or on the line of the consumer it reached.
+      expect(ok).toMatchObject({ eventCount: 1, eventTypes: ['asynclog.acted'], entities: [] });
+      const ofRun = fixture.lines().filter((l) => l.invocationId === ok!.invocationId);
+      expect(ofRun.length).toBeGreaterThanOrEqual(2);
+      expect(JSON.stringify(ofRun)).not.toContain(ASYNC_LOG_SECRET_ENTITY);
 
       const failed = fixture
         .lines()

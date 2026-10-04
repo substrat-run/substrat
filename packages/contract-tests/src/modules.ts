@@ -2748,6 +2748,8 @@ export const asyncLogModManifest = moduleManifest.parse({
 
 /** The text a refusing handler throws with — which no invocation line may carry (#1901). */
 export const ASYNC_LOG_SECRET_TEXT = 'payload-quoted-in-an-error';
+/** An entity id that is personal data — which no invocation line may carry either (#1901). */
+export const ASYNC_LOG_SECRET_ENTITY = 'alice@example.com';
 
 /**
  * The module the async-log suite drives (#1901). `asynclog/act` emits one event per tag; the
@@ -2773,6 +2775,15 @@ export const asyncLogMod: ModuleRegistration = {
     'asynclog/tick': (async (ctx) => {
       assertAllowed(await ctx.check('asynclog:tick' as PermissionKey));
       ctx.log.info('ticked');
+      // About an entity whose id is an email address: the run's line may count the event,
+      // and must not name the entity.
+      ctx.emit({
+        type: 'asynclog.acted',
+        schemaVersion: 1,
+        entity: { entityType: 'asynclog-thing', entityId: ASYNC_LOG_SECRET_ENTITY },
+        piiClass: 'none',
+        payload: { tag: 'tick', fail: false },
+      });
     }) as OperationHandler<never, unknown>,
     'asynclog/tick-fails': (async (ctx) => {
       assertAllowed(await ctx.check('asynclog:tick' as PermissionKey));

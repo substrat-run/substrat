@@ -367,6 +367,13 @@ export interface InvocationLineFields {
   problemCode?: string | null;
   principalKind?: string | null;
   emitted?: EmittedReport;
+  /**
+   * #1901: write `entities` from `emitted` (the default). An async line passes `false`: an
+   * entity id is data a vertical chose — an email, a customer number — and the async line
+   * carries ids the platform minted, declared names and codes only. Its `entities` is then
+   * always `[]`, which a reader takes as "not recorded" beside a non-null `eventCount`.
+   */
+  withEntities?: boolean;
   versionId?: string | null;
   outputFields?: OutputFieldsReport;
   async?: Pick<
@@ -397,7 +404,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     principalKind: f.principalKind ?? null,
     eventCount: emitted ? emitted.total : null,
     eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
-    entities: emitted ? distinct(emitted.events.map((e) => e.entity)) : [],
+    entities: emitted && f.withEntities !== false ? distinct(emitted.events.map((e) => e.entity)) : [],
     versionId: f.versionId ?? null,
     ...(f.outputFields ? { outputFields: f.outputFields } : {}),
     ...(f.async ?? {}),
