@@ -472,7 +472,12 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       const real = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
         lifecycleTargets(f: object): Promise<unknown[]>;
       };
-      const stale = await real.lifecycleTargets({ scopeId: s });
+      // Read while the unsuspend's delivery was still in flight, before its receipt landed, so the
+      // late pass has something to deliver.
+      const stale = ((await real.lifecycleTargets({ scopeId: s })) as Record<string, unknown>[]).map((r) => ({
+        ...r,
+        delivered: null,
+      }));
       await restoreTo(copy); // the directory (the same object) is the restored history now: suspended
       await expect(servedHere(t, s)).rejects.toThrow(/not active/);
       // The late pass: its FIRST read is the stale one, everything after is the live store.
@@ -493,6 +498,8 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       // It delivered active at the old epoch, was refused, raised past what the scope holds, re-read
       // the CURRENT store and delivered that: the restored suspension stands.
       expect(first).toBe(false);
+      const last = deliveries.filter((d) => d.scopeId === s).slice(-2);
+      expect(last.map((d) => d.scope)).toEqual(['active', 'suspended']); // the stale try, then the live re-read
       await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
       // and the restored directory's own heal finds nothing to undo
       await platform().healLifecycles(actor, { limit: 1000 });
