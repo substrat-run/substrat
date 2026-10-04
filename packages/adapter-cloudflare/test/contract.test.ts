@@ -22,7 +22,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_RUN_DUE_AT, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -2425,6 +2425,25 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await runOf(s, heldId)).toMatchObject({ status: 'running', attempts: 0 });
     // …and with nothing ahead of it, the held run (still past its deadline) has its turn, and waits again.
     expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, deferred: 1 });
+  });
+
+  /** #2028 review: the due order is served by its own index on the DO's SQLite, with no sort step. */
+  it('#1834: the due read seeks _substrat_job_runs_due_at and sorts nothing', async () => {
+    const s = await newScope();
+    const plan = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) =>
+      state.storage.sql
+        .exec(
+          `EXPLAIN QUERY PLAN SELECT * FROM _substrat_job_runs
+            WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+              AND (? IS NULL OR ${JOB_RUN_DUE_AT} > ? OR (${JOB_RUN_DUE_AT} = ? AND id > ?))
+            ORDER BY ${JOB_RUN_DUE_AT}, id LIMIT ?`,
+          '2026-01-01T00:00:00.000Z', null, null, null, null, 50,
+        )
+        .toArray()
+        .map((r) => String(r.detail)),
+    );
+    expect(plan.join(' | ')).toMatch(/USING INDEX _substrat_job_runs_due_at/);
+    expect(plan.join(' | ')).not.toMatch(/TEMP B-TREE/);
   });
 
   /**
