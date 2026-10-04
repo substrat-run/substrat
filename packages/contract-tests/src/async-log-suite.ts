@@ -117,6 +117,18 @@ export function asyncLogContractSuite(adapterName: string, makeFixture: () => Pr
       expect(fixture.logs().find((l) => l.fields['tag'] === tag)).toMatchObject({ invocationId, operation: null });
     });
 
+    it('outside any call, a delivery mints its own id, and its ctx.log line still joins it', async () => {
+      const tag = `nocall-${ulid()}`;
+      const stub = await host.getScope(alice, t, s);
+      // No invocation id: the tail that delivers the event runs in no call.
+      await stub.invoke('asynclog/act', { tags: [tag], fail: false });
+      const log = fixture.logs().find((l) => l.fields['tag'] === tag);
+      expect(log?.invocationId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+      expect(linesAbout(tag, '@test/asynclog')).toEqual([
+        expect.objectContaining({ kind: 'consumer', outcome: 'delivered', invocationId: log!.invocationId }),
+      ]);
+    });
+
     it('a consumer that throws is an error line, dead-lettered, with the code and none of the text', async () => {
       const tag = `refuse-${ulid()}`;
       const invocationId = await act(s, [tag], true);
