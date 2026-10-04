@@ -94,7 +94,7 @@ export function settleLifecycleAfterLoad(sql: SwitchSql, before: ScopeLifecycle 
  * lifecycle passes.
  */
 export function lifecycleRefusal(
-  state: ScopeLifecycle | null,
+  state: Pick<ScopeLifecycle, 'scope' | 'tenant'> | null,
   ids?: { tenantId: string; scopeId: string },
 ): string | null {
   if (!state) return null;
