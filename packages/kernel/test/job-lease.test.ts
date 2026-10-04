@@ -347,6 +347,67 @@ describe('#2034: a due run is claimed before its handler runs', () => {
       expect(table.get('A')).toMatchObject({ status: 'done', attempts: 0 });
     });
 
+    it('an entry delayed past the lease is judged by fresh time: it stamps nothing, and a rival runs the run once (#2042 r3)', async () => {
+      const clock = { ms: T0 };
+      let invoked = 0;
+      const handler = () => ((invoked += 1), { done: true });
+      let rival: Promise<unknown> | null = null;
+      const { store, table } = memoryJobStore([rowOf('A')], {
+        clock: () => iso(clock.ms),
+        beforeEnter: async () => {
+          if (rival) return;
+          clock.ms += JOB_LEASE_MS; // the entry waited in transit until the lease was over
+          expect(table.get('A')!.lease_entered_at).toBeNull();
+          rival = driver(store, clock, handler, { maxAttempts: 1 })();
+          await rival;
+        },
+      });
+      expect(await driver(store, clock, handler, { maxAttempts: 1 })()).toMatchObject({ attempted: 0, superseded: 1 });
+      expect(await rival).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+      expect(invoked).toBe(1);
+      expect(table.get('A')).toMatchObject({ status: 'done', attempts: 0 });
+    });
+
+    it('an entry delayed past the lease with no rival stamps nothing either: the run is released, nothing charged', async () => {
+      const clock = { ms: T0 };
+      let delayed = true;
+      let stamped: boolean | null = null;
+      const { store, table } = memoryJobStore([rowOf('A')], {
+        clock: () => iso(clock.ms),
+        beforeEnter: () => {
+          if (delayed) clock.ms += JOB_LEASE_MS;
+        },
+        afterEnter: (_id, entered) => {
+          if (delayed) stamped = entered;
+          delayed = false;
+        },
+      });
+      let invoked = 0;
+      const drive = driver(store, clock, () => ((invoked += 1), { done: true }), { maxAttempts: 1 });
+      expect(await drive()).toMatchObject({ attempted: 0, superseded: 1 });
+      expect(stamped).toBe(false);
+      expect(invoked).toBe(0);
+      expect(table.get('A')).toMatchObject({ status: 'running', attempts: 0, lease_owner: null, lease_entered_at: null });
+    });
+
+    it("an entry whose ANSWER came back past the margin is not acted on, and its stamp is released (#2042 r3)", async () => {
+      const clock = { ms: T0 };
+      let slow = true;
+      const { store, table } = memoryJobStore([rowOf('A')], {
+        clock: () => iso(clock.ms),
+        afterEnter: (_id, entered) => {
+          expect(entered).toBe(slow); // the statement itself ran in time
+          if (slow) clock.ms += JOB_LEASE_MS * (1 - JOB_LEASE_ENTRY_MARGIN);
+          slow = false;
+        },
+      });
+      let invoked = 0;
+      const drive = driver(store, clock, () => ((invoked += 1), { done: true }), { maxAttempts: 1 });
+      expect(await drive()).toMatchObject({ attempted: 0, superseded: 1 });
+      expect(invoked).toBe(0);
+      expect(table.get('A')).toMatchObject({ status: 'running', attempts: 0, lease_owner: null, lease_entered_at: null });
+    });
+
     it('twin: an entered pass whose lease expires IS charged, and with maxAttempts 1 the takeover ends the run', async () => {
       const clock = { ms: T0 };
       const held = gate();

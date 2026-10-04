@@ -23,12 +23,20 @@ export function memoryJobStore(
     claims?: { id: string; owner: string; won: boolean }[];
     /** Runs after a won claim is written, before its answer reaches the drive: a slow answer. */
     afterClaim?: (id: string) => unknown;
+    /** Runs before an entry statement executes: an entry delayed in transit (#2042 r3). */
+    beforeEnter?: (id: string) => unknown;
+    /** Runs after an entry statement executed, before its answer reaches the drive. */
+    afterEnter?: (id: string, entered: boolean) => unknown;
+    /** The store's own clock, read as an entry runs. Default: the latest time a drive handed it. */
+    clock?: () => string;
   } = {},
 ) {
   const table = new Map<string, JobRunRow>(
     rows.map((r) => [r.id, { ...r, lease_owner: r.lease_owner ?? null, lease_entered_at: r.lease_entered_at ?? null }]),
   );
   const steps = new Map<string, JobStepRow>();
+  /** The latest `now` a drive passed in: the default clock an entry is judged by. */
+  let lastSeen = new Date(0).toISOString();
   const holds = (r: JobRunRow | undefined, owner: string): r is JobRunRow =>
     !!r && r.status === 'running' && (r.lease_owner ?? null) === owner;
   const apply = (id: string, p: JobRunPatch, owner: string): boolean => {
@@ -71,6 +79,7 @@ export function memoryJobStore(
       return keys;
     },
     claim: async (id, owner, now, until) => {
+      lastSeen = now;
       const r = table.get(id);
       const won = !!r && r.status === 'running' && (r.next_attempt_at === null || r.next_attempt_at <= now);
       opts.claims?.push({ id, owner, won });
@@ -90,11 +99,15 @@ export function memoryJobStore(
       await opts.afterClaim?.(id);
       return { run: { ...claimed }, takeover };
     },
-    enter: async (id, owner, now, enterBy) => {
+    enter: async (id, owner, marginMs) => {
+      await opts.beforeEnter?.(id);
+      const now = opts.clock?.() ?? lastSeen;
+      const enterBy = new Date(Date.parse(now) + marginMs).toISOString();
       const r = table.get(id);
-      if (!holds(r, owner) || r.next_attempt_at === null || r.next_attempt_at <= enterBy) return false;
-      table.set(id, { ...r, lease_entered_at: now });
-      return true;
+      const entered = holds(r, owner) && r.next_attempt_at !== null && r.next_attempt_at > enterBy;
+      if (entered) table.set(id, { ...r, lease_entered_at: now });
+      await opts.afterEnter?.(id, entered);
+      return entered;
     },
     list: async () => [...table.values()],
     patch: async (id, p, owner) => apply(id, p, owner),

@@ -93,9 +93,14 @@ import { ulid } from './ulid.js';
  * left: a claim whose answer came back late may have expired on the way, and the run
  * may be someone else's already. Only an entered pass invokes the handler.
  *
+ * The entry is judged twice, both times against fresh time: by the store as the entry
+ * statement runs, and by the drive once its answer is back. So the stretch between a
+ * successful entry and the handler starting is covered by the margin.
+ *
  * What the lease does NOT cover, by construction: a pass whose lease expires while it
- * is working — an entry whose answer took longer than the margin to come back, or a
- * stretch between two step boundaries longer than the lease. Once
+ * is working — a stretch between two step boundaries longer than the lease, or an
+ * entry answer delayed past the margin AND past the lease after both checks passed.
+ * Once
  * it expires another drive may take the run over, and until the stale pass reaches its
  * next step boundary or its outcome (where it learns, and stops), both are running.
  * That stretch is at-least-once, like a step body (see `JobPassContext.step`); the
@@ -656,10 +661,13 @@ export interface JobRunStore {
    */
   claim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null>;
   /**
-   * #2034 (#2042 r2): enter `owner`'s claimed pass (`JOB_RUN_ENTER_SQL`) — true only while it still
-   * holds the lease and the lease runs past `enterBy`. Only an entered pass invokes its handler.
+   * #2034 (#2042 r2, r3): enter `owner`'s claimed pass (`JOB_RUN_ENTER_SQL`) — true only while it
+   * still holds the lease and the lease runs more than `marginMs` past NOW, where now is read by
+   * the adapter's own clock as the statement runs. Not a deadline the driver computed before the
+   * call: an entry that waited in transit or in the scope's queue would compare against stale
+   * time and could stamp a lease already expired. Only an entered pass invokes its handler.
    */
-  enter(id: string, owner: string, now: string, enterBy: string): Promise<boolean>;
+  enter(id: string, owner: string, marginMs: number): Promise<boolean>;
   list(filter: JobRunFilter): Promise<JobRunRow[]>;
   /** A pass outcome, only while `owner` holds the run (`JOB_RUN_PATCH_SQL`). False = refused. */
   patch(id: string, patch: JobRunPatch, owner: string): Promise<boolean>;
@@ -1317,10 +1325,13 @@ export async function runDueJobRuns(options: {
     const at = options.now();
     const won = await options.store.claim(id, owner, at, plusMs(at, leaseMs));
     if (!won) return null;
-    const now = options.now();
-    if (await options.store.enter(id, owner, now, plusMs(now, leaseMs * JOB_LEASE_ENTRY_MARGIN))) {
-      return { ...won, owner };
+    const margin = leaseMs * JOB_LEASE_ENTRY_MARGIN;
+    // The entry is judged by the store's time as it runs (#2042 r3), and its answer once more by
+    // this drive's: an answer that took longer than the margin to come back is not acted on.
+    if (await options.store.enter(id, owner, margin)) {
+      if (Date.parse(won.run.next_attempt_at!) - Date.parse(options.now()) > margin) return { ...won, owner };
     }
+    const now = options.now();
     await settle(options.store, won.run, owner, now, {
       status: 'running',
       attempts: won.run.attempts,

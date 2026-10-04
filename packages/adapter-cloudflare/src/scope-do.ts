@@ -4459,9 +4459,22 @@ export function defineScopeDO(
       });
     }
 
-    /** #2034 (#2042 r2): enter a claimed pass — `JOB_RUN_ENTER_SQL`, one compare-and-set. */
-    async jobRunEnter(id: string, owner: string, now: string, enterBy: string): Promise<boolean> {
-      return this.sql.exec(JOB_RUN_ENTER_SQL, now, id, owner, enterBy).rowsWritten > 0;
+    /**
+     * #2034 (#2042 r2, r3): enter a claimed pass — `JOB_RUN_ENTER_SQL`, one compare-and-set, judged
+     * by this object's clock as the statement runs. Never by a deadline the coordinator computed
+     * before the call: an RPC that waited in transit would compare against stale time.
+     */
+    async jobRunEnter(id: string, owner: string, marginMs: number): Promise<boolean> {
+      const now = Date.now();
+      return (
+        this.sql.exec(
+          JOB_RUN_ENTER_SQL,
+          new Date(now).toISOString(),
+          id,
+          owner,
+          new Date(now + marginMs).toISOString(),
+        ).rowsWritten > 0
+      );
     }
 
     /**

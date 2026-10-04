@@ -5334,8 +5334,13 @@ export class SqliteScopeHost implements ScopeHost {
     return {
       startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
       claim: (id: string, owner: string, now: string, until: string) => turn(() => claimTx(id, owner, now, until)),
-      enter: (id: string, owner: string, now: string, enterBy: string) =>
-        turn(() => enterRun.run(now, id, owner, enterBy).changes > 0),
+      // #2042 r3: judged by this host's clock as the statement runs, inside its turn — never by a
+      // deadline the driver computed before its call waited in the queue.
+      enter: (id: string, owner: string, marginMs: number) =>
+        turn(() => {
+          const now = this.clock();
+          return enterRun.run(now, id, owner, new Date(Date.parse(now) + marginMs).toISOString()).changes > 0;
+        }),
       // #1834: the drive's one snapshot — keys only, in the order runs became due.
       dueKeys: (now: string, max: number) =>
         turn(() => db
