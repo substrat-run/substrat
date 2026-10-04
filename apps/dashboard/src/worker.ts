@@ -27,7 +27,7 @@ import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgeme
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
-import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv } from '@substrat-run/oidc-rp';
+import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
@@ -648,7 +648,7 @@ async function resolveAccount(
  * only action that cannot be tenant-narrowed (there is no tenant yet), so it stays
  * a controlled platform action, gated by the authenticated session.
  */
-async function createTeam(host: ScopeHost, env: Env, user: { id: string; email?: string | null }, name: string): Promise<DashboardNode> {
+async function createTeam(host: ScopeHost, env: Env, user: SessionUser, name: string): Promise<DashboardNode> {
   await ensureIdentityPool(host, STAFF, resolveMemoFor(env.CONTROL_PLANE));
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
@@ -666,7 +666,9 @@ async function createTeam(host: ScopeHost, env: Env, user: { id: string; email?:
   const org = orgId.parse(ulid());
   await host.admin.createOrg(STAFF, { id: org, tenantId: t, slug: 'team', name });
   const scope = await host.getScope(owner, t, s);
-  await scope.invoke('dashboard/init-team', { orgId: org, ownerEmail: user.email ?? '' });
+  // The owner row takes the address only if the issuer verified it (#1359) — one rule for
+  // every roster row, so nothing that later matches on email can read an unverified one.
+  await scope.invoke('dashboard/init-team', { orgId: org, ownerEmail: identifyEmail(env, user).email ?? '' });
   // Mirror the owner into the shared plane's directory so `substrat push` can
   // resolve this workspace immediately (see mirrorBuilderIdentity).
   await mirrorBuilderIdentity(env, host, user.id, t);

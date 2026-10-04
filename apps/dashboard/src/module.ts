@@ -1013,7 +1013,13 @@ export interface DashboardMemberRow {
 
 const initTeamInput = z.object({
   orgId: z.string().min(1),
-  ownerEmail: z.string().min(1),
+  /**
+   * The owner's address as the issuer verified it, or `''` when it did not (#1359): an
+   * address the issuer did not vouch for never enters a roster row, where a later match on
+   * email could read it as someone. Empty rather than NULL because the column predates
+   * this and is NOT NULL; the row is keyed by `principal` either way.
+   */
+  ownerEmail: z.string(),
 });
 
 /**
