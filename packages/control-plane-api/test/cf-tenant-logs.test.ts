@@ -982,3 +982,74 @@ describe('cf tenant logs — the runtime record folds into the stamped row', () 
     expect(events.map((e) => e.message).sort()).toEqual(['POST /api/orders', 'POST /api/orders → 200 (42 ms)']);
   });
 });
+
+describe('cf tenant logs — async work (#1901)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const consumer = (over: Record<string, unknown> = {}, id = '01CO') =>
+    invocation(
+      {
+        kind: 'consumer',
+        method: null,
+        path: null,
+        status: null,
+        operation: 'executor:notify',
+        eventType: 'ticket.created',
+        eventId: '01EVENT',
+        attempt: 2,
+        outcome: 'retrying',
+        level: 'error',
+        threw: true,
+        durationMs: 12,
+        ...over,
+      },
+      id,
+    );
+
+  it('says what ran and how it ended, at its own level — no method, path or status to show', async () => {
+    const { reader } = readerOver((f) =>
+      keyed(f, 'substrat')
+        ? [
+            consumer(),
+            invocation(
+              { kind: 'schedule', method: null, path: null, status: null, operation: 'digest/send', outcome: 'ok', level: 'info', durationMs: 40, latenessMs: 1200 },
+              '01SC',
+            ),
+            invocation(
+              { kind: 'consumer', method: null, path: null, status: null, operation: null, outcome: 'suppressed', level: 'warn', durationMs: 0, suppressed: 5, suppressedBy: { 'consumer:dead-lettered': 5 } },
+              '01SU',
+            ),
+          ]
+        : [],
+    );
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events.map((e) => [e.message, e.level]).sort()).toEqual([
+      ['consumer executor:notify ← ticket.created (attempt 2) → retrying (12 ms)', 'error'],
+      ['consumer: 5 more lines withheld (consumer:dead-lettered 5)', 'warn'],
+      ['schedule digest/send → ok (40 ms, 1200 ms late)', 'info'],
+    ]);
+  });
+
+  it('lists async work beside requests, with its kind, and filters on it', async () => {
+    const { reader, sent } = readerOver(() => [invocation({}, '01RQ'), consumer()]);
+    const scope = { tenantId: '01TENANT', from: 0, to: 10_000, limit: 10 };
+
+    const all = await reader.tenantRequests!(scope);
+    expect(all.map((r) => [r.kind, r.outcome, r.attempt])).toEqual(
+      expect.arrayContaining([
+        ['request', null, null],
+        ['consumer', 'retrying', 2],
+      ]),
+    );
+
+    // An async kind narrows the query, as any facet does.
+    const consumers = await reader.tenantRequests!({ ...scope, where: { kind: ['consumer'] } });
+    expect(keyed(sent.at(-1)!, 'kind')).toEqual({ key: 'kind', operation: 'eq', type: 'string', value: 'consumer' });
+    expect(consumers.map((r) => r.kind)).toEqual(['consumer']);
+
+    // `request` is spelled by no line, so it is applied to the answer instead of the query.
+    const requests = await reader.tenantRequests!({ ...scope, where: { kind: ['request'] } });
+    expect(keyed(sent.at(-1)!, 'kind')).toBeUndefined();
+    expect(requests.map((r) => r.kind)).toEqual(['request']);
+  });
+});
