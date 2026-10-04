@@ -35,6 +35,10 @@
     "./invite-routes": {
       "types": "./dist/invite-routes.d.ts",
       "default": "./dist/invite-routes.js"
+    },
+    "./owner-claim-routes": {
+      "types": "./dist/owner-claim-routes.d.ts",
+      "default": "./dist/owner-claim-routes.js"
     }
   },
   "files": [

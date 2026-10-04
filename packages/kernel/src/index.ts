@@ -192,6 +192,7 @@ export {
   readCapabilities,
   readCapabilityPage,
   plausibleSessionToken,
+  plausibleCapabilitySecret,
   redactSecrets,
   redactSecretText,
   resolveCapabilitySession,

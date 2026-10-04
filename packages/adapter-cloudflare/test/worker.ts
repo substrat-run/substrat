@@ -448,6 +448,9 @@ export const KickRealDO = defineKickCoalescerDO<KickEnv>({
   },
 });
 
+/** #1686: vertical-auth's identity directory, as a vertical binds it — owner-claim.test.ts. */
+export { IdentityDO } from '@substrat-run/vertical-auth';
+
 export default {
   fetch(): Response {
     return new Response('substrat adapter-cloudflare test worker', { status: 200 });

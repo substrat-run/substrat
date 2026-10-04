@@ -10,7 +10,10 @@ import {
   needsSetup,
   ownerSeat,
   resolvePrincipal,
-  mintOwnerClaim,
+  ownerClaimTarget,
+  recordOwnerClaim,
+  ownerClaimMatches,
+  claimOwnerByCapability,
   claimOwner,
   transferOwner,
   completeOwnerTransfer,
@@ -22,7 +25,8 @@ import type { RegistrySql } from '../src/site-registry.js';
 /**
  * The owner seat (#925), exercised against a real SQLite through the same `exec` seam the
  * IdentityDO's `ctx.storage.sql` has. These are the rules behind `setPendingOwner`,
- * `resolvePrincipal`, `needsSetup`, `ownerSeat`, `mintOwnerClaim` and `claimOwner`.
+ * `resolvePrincipal`, `needsSetup`, `ownerSeat`, the claim link's `recordOwnerClaim` /
+ * `claimOwnerByCapability` (#1686), and the legacy `claimOwner`.
  */
 
 const SCOPE = '01SCOPEDESK';
@@ -48,6 +52,19 @@ function freshSql(): RegistrySql {
   const sql = sqlOver(db);
   migrateOwnerSeat(sql);
   return sql;
+}
+
+/**
+ * A claim link as a deployment from before #1686 minted it — its token's hash in `owner_claim`,
+ * replacing any earlier one, and nothing for a seat that is not pending. The removed
+ * `mintOwnerClaim`, kept verbatim as a fixture: such rows are still redeemed (by `claimOwner`)
+ * until they expire, and these tests are what hold that.
+ */
+function legacyLink(sql: RegistrySql, scopeId: string, tokenHash: string, now: number): { expiresAt: string } | null {
+  if ([...sql.exec('SELECT 1 FROM pending_owner WHERE scope_id = ?', scopeId)].length === 0) return null;
+  const expiresAt = now + OWNER_CLAIM_TTL_MS;
+  sql.exec('INSERT OR REPLACE INTO owner_claim (scope_id, token_hash, expires_at) VALUES (?, ?, ?)', scopeId, tokenHash, expiresAt);
+  return { expiresAt: new Date(expiresAt).toISOString() };
 }
 
 describe('owner seat', () => {
@@ -100,7 +117,7 @@ describe('owner seat', () => {
 
     // Claim by link, then re-provision again: the seat stays claimed. Before #925 this
     // INSERT OR REPLACEd a fresh pending row, and the next stranger to sign in became owner.
-    mintOwnerClaim(sql, SCOPE, 'hash-1', T0 + 61 * MIN);
+    legacyLink(sql, SCOPE, 'hash-1', T0 + 61 * MIN);
     expect(claimOwner(sql, SCOPE, 'sub-installer', 'hash-1', T0 + 62 * MIN)).toBe(OWNER);
     recordOwnerSeat(sql, SCOPE, OWNER, T0 + 63 * MIN);
     expect(needsSetup(sql, SCOPE)).toBe(false);
@@ -128,7 +145,7 @@ describe('owner seat', () => {
   it('a claim link binds exactly the presented token, once, while it lives', () => {
     recordOwnerSeat(sql, SCOPE, OWNER, T0);
     const late = T0 + FIRST_SIGN_IN_WINDOW_MS + MIN;
-    const minted = mintOwnerClaim(sql, SCOPE, 'hash-a', late);
+    const minted = legacyLink(sql, SCOPE, 'hash-a', late);
     expect(minted).toEqual({ expiresAt: new Date(late + OWNER_CLAIM_TTL_MS).toISOString() });
     expect(ownerSeat(sql, SCOPE, late).claimLink).toEqual({ expiresAt: minted!.expiresAt });
 
@@ -138,7 +155,7 @@ describe('owner seat', () => {
     // Expired: nothing.
     expect(claimOwner(sql, SCOPE, 'sub-installer', 'hash-a', late + OWNER_CLAIM_TTL_MS)).toBeNull();
     // Minting again retires the earlier link.
-    mintOwnerClaim(sql, SCOPE, 'hash-c', late + MIN);
+    legacyLink(sql, SCOPE, 'hash-c', late + MIN);
     expect(claimOwner(sql, SCOPE, 'sub-installer', 'hash-a', late + 2 * MIN)).toBeNull();
     // The live one binds, consumes the seat and the link.
     expect(claimOwner(sql, SCOPE, 'sub-installer', 'hash-c', late + 2 * MIN)).toBe(OWNER);
@@ -147,12 +164,12 @@ describe('owner seat', () => {
     // Used: a replay of the same token binds nobody else.
     expect(claimOwner(sql, SCOPE, 'sub-stranger', 'hash-c', late + 3 * MIN)).toBeNull();
     // And nothing more can be minted for a claimed seat.
-    expect(mintOwnerClaim(sql, SCOPE, 'hash-d', late + 3 * MIN)).toBeNull();
+    expect(ownerClaimTarget(sql, SCOPE)).toBeNull();
   });
 
   it('a first sign-in that claims also retires an outstanding link', () => {
     recordOwnerSeat(sql, SCOPE, OWNER, T0);
-    mintOwnerClaim(sql, SCOPE, 'hash-a', T0);
+    legacyLink(sql, SCOPE, 'hash-a', T0);
     expect(resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + MIN)).toBe(OWNER);
     expect(claimOwner(sql, SCOPE, 'sub-stranger', 'hash-a', T0 + 2 * MIN)).toBeNull();
     expect(ownerSeat(sql, SCOPE, T0 + 2 * MIN).claimLink).toBeNull();
@@ -165,7 +182,7 @@ describe('owner seat', () => {
     expect(resolvePrincipal(sql, SCOPE, 'sub-stranger', T0)).toBeNull();
     expect(ownerSeat(sql, SCOPE, T0)).toMatchObject({ state: 'unclaimed', firstSignIn: { open: false, until: null } });
     // Still claimable the bounded way.
-    mintOwnerClaim(sql, SCOPE, 'hash-a', T0);
+    legacyLink(sql, SCOPE, 'hash-a', T0);
     expect(claimOwner(sql, SCOPE, 'sub-installer', 'hash-a', T0 + MIN)).toBe(OWNER);
   });
 
@@ -186,7 +203,92 @@ describe('owner seat', () => {
     expect(ownerSeat(sql, SCOPE, T0)).toEqual({ state: 'unknown', owner: null, firstSignIn: null, claimLink: null });
     expect(needsSetup(sql, SCOPE)).toBe(false);
     expect(resolvePrincipal(sql, SCOPE, 'sub-anyone', T0)).toBeNull();
-    expect(mintOwnerClaim(sql, SCOPE, 'hash', T0)).toBeNull();
+    expect(ownerClaimTarget(sql, SCOPE)).toBeNull();
+  });
+});
+
+/**
+ * The claim link as a `become` capability (#1686) — the directory's half. The capability itself
+ * (its secret, single use, expiry and revocation) lives in the scope's DO and is held by
+ * `packages/adapter-cloudflare/test/owner-claim.test.ts`; what is held here is which capability
+ * the directory accepts as THE link, and that every rule the legacy link kept still holds.
+ */
+describe('owner claim link (capability)', () => {
+  let sql: RegistrySql;
+  const late = T0 + FIRST_SIGN_IN_WINDOW_MS + MIN;
+  const link = (n: number, at = late) => ({ capabilityId: `01CAPABILITY${n}`, tokenHash: `cap-hash-${n}`, expiresAt: at + OWNER_CLAIM_TTL_MS });
+
+  beforeEach(() => {
+    sql = freshSql();
+    recordOwnerSeat(sql, SCOPE, OWNER, T0);
+  });
+
+  it('records the link, matches only its hash, and binds once for the capability it names', () => {
+    expect(ownerClaimTarget(sql, SCOPE)).toBe(OWNER);
+    expect(recordOwnerClaim(sql, SCOPE, OWNER, link(1))).toEqual({ previous: null });
+    expect(ownerSeat(sql, SCOPE, late).claimLink).toEqual({ expiresAt: new Date(late + OWNER_CLAIM_TTL_MS).toISOString() });
+    expect(ownerClaimMatches(sql, SCOPE, 'cap-hash-1', late + MIN)).toBe(true);
+    expect(ownerClaimMatches(sql, SCOPE, 'cap-hash-2', late + MIN)).toBe(false);
+    // A capability that is not the recorded one, or that became someone other than the owner: nothing.
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-stranger', '01CAPABILITY9', OWNER, late + MIN)).toBeNull();
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-stranger', '01CAPABILITY1', '01PRINCIPALOTHER', late + MIN)).toBeNull();
+    expect(needsSetup(sql, SCOPE)).toBe(true);
+    // The twin: the recorded capability, naming the owner, binds — and consumes seat and link.
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-installer', '01CAPABILITY1', OWNER, late + MIN)).toBe(OWNER);
+    expect(ownerSeat(sql, SCOPE, late + MIN)).toEqual({ state: 'claimed', owner: OWNER, firstSignIn: null, claimLink: null });
+    expect(resolvePrincipal(sql, SCOPE, 'sub-installer', late + 2 * MIN)).toBe(OWNER);
+    // Replayed: the link is gone with the seat.
+    expect(ownerClaimMatches(sql, SCOPE, 'cap-hash-1', late + 2 * MIN)).toBe(false);
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-stranger', '01CAPABILITY1', OWNER, late + 2 * MIN)).toBeNull();
+    // And there is nothing more to mint for, nor to record.
+    expect(ownerClaimTarget(sql, SCOPE)).toBeNull();
+    expect(recordOwnerClaim(sql, SCOPE, OWNER, link(2))).toBeNull();
+  });
+
+  it('an expired link matches nothing and binds nobody — the moment before, it does', () => {
+    recordOwnerClaim(sql, SCOPE, OWNER, link(1));
+    const expiry = late + OWNER_CLAIM_TTL_MS;
+    expect(ownerClaimMatches(sql, SCOPE, 'cap-hash-1', expiry)).toBe(false);
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-installer', '01CAPABILITY1', OWNER, expiry)).toBeNull();
+    expect(ownerSeat(sql, SCOPE, expiry).claimLink).toBeNull();
+    expect(ownerClaimMatches(sql, SCOPE, 'cap-hash-1', expiry - 1)).toBe(true);
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-installer', '01CAPABILITY1', OWNER, expiry - 1)).toBe(OWNER);
+  });
+
+  it('a re-mint names the previous capability to revoke, and only the new one binds', () => {
+    recordOwnerClaim(sql, SCOPE, OWNER, link(1));
+    expect(recordOwnerClaim(sql, SCOPE, OWNER, link(2, late + MIN))).toEqual({ previous: '01CAPABILITY1' });
+    expect(ownerClaimMatches(sql, SCOPE, 'cap-hash-1', late + 2 * MIN)).toBe(false);
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-installer', '01CAPABILITY1', OWNER, late + 2 * MIN)).toBeNull();
+    expect(ownerClaimMatches(sql, SCOPE, 'cap-hash-2', late + 2 * MIN)).toBe(true);
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-installer', '01CAPABILITY2', OWNER, late + 2 * MIN)).toBe(OWNER);
+  });
+
+  it('a capability mint retires an outstanding LEGACY link — no legacy redemption after it', () => {
+    legacyLink(sql, SCOPE, 'legacy-hash', late);
+    expect(recordOwnerClaim(sql, SCOPE, OWNER, link(1, late + MIN))).toEqual({ previous: null });
+    expect(claimOwner(sql, SCOPE, 'sub-stranger', 'legacy-hash', late + 2 * MIN)).toBeNull();
+    expect(needsSetup(sql, SCOPE)).toBe(true);
+    expect(ownerSeat(sql, SCOPE, late + 2 * MIN).claimLink).toEqual({ expiresAt: new Date(late + MIN + OWNER_CLAIM_TTL_MS).toISOString() });
+    // The twin: without the capability mint, the same legacy link still binds while it lives.
+    const other = freshSql();
+    recordOwnerSeat(other, SCOPE, OWNER, T0);
+    legacyLink(other, SCOPE, 'legacy-hash', late);
+    expect(claimOwner(other, SCOPE, 'sub-installer', 'legacy-hash', late + 2 * MIN)).toBe(OWNER);
+  });
+
+  it('a capability link is also retired by a first sign-in that claims first', () => {
+    recordOwnerClaim(sql, SCOPE, OWNER, link(1, T0));
+    expect(resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + MIN)).toBe(OWNER);
+    expect(ownerClaimMatches(sql, SCOPE, 'cap-hash-1', T0 + 2 * MIN)).toBe(false);
+    expect(claimOwnerByCapability(sql, SCOPE, 'sub-stranger', '01CAPABILITY1', OWNER, T0 + 2 * MIN)).toBeNull();
+    expect(ownerSeat(sql, SCOPE, T0 + 2 * MIN).claimLink).toBeNull();
+  });
+
+  it('records nothing for a principal that is not the pending owner', () => {
+    expect(recordOwnerClaim(sql, SCOPE, '01PRINCIPALOTHER', link(1))).toBeNull();
+    expect(ownerSeat(sql, SCOPE, late).claimLink).toBeNull();
+    expect(recordOwnerClaim(sql, '01SCOPEUNKNOWN', OWNER, link(1))).toBeNull();
   });
 });
 
@@ -224,7 +326,7 @@ describe('owner transfer', () => {
     });
     // Nothing re-opened: no pending seat, nothing to mint, a stranger still resolves to nobody.
     expect(needsSetup(sql, SCOPE)).toBe(false);
-    expect(mintOwnerClaim(sql, SCOPE, 'hash', T0 + 2 * MIN)).toBeNull();
+    expect(ownerClaimTarget(sql, SCOPE)).toBeNull();
     expect(resolvePrincipal(sql, SCOPE, 'sub-stranger', T0 + 2 * MIN)).toBeNull();
     // Both logins keep their bindings: the hand-over moves ownership, not identities.
     expect(resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + 2 * MIN)).toBe(OWNER);
@@ -373,7 +475,7 @@ describe('owner transfer', () => {
     recordOwnerSeat(sql, SCOPE, OWNER, T0);
     bindMember(SUCCESSOR, 'sub-successor');
     const late = T0 + FIRST_SIGN_IN_WINDOW_MS + MIN;
-    mintOwnerClaim(sql, SCOPE, 'hash-1', late);
+    legacyLink(sql, SCOPE, 'hash-1', late);
     const before = ownerSeat(sql, SCOPE, late);
     expect(transferOwner(sql, SCOPE, OWNER, SUCCESSOR, true)).toEqual({ outcome: 'refused', owner: OWNER, reason: 'unclaimed' });
     expect(ownerSeat(sql, SCOPE, late)).toEqual(before);

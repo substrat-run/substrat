@@ -16,6 +16,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
+  platformActorId,
   principalId,
   scopeId,
   tenantId,
@@ -49,9 +50,9 @@ import {
   IdentityDO,
   instanceAuthFor,
   mintOwnerClaimLink,
-  sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
+import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 
 // Registration order is a migration-ordering contract (protocol before callout).
@@ -357,11 +358,15 @@ app.post('/internal/owner-claim', async (c) => {
     if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
     throw e;
   }
-  const body = z.object({ tenantId, scopeId, origin: z.string().url() }).parse(await c.req.json());
+  const body = z
+    .object({ tenantId, scopeId, origin: z.string().url(), actor: platformActorId.optional() })
+    .parse(await c.req.json());
+  const ref = { tenantId: body.tenantId, scopeId: body.scopeId };
   const link = await mintOwnerClaimLink(
-    identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId }),
-    body.scopeId,
+    { directory: identityDo(c.env, ref), host: hostFor(c.env) },
+    ref,
     body.origin,
+    body.actor,
   );
   if (!link) {
     throw new HTTPException(409, {
@@ -553,18 +558,14 @@ mountInviteRoutes(app, {
 
 /**
  * Claim the owner seat by link (#925): the installer signed in at the issuer and now presents
- * the token the dashboard minted for this workspace. Binds their subject → the owner principal,
- * which already holds `office-admin` from provision. One answer for every way it can fail, so a
- * probe learns nothing about which.
+ * the link the dashboard minted for this workspace, which binds their subject to the owner
+ * principal (it already holds `office-admin` from provision). vertical-auth's one mount (#1686).
  */
-app.post('/api/claim-owner', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
-  if (!subject) throw new HTTPException(401, { message: 'sign in before claiming this workspace' });
-  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
-  const principal = await identityDo(c.env, node).claimOwner(node.scopeId, subject.sub, await sha256Hex(token));
-  if (!principal) throw new HTTPException(400, { message: 'this claim link is invalid, expired, or already used' });
-  return c.json({ ok: true, principal });
+mountOwnerClaim(app, {
+  nodeFor,
+  authProvider: authProviderFor,
+  directory: identityDo,
+  host: hostFor,
 });
 
 // The whole data API — the SAME route table the node server mounts (src/routes.ts),

@@ -58,6 +58,8 @@ import {
   projectedIdentityLink,
   ownerSeat,
   ownerClaimLink,
+  platformActorId,
+  type PlatformActorId,
   ownerTransferPair,
   distinctOwnerTransfer,
   ownerTransferRecord,
@@ -562,6 +564,8 @@ const ownerClaimBody = z.object({
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
   origin: z.string().url(),
+  /** The platform actor that asked (#1686) — optional, so a control plane from before it still mints. */
+  actor: platformActorId.optional(),
 });
 
 /** `/internal/owner-transfer` body (#1665): the address plus `ownerTransferInput`'s two principals. */
@@ -736,13 +740,15 @@ export interface PlatformSurfaceDeps<Env> {
    * Mint a short-lived claim link for an UNCLAIMED owner seat (#925) — what the dashboard
    * hands the installer once the first-sign-in window has closed (or instead of relying on
    * it). Return `null` when the seat is already claimed (⇒ 409). The link is answered to the
-   * platform and never persisted by it; the vertical stores only the token's hash. Omit ⇒
-   * `/internal/owner-claim` answers 501.
+   * platform and never persisted by it; the vertical stores only the secret's hash. Omit ⇒
+   * `/internal/owner-claim` answers 501. vertical-auth's `mintOwnerClaimLink` is the reference:
+   * since #1686 the link is a `become` capability, and `input.actor` is the platform actor that
+   * asked — recorded as its minter — when the control plane names one.
    */
   mintOwnerClaim?: (
     env: Env,
     ref: { tenantId: TenantId; scopeId: ScopeId },
-    input: { origin: string },
+    input: { origin: string; actor?: PlatformActorId },
   ) => Promise<OwnerClaimLink | null>;
   /**
    * Move the scope's owner of record from `from` to `to` (#1665). vertical-auth's IdentityDO
@@ -1658,7 +1664,7 @@ export function mountPlatformSurface<Env extends object>(
     const link = await deps.mintOwnerClaim(
       c.env,
       { tenantId: body.tenantId, scopeId: body.scopeId },
-      { origin: body.origin },
+      { origin: body.origin, ...(body.actor ? { actor: body.actor } : {}) },
     );
     if (!link) {
       throw new HTTPException(409, {
