@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost, type LifecycleDelegation } from '../src/host.js';
+import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, type LifecycleDelegation } from '../src/host.js';
 import { createRouteResolver } from '../src/route-resolver.js';
 import router, { type Env } from '../../../apps/router/src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -346,7 +346,7 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
         await platform().admin.suspendScope(actor, t, s);
         const copy = await platform().admin.exportDirectory(actor);
         // The old history delivered active at an epoch a backward clock will not reach.
-        await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, Date.now() + 10 ** 9));
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, Date.now() + 60 * 60 * 1000));
         await expect(servedHere(t, s)).resolves.toBeDefined();
         const back = await ontoFresh(copy);
         try {
@@ -360,7 +360,7 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
         const t = await tenantOf();
         const s = await hosted(t);
         const copy = await platform().admin.exportDirectory(actor);
-        await deployment().setLifecycleLocal(s, farAhead({ scope: 'suspended' }, Date.now() + 10 ** 9));
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'suspended' }, Date.now() + 60 * 60 * 1000));
         await expect(servedHere(t, s)).rejects.toThrow(/not active/);
         const back = await ontoFresh(copy);
         try {
@@ -389,6 +389,67 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
         }
       });
 
+      it('a forged epoch far past the clock is never raised to: an ops failure, the directory unmoved', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        await platform().admin.suspendScope(actor, t, s);
+        const copy = await platform().admin.exportDirectory(actor);
+        const forged = Number.MAX_SAFE_INTEGER - 1;
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, forged));
+        const back = await ontoFresh(copy);
+        try {
+          const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+            lifecycleTargets(f: object): Promise<{ epoch: number }[]>;
+          };
+          const [row] = await dir.lifecycleTargets({ scopeId: s });
+          // No raise toward the forged value: whatever the restored copy's other scopes legitimately
+          // taught this directory, its epoch stays within the skew of the clock.
+          expect(row!.epoch).toBeLessThanOrEqual(Date.now() + LIFECYCLE_EPOCH_SKEW_MS);
+          const failures = await platform().admin.listOpsFailures(actor, { scopeId: s });
+          expect(failures.map((f) => f.stage)).toContain('foreign-epoch');
+        } finally {
+          back();
+        }
+      });
+
+      it('a held epoch within the skew (a clock somewhat ahead) is raised past, and the scope converges', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        await platform().admin.suspendScope(actor, t, s);
+        const copy = await platform().admin.exportDirectory(actor);
+        const ahead = Date.now() + LIFECYCLE_EPOCH_SKEW_MS / 2;
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, ahead));
+        const back = await ontoFresh(copy);
+        try {
+          const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+            lifecycleTargets(f: object): Promise<{ epoch: number }[]>;
+          };
+          expect((await dir.lifecycleTargets({ scopeId: s }))[0]!.epoch).toBeGreaterThan(ahead);
+          await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+        } finally {
+          back();
+        }
+      });
+
+      it('a directory never restored does not raise over a foreign epoch at all', async () => {
+        const kept = directoryName;
+        directoryName = `lifecycle-never-${ulid()}`;
+        try {
+          await warmControlPlane(directory);
+          const t = await tenantOf();
+          const s = await hosted(t);
+          await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, 5));
+          await platform().admin.suspendScope(actor, t, s); // epoch 0 delivery, refused as older
+          const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+            lifecycleTargets(f: object): Promise<{ epoch: number }[]>;
+          };
+          expect((await dir.lifecycleTargets({ scopeId: s }))[0]!.epoch).toBe(0);
+          expect((await platform().admin.listOpsFailures(actor, { scopeId: s })).map((f) => f.stage)).toContain('foreign-epoch');
+        } finally {
+          directoryName = kept;
+        }
+      });
+
       it('the raise only ever moves the epoch up, whatever order concurrent heals learn in', async () => {
         const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`lifecycle-raise-${ulid()}`)) as unknown as {
           raiseLifecycleEpoch(atLeast: number): Promise<number>;
@@ -399,6 +460,43 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
         expect(Math.max(...raced)).toBe(13);
         expect(await dir.raiseLifecycleEpoch(0)).toBe(13);
       });
+    });
+
+    it("Codex's late pass, within one environment: a heal that read BEFORE a restore delivers after it, and the restored state wins", async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      await platform().admin.suspendScope(actor, t, s);
+      const copy = await platform().admin.exportDirectory(actor); // says suspended
+      await platform().admin.unsuspendScope(actor, t, s);
+      // The rows an in-flight heal read before the restore: they say active, at the old epoch.
+      const real = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+        lifecycleTargets(f: object): Promise<unknown[]>;
+      };
+      const stale = await real.lifecycleTargets({ scopeId: s });
+      await restoreTo(copy); // the directory (the same object) is the restored history now: suspended
+      await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+      // The late pass: its FIRST read is the stale one, everything after is the live store.
+      let first = true;
+      const lateDirectory = {
+        idFromName: directory.idFromName,
+        get: (id: DurableObjectId) =>
+          new Proxy(env.CONTROL_PLANE.get(id) as object, {
+            get: (target, prop) =>
+              prop === 'lifecycleTargets' && first
+                ? async () => ((first = false), stale)
+                : (Reflect.get(target, prop) as unknown),
+          }),
+      } as unknown as DurableObjectNamespace;
+      await new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: lateDirectory, lifecycleDelegation }).healLifecycles(actor, {
+        limit: 1000,
+      });
+      // It delivered active at the old epoch, was refused, raised past what the scope holds, re-read
+      // the CURRENT store and delivered that: the restored suspension stands.
+      expect(first).toBe(false);
+      await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+      // and the restored directory's own heal finds nothing to undo
+      await platform().healLifecycles(actor, { limit: 1000 });
+      await expect(servedHere(t, s)).rejects.toThrow(/not active/);
     });
 
     it('each restore mints an epoch newer than the last, and a second heal has nothing to redo', async () => {

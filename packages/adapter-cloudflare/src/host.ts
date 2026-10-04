@@ -1606,6 +1606,13 @@ export interface LifecycleDelegation {
   deliver(args: { tenantId: TenantId; scopeId: ScopeId; lifecycle: ScopeLifecycle }): Promise<LifecycleDelivery>;
 }
 
+/**
+ * How far ahead of the clock a held lifecycle epoch may be and still be learned past (#1713). An
+ * epoch is the time a directory restore minted it, so a legitimate one is behind its minter's
+ * clock; the skew allows for clocks that disagree, and bounds what a forged answer can move.
+ */
+export const LIFECYCLE_EPOCH_SKEW_MS = 24 * 60 * 60 * 1000;
+
 /** What one delivery pass did (#1713): a transition's push, or one heal sweep. */
 export interface LifecycleDeliveryReport {
   /** Scopes the pass delivered to. */
@@ -7761,6 +7768,14 @@ export class CloudflareScopeHost implements ScopeHost {
       report.attempted += 1;
       try {
         let answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+        // SINGLE AUTHORITY (the invariant this rests on): an environment has exactly one directory,
+        // the singleton `CONTROL_PLANE.idFromName('control-plane')`. A "fresh directory" restore is
+        // that same object restored after its storage was lost, never a second live writer, and
+        // the raise below always re-reads the CURRENT store and delivers what it says. Two control
+        // planes healing one dispatch namespace at once is a split brain that corrupts far more
+        // than lifecycle, and is out of scope here; fencing it in lifecycle alone would guarantee
+        // nothing.
+        //
         // The scope refused us as OLDER while holding a revision this directory's history did not
         // write: an epoch ahead of ours, or ours with other counters. Only another history of the
         // directory delivers those — the one a fresh-directory restore replaced, whose epoch a
@@ -7768,13 +7783,36 @@ export class CloudflareScopeHost implements ScopeHost {
         // ever holds epochs a directory minted, so this directory learns past it: its epoch is
         // raised above the one held (monotonic, one statement), and the scope is delivered again.
         const held = answer.lifecycle.revision;
-        if (
+        const foreign =
           !answer.applied &&
-          held &&
+          held !== undefined &&
           (held.epoch > lifecycle.revision.epoch ||
-            (held.epoch === lifecycle.revision.epoch && lifecycleReceipt(answer.lifecycle) !== lifecycleReceipt(lifecycle)))
-        ) {
-          await this.cp.raiseLifecycleEpoch(held.epoch + 1);
+            (held.epoch === lifecycle.revision.epoch && lifecycleReceipt(answer.lifecycle) !== lifecycleReceipt(lifecycle)));
+        // Bounded, because the deployment answering is the vertical's own code: only a directory
+        // that has been restored can meet another history (epoch > 0), and a legitimate epoch is
+        // a mint time, so one further ahead than the skew is forged or broken. Either way nothing
+        // is raised; the refusal is an ops failure for an operator to look at.
+        if (foreign && (lifecycle.revision.epoch === 0 || held!.epoch > Date.now() + LIFECYCLE_EPOCH_SKEW_MS)) {
+          report.failed += 1;
+          await this.admin
+            .recordOpsFailure({
+              actor,
+              operation: 'scope.lifecycle',
+              stage: 'foreign-epoch',
+              tenantId,
+              scopeId,
+              message:
+                `the deployment refused this directory's lifecycle while holding epoch ${held!.epoch} ` +
+                `(this directory is at ${lifecycle.revision.epoch}); not raised past it — ` +
+                (lifecycle.revision.epoch === 0
+                  ? 'this directory has never been restored, so no other history should have written it'
+                  : 'it is further ahead of the clock than any directory mints'),
+            })
+            .catch((e: unknown) => console.error('substrat: could not record a foreign lifecycle epoch (#1713)', e));
+          continue;
+        }
+        if (foreign) {
+          await this.cp.raiseLifecycleEpoch(held!.epoch + 1);
           const [again] = await this.cp.lifecycleTargets({ scopeId });
           const next = again ? this.lifecycleOfTarget(again) : null;
           if (again && next) {

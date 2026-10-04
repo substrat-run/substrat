@@ -4251,6 +4251,8 @@ export class ControlPlaneDO extends DurableObject {
    */
   raiseLifecycleEpoch(atLeast: number): number {
     if (!Number.isSafeInteger(atLeast) || atLeast < 0) throw new Error(`not an epoch: ${atLeast}`);
+    // An epoch is a mint time: one a day past the clock is forged or broken, and never raised to.
+    if (atLeast > Date.now() + 24 * 60 * 60 * 1000) throw new Error(`epoch ${atLeast} is ahead of the clock; not raised`);
     this.sql.exec(
       `INSERT INTO lifecycle_revisions (subject, revision) VALUES ('directory:epoch', ?)
          ON CONFLICT (subject) DO UPDATE SET revision = MAX(revision, excluded.revision)`,
