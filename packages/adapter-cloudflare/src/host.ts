@@ -3754,8 +3754,6 @@ export class CloudflareScopeHost implements ScopeHost {
       sourceScopeId: dump.scopeId as ScopeId,
       // A fork: its callers (snapshotScope) hand it a dump the platform exported.
       exact: true,
-      // #2016: the fork's own tenant, from the directory row just written — never the dump's.
-      provisionedFor: input.tenantId,
     });
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     await this.recordAdmin(
@@ -3786,8 +3784,6 @@ export class CloudflareScopeHost implements ScopeHost {
     const switchedOff = await this.scopeStub(scopeId).importDump(dump.tables, scopeId, {
       switchOff: recordedOff.length ? { moduleIds: recordedOff, at: new Date().toISOString() } : undefined,
       sourceScopeId: opts?.sourceScopeId ?? (dump.scopeId as ScopeId),
-      // #2016: the directory's pair, checked just above; a store provisioned for another refuses.
-      provisionedFor: tenantId,
     });
     await this.recordAdmin(
       actor,
