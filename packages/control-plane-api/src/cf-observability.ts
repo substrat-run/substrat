@@ -17,11 +17,18 @@ import type {
 import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, INVOCATION_KINDS, invocationKindOf } from './observability.js';
 
 /**
+ * An HTTP method as RFC 9110 §9.1 defines it: a `token` (§5.6.2), one or more `tchar`.
+ * Not `[A-Z]+`: the writer records `Request.method` verbatim, and `M-SEARCH` and `X1` are
+ * methods too.
+ */
+export const HTTP_METHOD_PATTERN = "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$";
+
+/**
  * #1901: a request's line, as a filter. Every request line carries its HTTP method — the
  * lines written before `kind` existed included — and an async line's `method` is `null`,
  * so this is the `kind = request` the lines themselves cannot spell.
  */
-const REQUEST_LINE_FILTER: TelemetryFilter = { key: 'method', operation: 'regex', type: 'string', value: '^[A-Z]+$' };
+const REQUEST_LINE_FILTER: TelemetryFilter = { key: 'method', operation: 'regex', type: 'string', value: HTTP_METHOD_PATTERN };
 
 /** #1901: the kinds of async work a scope host logs — every kind but a request. */
 const ASYNC_KINDS = INVOCATION_KINDS.filter((k) => k !== 'request');

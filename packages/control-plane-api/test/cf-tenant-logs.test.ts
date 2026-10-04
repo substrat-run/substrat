@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { createCfObservabilityReader } from '../src/cf-observability.js';
+import { createCfObservabilityReader, HTTP_METHOD_PATTERN } from '../src/cf-observability.js';
 import { TENANT_METRICS_LIMIT } from '../src/observability.js';
 
 /**
@@ -1050,7 +1050,7 @@ describe('cf tenant logs — async work (#1901)', () => {
     // `request` is spelled by no line, so the query matches what every request line has.
     const requests = await reader.tenantRequests!({ ...scope, where: { kind: ['request'] } });
     expect(keyed(sent.at(-1)!, 'kind')).toBeUndefined();
-    expect(keyed(sent.at(-1)!, 'method')).toEqual({ key: 'method', operation: 'regex', type: 'string', value: '^[A-Z]+$' });
+    expect(keyed(sent.at(-1)!, 'method')).toEqual({ key: 'method', operation: 'regex', type: 'string', value: HTTP_METHOD_PATTERN });
     expect(requests.map((r) => r.kind)).toEqual(['request']);
   });
 
@@ -1084,5 +1084,24 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect(both.filter((r) => r.kind === 'consumer')).toHaveLength(60);
     // The twin: a consumer selection pages consumers, never the request.
     expect((await reader.tenantRequests!({ ...scope, where: { kind: ['consumer'] } })).every((r) => r.kind === 'consumer')).toBe(true);
+  });
+
+  it('counts every RFC 9110 method as a request — a hyphen or a digit included — and nothing else', async () => {
+    const methods = ['M-SEARCH', 'X1', 'PROPFIND', 'get'];
+    const lines = [
+      ...Array.from({ length: 60 }, (_, i) => ({ ...consumer({}, `01C${i}`), timestamp: 10_000 - i })),
+      ...methods.map((method, i) => ({ ...invocation({ method }, `01RQ${i}`), timestamp: 1_000 - i })),
+    ];
+    const { reader } = readerOver((filters, limit) =>
+      lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit),
+    );
+    const scope = { tenantId: '01TENANT', from: 0, to: 20_000, limit: 50 };
+    const alone = await reader.tenantRequests!({ ...scope, where: { kind: ['request'] } });
+    expect(alone.map((r) => r.method).sort()).toEqual([...methods].sort());
+    const mixed = await reader.tenantRequests!({ ...scope, limit: 100, where: { kind: ['request', 'consumer'] } });
+    expect(mixed.filter((r) => r.kind === 'request').map((r) => r.method).sort()).toEqual([...methods].sort());
+    // Not a token: never a method, so never a request by this predicate — nor is an async line's null.
+    const re = new RegExp(HTTP_METHOD_PATTERN);
+    for (const notAMethod of ['', 'GET /x', 'M(SEARCH)', 'null ']) expect(re.test(notAMethod)).toBe(false);
   });
 });
