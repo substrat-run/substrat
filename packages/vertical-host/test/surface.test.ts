@@ -1410,6 +1410,65 @@ describe('mountPlatformSurface — the schedule switch (#1666)', () => {
 });
 
 /**
+ * The far end of the lifecycle delivery (#1713): the platform pushes a scope's lifecycle here,
+ * parsed before the host sees it. 501 for a host without the method, so the platform records a
+ * delivery that did not land and its heal sweep asks again.
+ */
+describe('mountPlatformSurface — the lifecycle delivery (#1713)', () => {
+  const post = (host: VerticalScopeHost, body: unknown, headers: Record<string, string> = authed({ 'content-type': 'application/json' })) =>
+    appWith(host).request('/internal/lifecycle', { method: 'POST', headers, body: JSON.stringify(body) }, ENV);
+  const lifecycle = { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z' };
+  const body = { scopeId: SCOPE, lifecycle };
+
+  it('parses and hands the lifecycle to the host, answering its outcome verbatim', async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({
+      setLifecycleLocal: async (...args: unknown[]) => {
+        got = args;
+        return { applied: true, changed: true, lifecycle } as never;
+      },
+    });
+    const res = await post(host, body);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ applied: true, changed: true, lifecycle });
+    expect(got).toEqual([SCOPE, lifecycle]);
+  });
+
+  it('a host without the method answers 501', async () => {
+    const res = await post(fakeHost(), body);
+    expect(res.status).toBe(501);
+    expect(JSON.stringify(await res.json())).toMatch(/redeploy/);
+  });
+
+  it.each([
+    ['a status no scope can hold', { ...lifecycle, scope: 'paused' }],
+    ['no read time', { scope: 'suspended', tenant: 'active' }],
+  ])('refuses %s, and calls nothing', async (_name, bad) => {
+    let called = false;
+    const host = fakeHost({
+      setLifecycleLocal: async () => {
+        called = true;
+        return { applied: true, changed: true, lifecycle } as never;
+      },
+    });
+    expect((await post(host, { scopeId: SCOPE, lifecycle: bad })).status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  it('sits behind the platform-secret gate like the rest of the surface', async () => {
+    let called = false;
+    const host = fakeHost({
+      setLifecycleLocal: async () => {
+        called = true;
+        return { applied: true, changed: true, lifecycle } as never;
+      },
+    });
+    expect((await post(host, body, { 'content-type': 'application/json' })).status).toBe(403);
+    expect(called).toBe(false);
+  });
+});
+
+/**
  * The far end of the schedule kill switch's status read (#1674) — the read half of the
  * #1666 block above. No admin-log join happens here (this deployment holds none), so it
  * answers the bare per-module position `systemGrantsStatusLocal` gives it, verbatim.
