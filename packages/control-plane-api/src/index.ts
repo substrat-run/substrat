@@ -186,7 +186,7 @@ export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';
 export { createCfObservabilityReader } from './cf-observability.js';
 // #1923: the one sanctioned reading of a line's `outputFields` — tenant- and app-scoped, aggregate only.
-export { tallyFieldCoverage, FIELD_COVERAGE_OPERATIONS_MAX, ROUTER_SERVICES } from './field-coverage-tally.js';
+export { tallyFieldCoverage, FIELD_COVERAGE_OPERATIONS_MAX } from './field-coverage-tally.js';
 export type { FieldCoverageTally, FieldCoverageScope, OperationFieldCoverage, FieldCoverageCount } from './field-coverage-tally.js';
 // #1877: the aggregate seam under ObservabilityReader, and the store its cache keeps
 // closed blocks in (a Durable Object's SQL in production).

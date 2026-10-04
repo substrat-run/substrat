@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DECLARED_OUTPUT_FIELDS_MAX } from '@substrat-run/contracts';
-import { readFileSync } from 'node:fs';
-import { FIELD_COVERAGE_OPERATIONS_MAX, ROUTER_SERVICES, tallyFieldCoverage, type FieldCoverageScope } from '../src/field-coverage-tally.js';
+import { ROUTER_SCRIPT_NAMES } from '@substrat-run/contracts';
+import { FIELD_COVERAGE_OPERATIONS_MAX, tallyFieldCoverage, type FieldCoverageScope } from '../src/field-coverage-tally.js';
 import { createCfObservabilityReader } from '../src/cf-observability.js';
 import { serviceFamilyMatcher } from '../src/service-family.js';
 
@@ -259,17 +259,25 @@ describe('the router join (#1923)', () => {
       expect(tallyFieldCoverage([real], [routerLine(id, TENANT, APP, service)], scope).operations, service).toEqual([]);
     }
     expect(tallyFieldCoverage([real], [{ ...routerLine(id), $metadata: {} }], scope).operations).toEqual([]);
-    for (const service of ROUTER_SERVICES) {
+    for (const service of ROUTER_SCRIPT_NAMES) {
       expect(tallyFieldCoverage([real], [routerLine(id, TENANT, APP, service)], scope).operations, service).toHaveLength(1);
     }
   });
 
-  it('pins the router services to the names its wrangler config deploys', () => {
-    const config = readFileSync(new URL('../../../apps/router/wrangler.jsonc', import.meta.url), 'utf8');
-    const name = /^\t"name": "([^"]+)"/m.exec(config)?.[1];
-    expect(name).toBe('substrat-router');
-    const envs = [...config.matchAll(/^\t\t"([a-z]+)": \{$/gm)].map((m) => `${name}-${m[1]}`);
-    expect([...ROUTER_SERVICES].sort()).toEqual([name, ...envs].sort());
+  it("refuses an app whose scripts would be named like the router's (Codex r2's reproduction)", () => {
+    // A vertical deployed as `substrat/router` would log router-shaped lines under the router's
+    // own service name, for an invented id and any tenant, then a matching report.
+    const id = dispatchId();
+    const forgedRouter = routerLine(id, B, 'substrat/router', 'substrat-router');
+    const report = line({ tenantId: B, vertical: 'substrat/router', fieldCoverageId: id }, 'substrat-router');
+    for (const services of [['substrat-router'], ['acme-widgets', 'substrat-router-test']]) {
+      expect(
+        () => tallyFieldCoverage([report], [forgedRouter], { tenantId: B, vertical: 'substrat/router', services }),
+        services.join(),
+      ).toThrow(/router/);
+    }
+    // The twin: the stem `substrat-routers` is its own family, not the router's.
+    expect(() => tallyFieldCoverage([], [], { ...scope, services: ['substrat-routers'] })).not.toThrow();
   });
 
   it('names its app', () => {

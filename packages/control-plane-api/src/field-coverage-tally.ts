@@ -15,8 +15,12 @@
  * - **The tenant and app a report counts for are the ROUTER's.** A report counts only when
  *   its `fieldCoverageId` — the dispatch id the router armed the walk with — matches the
  *   router's own line for that request, and that line names this tenant and this app. Router
- *   lines are read from the router's service only (`ROUTER_SERVICES`, `$metadata.service`,
- *   which the log platform stamps and a vertical cannot set). A vertical serving tenants A and
+ *   lines are read from the router's scripts only (`ROUTER_SCRIPT_NAMES`, by
+ *   `$metadata.service`, which the log platform stamps). A vertical cannot log under those
+ *   names: a slug that would deploy under any platform script name is refused at
+ *   registration and at deploy (`platformScriptCollision`), from the same list. Workers Logs
+ *   carry no field that tells a dispatch-namespace script from a top-level worker that this
+ *   reader could check instead, so the reserved names are the whole of that guarantee. A vertical serving tenants A and
  *   B that writes a report naming B during A's request has only A's id to give it, which joins
  *   to A; an invented id joins to nothing. Each id counts once.
  * - **The script is the app's.** A vertical line counts only if one of the app's own script
@@ -44,7 +48,7 @@
  * Every count is per response serialisation, never per row: a paged read of 200 rows is one
  * response (#1331).
  */
-import { DECLARED_OUTPUT_FIELDS_MAX, FIELD_COVERAGE_ID_FIELD, INVOCATION_RECORD_FIELD_MAX } from '@substrat-run/contracts';
+import { DECLARED_OUTPUT_FIELDS_MAX, FIELD_COVERAGE_ID_FIELD, INVOCATION_RECORD_FIELD_MAX, ROUTER_SCRIPT_NAMES } from '@substrat-run/contracts';
 import type { OutputFieldsReport } from '@substrat-run/kernel';
 import { ownsInvocation } from './cf-observability.js';
 import { serviceFamilyMatcher } from './service-family.js';
@@ -96,13 +100,6 @@ export interface FieldCoverageScope {
   declared?: Readonly<Record<string, readonly string[]>>;
 }
 
-/**
- * The router's scripts, by exact name — the only services whose lines are provenance. Pinned
- * here, never taken from a caller or a line: the router's `wrangler.jsonc` names them, and a
- * test holds the two together.
- */
-export const ROUTER_SERVICES: readonly string[] = ['substrat-router', 'substrat-router-test'];
-
 /** A dispatch id: the ULID the router mints for a sampled request. */
 const DISPATCH_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -122,7 +119,7 @@ function dispatchIdsFor(routerEvents: Iterable<unknown>, scope: FieldCoverageSco
   for (const event of routerEvents) {
     if (event === null || typeof event !== 'object') continue;
     const service = serviceOf(event);
-    if (typeof service !== 'string' || !ROUTER_SERVICES.includes(service)) continue;
+    if (typeof service !== 'string' || !ROUTER_SCRIPT_NAMES.includes(service)) continue;
     const source = (event as Record<string, unknown>)['source'];
     if (source === null || typeof source !== 'object') continue;
     const line = source as Record<string, unknown>;
@@ -181,10 +178,17 @@ export function tallyFieldCoverage(
   if (typeof scope.vertical !== 'string' || scope.vertical.length === 0) {
     throw new TypeError('a field-coverage tally is for one app, and names it');
   }
+  const ownService = serviceFamilyMatcher(scope.services);
+  // #1923: an app whose own scripts would be named like the router's has no provenance to
+  // join to — its lines and the router's are one set. Registration and deploy refuse such a
+  // slug; a registry entry that predates the rule is refused here rather than trusted.
+  const shadowed = ROUTER_SCRIPT_NAMES.find((name) => ownService(name));
+  if (shadowed) {
+    throw new TypeError(`a field-coverage tally cannot trust router lines for an app whose scripts are named like '${shadowed}'`);
+  }
   const dispatched = dispatchIdsFor(routerEvents, scope);
   const counted = new Set<string>();
   const operations = new Map<string, { responses: number; fields: Map<string, FieldCoverageCount> }>();
-  const ownService = serviceFamilyMatcher(scope.services);
   // Each operation's declared names as a set, built the first time a report needs it.
   const declaredSets = new Map<string, ReadonlySet<string>>();
   let refused = 0;

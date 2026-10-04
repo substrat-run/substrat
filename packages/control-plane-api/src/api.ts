@@ -67,6 +67,9 @@ import {
   DENIAL_LIMIT_MAX,
   denialGroupBy,
   registerVerticalInput,
+  platformScriptCollision,
+  platformScriptRefusal,
+  PLATFORM_SCRIPT_NAMES,
   serviceDimensions,
   sweepRunKind,
   sweepRunOutcome,
@@ -6445,6 +6448,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const doClasses = deployedDoClasses(manifest.doClasses, manifest.platformSweeper);
     const serving = await host.admin.verticalServing(actor, slug);
     const ref = serving?.ref ?? stableDeploymentRefFor(slug);
+    // #1923: the serving upload is the other door a script name is minted through.
+    const collision = platformScriptCollision(slug) ?? (PLATFORM_SCRIPT_NAMES.has(ref) ? ref : null);
+    if (collision) throw new ControlPlaneError(422, platformScriptRefusal(slug, collision));
     const modules = await options.fetchVerticalModules(version.deploymentRef);
     // #301 PR-2: every serving upload re-derives the per-tenant store D1 bindings from
     // the ledger and sends them WITH the bundle's own bindings — an upload's `bindings`
@@ -6887,6 +6893,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       slug = bare;
       ownerTenant = (await ownerOf(c.get('actor'), slug)) ?? null;
     }
+
+    // #1923: a slug that would deploy under one of the platform's own script names is refused
+    // before anything is uploaded. Registration refuses it too; this is the deploy half, for a
+    // registry id that predates the rule, so it can never put a script under a platform name.
+    const collision = platformScriptCollision(slug);
+    if (collision) return c.json({ error: platformScriptRefusal(slug, collision) }, 422);
 
     // #388: refuse the SILENT lineage fork. A first push of a registry id that does not
     // exist yet, whose product name (the slug's tail) matches an existing lineage this
