@@ -28,6 +28,29 @@ export interface RequestRecord {
   eventTypes: string[];
   entities: string[];
   versionId: string | null;
+  /**
+   * #1901: `request`, or the kind of async work the scope host logged (`consumer`,
+   * `schedule`). Optional, with the outcome fields below: a plane older than #1901 sends none,
+   * and a row without them is a request's.
+   */
+  kind?: string;
+  outcome?: string | null;
+  eventType?: string | null;
+  eventId?: string | null;
+  attempt?: number | null;
+  latenessMs?: number | null;
+}
+
+/** #1901: a line's kind, absent read as `request`. */
+export function kindOf(v: unknown): 'request' | 'consumer' | 'schedule' {
+  return v === 'consumer' || v === 'schedule' ? v : 'request';
+}
+
+/** The stamped line of a log event, or null. */
+function invocationSource(e: LogLine): Record<string, unknown> | null {
+  const raw = e.raw as Record<string, unknown> | undefined;
+  const source = raw && typeof raw['source'] === 'object' && raw['source'] !== null ? (raw['source'] as Record<string, unknown>) : null;
+  return source && source['substrat'] === 'invocation' ? source : null;
 }
 
 /**
@@ -56,10 +79,14 @@ const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string =>
  * line and one opened from a Requests row describe the request identically.
  */
 export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
-  for (const e of logs) {
-    const raw = e.raw as Record<string, unknown> | undefined;
-    const source = raw && typeof raw['source'] === 'object' && raw['source'] !== null ? (raw['source'] as Record<string, unknown>) : null;
-    if (!source || source['substrat'] !== 'invocation') continue;
+  // #1901: a call's consumers share its id, so its lines can hold several stamped lines.
+  // The request's own (no `kind`) is the record; an async line is only when there is none —
+  // work a sweep ran, under an id of its own.
+  const stamped = logs.filter((e) => invocationSource(e) !== null);
+  const e = stamped.find((l) => kindOf(invocationSource(l)!['kind']) === 'request') ?? stamped[0];
+  if (e) {
+    const raw = e.raw as Record<string, unknown>;
+    const source = invocationSource(e)!;
     return {
       timestamp: num(raw!['timestamp']) ?? e.timestamp,
       invocationId: str(source['invocationId']),
@@ -79,16 +106,25 @@ export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
       eventTypes: strings(source['eventTypes']),
       entities: strings(source['entities']),
       versionId: str(source['versionId']),
+      kind: kindOf(source['kind']),
+      outcome: str(source['outcome']),
+      eventType: str(source['eventType']),
+      eventId: str(source['eventId']),
+      attempt: num(source['attempt']),
+      latenessMs: num(source['latenessMs']),
     };
   }
   return null;
 }
 
-/** Whether a log line is the stamped invocation line itself — the slide-over lists it as the request, not as a line. */
+/**
+ * Whether a log line is a REQUEST's stamped line — the slide-over lists it as the request,
+ * not as a line. A consumer's or a schedule's line (#1901) is work the call caused, so it is
+ * listed with the call's other lines, at the moment it ended.
+ */
 export function isInvocationLine(e: LogLine): boolean {
-  const raw = e.raw as Record<string, unknown> | undefined;
-  const source = raw?.['source'] as Record<string, unknown> | undefined;
-  return source?.['substrat'] === 'invocation';
+  const source = invocationSource(e);
+  return source !== null && kindOf(source['kind']) === 'request';
 }
 
 export interface TimelineMark {

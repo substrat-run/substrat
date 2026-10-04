@@ -18,6 +18,8 @@ export interface ObsQuery {
   lvl?: string;
   status?: string;
   surface?: string;
+  /** #1901: the Requests mode's `kind` facet — `request`, `consumer`, `schedule`. */
+  kind?: string;
   /** #1747: one log pattern — a `ctx.log` template, verbatim. Narrows the Lines mode. */
   tpl?: string;
   /** #1744: the process map's lifecycle (an entity name), period, selection and compare switch. */
@@ -51,6 +53,7 @@ export const OBS_KEYS = [
   'lvl',
   'status',
   'surface',
+  'kind',
   'tpl',
   'entity',
   'period',
