@@ -22,7 +22,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type SwitchSql } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -47,6 +47,7 @@ import {
   concurrencyContractSuite,
   emittedReportContractSuite,
   moduleLogContractSuite,
+  asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
   permMod,
@@ -4245,6 +4246,40 @@ moduleLogContractSuite('adapter-cloudflare', async () => {
   return {
     host,
     logs: () => lines,
+    cleanup: async () => {
+      for (const s of spies) s.mockRestore();
+      await host.close();
+    },
+  };
+});
+
+// #1901: async work's invocation lines — written inside the DO (consumers) and on the
+// coordinator (executors, schedules), both to the console, where they are read here.
+asyncLogContractSuite('adapter-cloudflare', async () => {
+  const lines: InvocationLogLine[] = [];
+  const logs: ModuleLogLine[] = [];
+  const capture = (text: unknown) => {
+    if (typeof text !== 'string') return false;
+    if (text.startsWith('{"substrat":"invocation"')) lines.push(JSON.parse(text) as InvocationLogLine);
+    else if (text.startsWith('{"substrat":"log"')) logs.push(JSON.parse(text) as ModuleLogLine);
+    else return false;
+    return true;
+  };
+  const spies = (['log', 'warn', 'error', 'debug'] as const).map((m) => {
+    const original = console[m].bind(console);
+    return vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
+      if (!capture(args[0])) original(...args);
+    });
+  });
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    lines: () => lines,
+    logs: () => logs,
     cleanup: async () => {
       for (const s of spies) s.mockRestore();
       await host.close();
