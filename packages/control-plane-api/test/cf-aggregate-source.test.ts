@@ -80,12 +80,47 @@ describe('the telemetry source (#1877)', () => {
       { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
     ]);
     expect(q.parameters.groupBys!.map((g) => g.value)).toEqual([
-      'tenantId', 'scopeId', 'level', 'operation', 'problemCode', 'principalKind', 'surface', 'status',
+      'tenantId', 'scopeId', 'level', 'operation', 'problemCode', 'principalKind', 'surface', 'status', 'kind',
     ]);
     // An hour at the one-minute grain.
     expect(q.granularity).toBe(60);
     // …and only ours comes back.
     expect(v.buckets).toEqual([{ start: '2026-09-27T10:05:00.000Z', info: 0, warn: 3, error: 0, unrecorded: 0 }]);
+  });
+
+  it('#1901: counts async work under its kind, and a line with none as a request', async () => {
+    stub(() => ({
+      body: {
+        calculations: [
+          {
+            series: [
+              {
+                time: '2026-09-27T10:05:00Z',
+                data: [
+                  point({ tenantId: T, level: 'info', operation: 'acme/assign', status: 200 }, 4),
+                  point({ tenantId: T, level: 'error', operation: 'acme-notify', kind: 'consumer', problemCode: 'conflict' }, 2),
+                  point({ tenantId: T, level: 'info', operation: 'acme/digest', kind: 'schedule' }, 1),
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    }));
+    const r = reader();
+    const all = await r.tenantRequestFacets!({ tenantId: T, services: ['acme-widgets'], from, to });
+    expect(all.total).toBe(7);
+    expect(all.facets.kind).toEqual([
+      { value: 'request', count: 4 },
+      { value: 'consumer', count: 2 },
+      { value: 'schedule', count: 1 },
+    ]);
+    // `request` filters on the lines that carry no kind — the one value no line spells.
+    const requests = await r.tenantRequestFacets!({ tenantId: T, services: ['acme-widgets'], from, to, where: { kind: ['request'] } });
+    expect(requests.total).toBe(4);
+    const consumers = await r.tenantRequestFacets!({ tenantId: T, services: ['acme-widgets'], from, to, where: { kind: ['consumer'] } });
+    expect(consumers.total).toBe(2);
+    expect(consumers.facets.level).toEqual([{ value: 'error', count: 2 }]);
   });
 
   it('splits a full span in two rather than paging it — no order to trust', async () => {
