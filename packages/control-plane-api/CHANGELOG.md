@@ -1,5 +1,151 @@
 # @substrat-run/control-plane-api
 
+## 0.136.0
+
+### Minor Changes
+
+- 1af2d47: Async work writes an invocation line (#1901). A consumer delivery, each retry, a dead-letter and a schedule run used to write nothing, so a consumer that failed every attempt showed only as a dead-letter count.
+
+  - The scope host writes one line per unit of work, in the request line's shape plus `kind: 'consumer' | 'schedule'`. A request's line still has no `kind`; read a missing one as `request`. Both lines are built by the new `invocationLine`, so they share one grammar.
+  - A consumer's line (a module consumer, an executor, or an imported event's handler) names the consumer as `operation` and carries `eventType`, `eventId`, `attempt` and `outcome`: `delivered`, `retrying`, `dead-lettered`, `inert` (a copy's held delivery, at `warn`) or `routed`. A schedule's line carries `dueAt` and `latenessMs`, with `outcome` `ok` or `failed`.
+  - Ids, names and the thrown error's `errorCode` only. No payload, and no error text.
+  - A unit in a call's tail logs under the call's id. A unit outside any call logs under an id minted for it, and its `ctx.log` lines carry the same id.
+  - A pass writes at most `ASYNC_LINES_PER_PASS` (100) lines, then one `suppressed` line that counts the rest per `<kind>:<outcome>`.
+  - `SqliteScopeHostOptions.invocationLineSink` redirects the lines; the default, and the Durable Object host, write them to the console. Both adapters pass the new `asyncLogContractSuite`.
+  - `InvocationLogLine.method` and `.path` are now `string | null`; they are `null` on an async line.
+  - The control plane's request reads gain a `kind` facet (`REQUEST_FACET_KEYS`), and each `RequestRecord` carries `kind`, `outcome`, `eventType`, `eventId`, `attempt` and `latenessMs`. The telemetry cube groups by `kind`. Past the router cut-over, the request cube adds the async lines the router never meters (`AggregateSource.asyncRequests`).
+
+  These lines ship inside the vertical's adapter, so a vertical writes them after it upgrades and pushes again, not on a platform deploy.
+
+- 30c2cda: A scope's copy-origin record now holds two separate facts. One is the copied-events mark: the newest event a load brought in from another scope, which that scope's queued work is held behind. The other is whether the scope is a copy, which a host with no control-plane directory reads to hold a copy's effects inert. A load into another scope id sets only the mark. The scope is classified a copy only when the platform's directory says it is not primary. That covers a preview, a fork and a snapshot, so one install's backup restored onto another install now runs its own effects, and the work it copied still never runs there. The new `_substrat_copy_origin.is_copy` column is added in place. A row written before it reads as a copy, as it always did. `clearCopyMarker` now clears the classification of any such row and keeps its events mark, so it no longer answers `carries-events`. Previews and snapshots are created with the directory's classification attached.
+
+  Release order: deploy the control plane first, so every preview and snapshot it creates carries the classification. Then re-push the hosted verticals. Then run `pnpm scopes:mark-copies --dry-run` followed by the real pass, which classifies any copy a vertical on the new runtime loaded while the control plane was still behind. A preview's outbound requests stay refused throughout, because the egress gate reads the directory, not the scope's store.
+
+- 3ed9e9d: Host-side exports start moving out of the kernel (part of #1978). Every existing import keeps working: the kernel still exports each one for this release, as the same binding, and marks it `@deprecated` with its new home.
+
+  - **Header names** move to `@substrat-run/contracts`: `PLATFORM_SECRET_HEADER`, `PLATFORM_REQUEST_HEADER`, `EXPORTED_EVENTS_HEADER`, `CONNECTOR_ATTACHMENT_RECORD_HEADER`, `LIVE_MODE_HEADER` and the `LiveRefusal` type. They are importable from the package root and from a new `@substrat-run/contracts/wire-headers` subpath, which imports nothing.
+  - **`@substrat-run/vertical-host`** now exports `invocationLog`, `withInvocationLog`, `invocationStampOf`, `INVOCATION_RECORD_KEY`, `readRoutedNode`, `RouterAssertionError`, `assertPlatformCall`, `PlatformCallError`, `kickFlags`, `isUpgradeRequest` and their types. Import them from there.
+  - **`@substrat-run/adapter-cloudflare`** now exports the Analytics Engine connector-call recorder: `analyticsEngineConnectorCallRecorder`, `CONNECTOR_CALL_DATA_POINT_LAYOUT`, `connectorCallDataPoint` and `AnalyticsEngineDatasetLike`. The neutral recorder interface stays in the kernel.
+  - **`@substrat-run/control-plane-api`** now exports `isTerminalDispatchFailure`, `isTerminalProviderError`, `providerErrorStatus` and `RETRYABLE_CLIENT_STATUSES`.
+  - `invocationLevelOf` and `InvocationLevel` were already defined in `@substrat-run/contracts`. The kernel's copies of those exports are deprecated in favour of contracts.
+
+  The scaffold template and the demos now import from the new homes. Nothing a deployed vertical sends, reads or logs changes.
+
+- 7a28aea: The platform supplies the scope sweeper that runs a vertical's declared schedules (#1902).
+
+  A vertical that declares `schedules` no longer has to export `defineScopeSweeperDO`, bind a `SWEEPER` store, or call `noteScope`/`forgetScope` from its platform hooks. When a version declares schedules and its worker entry exports no sweeper, the uploader adds one: the class `SweeperDO`, bound as `SWEEPER`, its migration, and the platform entry's re-export of it. The class is generated from `defineScopeSweeperDO` into `platform-entry.generated.ts` (`pnpm lint:platform-entry --check`).
+
+  - `mountPlatformSurface` registers the `hostFor` it is given, which is the host the supplied sweeper runs. It adds a scope to the supplied sweeper's roster after provision and reconcile, and removes it after delete-scope, when the upload sets `SUBSTRAT_SCOPE_SWEEPER`. New exports: `registerScopeSweepHost`, `registeredScopeSweepHost`, `platformSweeperOf`, `PLATFORM_SWEEPER_VAR`.
+  - `substrat push` reads the entry's own sweeper classes from source and sends them as the manifest's new `sweeperClasses` (`[]` for none). The push route decides from that declaration, never from the bundle's bytes, and decides once: the answer is recorded with the version (the stored manifest's `platformSweeper`), and promote, re-serve and backout reuse it without re-deciding, so they can never refuse over it. A version pushed before this keeps exactly what it had. An own sweeper is kept, and the push is refused (422) if no binding names it. The platform's names, bound to something else, are refused rather than overwritten. A push from an older CLI falls back to the conventional names (`SWEEPER` bound to `SweeperDO` is the vertical's own, neither means none), and refuses a half-match.
+  - Every control-plane response carries `x-substrat-platform-features: scope-sweeper` (`PLATFORM_FEATURES_HEADER`, `PLATFORM_FEATURE_SCOPE_SWEEPER` in contracts). Before uploading a version that leaves the sweeper to the platform, `substrat push` checks for it, and refuses when the control plane does not list it, since an older control plane would accept the version and never run its schedules.
+  - A vertical that drops its own `SweeperDO` keeps the same Durable Object namespace on its serving script, so its roster and its armed alarm carry over and the in-place migration is empty.
+  - The push gate (and `lint:schedule-sweeper`) no longer refuses "no sweeper". It refuses an own sweeper nothing binds, the platform's names taken, or an installed `@substrat-run/vertical-host` too old to register the host.
+  - `defineScopeSweeperDO` checks ids with a pattern instead of the contracts schemas, so the supplied module carries no zod.
+  - The `npm create substrat` template still wires its own sweeper, which keeps working unchanged. It drops it once a control plane carrying this is live, since `substrat push` refuses to leave the sweeper to a control plane that does not supply one.
+
+- 7418e7e: Previews and forks are inert: a scope that is not primary causes no outbound effects (#2005).
+
+  A fork, a snapshot and a preview of either kind still run their code and commit their writes, but nothing they ask for leaves them. One predicate decides it, `isPrimaryScope`, and every outbound door applies it:
+
+  - The platform-intent drain settles a non-primary scope's own intents `failed`, attributed to the platform, with the new `INERT_SCOPE_REASON`, and runs no handler. The settle lands no ops-failure row. `model-usage` and `sweep-runs` still land, because they record something that already happened. `drainScopePlatformRequests` now takes a `PlatformDrainContext`, which requires the scope's `kind` and `forkedFrom`, and decides from them.
+  - Executor and connector dispatch, on both adapters (the emitting call's tail and `drainDue`), journals a non-primary scope's deliveries terminal with the same reason and never runs the handler. `ExecutorDrainReport` gains an optional `inert` count. A CP-less hosted vertical, which has no directory, reads the scope's own copy-origin row instead. Every copy now holds that row, an empty copy included. Every carry onto a non-primary scope marks it (`restoreScope`'s `markCopy`). The new staff route `POST /scopes/mark-copies` (`pnpm scopes:mark-copies`; paged, resumable, dry run, admin-logged as `markScopeCopy`) marks copies made before the row existed, suspended and archived ones included, through the vertical's new `/internal/mark-copy`. Reactivating a copy marks it first. Each marker request carries the directory's classification (`scopeLineage`), and the vertical refuses to mark a primary. `POST /tenants/:t/scopes/:s/clear-copy-mark` (staff, logged as `clearScopeCopyMark`) clears a mistaken mark on an install, through `/internal/clear-copy-mark`.
+  - `RouteTarget` gains `primary` (defaulted to `true` for a resolver that predates it). `RouteTarget` also gains `hostnames`, the scope's active hostnames, defaulted to `[]`. The router hands all of it, with the hostname the dispatch serves, to the egress worker. The worker refuses every third-party subrequest from a non-primary scope, and every write to another platform app, metering both as `inert`. Reads of other apps, any request to a hostname of the copy's own scope, and the relay still pass, and each of them leaves with `redirect: 'manual'`, so a redirect cannot carry a copy past the rule.
+  - The sweep's schedule and freshness phases filter on `isPrimaryScope`, so a clean-room preview no longer fires its schedules.
+  - Previews and forks cannot send email or change a tenant's connections: the email relay, the connection relay (including the route a consent round's callback stores through) and connect-url refuse a non-primary scope with a 403.
+  - `isPrimaryScopeRow` answers the same predicate over a raw directory row.
+
+### Patch Changes
+
+- 4964eb8: A preview push or `scope bind` that moves a scope's data into another version's deployment now wipes the copy it leaves behind (#1722). Once the bind lands, the old copy is emptied to a `carried_away` marker rather than reaped, so a later bind back to that version can carry the data in again. The three bind tails (preview push, `scope bind`, serving-pin repair) are now one.
+
+  **Only one of two racing carries binds.** The bind expects the version the data was copied from, so of two pushes that read the same binding only one lands. The other is refused with a 412, and its copy is discarded, unless the preview is now served from that same deployment (a CI retry of the same version). A carry also refuses, before restoring anything, an export from a scope that was re-pointed meanwhile, or from a store that was already wiped. Right before it binds, a carry reads its source again. If anything changed there since the export (a write, a load, or a clear of its copy marker), it carries again from a fresh export. After three tries it is refused with a typed 409 (`carrySourceChanged`), with nothing bound.
+
+  **Every act on a store is fenced on that store.** A scope DO keeps a load stamp and a write revision in `_substrat_meta`, and neither ever leaves in a dump. Every load replaces the stamp. Every write advances the revision inside the transaction that commits it, an in-place update such as a drain receipt included.
+
+  - A carry's export (`/internal/export?stamp=1`) hands both over, in the `x-substrat-load-stamp` and `x-substrat-write-revision` headers, read in the same call as the dump.
+  - A carry reads the destination's marker (`/internal/load-marker`) and sends it back as `expect` on `/internal/restore`, so a retried push never overwrites a store another run bound and wrote to.
+  - The source wipe (`/internal/wipe-carried`) runs only if the source still holds what the carry exported, so a rollback that restored there meanwhile keeps its data.
+  - Every comparison happens inside the act's own transaction, and a refusal answers 412.
+
+  **A copy that took a write the carry did not copy is kept, not wiped.** It is recorded as `source-copy-kept` and protected in its own store: every load into it, a bind back included, is refused (409) until staff resolve it through the staff-only `GET /tenants/:t/scopes/:s/kept-copy` and `POST …/kept-copy/resolve`. The resolutions are:
+
+  - `discard`;
+  - `restore-forward` over the live store, acknowledging the live writes it replaces. It is fenced on the binding throughout, and discards the kept copy only once its data is where the scope still routes;
+  - `release`, for a kept copy that turned out to be the live store.
+
+  `GET …/kept-copy/export` pulls the kept copy under the governed export's rules (residency, masking unless `full=true`, access-logged) for reconciling by hand. Each resolution is fenced on the kept copy's load stamp and revision, and logged through the new `HostAdmin.recordKeptCopyResolution` (admin action `resolveKeptCopy`). A copy the carry wiped refuses writes, so a stale request still routed to it lands nothing.
+
+  **Copy marking (#2005).** A copy the carry wipes or keeps stays marked a copy whenever the directory says the scope is not primary, including a copy made before the marker existed. Marking a store a copy never counts as a write the carry missed. Clearing a mistaken marker does count. If a staff clear lands after the carry's last check of its source, the source records it, and the platform brings the clear to the store the scope now runs on: it clears that store's marker, fenced on this carry's own load of it and its revision (`/internal/clear-copy-mark` takes `expect`), and only then discards the source. A store another load has replaced meanwhile keeps its marker.
+
+  **Older deployments.** A deployment built before this release answers 404 on the new routes. Only a 404, a 501, or an HTML shell served as `text/html` reads as an older deployment. A lost, truncated or malformed answer is a failure, never a fallback. There, the wipe falls back to an unconditional load of the tombstone through `/internal/restore`, guarded by a route re-read and by the rollback checking its own store. The restore is guarded only by the binding read right before it. **Re-push every vertical after this release** so its scripts carry the fenced paths. The two remaining old-script windows close as each vertical is re-pushed.
+
+  The cleanup is best effort: a carry that fails between its restore and its wipe can still leave a copy, and reconciling those is not done yet.
+
+- b9b3b82: The rest of #1713: the platform's drain waits on a held scope, lifecycle deliveries carry the directory's revisions, and the connector doors hold too.
+
+  **The drain waits.** A hosted scope that is suspended or archived, or whose tenant is suspended or deleting, keeps its platform intents (a connector delivery the control plane runs, a sibling to provision) pending. The drain still lists them, so the backlog counts them, but runs none and settles none, so no attempt counts toward the give-up ceiling. The first drain after the scope is live again runs each one once. A held drain reports `held: true` with everything in `pending`. `PlatformDrainContext` gains a required `lifecycle: { scope, tenant }` from the directory; a scope whose tenant has no record is treated as held. `lifecycleRefusal` takes just the two statuses, so the drain and the deployment judge by one predicate.
+
+  **Revisioned deliveries.** Every lifecycle delivery carries the directory's `revision: { epoch, scope, tenant }`, and `/internal/lifecycle` refuses one without it (400). Every directory restore mints a newer `epoch` (kept out of directory dumps), so after a restore the heal pass brings each hosted scope onto what the restored directory says, in either direction: a scope its deployment ran live is held if the directory says suspended, and one it held runs again if the directory says active. A receipt now records the full revision acknowledged, not only the statuses, so a restore that left a scope's statuses unchanged still re-converges. A restore onto a fresh directory, whose clock may be behind an epoch a scope already holds, converges too: the scope refuses and answers its revision, and the directory raises its epoch past it and delivers again. That raise happens only on a directory that has been restored, and never past an epoch more than a day ahead of the clock; anything else is an ops failure (`scope.lifecycle` / `foreign-epoch`) and no raise, so a deployment answering with a forged epoch cannot move the platform's. A lifecycle a scope stored before revisions existed still holds the scope by its statuses, and any revisioned delivery replaces it.
+
+  **The connector doors hold.** On a CP-less host, `connectorInvokeLocal`, `connectorAttachmentUploadLocal` and `connectorAttachmentOpenLocal` (the far end of the platform's connector pass and dispatch) refuse a held scope in the directory's words, as every other door does.
+
+- 0c7699d: Add a staff-only, paged and resumable pass that heals every legacy preview still pinned to its vertical's serving script: it carries the data off the serving script into the preview's bound version, binds that version, then clears the pin (#1724).
+
+  A scope reap, a tenant reap and the bulk `adopt-serving` now refuse a body that is not valid JSON (400) or carries a key they do not know, instead of reading it as the defaults and running the act. An empty body is unchanged.
+
+- 18069f9: Suspending a scope or a tenant now stops a hosted vertical's own work on it, not only its requests (#1713). Until now the router refused a suspended scope's requests, but the vertical's sweeper, retries and job runner never pass the router, so a suspended scope kept firing its schedules and running its deliveries.
+
+  **The platform delivers the lifecycle.** After a scope transition (suspend, unsuspend, archive, unarchive) or a tenant status change, the control plane posts the scope's state to the deployment that serves it, at the new `/internal/lifecycle` route: `{ scopeId, lifecycle: { scope, tenant, at, revision: { epoch, scope, tenant } } }` (the new `scopeLifecycle` contract), answered with a `lifecycleDelivery`. A tenant change goes to every hosted scope under the tenant. A live scope whose deployment already runs it live is not posted to, so an activation changes nothing on the wire. Deliveries are ordered by revisions the directory keeps, `{ scope, tenant }`, each bumped in the same transaction as the status change it counts (a new `lifecycle_revisions` directory table). The scope keeps a delivery only when it is strictly newer on one revision and older on neither, so a late delivery cannot undo a later one, and a repeat of the same state is refused. A directory restore mints a newer epoch, compared before the counters, so a restored directory's deliveries win over everything the history it replaced delivered.
+
+  **One gate, deferred rather than dropped.** A CP-less `CloudflareScopeHost` checks the stored state at every door that runs a scope's work: `getScope`, attachments, capability, impersonation and peer doors, subscriptions, `getSystemScope`, `drainDue`, `startJobRun`, `runDueJobs`, `dispatchConnector`. A held scope is refused in the same words the directory uses (`scope not active (status: suspended)`, `tenant not active (status: …)`). The deferring entry points leave everything due:
+
+  - The sweeper skips a held scope whole and counts it in `ScopeSweepReport.held`.
+  - `runDueSchedules` reports `lifecycleHeld` with every schedule `skipped` and moves no cadence row.
+  - `checkFreshness` judges nothing.
+  - The executor drain attempts nothing (`ExecutorDrainReport.lifecycleHeld`).
+
+  Unsuspending resumes all of it on the next pass, once. An operator's reads (dead letters, job runs, platform requests, delivered grants) still work on a held scope.
+
+  **A missed delivery heals.** A delivery that fails never blocks the transition. It lands as an ops-failure row (`scope.lifecycle` / `deliver`). The directory records what each deployment acknowledged in a new `scope_lifecycle_receipts` table. On every cron pass, `CloudflareScopeHost.healLifecycles` re-delivers to every hosted scope whose receipt differs from the directory, and again to every scope held now. A restore of a backup taken before a suspension does not lift it, and a copy never inherits its source's state. A scope that has never received a lifecycle runs as before.
+
+  Re-push every vertical after this release so its deployment carries `/internal/lifecycle`. Until then, a delivery to it fails and is retried by the heal pass. The platform intents of a suspended hosted scope (connector deliveries the control plane drains) are not yet deferred; that is a separate change.
+
+- 01bf5d4: A kill switch whose answer was cut short no longer reports "Nothing was switched" (#2010).
+  When a deployment that has the switch route moved the switch and then lost part of its
+  answer (a truncated body, or one that failed to read), the control plane said the deployment
+  predated the route and told the operator to redeploy and retry. Now only a status says a
+  deployment predates a route: a 404, or a 501 where that deployment's own fallback answers one.
+  A body never does. An HTML page in particular can't count, because an old deployment's app
+  page and an error page from something in between look the same. Anything else is a 502 that
+  says the position is unknown and to read it before retrying. The same rule covers the
+  switch status reads, the preview-client calls to a team auth server, the cross-vertical event
+  calls, the plain internal calls, and the carry's fenced wipe.
+
+  The console's Schedules and Peers cards and the dashboard's app-to-app panel no longer show
+  such a failure as "Refused". They read the position again, show it, and say the switch was
+  not confirmed.
+
+  `@substrat-run/control-plane-client` exports `provesNothingChanged(error)`, the one rule both apps
+  use to tell a refusal (4xx, or 501) from a failure whose effect is unknown.
+
+- Updated dependencies [1af2d47]
+- Updated dependencies [fb1f624]
+- Updated dependencies [4fdad69]
+- Updated dependencies [4964eb8]
+- Updated dependencies [33b2d44]
+- Updated dependencies [4eb961d]
+- Updated dependencies [30c2cda]
+- Updated dependencies [b9b3b82]
+- Updated dependencies [3ed9e9d]
+- Updated dependencies [cdf32ab]
+- Updated dependencies [7a28aea]
+- Updated dependencies [7418e7e]
+- Updated dependencies [18069f9]
+- Updated dependencies [01bf5d4]
+  - @substrat-run/kernel@0.136.0
+  - @substrat-run/contracts@0.136.0
+  - @substrat-run/control-plane-client@0.1.1
+
 ## 0.135.0
 
 ### Minor Changes
