@@ -332,6 +332,7 @@ import {
   type JobDueKey,
   type JobHandler,
   type JobRun,
+  type JobRegistration,
   type JobRunClaim,
   type JobRunFilter,
   type JobRunPatch,
@@ -1248,14 +1249,12 @@ interface ScopeStubRpc {
     instance: string,
     row: JobRunRow,
   ): Promise<JobRunRow>;
-  jobRunById(id: string): Promise<JobRunRow | null>;
   jobRunInsert(row: JobRunRow): Promise<void>;
   jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]>;
   jobRunList(filter: JobRunFilter): Promise<JobRunRow[]>;
   jobRunClaim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null>;
   jobRunPatch(id: string, patch: JobRunPatch, owner?: string): Promise<boolean>;
   jobCommitPass(id: string, patch: JobRunPatch, owner?: string): Promise<boolean>;
-  jobStepRow(runId: string, step: string): Promise<JobStepRow | null>;
   jobStepBegin(runId: string, step: string, owner: string, leaseUntil: string): Promise<{ held: boolean; row: JobStepRow | null }>;
   jobStepRecord(
     runId: string,
@@ -2184,7 +2183,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * already carries. The HANDLER stays on the coordinator — it holds credentials
    * and calls the internet, which is why the DO never sees it.
    */
-  private readonly jobs = new Map<string, { handler: JobHandler; retry?: ExecutorRetryPolicy; leaseMs?: number }>();
+  private readonly jobs = new Map<string, JobRegistration>();
   /**
    * The event currently being effected, stamped onto admin rows the executor writes.
    * Ambient rather than threaded through every HostAdmin signature: set and cleared
@@ -2603,7 +2602,6 @@ export class CloudflareScopeHost implements ScopeHost {
     const stub = this.scopeStub(scopeId);
     return {
       startOrJoin: (key, row) => stub.jobRunStartOrJoin(key.moduleId, key.job, key.instance, row),
-      get: (id) => stub.jobRunById(id),
       dueKeys: (now, max) => stub.jobRunsDueKeys(now, max),
       claim: (id, owner, now, leaseUntil) => stub.jobRunClaim(id, owner, now, leaseUntil),
       list: (filter) => stub.jobRunList(filter),

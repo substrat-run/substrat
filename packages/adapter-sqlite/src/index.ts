@@ -492,6 +492,7 @@ import {
   type JobRunFilter,
   type JobRunKey,
   type JobRunPatch,
+  type JobRegistration,
   type JobRunClaim,
   type JobRunRow,
   type JobRunStore,
@@ -1583,7 +1584,7 @@ export class SqliteScopeHost implements ScopeHost {
    * first two thirds, so a run picked off the table finds its handler by the
    * columns it already carries.
    */
-  private readonly jobs = new Map<string, { handler: JobHandler; retry?: ExecutorRetryPolicy; leaseMs?: number }>();
+  private readonly jobs = new Map<string, JobRegistration>();
   /**
    * The event currently being effected by an executor, stamped onto any admin rows
    * it writes. Ambient rather than threaded through every HostAdmin signature: it is
@@ -5281,9 +5282,11 @@ export class SqliteScopeHost implements ScopeHost {
     const patchRun = db.prepare(JOB_RUN_PATCH_SQL);
     const patchArgs = (id: string, p: JobRunPatch, owner: string) =>
       [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id, owner] as const;
-    const getRun = db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?');
+    const ownerOf = db.prepare('SELECT lease_owner FROM _substrat_job_runs WHERE id = ?');
     const claimRun = db.prepare(JOB_RUN_CLAIM_SQL);
     const renewRun = db.prepare(JOB_RUN_RENEW_SQL);
+    const recordStepRow = db.prepare(JOB_STEP_RECORD_SQL);
+    const dropSteps = db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?');
     const stepRow = db.prepare(
       'SELECT step, result, attempts, last_error FROM _substrat_job_steps WHERE run_id = ? AND step = ?',
     );
@@ -5304,20 +5307,20 @@ export class SqliteScopeHost implements ScopeHost {
       // #2034: the ledger goes only with a patch that applied — a stale holder's commit must
       // not empty the ledger of the pass that took the run over.
       if (patchRun.run(...patchArgs(id, p, owner)).changes === 0) return false;
-      db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?').run(id);
+      dropSteps.run(id);
       return true;
     });
     // #2034: the claim, and whether it took over a lease, read in the same transaction.
     const claimTx = db.transaction((id: string, owner: string, now: string, until: string): JobRunClaim | null => {
-      const before = row(getRun.get(id));
-      if (claimRun.run(owner, until, now, JOB_LEASE_EXPIRED_NOTE, id, now).changes === 0) return null;
-      return { run: row(getRun.get(id))!, takeover: (before?.lease_owner ?? null) !== null };
+      const before = ownerOf.get(id) as { lease_owner: string | null } | undefined;
+      const claimed = row(claimRun.get(owner, until, now, JOB_LEASE_EXPIRED_NOTE, id, now));
+      return claimed && { run: claimed, takeover: (before?.lease_owner ?? null) !== null };
     });
     const recordStepTx = db.transaction(
       (runId: string, name: string, result: string | null, attempts: number, lastError: string | null,
         at: string, owner: string, until: string): boolean => {
         if (renewRun.run(until, runId, owner).changes === 0) return false;
-        db.prepare(JOB_STEP_RECORD_SQL).run(runId, name, result, attempts, lastError, at, runId, owner);
+        recordStepRow.run(runId, name, result, attempts, lastError, at, runId, owner);
         return true;
       },
     );
@@ -5327,7 +5330,6 @@ export class SqliteScopeHost implements ScopeHost {
     const turn = <T>(fn: () => T): Promise<T> => rt.actor.enqueue(fn);
     return {
       startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
-      get: (id: string) => turn(() => row(getRun.get(id))),
       claim: (id: string, owner: string, now: string, until: string) => turn(() => claimTx(id, owner, now, until)),
       // #1834: the drive's one snapshot — keys only, in the order runs became due.
       dueKeys: (now: string, max: number) =>

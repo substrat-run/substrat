@@ -578,6 +578,7 @@ export type {
   JobPassOutcome,
   JobPassResult,
   JobRun,
+  JobRegistration,
   JobRunClaim,
   JobRunFilter,
   JobRunKey,

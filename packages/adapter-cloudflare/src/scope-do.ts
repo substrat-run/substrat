@@ -4339,7 +4339,10 @@ export function defineScopeDO(
       return row;
     }
 
-    /** One run by id, whatever its status. */
+    /**
+     * One run by id, whatever its status. Not called by a coordinator since #2034 (the claim reads
+     * the run back); kept for one a deploy behind, which re-reads a run before each pass.
+     */
     async jobRunById(id: string): Promise<JobRunRow | null> {
       return (
         (this.sql.exec('SELECT * FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as unknown as
@@ -4460,14 +4463,13 @@ export function defineScopeDO(
      */
     async jobRunClaim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null> {
       return this.revision.transactionSync(() => {
-        const runById = () =>
-          this.sql.exec('SELECT * FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as unknown as
-            | JobRunRow
-            | undefined;
-        const before = runById();
-        const claimed = this.sql.exec(JOB_RUN_CLAIM_SQL, owner, leaseUntil, now, JOB_LEASE_EXPIRED_NOTE, id, now);
-        if (claimed.rowsWritten === 0) return null;
-        return { run: runById()!, takeover: (before?.lease_owner ?? null) !== null };
+        const before = this.sql.exec('SELECT lease_owner FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as
+          | { lease_owner: string | null }
+          | undefined;
+        const claimed = this.sql
+          .exec(JOB_RUN_CLAIM_SQL, owner, leaseUntil, now, JOB_LEASE_EXPIRED_NOTE, id, now)
+          .toArray()[0] as unknown as JobRunRow | undefined;
+        return claimed ? { run: claimed, takeover: (before?.lease_owner ?? null) !== null } : null;
       });
     }
 
@@ -4482,11 +4484,18 @@ export function defineScopeDO(
       leaseUntil: string,
     ): Promise<{ held: boolean; row: JobStepRow | null }> {
       if (this.sql.exec(JOB_RUN_RENEW_SQL, leaseUntil, runId, owner).rowsWritten === 0) return { held: false, row: null };
-      return { held: true, row: await this.jobStepRow(runId, step) };
+      return { held: true, row: this.stepRow(runId, step) };
     }
 
-    /** One step's ledger row — a non-null `result` is what means completed. */
+    /**
+     * One step's ledger row — a non-null `result` is what means completed. Not called by a
+     * coordinator since #2034 (`jobStepBegin` reads it while renewing); kept for one a deploy behind.
+     */
     async jobStepRow(runId: string, step: string): Promise<JobStepRow | null> {
+      return this.stepRow(runId, step);
+    }
+
+    private stepRow(runId: string, step: string): JobStepRow | null {
       return (
         (this.sql
           .exec(

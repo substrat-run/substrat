@@ -224,6 +224,8 @@ export const JOB_RUN_PATCH_SQL = `UPDATE _substrat_job_runs
  * note as `last_error`. SQLite evaluates every `SET` against the row as it was, so the
  * `CASE`s read the previous owner.
  *
+ * Returns the claimed row, as the claim left it (`RETURNING *`); no row = the claim lost.
+ *
  * Params: lease_owner, next_attempt_at (the expiry), updated_at, last_error (the
  * takeover note), id, now.
  */
@@ -231,7 +233,8 @@ export const JOB_RUN_CLAIM_SQL = `UPDATE _substrat_job_runs
      SET lease_owner = ?, next_attempt_at = ?, updated_at = ?,
          attempts = attempts + CASE WHEN lease_owner IS NULL THEN 0 ELSE 1 END,
          last_error = CASE WHEN lease_owner IS NULL THEN last_error ELSE ? END
-   WHERE id = ? AND status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`;
+   WHERE id = ? AND status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+   RETURNING *`;
 
 /**
  * #2034: renew a pass's lease at a step boundary — only while the pass still holds it.
@@ -463,6 +466,14 @@ export interface JobPassContext {
  */
 export type JobHandler = (pass: JobPassContext) => JobPassResult | void | Promise<JobPassResult | void>;
 
+/** A job as `registerJob` recorded it: its handler, its default step policy and its lease (#2034). */
+export interface JobRegistration {
+  readonly handler: JobHandler;
+  readonly retry?: ExecutorRetryPolicy;
+  /** Default `JOB_LEASE_MS`. */
+  readonly leaseMs?: number;
+}
+
 /** What `runDueJobs` did in one call. */
 export interface JobDriveReport {
   /** Runs this call picked up — due, and `running`. */
@@ -578,8 +589,6 @@ export interface JobRunStore {
    * DO side, where the input gate makes one round trip indivisible.
    */
   startOrJoin(key: JobRunKey, row: JobRunRow): Promise<JobRunRow>;
-  /** One run by id, whatever its status. */
-  get(id: string): Promise<JobRunRow | null>;
   /**
    * #1834: ONE snapshot of the keys of up to `max` `running` runs whose `next_attempt_at` has passed
    * (or is NULL), in the order they became due (`JOB_RUN_DUE_AT`, then id), read in ONE query.
@@ -591,8 +600,8 @@ export interface JobRunStore {
    */
   dueKeys(now: string, max: number): Promise<JobDueKey[]>;
   /**
-   * #2034: claim run `id` for one pass — `JOB_RUN_CLAIM_SQL`, then the row as it left it — or
-   * null when the run is no longer `running` and due (another drive holds it, or it moved).
+   * #2034: claim run `id` for one pass — `JOB_RUN_CLAIM_SQL`, which returns the row as it left it —
+   * or null when the run is no longer `running` and due (another drive holds it, or it moved).
    *
    * ONE operation, for the reason `startOrJoin` is one: `takeover` is whether the row carried an
    * owner before the claim, which only a read in the same transaction can say.
@@ -894,8 +903,32 @@ class LeaseLost extends Error {
   }
 }
 
-/** When a lease taken at `at` for `leaseMs` expires. */
-const leaseUntil = (at: string, leaseMs: number): string => new Date(Date.parse(at) + leaseMs).toISOString();
+/** The ISO instant `ms` after `at` — a lease's expiry, a deferral's end. */
+const plusMs = (at: string, ms: number): string => new Date(Date.parse(at) + ms).toISOString();
+
+/**
+ * Write a pass's outcome onto its run, keeping what the last commit wrote (cursor, counters) and
+ * stamping `ended_at` when the outcome is terminal. False = refused: `owner` no longer holds the run.
+ */
+function settle(
+  store: JobRunStore,
+  run: JobRunRow,
+  owner: string,
+  at: string,
+  outcome: Pick<JobRunPatch, 'status' | 'attempts' | 'lastError' | 'nextAttemptAt'>,
+): Promise<boolean> {
+  return store.patch(
+    run.id,
+    {
+      ...outcome,
+      cursor: run.cursor,
+      counters: run.counters,
+      updatedAt: at,
+      endedAt: outcome.status === 'running' ? null : at,
+    },
+    owner,
+  );
+}
 
 /** What one pass did, as the drive loop reads it. */
 export interface JobPassOutcome {
@@ -1016,7 +1049,7 @@ export async function runJobPass(options: {
         usedThisPass.add(name);
         const policy = resolveRetryPolicy(retry ?? options.retry);
         // #2034: a step boundary renews the lease, and a pass that lost it runs no further step.
-        const begun = await store.beginStep(run.id, name, owner, leaseUntil(now(), leaseMs));
+        const begun = await store.beginStep(run.id, name, owner, plusMs(now(), leaseMs));
         held(begun.held);
         const prior = begun.row;
         // A NON-NULL result is what means completed: a step that threw left its row
@@ -1041,14 +1074,14 @@ export async function runJobPass(options: {
           if (wait) throw wait;
           const cause = message(err);
           const at = now();
-          held(await store.recordStep(run.id, name, null, attempts, cause, at, owner, leaseUntil(at, leaseMs)));
+          held(await store.recordStep(run.id, name, null, attempts, cause, at, owner, plusMs(at, leaseMs)));
           throw new JobStepFailure(name, attempts, policy, cause);
         }
         // `undefined` becomes the JSON text 'null', not SQL NULL: a step done purely
         // for its effect must still read as completed on the next pass.
         const stored = JSON.stringify(value) ?? 'null';
         const at = now();
-        held(await store.recordStep(run.id, name, stored, attempts, null, at, owner, leaseUntil(at, leaseMs)));
+        held(await store.recordStep(run.id, name, stored, attempts, null, at, owner, plusMs(at, leaseMs)));
         // RETURNED THROUGH THE STORED FORM, not as the raw value. The resume path
         // returns `JSON.parse(row.result)`, so returning `value` here would hand the
         // handler a `Date` on the first pass and the string `"2026-01-01T…"` on the
@@ -1108,20 +1141,12 @@ export async function runJobPass(options: {
     // commit wrote (its attempts and its last error included); only when it is next due moves.
     if (deferral(err)) {
       const at = now();
-      const patched = await store.patch(
-        run.id,
-        {
-          status: 'running',
-          cursor: run.cursor,
-          counters: run.counters,
-          attempts: run.attempts,
-          lastError: run.last_error,
-          updatedAt: at,
-          nextAttemptAt: new Date(Date.parse(at) + JOB_DEFER_MS).toISOString(),
-          endedAt: null,
-        },
-        owner,
-      );
+      const patched = await settle(store, run, owner, at, {
+        status: 'running',
+        attempts: run.attempts,
+        lastError: run.last_error,
+        nextAttemptAt: plusMs(at, JOB_DEFER_MS),
+      });
       return patched ? { status: 'deferred', error: message(err) } : { status: 'superseded' };
     }
     const stepFailure = err instanceof JobStepFailure ? err : null;
@@ -1134,21 +1159,13 @@ export async function runJobPass(options: {
     const exhausted = against >= policy.maxAttempts;
     const error = message(err);
     const at = now();
-    const patched = await store.patch(
-      run.id,
-      {
-        status: exhausted ? 'failed' : 'running',
-        cursor: run.cursor,
-        counters: run.counters,
-        attempts,
-        lastError: error,
-        updatedAt: at,
-        // The backoff, never the lease's expiry the claim wrote: the lease ends with the pass (#2034).
-        nextAttemptAt: exhausted ? null : backoffAt(against, policy, new Date(at)),
-        endedAt: exhausted ? at : null,
-      },
-      owner,
-    );
+    const patched = await settle(store, run, owner, at, {
+      status: exhausted ? 'failed' : 'running',
+      attempts,
+      lastError: error,
+      // The backoff, never the lease's expiry the claim wrote: the lease ends with the pass (#2034).
+      nextAttemptAt: exhausted ? null : backoffAt(against, policy, new Date(at)),
+    });
     if (!patched) return { status: 'superseded' };
     return { status: exhausted ? 'failed' : 'retrying', error };
   }
@@ -1193,9 +1210,7 @@ export async function runJobPass(options: {
 export async function runDueJobRuns(options: {
   store: JobRunStore;
   /** job name → its handler and policy, as `registerJob` recorded them. */
-  handlerFor: (
-    run: Pick<JobRunRow, 'module_id' | 'job'>,
-  ) => { handler: JobHandler; retry?: ExecutorRetryPolicy; leaseMs?: number } | undefined;
+  handlerFor: (run: Pick<JobRunRow, 'module_id' | 'job'>) => JobRegistration | undefined;
   now: () => string;
   openScope: (run: JobRunRow, pass: object) => Promise<ScopeStub>;
   /** #1834: the host's own system-door refusals on one pass, by identity (`runJobPass`). */
@@ -1230,11 +1245,16 @@ export async function runDueJobRuns(options: {
     if (options.handlerFor(key)) picked.push(key);
   }
 
+  /** Tally one pass's outcome; a deferral's error is the door's, and never on the record. */
+  const count = (runId: string, outcome: JobPassOutcome): void => {
+    report[outcome.status] += 1;
+    if (outcome.error !== undefined && outcome.status !== 'deferred') report.errors.push({ runId, error: outcome.error });
+  };
   /** #2034: claim `id` for one pass, under an owner minted for that pass alone. */
   const claim = async (id: string, leaseMs: number) => {
     const owner = ulid();
     const at = options.now();
-    const won = await options.store.claim(id, owner, at, leaseUntil(at, leaseMs));
+    const won = await options.store.claim(id, owner, at, plusMs(at, leaseMs));
     return won && { ...won, owner };
   };
 
@@ -1251,27 +1271,13 @@ export async function runDueJobRuns(options: {
     // counted it). Judged against the job's policy like any failure no step owns: a pass that keeps
     // dying ends the run here, rather than being retried at every expiry forever.
     if (claimed.takeover && claimed.run.attempts >= resolveRetryPolicy(registered.retry).maxAttempts) {
-      const at = options.now();
-      const settled = await options.store.patch(
-        key.id,
-        {
-          status: 'failed',
-          cursor: claimed.run.cursor,
-          counters: claimed.run.counters,
-          attempts: claimed.run.attempts,
-          lastError: JOB_LEASE_EXPIRED_NOTE,
-          updatedAt: at,
-          nextAttemptAt: null,
-          endedAt: at,
-        },
-        claimed.owner,
-      );
-      if (settled) {
-        report.failed += 1;
-        report.errors.push({ runId: key.id, error: JOB_LEASE_EXPIRED_NOTE });
-      } else {
-        report.superseded += 1;
-      }
+      const settled = await settle(options.store, claimed.run, claimed.owner, options.now(), {
+        status: 'failed',
+        attempts: claimed.run.attempts,
+        lastError: JOB_LEASE_EXPIRED_NOTE,
+        nextAttemptAt: null,
+      });
+      count(key.id, settled ? { status: 'failed', error: JOB_LEASE_EXPIRED_NOTE } : { status: 'superseded' });
       continue;
     }
     for (let pass = 0; pass < maxPasses; pass += 1) {
@@ -1287,29 +1293,8 @@ export async function runDueJobRuns(options: {
         openScope: (pass) => options.openScope(run, pass),
         deferral: options.deferral,
       });
-      if (outcome.status === 'completed') {
-        report.completed += 1;
-        break;
-      }
-      if (outcome.status === 'failed') {
-        report.failed += 1;
-        report.errors.push({ runId: run.id, error: outcome.error! });
-        break;
-      }
-      if (outcome.status === 'deferred') {
-        report.deferred += 1;
-        break;
-      }
-      if (outcome.status === 'superseded') {
-        report.superseded += 1;
-        break;
-      }
-      if (outcome.status === 'retrying') {
-        report.retrying += 1;
-        report.errors.push({ runId: run.id, error: outcome.error! });
-        break;
-      }
-      report.advanced += 1;
+      count(run.id, outcome);
+      if (outcome.status !== 'advanced') break;
       // A second pass in this call resumes from what the first one COMMITTED, as its own claim
       // reads it back: the cursor is the handler's value and the store is the only thing that
       // knows it survived the write. Another drive may have claimed it in between; then it is theirs.

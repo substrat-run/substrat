@@ -51,7 +51,6 @@ export function memoryJobStore(
   };
   const store: JobRunStore = {
     startOrJoin: async (_key, row) => row,
-    get: async (id) => (table.has(id) ? { ...table.get(id)! } : null),
     dueKeys: async (now, max) => {
       const keys: JobDueKey[] = [...table.values()]
         .filter((r) => r.status === 'running' && (r.next_attempt_at === null || r.next_attempt_at <= now))
