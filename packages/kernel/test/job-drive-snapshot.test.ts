@@ -76,14 +76,14 @@ function storeOf(rows: JobRunRow[], opts: { afterSnapshot?: (rows: Map<string, J
   return { store, table };
 }
 
-/** Drive once with `limit`, counting each run's passes. */
-async function drive(store: JobRunStore, ran: string[], limit: number) {
+/** Drive once with `limit`, counting each run's passes. With `advance`, a pass leaves its run going. */
+async function drive(store: JobRunStore, ran: string[], limit: number, advance = false) {
   return runDueJobRuns({
     store,
     handlerFor: () => ({
       handler: (pass) => {
         ran.push(pass.run.id);
-        return { done: true };
+        return { done: !advance };
       },
     }),
     now: () => NOW,
@@ -124,10 +124,12 @@ describe('#1834: a drive acts on one snapshot, re-read at each claim', () => {
     expect(ran).toEqual(['A']);
   });
 
+  // Its pass ADVANCES, so after it the run is still running and due: only the dedupe, not the
+  // claim's re-read, stands between the repeated key and a second pass in the same drive.
   it('a key the snapshot names twice runs once in the drive', async () => {
     const ran: string[] = [];
     const { store } = storeOf([rowOf('A'), rowOf('B')], { duplicate: 'A' });
-    expect(await drive(store, ran, 3)).toMatchObject({ attempted: 2, completed: 2 });
+    expect(await drive(store, ran, 3, true)).toMatchObject({ attempted: 2, advanced: 2 });
     expect(ran).toEqual(['A', 'B']);
   });
 
