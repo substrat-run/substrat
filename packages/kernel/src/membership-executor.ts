@@ -259,7 +259,9 @@ async function removedSince(
     action: ['unassignRole', 'removeMember'],
     since: event.occurredAt,
   });
-  return revoked.some((row) => namesPrincipal(row, principal));
+  // Strictly after: `since` is inclusive, and a revoke stamped in the request's own
+  // millisecond cannot be told apart from one made just before it.
+  return revoked.some((row) => row.at > event.occurredAt && namesPrincipal(row, principal));
 }
 
 /** A revoking admin row's subject: `unassignRole` records the assignment, `removeMember` the membership. */
