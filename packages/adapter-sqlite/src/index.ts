@@ -476,11 +476,13 @@ import {
   withheldNote,
   type ExportRow,
   JOB_RUN_DDL,
+  JOB_RUN_DUE_AT,
   jobRunListLimit,
   jobRunOf,
   runDueJobRuns,
   startJobRun,
   type JobDriveReport,
+  type JobDueKey,
   type JobHandler,
   type JobRun,
   type JobRunFilter,
@@ -494,9 +496,13 @@ import {
   type EntityVersionRow,
   type InvokeOptions,
   IDEMPOTENCY_DDL,
-  REFUSALS_DDL,
+  REFUSALS_TABLE_DDL,
+  REFUSALS_INDEX,
   refusalInsert,
-  refusedTransitionOf,
+  refusalOf,
+  markGuardRefusal,
+  REFUSALS_REBUILD,
+  refusalsAdmitGuards,
   assertIdempotencyKey,
   idempotencyLookupQuery,
   idempotencyPruneStatement,
@@ -897,7 +903,8 @@ const KERNEL_DDL = `
     drained_at TEXT
   );
   ${IDEMPOTENCY_DDL}
-  ${REFUSALS_DDL}
+  ${REFUSALS_TABLE_DDL}
+  ${REFUSALS_INDEX}
   -- #1672: capabilities — authority carried by a secret (a link share), and the sessions
   -- an exchange trades that secret for. Spine (kernel-written), shared with the DO adapter
   -- from @substrat-run/kernel so the two cannot part company; the column comments are there.
@@ -4969,7 +4976,14 @@ export class SqliteScopeHost implements ScopeHost {
             `before '${operation}'; no registered module contributes it (operation blocked)`,
         );
       }
-      await predicate.handler(ctx, guard.config, input);
+      try {
+        await predicate.handler(ctx, guard.config, input);
+      } catch (err) {
+        // #1745: a guard refusing is recorded after the rollback, as a transition is —
+        // marked here, where which guard threw is still known. Always rethrown.
+        markGuardRefusal(err, guard.predicate, operation);
+        throw err;
+      }
     }
   }
 
@@ -5285,15 +5299,15 @@ export class SqliteScopeHost implements ScopeHost {
       startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
       get: (id: string) =>
         turn(() => row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id))),
-      due: (now: string, limit: number, afterId?: string) =>
+      // #1834: the drive's one snapshot — keys only, in the order runs became due.
+      dueKeys: (now: string, max: number) =>
         turn(() => db
           .prepare(
-            `SELECT * FROM _substrat_job_runs
+            `SELECT id, module_id, job FROM _substrat_job_runs
               WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                AND (? IS NULL OR id > ?)
-              ORDER BY id LIMIT ?`,
+              ORDER BY ${JOB_RUN_DUE_AT}, id LIMIT ?`,
           )
-          .all(now, afterId ?? null, afterId ?? null, limit) as JobRunRow[]),
+          .all(now, max) as JobDueKey[]),
       list: (filter: JobRunFilter) => turn(() => {
         const where: string[] = [];
         const params: SqlValue[] = [];
@@ -5769,8 +5783,9 @@ export class SqliteScopeHost implements ScopeHost {
    * point, since the denial is exactly the write the rolled-back operation could not make.
    */
   /**
-   * #1745: record a refused transition the operation failed with, after its rollback — the
-   * denial's discipline (above), for the lifecycle's refusals. Anything else is not one.
+   * #1745: record a refused transition or refusing guard the operation failed with, after its
+   * rollback — the denial's discipline (above), for the lifecycle's and the guards' refusals.
+   * Anything else is not one.
    */
   private recordRefusal(
     rt: ScopeRuntime,
@@ -5780,7 +5795,7 @@ export class SqliteScopeHost implements ScopeHost {
     invocationId: string | null,
     impersonation?: ImpersonationSession,
   ): void {
-    const refused = refusedTransitionOf(err);
+    const refused = refusalOf(err);
     if (!refused) return;
     const q = refusalInsert({
       tenantId: rt.tenantId,
@@ -10576,17 +10591,38 @@ export class SqliteScopeHost implements ScopeHost {
    * read `ensureIdentityKey` already uses — PRAGMA would do here, but not there.
    */
   private ensureScheduleStateKind(db: Database.Database): void {
+    this.rebuildIfStale(db, '_substrat_schedule_state', scheduleStateHasKind, SCHEDULE_STATE_REBUILD);
+  }
+
+  /**
+   * #1745: `_substrat_refusals`, rebuilt to admit a guard row (a nullable `from_state`, plus
+   * `guard` and `reason`) on a scope db whose table predates it.
+   */
+  private ensureRefusalsAdmitGuards(db: Database.Database): void {
+    this.rebuildIfStale(db, '_substrat_refusals', refusalsAdmitGuards, REFUSALS_REBUILD);
+  }
+
+  /**
+   * Run a kernel create-copy-drop-rename `script` over `table` when the stored DDL fails
+   * `isCurrent` — the DO adapter's `rebuildIfStale`, so the two rebuild byte-identically.
+   */
+  private rebuildIfStale(
+    db: Database.Database,
+    table: string,
+    isCurrent: (tableSql: string) => boolean,
+    script: string,
+  ): void {
     const row = db
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get('_substrat_schedule_state') as { sql: string } | undefined;
-    if (!row || scheduleStateHasKind(row.sql)) return;
-    // In a transaction, for the reason the kernel constant spells out: create-copy-
+      .get(table) as { sql: string } | undefined;
+    if (!row || isCurrent(row.sql)) return;
+    // In a transaction, for the reason the kernel constants spell out: create-copy-
     // drop-rename has two intermediate states and BOTH are unrecoverable on the next
     // wake — one dies on the leftover scratch table, one silently orphans the rows
     // behind an empty table `CREATE TABLE IF NOT EXISTS` put back. `db.transaction`
     // nests as a SAVEPOINT, which is what makes this safe on the `loadDump` path too,
     // where the whole replay is already inside one.
-    db.transaction(() => db.exec(SCHEDULE_STATE_REBUILD))();
+    db.transaction(() => db.exec(script))();
   }
 
   /**
@@ -11645,6 +11681,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #1288: not an ensureColumn, because `kind` joins the schedule-state PRIMARY KEY
     // and no ALTER can widen a key. Rebuilt instead, from the kernel's statements.
     this.ensureScheduleStateKind(db);
+    // #1745: likewise a rebuild — `from_state` loses its NOT NULL, which no ALTER can do.
+    this.ensureRefusalsAdmitGuards(db);
     // #1525: the invocation a fired schedule ran in, on a scope DB created before the
     // column. Nullable, and the null is honestly "no call was carried" for every legacy
     // row — a past run's id cannot be recovered afterwards, exactly as the other #1525

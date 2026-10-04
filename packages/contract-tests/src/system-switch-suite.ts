@@ -467,6 +467,34 @@ export function systemSwitchContractSuite(
     });
 
     /**
+     * #1834: the restore puts the switch back for everything that acts through the system door,
+     * not only the schedules. This host's rewind (the backup restore; a PITR rewind is the
+     * Durable-Object plane's, pinned in the Cloudflare adapter's own #1819/#1834 block) brings the
+     * job module's grant back live, and a job run started after it is still refused at the door.
+     */
+    it("a restore of a dump from BEFORE the switch keeps a job run of the module refused, until it is restored (#1834)", async () => {
+      const s = await newScope();
+      await grant(s, 'jobs:write', JOBS);
+      const before = await host.admin.exportScope(staff, t, s);
+      await off(s, JOBS);
+      await host.restoreScope(staff, t, s, before);
+
+      const run = await host.startJobRun(t, s, { moduleId: JOBS, job: 'record', instance: 'restored', payload: {} });
+      const denied = await host.runDueJobs(t, s);
+      expect(denied).toMatchObject({ completed: 0, retrying: 1 });
+      const stalled = (await host.jobRuns(t, s)).find((r) => r.id === run.id);
+      expect(stalled).toMatchObject({ status: 'running', lastError: expect.stringMatching(/jobs:write/) });
+      expect((await (await host.getScope(reader, t, s)).invoke('jobs/items')) as string[]).toEqual([]);
+      // The schedules beside it, unchanged: still on.
+      expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES, failed: 0 });
+
+      // The twin: restored, the same run's next pass records its item and completes.
+      await on(s, JOBS);
+      expect(await host.runDueJobs(t, s)).toMatchObject({ completed: 1 });
+      expect((await (await host.getScope(reader, t, s)).invoke('jobs/items')) as string[]).toEqual(['one']);
+    });
+
+    /**
      * #1742 review: the restore's switch runs inside the replay's own transaction, on both
      * adapters. This was proven with a dump whose `_substrat_tuples` DDL carried a CHECK refusing
      * the OFF marker. Since #1883 a restore builds that table from the kernel's DDL, so a dump can

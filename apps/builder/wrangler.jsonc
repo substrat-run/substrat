@@ -79,4 +79,8 @@
 	//   CP_SERVICE_TOKEN (= the control plane's SERVICE_TOKEN)
 	// Provider keys (ANTHROPIC_API_KEY etc.) arrive with #626 — the shell
 	// holds no model credentials at all.
+	// The staff check reads the roster only for an address the issuer asserted
+	// `email_verified: true` (#1359), with nothing set. The break-glass, for an issuer
+	// that does not send the claim, is a var that logs on every address it admits:
+	//   "OIDC_ALLOW_UNVERIFIED_EMAIL": "true"
 }

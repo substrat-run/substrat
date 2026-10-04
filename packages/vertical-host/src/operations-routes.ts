@@ -38,11 +38,9 @@ import {
   PAGE_LINK_HEADER,
   PAGE_TOTAL_HEADER,
   errorCodeOf,
-  FIELD_COVERAGE_ARMED,
-  FIELD_COVERAGE_BINDING,
 } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
-import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
+import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
 import { defOf, transparentInner } from './zod-structural.js';
@@ -524,13 +522,10 @@ export function mountOperations(
       const result = await stub.invoke(name, payload, invokeOptions);
       // #1331: the field walk, on the RESULT rather than the serialised body, and before
       // `respond`, so a vertical that owns its envelope is observed like every other. Only
-      // when there is a record to write it to, and only when the platform armed the switch —
-      // the one extra read an unarmed request pays is the binding's.
-      if (
-        record &&
-        outputWalk &&
-        (c.env as Record<string, unknown> | undefined)?.[FIELD_COVERAGE_BINDING] === FIELD_COVERAGE_ARMED
-      ) {
+      // when there is a record to write it to, and only on a request the router armed it for
+      // (#1923) — decided when the request was stamped, so an unarmed request pays one
+      // lookup here. The walk only reads: the result handed on below is the same object.
+      if (record && outputWalk && fieldCoverageArmed(c.req.raw)) {
         const observed = observeOutputFields(result, outputWalk);
         if (observed) record.outputFields = observed;
       }

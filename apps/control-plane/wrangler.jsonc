@@ -99,10 +99,11 @@
 	//   wrangler secret put OIDC_CLIENT_ID
 	//   wrangler secret put OIDC_CLIENT_SECRET
 	//   wrangler secret put SESSION_SECRET       # random 32+ bytes; signs the cookies
-	// Opt-in, off until set (#1359): a staff session counts for the roster only when the
-	// issuer asserted `email_verified: true`. Turn it on once the issuer is known to send
-	// the claim — against one that omits it, it locks the whole roster out. As a var:
-	//   "OIDC_REQUIRE_EMAIL_VERIFIED": "true"
+	// A staff session counts for the roster only when the issuer asserted
+	// `email_verified: true` (#1359) — the default, with nothing set. The break-glass, for an
+	// issuer that does not send the claim, is a var; it logs a warning on every isolate and
+	// every address it admits while it is on:
+	//   "OIDC_ALLOW_UNVERIFIED_EMAIL": "true"
 	// The AuthHero client must allow the redirect URI  https://console.substrat.net/api/auth/callback
 	// (and http://localhost:8787/api/auth/callback for dev).
 	// Serve the console + control-plane API on console.substrat.net. A Custom Domain

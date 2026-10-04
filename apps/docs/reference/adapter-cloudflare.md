@@ -138,8 +138,12 @@ listed them as deferred:
   `reassertSystemSwitches` puts a recorded OFF back after a wipe, a stale restore or a rewind
   (always after provisioning's seat), and `listSystemSwitches` is the fleet read of what is
   off. A point-in-time rewind replaces the scope's whole storage, so it first claims the
-  scope's switched-off modules on one object outside it (`SWITCH_HOLDS_NAME`), and
-  `runDueSchedules` skips a claimed module until a switch move lands on the restored storage.
+  scope's switched-off modules on one object outside it (`SWITCH_HOLDS_NAME`). The system door
+  (`getSystemScope`, which every schedule fire, job run and module attachment open goes through)
+  refuses a claimed module until a switch move lands on the restored storage, and
+  `runDueSchedules` reports its schedules skipped. Each call through the door is pinned to the
+  scope instance the door checked. A rewind always restarts the scope, so a door opened before
+  the rewind checks again before its next call runs.
   With no delegation configured, a hosted scope's status read and re-assert refuse
   `unavailable` rather than answer from this host's placeholder namespace.
 

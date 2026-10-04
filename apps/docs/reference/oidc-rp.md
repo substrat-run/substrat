@@ -63,8 +63,40 @@ const user = await sessionFromHeaders(c.env, c.req.raw.headers); // SessionUser 
 issuer saying nothing — an IdP that never emits the claim, or a session minted before the
 field existed, for the rest of its seven days. `mintSession` signs it into the session JWT
 under its OIDC spelling, `email_verified`, so the mint and the read agree; `verifySession`
-hands it back as `emailVerified`. Nothing in the platform gates on it yet, and this package
-deliberately does not decide what `undefined` means (#1359).
+hands it back as `emailVerified`.
+
+### An address is an identifier only when the issuer verified it
+
+Anyone with an issuer account can put any address on it. Wherever the platform keys
+something on an address — the Console's staff roster, the builder studio's staff check, a
+Dashboard invite addressed to someone, the support desk's signed visitor identity — it
+asks `identifyEmail(env, user)`, and by default only `emailVerified: true` passes (#1359):
+
+```ts
+import { identifyEmail, emailRefusalMessage } from '@substrat-run/oidc-rp';
+
+const id = identifyEmail(c.env, user);
+// { email }                       — verified: use it
+// { email: null, refused }        — 'unverified' (the issuer said false),
+//                                   'unasserted' (no claim at all), or 'no-email'
+if (!id.email) return c.json({ error: emailRefusalMessage(id.refused) }, 403);
+```
+
+`unasserted` is refused like `unverified`, not trusted. It is what every session minted before
+the claim was carried looks like, so the message for it asks the person to sign in again;
+the platform issuer sends the claim on every login. Signing in is not gated: a session
+whose address is unverified is still a valid session, it just may not be anyone *by address*.
+
+The rule has one switch, for an issuer that does not send the claim:
+
+```
+OIDC_ALLOW_UNVERIFIED_EMAIL=true   # break-glass — admits an address the issuer did not verify
+```
+
+It is a deployment-wide variable, never a request parameter, a roster column or a tenant
+setting, and only the exact string `true` turns it on. While it is on, each isolate logs a
+warning the first time it reads it and another line for every address it lets through, so
+the decision shows up in the logs.
 
 The per-app step that stays in the app is exactly the interesting one: the Dashboard does a
 **JIT tenant bootstrap** on first login (a new user provisions their own tenant), while the

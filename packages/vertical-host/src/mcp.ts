@@ -58,11 +58,9 @@ import {
   mcpEndpointPath,
   mcpResourceOf,
   errorCodeOf,
-  FIELD_COVERAGE_ARMED,
-  FIELD_COVERAGE_BINDING,
 } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
-import { INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
+import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
 
@@ -71,8 +69,8 @@ interface McpInvocation {
   record: InvocationRecord | undefined;
   invocationId: string | undefined;
   /**
-   * #1331: the platform armed the field walk for this request. Read once where the Hono
-   * context is, so a tool call in a batch pays nothing per call to find out.
+   * #1331: the router armed the field walk for this request (#1923). Read once where the
+   * Hono context is, so a tool call in a batch pays nothing per call to find out.
    */
   fieldCoverage: boolean;
 }
@@ -551,7 +549,7 @@ export function mountMcp(
           : {}),
       });
       // #1331: the same walk the HTTP mount runs, on the RESULT before it is serialised.
-      // Only with a record to write to, and only when the platform armed the switch.
+      // Only with a record to write to, and only when the router armed it for this request.
       if (record && tool.outputWalk && invocation.fieldCoverage) {
         const observed = observeOutputFields(result, tool.outputWalk);
         if (observed) record.outputFields = observed;
@@ -741,8 +739,8 @@ export function mountMcp(
         // #1893: or the platform's stamp, when the worker mounts no middleware.
         record: (get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined) ?? invocationStampOf(c.req.raw)?.record,
         invocationId: (get?.('substratInvocationId') as string | undefined) ?? invocationStampOf(c.req.raw)?.invocationId,
-        fieldCoverage:
-          (c.env as Record<string, unknown> | undefined)?.[FIELD_COVERAGE_BINDING] === FIELD_COVERAGE_ARMED,
+        // #1923: armed by the router for this request, decided when it was stamped.
+        fieldCoverage: fieldCoverageArmed(c.req.raw),
       };
       if (invocation.record && stub.subjectKind !== undefined) invocation.record.principalKind = stub.subjectKind;
       for (const msg of messages) {

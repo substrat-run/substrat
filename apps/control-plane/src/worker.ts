@@ -129,7 +129,7 @@ import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
 import { failureDigestWatermark, sendFailureDigest } from './failure-alerts.js';
-import { oidcStaffSessionReader, oidcStaffBearerReader, type StaffAuthEnv } from './staff-auth.js';
+import { oidcStaffSessionReader, oidcStaffBearerReader, staffRefusalOf, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
 import { studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
@@ -1868,6 +1868,22 @@ export default {
   fetch(request: Request, env: Env): Response | Promise<Response> {
     const app = new Hono<{ Bindings: Env }>();
 
+    // A 401 to someone who presented a valid session says why (#1359). The staff readers
+    // refuse an address the issuer did not verify — and every session minted before the
+    // claim was carried reads that way for up to seven days — so a bare `unauthenticated`
+    // would leave a signed-in person, in the console or the CLI, with no idea that signing
+    // in again is the whole fix. Registered first so it sees every /api answer, including
+    // the API router's own middleware. The status and headers stay; only the sentence moves.
+    app.use('/api/*', async (c, next) => {
+      await next();
+      if (c.res.status !== 401) return;
+      const why = await staffRefusalOf(c.env, c.req.raw.headers);
+      if (!why) return;
+      const headers = new Headers(c.res.headers);
+      headers.set('content-type', 'application/json');
+      c.res = new Response(JSON.stringify({ error: why }), { status: 401, headers });
+    });
+
     // Staff sign-in: OIDC relying party (AuthHero) — /api/auth/login → /callback →
     // /logout. Same-origin with the console, so the session cookie just carries.
     // Registered before the /api router so these paths win over it.
@@ -1879,11 +1895,10 @@ export default {
     mountCliAuthRoutes(app);
 
     // Who is signed in — the console SPA polls this (null when there is no session).
-    // Authentication only, so deliberately NOT the staff reader: with
-    // OIDC_REQUIRE_EMAIL_VERIFIED on, an unverified address is still signed in, and the
-    // console hands a null straight back to the IdP — whose SSO session returns the same
-    // unverified address, forever. It lands signed in with nothing it may act on instead,
-    // exactly like an address the roster does not list (#1359).
+    // Authentication only, so deliberately NOT the staff reader: an address the issuer did
+    // not verify is still signed in, and the console hands a null straight back to the
+    // IdP — whose SSO session returns the same unverified address, forever. It lands
+    // signed in with nothing it may act on instead, and the API's 401 says why (#1359).
     app.get('/api/auth/session', async (c) => {
       const user = await sessionFromHeaders(c.env, c.req.raw.headers);
       return c.json({ user: user?.email ? { email: user.email } : null });

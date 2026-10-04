@@ -377,3 +377,68 @@ describe('prompt=none answers without any UI', () => {
     expect(new URL(location).searchParams.get('error')).toBe('login_required');
   });
 });
+
+/**
+ * What this issuer says about an address (#1359). A Substrat relying party asks for
+ * `openid email profile` and, by default, takes an address as an identifier only when the
+ * issuer asserted `email_verified: true` about it — so whatever response carries `email`
+ * must carry the flag beside it, and must carry it as a real boolean in both directions.
+ */
+describe('email_verified travels with the address', () => {
+  async function claimsAfterLogin(): Promise<Record<string, unknown>> {
+    const { clientId, clientSecret } = await registerClient('Verified-email RP');
+    const cookie = await signInAs(ADMIN);
+    const { verifier, challenge } = await pkce();
+    const authorize = await call(authorizeUrl(clientId, 'st-ev', challenge, { scope: 'openid email profile' }), {
+      headers: { ...NAVIGATE, cookie },
+    });
+    const consent = await call('/api/auth/oauth2/consent', {
+      method: 'POST',
+      headers: { ...FROM_FETCH, cookie },
+      body: JSON.stringify({ accept: true, oauth_query: oauthQueryOf(authorize.headers.get('location') ?? '') }),
+    });
+    const { url } = (await consent.json()) as { url: string };
+    const token = await call('/api/auth/oauth2/token', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        authorization: `Basic ${btoa(`${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`)}`,
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: new URL(url).searchParams.get('code') ?? '',
+        redirect_uri: RP_REDIRECT,
+        code_verifier: verifier,
+      }).toString(),
+    });
+    const tokens = (await token.json()) as { id_token: string; access_token: string };
+    const idToken = JSON.parse(
+      Buffer.from((tokens.id_token.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'),
+    ) as Record<string, unknown>;
+    // The relying party reads the address from whichever response carries it, and the flag
+    // from that same response — so hold the pair together the same way.
+    if (typeof idToken.email === 'string') return idToken;
+    const userinfo = await call('/api/auth/oauth2/userinfo', {
+      headers: { authorization: `Bearer ${tokens.access_token}` },
+    });
+    expect(userinfo.status).toBe(200);
+    return (await userinfo.json()) as Record<string, unknown>;
+  }
+
+  it('asserts true for an address it has verified', async () => {
+    const claims = await claimsAfterLogin();
+    expect(claims.email).toBe(ADMIN.email);
+    expect(claims.email_verified).toBe(true);
+  });
+
+  it('asserts false — not nothing — for one it has not', async () => {
+    sqlite.prepare('UPDATE user SET email_verified = 0 WHERE email = ?').run(ADMIN.email);
+    try {
+      const claims = await claimsAfterLogin();
+      expect(claims.email).toBe(ADMIN.email);
+      expect(claims.email_verified).toBe(false);
+    } finally {
+      sqlite.prepare('UPDATE user SET email_verified = 1 WHERE email = ?').run(ADMIN.email);
+    }
+  });
+});

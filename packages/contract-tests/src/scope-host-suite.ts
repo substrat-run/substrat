@@ -19,6 +19,7 @@ import {
   SCOPE_QUERY_ROW_MAX,
   type EntityRef,
   type ErrorCode,
+  type LifecycleFlowResult,
   KERNEL_AUTHORED_EVENT_TYPES,
   type OrgId,
   type PlatformRequest,
@@ -52,6 +53,7 @@ import {
   contractTestInitialModules,
   gateModManifest,
   lateMod,
+  TEST_LIFECYCLE,
   testModManifest,
   victimModManifest,
 } from './modules.js';
@@ -2231,15 +2233,7 @@ export function scopeHostContractSuite(
       await stub.invoke('test/move', { entityId: 'l1' });
       const flow = await host.admin.lifecycleFlow(staff, t1, s1, {
         entityType: 'test-lifecycle',
-        lifecycle: {
-          field: 'state',
-          initial: 'draft',
-          states: {
-            draft: { on: { 'test/move': 'live' } },
-            live: { on: { 'test/move': 'done' } },
-            done: { terminal: true },
-          },
-        },
+        lifecycle: TEST_LIFECYCLE,
         since,
         until: new Date(Date.now() + 60_000).toISOString(),
       });
@@ -2248,6 +2242,95 @@ export function scopeHostContractSuite(
       expect(flow.states.find((s) => s.state === 'done')!.current).toBe(1);
       expect(flow.observation).toMatchObject({ entities: 1, events: 3, inferred: 1, complete: true });
       expect(flow.totals.finished).toBe(1);
+    });
+
+    describe('lifecycleFlow on both adapters (#1744)', () => {
+      let stub: Awaited<ReturnType<ScopeHost['getScope']>>;
+      beforeAll(async () => {
+        stub = await host.getScope(alice, t1, s1);
+      });
+      /** One move, as its own call, returning the instant the outbox stamped on it. */
+      const move = async (entityId: string, state: string): Promise<string> => {
+        const invocationId = ulid();
+        await stub.invoke('test/move', { entityId, state }, { invocationId });
+        const { events } = await host.admin.invocationEvents(staff, t1, s1, { invocationId });
+        expect(events).toHaveLength(1);
+        const at = events[0]!.occurredAt;
+        // The boundaries below are exact instants, so no two moves may share one.
+        while (Date.now() <= Date.parse(at)) await new Promise((r) => setTimeout(r, 2));
+        return at;
+      };
+      const edge = (flow: LifecycleFlowResult, from: string, to: string) =>
+        flow.edges.find((e) => e.from === from && e.to === to && e.declared);
+      const state = (flow: LifecycleFlowResult, name: string) => flow.states.find((s) => s.state === name);
+
+      it('counts an event at `since` and not one at `until`: the window is half-open', async () => {
+        const a = await move('w1', 'draft');
+        const b = await move('w1', 'live');
+        const c = await move('w1', 'done');
+        expect(a < b && b < c).toBe(true);
+        const read = (since: string, until: string) =>
+          host.admin.lifecycleFlow(staff, t1, s1, { entityType: 'test-lifecycle', lifecycle: TEST_LIFECYCLE, since, until });
+
+        // [b, c): the move AT `since` is in; the move AT `until` is not replayed at all,
+        // so "now" is still `live` — and the declared edge it would have taken reads 0.
+        const mid = await read(b, c);
+        expect(edge(mid, 'draft', 'live')!.count).toBe(1);
+        expect(edge(mid, 'live', 'done')!.count).toBe(0);
+        expect(state(mid, 'live')!.current).toBe(1);
+
+        // [a, b): history before `since` is replayed, never counted, and `b` is outside.
+        const before = await read(a, b);
+        expect(edge(before, 'draft', 'live')!.count).toBe(0);
+        expect(state(before, 'draft')!.current).toBeGreaterThanOrEqual(1);
+
+        // The twin: one millisecond past `c` and the same move is counted.
+        const after = await read(b, new Date(Date.parse(c) + 1).toISOString());
+        expect(edge(after, 'draft', 'live')!.count).toBe(1);
+        expect(edge(after, 'live', 'done')!.count).toBe(1);
+        expect(state(after, 'live')!.current).toBe(0);
+      });
+
+      it('lists a move the declaration does not have apart from the declared edges', async () => {
+        const since = await move('u1', 'draft');
+        await move('u1', 'done'); // `test/move` from draft is declared to lead to `live`
+        await move('u2', 'draft');
+        await move('u2', 'limbo'); // a state the declaration does not have at all
+        const flow = await host.admin.lifecycleFlow(staff, t1, s1, {
+          entityType: 'test-lifecycle',
+          lifecycle: TEST_LIFECYCLE,
+          since,
+          until: new Date(Date.now() + 60_000).toISOString(),
+        });
+
+        const undeclared = flow.edges.filter((e) => !e.declared);
+        expect(undeclared).toHaveLength(2);
+        expect(undeclared).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ from: 'draft', to: 'done', operation: 'test/move', count: 1, seenLate: false }),
+            expect.objectContaining({ from: 'draft', to: 'limbo', operation: 'test/move', count: 1, seenLate: false }),
+          ]),
+        );
+        // Not folded into the declared edge out of the same state under the same operation.
+        expect(edge(flow, 'draft', 'live')!.count).toBe(0);
+        expect(state(flow, 'limbo')).toMatchObject({ declared: false, current: 1 });
+      });
+
+      it("answers only for the tenant's own scope: a mismatched pair is refused, another tenant's scope sees none of it", async () => {
+        const since = await move('i1', 'draft');
+        const window = { entityType: 'test-lifecycle', lifecycle: TEST_LIFECYCLE, since, until: new Date(Date.now() + 60_000).toISOString() };
+        // The positive twin: t1's own pair sees the instance just started.
+        expect((await host.admin.lifecycleFlow(staff, t1, s1, window)).totals.started).toBe(1);
+        // K-3: never another tenant's outbox, and never an empty answer for one either.
+        await expect(host.admin.lifecycleFlow(staff, t2, s1, window)).rejects.toThrow();
+        await expect(host.admin.lifecycleFlow(staff, t1, s2, window)).rejects.toThrow();
+        // t2's own scope answers, from its own outbox — in which t1 emitted nothing.
+        const own = await host.admin.lifecycleFlow(staff, t2, s2, window);
+        expect(own.observation).toMatchObject({ entities: 0, events: 0, complete: true });
+        expect(own.edges.every((e) => e.count === 0)).toBe(true);
+        // K-24: the read is recorded against the actor.
+        expect((await host.admin.accessLog(staff, { tenantId: t1, method: 'lifecycleFlow' })).length).toBeGreaterThan(0);
+      });
     });
 
     it('records a refused transition after the rollback, and the replay counts it (#1745)', async () => {
@@ -2259,11 +2342,7 @@ export function scopeHostContractSuite(
       await expect(stub.invoke('test/refuse', { entityId: 'r1', from: 'done' })).rejects.toThrow(/invalid transition/);
       const flow = await host.admin.lifecycleFlow(staff, t1, s1, {
         entityType: 'test-lifecycle',
-        lifecycle: {
-          field: 'state',
-          initial: 'draft',
-          states: { draft: { on: { 'test/move': 'live' } }, live: { on: { 'test/move': 'done' } }, done: { terminal: true } },
-        },
+        lifecycle: TEST_LIFECYCLE,
         since,
         until: new Date(Date.now() + 60_000).toISOString(),
       });
@@ -2299,6 +2378,12 @@ export function scopeHostContractSuite(
         drainedAt: null,
       });
       expect(rows[0]!.decodeError).toBeUndefined();
+      expect(rows[0]!.guard).toBeNull();
+
+      // A move the lifecycle allows records nothing.
+      const allowed = ulid();
+      await stub.invoke('test/move', { entityId: 'r2-ok', state: 'draft' }, { invocationId: allowed });
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: allowed })).toEqual([]);
 
       // The row survived the operation's rollback — and the operation itself left nothing
       // behind in the outbox for that call.
@@ -2317,6 +2402,16 @@ export function scopeHostContractSuite(
       const logged = await host.admin.accessLog(staff, { tenantId: t1, method: 'listRefusals' });
       expect(logged.length).toBeGreaterThan(0);
       await expect(host.admin.listRefusals(staff, t2, s1)).rejects.toThrow();
+
+      // A record whose status column holds arbitrary text: the refusal is recorded, with the
+      // state as the marker — the lifecycle never vouched for that text, so it is not kept.
+      const undeclared = ulid();
+      await expect(
+        stub.invoke('test/refuse', { entityId: 'r2-odd', from: 'call ada@example.com' }, { invocationId: undeclared }),
+      ).rejects.toThrow(/invalid transition/);
+      const [oddRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: undeclared });
+      expect(oddRow).toMatchObject({ kind: 'transition', fromState: 'undeclared', entityId: 'r2-odd', operation: 'test/move' });
+      expect(JSON.stringify(oddRow)).not.toMatch(/ada@example\.com|call ada/);
     });
 
     // -- scope data introspection: the §5.4 admin-query RPC --------------------
@@ -6929,6 +7024,94 @@ export function scopeHostContractSuite(
     it('leaves unguarded operations untouched', async () => {
       const stub = await host.getScope(alice, t1, s1);
       await expect(stub.invoke<string[]>('guarded/rows')).resolves.toEqual(['go']);
+    });
+
+    it('records a guard refusal once, after the rollback, with no message or input on the row (#1745)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const rowsBefore = await stub.invoke<string[]>('guarded/rows');
+      const call = ulid();
+      const note = 'call me at ada@example.com';
+      await expect(
+        stub.invoke('guarded/open', { id: 'g-refused', note }, { invocationId: call }),
+      ).rejects.toThrow(/gate closed/);
+      // The caller's answer is the predicate's own 409, unchanged by being recorded.
+      await expect(stub.invoke('guarded/open', { id: 'g-refused', note })).rejects.toMatchObject({
+        code: 'conflict',
+      });
+
+      const rows = await host.admin.listRefusals(staff, t1, s1, { invocationId: call });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        kind: 'guard',
+        guard: 'gate/must-be-open',
+        reason: 'gate_closed',
+        actor: alice,
+        actorKind: 'principal',
+        tenantId: t1,
+        scopeId: s1,
+        entityType: 'guarded-thing',
+        entityId: 'g-refused',
+        // A guard stands before an operation; the kernel does not know the record's state.
+        fromState: null,
+        attemptedState: null,
+        operation: 'guarded/open',
+        invokedOperation: 'guarded/open',
+        impersonation: null,
+        invocationId: call,
+        drainedAt: null,
+      });
+      expect(rows[0]!.decodeError).toBeUndefined();
+      // Keys and vocabulary only: neither the input nor the message the caller saw.
+      expect(JSON.stringify(rows[0])).not.toMatch(/ada@example\.com|gate closed|call me/);
+      // Both attempts recorded, each once, and as guards.
+      expect(await host.admin.listRefusals(staff, t1, s1, { kind: 'guard', entityId: 'g-refused' })).toHaveLength(2);
+      expect(await host.admin.listRefusals(staff, t1, s1, { kind: 'transition', entityId: 'g-refused' })).toEqual([]);
+
+      // The wire takes any non-empty string as a conflict's reason, so a predicate can put
+      // request text there; the row keeps a code or the fixed marker, never the text.
+      const leaked = ulid();
+      await expect(
+        stub.invoke('guarded/open', { id: 'g-leak', reason: 'call ada@example.com' }, { invocationId: leaked }),
+      ).rejects.toThrow(/gate closed/);
+      const [leakRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: leaked });
+      expect(leakRow).toMatchObject({ kind: 'guard', reason: 'unrecognized', entityId: 'g-leak' });
+      expect(JSON.stringify(leakRow)).not.toMatch(/ada@example\.com|call ada/);
+
+      // The same for the record's type, which a predicate names from whatever it was handed:
+      // kept only when spelled as an entity type. The id stays — it is the record's key.
+      const typed = ulid();
+      await expect(
+        stub.invoke('guarded/open', { id: 'g-typed', entityType: 'ada@example.com' }, { invocationId: typed }),
+      ).rejects.toThrow(/gate closed/);
+      const [typedRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: typed });
+      expect(typedRow).toMatchObject({ kind: 'guard', entityType: 'undeclared', entityId: 'g-typed' });
+      expect(JSON.stringify(typedRow)).not.toMatch(/ada@example\.com/);
+
+      // The rollback took the predicate's own write with it, and the handler never ran —
+      // the refusal row is the one write that survived.
+      expect(await stub.invoke<string[]>('guarded/rows')).toEqual(rowsBefore);
+    });
+
+    it('records nothing for a guard that passes, or one that throws something other than a refusal (#1745)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const rowsBefore = await stub.invoke<string[]>('guarded/rows');
+      const passed = ulid();
+      await stub.invoke('guarded/open', { id: 'g-open', open: true }, { invocationId: passed });
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: passed })).toEqual([]);
+      expect(await stub.invoke<string[]>('guarded/rows')).toEqual([...rowsBefore, 'gate saw g-open', 'opened g-open']);
+
+      // A bare Error is a guard failing, not a guard refusing: blocked, never recorded.
+      const failed = ulid();
+      await expect(stub.invoke('guarded/act', { flag: 'stop' }, { invocationId: failed })).rejects.toThrow(
+        /expected flag/,
+      );
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: failed })).toEqual([]);
+      // And a guard whose predicate is missing fails closed, also unrecorded.
+      const orphan = ulid();
+      await expect(stub.invoke('guarded/orphan', {}, { invocationId: orphan })).rejects.toThrow(
+        /unknown guard predicate/,
+      );
+      expect(await host.admin.listRefusals(staff, t1, s1, { invocationId: orphan })).toEqual([]);
     });
 
     // -- operation withdrawal (K-17) -----------------------------------------

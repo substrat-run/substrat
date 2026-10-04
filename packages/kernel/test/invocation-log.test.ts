@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import {
+  fieldCoverageArmed,
   INVOCATION_RECORD_KEY,
   invocationLevelOf,
   invocationLog,
@@ -547,5 +548,139 @@ describe('the line’s outputFields (#1331)', () => {
       'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',
       'eventTypes', 'entities', 'versionId',
     ]);
+  });
+});
+
+/**
+ * #1923: the router arms the field walk per request with a header, and the stamp honours it
+ * only on a request whose router assertion verifies — the same terms as the tenant.
+ */
+describe('arming the field walk (#1923)', () => {
+  /** The router's dispatch id for a sampled request: a ULID. */
+  const DISPATCH = '01JZ0000000000000000DSP001';
+  const ARM = { 'x-substrat-field-coverage': DISPATCH };
+  const options = {
+    routerSecret: (env: Env) => env.ROUTER_SECRET,
+    allowUnsigned: (env: Env) => env.ALLOW_DEV_NODE === 'true',
+  };
+
+  /** Whether the walk was armed, as `vertical-host` asks it, from inside each stamping layer. */
+  async function armedBy(headers: Record<string, string>, env: Env = ENV) {
+    const cap = capture();
+    try {
+      let platform: boolean | undefined;
+      const worker = withInvocationLog<Env>(
+        {
+          fetch: async (req) => {
+            platform = fieldCoverageArmed(req);
+            return new Response('ok');
+          },
+        },
+        options,
+      );
+      await worker.fetch!(new Request('https://acme.example/api/x', { headers }), env, {});
+
+      let middleware: boolean | undefined;
+      const app = appWith((a) =>
+        a.get('/api/x', (c) => {
+          middleware = fieldCoverageArmed(c.req.raw);
+          return c.text('ok');
+        }),
+      );
+      await app.request('/api/x', { headers }, env);
+      expect(middleware, 'both layers agree').toBe(platform);
+      return platform;
+    } finally {
+      cap.restore();
+    }
+  }
+
+  it('arms a request the router signed', async () => {
+    expect(await armedBy({ ...routed, ...ARM })).toBe(true);
+  });
+
+  it('is off without the header, or with any value that is not a dispatch id', async () => {
+    expect(await armedBy(routed)).toBe(false);
+    for (const v of ['on', 'ON', 'true', '1', '', DISPATCH.toLowerCase(), `${DISPATCH}0`, DISPATCH.slice(1), `${DISPATCH},${DISPATCH}`]) {
+      expect(await armedBy({ ...routed, 'x-substrat-field-coverage': v }), v).toBe(false);
+    }
+  });
+
+  it('refuses the header on an unsigned or forged assertion', async () => {
+    const { 'x-substrat-router': _secret, ...unsigned } = routed;
+    expect(await armedBy({ ...unsigned, ...ARM })).toBe(false);
+    expect(await armedBy({ ...routed, 'x-substrat-router': 'i-guessed', ...ARM })).toBe(false);
+    // A worker holding no secret verifies nothing, so it arms nothing — even for a request
+    // that presents one.
+    expect(await armedBy({ ...routed, ...ARM }, {})).toBe(false);
+  });
+
+  it('refuses the header with no assertion at all, or a malformed one', async () => {
+    expect(await armedBy(ARM)).toBe(false);
+    expect(await armedBy({ ...routed, 'x-substrat-tenant': 'not-a-ulid', ...ARM })).toBe(false);
+    expect(await armedBy({ 'x-substrat-router': SECRET, ...ARM })).toBe(false);
+  });
+
+  it('honours the dev opt-out exactly as the tenant does', async () => {
+    const { 'x-substrat-router': _secret, ...unsigned } = routed;
+    expect(await armedBy({ ...unsigned, ...ARM }, { ALLOW_DEV_NODE: 'true' })).toBe(true);
+    expect(await armedBy(ARM, { ALLOW_DEV_NODE: 'true' })).toBe(false);
+  });
+
+  it('is off for a request no stamp covers, and for a stamp that predates the switch', () => {
+    const req = new Request('https://acme.example/', { headers: { ...routed, ...ARM } });
+    expect(fieldCoverageArmed(req)).toBe(false);
+    expect(fieldCoverageArmed({})).toBe(false);
+  });
+
+  it("writes the router's dispatch id beside the report, and neither without arming", async () => {
+    const lineOf = async (headers: Record<string, string>) => {
+      const cap = capture();
+      try {
+        const worker = withInvocationLog<Env>(
+          {
+            fetch: async (req) => {
+              // What a mount does when the walk is armed — and what a vertical's own code could
+              // do when it is not.
+              invocationStampOf(req)!.record.outputFields = { present: ['id'], empty: [], absent: [] };
+              return new Response('ok');
+            },
+          },
+          options,
+        );
+        await worker.fetch!(new Request('https://acme.example/api/x', { headers }), ENV, {});
+        return cap.lines[0]!;
+      } finally {
+        cap.restore();
+      }
+    };
+    const armed = await lineOf({ ...routed, ...ARM });
+    expect(armed.outputFields).toEqual({ present: ['id'], empty: [], absent: [] });
+    expect(armed.fieldCoverageId).toBe(DISPATCH);
+    // Unarmed, a report the vertical wrote itself carries no provenance, so no reader counts it.
+    const unarmed = await lineOf(routed);
+    expect(unarmed).not.toHaveProperty('fieldCoverageId');
+  });
+
+  it('decides once, when the stamp begins: a request with no header never verifies anything', async () => {
+    let reads = 0;
+    const worker = withInvocationLog<Env>({ fetch: async () => new Response('ok') }, {
+      routerSecret: (env) => {
+        reads += 1;
+        return env.ROUTER_SECRET;
+      },
+    });
+    const cap = capture();
+    try {
+      // Unarmed: the secret is read once, for the line in the `finally`, never for arming.
+      await worker.fetch!(new Request('https://acme.example/', { headers: routed }), ENV, {});
+      expect(reads).toBe(1);
+      reads = 0;
+      // Armed: once more, when the stamp begins, and not again per question asked of it.
+      await worker.fetch!(new Request('https://acme.example/', { headers: { ...routed, ...ARM } }), ENV, {});
+      expect(reads).toBe(2);
+    } finally {
+      cap.restore();
+    }
   });
 });

@@ -498,7 +498,19 @@ export {
   type ImpersonationRow,
 } from './impersonation.js';
 export { readLifecycleFlow } from './lifecycle-flow.js';
-export { REFUSALS_DDL, refusalInsert, refusedTransitionOf, type RefusalRow } from './refusals.js';
+export {
+  REFUSALS_DDL,
+  REFUSALS_INDEX,
+  REFUSALS_REBUILD,
+  REFUSALS_TABLE_DDL,
+  markGuardRefusal,
+  refusalInsert,
+  refusalOf,
+  refusalsAdmitGuards,
+  refusedTransitionOf,
+  type RefusalRow,
+  type RefusedGuard,
+} from './refusals.js';
 export { REFUSAL_COLUMNS, mapRefusalRow, refusalListQuery, type RefusalDbRow } from './refusal-query.js';
 export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
 export type { ScopeWalkPage } from './timeline.js';
@@ -543,6 +555,9 @@ export {
   JOB_RUN_LIST_MAX,
   jobRunListLimit,
   JOB_STEP_REUSED,
+  SYSTEM_DOOR_WAIT,
+  JOB_DEFER_MS,
+  JOB_RUN_DUE_AT,
   assertQueueSafe,
   jobRunOf,
   runDueJobRuns,
@@ -550,6 +565,7 @@ export {
   startJobRun,
 } from './job-run.js';
 export type {
+  JobDueKey,
   JobDriveReport,
   JobHandler,
   JobPassContext,
@@ -688,6 +704,8 @@ export {
   invocationStampOf,
   /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
   withInvocationLog,
+  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
+  fieldCoverageArmed,
 } from './invocation-log.js';
 export type {
   /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */

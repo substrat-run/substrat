@@ -73,6 +73,20 @@ export const errorCode = z.enum([
 ]);
 export type ErrorCode = z.infer<typeof errorCode>;
 
+/**
+ * The grammar of a problem's `reason` slug (#1745): the snake_case every `errorCode` is
+ * written in, at most `PROBLEM_REASON_MAX` characters. It is a code, never a sentence.
+ *
+ * Not applied to the wire extension, where a non-conforming reason must not turn the
+ * refusal being built into a different failure; applied wherever a reason is KEPT, so a
+ * reason that carries request text (an email, a name) is never written to a durable row.
+ */
+export const PROBLEM_REASON_MAX = 64;
+export const problemReason = z
+  .string()
+  .max(PROBLEM_REASON_MAX)
+  .regex(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/);
+
 /** `permission_denied` → `https://substrat.net/errors/permission-denied`. */
 export function problemTypeFor(code: ErrorCode): string {
   return `${PROBLEM_TYPE_BASE}/${code.replaceAll('_', '-')}`;
@@ -146,7 +160,11 @@ export const PROBLEM_EXTENSIONS = {
     entity: entityRef.optional(),
   }),
   rate_limited: z.object({ retryAfter: z.number().int().nonnegative().optional() }),
-  unavailable: z.strictObject({}),
+  /**
+   * `reason` narrows a refusal a caller should wait out rather than report, as `forbidden`'s does:
+   * `system_door_wait` (#1834), a scope that kept restarting under a module's system door.
+   */
+  unavailable: z.object({ reason: z.string().min(1).optional() }),
   internal: z.strictObject({}),
 } as const satisfies Record<ErrorCode, z.ZodType>;
 

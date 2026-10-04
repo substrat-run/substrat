@@ -15,7 +15,10 @@
  * - **One entry per list.** A paged read's or an array output's entries are homogeneous by
  *   schema, so the first entry answers for the page.
  * - **Capped.** At most `DECLARED_OUTPUT_FIELDS_MAX` declared names, the declared half's own cap.
- * - **Off unless armed** (`FIELD_COVERAGE_BINDING`), and resolved once per route at mount.
+ * - **Off unless armed**, per request, by the router (`FIELD_COVERAGE_HEADER`, #1923): it
+ *   sends the header on a sampled fraction of requests, and the stamp honours it only on a
+ *   request whose router assertion verifies. The walk itself is resolved once per route at
+ *   mount.
  *
  * ## What it records, and what it never does
  *

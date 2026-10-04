@@ -37,10 +37,11 @@ about the address; `undefined` is the provider saying nothing — what an OIDC i
 never emits `email_verified` looks like, and what a session minted before the field existed
 looks like for the rest of its life. All three providers below populate it: the two OIDC ones
 carry the issuer's `email_verified` claim through unchanged, and `doAuthProvider` reports its
-own directory's flag. Nothing in this package gates on it — an address becomes an identifier
-in invite flows and on a staff roster, and a gate there could not be written against a claim
-nobody transported (#1359, #1373) — so the vertical that eventually writes such a gate decides
-what `undefined` means.
+own directory's flag. Nothing in this package gates on it: a vertical's invites are claimed by
+token, not by address. A vertical that does key something on an address should ask
+[`identifyEmail`](/reference/oidc-rp#an-address-is-an-identifier-only-when-the-issuer-verified-it)
+from `@substrat-run/oidc-rp`, the rule the platform's own apps use: only `true` passes, and
+`undefined` is refused like `false` (#1359).
 
 ## `instanceAuthFor` — what a vertical actually mounts
 

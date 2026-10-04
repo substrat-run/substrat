@@ -157,15 +157,16 @@ export function Team({
         )}
         {rows.map((m, i) => {
           const s = STATUS[m.status];
-          const you = m.email === meEmail;
-          const name = m.email.split('@')[0] ?? m.email;
+          // An owner whose sign-in carried no verified address is stored without one (#1359).
+          const you = m.email !== '' && m.email === meEmail;
+          const name = m.email ? (m.email.split('@')[0] ?? m.email) : 'owner';
           return (
             <div key={m.id} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 48, padding: '0 16px', fontSize: 13, borderBottom: i === rows.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Avatar seed={name} tone={AVATAR_TONE[m.role_key] ?? 'muted'} size={26} />
                 <span style={{ display: 'flex', flexDirection: 'column' }}>
                   <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{name} {you && <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontWeight: 400 }}>(you)</span>}</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)' }}>{m.email}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)' }}>{m.email || 'address not verified'}</span>
                 </span>
               </span>
               <span><MonoTag>{m.role_key}</MonoTag></span>

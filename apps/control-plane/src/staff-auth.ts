@@ -1,35 +1,61 @@
 import type { StaffSessionReader } from '@substrat-run/control-plane-api';
 import {
+  emailRefusalMessage,
+  emailRefusalOf,
+  identifyEmail,
   sessionFromHeaders,
   verifySession,
+  type EmailIdentityEnv,
   type OidcEnv,
   type SessionUser,
 } from '@substrat-run/oidc-rp';
 
 /**
- * The staff readers' environment: the OIDC relying party's, plus one opt-in.
+ * The staff readers' environment: the OIDC relying party's, plus the one break-glass.
  *
- * `OIDC_REQUIRE_EMAIL_VERIFIED` (#1359) — `"true"` makes the roster's key, the session's
- * email, count only when the issuer asserted `email_verified: true` about it. Off unless
- * set to exactly `"true"`, the same spelling `ALLOW_DEV_ACTOR` reads. It is a per-issuer
- * fact rather than a default because an issuer that never emits the claim is
- * indistinguishable from one that says "unverified", and turning the gate on against it
- * locks the whole roster out of the control plane. Set it once the platform issuer is
- * known to send the claim.
+ * The roster's key is the session's email, so it counts only when the issuer asserted
+ * `email_verified: true` about it (#1359) — by default, with nothing configured.
+ * `OIDC_ALLOW_UNVERIFIED_EMAIL` is the deployment-wide opt-out, and `identifyEmail` is
+ * what makes it loud while it is on.
  */
-export interface StaffAuthEnv extends OidcEnv {
-  OIDC_REQUIRE_EMAIL_VERIFIED?: string;
+export interface StaffAuthEnv extends OidcEnv, EmailIdentityEnv {}
+
+/**
+ * The address a session proves, or null — the one place both readers decide it. Fails
+ * closed: `false` and an absent claim both resolve to no staff identity, because the
+ * roster keys on the address and an unverified one is someone else's key.
+ */
+function staffIdentityOf(env: StaffAuthEnv, user: SessionUser | null): { email: string } | null {
+  if (!user) return null;
+  const { email } = identifyEmail(env, user);
+  return email ? { email } : null;
+}
+
+/** The CLI's `Authorization: Bearer <token>`, or undefined. */
+function bearerToken(headers: Headers): string | undefined {
+  const header = headers.get('authorization') ?? '';
+  return /^bearer /i.test(header) ? header.slice(7).trim() : undefined;
+}
+
+/** The session a request presents, in the readers' order — the cookie, else a CLI bearer. */
+async function presentedSession(env: StaffAuthEnv, headers: Headers): Promise<SessionUser | null> {
+  return (await sessionFromHeaders(env, headers)) ?? (await verifySession(env, bearerToken(headers)));
 }
 
 /**
- * The address a session proves, or null — the one place both readers decide it. With the
- * gate on it fails closed: `false` and an absent claim both resolve to no staff identity,
- * because the roster keys on the address and an unverified one is someone else's key.
+ * Why a request that DID present a valid session was not taken as staff, as the sentence
+ * to show — or null when it presented none, or one whose address passes. The 401 the API
+ * answers with says only `unauthenticated`; a person holding a perfectly good session that
+ * predates the claim (#1373) would read that as "signed out" with no idea why, so the
+ * worker swaps the body for this. Only the two refusals a person can act on are named:
+ * an address the roster would never key on anyway (`no-email`) stays a plain 401.
  */
-function staffIdentityOf(env: StaffAuthEnv, user: SessionUser | null): { email: string } | null {
-  if (!user?.email) return null;
-  if (env.OIDC_REQUIRE_EMAIL_VERIFIED === 'true' && user.emailVerified !== true) return null;
-  return { email: user.email };
+export async function staffRefusalOf(env: StaffAuthEnv, headers: Headers): Promise<string | null> {
+  // With the break-glass on, the reader admitted the address: the 401 is about the roster.
+  if (env.OIDC_ALLOW_UNVERIFIED_EMAIL === 'true') return null;
+  const user = await presentedSession(env, headers);
+  const refused = user ? emailRefusalOf(user) : null;
+  return refused === 'unverified' || refused === 'unasserted' ? emailRefusalMessage(refused) : null;
 }
 
 /**
@@ -58,9 +84,5 @@ export function oidcStaffSessionReader(env: StaffAuthEnv): StaffSessionReader {
  * from. The roster (`d1StaffRoster`) remains the single gate, exactly as for the cookie.
  */
 export function oidcStaffBearerReader(env: StaffAuthEnv): StaffSessionReader {
-  return async (headers) => {
-    const header = headers.get('authorization') ?? '';
-    const token = /^bearer /i.test(header) ? header.slice(7).trim() : undefined;
-    return staffIdentityOf(env, await verifySession(env, token));
-  };
+  return async (headers) => staffIdentityOf(env, await verifySession(env, bearerToken(headers)));
 }

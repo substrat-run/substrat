@@ -133,7 +133,7 @@ export function App() {
   const [members, setMembers] = useState<Member[]>([]);
   // #977: the admin log names a member by principal; the page names them by email.
   const personName = useCallback(
-    (principal: string) => members.find((m) => m.principal === principal)?.email ?? null,
+    (principal: string) => members.find((m) => m.principal === principal)?.email || null,
     [members],
   );
   const [membersCursor, setMembersCursor] = useState<string | null>(null);

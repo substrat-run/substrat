@@ -3,6 +3,8 @@ import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type CubeStore, type RequestCubeRow } from './aggregate-source.js';
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
+import { serviceFamilyPattern } from './service-family.js';
+import { FIELD_COVERAGE_ID_FIELD } from '@substrat-run/contracts';
 import type {
   ObservabilityReader,
   ObservedEgressRow,
@@ -79,27 +81,20 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
   return filters;
 }
 
-/** A lowercased ULID, as it ends a per-version script name (`deploymentRefFor`). */
-const SCRIPT_ULID = '[0-9a-hjkmnp-tv-z]{26}';
-
 /**
- * #1877: one vertical's script FAMILY, as a filter on `$metadata.service` — the field
- * Workers Logs indexes every event by. The stem itself is the serving script; `<stem>-<ulid>`
- * is a per-version script (previews, legacy scopes); `<stem>-eu` / `-us` a jurisdictional one
- * (K-30).
+ * #1877: one vertical's script FAMILY, as a filter on `$metadata.service` (`service-family.ts`
+ * says which names are in it).
  *
  * Two leaves, both required: `starts_with` is the one the store can narrow a scan on, and the
- * anchored regex is what makes it exact — another vertical whose stem merely begins with this
- * one (`ticket0` and `ticket0-crm`) is not in the family.
+ * anchored regex is what makes it exact.
  */
 function familyFilter(stem: string): TelemetryFilter {
-  const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return {
     kind: 'group',
     filterCombination: 'and',
     filters: [
       { key: '$metadata.service', operation: 'starts_with', type: 'string', value: stem },
-      { key: '$metadata.service', operation: 'regex', type: 'string', value: `^${escaped}(-${SCRIPT_ULID})?(-(eu|us))?$` },
+      { key: '$metadata.service', operation: 'regex', type: 'string', value: serviceFamilyPattern(stem) },
     ],
   };
 }
@@ -268,7 +263,7 @@ function isFailedInvocation(e: RecentLogEvent): boolean {
  * refusal, never a shrug: this predicate is the whole isolation boundary for correlated
  * lines, which carry no tenant of their own.
  */
-function ownsInvocation(
+export function ownsInvocation(
   e: Record<string, unknown>,
   input: { tenantId: string; scopeId?: string; vertical?: string },
 ): boolean {
@@ -480,6 +475,22 @@ function withRuntimeTimings(e: RecentLogEvent, byRequest: Map<string, Record<str
 }
 
 /**
+ * #1923: a raw event as it may leave a per-event read — the stamped line WITHOUT its
+ * `outputFields` (or the dispatch id beside it). That report is one response's data, beside a path that can name a record,
+ * and its only sanctioned reading is the aggregate `tallyFieldCoverage`, which reads the
+ * unprojected events. Every per-event read projects through `projectEvent`, so stripping here
+ * keeps it off all of them.
+ */
+function withoutOutputFields(e: Record<string, unknown>): Record<string, unknown> {
+  const source = e['source'];
+  if (source === null || typeof source !== 'object') return e;
+  if (!('outputFields' in source) && !(FIELD_COVERAGE_ID_FIELD in source)) return e;
+  // The dispatch id goes with it: it is the report's provenance and means nothing without it.
+  const { outputFields: _report, [FIELD_COVERAGE_ID_FIELD]: _id, ...rest } = source as Record<string, unknown>;
+  return { ...e, source: rest };
+}
+
+/**
  * One backend event → the seam's neutral `RecentLogEvent`.
  *
  * Shared by the service-grain and tenant-grain readers so a field learned in one is not
@@ -507,7 +518,7 @@ function projectEvent(e: Record<string, unknown>): RecentLogEvent {
     requestId: str(metadata['requestId']) ?? str(workers['requestId']),
     cpuTimeMs: num(workers['cpuTimeMs']),
     wallTimeMs: num(workers['wallTimeMs']),
-    raw: e,
+    raw: withoutOutputFields(e),
   };
 }
 

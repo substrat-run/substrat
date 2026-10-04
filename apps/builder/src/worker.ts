@@ -47,6 +47,7 @@ import {
 	type OidcEnv,
 	type SessionUser,
 } from '@substrat-run/oidc-rp';
+import { deniedDetail, staffAccessOf, type StaffEnv } from './staff.js';
 
 export { BuilderAgent } from './agent.js';
 // The execution container's DO class (#626) — wrangler requires the export here.
@@ -55,9 +56,7 @@ export { Sandbox } from '@cloudflare/sandbox';
 // metering engine — the builder's first kernel-backed table (src/metering.ts).
 export const ScopeDO = defineScopeDO([meteringModule], {});
 
-export interface Env extends OidcEnv {
-	/** The control plane's auth DB — read-only roster lookups, never writes. */
-	AUTH_DB: D1Database;
+export interface Env extends OidcEnv, StaffEnv {
 	BUILDER_AGENT: DurableObjectNamespace;
 	/** The studio's own kernel scope (#646) — usage metering lives here. */
 	SCOPE: DurableObjectNamespace;
@@ -79,17 +78,6 @@ function readCookie(header: string | null, name: string): string | undefined {
 		if (k === name) return v.join('=');
 	}
 	return undefined;
-}
-
-/** Roster check — same table, same fail-closed semantics as the control plane. */
-async function isStaff(env: Env, email: string | undefined): Promise<boolean> {
-	if (!email) return false;
-	const row = await env.AUTH_DB.prepare(
-		'SELECT actor FROM staff_actor WHERE email = ? AND revoked_at IS NULL',
-	)
-		.bind(email.toLowerCase())
-		.first<{ actor: string }>();
-	return row !== null;
 }
 
 function escapeHtml(s: string): string {
@@ -169,7 +157,7 @@ app.use('*', async (c, next) => {
 		}
 		return c.json({ error: 'not signed in' }, 401);
 	}
-	const staff = await isStaff(c.env, user.email);
+	const { staff, refused } = await staffAccessOf(c.env, user);
 	// Staff are decided by the one D1 read above — no directory walk on their
 	// asset requests. Only a non-staff user needs teams AT THE GATE (their access
 	// IS the entitled set); the walk is deferred for staff until a route that
@@ -179,8 +167,7 @@ app.use('*', async (c, next) => {
 		usable = (await teamsFor(c.env, user.id)).filter((t) => t.entitled);
 		if (usable.length === 0) {
 			// Same split as the 401 above: a page for browsers, JSON for API callers.
-			// Still names the email, never the app (header comment: fail closed).
-			const detail = `The builder studio is not enabled for ${user.email ?? 'this account'}'s team yet.`;
+			const detail = deniedDetail(user, refused);
 			if (c.req.header('accept')?.includes('text/html')) {
 				return c.html(deniedPage(detail), 403);
 			}

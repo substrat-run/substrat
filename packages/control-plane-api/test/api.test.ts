@@ -4975,6 +4975,21 @@ describe('control-plane API — deploy', () => {
       expect(res.status).toBe(201);
       expect(await res.json()).toMatchObject({ verticalSlug: 'plain', admission: 'pending' });
     });
+
+    it("refuses a slug that would deploy under a platform worker's script name, before any upload (#1923)", async () => {
+      const before = deployed.length;
+      for (const slug of ['substrat-router', 'substrat-router-test', 'substrat-control-plane']) {
+        const res = await push(slug, form(manifest()));
+        expect(res.status, slug).toBe(422);
+        expect((await res.json()).error, slug).toContain('platform');
+      }
+      expect(deployed.length).toBe(before); // nothing reached the namespace
+      expect((await host.admin.listVerticals(staff)).map((v) => v.slug)).not.toContain('substrat-router');
+      // The twin: a near miss deploys.
+      expect((await push('substrat-routers', form(manifest()))).status).toBe(201);
+      // Registration refuses the same names on the host itself, whatever door it is called from.
+      await expect(host.admin.registerVertical(staff, { slug: 'substrat/router', name: 'x', source: 'cli' })).rejects.toThrow(/platform/);
+    });
   });
 
   it('surfaces an upload throw with no upstream status as a 502 with detail, not a blank 500', async () => {

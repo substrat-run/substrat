@@ -13,9 +13,10 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { moduleId, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { scheduleMod } from '@substrat-run/contract-tests';
+import { PRE_GUARD_REFUSALS_DDL, scheduleMod } from '@substrat-run/contract-tests';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
+import { splitSqlStatements } from '../src/scope-do.js';
 import { warmControlPlane } from './do-warmup.js';
 
 // Crockford base32, 26 chars — the shape a minted `ulid()` always has. Declared here
@@ -272,6 +273,113 @@ describe('#1883: a DO woken over a column a restore added untyped', () => {
       expect(after.rows).toEqual([['e1', 'm1', '2026-09-01T00:00:00.000Z', null, 0, null, 'inv-1']]);
       // And the scope serves: the constructor's column pass did not throw.
       await expect(host.admin.exportScope(staff, t, s)).resolves.toBeDefined();
+    } finally {
+      if (provisioned) await host.admin.archiveScope(staff, t, s);
+      await host.close();
+    }
+  });
+});
+
+/**
+ * #1745's REBUILD on a real Durable Object: a scope whose `_substrat_refusals` is the shape
+ * #1928 shipped (`from_state NOT NULL`, no `guard` / `reason`) holds transition rows, and the
+ * next wake must rebuild it to admit a guard row without losing one of them or the index the
+ * process map reads by. A second wake, after a guard row is in, must change nothing.
+ */
+describe('#1745: a DO woken over a pre-guard _substrat_refusals rebuilds it, once', () => {
+  it('keeps every transition row and the index, admits a guard row, and a second wake is a no-op', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      checker: UNSAFE_allowAllChecker,
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    let provisioned = false;
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `refusals1745-${ulid().toLowerCase()}`, name: 'Refusals' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'refusals-vertical' });
+      provisioned = true;
+      const freshStub = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+      const evict = (why: string) =>
+        runInDurableObject(freshStub(), (_instance, state) => {
+          state.abort(why);
+        }).catch(() => undefined);
+      const read = () =>
+        runInDurableObject(freshStub(), (_instance, state) => {
+          const sql = state.storage.sql;
+          const cursor = sql.exec('SELECT * FROM _substrat_refusals ORDER BY id');
+          return {
+            ddl: (
+              sql
+                .exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '_substrat_refusals'")
+                .toArray() as unknown as { sql: string }[]
+            )[0]!.sql,
+            columns: cursor.columnNames,
+            rows: cursor.toArray(),
+            indexes: sql
+              .exec("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = '_substrat_refusals' ORDER BY name")
+              .toArray(),
+            scratch: sql.exec("SELECT name FROM sqlite_master WHERE name = '_substrat_refusals_new'").toArray().length,
+          };
+        });
+      const alice = JSON.stringify(ulid());
+      const legacy = [
+        [ulid(), 'order', 'o1', 'closed', 'open', 'shop/reopen', alice, null, 'inv-1', '2026-09-30T10:00:00.000Z', null],
+        [ulid(), null, null, 'done', null, 'test/move', alice, '{"staff":"x"}', null, '2026-09-30T11:00:00.000Z', '2026-10-01T00:00:00.000Z'],
+      ];
+
+      // The table #1928 shipped, holding two transition rows that differ in every nullable
+      // column — so a rebuild that dropped or shuffled a column could not pass.
+      await runInDurableObject(freshStub(), (_instance, state) => {
+        state.storage.sql.exec('DROP TABLE _substrat_refusals');
+        for (const stmt of splitSqlStatements(PRE_GUARD_REFUSALS_DDL)) state.storage.sql.exec(stmt);
+        for (const r of legacy) {
+          state.storage.sql.exec(
+            `INSERT INTO _substrat_refusals (id, kind, tenant_id, scope_id, entity_type, entity_id, from_state,
+               attempted_state, operation, invoked_operation, actor, impersonation, invocation_id, at, drained_at)
+             VALUES (?, 'transition', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            r[0], t, s, r[1], r[2], r[3], r[4], r[5], r[5], r[6], r[7], r[8], r[9], r[10],
+          );
+        }
+      });
+      const before = await read();
+      expect(before.ddl).toMatch(/from_state TEXT NOT NULL/);
+      await evict('evicted for #1745 test — first wake');
+
+      const first = await read();
+      expect(first.ddl).not.toMatch(/from_state TEXT NOT NULL/);
+      expect(first.columns).toEqual(expect.arrayContaining(['guard', 'reason']));
+      expect(first.scratch).toBe(0);
+      expect(before.indexes).toContainEqual({ name: '_substrat_refusals_entity_at' });
+      expect(first.indexes).toEqual(before.indexes);
+      // Every row, every value, with the new columns NULL — implied by the kind.
+      expect(first.rows).toEqual(
+        before.rows.map((r) => ({ ...(r as Record<string, unknown>), guard: null, reason: null })),
+      );
+      // And read back through the shared decoder as the transitions they are.
+      const read1 = await host.admin.listRefusals(staff, t, s);
+      expect(read1.map((r) => [r.kind, r.reason, r.guard, r.fromState, r.entityId])).toEqual([
+        ['transition', 'invalid_transition', null, 'done', null],
+        ['transition', 'invalid_transition', null, 'closed', 'o1'],
+      ]);
+
+      // The rebuilt table admits a guard row: no from-state.
+      await runInDurableObject(freshStub(), (_instance, state) => {
+        state.storage.sql.exec(
+          `INSERT INTO _substrat_refusals (id, kind, tenant_id, scope_id, from_state, operation, guard, reason, actor, at)
+           VALUES (?, 'guard', ?, ?, NULL, 'shop/finish', 'protocol/all-signed', 'protocol_required', ?, ?)`,
+          ulid(), t, s, alice, '2026-10-01T12:00:00.000Z',
+        );
+      });
+      const withGuard = await read();
+      expect(withGuard.rows).toHaveLength(3);
+
+      // A second wake finds the new shape and leaves it, guard row and all.
+      await evict('evicted for #1745 test — second wake');
+      expect(await read()).toEqual(withGuard);
     } finally {
       if (provisioned) await host.admin.archiveScope(staff, t, s);
       await host.close();
