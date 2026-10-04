@@ -28,6 +28,14 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { discoverIssuer as discover, isAllowedEndpoint, type Discovery } from './discovery.js';
 
 export { discoverIssuer, type Discovery as OidcDiscovery } from './discovery.js';
+export {
+  identifyEmail,
+  emailRefusalMessage,
+  ALLOW_UNVERIFIED_EMAIL,
+  type EmailIdentity,
+  type EmailIdentityEnv,
+  type EmailRefusal,
+} from './email-identity.js';
 
 export interface OidcEnv {
   /** The AuthHero issuer, e.g. https://auth.substrat.run — the only wired-in value. */
@@ -52,10 +60,8 @@ export interface SessionUser {
    * emits the claim looks like, and what every session minted before this field existed
    * looks like for the rest of its seven days.
    *
-   * Nothing in the platform reads it yet. It is here because an address is an identifier
-   * in at least two places — the staff roster and vertical invite flows — and a gate
-   * there cannot be written against a claim that was never carried (#1359). Whoever
-   * writes that gate decides what `undefined` means; this package deliberately does not.
+   * `identifyEmail` (./email-identity.ts) is what reads it: an address identifies someone
+   * only when this is `true`, and `undefined` is refused like `false` (#1359).
    */
   emailVerified?: boolean;
 }
