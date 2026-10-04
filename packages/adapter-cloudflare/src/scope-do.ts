@@ -4437,7 +4437,8 @@ export function defineScopeDO(
     private jobPatchArgs(id: string, patch: JobRunPatch, owner: string | undefined) {
       return [
         patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
-        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id, owner ?? null,
+        // `?? null`: a coordinator from before #2042 r3 sends no `admissionMisses`.
+        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, patch.admissionMisses ?? null, id, owner ?? null,
       ] as const;
     }
 
@@ -5355,6 +5356,8 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_job_runs ADD COLUMN lease_owner TEXT',
         // #2042 r2: whether the holder entered its pass. NULL for any lease already there: free to take over.
         'ALTER TABLE _substrat_job_runs ADD COLUMN lease_entered_at TEXT',
+        // #2042 r3: consecutive admission misses. NULL = none, right for every run already there.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN admission_misses INTEGER',
         // Executor retry state (#100). The defaults read as "terminal", which is
         // right for every row already there: each is a completed delivery or a
         // consumer dead-letter.

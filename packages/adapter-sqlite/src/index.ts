@@ -5282,7 +5282,7 @@ export class SqliteScopeHost implements ScopeHost {
     // kernel's statement, so both adapters hold the same line.
     const patchRun = db.prepare(JOB_RUN_PATCH_SQL);
     const patchArgs = (id: string, p: JobRunPatch, owner: string) =>
-      [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id, owner] as const;
+      [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, p.admissionMisses, id, owner] as const;
     const enteredAt = db.prepare('SELECT lease_entered_at FROM _substrat_job_runs WHERE id = ?');
     const enterRun = db.prepare(JOB_RUN_ENTER_SQL);
     const claimRun = db.prepare(JOB_RUN_CLAIM_SQL);
@@ -11738,6 +11738,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #2042 r2: whether the holder entered its pass. NULL = it has not, which is right for any lease
     // already there: a takeover of it costs nothing.
     this.ensureColumn(db, '_substrat_job_runs', 'lease_entered_at', 'lease_entered_at TEXT');
+    // #2042 r3: consecutive admission misses. NULL = none, right for every run already there.
+    this.ensureColumn(db, '_substrat_job_runs', 'admission_misses', 'admission_misses INTEGER');
     // #2009: the copy classification on a scope DB built before it (NULL reads as a copy; see
     // `COPY_ORIGIN_DDL`).
     this.ensureColumn(db, '_substrat_copy_origin', 'is_copy', 'is_copy INTEGER');

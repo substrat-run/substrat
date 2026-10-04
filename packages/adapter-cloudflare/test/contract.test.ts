@@ -23,7 +23,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_LEASE_MIN_MS, JOB_RUN_DUE_AT, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_LEASE_MIN_MS, JOB_RUN_DUE_AT, JOB_ADMISSION_MISS_MAX, JOB_LEASE_TOO_SHORT_NOTE, admissionBackoffMs, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -2693,10 +2693,12 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
     expect(briefPasses).toBe(0);
-    expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 0, leaseOwner: null });
-    // Released due now, so the next drive runs it, even on `maxAttempts: 1`.
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 0, admissionMisses: 1, leaseOwner: null });
+    // Released after its admission backoff (skipped here); the next drive runs it, even on `maxAttempts: 1`.
+    await dueNow(s);
     expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
     expect(briefPasses).toBe(1);
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', admissionMisses: 0 });
   });
 
   /**
@@ -2736,6 +2738,81 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(counting.jobEnterAnswers).toEqual([false]);
     expect(briefPasses).toBe(0);
     expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 0, leaseOwner: null });
+  });
+
+  /**
+   * #2034 (#2042 review r3): a run whose every claim comes back too late is not claimed forever.
+   * Each miss is counted on the row and backs the next claim off (the waits are skipped here), and
+   * at JOB_ADMISSION_MISS_MAX it fails, its lease too short for where it runs.
+   */
+  it('#2034: consecutive admission misses back off, then fail the run, lease too short', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'always-late', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    counting.afterJobClaim = () => new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+    const h = jobDeployment(counting.ns);
+    for (let miss = 1; miss < JOB_ADMISSION_MISS_MAX; miss += 1) {
+      const before = Date.now();
+      expect(await h.runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1, failed: 0 });
+      const row = await runOf(s, run.id);
+      expect(row).toMatchObject({ status: 'running', attempts: 0, admissionMisses: miss, leaseOwner: null });
+      expect(Date.parse(row!.nextAttemptAt!)).toBeGreaterThanOrEqual(before + admissionBackoffMs(miss));
+      await dueNow(s);
+    }
+    const last = await h.runDueJobs(t, s);
+    expect(last).toMatchObject({ attempted: 0, failed: 1 });
+    expect(last.errors[0]!.error).toContain(JOB_LEASE_TOO_SHORT_NOTE);
+    expect(await runOf(s, run.id)).toMatchObject({
+      status: 'failed',
+      attempts: 0,
+      admissionMisses: JOB_ADMISSION_MISS_MAX,
+      lastError: expect.stringContaining(`leaseMs ${JOB_LEASE_MIN_MS}`),
+    });
+    expect(briefPasses).toBe(0);
+  });
+
+  it('#2034: twin — an entry resets the admission misses', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late-then-prompt', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    counting.afterJobClaim = () => new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+    for (let i = 0; i < 3; i += 1) {
+      await jobDeployment(counting.ns).runDueJobs(t, s);
+      await dueNow(s);
+    }
+    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 3 });
+    counting.afterJobClaim = null;
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', admissionMisses: 0 });
+    expect(briefPasses).toBe(1);
+  });
+
+  it("#2034: the DO's entry statement clears the admission misses the outcome patch wrote", async () => {
+    const s = await newScope();
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'reset', payload: {} });
+    type Store = {
+      jobRunClaim(id: string, owner: string, now: string, until: string): Promise<unknown>;
+      jobRunEnter(id: string, owner: string, marginMs: number): Promise<boolean>;
+      jobRunPatch(id: string, patch: Record<string, unknown>, owner: string): Promise<boolean>;
+    };
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as Store;
+    const lease = () => {
+      const now = new Date();
+      return [now.toISOString(), new Date(now.getTime() + 60_000).toISOString()] as const;
+    };
+    await stub.jobRunClaim(run.id, 'first', ...lease());
+    expect(
+      await stub.jobRunPatch(run.id, {
+        status: 'running', cursor: null, counters: '{}', attempts: 0, lastError: null,
+        updatedAt: new Date().toISOString(), nextAttemptAt: null, endedAt: null, admissionMisses: 4,
+      }, 'first'),
+    ).toBe(true);
+    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 4 });
+    await stub.jobRunClaim(run.id, 'second', ...lease());
+    expect(await stub.jobRunEnter(run.id, 'second', 1_000)).toBe(true);
+    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 0, leaseOwner: 'second' });
   });
 
   it('#2034: twin — a claim answered in time runs its pass once', async () => {

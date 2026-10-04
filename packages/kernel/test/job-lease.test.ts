@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { ScopeStub } from '../src/scope-host.js';
 import {
+  JOB_ADMISSION_BACKOFF_BASE_MS,
+  JOB_ADMISSION_BACKOFF_MAX_MS,
+  JOB_ADMISSION_MISS_MAX,
   JOB_DEFER_MS,
+  JOB_LEASE_TOO_SHORT_NOTE,
   JOB_LEASE_ENTRY_MARGIN,
   JOB_LEASE_EXPIRED_NOTE,
   JOB_LEASE_MIN_MS,
   JOB_LEASE_MS,
+  admissionBackoffMs,
   assertLeaseMs,
   runDueJobRuns,
   type JobHandler,
@@ -340,11 +345,20 @@ describe('#2034: a due run is claimed before its handler runs', () => {
       });
       const drive = driver(store, clock, () => ((invoked += 1), { done: true }), { maxAttempts: 1 });
       expect(await drive()).toMatchObject({ attempted: 0, superseded: 1 });
-      // It still held the run, so it released it: due now, unleased, nothing charged.
-      expect(table.get('A')).toMatchObject({ status: 'running', attempts: 0, lease_owner: null, lease_entered_at: null, next_attempt_at: iso(clock.ms) });
+      // It still held the run, so it released it: unleased, nothing charged, one admission miss
+      // counted and the first admission backoff to wait out (#2042 r3).
+      expect(table.get('A')).toMatchObject({
+        status: 'running',
+        attempts: 0,
+        admission_misses: 1,
+        lease_owner: null,
+        lease_entered_at: null,
+        next_attempt_at: iso(clock.ms + JOB_ADMISSION_BACKOFF_BASE_MS),
+      });
+      clock.ms += JOB_ADMISSION_BACKOFF_BASE_MS;
       expect(await drive()).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
       expect(invoked).toBe(1);
-      expect(table.get('A')).toMatchObject({ status: 'done', attempts: 0 });
+      expect(table.get('A')).toMatchObject({ status: 'done', attempts: 0, admission_misses: null });
     });
 
     it('an entry delayed past the lease is judged by fresh time: it stamps nothing, and a rival runs the run once (#2042 r3)', async () => {
@@ -449,7 +463,7 @@ describe('#2034: a due run is claimed before its handler runs', () => {
       expect(report).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
     });
 
-    it('a late answer that still holds the run releases it, due now and no attempt spent', async () => {
+    it('a late answer that still holds the run releases it, after a backoff and no attempt spent', async () => {
       const clock = { ms: T0 };
       let invoked = 0;
       let slow = true;
@@ -470,10 +484,105 @@ describe('#2034: a due run is claimed before its handler runs', () => {
         lease_owner: null,
         attempts: 1,
         last_error: 'earlier',
-        next_attempt_at: iso(clock.ms),
+        next_attempt_at: iso(clock.ms + JOB_ADMISSION_BACKOFF_BASE_MS),
       });
+      clock.ms += JOB_ADMISSION_BACKOFF_BASE_MS;
       expect(await drive()).toMatchObject({ attempted: 1, completed: 1 });
       expect(invoked).toBe(1);
+    });
+  });
+
+  describe('repeated admission misses back off, and end the run (#2042 review r3)', () => {
+    /** A store whose every claim answer comes back with less than the margin of its lease left. */
+    const alwaysLate = (clock: { ms: number }, lateFor = () => true) =>
+      memoryJobStore([rowOf('A')], {
+        clock: () => iso(clock.ms),
+        afterClaim: () => {
+          if (lateFor()) clock.ms += JOB_LEASE_MS * (1 - JOB_LEASE_ENTRY_MARGIN);
+        },
+      });
+
+    it('each miss waits longer, no handler runs and no attempt is charged; at the limit the run fails, lease too short', async () => {
+      const clock = { ms: T0 };
+      let invoked = 0;
+      const { store, table } = alwaysLate(clock);
+      const drive = driver(store, clock, () => ((invoked += 1), { done: true }), { maxAttempts: 1 });
+      const waits: number[] = [];
+      for (let miss = 1; miss < JOB_ADMISSION_MISS_MAX; miss += 1) {
+        const report = await drive();
+        expect(report).toMatchObject({ attempted: 0, superseded: 1, failed: 0 });
+        expect(report.warnings).toEqual([{ runId: 'A', warning: expect.stringMatching(`admission miss ${miss} of ${JOB_ADMISSION_MISS_MAX}`) }]);
+        const row = table.get('A')!;
+        expect(row).toMatchObject({ status: 'running', attempts: 0, admission_misses: miss, lease_owner: null });
+        waits.push(Date.parse(row.next_attempt_at!) - clock.ms);
+        clock.ms = Date.parse(row.next_attempt_at!);
+      }
+      // Exponential, capped.
+      expect(waits).toEqual(waits.map((_, i) => Math.min(JOB_ADMISSION_BACKOFF_MAX_MS, JOB_ADMISSION_BACKOFF_BASE_MS * 2 ** i)));
+      expect(admissionBackoffMs(JOB_ADMISSION_MISS_MAX + 20)).toBe(JOB_ADMISSION_BACKOFF_MAX_MS);
+      const last = await drive();
+      expect(last).toMatchObject({ attempted: 0, failed: 1, superseded: 0 });
+      expect(last.errors).toEqual([{ runId: 'A', error: expect.stringContaining(JOB_LEASE_TOO_SHORT_NOTE) }]);
+      expect(table.get('A')).toMatchObject({
+        status: 'failed',
+        attempts: 0,
+        admission_misses: JOB_ADMISSION_MISS_MAX,
+        last_error: expect.stringMatching(new RegExp(`^${JOB_LEASE_TOO_SHORT_NOTE}: .*leaseMs ${JOB_LEASE_MS}`)),
+      });
+      expect(invoked).toBe(0);
+      // Terminal: not claimed again.
+      clock.ms += JOB_ADMISSION_BACKOFF_MAX_MS;
+      expect(await drive()).toMatchObject({ attempted: 0, superseded: 0, failed: 0 });
+    });
+
+    it('the reset is the ENTRY itself: a pass that entered and then died leaves the count at zero', async () => {
+      const clock = { ms: T0 };
+      const held = gate();
+      const inside = gate();
+      let late = false;
+      const { store, table } = memoryJobStore([rowOf('A', { admission_misses: 5 })], {
+        clock: () => iso(clock.ms),
+        afterClaim: () => {
+          if (late) clock.ms += JOB_LEASE_MS * (1 - JOB_LEASE_ENTRY_MARGIN);
+        },
+      });
+      const dying = driver(store, clock, async () => {
+        inside.open();
+        await held.opened; // it never reports
+        return { done: true };
+      })();
+      await inside.opened;
+      expect(table.get('A')).toMatchObject({ admission_misses: null });
+      clock.ms += JOB_LEASE_MS;
+      late = true;
+      // The takeover's own claim comes back late: a FIRST miss, not the sixth.
+      expect(await driver(store, clock, () => ({ done: true }))()).toMatchObject({ superseded: 1 });
+      expect(table.get('A')).toMatchObject({ admission_misses: 1, attempts: 1 });
+      held.open();
+      await dying;
+    });
+
+    it('twin: an entry resets the count, so misses must be consecutive to end the run', async () => {
+      const clock = { ms: T0 };
+      let claims = 0;
+      // Late on every claim but the one after the seventh: the run advances there.
+      const { store, table } = alwaysLate(clock, () => (claims += 1) !== 8);
+      let passes = 0;
+      const drive = driver(store, clock, () => ((passes += 1), { cursor: passes }), { maxAttempts: 1 });
+      for (let i = 0; i < 7; i += 1) {
+        await drive();
+        clock.ms = Date.parse(table.get('A')!.next_attempt_at!);
+      }
+      expect(table.get('A')).toMatchObject({ admission_misses: 7 });
+      expect(await drive()).toMatchObject({ attempted: 1, advanced: 1 });
+      expect(table.get('A')).toMatchObject({ status: 'running', admission_misses: null, next_attempt_at: null });
+      // Seven more misses would have ended a run that kept its count; this one is still going.
+      for (let i = 0; i < 7; i += 1) {
+        expect(await drive()).toMatchObject({ superseded: 1, failed: 0 });
+        clock.ms = Date.parse(table.get('A')!.next_attempt_at!);
+      }
+      expect(table.get('A')).toMatchObject({ status: 'running', admission_misses: 7 });
+      expect(passes).toBe(1);
     });
   });
 

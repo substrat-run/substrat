@@ -52,6 +52,7 @@ export function memoryJobStore(
       updated_at: p.updatedAt,
       next_attempt_at: p.nextAttemptAt,
       ended_at: p.endedAt,
+      admission_misses: p.admissionMisses,
       lease_owner: null,
       lease_entered_at: null,
     });
@@ -105,7 +106,7 @@ export function memoryJobStore(
       const enterBy = new Date(Date.parse(now) + marginMs).toISOString();
       const r = table.get(id);
       const entered = holds(r, owner) && r.next_attempt_at !== null && r.next_attempt_at > enterBy;
-      if (entered) table.set(id, { ...r, lease_entered_at: now });
+      if (entered) table.set(id, { ...r, lease_entered_at: now, admission_misses: null });
       await opts.afterEnter?.(id, entered);
       return entered;
     },

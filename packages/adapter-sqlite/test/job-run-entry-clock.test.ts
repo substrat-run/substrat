@@ -54,7 +54,7 @@ it('an entry that runs after its lease expired stamps nothing, and the next driv
   }
 });
 
-it('twin: an entry that runs in time stamps the lease', async () => {
+it('twin: an entry that runs in time stamps the lease, and clears the admission misses', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-job-entry-'));
   const clock = manualClock('2026-10-05T00:00:00.000Z');
   const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)), clock: clock.read });
@@ -79,6 +79,17 @@ it('twin: an entry that runs in time stamps the lease', async () => {
     clock.advance(JOB_LEASE_MIN_MS / 2); // half the lease left: more than the margin
     expect(await store.enter(run.id, 'prompt-entry', JOB_LEASE_MIN_MS / 4)).toBe(true);
     expect((await store.list({})).find((r) => r.id === run.id)).toMatchObject({ lease_entered_at: clock.read() });
+
+    // #2042 r3: an admission miss's count lands through the outcome patch, and an entry clears it.
+    expect(await store.patch(run.id, {
+      status: 'running', cursor: null, counters: '{}', attempts: 0, lastError: null,
+      updatedAt: clock.read(), nextAttemptAt: clock.read(), endedAt: null, admissionMisses: 3,
+    }, 'prompt-entry')).toBe(true);
+    expect((await store.list({})).find((r) => r.id === run.id)).toMatchObject({ admission_misses: 3, lease_owner: null });
+    const again = clock.read();
+    await store.claim(run.id, 'next', again, new Date(Date.parse(again) + JOB_LEASE_MIN_MS).toISOString());
+    expect(await store.enter(run.id, 'next', JOB_LEASE_MIN_MS / 4)).toBe(true);
+    expect((await store.list({})).find((r) => r.id === run.id)).toMatchObject({ admission_misses: null });
   } finally {
     await host.close();
     rmSync(dir, { recursive: true, force: true });

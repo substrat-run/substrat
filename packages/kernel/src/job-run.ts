@@ -93,6 +93,13 @@ import { ulid } from './ulid.js';
  * left: a claim whose answer came back late may have expired on the way, and the run
  * may be someone else's already. Only an entered pass invokes the handler.
  *
+ * A claim that cannot enter is an ADMISSION MISS: no handler ran, so no attempt is
+ * charged, but the run counts consecutive misses (`admission_misses`, cleared by an
+ * entry), waits a growing backoff before its next claim (`admissionBackoffMs`), and the
+ * drive reports and logs a warning naming the job, its `leaseMs` and the delay it saw.
+ * After `JOB_ADMISSION_MISS_MAX` in a row the run fails with `JOB_LEASE_TOO_SHORT_NOTE`:
+ * a lease that the environment's round trips keep eating cannot be fixed by waiting.
+ *
  * The entry is judged twice, both times against fresh time: by the store as the entry
  * statement runs, and by the drive once its answer is back. So the stretch between a
  * successful entry and the handler starting is covered by the margin.
@@ -168,7 +175,12 @@ export const JOB_RUN_DDL = `
     lease_owner TEXT,
     -- #2034 (#2042 r2): when the holder ENTERED its pass (JOB_RUN_ENTER_SQL); NULL = it has
     -- not, and a claim that never entered is taken over without costing an attempt.
-    lease_entered_at TEXT
+    lease_entered_at TEXT,
+    -- #2042 r3: CONSECUTIVE claims that could not enter their pass (their answer came back
+    -- with too little of the lease left). NULL = none; reset by an entry. Not attempts: no
+    -- handler ran. Past JOB_ADMISSION_MISS_MAX the run fails, its lease too short for where
+    -- it runs.
+    admission_misses INTEGER
   );
   -- The drive's read: WHERE status = 'running' AND (next_attempt_at IS NULL OR <= ?)
   -- ORDER BY id. Leading with status makes the live runs a seekable range over a
@@ -223,11 +235,12 @@ export const JOB_RUN_DDL = `
  * patches the unleased rows it drives.
  *
  * Params: status, cursor, counters, attempts, last_error, updated_at, next_attempt_at,
- * ended_at, id, lease_owner.
+ * ended_at, admission_misses, id, lease_owner.
  */
 export const JOB_RUN_PATCH_SQL = `UPDATE _substrat_job_runs
      SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
-         updated_at = ?, next_attempt_at = ?, ended_at = ?, lease_owner = NULL, lease_entered_at = NULL
+         updated_at = ?, next_attempt_at = ?, ended_at = ?, admission_misses = ?,
+         lease_owner = NULL, lease_entered_at = NULL
    WHERE id = ? AND status = 'running' AND lease_owner IS ?`;
 
 /**
@@ -263,11 +276,12 @@ export const JOB_RUN_CLAIM_SQL = `UPDATE _substrat_job_runs
  * A compare-and-set: it marks the lease entered only while `lease_owner` is still this claim's
  * and the lease still runs past `enter_by` (now, plus `JOB_LEASE_ENTRY_MARGIN` of the lease). A
  * claim whose answer came back late finds its lease gone or nearly gone here, and enters
- * nothing; only an entered lease costs an attempt when it is taken over.
+ * nothing; only an entered lease costs an attempt when it is taken over. An entry clears the
+ * run's `admission_misses`.
  *
  * Params: lease_entered_at (now), id, lease_owner, enter_by.
  */
-export const JOB_RUN_ENTER_SQL = `UPDATE _substrat_job_runs SET lease_entered_at = ?
+export const JOB_RUN_ENTER_SQL = `UPDATE _substrat_job_runs SET lease_entered_at = ?, admission_misses = NULL
    WHERE id = ? AND status = 'running' AND lease_owner IS ? AND next_attempt_at > ?`;
 
 /**
@@ -334,6 +348,11 @@ export interface JobRun extends JobRunKey {
   endedAt: string | null;
   /** #2034: the pass holding the run right now, or null. Opaque; minted per claim. */
   leaseOwner: string | null;
+  /**
+   * #2042 r3: consecutive claims that could not enter their pass in time — 0 once one does. Not
+   * attempts: no handler ran. A run that keeps missing fails with `JOB_LEASE_TOO_SHORT_NOTE`.
+   */
+  admissionMisses: number;
   /**
    * Why this row could not be read whole, or null — which is the ordinary case and
    * what every run written by this driver carries.
@@ -414,6 +433,27 @@ export const JOB_LEASE_MIN_MS = 100;
  * paused isolate — is time another drive can spend taking the run over once the lease has expired.
  */
 export const JOB_LEASE_ENTRY_MARGIN = 0.25;
+
+/**
+ * #2042 r3: consecutive admission misses after which a run fails rather than being claimed again.
+ * A claim that cannot enter in time costs no attempt, so without a bound a run whose lease is too
+ * short for where it runs would be claimed, missed and released forever, with nothing reporting it.
+ */
+export const JOB_ADMISSION_MISS_MAX = 10;
+
+/** #2042 r3: the wait after a first admission miss; it doubles per miss, up to `JOB_ADMISSION_BACKOFF_MAX_MS`. */
+export const JOB_ADMISSION_BACKOFF_BASE_MS = 1_000;
+
+/** #2042 r3: the longest wait between two admission attempts. */
+export const JOB_ADMISSION_BACKOFF_MAX_MS = 5 * 60_000;
+
+/** #2042 r3: how long a run waits after its `misses`-th consecutive admission miss. */
+export function admissionBackoffMs(misses: number): number {
+  return Math.min(JOB_ADMISSION_BACKOFF_MAX_MS, JOB_ADMISSION_BACKOFF_BASE_MS * 2 ** Math.max(0, misses - 1));
+}
+
+/** #2042 r3: the start of `last_error` on a run failed for missing its admission `JOB_ADMISSION_MISS_MAX` times. */
+export const JOB_LEASE_TOO_SHORT_NOTE = 'lease too short for this environment';
 
 /** #2034: `last_error` of a run whose expired lease a later claim took over. */
 export const JOB_LEASE_EXPIRED_NOTE =
@@ -548,6 +588,11 @@ export interface JobDriveReport {
   deferred: number;
   /** Per-run failures, the same shape `ScheduleRunReport.errors` has: what failed and why. */
   errors: { runId: string; error: string }[];
+  /**
+   * #2042 r3: what the drive saw but did not count as a failure — a claim that could not enter its
+   * pass in time, with the job's lease and the delay observed. Also logged as a structured line.
+   */
+  warnings: { runId: string; warning: string }[];
 }
 
 /** The `_substrat_job_runs` row, as both adapters' SQL returns it. */
@@ -572,6 +617,8 @@ export interface JobRunRow {
   readonly lease_owner?: string | null;
   /** #2034 (#2042 r2): when the holder entered its pass. Optional for the same reason. */
   readonly lease_entered_at?: string | null;
+  /** #2042 r3: consecutive claims that could not enter. Optional for the same reason. */
+  readonly admission_misses?: number | null;
 }
 
 /**
@@ -608,6 +655,8 @@ export interface JobRunPatch {
   readonly updatedAt: string;
   readonly nextAttemptAt: string | null;
   readonly endedAt: string | null;
+  /** #2042 r3: consecutive admission misses; null outside an admission miss. */
+  readonly admissionMisses: number | null;
 }
 
 /**
@@ -751,6 +800,9 @@ class PassDeferred extends Error {
  */
 export const JOB_DEFER_MS = 60_000;
 
+/** The runtime's console, which the kernel's lib does not declare; as `invocation-log.ts` reaches it. */
+declare const console: { log(message: string): void };
+
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** What a value is, for the refusal message: `a Uint8Array`, `a function`, `a Date`. */
@@ -873,6 +925,7 @@ export function jobRunOf(row: JobRunRow): JobRun {
     nextAttemptAt: row.next_attempt_at,
     endedAt: row.ended_at,
     leaseOwner: row.lease_owner ?? null,
+    admissionMisses: row.admission_misses ?? 0,
     decodeError,
   };
 }
@@ -976,12 +1029,13 @@ function settle(
   run: JobRunRow,
   owner: string,
   at: string,
-  outcome: Pick<JobRunPatch, 'status' | 'attempts' | 'lastError' | 'nextAttemptAt'>,
+  outcome: Pick<JobRunPatch, 'status' | 'attempts' | 'lastError' | 'nextAttemptAt'> & { admissionMisses?: number },
 ): Promise<boolean> {
   return store.patch(
     run.id,
     {
       ...outcome,
+      admissionMisses: outcome.admissionMisses ?? null,
       cursor: run.cursor,
       counters: run.counters,
       updatedAt: at,
@@ -1190,6 +1244,7 @@ export async function runJobPass(options: {
         // Cleared, never left at the lease's expiry: the lease ends with the pass (#2034).
         nextAttemptAt: null,
         endedAt: done ? at : null,
+        admissionMisses: null,
       },
       owner,
     );
@@ -1288,6 +1343,7 @@ export async function runDueJobRuns(options: {
     superseded: 0,
     deferred: 0,
     errors: [],
+    warnings: [],
   };
   const maxPasses = Math.max(1, options.maxPasses ?? 1);
   // Bound for the store's `LIMIT` (#1632): refused, not normalized, when it is not a positive integer.
@@ -1331,14 +1387,48 @@ export async function runDueJobRuns(options: {
     if (await options.store.enter(id, owner, margin)) {
       if (Date.parse(won.run.next_attempt_at!) - Date.parse(options.now()) > margin) return { ...won, owner };
     }
+    // An admission miss (#2042 r3): no handler ran, so no attempt is charged — but consecutive misses
+    // are counted, the run waits out a growing backoff before its next claim, and past
+    // JOB_ADMISSION_MISS_MAX it fails, its lease too short for where it runs.
     const now = options.now();
-    await settle(options.store, won.run, owner, now, {
-      status: 'running',
-      attempts: won.run.attempts,
-      lastError: won.run.last_error,
-      nextAttemptAt: now,
-    });
-    report.superseded += 1;
+    const misses = (won.run.admission_misses ?? 0) + 1;
+    const giveUp = misses >= JOB_ADMISSION_MISS_MAX;
+    const observed = Date.parse(now) - Date.parse(at);
+    const warning =
+      `job ${won.run.module_id}/${won.run.job}: claim not entered in time — leaseMs ${leaseMs}, entry margin ` +
+      `${margin} ms, claim and entry took ${observed} ms (admission miss ${misses} of ${JOB_ADMISSION_MISS_MAX})`;
+    report.warnings.push({ runId: id, warning });
+    console.log(JSON.stringify({
+      substrat: 'job-admission-miss',
+      runId: id,
+      job: `${won.run.module_id}/${won.run.job}`,
+      leaseMs,
+      marginMs: margin,
+      observedMs: observed,
+      misses,
+      max: JOB_ADMISSION_MISS_MAX,
+    }));
+    const settled = await settle(options.store, won.run, owner, now, giveUp
+      ? {
+          status: 'failed',
+          attempts: won.run.attempts,
+          lastError: `${JOB_LEASE_TOO_SHORT_NOTE}: ${warning}`,
+          nextAttemptAt: null,
+          admissionMisses: misses,
+        }
+      : {
+          status: 'running',
+          attempts: won.run.attempts,
+          lastError: won.run.last_error,
+          nextAttemptAt: plusMs(now, admissionBackoffMs(misses)),
+          admissionMisses: misses,
+        });
+    if (settled && giveUp) {
+      report.failed += 1;
+      report.errors.push({ runId: id, error: `${JOB_LEASE_TOO_SHORT_NOTE}: ${warning}` });
+    } else {
+      report.superseded += 1;
+    }
     return null;
   };
 
