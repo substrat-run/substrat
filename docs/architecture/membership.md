@@ -177,6 +177,27 @@ construction. §3 named the split trail as the main thing that gets worse under 
 pattern; joining it is cheap to design now and impossible to reconstruct after two years of
 uncorrelated rows — which is exactly when someone asks.
 
+**The executor is the kernel's, mounted once (#1184).** `registerMembershipExecutor(host,
+{ actor, level })` in `@substrat-run/kernel` consumes `member.add-requested` and effects
+`addMember` plus `assignRole` at the scope or the tenant node. The correlation id is the
+event's own kernel-minted id, carried back as `causedBy` on both admin rows. Nothing in the
+payload is authority, because module code wrote it. The executor takes the inviter from the
+kernel-stamped actor of the invitation's `invites.sent` event, and the joiner from the
+request's own actor, which must also have made the invitation's first acceptance. It then
+asks §5.1's set comparison, at the node it is about to assign at and at execution time,
+whether that inviter still holds the role. A sender demoted or removed since the send is
+refused. The bound is no weaker than `ctx.grant`'s delegation: the most a module can do is
+make the principal who really invoked it look like the sender. A refusal is terminal
+(`refuseDelivery`, a return value module code cannot produce), journaled with the missing
+permissions, and reported to the accepting call through `onExecutorOutcomes`. The admin rows
+name the platform actor that executed them and, through `attributed` (#977), the inviter
+`onBehalfOf` whom they were written. That answers the `PlatformActorId` question: the actor
+is the hand, and the person whose authority bounded the write is recorded beside it, not
+laundered away. The dashboard mounts it at the tenant node, with its own scope sweeper as
+the backstop. The verticals that mount `vertical-auth`'s invite routes do not need it:
+their invite grants a SCOPE role, a scope-local tuple already bounded by
+`assignScopeRoleBounded`, and no org membership.
+
 ### 4.3 Revocation: tombstone, never delete (K-21, shipped)
 
 A revoked tuple keeps its row and gains a `revoked_at` the checker's walk skips. Decided
@@ -291,7 +312,8 @@ rate-limited. The mechanics came from [booking-social](../rfc/booking-social.md)
 don't search" — written for a consumer social graph, and they transferred intact.
 
 **The engine owns the flow; the executor owns the effect.** On accept the engine
-*emits* `member.add-requested` and the connector (§4.2) effects it. An earlier draft of
+*emits* `invites.accepted` and `member.add-requested`, and the kernel's membership executor
+(§4.2) effects the second. An earlier draft of
 this section said the engine "calls the §4 seam", which was the in-scope framing §4.1
 corrects: the engine cannot call anything that writes the directory, because that write
 is outside its transaction. It asks. That is why the seam had to exist first — without
