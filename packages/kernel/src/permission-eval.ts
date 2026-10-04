@@ -183,6 +183,13 @@ async function walkParents<R>(
 ): Promise<R | undefined> {
   type Frontier = { ref: string; chain: RelationTuple[] };
   let frontier: Frontier[] = [{ ref: start, chain: [] }];
+  // Each node is probed and expanded once, at the first (shallowest) depth it is reached,
+  // so the walk costs one `parents` read per distinct node — not one per PATH to it. A
+  // multi-parent row whose parents share an ancestor (a ticket0 message under N widget
+  // sessions, each under one conversation) would otherwise expand that ancestor N times
+  // (#1853). Shallowest-first keeps the answer: a later sighting is never closer to a hit
+  // and never reaches further within the depth bound.
+  const visited = new Set<string>([start]);
   for (let depth = 0; depth <= ENTITY_WALK_DEPTH && frontier.length > 0; depth++) {
     for (const candidate of frontier) {
       const hit = await probe(candidate.ref, candidate.chain);
@@ -198,7 +205,8 @@ async function walkParents<R>(
         // for grants and membership but silently NOT for entity edges — which is the
         // case open question 15 is actually about (a facility moving management
         // company must stop being reachable).
-        if (!live(p, now)) continue;
+        if (!live(p, now) || visited.has(p.object)) continue;
+        visited.add(p.object);
         next.push({
           ref: p.object,
           chain: [...candidate.chain, t(p.subject, 'parent', p.object)],
