@@ -383,7 +383,7 @@ export type {
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, MARK_COPY_ORIGIN_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
-export { isLifecycleWrite, lifecycleAfterLoad, lifecycleReceipt, lifecycleRefusal, readLifecycle, settleLifecycleAfterLoad, SCOPE_LIFECYCLE_KEY, supersedes as lifecycleSupersedes, WRITE_LIFECYCLE_SQL, writeLifecycle } from './scope-lifecycle.js';
+export { isLifecycleWrite, lifecycleAfterLoad, lifecycleReceipt, lifecycleRefusal, readLifecycle, settleLifecycleAfterLoad, SCOPE_LIFECYCLE_KEY, WRITE_LIFECYCLE_SQL, writeLifecycle } from './scope-lifecycle.js';
 export { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, type KeptCopy, carriedAwayDump, dumpMetaValue, isCopyMarkInsert, isWriteStatement, metaValueIn, type CarriedAway, type LoadMarker } from './carried-copy.js';
 export { LEGACY_SCOPE_ROWS_BACKFILL, assertDirectoryTablesBuilt, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, spineColumnAdditions, spineRowsInsert, type KernelColumnsOf } from './spine-restore.js';
 export {

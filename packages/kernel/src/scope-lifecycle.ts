@@ -66,7 +66,7 @@ const UNREVISED: LifecycleRevision = { scope: -1, tenant: -1 };
  * deliveries can tie. Revisions that disagree (newer on one, older on the other) cannot come from
  * one directory read and are refused too.
  */
-export function supersedes(next: StoredScopeLifecycle, current: StoredScopeLifecycle | null): boolean {
+function supersedes(next: StoredScopeLifecycle, current: StoredScopeLifecycle | null): boolean {
   if (current === null) return true;
   const n = next.revision ?? UNREVISED;
   const c = current.revision ?? UNREVISED;
