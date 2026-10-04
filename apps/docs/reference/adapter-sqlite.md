@@ -91,6 +91,11 @@ Beyond `getScope`, the host implements the admin-side contract the platform driv
 - **connectors** — `registerConnector`, `dispatchConnector`, `getConnectorScope`,
   `getConnectorAttachments`
 - **schedules** — `registeredSchedules`, `runDueSchedules`, `getSystemScope`
+- **system switch** — `host.admin.revokeFromSystem` and `restoreToSystem` record the
+  requested position in the directory and move the scope's switch in a serialized
+  actor turn. An OFF also checks tenant-level system grants, so the scope marker
+  denies those grants as well as scope-local ones; the response attests this with
+  `deniesTenantGrants: true`.
 - **resumable runs** — `registerJob`, `startJobRun`, `runDueJobs`, `jobRuns`
 - **platform intents** — `listPlatformRequests`, `listPlatformRequestHistory`,
   `settlePlatformRequest`
