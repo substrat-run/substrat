@@ -676,6 +676,16 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
     expect(seen).toEqual([{ path: '/internal/system-switch', body: { scopeId: s, moduleId: '@test/sched', to: 'off' } }]);
   });
 
+  it("posts the platform's tenantHeld when it is given (#1823)", async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const client = answering(
+      () => new Response(JSON.stringify({ held: true, changed: true, permissions: [] }), { status: 200 }),
+      seen,
+    );
+    await client.systemSwitch({ ...input, tenantHeld: true });
+    expect(seen[0]?.body).toEqual({ scopeId: s, moduleId: '@test/sched', to: 'off', tenantHeld: true });
+  });
+
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
   ])('%s — the explicit legacy signal — is a 501 that says to redeploy', async (_name, res) => {

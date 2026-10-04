@@ -422,6 +422,7 @@ export {
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
   scopesSwitchedOffFor,
+  tenantHoldsSystemGrant,
   switchedOffModulesOf,
   systemSwitchRecordsOf,
   systemSwitchesTableExists,

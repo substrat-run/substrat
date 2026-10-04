@@ -758,7 +758,13 @@ export class VerticalClient {
    * have landed and the switch may have moved before the answer was lost, so the only honest
    * instruction is to confirm the position first.
    */
-  async systemSwitch(input: { scopeId: ScopeId; moduleId: ModuleId; to: 'on' | 'off' }): Promise<SystemSwitchOutcome> {
+  async systemSwitch(input: {
+    scopeId: ScopeId;
+    moduleId: ModuleId;
+    to: 'on' | 'off';
+    /** #1823: the platform holds a live tenant-level grant for the module — see the route's body. */
+    tenantHeld?: boolean;
+  }): Promise<SystemSwitchOutcome> {
     const verb = 'system-switch';
     const lost =
       `the switch on scope ${input.scopeId} may or may not have moved. ` +

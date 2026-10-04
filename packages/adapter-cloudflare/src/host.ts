@@ -786,7 +786,7 @@ interface ControlPlaneStub {
   }): Promise<void>;
   listConnectionGrants(tenantId: string): Promise<ConnectionGrantDoRow[]>;
   // #1674: the schedule switch's directory record — `system-switch-record.ts`.
-  recordSystemSwitchedOff(row: SystemSwitchRecordWrite): Promise<void>;
+  recordSystemSwitchedOff(row: SystemSwitchRecordWrite): Promise<SystemSwitchRecordPrior>;
   recordSystemSwitchedOn(row: SystemSwitchRecordWrite): Promise<SystemSwitchRecordPrior>;
   restoreSystemSwitchRecord(
     key: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
@@ -795,6 +795,7 @@ interface ControlPlaneStub {
   listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
   systemSwitchRecordsOf(tenantId: string, scopeId: string): Promise<[string, 'on' | 'off'][]>;
   switchedOffModulesOf(tenantId: string, scopeId: string): Promise<string[]>;
+  tenantHeldSystemModules(tenantId: string, moduleIds: readonly string[], now: string): Promise<string[]>;
   recordConnectionUse(
     id: string,
     error: string | null,
@@ -1118,6 +1119,8 @@ interface ScopeStubRpc {
     scopeId: string,
     to: 'on' | 'off',
     at: string,
+    /** #1823: the directory holds a live tenant-level grant for the module. */
+    tenantHeld?: boolean,
   ): Promise<SwitchOutcome & { instance: string }>;
   /** Move one peer's kill switch on this scope (#1706) — the kernel's `switchPeer`. */
   switchPeer(vertical: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome>;
@@ -1250,7 +1253,7 @@ interface ScopeStubRpc {
   /** Provisioning's seat as one unit, then the recorded-off modules switched off in it (#1742). */
   seatTuples(
     tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
-    switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+    switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
   ): Promise<SwitchedOff[]>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
@@ -1363,7 +1366,7 @@ interface ScopeStubRpc {
     /** Live connections' PUBLIC sealing keys (#687) — same preserve-on-undefined convention. */
     connectionKeys?: { connection_id: string; provider: string; key_id: string; public_key: string }[],
     /** The recorded-off modules switched off after the seat, in the same unit (#1742). */
-    switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string },
+    switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
     serviceSubjects?: readonly string[],
   ): Promise<SwitchedOff[]>;
   /** Resolve an external identity from this scope's projected links (#406) — the CP-less auth read. */
@@ -1393,7 +1396,7 @@ interface ScopeStubRpc {
     destScopeId?: ScopeId,
     opts?: {
       /** The recorded-off modules switched off on `destScopeId` after the replay, in its event (#1742). */
-      switchOff?: { moduleIds: readonly string[]; at: string };
+      switchOff?: { moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] };
       /** The scope the dump was captured from (#1869): only its node grants are re-pointed. */
       sourceScopeId?: ScopeId;
       /** The platform exported the dump itself: no fallback (`RepointSource.exact`). */
@@ -1411,7 +1414,7 @@ interface ScopeStubRpc {
     tables: ScopeDumpTable[],
     destScopeId: ScopeId,
     opts: {
-      switchOff?: { moduleIds: readonly string[]; at: string };
+      switchOff?: { moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] };
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -1592,6 +1595,12 @@ export interface SystemSwitchDelegation {
     scopeId: ScopeId;
     moduleId: ModuleId;
     to: 'on' | 'off';
+    /**
+     * #1823: the directory holds a live TENANT-level grant for the module. The deployment has
+     * no directory to read it from, and a module whose only authority on the scope is that
+     * grant must still be switchable there.
+     */
+    tenantHeld?: boolean;
   }): Promise<SwitchOutcome>;
   /**
    * The read half (#1674): every module the deployment serving this scope holds or has
@@ -1929,12 +1938,14 @@ function nullControlPlane(): ControlPlaneStub {
     // #1674: the schedule switch's record is a DIRECTORY store, and a CP-less host has no
     // directory — the shared control plane that delegates here keeps it. Same posture as
     // `recordAdmin`: nothing to write, nothing recorded to read back.
-    recordSystemSwitchedOff: noop,
+    recordSystemSwitchedOff: async () => null,
     recordSystemSwitchedOn: async () => null,
     restoreSystemSwitchRecord: noop,
     listSystemSwitches: async () => [],
     systemSwitchRecordsOf: async () => [],
     switchedOffModulesOf: async () => [],
+    // #1823: no tenant tuples here either — the platform reads them and sends `tenantHeld`.
+    tenantHeldSystemModules: async () => [],
   };
   return new Proxy({} as ControlPlaneStub, {
     get: (_t, prop) =>
@@ -3247,10 +3258,17 @@ export class CloudflareScopeHost implements ScopeHost {
     // after it then finds them off, and audits what the unit moved.
     const ownStore = this.cpLess || record.vertical === null;
     const recordedOff = ownStore ? await this.cp.switchedOffModulesOf(input.tenantId, input.scopeId) : [];
+    const seatAt = new Date().toISOString();
     const switchedOff = await this.scopeStub(input.scopeId).seatTuples(
       seats,
       recordedOff.length
-        ? { scopeId: input.scopeId, moduleIds: recordedOff, at: new Date().toISOString() }
+        ? {
+            scopeId: input.scopeId,
+            moduleIds: recordedOff,
+            at: seatAt,
+            // #1823: a recorded-off module held only by a tenant grant goes back off too.
+            tenantHeld: await this.cp.tenantHeldSystemModules(input.tenantId, recordedOff, seatAt),
+          }
         : undefined,
     );
     if (ownStore) {
@@ -3742,8 +3760,16 @@ export class CloudflareScopeHost implements ScopeHost {
     // restored in its deployment, which the platform carries the same list to.
     const ownStore = this.cpLess || existing.vertical === null;
     const recordedOff = ownStore ? await this.cp.switchedOffModulesOf(tenantId, scopeId) : [];
+    const replayAt = new Date().toISOString();
     const switchedOff = await this.scopeStub(scopeId).importDump(dump.tables, scopeId, {
-      switchOff: recordedOff.length ? { moduleIds: recordedOff, at: new Date().toISOString() } : undefined,
+      switchOff: recordedOff.length
+        ? {
+            moduleIds: recordedOff,
+            at: replayAt,
+            // #1823: a recorded-off module held only by a tenant grant goes back off too.
+            tenantHeld: await this.cp.tenantHeldSystemModules(tenantId, recordedOff, replayAt),
+          }
+        : undefined,
       sourceScopeId: opts?.sourceScopeId ?? (dump.scopeId as ScopeId),
     });
     await this.recordAdmin(
@@ -4940,10 +4966,14 @@ export class CloudflareScopeHost implements ScopeHost {
       const delegation = this.cpLess || vertical !== null ? this.systemSwitchDelegation : undefined;
       // #1819: a scope whose store is here was rewound here, so `switchInScope` releases its
       // hold here too. A delegated move releases in the deployment serving the scope.
-      const move = (moduleId: ModuleId, to: 'on' | 'off', at: string): Promise<SwitchOutcome> =>
-        delegation
-          ? delegation.switch({ tenantId, scopeId, moduleId, to })
-          : this.switchInScope(scopeId, moduleId, to, at);
+      // #1823: a module whose only authority on the scope is a TENANT-level grant has nothing in
+      // the scope's storage for the switch to find, so the directory says whether it is held.
+      const move = async (moduleId: ModuleId, to: 'on' | 'off', at: string): Promise<SwitchOutcome> => {
+        const tenantHeld = (await this.cp.tenantHeldSystemModules(tenantId, [moduleId], at)).length > 0;
+        return delegation
+          ? delegation.switch({ tenantId, scopeId, moduleId, to, tenantHeld })
+          : this.switchInScope(scopeId, moduleId, to, at, tenantHeld);
+      };
       return { vertical, move };
     };
 
@@ -4965,37 +4995,37 @@ export class CloudflareScopeHost implements ScopeHost {
       const target = { tenantId, scopeId, vertical };
       const base = { operationId, moduleId: input.moduleId, schedules: to };
       await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
-      // The directory's record (#1674): ON before the scope moves, OFF after it held — see
-      // `recordSystemSwitchedOn` for why that order is the safe one.
+      // The directory's record (#1674), written BEFORE the scope moves, both ways, and undone
+      // if the move throws or holds nothing — see `recordSystemSwitchedOn` and (#1823)
+      // `recordSystemSwitchedOff` for why that order is the safe one.
       const at = new Date().toISOString();
       const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
       const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
-      let prior: SystemSwitchRecordPrior = null;
-      if (to === 'on') {
-        try {
-          prior = await this.cp.recordSystemSwitchedOn(record);
-        } catch (err) {
-          // Nothing has moved: fail the call here, audited, rather than switch a scope on
-          // whose record still says off (the next reconcile would switch it back off).
-          await this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) }).catch(
-            () => undefined,
-          );
-          throw err;
-        }
+      let prior: SystemSwitchRecordPrior;
+      try {
+        prior = to === 'on' ? await this.cp.recordSystemSwitchedOn(record) : await this.cp.recordSystemSwitchedOff(record);
+      } catch (err) {
+        // Nothing has moved: fail the call here, audited. An ON must not switch a scope on
+        // whose record still says off (the next reconcile would switch it back off), and an
+        // OFF must not leave a scope off that the record does not know of (#1823).
+        await this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) }).catch(
+          () => undefined,
+        );
+        throw err;
       }
       /**
-       * A record write AFTER the scope moved (review #5): retried once, and a failure of both
-       * is answered rather than swallowed — it lands on the outcome row as `recordError`, and
-       * the call does not report plain success. A lost OFF record is exactly what a wipe then
-       * turns into a module running again.
+       * The record's undo, after the scope's move threw or held nothing: retried once, and a
+       * failure of both is answered rather than swallowed — it lands on the outcome row as
+       * `recordError`, and the call says so.
        */
-      const recordWrite = async (write: () => Promise<unknown>): Promise<string | null> => {
+      const undoRecord = async (): Promise<string | null> => {
+        const undo = () => this.cp.restoreSystemSwitchRecord(record, prior);
         try {
-          await write();
+          await undo();
           return null;
         } catch {
           try {
-            await write();
+            await undo();
             return null;
           } catch (err) {
             return errorOf(err);
@@ -5006,7 +5036,7 @@ export class CloudflareScopeHost implements ScopeHost {
       try {
         outcome = await move(input.moduleId, to, at);
       } catch (err) {
-        const recordError = prior ? await recordWrite(() => this.cp.restoreSystemSwitchRecord(record, prior)) : null;
+        const recordError = await undoRecord();
         // Best effort: the original error is what the caller must see, and the intent row
         // already says an attempt was made.
         await this.recordAdmin(actor, action, target, null, {
@@ -5017,15 +5047,10 @@ export class CloudflareScopeHost implements ScopeHost {
         }).catch(() => undefined);
         throw err;
       }
-      // OFF is recorded once the scope held it. A refused ON moved nothing, so its record
-      // write is undone: left `on`, the next reconcile of a wiped scope would leave the
-      // module running.
-      const recordError =
-        to === 'off' && outcome.held
-          ? await recordWrite(() => this.cp.recordSystemSwitchedOff(record))
-          : to === 'on' && !outcome.held && prior
-            ? await recordWrite(() => this.cp.restoreSystemSwitchRecord(record, prior))
-            : null;
+      // A call that held nothing moved nothing, so its record write is undone: left `off`, it
+      // would switch the module off the day it is installed; left `on`, the next reconcile of
+      // a wiped scope would leave the module running.
+      const recordError = outcome.held ? null : await undoRecord();
       await this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
@@ -5039,14 +5064,6 @@ export class CloudflareScopeHost implements ScopeHost {
           `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
             `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')` +
             (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
-        );
-      }
-      if (recordError) {
-        throw substratError(
-          'unavailable',
-          `module '${input.moduleId}' is switched ${to} on scope ${scopeId}, but the directory's record of it ` +
-            `could not be written (${recordError}) — repeat the call to record it; a wipe of this scope would ` +
-            `otherwise lose the switch`,
         );
       }
       return {
@@ -8291,6 +8308,7 @@ export class CloudflareScopeHost implements ScopeHost {
     moduleId: ModuleId,
     to: 'on' | 'off',
     at: string,
+    tenantHeld = false,
   ): Promise<SwitchOutcome> {
     let scopeClaims: SwitchHoldClaim[] | undefined;
     let readError: unknown;
@@ -8299,7 +8317,13 @@ export class CloudflareScopeHost implements ScopeHost {
     } catch (err) {
       readError = err;
     }
-    const { instance, ...outcome } = await this.scopeStub(scopeId).switchSystemSchedules(moduleId, scopeId, to, at);
+    const { instance, ...outcome } = await this.scopeStub(scopeId).switchSystemSchedules(
+      moduleId,
+      scopeId,
+      to,
+      at,
+      tenantHeld,
+    );
     if (!scopeClaims) throw readError;
     const now = Date.now();
     const pendingLive = (c: SwitchHoldClaim) => c.state === 'pending' && now - Date.parse(c.heldAt) <= SWITCH_HOLD_PENDING_MAX_MS;
@@ -9076,11 +9100,18 @@ export class CloudflareScopeHost implements ScopeHost {
    * admin log and writes the row once this returns. `held: false` is an answer, not a
    * throw — see `systemSwitchOutcome`.
    */
-  async systemSwitchLocal(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SystemSwitchOutcome> {
+  async systemSwitchLocal(
+    scopeId: ScopeId,
+    moduleId: ModuleId,
+    to: 'on' | 'off',
+    opts?: { tenantHeld?: boolean },
+  ): Promise<SystemSwitchOutcome> {
     // Parsed on the way out: this is the wire answer the platform reads, and the DO's
     // plain strings become the published shape here rather than on trust.
     // #1819: `switchInScope` releases a rewind's hold on the module once the switch lands.
-    return systemSwitchOutcome.parse(await this.switchInScope(scopeId, moduleId, to, new Date().toISOString()));
+    return systemSwitchOutcome.parse(
+      await this.switchInScope(scopeId, moduleId, to, new Date().toISOString(), opts?.tenantHeld ?? false),
+    );
   }
 
   /**

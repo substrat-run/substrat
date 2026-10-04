@@ -1367,7 +1367,22 @@ describe('mountPlatformSurface — the schedule switch (#1666)', () => {
     const res = await post(host, body);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ held: true, changed: true, permissions: ['absence:expire-stale'] });
-    expect(got).toEqual([SCOPE, '@substrat-run/engine-absence', 'off']);
+    expect(got).toEqual([SCOPE, '@substrat-run/engine-absence', 'off', { tenantHeld: undefined }]);
+  });
+
+  it("carries the platform's tenantHeld through to the host (#1823), and refuses one that is not a boolean", async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({
+      systemSwitchLocal: async (...args: unknown[]) => {
+        got = args;
+        return { held: true, changed: true, permissions: [] } as never;
+      },
+    });
+    expect((await post(host, { ...body, tenantHeld: true })).status).toBe(200);
+    expect(got).toEqual([SCOPE, '@substrat-run/engine-absence', 'off', { tenantHeld: true }]);
+    got = [];
+    expect((await post(host, { ...body, tenantHeld: 'yes' })).status).toBe(400);
+    expect(got).toEqual([]);
   });
 
   it('a module the scope never held is a 200 with held: false, not a 404', async () => {

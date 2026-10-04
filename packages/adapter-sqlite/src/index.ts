@@ -329,6 +329,7 @@ import {
   recordSystemSwitchedOn,
   restoreSystemSwitchRecord,
   scopesSwitchedOffFor,
+  tenantHoldsSystemGrant,
   switchedOffModulesOf,
   inUnitMovesToAudit,
   staleCarryRevertRow,
@@ -2762,7 +2763,8 @@ export class SqliteScopeHost implements ScopeHost {
    * `HostAdmin.reassertSystemSwitches`' body (#1674), run inside a turn the caller already
    * holds on the scope's actor: every module the directory records OFF on the scope is
    * switched off again. Already off answers `changed: false` and writes nothing, and a
-   * module the scope does not hold is left alone. Audited only when something moved.
+   * module with no authority reaching the scope (no grant here, no tenant-level grant) is left
+   * alone. Audited only when something moved.
    *
    * `audit` receives each row. By default it writes to the admin log at once. A caller running
    * this inside a scope transaction that may still roll back (a restore's replay) collects
@@ -2797,8 +2799,10 @@ export class SqliteScopeHost implements ScopeHost {
     const applied = opts?.appliedInUnit?.filter((a) => !reverted.has(a.moduleId));
     for (const row of inUnitMovesToAudit(recordedOff, applied)) audit({ operationId: ulid(), ...row });
     return recordedOff.map((moduleId) => {
+      // #1823: a module whose only authority here is a tenant-level grant is held too.
+      const tenantHeld = tenantHoldsSystemGrant(switchSqlOf(this.directory), tenantId, moduleId, this.clock());
       const outcome = rt.db.transaction(() =>
-        switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'off', at }),
+        switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'off', at, tenantHeld }),
       )();
       if (outcome.changed) {
         audit({
@@ -6511,34 +6515,34 @@ export class SqliteScopeHost implements ScopeHost {
       const target = { tenantId, scopeId };
       const base = { operationId, moduleId: input.moduleId, schedules: to };
       this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
-      // The directory's record (#1674): ON before the scope moves, OFF after it held — see
-      // `recordSystemSwitchedOn` for why that order is the safe one.
+      // The directory's record (#1674), written BEFORE the scope moves, both ways, and undone
+      // if the move throws or holds nothing — see `recordSystemSwitchedOn` and (#1823)
+      // `recordSystemSwitchedOff` for why that order is the safe one.
       const at = new Date().toISOString();
       const directorySql = switchSqlOf(this.directory);
       const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
       const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
-      let prior: SystemSwitchRecordPrior = null;
-      if (to === 'on') {
+      let prior: SystemSwitchRecordPrior;
+      try {
+        prior = to === 'on' ? recordSystemSwitchedOn(directorySql, record) : recordSystemSwitchedOff(directorySql, record);
+      } catch (err) {
+        // Nothing has moved: fail the call here, audited — the Cloudflare adapter's posture.
         try {
-          prior = recordSystemSwitchedOn(directorySql, record);
-        } catch (err) {
-          // Nothing has moved: fail the call here, audited — the Cloudflare adapter's posture.
-          try {
-            this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) });
-          } catch {
-            // Best effort: the original error is what the caller must see.
-          }
-          throw err;
+          this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) });
+        } catch {
+          // Best effort: the original error is what the caller must see.
         }
+        throw err;
       }
-      /** A record write after the scope moved (review #5): retried once, never swallowed. */
-      const recordWrite = (write: () => void): string | null => {
+      /** The record's undo, after the scope's move threw or held nothing: retried once, never swallowed. */
+      const undoRecord = (): string | null => {
+        const undo = () => restoreSystemSwitchRecord(directorySql, record, prior);
         try {
-          write();
+          undo();
           return null;
         } catch {
           try {
-            write();
+            undo();
             return null;
           } catch (err) {
             return errorOf(err);
@@ -6552,14 +6556,18 @@ export class SqliteScopeHost implements ScopeHost {
         // `db.transaction` issued mid-invoke became a SAVEPOINT inside it and rolled back
         // with it — after this verb had already audited `applied`. `turn` is re-entrant, so a
         // caller already inside one of this scope's tasks joins it rather than deadlocking.
+        //
+        // #1823: read in the same turn, so no tenant grant moves between the read and the switch.
+        // The directory is this process's own database, so the read is synchronous.
         const rt = this.runtime(tenantId, scopeId);
-        outcome = await rt.actor.turn(() =>
-          rt.db.transaction(() =>
-            switchSystemSchedules(switchSqlOf(rt.db), { moduleId: input.moduleId, scopeId, to, at }),
-          )(),
-        );
+        outcome = await rt.actor.turn(() => {
+          const tenantHeld = tenantHoldsSystemGrant(directorySql, tenantId, input.moduleId, this.clock());
+          return rt.db.transaction(() =>
+            switchSystemSchedules(switchSqlOf(rt.db), { moduleId: input.moduleId, scopeId, to, at, tenantHeld }),
+          )();
+        });
       } catch (err) {
-        const recordError = recordWrite(() => restoreSystemSwitchRecord(directorySql, record, prior));
+        const recordError = undoRecord();
         try {
           this.recordAdmin(actor, action, target, null, {
             ...base,
@@ -6572,15 +6580,11 @@ export class SqliteScopeHost implements ScopeHost {
         }
         throw err;
       }
-      // OFF is recorded once the scope held it. A refused ON moved nothing, so its record
-      // write is undone: left `on`, the next reconcile of a wiped scope would leave the
-      // module running.
-      const recordError =
-        to === 'off' && outcome.held
-          ? recordWrite(() => recordSystemSwitchedOff(directorySql, record))
-          : to === 'on' && !outcome.held
-            ? recordWrite(() => restoreSystemSwitchRecord(directorySql, record, prior))
-            : null;
+      // A call that held nothing moved nothing (the module has no authority reaching the scope,
+      // its own or the tenant's), so its record write is undone: left `off`, it
+      // would switch the module off the day it is installed; left `on`, the next reconcile of
+      // a wiped scope would leave the module running.
+      const recordError = outcome.held ? null : undoRecord();
       this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
@@ -6594,14 +6598,6 @@ export class SqliteScopeHost implements ScopeHost {
           `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
             `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')` +
             (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
-        );
-      }
-      if (recordError) {
-        throw substratError(
-          'unavailable',
-          `module '${input.moduleId}' is switched ${to} on scope ${scopeId}, but the directory's record of it ` +
-            `could not be written (${recordError}) — repeat the call to record it; a wipe of this scope would ` +
-            `otherwise lose the switch`,
         );
       }
       return {

@@ -355,7 +355,12 @@ export interface VerticalScopeHost {
    * before it satisfies this interface without it — and the route answers 501, which the
    * control plane reports as "redeploy", never as a switch that moved.
    */
-  systemSwitchLocal?(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SystemSwitchOutcome>;
+  systemSwitchLocal?(
+    scopeId: ScopeId,
+    moduleId: ModuleId,
+    to: 'on' | 'off',
+    opts?: { tenantHeld?: boolean },
+  ): Promise<SystemSwitchOutcome>;
   /**
    * The far end of the lifecycle delivery (#1713): store the scope's lifecycle as the directory
    * holds it, unless the scope already holds a newer one. Optional for the reason
@@ -638,6 +643,10 @@ const systemSwitchBody = z.object({
   scopeId: scopeIdOf,
   moduleId: moduleIdOf,
   to: z.enum(['on', 'off']),
+  // #1823: the platform read a live TENANT-level grant for the module, which this deployment
+  // has no directory to read. Optional: a platform built before it sends none, and a module
+  // whose only authority is a tenant grant then answers `held: false`, as it always did.
+  tenantHeld: z.boolean().optional(),
 });
 
 /** `/internal/lifecycle` body (#1713) — the scope's lifecycle as the platform read it. */
@@ -1375,7 +1384,7 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.systemSwitchLocal) {
       return c.json({ error: 'this deployment cannot switch schedules (#1666) — redeploy it' }, 501);
     }
-    return c.json(await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to));
+    return c.json(await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to, { tenantHeld: body.tenantHeld }));
   });
 
   // The lifecycle delivery (#1713): the platform's directory holds a scope's lifecycle, and a

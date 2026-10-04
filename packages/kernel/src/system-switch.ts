@@ -19,19 +19,25 @@
  * `scope:<id>` marker. The gate is OFF while that marker is live, whatever grants are
  * live beside it. **Restore is the lever; a grant is not.** The marker is an ordinary
  * K-21 tuple: switching back on tombstones it, so the row stays as evidence of when the
- * switch was last pulled. The permission walk reads only `role:` and `granted:` relations
- * (`permission-eval.ts`), so the marker authorizes nothing and denies nothing by itself.
+ * switch was last pulled. The permission walk reads only `role:` and `granted:` relations,
+ * so the marker authorizes nothing; what it denies, it denies through the one question the
+ * evaluator asks before the walk (below).
  *
  * Switching off ALSO tombstones every live `granted:` tuple the module holds on the scope.
  * That is what makes it a kill switch rather than a schedule pause: anything that acts
  * with the module's system authority — a resumable job run (#1577), a `getSystemScope`
  * invoke — is denied by its own `ctx.check` while the switch is off.
  *
- * **And nothing may write a new one while it is off**, which is what makes that denial
- * hold. The checker is deliberately NOT marker-aware; the switch is closed on the WRITE
- * side instead, at the only two writers of a scope-level `system:` grant:
+ * **And the checker reads the marker too** (#1823), which is what makes that denial hold
+ * against a grant OFF cannot tombstone. A TENANT-level `system:` grant lives in the directory
+ * (and in every scope's projection of it), not at `scope:<id>`, so OFF leaves it live. The
+ * permission evaluator asks the scope reader's `switchedOff` before it reads any tuple, and a
+ * live marker denies the subject on that scope whatever it holds (`permission-eval.ts`). The
+ * write side stays closed as well, so a switched-off scope does not accumulate grants that
+ * ON would then hand back:
  * - `grantToSystem` refuses while the module is switched off on that scope (the adapters
- *   ask `systemSwitchedOff` in the same unit as the write);
+ *   ask `systemSwitchedOff` in the same unit as the write), and a tenant-level grant while
+ *   the directory records it off on any scope (#1743);
  * - provisioning's seat (`seatScopeTuple`) seats nothing for a subject whose marker is
  *   live, so a reconcile cannot create a grant a newer version declares.
  *
@@ -189,21 +195,26 @@ export interface SwitchOutcome {
  * marker. A repeated OFF re-asserts the whole position: a grant that became live meanwhile
  * (only a raw write can do that now) is tombstoned and recorded too.
  *
- * `held: false`, with nothing written, when the scope holds neither a grant nor a marker
- * for the module: the caller named something this scope never ran, and turning "nothing"
- * off must not write a marker that silently disables a module the day it is installed.
+ * `held: false`, with nothing written, when the module has no authority reaching the scope:
+ * no grant and no marker here, and no live TENANT-level grant (`tenantHeld`, which the caller
+ * reads from the directory, since the scope's storage cannot answer it). The caller named
+ * something this scope never ran, and turning "nothing" off must not write a marker that
+ * silently disables a module the day it is installed. A module whose only authority here is a
+ * tenant-level grant IS held (#1823): OFF writes the marker, which the evaluator then denies
+ * the module on, and tombstones nothing, because nothing of it is here to tombstone.
  *
  * Run it inside one transaction; the reads and writes here are meant to be one unit.
  */
 export function switchSystemSchedules(
   db: SwitchSql,
-  input: { moduleId: string; scopeId: string; to: 'on' | 'off'; at: string },
+  input: { moduleId: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
 ): SwitchOutcome {
   return switchSubjectGrants(db, {
     subject: subjectOf(input.moduleId),
     scopeId: input.scopeId,
     to: input.to,
     at: input.at,
+    tenantHeld: input.tenantHeld,
   });
 }
 
@@ -222,16 +233,24 @@ export interface SwitchedOff extends SwitchOutcome {
  * `scopeId` is the scope `db` is, and the caller passes the one the request provisions or
  * restores, never a second id: the list names modules, never scopes, so it can only reach
  * the scope that unit is already writing. A module the scope holds nothing for answers
- * `held: false` and writes nothing, as the switch always does. Off only: nothing here turns
- * a module on.
+ * `held: false` and writes nothing, as the switch always does — unless it is in `tenantHeld`,
+ * the recorded-off modules the caller found a live tenant-level grant for (#1823). Off only:
+ * nothing here turns a module on.
  */
 export function switchRecordedOff(
   db: SwitchSql,
-  input: { scopeId: string; moduleIds: readonly string[]; at: string },
+  input: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
 ): SwitchedOff[] {
+  const tenantHeld = new Set(input.tenantHeld ?? []);
   return [...new Set(input.moduleIds)].map((moduleId) => ({
     moduleId,
-    ...switchSystemSchedules(db, { moduleId, scopeId: input.scopeId, to: 'off', at: input.at }),
+    ...switchSystemSchedules(db, {
+      moduleId,
+      scopeId: input.scopeId,
+      to: 'off',
+      at: input.at,
+      tenantHeld: tenantHeld.has(moduleId),
+    }),
   }));
 }
 
@@ -246,7 +265,7 @@ export function switchRecordedOff(
  */
 export function switchSubjectGrants(
   db: SwitchSql,
-  input: { subject: string; scopeId: string; to: 'on' | 'off'; at: string },
+  input: { subject: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
 ): SwitchOutcome {
   const subject = input.subject;
   const object = `scope:${input.scopeId}`;
@@ -263,7 +282,7 @@ export function switchSubjectGrants(
     SYSTEM_SWITCH_OFF_RELATION,
     object,
   )[0] as { revoked_at: string | null } | undefined;
-  if (grants.length === 0 && !marker) return { held: false, changed: false, permissions: [] };
+  if (grants.length === 0 && !marker && !input.tenantHeld) return { held: false, changed: false, permissions: [] };
 
   const permissionOf = (relation: string): string => relation.slice('granted:'.length);
   if (input.to === 'off') {

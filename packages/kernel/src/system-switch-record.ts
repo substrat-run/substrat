@@ -271,6 +271,26 @@ export function scopesSwitchedOffFor(db: SwitchSql, tenantId: string, moduleId: 
     .map((r) => String(r.scope_id));
 }
 
+/**
+ * Does the tenant hold a live TENANT-level grant for this module (#1823)? Asked of the
+ * directory, where the tenant tuple lives, and handed to the switch as `tenantHeld`: a module
+ * whose only authority on a scope is a tenant-level grant has nothing in the scope's storage
+ * for the switch to find, and must still be switchable there. One statement on both adapters'
+ * directories; the same "live" the evaluator judges a grant by (unrevoked, unexpired at `now`).
+ */
+export function tenantHoldsSystemGrant(db: SwitchSql, tenantId: string, moduleId: string, now: string): boolean {
+  const row = db.all(
+    `SELECT EXISTS (SELECT 1 FROM _substrat_tenant_tuples
+       WHERE tenant_id = ? AND subject = ? AND object = ? AND substr(relation, 1, 8) = 'granted:'
+         AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)) AS held`,
+    tenantId,
+    `system:${moduleId}`,
+    `tenant:${tenantId}`,
+    now,
+  )[0] as { held: number } | undefined;
+  return Number(row?.held) === 1;
+}
+
 /** What one switch call writes into the record. */
 export interface SystemSwitchRecordWrite {
   tenantId: string;
@@ -400,14 +420,42 @@ function setRecordRow(
   );
 }
 
+/** The row as it stands now, or null — what a write answers so its undo can put it back. */
+function priorOf(db: SwitchSql, key: { tenantId: string; scopeId: string; moduleId: string }): SystemSwitchRecordPrior {
+  const prior = db.all(
+    `SELECT position, actor, reason, operation_id, switched_at FROM _substrat_system_switches
+      WHERE tenant_id = ? AND scope_id = ? AND module_id = ?`,
+    key.tenantId,
+    key.scopeId,
+    key.moduleId,
+  )[0];
+  if (!prior) return null;
+  return {
+    position: positionOf(prior.position),
+    actor: String(prior.actor),
+    reason: String(prior.reason),
+    operationId: String(prior.operation_id),
+    at: String(prior.switched_at),
+  };
+}
+
 /**
- * OFF's write, made AFTER the scope's switch held. An upsert: a repeat OFF refreshes the
- * actor, reason and time, as the status read reports the latest reason. Never made for a
- * call that held nothing, because a row saying `off` for a module the scope never ran
- * would switch it off on the day it is installed (the kernel's `held` check, for the same
- * reason).
+ * OFF's write, made BEFORE the scope's switch moves (#1823), and undone by
+ * `restoreSystemSwitchRecord` when the move throws or holds nothing. An upsert: a repeat OFF
+ * refreshes the actor, reason and time, as the status read reports the latest reason.
+ * Answers the row as it was.
+ *
+ * Before, because the other order left a window: between the scope moving and this write, a
+ * tenant-level `grantToSystem` read no `off` row and was accepted (#1743's refusal reads this
+ * table, in the unit that writes the tenant tuple). Written first, there is no instant at
+ * which the scope is off and the record is not. This order fails toward a record of `off`
+ * beside a scope still on, until the undo runs — the direction OFF wins anyway, and the one a
+ * kill switch should fail in. Still never LEFT behind for a call that held nothing: a row
+ * saying `off` for a module the scope never ran would switch it off on the day it is
+ * installed (the kernel's `held` check, for the same reason).
  */
-export function recordSystemSwitchedOff(db: SwitchSql, row: SystemSwitchRecordWrite): void {
+export function recordSystemSwitchedOff(db: SwitchSql, row: SystemSwitchRecordWrite): SystemSwitchRecordPrior {
+  const prior = priorOf(db, row);
   db.run(
     `INSERT INTO _substrat_system_switches
        (tenant_id, scope_id, module_id, position, actor, reason, operation_id, switched_at)
@@ -423,6 +471,7 @@ export function recordSystemSwitchedOff(db: SwitchSql, row: SystemSwitchRecordWr
     row.operationId,
     row.at,
   );
+  return prior;
 }
 
 /**
@@ -433,36 +482,36 @@ export function recordSystemSwitchedOff(db: SwitchSql, row: SystemSwitchRecordWr
  * the marker wins. Answers the row as it was, for `restoreSystemSwitchRecord`.
  */
 export function recordSystemSwitchedOn(db: SwitchSql, row: SystemSwitchRecordWrite): SystemSwitchRecordPrior {
-  const prior = db.all(
-    `SELECT position, actor, reason, operation_id, switched_at FROM _substrat_system_switches
-      WHERE tenant_id = ? AND scope_id = ? AND module_id = ?`,
-    row.tenantId,
-    row.scopeId,
-    row.moduleId,
-  )[0];
-  if (!prior) return null;
-  setRecordRow(db, row, { position: 'on', actor: row.actor, reason: row.reason, operationId: row.operationId, at: row.at });
-  return {
-    position: positionOf(prior.position),
-    actor: String(prior.actor),
-    reason: String(prior.reason),
-    operationId: String(prior.operation_id),
-    at: String(prior.switched_at),
-  };
+  const prior = priorOf(db, row);
+  if (prior) {
+    setRecordRow(db, row, { position: 'on', actor: row.actor, reason: row.reason, operationId: row.operationId, at: row.at });
+  }
+  return prior;
 }
 
 /**
- * Put a row back as `recordSystemSwitchedOn` found it — the ON that wrote it threw, or held
- * nothing. A compare-and-set on the ON's own `operationId`: if another switch call has
- * written the row since (a concurrent OFF), the row is left as that call wrote it, so an
- * ON's undo can never clobber a newer position.
+ * Put a row back as `recordSystemSwitchedOn` or `recordSystemSwitchedOff` found it — the call
+ * that wrote it threw, or held nothing. A row that did not exist is removed again. A
+ * compare-and-set on the call's own `operationId`: if another switch call has written the row
+ * since, the row is left as that call wrote it, so an undo can never clobber a newer position.
  */
 export function restoreSystemSwitchRecord(
   db: SwitchSql,
-  on: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
+  call: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
   prior: SystemSwitchRecordPrior,
 ): void {
-  if (prior) setRecordRow(db, on, prior, on.operationId);
+  if (prior) {
+    setRecordRow(db, call, prior, call.operationId);
+    return;
+  }
+  db.run(
+    `DELETE FROM _substrat_system_switches
+      WHERE tenant_id = ? AND scope_id = ? AND module_id = ? AND operation_id = ?`,
+    call.tenantId,
+    call.scopeId,
+    call.moduleId,
+    call.operationId,
+  );
 }
 
 /**

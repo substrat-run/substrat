@@ -1709,8 +1709,10 @@ export interface HostAdmin {
    * with `conflict`: restore is the lever; a grant is not. A grant that went through would
    * hand the module's system authority back to a job run or a `getSystemScope` invoke
    * while its schedules stayed off. Only `restoreToSystem` turns the switch back on.
-   * (A TENANT-level grant — `node.scopeId` null — is not checked: the switch lives in each
-   * scope's storage and the directory cannot see it. Nothing in the platform writes one.)
+   * A TENANT-level grant (`node.scopeId` null) is refused the same way while the directory
+   * records the module off on any scope of the tenant (#1743). One that already existed when
+   * a scope was switched off gives the module nothing there: the evaluator denies a
+   * switched-off subject on its scope whatever it holds (#1823).
    */
   grantToSystem(actor: PlatformActorId, grant: SystemGrant): Promise<void>;
   /**
@@ -1727,7 +1729,8 @@ export interface HostAdmin {
    *   `restoreToSystem`;
    * - anything acting with the module's system authority is denied by its own
    *   `ctx.check` — a resumable job run (#1577) fails its step, a `getSystemScope` invoke
-   *   is refused;
+   *   is refused — including authority from a TENANT-level grant, which OFF cannot
+   *   tombstone: the evaluator reads the marker before any grant (#1823);
    * - and nothing can hand that authority back: `grantToSystem` refuses, and a reconcile
    *   seats no `system:` grant for the module, not even one a newer version declares.
    *   `restoreToSystem` is the only way back.
@@ -1740,8 +1743,14 @@ export interface HostAdmin {
    * atomic: this order fails toward "an intent with no outcome", never toward "a switch
    * that moved with no row".
    *
-   * Throws `not_found` when the scope holds no `system:<module>` grant at all — a typo in
-   * an emergency must not answer "done". On a host that delegates to the deployment
+   * Throws `not_found` when the module has no authority reaching the scope at all — no
+   * `system:<module>` grant on the scope and no live tenant-level one (#1823) — so a typo in
+   * an emergency does not answer "done". A module whose only authority there is a
+   * tenant-level grant IS switched: OFF writes the marker and tombstones nothing.
+   *
+   * The directory's record of the switch is written BEFORE the scope moves and taken back if
+   * the move throws or holds nothing (#1823), so #1743's tenant-level refusal has no window to
+   * miss. On a host that delegates to the deployment
    * serving the scope, the write happens THERE and the audit rows HERE.
    */
   revokeFromSystem(actor: PlatformActorId, input: SystemSwitch): Promise<SystemSwitchResult>;
