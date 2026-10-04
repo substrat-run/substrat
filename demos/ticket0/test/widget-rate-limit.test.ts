@@ -1,7 +1,7 @@
 /**
  * The widget surface's rate limit (#937).
  *
- * ticket0's three widget routes are the one door in this repo that anybody's browser
+ * ticket0's widget routes are the one door in this repo that anybody's browser
  * may knock on, and `widget-post` turns into a model call — the single thing in the
  * system that costs money per request, metered to a desk that did not choose to be
  * attacked. #130's per-token limit does not reach it: every visitor shares the desk's
@@ -15,6 +15,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
+import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { ulid, type LiveReadSurface } from '@substrat-run/kernel';
 import { mountWidgetSurface, WIDGET_RATE_LIMITS } from '../harness/widget-surface.js';
 
 const ORIGIN = 'https://embedder.example';
@@ -30,6 +32,25 @@ const ORIGIN = 'https://embedder.example';
 function mounted(now: () => number, origin = ORIGIN) {
   const app = new Hono();
   const invoked: string[] = [];
+  /**
+   * The host's live-read surface, stubbed: what it is asked is the assertion (#1853). A node
+   * `Response` cannot carry a 101, so a subscription answers 200 here — the route returns
+   * whatever `subscribe` hands it, so the status is only a marker that it was reached.
+   */
+  const subscribed: string[] = [];
+  const live = {
+    surface: {
+      subscribe: async (input: { within?: unknown }) => {
+        subscribed.push(String((input.within as { entity?: { entityId?: string } })?.entity?.entityId));
+        return new Response('subscribed', { status: 200 });
+      },
+    } as unknown as LiveReadSurface<Request, Response>,
+    subscriber: {
+      tenantId: tenantId.parse(ulid()),
+      scopeId: scopeId.parse(ulid()),
+      principal: principalId.parse(ulid()),
+    },
+  };
   mountWidgetSurface(app, {
     now,
     resolveDesk: async (c) => ({
@@ -39,6 +60,7 @@ function mounted(now: () => number, origin = ORIGIN) {
       },
       allowedOrigins: [origin],
       deskKey: c.req.header('x-test-desk') ?? 'desk-1',
+      live,
     }),
   });
 
@@ -56,6 +78,12 @@ function mounted(now: () => number, origin = ORIGIN) {
 
   return {
     invoked,
+    subscribed,
+    /** The widget opening its live feed: a WebSocket handshake on the session's token. */
+    watch: async (token: string, desk?: string): Promise<Response> =>
+      app.request(`/widget/sessions/s1/live?token=${encodeURIComponent(token)}`, {
+        headers: { ...headers(desk), upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-version': '13' },
+      }),
     start: (desk?: string) => post('/widget/sessions', {}, desk),
     say: (token: string, desk?: string) =>
       post('/widget/sessions/s1/messages', { token, body: 'hi' }, desk),
@@ -201,5 +229,44 @@ describe('the widget surface limits one caller, not the whole desk', () => {
     // cost something, or dropping the token is how you get an unmetered door.
     await spendAll(() => surface.say(''), WIDGET_RATE_LIMITS.write);
     expect((await surface.say('')).status).toBe(429);
+  });
+
+  /**
+   * #1853: opening the live feed is a read. A reconnect loop must not be cheaper than the
+   * poll it replaces, so the handshake spends the same per-token allowance as the thread
+   * read — and is refused before the token is checked or anything is subscribed.
+   */
+  it('spends a live handshake out of the same per-token read allowance as the thread poll', async () => {
+    const surface = mounted(() => 1_000_000);
+    await spendAll(() => surface.read('token-a'), WIDGET_RATE_LIMITS.read - 1);
+
+    // The last read in the window goes to the socket…
+    expect((await surface.watch('token-a')).status).toBe(200);
+    expect(surface.subscribed).toEqual(['s1']);
+
+    // …so the next handshake is refused, and so is the next poll: one budget, two doors.
+    const refused = await surface.watch('token-a');
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect((await surface.read('token-a')).status).toBe(429);
+  });
+
+  it('refuses an over-budget handshake before the token is proven or anything is subscribed', async () => {
+    const surface = mounted(() => 1_000_000);
+    await spendAll(() => surface.read('token-a'), WIDGET_RATE_LIMITS.read);
+    surface.invoked.length = 0;
+
+    expect((await surface.watch('token-a')).status).toBe(429);
+    expect(surface.invoked).toEqual([]);
+    expect(surface.subscribed).toEqual([]);
+  });
+
+  it("leaves another session's live allowance alone", async () => {
+    const surface = mounted(() => 1_000_000);
+    await spendAll(() => surface.watch('token-a'), WIDGET_RATE_LIMITS.read);
+    expect((await surface.watch('token-a')).status).toBe(429);
+
+    expect((await surface.watch('token-b')).status).toBe(200);
+    expect(surface.subscribed).toHaveLength(WIDGET_RATE_LIMITS.read + 1);
   });
 });
