@@ -501,8 +501,7 @@ export function fieldCoverageArmed(request: object): boolean {
 }
 
 function beginStamp<Env>(request: { headers: HeaderReader }, env: Env, options: InvocationLogOptions<Env>): InvocationStamp {
-  const stamp: InvocationStamp = { invocationId: ulid(), record: {} };
-  if (armsFieldCoverage(request.headers, env, options)) stamp.fieldCoverage = true;
+  const stamp: InvocationStamp = { invocationId: ulid(), record: {}, fieldCoverage: armsFieldCoverage(request.headers, env, options) };
   stamps().set(request, stamp);
   return stamp;
 }

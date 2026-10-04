@@ -10,9 +10,10 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, FIELD_COVERAGE_ARMED, FIELD_COVERAGE_HEADER } from '@substrat-run/contracts';
+import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, FIELD_COVERAGE_HEADER } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
-import { invocationLog, INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
+import { INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
+import { ARMED, ENV, quietly, routed, stampInto } from './routed.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { mcpToolsOf, mcpToolName, MCP_PROTOCOL_VERSIONS } from '../src/mcp.js';
 
@@ -882,14 +883,6 @@ describe('the per-request record on a tool call (#1746)', () => {
  * for a call that failed, and unarmed the result is never so much as looked at.
  */
 describe('the field walk on a tool call (#1331)', () => {
-  const ROUTER = 'router-sekret';
-  const routed = {
-    'x-substrat-router': ROUTER,
-    'x-substrat-tenant': '01JZ0000000000000000TEN001',
-    'x-substrat-scope': '01JZ0000000000000000SCP001',
-  };
-  /** #1923: what the router sends on a sampled request — the header beside a signed node. */
-  const ARMED: Record<string, string> = { ...routed, [FIELD_COVERAGE_HEADER]: FIELD_COVERAGE_ARMED };
   /** A value no record may ever contain. */
   const SECRET = 'value-7e2a-never-recorded@example.com';
   const card = z.object({ id: z.string(), title: z.string(), note: z.string().optional(), owner_email: z.string() });
@@ -902,28 +895,16 @@ describe('the field walk on a tool call (#1331)', () => {
   function walked(invoke: (operation: string) => unknown, seed?: (record: InvocationRecord) => void) {
     const record: InvocationRecord = {};
     seed?.(record);
-    const app = new Hono<{ Bindings: { ROUTER_SECRET: string } }>();
-    // The real stamp decides whether the router armed the walk; its record is then swapped
-    // for one the test holds.
-    app.use('*', invocationLog<{ ROUTER_SECRET: string }>({ routerSecret: (env) => env.ROUTER_SECRET }));
-    app.use('*', async (c, next) => {
-      (c as unknown as { set: (k: string, v: unknown) => void }).set(INVOCATION_RECORD_KEY, record);
-      await next();
-    });
+    const app = new Hono<{ Bindings: typeof ENV }>();
+    stampInto(app, record);
     mountOperations(app, ops, async () => ({
       subjectKind: 'principal',
       invoke: async (operation: string) => invoke(operation),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any);
-    const call = async (tools: string[], headers: Record<string, string> = {}) => {
-      const original = console.log;
-      // The stamp's own line is not what these tests are about.
-      console.log = (first: unknown, ...rest: unknown[]) => {
-        if (typeof first === 'string' && first.includes('"substrat":"invocation"')) return;
-        original(first, ...rest);
-      };
-      try {
-        return await app.request(
+    const call = (tools: string[], headers: Record<string, string> = {}) =>
+      quietly(async () =>
+        app.request(
           '/api/mcp',
           {
             method: 'POST',
@@ -932,12 +913,9 @@ describe('the field walk on a tool call (#1331)', () => {
               tools.map((name, i) => ({ jsonrpc: '2.0', id: i + 1, method: 'tools/call', params: { name, arguments: {} } })),
             ),
           },
-          { ROUTER_SECRET: ROUTER },
-        );
-      } finally {
-        console.log = original;
-      }
-    };
+          ENV,
+        ),
+      );
     return { record, call };
   }
 

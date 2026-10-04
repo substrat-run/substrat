@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DECLARED_OUTPUT_FIELDS_MAX } from '@substrat-run/contracts';
 import { FIELD_COVERAGE_OPERATIONS_MAX, tallyFieldCoverage } from '../src/field-coverage-tally.js';
 import { createCfObservabilityReader } from '../src/cf-observability.js';
-import { inServiceFamily } from '../src/service-family.js';
+import { serviceFamilyMatcher } from '../src/service-family.js';
 
 /**
  * #1923 part (c): `outputFields` is asserted by the vertical, so the one reading of it is
@@ -80,14 +80,11 @@ describe('tallyFieldCoverage (#1923)', () => {
   });
 
   it('has no every-tenant spelling', () => {
-    for (const tenantId of ['', undefined, null, '*']) {
-      if (tenantId === '*') {
-        // A string is a tenant id like any other, and matches only lines that name it.
-        expect(tallyFieldCoverage([line()], { ...scope, tenantId }).operations).toEqual([]);
-        continue;
-      }
+    for (const tenantId of ['', undefined, null]) {
       expect(() => tallyFieldCoverage([line()], { ...scope, tenantId: tenantId as never })).toThrow(/one tenant/);
     }
+    // A string is a tenant id like any other, and matches only lines that name it.
+    expect(tallyFieldCoverage([line()], { ...scope, tenantId: '*' }).operations).toEqual([]);
   });
 
   it("drops a line another app's script wrote, even naming this tenant", () => {
@@ -178,16 +175,17 @@ describe('tallyFieldCoverage (#1923)', () => {
   });
 });
 
-describe('inServiceFamily', () => {
+describe('serviceFamilyMatcher', () => {
   it('is the anchored family the telemetry filter uses', () => {
-    expect(inServiceFamily('acme-widgets', SERVICES)).toBe(true);
-    expect(inServiceFamily('acme-widgets-us', SERVICES)).toBe(true);
-    expect(inServiceFamily('acme-widgets-crm', SERVICES)).toBe(false);
-    expect(inServiceFamily('xacme-widgets', SERVICES)).toBe(false);
-    expect(inServiceFamily('acme-widgets', [])).toBe(false);
-    expect(inServiceFamily(undefined, SERVICES)).toBe(false);
+    const own = serviceFamilyMatcher(SERVICES);
+    expect(own('acme-widgets')).toBe(true);
+    expect(own('acme-widgets-us')).toBe(true);
+    expect(own('acme-widgets-crm')).toBe(false);
+    expect(own('xacme-widgets')).toBe(false);
+    expect(own(undefined)).toBe(false);
+    expect(serviceFamilyMatcher([])('acme-widgets')).toBe(false);
     // A stem is matched as text, never as a pattern.
-    expect(inServiceFamily('acmeXwidgets', ['acme.widgets'])).toBe(false);
+    expect(serviceFamilyMatcher(['acme.widgets'])('acmeXwidgets')).toBe(false);
   });
 });
 

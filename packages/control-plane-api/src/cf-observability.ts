@@ -262,7 +262,7 @@ function isFailedInvocation(e: RecentLogEvent): boolean {
  * refusal, never a shrug: this predicate is the whole isolation boundary for correlated
  * lines, which carry no tenant of their own.
  */
-function ownsInvocation(
+export function ownsInvocation(
   e: Record<string, unknown>,
   input: { tenantId: string; scopeId?: string; vertical?: string },
 ): boolean {

@@ -19,8 +19,11 @@ export function serviceFamilyPattern(stem: string): string {
   return `^${escaped}(-${SCRIPT_ULID})?(-(eu|us))?$`;
 }
 
-/** Whether `service` is a script of one of the families `stems` name. An empty list names none. */
-export function inServiceFamily(service: unknown, stems: readonly string[]): boolean {
-  if (typeof service !== 'string') return false;
-  return stems.some((stem) => service.startsWith(stem) && new RegExp(serviceFamilyPattern(stem)).test(service));
+/**
+ * A test for whether a service is a script of one of the families `stems` name, with the
+ * patterns compiled once. An empty list names none.
+ */
+export function serviceFamilyMatcher(stems: readonly string[]): (service: unknown) => boolean {
+  const patterns = stems.map((stem) => new RegExp(serviceFamilyPattern(stem)));
+  return (service) => typeof service === 'string' && patterns.some((p) => p.test(service));
 }

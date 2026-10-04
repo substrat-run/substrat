@@ -16,22 +16,10 @@ import {
   FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
 } from '@substrat-run/contracts';
-import { invocationLog, INVOCATION_RECORD_KEY, withInvocationLog, type InvocationRecord } from '../src/invocation-log.js';
+import { withInvocationLog, type InvocationRecord } from '../src/invocation-log.js';
+import { ARMED, ENV, quietly, ROUTER_SECRET as SECRET_ROUTER, routed, stampInto } from './routed.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { observeOutputFields, outputWalkOf } from '../src/field-coverage.js';
-
-/** The router's signature and node, as every routed request carries them. */
-const SECRET_ROUTER = 'router-sekret';
-const routed = {
-  'x-substrat-router': SECRET_ROUTER,
-  'x-substrat-tenant': '01JZ0000000000000000TEN001',
-  'x-substrat-scope': '01JZ0000000000000000SCP001',
-  'x-substrat-vertical': 'acme/widgets',
-  'x-substrat-surface': 'app',
-};
-
-/** #1923: the header the router sends on a sampled request. Honoured only beside a signed node. */
-const ARMED = { ...routed, [FIELD_COVERAGE_HEADER]: FIELD_COVERAGE_ARMED };
 
 /** A value no record may ever contain. */
 const SECRET = 'value-4c1d-never-recorded@example.com';
@@ -43,14 +31,8 @@ type Respond = (c: unknown, result: unknown) => Response | Promise<Response>;
 /** One declared operation, a stub answering `result`, and the record the middleware hands down. */
 function harness(decl: Record<string, unknown>, result: () => unknown, opts: { respond?: Respond } = {}) {
   const record: InvocationRecord = {};
-  const app = new Hono<{ Bindings: { ROUTER_SECRET: string } }>();
-  // The real stamp, which is what decides whether the router armed the walk (#1923); the
-  // record it hands down is then swapped for one the test holds.
-  app.use('*', invocationLog<{ ROUTER_SECRET: string }>({ routerSecret: (env) => env.ROUTER_SECRET }));
-  app.use('*', async (c, next) => {
-    (c as unknown as { set: (k: string, v: unknown) => void }).set(INVOCATION_RECORD_KEY, record);
-    await next();
-  });
+  const app = new Hono<{ Bindings: typeof ENV }>();
+  stampInto(app, record);
   mountOperations(
     app,
     { 'acme/op': { ...decl, http: { method: 'GET', path: '/op' } } },
@@ -61,19 +43,7 @@ function harness(decl: Record<string, unknown>, result: () => unknown, opts: { r
       }) as any,
     { mcp: false, ...(opts.respond ? { respond: opts.respond as never } : {}) },
   );
-  const call = async (headers: Record<string, string> = {}) => {
-    const original = console.log;
-    // The stamp's own line is not what this harness is about; `run` below reads it.
-    console.log = (first: unknown, ...rest: unknown[]) => {
-      if (typeof first === 'string' && first.includes('"substrat":"invocation"')) return;
-      original(first, ...rest);
-    };
-    try {
-      return await app.request('/api/op', { headers }, { ROUTER_SECRET: SECRET_ROUTER });
-    } finally {
-      console.log = original;
-    }
-  };
+  const call = (headers: Record<string, string> = {}) => quietly(async () => app.request('/api/op', { headers }, ENV));
   return { record, call };
 }
 

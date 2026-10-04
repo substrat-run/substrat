@@ -98,33 +98,6 @@ export const FIELD_COVERAGE_HEADER = 'x-substrat-field-coverage';
 /** The one value of {@link FIELD_COVERAGE_HEADER} that arms the walk. Anything else is off. */
 export const FIELD_COVERAGE_ARMED = 'on';
 
-/**
- * The router's sample rate, read from its `FIELD_COVERAGE_SAMPLE_RATE` var: a fraction of
- * requests in `[0, 1]`, written as a decimal (`0.01` is one request in a hundred).
- *
- * Strict, and every doubt is off: absent, empty, unparseable, `NaN`, infinite, negative or
- * ABOVE `1` reads as `0`. Above one is refused rather than clamped because the likely
- * meaning of `50` is "one in fifty" or "fifty percent", and clamping either to every request
- * would be the most expensive reading of a typo. The walk is off by default; a router nobody
- * configured arms nothing.
- */
-export function fieldCoverageSampleRate(value: unknown): number {
-  if (typeof value !== 'string' && typeof value !== 'number') return 0;
-  const rate = typeof value === 'number' ? value : value.trim() === '' ? NaN : Number(value);
-  if (!Number.isFinite(rate) || rate <= 0 || rate > 1) return 0;
-  return rate;
-}
-
-/**
- * Whether one request is in the sample. `random` is `Math.random` in the router and a fixed
- * value in a test. A rate of `0` never samples and never draws.
- */
-export function fieldCoverageSampled(rate: number, random: () => number = Math.random): boolean {
-  if (!(rate > 0) || rate > 1) return false;
-  if (rate === 1) return true;
-  return random() < rate;
-}
-
 /** The level a request is filed under (#1746). See {@link invocationLevelOf}. */
 export type InvocationLevel = 'error' | 'warn' | 'info';
 

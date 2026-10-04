@@ -25,8 +25,6 @@ import {
   decodeInvocationRecord,
   FIELD_COVERAGE_ARMED,
   FIELD_COVERAGE_HEADER,
-  fieldCoverageSampled,
-  fieldCoverageSampleRate,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
   peerCallRequest,
@@ -35,6 +33,7 @@ import {
   type PeerCaller,
   type RouteTarget,
 } from '@substrat-run/contracts';
+import { fieldCoverageSampled, fieldCoverageSampleRate } from './field-coverage-sample.js';
 
 export interface Env {
   /**
@@ -57,7 +56,7 @@ export interface Env {
   /**
    * #1923: the fraction of dispatched requests the router arms the per-response field walk
    * for (`FIELD_COVERAGE_HEADER`), as a decimal in `(0, 1]` — `0.01` is one in a hundred.
-   * Absent is off, and so is anything `fieldCoverageSampleRate` does not read as a rate.
+   * Absent is off, and so is anything `fieldCoverageSampleRate` (`field-coverage-sample.ts`) does not read as a rate.
    * A router var, so the walk is turned on, down or off without re-pushing any vertical.
    */
   FIELD_COVERAGE_SAMPLE_RATE?: string;
@@ -204,7 +203,11 @@ function verticalFor(env: Env, target: RouteTarget, hostname: string): Fetcher |
  * router must be the only thing that can write them. Stripping by prefix rather than
  * by name means a header added later is covered by default instead of by remembering.
  */
-function assertNode(request: Request, target: RouteTarget, secret?: string, fieldCoverage = false): Request {
+function assertNode(
+  request: Request,
+  target: RouteTarget,
+  { secret, fieldCoverage = false }: { secret?: string; fieldCoverage?: boolean },
+): Request {
   const headers = new Headers();
   for (const [k, v] of request.headers) {
     if (!k.toLowerCase().startsWith(ASSERTED_PREFIX)) headers.set(k, v);
@@ -420,15 +423,18 @@ async function dispatch(
   //
   // #1923: whether this request is in the field-coverage sample, drawn once, so a retry is
   // the same request in or out of it.
-  const sampled = fieldCoverageSampled(fieldCoverageSampleRate(env.FIELD_COVERAGE_SAMPLE_RATE));
-  const forwarded = assertNode(request, target, env.ROUTER_SECRET, sampled);
+  const assertion = {
+    secret: env.ROUTER_SECRET,
+    fieldCoverage: fieldCoverageSampled(fieldCoverageSampleRate(env.FIELD_COVERAGE_SAMPLE_RATE)),
+  };
+  const forwarded = assertNode(request, target, assertion);
 
   try {
     return await vertical.fetch(forwarded);
   } catch (e) {
     if (!isTransientDispatchFailure(e) || !isReplayable(request)) throw e;
     try {
-      return await vertical.fetch(assertNode(request, target, env.ROUTER_SECRET, sampled));
+      return await vertical.fetch(assertNode(request, target, assertion));
     } catch (retryError) {
       if (!isTransientDispatchFailure(retryError)) throw retryError;
       // Twice is enough to distinguish a propagation gap from a script that is

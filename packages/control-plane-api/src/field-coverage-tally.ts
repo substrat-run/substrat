@@ -35,7 +35,9 @@
  * response (#1331).
  */
 import { DECLARED_OUTPUT_FIELDS_MAX, INVOCATION_RECORD_FIELD_MAX } from '@substrat-run/contracts';
-import { inServiceFamily } from './service-family.js';
+import type { OutputFieldsReport } from '@substrat-run/kernel';
+import { ownsInvocation } from './cf-observability.js';
+import { serviceFamilyMatcher } from './service-family.js';
 
 /** How often one declared field was carried, across the responses counted. */
 export interface FieldCoverageCount {
@@ -88,17 +90,14 @@ export interface FieldCoverageScope {
  */
 export const FIELD_COVERAGE_OPERATIONS_MAX = 1000;
 
-const BUCKETS = ['present', 'empty', 'absent'] as const;
+/** The report's buckets — the writer's own shape, so a renamed bucket is a compile error here. */
+const BUCKETS = ['present', 'empty', 'absent'] as const satisfies ReadonlyArray<keyof OutputFieldsReport>;
 
 /** A report's three name lists, or `undefined` when it is not a well-formed one. */
-function namesOf(
-  report: unknown,
-  declared: readonly string[] | undefined,
-): Record<(typeof BUCKETS)[number], string[]> | undefined {
+function namesOf(report: unknown, allowed: ReadonlySet<string> | undefined): OutputFieldsReport | undefined {
   if (report === null || typeof report !== 'object' || Array.isArray(report)) return undefined;
   const seen = new Set<string>();
-  const out = { present: [] as string[], empty: [] as string[], absent: [] as string[] };
-  const allowed = declared ? new Set(declared) : undefined;
+  const out: OutputFieldsReport = { present: [], empty: [], absent: [] };
   for (const bucket of BUCKETS) {
     const list = (report as Record<string, unknown>)[bucket];
     if (!Array.isArray(list)) return undefined;
@@ -126,17 +125,19 @@ export function tallyFieldCoverage(events: Iterable<unknown>, scope: FieldCovera
     throw new TypeError('a field-coverage tally is for one tenant, and names it');
   }
   const operations = new Map<string, { responses: number; fields: Map<string, FieldCoverageCount> }>();
+  const ownService = serviceFamilyMatcher(scope.services);
+  // Each operation's declared names as a set, built the first time a report needs it.
+  const declaredSets = new Map<string, ReadonlySet<string>>();
   let refused = 0;
 
   for (const event of events) {
     if (event === null || typeof event !== 'object') continue;
-    const source = (event as Record<string, unknown>)['source'];
-    if (source === null || typeof source !== 'object') continue;
-    const line = source as Record<string, unknown>;
-    if (line['substrat'] !== 'invocation' || line['tenantId'] !== scope.tenantId) continue;
+    // The same isolation predicate the tenant log reads use: a stamped line naming this tenant.
+    if (!ownsInvocation(event as Record<string, unknown>, { tenantId: scope.tenantId })) continue;
+    const line = (event as { source: Record<string, unknown> }).source;
     const metadata = (event as Record<string, unknown>)['$metadata'];
     const service = metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>)['service'] : undefined;
-    if (!inServiceFamily(service, scope.services)) continue;
+    if (!ownService(service)) continue;
     // A line with no report was not walked (unarmed, failed, or nothing declared): no data.
     if (!('outputFields' in line)) continue;
 
@@ -148,11 +149,16 @@ export function tallyFieldCoverage(events: Iterable<unknown>, scope: FieldCovera
       refused++;
       continue;
     }
-    if (scope.declared && !Object.prototype.hasOwnProperty.call(scope.declared, operation)) {
-      refused++;
-      continue;
+    let allowed: ReadonlySet<string> | undefined;
+    if (scope.declared) {
+      if (!Object.hasOwn(scope.declared, operation)) {
+        refused++;
+        continue;
+      }
+      allowed = declaredSets.get(operation);
+      if (!allowed) declaredSets.set(operation, (allowed = new Set(scope.declared[operation])));
     }
-    const names = namesOf(line['outputFields'], scope.declared?.[operation]);
+    const names = namesOf(line['outputFields'], allowed);
     if (!names) {
       refused++;
       continue;
@@ -167,7 +173,8 @@ export function tallyFieldCoverage(events: Iterable<unknown>, scope: FieldCovera
     }
     // The field cap holds per operation across reports too, so a vertical naming a different
     // field each time cannot grow one operation past what one declaration could hold.
-    const fresh = BUCKETS.reduce((n, b) => n + names[b].filter((f) => !entry!.fields.has(f)).length, 0);
+    let fresh = 0;
+    for (const bucket of BUCKETS) for (const field of names[bucket]) if (!entry.fields.has(field)) fresh++;
     if (entry.fields.size + fresh > DECLARED_OUTPUT_FIELDS_MAX) {
       refused++;
       continue;
