@@ -260,7 +260,7 @@ export type InvocationKind = (typeof INVOCATION_KINDS)[number];
 
 /** A line's kind, absent read as `request` (#1901). */
 export function invocationKindOf(v: unknown): InvocationKind {
-  return v === 'consumer' || v === 'schedule' ? v : 'request';
+  return INVOCATION_KINDS.find((k) => k !== 'request' && k === v) ?? 'request';
 }
 export type RequestFacetKey = (typeof REQUEST_FACET_KEYS)[number];
 

@@ -82,13 +82,16 @@ export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
   // #1901: a call's consumers share its id, so its lines can hold several stamped lines.
   // The request's own (no `kind`) is the record; an async line is only when there is none —
   // work a sweep ran, under an id of its own.
-  const stamped = logs.filter((e) => invocationSource(e) !== null);
-  const e = stamped.find((l) => kindOf(invocationSource(l)!['kind']) === 'request') ?? stamped[0];
-  if (e) {
+  const stamped = logs.flatMap((e) => {
+    const source = invocationSource(e);
+    return source ? [{ e, source }] : [];
+  });
+  const found = stamped.find((l) => kindOf(l.source['kind']) === 'request') ?? stamped[0];
+  if (found) {
+    const { e, source } = found;
     const raw = e.raw as Record<string, unknown>;
-    const source = invocationSource(e)!;
     return {
-      timestamp: num(raw!['timestamp']) ?? e.timestamp,
+      timestamp: num(raw['timestamp']) ?? e.timestamp,
       invocationId: str(source['invocationId']),
       scopeId: str(source['scopeId']),
       vertical: str(source['vertical']),

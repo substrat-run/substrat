@@ -14,10 +14,10 @@ import type {
   RequestRecord,
   TenantRequestScope,
 } from './observability.js';
-import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, invocationKindOf } from './observability.js';
+import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, INVOCATION_KINDS, invocationKindOf } from './observability.js';
 
-/** #1901: the kinds of async work a scope host logs — everything but a request. */
-const ASYNC_KINDS = ['consumer', 'schedule'] as const;
+/** #1901: the kinds of async work a scope host logs — every kind but a request. */
+const ASYNC_KINDS = INVOCATION_KINDS.filter((k) => k !== 'request');
 
 /** A telemetry filter: a leaf comparison, or a group of them (the API nests up to 4 deep). */
 type TelemetryFilter =
@@ -317,21 +317,20 @@ function describeInvocation(e: RecentLogEvent): RecentLogEvent {
  * - `consumer: 5 more lines withheld (consumer:dead-lettered 5)`
  */
 function describeAsync(kind: string, source: Record<string, unknown>): string {
-  const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
   const n = (v: unknown) => (typeof v === 'number' ? v : null);
-  const outcome = text(source['outcome']) ?? '—';
+  const outcome = str(source['outcome']) ?? '—';
   if (outcome === 'suppressed') {
     const by = (source['suppressedBy'] ?? {}) as Record<string, unknown>;
     const parts = Object.entries(by).map(([k, v]) => `${k} ${String(v)}`);
     return `${kind}: ${n(source['suppressed']) ?? '?'} more lines withheld${parts.length ? ` (${parts.join(', ')})` : ''}`;
   }
-  const operation = text(source['operation']) ?? '?';
+  const operation = str(source['operation']) ?? '?';
   const ms = n(source['durationMs']);
   const late = n(source['latenessMs']);
   const timing = [ms === null ? null : `${ms} ms`, late === null ? null : `${late} ms late`].filter(Boolean).join(', ');
   const subject =
     kind === 'consumer'
-      ? `${operation} ← ${text(source['eventType']) ?? '?'}${n(source['attempt']) === null ? '' : ` (attempt ${n(source['attempt'])})`}`
+      ? `${operation} ← ${str(source['eventType']) ?? '?'}${n(source['attempt']) === null ? '' : ` (attempt ${n(source['attempt'])})`}`
       : operation;
   return `${kind} ${subject} → ${outcome}${timing ? ` (${timing})` : ''}`;
 }

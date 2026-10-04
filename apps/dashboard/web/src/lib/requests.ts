@@ -116,16 +116,7 @@ export function facetValueLabel(key: RequestFacetKey, value: string | number): s
 
 /** #1901: what kind of work a row is, in the page's words. */
 export function kindLabel(kind: string): string {
-  switch (kind) {
-    case 'consumer':
-      return 'event consumer';
-    case 'schedule':
-      return 'schedule';
-    case 'request':
-      return 'request';
-    default:
-      return kind;
-  }
+  return kind === 'consumer' ? 'event consumer' : kind;
 }
 
 /**

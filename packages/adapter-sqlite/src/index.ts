@@ -5059,8 +5059,8 @@ export class SqliteScopeHost implements ScopeHost {
 
       for (const row of rows) {
         report.attempted += 1;
-        // #1901: this attempt's line. The attempt number is the journal's, read before the
-        // attempt is recorded — what `recordExecutorDelivery` is about to make it.
+        // #1901: this attempt's line. Its number is the one the journal records, which
+        // `recordExecutorDelivery` answers — the Durable Object's RPC does the same.
         const unit = {
           kind: 'consumer' as const,
           tenantId: rt.tenantId,
@@ -5069,7 +5069,6 @@ export class SqliteScopeHost implements ScopeHost {
           operation: deliveryId,
           eventType: executor.eventType,
           eventId: row.id,
-          attempt: this.executorAttemptsOf(rt, row.id, deliveryId) + 1,
           startedAt: Date.now(),
           versionId: this.versionId,
         };
@@ -5083,16 +5082,16 @@ export class SqliteScopeHost implements ScopeHost {
           // on the FIRST failure, unlike a handler's: the decode is pure, of text already
           // in hand, so a retry cannot succeed — and only the decode is caught here, so a
           // handler's transient failure keeps its backoff below.
-          this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), TERMINAL_RETRY, invocationId);
+          const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), TERMINAL_RETRY, invocationId);
           report.deadLettered += 1;
-          lines.write({ ...unit, outcome: 'dead-lettered' });
+          lines.write({ ...unit, attempt: attempts, outcome: 'dead-lettered' });
           continue;
         }
         if (isInert()) {
-          this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, TERMINAL_RETRY, invocationId);
+          const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, TERMINAL_RETRY, invocationId);
           report.inert = (report.inert ?? 0) + 1;
           // Its own outcome, never `delivered`: no handler ran (#2005).
-          lines.write({ ...unit, outcome: 'inert' });
+          lines.write({ ...unit, attempt: attempts, outcome: 'inert' });
           continue;
         }
         this.causedBy = event.id;
@@ -5104,11 +5103,11 @@ export class SqliteScopeHost implements ScopeHost {
           } else {
             await executor.handler(this.admin, event);
           }
-          this.recordExecutorDelivery(rt, row.id, deliveryId, null, executor.retry, invocationId);
+          const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, null, executor.retry, invocationId);
           report.delivered += 1;
-          lines.write({ ...unit, outcome: 'delivered' });
+          lines.write({ ...unit, attempt: attempts, outcome: 'delivered' });
         } catch (err) {
-          const dead = this.recordExecutorDelivery(
+          const { dead, attempts } = this.recordExecutorDelivery(
             rt,
             row.id,
             deliveryId,
@@ -5118,7 +5117,7 @@ export class SqliteScopeHost implements ScopeHost {
           );
           if (dead) report.deadLettered += 1;
           else report.retrying += 1;
-          lines.write({ ...unit, outcome: dead ? 'dead-lettered' : 'retrying', error: err });
+          lines.write({ ...unit, attempt: attempts, outcome: dead ? 'dead-lettered' : 'retrying', error: err });
         } finally {
           this.causedBy = null;
         }
@@ -5126,20 +5125,9 @@ export class SqliteScopeHost implements ScopeHost {
     }
   }
 
-  /** How many attempts a delivery has had — the journal's count. */
-  private executorAttemptsOf(rt: ScopeRuntime, eventId: string, deliveryId: string): number {
-    return (
-      (
-        rt.db
-          .prepare('SELECT attempts FROM _substrat_deliveries WHERE event_id = ? AND consumer_module = ?')
-          .get(eventId, deliveryId) as { attempts: number } | undefined
-      )?.attempts ?? 0
-    );
-  }
-
   /**
-   * Journal one executor attempt. Returns true when this attempt was the last one
-   * — i.e. the delivery is now dead-lettered.
+   * Journal one executor attempt. Answers which attempt it was (#1901), and `dead` when
+   * it was the last one — i.e. the delivery is now dead-lettered.
    *
    * Written AFTER the handler ran, so a crash mid-effect retries rather than
    * silently marking success. Claiming first would make delivery at-most-once and
@@ -5153,7 +5141,7 @@ export class SqliteScopeHost implements ScopeHost {
     retry: Required<ExecutorRetryPolicy>,
     /** #1525: the call THIS attempt ran in, or null. Last, mirroring the DO's RPC. */
     invocationId: string | null,
-  ): boolean {
+  ): { dead: boolean; attempts: number } {
     const prior =
       (
         rt.db
@@ -5193,7 +5181,7 @@ export class SqliteScopeHost implements ScopeHost {
         // #1525: the call this attempt ran in, as the caller named it.
         invocationId,
       );
-    return error !== null && exhausted;
+    return { dead: error !== null && exhausted, attempts };
   }
 
   /** Whether the directory says `scopeId` is the real install (`isPrimaryScopeRow`, #2005). */
