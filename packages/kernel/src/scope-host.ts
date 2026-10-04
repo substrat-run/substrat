@@ -5063,6 +5063,11 @@ export interface ScopeHost {
    * and this driver's contract in `job-run.ts`. `retry` is the DEFAULT policy for
    * the job's steps; a step may pass its own.
    *
+   * `options.leaseMs` (#2034) is how long one pass holds its run without reaching a
+   * step boundary, which renews it — default `JOB_LEASE_MS`. Past it, the run is due
+   * again and the next drive takes it over, counting the silent pass as a failed
+   * attempt. A job whose pass may go longer than that between two steps says so here.
+   *
    * The fourth driver, and a SIBLING of the three that already exist rather than a
    * widening of any of them. An executor retries one delivery whole; a schedule
    * fires one operation that must finish; the platform sweep does a pass of
@@ -5073,6 +5078,7 @@ export interface ScopeHost {
     name: string,
     handler: JobHandler,
     retry?: ExecutorRetryPolicy,
+    options?: { leaseMs?: number },
   ): void;
 
   /**
@@ -5117,12 +5123,10 @@ export interface ScopeHost {
    * grant gate here would STALL it silently rather than refuse it. The authority it
    * exercises is checked where it is used, inside the operations its steps invoke.
    *
-   * **One driver per scope at a time**, and that is a bound the caller holds, not one
-   * this enforces — there is no lease. Coalescing stops duplicate RUNS; two concurrent
-   * calls of THIS would advance the same run together. Every topology the driver is
-   * built for gives a scope one tick (the platform sweep does one call per scope, a
-   * scope DO's alarm fires for its own), so the bound holds by construction; the full
-   * argument, and what an overlap would actually cost, is in `job-run.ts`.
+   * **Overlapping calls are safe** (#2034): each run is CLAIMED before its pass, with a
+   * lease the pass renews at every step boundary, so two calls on one scope never run
+   * one run's handler together. A run whose pass died is taken over once its lease
+   * expires. The full argument is in `job-run.ts`.
    */
   runDueJobs(
     tenantId: TenantId,

@@ -82,6 +82,9 @@ import {
   assertRowLimit,
   assertRowOffset,
   JOB_RUN_PATCH_SQL,
+  JOB_RUN_CLAIM_SQL,
+  JOB_RUN_RENEW_SQL,
+  JOB_LEASE_EXPIRED_NOTE,
   JOB_STEP_RECORD_SQL,
   DELIVERY_ERROR_REDACTION_SQL,
   REDACTED_DELIVERY_NOTE,
@@ -201,6 +204,7 @@ import {
   type EntityVersionRow,
   type JobRunFilter,
   type JobRunPatch,
+  type JobRunClaim,
   type JobRunRow,
   type JobDueKey,
   type JobStepRow,
@@ -4435,13 +4439,50 @@ export function defineScopeDO(
      * partial update that wrote three of the four would leave a run carrying the
      * last failure's error beside the new cursor, which reads as broken forever.
      */
-    async jobRunPatch(id: string, patch: JobRunPatch): Promise<void> {
-      // A compare-and-set on `running` (#1632) — see `JOB_RUN_PATCH_SQL`.
-      this.sql.exec(
-        JOB_RUN_PATCH_SQL,
+    async jobRunPatch(id: string, patch: JobRunPatch, owner?: string): Promise<boolean> {
+      // A compare-and-set on `running` (#1632) and on the pass's lease (#2034) — see
+      // `JOB_RUN_PATCH_SQL`. `owner` is LAST and optional: a coordinator from before leases
+      // sends none, and patches the unleased rows it drives.
+      return this.sql.exec(JOB_RUN_PATCH_SQL, ...this.jobPatchArgs(id, patch, owner)).rowsWritten > 0;
+    }
+
+    private jobPatchArgs(id: string, patch: JobRunPatch, owner: string | undefined) {
+      return [
         patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
-        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
-      );
+        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id, owner ?? null,
+      ] as const;
+    }
+
+    /**
+     * #2034: the claim — `JOB_RUN_CLAIM_SQL`, and whether it took over a lease, read in ONE
+     * `transactionSync`: the single round trip is what makes it indivisible, as in
+     * `jobRunStartOrJoin`. Null = the run is no longer running and due.
+     */
+    async jobRunClaim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null> {
+      return this.revision.transactionSync(() => {
+        const runById = () =>
+          this.sql.exec('SELECT * FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as unknown as
+            | JobRunRow
+            | undefined;
+        const before = runById();
+        const claimed = this.sql.exec(JOB_RUN_CLAIM_SQL, owner, leaseUntil, now, JOB_LEASE_EXPIRED_NOTE, id, now);
+        if (claimed.rowsWritten === 0) return null;
+        return { run: runById()!, takeover: (before?.lease_owner ?? null) !== null };
+      });
+    }
+
+    /**
+     * #2034: a step boundary — renew the pass's lease, then read the step's ledger row, in one
+     * round trip. A pass that lost its lease reads nothing and stops.
+     */
+    async jobStepBegin(
+      runId: string,
+      step: string,
+      owner: string,
+      leaseUntil: string,
+    ): Promise<{ held: boolean; row: JobStepRow | null }> {
+      if (this.sql.exec(JOB_RUN_RENEW_SQL, leaseUntil, runId, owner).rowsWritten === 0) return { held: false, row: null };
+      return { held: true, row: await this.jobStepRow(runId, step) };
     }
 
     /** One step's ledger row — a non-null `result` is what means completed. */
@@ -4465,9 +4506,19 @@ export function defineScopeDO(
       attempts: number,
       lastError: string | null,
       at: string,
-    ): Promise<void> {
-      // Only while the run is still `running` (#1632) — see `JOB_STEP_RECORD_SQL`.
-      this.sql.exec(JOB_STEP_RECORD_SQL, runId, step, result, attempts, lastError, at, runId);
+      owner?: string,
+      leaseUntil?: string,
+    ): Promise<boolean> {
+      // Only while the run is still `running` (#1632) and the pass holds its lease (#2034),
+      // renewing the lease in the same transaction — see `JOB_STEP_RECORD_SQL`. A coordinator
+      // from before leases sends neither, holds no lease, and renews nothing.
+      return this.revision.transactionSync(() => {
+        if (leaseUntil !== undefined && this.sql.exec(JOB_RUN_RENEW_SQL, leaseUntil, runId, owner ?? null).rowsWritten === 0) {
+          return false;
+        }
+        this.sql.exec(JOB_STEP_RECORD_SQL, runId, step, result, attempts, lastError, at, runId, owner ?? null);
+        return true;
+      });
     }
 
     /**
@@ -4481,17 +4532,16 @@ export function defineScopeDO(
      * results, not to the cursor) then skips work it never did. The kernel's
      * `runJobPass` carries the full argument.
      */
-    async jobCommitPass(id: string, patch: JobRunPatch): Promise<void> {
+    async jobCommitPass(id: string, patch: JobRunPatch, owner?: string): Promise<boolean> {
       // `transactionSync` with both statements inline — NOT `await
       // this.jobRunPatch(...)` then the delete. The await is an output-gate
       // boundary, which is precisely the gap this method exists to close.
-      this.revision.transactionSync(() => {
-        this.sql.exec(
-          JOB_RUN_PATCH_SQL,
-          patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
-          patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
-        );
+      return this.revision.transactionSync(() => {
+        // #2034: the ledger goes only with a patch that applied — a stale holder's commit must
+        // not empty the ledger of the pass that took the run over.
+        if (this.sql.exec(JOB_RUN_PATCH_SQL, ...this.jobPatchArgs(id, patch, owner)).rowsWritten === 0) return false;
         this.sql.exec('DELETE FROM _substrat_job_steps WHERE run_id = ?', id);
+        return true;
       });
     }
 
@@ -5288,6 +5338,8 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
+        // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN lease_owner TEXT',
         // Executor retry state (#100). The defaults read as "terminal", which is
         // right for every row already there: each is a completed delivery or a
         // consumer dead-letter.

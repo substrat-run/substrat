@@ -316,6 +316,7 @@ import {
   type FreshnessRegistration,
   type FreshnessReport,
   jobRunOf,
+  assertLeaseMs,
   runDueJobRuns,
   SYSTEM_DOOR_WAIT,
   startJobRun,
@@ -331,6 +332,7 @@ import {
   type JobDueKey,
   type JobHandler,
   type JobRun,
+  type JobRunClaim,
   type JobRunFilter,
   type JobRunPatch,
   type JobRunRow,
@@ -1250,9 +1252,11 @@ interface ScopeStubRpc {
   jobRunInsert(row: JobRunRow): Promise<void>;
   jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]>;
   jobRunList(filter: JobRunFilter): Promise<JobRunRow[]>;
-  jobRunPatch(id: string, patch: JobRunPatch): Promise<void>;
-  jobCommitPass(id: string, patch: JobRunPatch): Promise<void>;
+  jobRunClaim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null>;
+  jobRunPatch(id: string, patch: JobRunPatch, owner?: string): Promise<boolean>;
+  jobCommitPass(id: string, patch: JobRunPatch, owner?: string): Promise<boolean>;
   jobStepRow(runId: string, step: string): Promise<JobStepRow | null>;
+  jobStepBegin(runId: string, step: string, owner: string, leaseUntil: string): Promise<{ held: boolean; row: JobStepRow | null }>;
   jobStepRecord(
     runId: string,
     step: string,
@@ -1260,7 +1264,9 @@ interface ScopeStubRpc {
     attempts: number,
     lastError: string | null,
     at: string,
-  ): Promise<void>;
+    owner?: string,
+    leaseUntil?: string,
+  ): Promise<boolean>;
   /** This scope's live `connection:<id>` grant tuples (#726 gap 1) — the read-back.
    *  Unions the scope's own tuples with the projected tenant-level ones, because a
    *  scope check consults both (rule 2 inheritance). */
@@ -2178,7 +2184,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * already carries. The HANDLER stays on the coordinator — it holds credentials
    * and calls the internet, which is why the DO never sees it.
    */
-  private readonly jobs = new Map<string, { handler: JobHandler; retry?: ExecutorRetryPolicy }>();
+  private readonly jobs = new Map<string, { handler: JobHandler; retry?: ExecutorRetryPolicy; leaseMs?: number }>();
   /**
    * The event currently being effected, stamped onto admin rows the executor writes.
    * Ambient rather than threaded through every HostAdmin signature: set and cleared
@@ -2571,12 +2577,14 @@ export class CloudflareScopeHost implements ScopeHost {
     name: string,
     handler: JobHandler,
     retry?: ExecutorRetryPolicy,
+    options?: { leaseMs?: number },
   ): void {
     // #1575: the kernel's own jobs are dispatched before this registry is read.
     assertJobRegistrable(moduleId, name);
+    assertLeaseMs(options?.leaseMs);
     const key = `${moduleId}/${name}`;
     if (this.jobs.has(key)) throw new Error(`job '${key}' is already registered`);
-    this.jobs.set(key, { handler, retry });
+    this.jobs.set(key, { handler, retry, leaseMs: options?.leaseMs });
   }
 
   /**
@@ -2597,12 +2605,13 @@ export class CloudflareScopeHost implements ScopeHost {
       startOrJoin: (key, row) => stub.jobRunStartOrJoin(key.moduleId, key.job, key.instance, row),
       get: (id) => stub.jobRunById(id),
       dueKeys: (now, max) => stub.jobRunsDueKeys(now, max),
+      claim: (id, owner, now, leaseUntil) => stub.jobRunClaim(id, owner, now, leaseUntil),
       list: (filter) => stub.jobRunList(filter),
-      patch: (id, patch) => stub.jobRunPatch(id, patch),
-      commitPass: (id, patch) => stub.jobCommitPass(id, patch),
-      step: (runId, name) => stub.jobStepRow(runId, name),
-      recordStep: (runId, name, result, attempts, lastError, at) =>
-        stub.jobStepRecord(runId, name, result, attempts, lastError, at),
+      patch: (id, patch, owner) => stub.jobRunPatch(id, patch, owner),
+      commitPass: (id, patch, owner) => stub.jobCommitPass(id, patch, owner),
+      beginStep: (runId, name, owner, leaseUntil) => stub.jobStepBegin(runId, name, owner, leaseUntil),
+      recordStep: (runId, name, result, attempts, lastError, at, owner, leaseUntil) =>
+        stub.jobStepRecord(runId, name, result, attempts, lastError, at, owner, leaseUntil),
     };
   }
 

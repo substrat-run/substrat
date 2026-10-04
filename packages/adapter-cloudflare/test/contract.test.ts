@@ -2617,12 +2617,12 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   /**
-   * #2028 review r3: one snapshot per drive, each row re-read before it runs, on the DO. Between the
-   * snapshot and the re-reads, where another writer can move rows, one picked run is moved past now and one unpicked
+   * #2028 review r3: one snapshot per drive, each row claimed before it runs (#2034), on the DO. Between the
+   * snapshot and the claims, where another writer can move rows, one picked run is moved past now and one unpicked
    * run becomes due. The moved one is skipped and runs on the next drive; the newly due one is not
    * lost, the next drive runs it; nothing runs twice.
    */
-  it('#1834: a drive acts on its one snapshot, re-reading each run before it runs it', async () => {
+  it('#1834: a drive acts on its one snapshot, claiming each run before it runs it', async () => {
     const s = await newScope();
     const start = (instance: string) =>
       jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance, payload: {} });

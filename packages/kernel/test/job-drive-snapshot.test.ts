@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { ScopeStub } from '../src/scope-host.js';
-import { runDueJobRuns, type JobDueKey, type JobRunPatch, type JobRunRow, type JobRunStore, type JobStepRow } from '../src/job-run.js';
+import { runDueJobRuns, type JobRunRow, type JobRunStore } from '../src/job-run.js';
+import { memoryJobStore } from './job-store-memory.js';
 
 /**
  * #1834 (#2028 review r3): a drive's selection is ONE snapshot of due keys, and each run is
- * re-read just before it runs. A store paged across several reads met rows another writer moved
+ * claimed just before it runs (#2034). A store paged across several reads met rows another writer moved
  * in between, and a drive ran one twice or skipped it. Here a hook moves rows AFTER the snapshot
- * and BEFORE the re-reads, and the drive must act on each row as it is at its re-read, each at most
- * once, leaving anything that moved to the next drive. Two OVERLAPPING drives are not covered: the
- * re-read reserves nothing, and one driver per scope at a time is still the stated bound.
+ * and BEFORE the claims, and the drive must act on each row as it is at its claim, each at most
+ * once, leaving anything that moved to the next drive. Two OVERLAPPING drives are
+ * `job-lease.test.ts`'s.
  */
 const NOW = '2026-10-04T12:00:00.000Z';
 const PAST = '2026-10-04T11:00:00.000Z';
@@ -34,48 +35,7 @@ function rowOf(id: string, nextAttemptAt: string | null = null): JobRunRow {
   };
 }
 
-/** An in-memory store. `afterSnapshot` runs once the snapshot is taken; `duplicate` repeats a key in it. */
-function storeOf(rows: JobRunRow[], opts: { afterSnapshot?: (rows: Map<string, JobRunRow>) => void; duplicate?: string } = {}) {
-  const table = new Map(rows.map((r) => [r.id, { ...r }]));
-  const apply = (id: string, p: JobRunPatch) => {
-    const r = table.get(id);
-    if (!r || r.status !== 'running') return;
-    table.set(id, {
-      ...r,
-      status: p.status,
-      cursor: p.cursor,
-      counters: p.counters,
-      attempts: p.attempts,
-      last_error: p.lastError,
-      updated_at: p.updatedAt,
-      next_attempt_at: p.nextAttemptAt,
-      ended_at: p.endedAt,
-    });
-  };
-  const store: JobRunStore = {
-    startOrJoin: async (_key, row) => row,
-    get: async (id) => (table.has(id) ? { ...table.get(id)! } : null),
-    dueKeys: async (now, max) => {
-      const keys: JobDueKey[] = [...table.values()]
-        .filter((r) => r.status === 'running' && (r.next_attempt_at === null || r.next_attempt_at <= now))
-        .sort((a, b) => (a.next_attempt_at ?? a.started_at).localeCompare(b.next_attempt_at ?? b.started_at) || a.id.localeCompare(b.id))
-        .slice(0, max)
-        .map((r) => ({ id: r.id, module_id: r.module_id, job: r.job }));
-      if (opts.duplicate) {
-        const again = keys.find((k) => k.id === opts.duplicate);
-        if (again) keys.push(again);
-      }
-      opts.afterSnapshot?.(table);
-      return keys;
-    },
-    list: async () => [...table.values()],
-    patch: async (id, p) => apply(id, p),
-    commitPass: async (id, p) => apply(id, p),
-    step: async (): Promise<JobStepRow | null> => null,
-    recordStep: async () => undefined,
-  };
-  return { store, table };
-}
+const storeOf = memoryJobStore;
 
 /** Drive once with `limit`, counting each run's passes. With `advance`, a pass leaves its run going. */
 async function drive(store: JobRunStore, ran: string[], limit: number, advance = false) {
@@ -93,7 +53,7 @@ async function drive(store: JobRunStore, ran: string[], limit: number, advance =
   });
 }
 
-describe('#1834: a drive acts on one snapshot, each row re-read before it runs', () => {
+describe('#1834: a drive acts on one snapshot, each row claimed before it runs', () => {
   it('twin: nothing moves, and the snapshot runs in due order up to the limit', async () => {
     const ran: string[] = [];
     const { store } = storeOf([rowOf('A'), rowOf('B'), rowOf('C')]);
@@ -101,7 +61,7 @@ describe('#1834: a drive acts on one snapshot, each row re-read before it runs',
     expect(ran).toEqual(['A', 'B']);
   });
 
-  it('a run moved past now after the snapshot is skipped at its re-read, and the next drive takes it', async () => {
+  it('a run moved past now after the snapshot is skipped at its claim, and the next drive takes it', async () => {
     const ran: string[] = [];
     const { store, table } = storeOf([rowOf('A'), rowOf('B'), rowOf('C')], {
       afterSnapshot: (rows) => {
@@ -126,7 +86,7 @@ describe('#1834: a drive acts on one snapshot, each row re-read before it runs',
   });
 
   // Its pass ADVANCES, so after it the run is still running and due: only the dedupe, not the
-  // re-read, stands between the repeated key and a second pass in the same drive.
+  // claim, stands between the repeated key and a second pass in the same drive.
   it('a key the snapshot names twice runs once in the drive', async () => {
     const ran: string[] = [];
     const { store } = storeOf([rowOf('A'), rowOf('B')], { duplicate: 'A' });

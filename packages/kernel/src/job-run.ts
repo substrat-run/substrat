@@ -1,5 +1,6 @@
 import { dataSubjectId, substratError, type DataSubjectId, type ModuleId } from '@substrat-run/contracts';
 import { assertRowLimit, backoffAt, resolveRetryPolicy, type ExecutorRetryPolicy, type ScopeStub } from './scope-host.js';
+import { ulid } from './ulid.js';
 
 /**
  * The fourth driver (#1577): long, resumable, coalesced work.
@@ -61,23 +62,34 @@ import { assertRowLimit, backoffAt, resolveRetryPolicy, type ExecutorRetryPolicy
  * `_substrat_sweep_runs` is a RECEIPT and carries such a constraint; a cursor is not a
  * receipt, and the two must not be re-merged (#1571, #1572).
  *
- * ## One driver per scope at a time — a stated bound, not a mechanism
+ * ## One pass per run at a time — a lease (#2034)
  *
- * Coalescing stops duplicate RUNS. It does not stop two concurrent callers of
- * `runDueJobs` from picking the same run out of the due read and advancing it at the
- * same time: there is no lease, and a lease is not smuggled in here. The topology the
- * driver is built for has one tick per scope — `runPlatformSweep` enumerates scopes
- * and does one call each, a scope DO's alarm fires for its own scope — so the bound
- * is satisfied by construction rather than defended against.
+ * Coalescing stops duplicate RUNS. What stops two drives overlapping on one scope from
+ * running the same run's handler together is the CLAIM: before a pass is invoked, one
+ * compare-and-set (`JOB_RUN_CLAIM_SQL`) checks that the run is still `running` and due
+ * and, in the same statement, writes a lease — a `lease_owner` minted for that one pass,
+ * and `next_attempt_at` pushed out to the lease's expiry. Both adapters serialize a
+ * scope's writes (the DO's input gate, the pure host's turn queue), so exactly one
+ * claim can win; the loser's statement finds the run no longer due and changes nothing.
+ * The lease's expiry IS `next_attempt_at`, deliberately: a leased run is simply not
+ * due, so the due read, its index and its `JOB_RUN_DUE_AT` order need nothing new.
  *
- * What the overlap would cost, if a deployment did drive one scope twice at once: the
- * step ledger absorbs most of it (a step already committed returns its memo to both),
- * so the exposure is a step neither pass has finished yet, which both would run. That
- * is the same at-least-once residue an executor already has and which handlers already
- * have to absorb — but it is NOT what "only one walk per source at a time" promises,
- * so it is written down rather than implied. Adding a lease is a real design with a
- * real expiry question behind it (a leaked lease is a run nothing will ever touch
- * again), and it wants a consumer's numbers before it gets one.
+ * Everything the pass writes afterwards — a step's ledger row, the outcome patch, the
+ * commit — is conditional on still holding that lease, so a holder that lost it
+ * changes nothing. Each step boundary RENEWS the lease, so a pass longer than one lease
+ * is not taken over while it is still making progress; one that finds its lease gone
+ * at a step boundary stops there and runs no further steps.
+ *
+ * **A lease that expires without a patch is recovered.** The run is due again at the
+ * expiry, and the next claim takes it over. That takeover counts as a failed pass —
+ * the pass that held it never reported — so `attempts` stays honest and a pass that
+ * keeps dying exhausts the job's policy and ends `failed` rather than looping forever.
+ * The expiry has to outlast the longest stretch a pass spends between two steps, which
+ * is the job's own number: `registerJob`'s `leaseMs`, default `JOB_LEASE_MS`.
+ *
+ * What the lease does NOT cover: work a stale holder had already started when its
+ * lease was taken over. A step body is at-least-once (see `JobPassContext.step`), and
+ * a holder whose lease expired mid-step finishes that step's effect before it learns.
  *
  * ## What this is NOT
  *
@@ -130,10 +142,14 @@ export const JOB_RUN_DDL = `
     started_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     -- When the next pass may run, on the executor's own backoff curve. NULL = now
-    -- (or terminal), which is why the due read tests IS NULL as well as <= now.
+    -- (or terminal), which is why the due read tests IS NULL as well as <= now. While
+    -- a pass holds the run (lease_owner set) it is the lease's expiry (#2034).
     next_attempt_at TEXT,
     -- When the run reached 'done' or 'failed'. NULL while it is still running.
-    ended_at TEXT
+    ended_at TEXT,
+    -- #2034: the pass holding the run, minted per claim; NULL = nobody. Every write a
+    -- pass makes is conditional on it, and the pass's outcome clears it.
+    lease_owner TEXT
   );
   -- The drive's read: WHERE status = 'running' AND (next_attempt_at IS NULL OR <= ?)
   -- ORDER BY id. Leading with status makes the live runs a seekable range over a
@@ -172,7 +188,7 @@ export const JOB_RUN_DDL = `
 
 /**
  * The write every pass outcome lands through, on both adapters — a compare-and-set on
- * `status = 'running'` (#1632).
+ * `status = 'running'` (#1632) and on the pass's lease (#2034), which it releases.
  *
  * A pass runs for as long as its handler takes, outside any lock, so a subject erasure
  * can settle the run `failed` and tombstone its payload, cursor and step memos while the
@@ -182,16 +198,55 @@ export const JOB_RUN_DDL = `
  * nothing else in the kernel moves a run out of that state except the pass itself and
  * the erasure. Same shape, same reason, as `settlePlatformRequest`'s CAS on `pending`.
  *
+ * The lease half: a pass whose lease another drive took over after it expired is no
+ * longer the run's, and its outcome — written over the new holder's work — is refused.
+ * `IS ?`, not `= ?`, so a caller passing NULL (a coordinator from before leases) still
+ * patches the unleased rows it drives.
+ *
  * Params: status, cursor, counters, attempts, last_error, updated_at, next_attempt_at,
- * ended_at, id.
+ * ended_at, id, lease_owner.
  */
 export const JOB_RUN_PATCH_SQL = `UPDATE _substrat_job_runs
      SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
-         updated_at = ?, next_attempt_at = ?, ended_at = ?
-   WHERE id = ? AND status = 'running'`;
+         updated_at = ?, next_attempt_at = ?, ended_at = ?, lease_owner = NULL
+   WHERE id = ? AND status = 'running' AND lease_owner IS ?`;
 
 /**
- * Record one step attempt — only while its run is still `running` (#1632).
+ * #2034: the claim — the ONE statement that decides which drive runs a due run's pass.
+ *
+ * Succeeds (one row changed) only where the run is still `running` and due, so of two
+ * drives that both picked it, one wins and the other changes nothing. The winner's
+ * lease is written in the same statement: `lease_owner`, and `next_attempt_at` pushed
+ * out to the lease's expiry, which is what takes the run out of the due read.
+ *
+ * A run due while it still carries an owner is an EXPIRED lease — its pass never
+ * reported — and taking it over counts that pass as failed: `attempts` + 1 and the
+ * note as `last_error`. SQLite evaluates every `SET` against the row as it was, so the
+ * `CASE`s read the previous owner.
+ *
+ * Params: lease_owner, next_attempt_at (the expiry), updated_at, last_error (the
+ * takeover note), id, now.
+ */
+export const JOB_RUN_CLAIM_SQL = `UPDATE _substrat_job_runs
+     SET lease_owner = ?, next_attempt_at = ?, updated_at = ?,
+         attempts = attempts + CASE WHEN lease_owner IS NULL THEN 0 ELSE 1 END,
+         last_error = CASE WHEN lease_owner IS NULL THEN last_error ELSE ? END
+   WHERE id = ? AND status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)`;
+
+/**
+ * #2034: renew a pass's lease at a step boundary — only while the pass still holds it.
+ * One row changed = still held, and the lease now runs to the new expiry; none = the
+ * pass lost the run (taken over, or settled by an erasure) and must stop.
+ *
+ * Params: next_attempt_at (the new expiry), id, lease_owner.
+ */
+export const JOB_RUN_RENEW_SQL = `UPDATE _substrat_job_runs SET next_attempt_at = ?
+   WHERE id = ? AND status = 'running' AND lease_owner IS ?`;
+
+/**
+ * Record one step attempt — only while its run is still `running` (#1632) and the pass
+ * still holds its lease (#2034). Both adapters run it after `JOB_RUN_RENEW_SQL`, in one
+ * transaction, and only when the renewal held.
  *
  * The step half of `JOB_RUN_PATCH_SQL`'s CAS: a stale pass's step, finishing after an
  * erasure settled the run, would otherwise write a fresh result carrying the person
@@ -199,11 +254,11 @@ export const JOB_RUN_PATCH_SQL = `UPDATE _substrat_job_runs
  * `VALUES` so the guard and the write are one statement; the `WHERE` also resolves
  * SQLite's parse ambiguity between a SELECT's trailing clause and `ON CONFLICT`.
  *
- * Params: run_id, step, result, attempts, last_error, recorded_at, run_id.
+ * Params: run_id, step, result, attempts, last_error, recorded_at, run_id, lease_owner.
  */
 export const JOB_STEP_RECORD_SQL = `INSERT INTO _substrat_job_steps (run_id, step, result, attempts, last_error, recorded_at)
      SELECT ?, ?, ?, ?, ?, ?
-      WHERE EXISTS (SELECT 1 FROM _substrat_job_runs WHERE id = ? AND status = 'running')
+      WHERE EXISTS (SELECT 1 FROM _substrat_job_runs WHERE id = ? AND status = 'running' AND lease_owner IS ?)
    ON CONFLICT (run_id, step) DO UPDATE SET result = excluded.result,
                                             attempts = excluded.attempts,
                                             last_error = excluded.last_error,
@@ -237,8 +292,11 @@ export interface JobRun extends JobRunKey {
   lastError: string | null;
   startedAt: string;
   updatedAt: string;
+  /** While `leaseOwner` is set, when that lease expires and the run is due again. */
   nextAttemptAt: string | null;
   endedAt: string | null;
+  /** #2034: the pass holding the run right now, or null. Opaque; minted per claim. */
+  leaseOwner: string | null;
   /**
    * Why this row could not be read whole, or null — which is the ordinary case and
    * what every run written by this driver carries.
@@ -299,6 +357,29 @@ export const JOB_RUN_LIST_MAX = 500;
 export function jobRunListLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return JOB_RUN_LIST_LIMIT;
   return Math.min(JOB_RUN_LIST_MAX, Math.max(1, Math.floor(limit)));
+}
+
+/**
+ * #2034: how long a pass's lease lasts by default — from its claim, and again from each
+ * step boundary, which renews it. A job whose pass can spend longer than this between
+ * two steps registers its own `leaseMs`; otherwise its run is taken over while still
+ * working. Fifteen minutes is the longest a hosted alarm or cron invocation runs, so a
+ * hosted pass that has gone longer without a step has been stopped anyway.
+ */
+export const JOB_LEASE_MS = 15 * 60_000;
+
+/** #2034: `last_error` of a run whose expired lease a later claim took over. */
+export const JOB_LEASE_EXPIRED_NOTE =
+  'interrupted: the pass holding this run stopped reporting, and its lease expired';
+
+/** #2034: a job's `leaseMs`, refused at registration unless it is a positive integer. */
+export function assertLeaseMs(leaseMs: number | undefined): void {
+  if (leaseMs === undefined) return;
+  if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) {
+    throw substratError('validation_failed', `leaseMs must be a positive integer of milliseconds, got ${String(leaseMs)}`, {
+      errors: [{ path: 'leaseMs', message: 'must be a positive integer' }],
+    });
+  }
 }
 
 /** Runs one `runDueJobs` call picks up by default. */
@@ -395,6 +476,12 @@ export interface JobDriveReport {
   /** Runs whose step exhausted its retries this call. Terminal: `failed`, with the error on the record. */
   failed: number;
   /**
+   * #2034: passes whose outcome was refused because the run was no longer theirs — their
+   * lease expired and another drive took the run over, or it was settled meanwhile (an
+   * erasure). Nothing the pass produced was written; whoever holds the run reports it.
+   */
+  superseded: number;
+  /**
    * Runs whose pass the host's system door told to wait (#1834): no attempt was counted and no error
    * recorded, as a switched-off schedule is `skipped` without its cadence moving. The run is due
    * again after `JOB_DEFER_MS`, so a run that keeps waiting never takes the turn of one behind it.
@@ -422,6 +509,14 @@ export interface JobRunRow {
   readonly updated_at: string;
   readonly next_attempt_at: string | null;
   readonly ended_at: string | null;
+  /** #2034. Optional only for an older scope DO answering before the lease column. */
+  readonly lease_owner?: string | null;
+}
+
+/** #2034: a won claim — the run as the claim left it, and whether it took over an expired lease. */
+export interface JobRunClaim {
+  readonly run: JobRunRow;
+  readonly takeover: boolean;
 }
 
 /** #1834: what a drive's snapshot holds of one due run — enough to pick it, never to act on it. */
@@ -489,16 +584,23 @@ export interface JobRunStore {
    * #1834: ONE snapshot of the keys of up to `max` `running` runs whose `next_attempt_at` has passed
    * (or is NULL), in the order they became due (`JOB_RUN_DUE_AT`, then id), read in ONE query.
    *
-   * Keys, not rows: the driver re-reads each row (`get`) just before it runs it, so what it acts on
-   * is never older than that re-read. The re-read RESERVES nothing: two drives overlapping on one
-   * scope can both re-read a row as due and both run it, which is why one driver per scope at a time
-   * stays a stated bound (see the file header). And one read, not pages: a cursor across separate
-   * reads met rows
-   * that a concurrent drive moved in between, and a drive then saw a run twice, or never.
+   * Keys, not rows: the driver CLAIMS each one (`claim`) just before it runs it, so what it acts on
+   * is the row as the claim left it, never the snapshot. And one read, not pages: a cursor across
+   * separate reads met rows that a concurrent drive moved in between, and a drive then saw a run
+   * twice, or never.
    */
   dueKeys(now: string, max: number): Promise<JobDueKey[]>;
+  /**
+   * #2034: claim run `id` for one pass — `JOB_RUN_CLAIM_SQL`, then the row as it left it — or
+   * null when the run is no longer `running` and due (another drive holds it, or it moved).
+   *
+   * ONE operation, for the reason `startOrJoin` is one: `takeover` is whether the row carried an
+   * owner before the claim, which only a read in the same transaction can say.
+   */
+  claim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null>;
   list(filter: JobRunFilter): Promise<JobRunRow[]>;
-  patch(id: string, patch: JobRunPatch): Promise<void>;
+  /** A pass outcome, only while `owner` holds the run (`JOB_RUN_PATCH_SQL`). False = refused. */
+  patch(id: string, patch: JobRunPatch, owner: string): Promise<boolean>;
   /**
    * A COMMITTED pass: write the run's new state and drop its step ledger together,
    * indivisibly.
@@ -510,9 +612,22 @@ export interface JobRunStore {
    * cursor — reads that stale memo and skips work it never did. The first cut of
    * this file ordered the two calls carefully and explained in a comment why the
    * gap was harmless. The comment was wrong; only atomicity makes it true.
+   *
+   * Only while `owner` holds the run, and the ledger is dropped only when the patch applied: a
+   * stale holder's commit would otherwise empty the ledger of the pass that took the run over.
+   * False = refused, and nothing was written.
    */
-  commitPass(id: string, patch: JobRunPatch): Promise<void>;
-  step(runId: string, name: string): Promise<JobStepRow | null>;
+  commitPass(id: string, patch: JobRunPatch, owner: string): Promise<boolean>;
+  /**
+   * #2034: a step boundary — renew `owner`'s lease to `leaseUntil` (`JOB_RUN_RENEW_SQL`) and read
+   * the step's ledger row, in one operation. `held: false` = the pass lost the run; `row` is then
+   * null and the pass must stop.
+   */
+  beginStep(runId: string, name: string, owner: string, leaseUntil: string): Promise<{ held: boolean; row: JobStepRow | null }>;
+  /**
+   * Record one step attempt, renewing `owner`'s lease to `leaseUntil` in the same transaction —
+   * both only while `owner` holds the run. False = the pass lost it, and nothing was written.
+   */
   recordStep(
     runId: string,
     name: string,
@@ -520,7 +635,9 @@ export interface JobRunStore {
     attempts: number,
     lastError: string | null,
     at: string,
-  ): Promise<void>;
+    owner: string,
+    leaseUntil: string,
+  ): Promise<boolean>;
 }
 
 /** `conflict` reason: two `step()` calls under one name in one pass. */
@@ -685,6 +802,7 @@ export function jobRunOf(row: JobRunRow): JobRun {
     updatedAt: row.updated_at,
     nextAttemptAt: row.next_attempt_at,
     endedAt: row.ended_at,
+    leaseOwner: row.lease_owner ?? null,
     decodeError,
   };
 }
@@ -737,6 +855,7 @@ export async function startJobRun(
     updated_at: at,
     next_attempt_at: null,
     ended_at: null,
+    lease_owner: null,
   };
   // The row is built unconditionally — an id is minted and a start time stamped even
   // when this call turns out to be a join. That is the price of doing the decision in
@@ -764,9 +883,23 @@ class JobStepFailure extends Error {
   }
 }
 
+/**
+ * #2034: the pass no longer holds its run's lease, found at a step boundary. Kernel-private and
+ * tied to its pass, like `PassDeferred`, so a handler that catches it cannot turn it into anything
+ * that writes: the pass stops, and the outcome is `superseded`.
+ */
+class LeaseLost extends Error {
+  constructor(readonly pass: object) {
+    super('this pass no longer holds the run: its lease was taken over or the run was settled');
+  }
+}
+
+/** When a lease taken at `at` for `leaseMs` expires. */
+const leaseUntil = (at: string, leaseMs: number): string => new Date(Date.parse(at) + leaseMs).toISOString();
+
 /** What one pass did, as the drive loop reads it. */
 export interface JobPassOutcome {
-  status: 'advanced' | 'completed' | 'retrying' | 'failed' | 'deferred';
+  status: 'advanced' | 'completed' | 'retrying' | 'failed' | 'deferred' | 'superseded';
   /**
    * The error left on the record. Present exactly on `retrying` and `failed`, and on `deferred`,
    * where it is the door's refusal and NOT on the record: a deferred pass records no error.
@@ -793,7 +926,12 @@ export interface JobPassOutcome {
  */
 export async function runJobPass(options: {
   store: JobRunStore;
+  /** The run as this pass's claim left it. */
   run: JobRunRow;
+  /** #2034: the lease this pass's claim wrote. Every write below is conditional on it. */
+  owner: string;
+  /** #2034: how long each renewal at a step boundary extends the lease. Default `JOB_LEASE_MS`. */
+  leaseMs?: number;
   handler: JobHandler;
   /** The job's own retry policy — a step may narrow it, none may widen past its own. */
   retry?: ExecutorRetryPolicy;
@@ -812,9 +950,14 @@ export async function runJobPass(options: {
    */
   deferral?: (err: unknown, pass: object) => boolean;
 }): Promise<JobPassOutcome> {
-  const { store, run, handler, now, openScope } = options;
+  const { store, run, owner, handler, now, openScope } = options;
+  const leaseMs = options.leaseMs ?? JOB_LEASE_MS;
   // This pass's token, and nothing else's: the door's refusals are tied to it.
   const passToken = {};
+  /** #2034: a write refused because the lease is gone stops the pass where it stands. */
+  const held = (applied: boolean): void => {
+    if (!applied) throw new LeaseLost(passToken);
+  };
   /** Asked once per refusal, since the host consumes its mark; the answer then travels as `PassDeferred`. */
   const deferral = (err: unknown): PassDeferred | null => {
     if (err instanceof PassDeferred) return err.pass === passToken ? err : null;
@@ -872,7 +1015,10 @@ export async function runJobPass(options: {
         }
         usedThisPass.add(name);
         const policy = resolveRetryPolicy(retry ?? options.retry);
-        const prior = await store.step(run.id, name);
+        // #2034: a step boundary renews the lease, and a pass that lost it runs no further step.
+        const begun = await store.beginStep(run.id, name, owner, leaseUntil(now(), leaseMs));
+        held(begun.held);
+        const prior = begun.row;
         // A NON-NULL result is what means completed: a step that threw left its row
         // with a null result and a raised count, and must run again.
         if (prior && prior.result !== null) return JSON.parse(prior.result) as T;
@@ -894,13 +1040,15 @@ export async function runJobPass(options: {
           const wait = deferral(err);
           if (wait) throw wait;
           const cause = message(err);
-          await store.recordStep(run.id, name, null, attempts, cause, now());
+          const at = now();
+          held(await store.recordStep(run.id, name, null, attempts, cause, at, owner, leaseUntil(at, leaseMs)));
           throw new JobStepFailure(name, attempts, policy, cause);
         }
         // `undefined` becomes the JSON text 'null', not SQL NULL: a step done purely
         // for its effect must still read as completed on the next pass.
         const stored = JSON.stringify(value) ?? 'null';
-        await store.recordStep(run.id, name, stored, attempts, null, now());
+        const at = now();
+        held(await store.recordStep(run.id, name, stored, attempts, null, at, owner, leaseUntil(at, leaseMs)));
         // RETURNED THROUGH THE STORED FORM, not as the raw value. The resume path
         // returns `JSON.parse(row.result)`, so returning `value` here would hand the
         // handler a `Date` on the first pass and the string `"2026-01-01T…"` on the
@@ -936,33 +1084,45 @@ export async function runJobPass(options: {
     // throw from the clear landed in the catch below, which wrote the OLD cursor
     // back and filed an already-committed pass as failed, so the record a human
     // reads to recover would have understated the run's own progress.
-    await store.commitPass(run.id, {
-      status: done ? 'done' : 'running',
-      cursor: keepsCursor ? run.cursor : JSON.stringify(result.cursor),
-      counters: JSON.stringify(counters),
-      attempts: 0,
-      lastError: null,
-      updatedAt: at,
-      nextAttemptAt: null,
-      endedAt: done ? at : null,
-    });
+    const committed = await store.commitPass(
+      run.id,
+      {
+        status: done ? 'done' : 'running',
+        cursor: keepsCursor ? run.cursor : JSON.stringify(result.cursor),
+        counters: JSON.stringify(counters),
+        attempts: 0,
+        lastError: null,
+        updatedAt: at,
+        // Cleared, never left at the lease's expiry: the lease ends with the pass (#2034).
+        nextAttemptAt: null,
+        endedAt: done ? at : null,
+      },
+      owner,
+    );
+    if (!committed) return { status: 'superseded' };
     return { status: done ? 'completed' : 'advanced' };
   } catch (err) {
+    // #2034: this pass lost the run at a step boundary. Nothing to write: any write would be refused.
+    if (err instanceof LeaseLost && err.pass === passToken) return { status: 'superseded' };
     // #1834: the host's system door said wait, so the call did not run. The run keeps what the last
     // commit wrote (its attempts and its last error included); only when it is next due moves.
     if (deferral(err)) {
       const at = now();
-      await store.patch(run.id, {
-        status: 'running',
-        cursor: run.cursor,
-        counters: run.counters,
-        attempts: run.attempts,
-        lastError: run.last_error,
-        updatedAt: at,
-        nextAttemptAt: new Date(Date.parse(at) + JOB_DEFER_MS).toISOString(),
-        endedAt: null,
-      });
-      return { status: 'deferred', error: message(err) };
+      const patched = await store.patch(
+        run.id,
+        {
+          status: 'running',
+          cursor: run.cursor,
+          counters: run.counters,
+          attempts: run.attempts,
+          lastError: run.last_error,
+          updatedAt: at,
+          nextAttemptAt: new Date(Date.parse(at) + JOB_DEFER_MS).toISOString(),
+          endedAt: null,
+        },
+        owner,
+      );
+      return patched ? { status: 'deferred', error: message(err) } : { status: 'superseded' };
     }
     const stepFailure = err instanceof JobStepFailure ? err : null;
     const policy = stepFailure?.policy ?? jobPolicy;
@@ -974,16 +1134,22 @@ export async function runJobPass(options: {
     const exhausted = against >= policy.maxAttempts;
     const error = message(err);
     const at = now();
-    await store.patch(run.id, {
-      status: exhausted ? 'failed' : 'running',
-      cursor: run.cursor,
-      counters: run.counters,
-      attempts,
-      lastError: error,
-      updatedAt: at,
-      nextAttemptAt: exhausted ? null : backoffAt(against, policy, new Date(at)),
-      endedAt: exhausted ? at : null,
-    });
+    const patched = await store.patch(
+      run.id,
+      {
+        status: exhausted ? 'failed' : 'running',
+        cursor: run.cursor,
+        counters: run.counters,
+        attempts,
+        lastError: error,
+        updatedAt: at,
+        // The backoff, never the lease's expiry the claim wrote: the lease ends with the pass (#2034).
+        nextAttemptAt: exhausted ? null : backoffAt(against, policy, new Date(at)),
+        endedAt: exhausted ? at : null,
+      },
+      owner,
+    );
+    if (!patched) return { status: 'superseded' };
     return { status: exhausted ? 'failed' : 'retrying', error };
   }
 }
@@ -1008,14 +1174,15 @@ export async function runJobPass(options: {
  *
  * **Selection is ONE snapshot per drive** (#1834). The drive reads the keys of up to
  * `JOB_DRIVE_SCAN_MAX` due runs in a single query, picks up to `limit` runnable ones
- * (each id once), and re-reads each row just before it runs it, skipping one that is no
- * longer `running` or no longer due. A cursor across several reads met rows that another
- * writer had moved in between, and ran one twice or skipped it. A run that moves, or
- * becomes due, after the snapshot is the NEXT drive's business, never this one's.
+ * (each id once), and CLAIMS each one just before it runs it (#2034), skipping one the
+ * claim finds no longer `running` or no longer due. A cursor across several reads met rows
+ * that another writer had moved in between, and ran one twice or skipped it. A run that
+ * moves, or becomes due, after the snapshot is the NEXT drive's business, never this one's.
  *
- * The re-read is a READ, not a reservation: it does not make overlapping drives safe. Two
- * drives on one scope at once can both re-read a row as due and both run its handler. The
- * one-driver-per-scope bound in the file header still applies.
+ * The claim is a reservation, not a read: of two drives overlapping on one scope that both
+ * picked a run, exactly one wins it, and only the winner invokes the handler (see the
+ * file header). A second pass in the same drive (`maxPasses`) claims again, with a fresh
+ * owner, so it holds a lease of its own rather than one the first pass released.
  *
  * The starvation was spotted while re-reading this file, judged unlikely and left
  * alone — and then found independently by a reviewer. The judgement may even have
@@ -1026,7 +1193,9 @@ export async function runJobPass(options: {
 export async function runDueJobRuns(options: {
   store: JobRunStore;
   /** job name → its handler and policy, as `registerJob` recorded them. */
-  handlerFor: (run: Pick<JobRunRow, 'module_id' | 'job'>) => { handler: JobHandler; retry?: ExecutorRetryPolicy } | undefined;
+  handlerFor: (
+    run: Pick<JobRunRow, 'module_id' | 'job'>,
+  ) => { handler: JobHandler; retry?: ExecutorRetryPolicy; leaseMs?: number } | undefined;
   now: () => string;
   openScope: (run: JobRunRow, pass: object) => Promise<ScopeStub>;
   /** #1834: the host's own system-door refusals on one pass, by identity (`runJobPass`). */
@@ -1040,6 +1209,7 @@ export async function runDueJobRuns(options: {
     completed: 0,
     retrying: 0,
     failed: 0,
+    superseded: 0,
     deferred: 0,
     errors: [],
   };
@@ -1060,20 +1230,57 @@ export async function runDueJobRuns(options: {
     if (options.handlerFor(key)) picked.push(key);
   }
 
+  /** #2034: claim `id` for one pass, under an owner minted for that pass alone. */
+  const claim = async (id: string, leaseMs: number) => {
+    const owner = ulid();
+    const at = options.now();
+    const won = await options.store.claim(id, owner, at, leaseUntil(at, leaseMs));
+    return won && { ...won, owner };
+  };
+
   for (const key of picked) {
-    // The re-read: the row as it is NOW. One that was finished, or moved past this moment, since
-    // the snapshot is skipped; it is the next drive's. This reserves nothing (see above).
-    const row = await options.store.get(key.id);
-    if (!row || row.status !== 'running' || (row.next_attempt_at !== null && row.next_attempt_at > options.now())) {
+    const registered = options.handlerFor(key)!;
+    const leaseMs = registered.leaseMs ?? JOB_LEASE_MS;
+    // The claim: the run is this drive's only if it is still running and due NOW, and then no
+    // other drive's until the lease ends. One that was finished, moved, or claimed by another
+    // drive since the snapshot is skipped; it is the next drive's.
+    let claimed = await claim(key.id, leaseMs);
+    if (!claimed) continue;
+    report.attempted += 1;
+    // An expired lease taken over is a pass that never reported, so it was an attempt (the claim
+    // counted it). Judged against the job's policy like any failure no step owns: a pass that keeps
+    // dying ends the run here, rather than being retried at every expiry forever.
+    if (claimed.takeover && claimed.run.attempts >= resolveRetryPolicy(registered.retry).maxAttempts) {
+      const at = options.now();
+      const settled = await options.store.patch(
+        key.id,
+        {
+          status: 'failed',
+          cursor: claimed.run.cursor,
+          counters: claimed.run.counters,
+          attempts: claimed.run.attempts,
+          lastError: JOB_LEASE_EXPIRED_NOTE,
+          updatedAt: at,
+          nextAttemptAt: null,
+          endedAt: at,
+        },
+        claimed.owner,
+      );
+      if (settled) {
+        report.failed += 1;
+        report.errors.push({ runId: key.id, error: JOB_LEASE_EXPIRED_NOTE });
+      } else {
+        report.superseded += 1;
+      }
       continue;
     }
-    const registered = options.handlerFor(row)!;
-    report.attempted += 1;
-    let run = row;
     for (let pass = 0; pass < maxPasses; pass += 1) {
+      const run = claimed.run;
       const outcome = await runJobPass({
         store: options.store,
         run,
+        owner: claimed.owner,
+        leaseMs,
         handler: registered.handler,
         retry: registered.retry,
         now: options.now,
@@ -1093,19 +1300,23 @@ export async function runDueJobRuns(options: {
         report.deferred += 1;
         break;
       }
+      if (outcome.status === 'superseded') {
+        report.superseded += 1;
+        break;
+      }
       if (outcome.status === 'retrying') {
         report.retrying += 1;
         report.errors.push({ runId: run.id, error: outcome.error! });
         break;
       }
       report.advanced += 1;
-      // A second pass in this call resumes from what the first one COMMITTED, read
-      // back rather than reconstructed: the cursor is the handler's value and the
-      // store is the only thing that knows it survived the write.
+      // A second pass in this call resumes from what the first one COMMITTED, as its own claim
+      // reads it back: the cursor is the handler's value and the store is the only thing that
+      // knows it survived the write. Another drive may have claimed it in between; then it is theirs.
       if (pass + 1 >= maxPasses) break;
-      const fresh = await options.store.get(run.id);
-      if (!fresh || fresh.status !== 'running') break;
-      run = fresh;
+      const next = await claim(run.id, leaseMs);
+      if (!next) break;
+      claimed = next;
     }
   }
   return report;
