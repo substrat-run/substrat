@@ -1597,11 +1597,15 @@ export function verticalEventsContractSuite(
         ['a snapshot', await fx.consumer.snapshotScope(staff, t, c)],
         ['a preview', await fx.consumer.snapshotScope(staff, t, c, { kind: 'preview' })],
       ];
-      // Carried, as history: the copy holds the data the watermark describes, and the watermark.
-      for (const [name, s] of copies) {
+      /** Where it was copied: the watermark, the data it describes, and one journaled import. */
+      const standsAsCopied = async (name: string, s: ScopeId) => {
         expect(await cursorsAt(s), name).toEqual(copied);
-        expect((await board(t, s)).associations.map((r) => r.crm_id), name).toEqual([one]);
-      }
+        const view = await board(t, s);
+        expect(view.associations.map((r) => r.crm_id), name).toEqual([one]);
+        expect(view.imports, name).toHaveLength(1);
+      };
+      // Carried, as history: the copy holds the data the watermark describes, and the watermark.
+      for (const [name, s] of copies) await standsAsCopied(name, s);
 
       const two = await create(t, p, 'Two');
       const { report } = await sweep();
@@ -1610,8 +1614,7 @@ export function verticalEventsContractSuite(
       expect((await board(t, c)).associations.map((r) => r.crm_id)).toEqual([one, two]);
       for (const [name, s] of copies) {
         expect(into(report, s), name).toBeUndefined();
-        expect(await cursorsAt(s), name).toEqual(copied);
-        expect((await board(t, s)).associations.map((r) => r.crm_id), name).toEqual([one]);
+        await standsAsCopied(name, s);
       }
 
       // The door: the batch the source was fed, addressed to each copy from the copy's own
@@ -1629,17 +1632,14 @@ export function verticalEventsContractSuite(
         events: read.events,
         withheld: read.withheld,
       };
-      expect(read.events.map((e) => e.id)).toHaveLength(1);
+      expect(read.events).toHaveLength(1);
       for (const [name, s] of copies) {
         expect(await fx.consumer.deliverToPeer(t, s, batch), name).toMatchObject({
           delivered: 0,
           stale: false,
           paused: { reason: INERT_SCOPE_REASON },
         });
-        expect(await cursorsAt(s), name).toEqual(copied);
-        const view = await board(t, s);
-        expect(view.associations.map((r) => r.crm_id), name).toEqual([one]);
-        expect(view.imports.map((r) => r.event_id), name).toHaveLength(1);
+        await standsAsCopied(name, s);
       }
 
       // The return twin: the consumer's own backup, restored into it, rewinds the watermark with

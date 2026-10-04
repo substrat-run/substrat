@@ -383,6 +383,7 @@ import {
   unknownRoleError,
   assertRowLimit,
   assertRowOffset,
+  emptyImportResult,
   INERT_SCOPE_REASON,
   lifecycleReceipt,
   lifecycleRefusal,
@@ -2432,8 +2433,8 @@ export class CloudflareScopeHost implements ScopeHost {
     const stub = this.scopeStub(scopeId);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects, so its deliveries are journaled terminal with the reason and no
-    // handler runs (`isInertScope`). Asked on the first due event, once per pass: most passes have none, and the directory
-    // is one global object.
+    // handler runs (`isInertScope`). Asked on the first due event, once per pass: most passes
+    // have none, and the directory is one global object.
     let inert: Promise<boolean> | undefined;
     const isInert = (): Promise<boolean> => (inert ??= this.isInertScope(tenantId, scopeId));
     // #1713: a CP-less scope its lifecycle holds attempts nothing and journals nothing, so every
@@ -4275,19 +4276,10 @@ export class CloudflareScopeHost implements ScopeHost {
     // elsewhere, the lifecycle check and the migration. A delivery is a write into the
     // consumer's scope, so it takes the gate an invoke through that door takes.
     const record = await this.peerScopeGate(tenantId, scopeId, 'deliverToPeer');
-    // #2004: a copy (a fork, a snapshot, a preview) never consumes another vertical's events.
-    // The sweep visits primary scopes only; this is the same rule at the door, so a delivery
-    // addressed to a copy any other way is a pause: nothing runs and the watermark stays.
+    // #2004: a copy consumes no other vertical's events, at the door as in the sweep
+    // (`scope-copy.ts`). A pause: nothing runs and the watermark stays.
     if (await this.isInertScope(tenantId, scopeId, record)) {
-      return importResult.parse({
-        delivered: 0,
-        deadLettered: 0,
-        duplicates: 0,
-        withheld: 0,
-        cursor: batch.after,
-        stale: false,
-        paused: { reason: INERT_SCOPE_REASON },
-      });
+      return { ...emptyImportResult(batch), paused: { reason: INERT_SCOPE_REASON } };
     }
     const result = importResult.parse(await this.scopeStub(scopeId).importApply(batch, tenantId, scopeId));
     if (result.delivered > 0) {
@@ -4432,16 +4424,14 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    // The directory's record, for a door that asks more of it (`isInertScope`). Undefined on a
-    // CP-less host, which has no directory.
     return record;
   }
 
   /**
    * Whether this scope is held inert (#2005): a fork, a snapshot or a preview, which causes no
    * outbound effects and consumes no other vertical's events (#2004). The one primacy question
-   * every such door asks. Where there is a directory its record answers (`record` when the
-   * caller has already read it). A CP-less host has none, so it asks the scope's own storage
+   * every such door asks. Where there is a directory its record answers (`record`, the one
+   * `peerScopeGate` returns, when the caller has already read it). A CP-less host has none, so it asks the scope's own storage
    * whether it is classified a copy (`_substrat_copy_origin`'s `is_copy`, #2009, set on the
    * directory's word): a preview and a snapshot reach a hosted vertical as restores the
    * platform marks.

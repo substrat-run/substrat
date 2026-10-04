@@ -453,6 +453,7 @@ import {
   scheduleStateHasKind,
   VERTICAL_EVENTS_DDL,
   EXPORT_HOPS_SQL,
+  emptyImportResult,
   IMPORT_CURSORS_SQL,
   IMPORT_CURSOR_OF_SQL,
   OUTBOX_MARK_SQL,
@@ -3898,19 +3899,9 @@ export class SqliteScopeHost implements ScopeHost {
     const source = batch.source;
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.enqueue(async () => {
-      const result: ImportResult = {
-        delivered: 0,
-        deadLettered: 0,
-        duplicates: 0,
-        withheld: 0,
-        cursor: batch.after,
-        stale: false,
-        paused: null,
-      };
-      // #2004: a copy (a fork, a snapshot, a preview) never consumes another vertical's events.
-      // The sweep visits primary scopes only; this is the same rule at the door (#2005's
-      // `isPrimaryInDirectory`), so a delivery addressed to a copy any other way is a pause:
-      // nothing runs and the watermark stays.
+      const result: ImportResult = emptyImportResult(batch);
+      // #2004: a copy consumes no other vertical's events, at the door as in the sweep
+      // (`scope-copy.ts`). A pause: nothing runs and the watermark stays.
       if (!this.isPrimaryInDirectory(scopeId)) return { ...result, paused: { reason: INERT_SCOPE_REASON } };
       // #1706's door, for a delivery (`operation: null`): the producer must be a declared peer
       // of this vertical with its switch on. Admitted inside the actor task, before anything
