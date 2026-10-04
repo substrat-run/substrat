@@ -368,6 +368,7 @@ import {
   reassertActionOf,
   reassertEntry,
   reassertOffRow,
+  reassertOnRow,
   switchActionOf,
   switchAuditSubject,
   switchNotFoundMessage,
@@ -827,6 +828,10 @@ interface ControlPlaneStub {
   switchedOffOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<string[]>;
   /** #2045: each record row's operation id, by subject — the fence a re-assert or carry moves with. */
   switchFencesOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, string][]>;
+  /** #2045: the subjects owed a re-assert to their record (a move that threw twice). */
+  markSwitchOwed(kind: SwitchKind, tenantId: string, scopeId: string, key: string): Promise<void>;
+  switchesOwedOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<string[]>;
+  clearSwitchesOwed(kind: SwitchKind, tenantId: string, scopeId: string, keys: readonly string[]): Promise<void>;
   tenantHeldOf(kind: SwitchKind, tenantId: string, keys: readonly string[], now: string): Promise<string[]>;
   recordConnectionUse(
     id: string,
@@ -2070,6 +2075,9 @@ function nullControlPlane(): ControlPlaneStub {
     switchRecordsOf: async () => [],
     switchedOffOf: async () => [],
     switchFencesOf: async () => [],
+    markSwitchOwed: noop,
+    switchesOwedOf: async () => [],
+    clearSwitchesOwed: noop,
     // #1823: no tenant tuples here either — the platform reads them and sends `tenantHeld`.
     tenantHeldOf: async () => [],
   };
@@ -2133,6 +2141,24 @@ export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
  * switched, but its evaluator still authorizes the module's tenant-level grant on the scope.
  * Carries the far end's outcome, so the operator's OFF knows whether there is a move to put back.
  */
+/**
+ * #2045 (Codex r2): the deployment serving the scope applied a fenced move without honouring the
+ * fence — a build from before it, which drops the field and would apply an older call's move after
+ * a newer one. Refused like `UnattestedSwitchOff`: the move is put back and the record with it.
+ */
+class UnfencedSwitch extends Error {
+  constructor(
+    scopeId: ScopeId,
+    readonly outcome: SwitchOutcome,
+  ) {
+    super(
+      `the deployment serving scope ${scopeId} predates the switch fence (#2045): it cannot refuse an older ` +
+        `switch call's move, so two overlapping calls could leave its scope and the directory's record apart. ` +
+        `Redeploy the vertical, then retry.`,
+    );
+  }
+}
+
 class UnattestedSwitchOff extends Error {
   constructor(
     scopeId: ScopeId,
@@ -5424,6 +5450,8 @@ export class CloudflareScopeHost implements ScopeHost {
         tenantHeld: boolean | undefined,
         /** #2045: the switch call's fence — its operation id, or for a re-assert the record's. */
         fence: string | undefined,
+        /** False only for a compensation, which puts back what an unattested move did. */
+        attest = true,
       ): Promise<SwitchOutcome> => {
         const held = tenantHeld ?? (await this.cp.tenantHeldOf(kind, tenantId, [key], at)).length > 0;
         const outcome = await (systemDelegation
@@ -5431,27 +5459,25 @@ export class CloudflareScopeHost implements ScopeHost {
           : peerDelegation
             ? peerDelegation.switch({ tenantId, scopeId, vertical: key, to, tenantHeld: held, fence })
             : this.switchInScope(kind, scopeId, key, to, at, held, fence));
+        if (!attest) return outcome;
+        // #2045: a fenced move must be answered by code that honoured the fence (Codex r2).
+        if (fence !== undefined && outcome.fenced !== true) throw new UnfencedSwitch(scopeId, outcome);
         if (outcome.superseded) return outcome;
         if (kind === 'system' && to === 'off' && held && outcome.held && outcome.deniesTenantGrants !== true) {
           throw new UnattestedSwitchOff(scopeId, key as ModuleId, outcome);
         }
         return outcome;
       };
-      /**
-       * Is the subject switched off on the scope right now? Read from wherever `move` writes — the
-       * deployment's status read or this scope's own — for a move that threw (#1823): the switch
-       * may already have moved before the throw (`switchInScope` moves it, then works the rewind
-       * hold), and then the directory's record must stay.
-       */
-      const isOff = async (key: string): Promise<boolean> => {
+      /** #2045: where each subject of this kind stands on the scope now, read from where `move` writes. */
+      const positions = async (): Promise<Map<string, SystemScheduleState>> => {
         if (kind === 'system') {
           const rows = await (systemDelegation?.status({ tenantId, scopeId }) ?? this.systemGrantsStatusLocal(scopeId));
-          return rows.some((r) => r.moduleId === key && r.schedules === 'off');
+          return new Map(rows.map((r) => [r.moduleId as string, r.schedules]));
         }
         const rows = await (peerDelegation?.status({ tenantId, scopeId }) ?? this.peerGrantsStatusLocal(scopeId));
-        return rows.some((r) => r.vertical === key && r.calls === 'off');
+        return new Map(rows.map((r) => [r.vertical as string, r.calls]));
       };
-      return { vertical, delegated, move, isOff };
+      return { vertical, delegated, move, positions };
     };
 
     /**
@@ -5469,7 +5495,7 @@ export class CloudflareScopeHost implements ScopeHost {
       to: 'on' | 'off',
     ): Promise<{ operationId: string; outcome: SwitchOutcome }> => {
       const { tenantId, scopeId } = node;
-      const { vertical, delegated, move, isOff } = await switchTarget(kind, tenantId, scopeId);
+      const { vertical, delegated, move } = await switchTarget(kind, tenantId, scopeId);
       const action = switchActionOf(kind, to);
       if (kind === 'peer') {
         // The peer door's gate (#1706): with a delegation, its lifecycle half (a suspended tenant
@@ -5531,60 +5557,71 @@ export class CloudflareScopeHost implements ScopeHost {
           }
         }
       };
+      /**
+       * A move the far end applied but could not attest — the tenant-grant denial (#1823) or the
+       * fence (#2045). Refused: the opposite move gives back exactly what this one did (nothing,
+       * when it changed nothing), and then the record goes back too, so neither the scope nor the
+       * directory moved. If the put-back fails, the record stays as this call wrote it and the
+       * re-assert path below takes over.
+       */
+      const refuseUnattested = async (err: UnattestedSwitchOff | UnfencedSwitch): Promise<void> => {
+        const opposite = to === 'off' ? 'on' : 'off';
+        const putBack = err.outcome.changed
+          ? await move(key, opposite, new Date().toISOString(), true, operationId, false).then(
+              () => true,
+              () => false,
+            )
+          : true;
+        if (!putBack) return;
+        // #2045: both moves landed under this call's fence, so the undone record keeps it.
+        const recordError = await undoRecord({ keepFence: true });
+        await this.recordAdmin(actor, action, target, null, {
+          ...base,
+          phase: 'refused',
+          error: err.message,
+          ...(recordError ? { recordError } : {}),
+        }).catch(() => undefined);
+        throw substratError(
+          'precondition_failed',
+          `${err.message} Nothing was switched` +
+            (recordError ? `, but its directory record could not be put back (${recordError}).` : '.'),
+        );
+      };
+      const attestation = (err: unknown): err is UnattestedSwitchOff | UnfencedSwitch =>
+        err instanceof UnattestedSwitchOff || err instanceof UnfencedSwitch;
       let outcome: SwitchOutcome;
       try {
-        outcome = await move(key, to, at, undefined, operationId);
-      } catch (err) {
-        if (err instanceof UnattestedSwitchOff) {
-          // The far end switched, and cannot hold it against the tenant-level grant. Refused:
-          // ON gives back exactly what this OFF took (nothing, when it changed nothing), and
-          // then the record goes back too — neither the scope nor the directory says off. An ON
-          // that fails here leaves the scope off, and the readback rule below keeps its record.
-          const putBack = err.outcome.changed
-            ? await move(key, 'on', new Date().toISOString(), true, operationId).then(
-                () => true,
-                () => false,
-              )
-            : true;
-          if (putBack) {
-            // #2045: both moves landed under this call's fence, so the undone record keeps it.
-            const recordError = await undoRecord({ keepFence: true });
-            await this.recordAdmin(actor, action, target, null, {
-              ...base,
-              phase: 'refused',
-              error: err.message,
-              ...(recordError ? { recordError } : {}),
-            }).catch(() => undefined);
-            throw substratError(
-              'precondition_failed',
-              `${err.message} Nothing was switched` +
-                (recordError ? `, but its directory record could not be put back (${recordError}).` : '.'),
-            );
-          }
+        try {
+          outcome = await move(key, to, at, undefined, operationId);
+        } catch (first) {
+          if (attestation(first)) throw first;
+          // #2045 (Codex r2): one retry under this call's own fence — idempotent, and refused by
+          // the scope if a newer call has moved it meanwhile.
+          outcome = await move(key, to, new Date().toISOString(), undefined, operationId);
         }
-        // A throw does not say the scope did not move: the move crosses the scope's DO and then
-        // the rewind hold, and a throw from the second leaves the scope's switch moved. So the
-        // record is undone only when the scope reads back in the OTHER position — an OFF that
-        // reads not off, an ON that still reads off — and kept when it reads back as asked.
-        // Undoing an ON that landed would put the record back to `off` beside a scope that is
-        // on, and the next re-assert would switch the operator's ON back off. A read that fails
-        // too counts as off, both ways, so what is left fails toward off: an OFF keeps its
-        // record (never a scope switched off with no record — a wipe or restore would have
-        // nothing to re-assert, and #1743's refusal nothing to read), and an ON is undone back
-        // to `off`, which the next re-assert completes if the scope did move.
-        const off = await isOff(key).catch(() => true);
-        const recordKept = off === (to === 'off');
-        // #2045: the move threw, so it may have landed under this call's fence; the undone record
-        // keeps that fence, so the re-assert that completes it is not refused by this call's move.
-        const recordError = recordKept ? null : await undoRecord({ keepFence: true });
+      } catch (err) {
+        if (attestation(err)) await refuseUnattested(err);
+        // The move threw twice. A throw does not say whether it landed, and an older call's move
+        // may still be in flight behind it, so no single readback can settle the scope. The record
+        // is this call's position under the newest fence (an older call's write is refused by it),
+        // so it stays, and the scope is marked for its next reconcile, whose re-assert moves it to
+        // the record under that fence — whichever way it lies now (`markSwitchOwed`; the cleared
+        // receipt makes the sweep reconcile the scope). For this subject the record is the authority.
+        const marked = await this.cp
+          .markSwitchOwed(kind, tenantId, scopeId, key)
+          .then(() => this.cp.markScopeProvisioned(scopeId, null))
+          .then(
+            () => true,
+            () => false,
+          );
         // Best effort: the original error is what the caller must see, and the intent row
         // already says an attempt was made.
         await this.recordAdmin(actor, action, target, null, {
           ...base,
           phase: 'failed',
           error: errorOf(err),
-          ...(recordKept ? { recordKept: true } : {}),
-          ...(recordError ? { recordError } : {}),
+          recordKept: true,
+          ...(marked ? { reassertOwed: true } : {}),
         }).catch(() => undefined);
         throw err;
       }
@@ -5776,7 +5813,7 @@ export class CloudflareScopeHost implements ScopeHost {
       opts?: SystemSwitchReassertOptions,
     ): Promise<SystemSwitchReassert[]> => {
       const { tenantId, scopeId } = node;
-      const { vertical, delegated, move } = await switchTarget(kind, tenantId, scopeId);
+      const { vertical, delegated, move, positions } = await switchTarget(kind, tenantId, scopeId);
       const action = reassertActionOf(kind);
       const recorded = new Map(await this.cp.switchRecordsOf(kind, tenantId, scopeId));
       // #1742 review: moves the deployment made from a stale list (restored ON after the list
@@ -5788,8 +5825,8 @@ export class CloudflareScopeHost implements ScopeHost {
       // serving the scope keeps its schedules running or its peer admitted. Refused loudly
       // instead, as the status read is, and only when a re-assert is owed: nothing recorded,
       // nothing to refuse.
-      const owed = reverts.length > 0 || [...recorded.values()].includes('off');
-      if (owed && !this.cpLess && vertical !== null && !delegated) {
+      const reassertOwed = reverts.length > 0 || [...recorded.values()].includes('off');
+      if (reassertOwed && !this.cpLess && vertical !== null && !delegated) {
         throw substratError(
           'unavailable',
           `no delegation configured for hosted scope ${scopeId} (vertical '${vertical}') — cannot re-assert ` +
@@ -5822,11 +5859,14 @@ export class CloudflareScopeHost implements ScopeHost {
       for (const row of inUnitMovesToAudit(kind, keys, opts?.appliedInUnit, reverted)) {
         await this.recordAdmin(actor, action, { tenantId, scopeId, vertical }, null, { operationId: ulid(), ...row });
       }
+      // #2045: every move here carries the fence of the call the record holds, so a scope a newer call
+      // has moved since refuses it; and a deployment from before the fence is refused (`move`), so a
+      // carry's reconcile records no receipt for it.
+      const owed = await this.cp.switchesOwedOf(kind, tenantId, scopeId);
+      const now = owed.length ? await positions() : new Map<string, SystemScheduleState>();
       const results: SystemSwitchReassert[] = [];
       const held = new Set(tenantHeld);
       for (const key of keys) {
-        // #2045: under the fence of the OFF the record holds, so a scope moved since by a newer call
-        // stays as that call put it.
         const outcome = await move(key, 'off', at, held.has(key), fences.get(key));
         if (outcome.changed) {
           await this.recordAdmin(actor, action, { tenantId, scopeId, vertical }, null, {
@@ -5836,6 +5876,25 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         results.push(reassertEntry(kind, key, outcome));
       }
+      // A subject marked owed (its switch call's move threw twice) converges to its record in either
+      // direction: OFF above, and here a record of ON beside a scope that is off — under the fence of
+      // the call the record holds, so a newer call's move is never undone. Every other record of ON
+      // keeps #1674's rule and turns nothing on.
+      const ons = owed.filter((key) => recorded.get(key) === 'on' && !reverted.has(key) && now.get(key) === 'off');
+      if (ons.length) {
+        const onFences = new Map(await this.cp.switchFencesOf(kind, tenantId, scopeId));
+        for (const key of ons) {
+          const outcome = await move(key, 'on', at, undefined, onFences.get(key));
+          if (!outcome.changed) continue;
+          await this.recordAdmin(actor, action, { tenantId, scopeId, vertical }, null, {
+            operationId: ulid(),
+            ...reassertOnRow(kind, key, outcome.permissions),
+          });
+          results.push(reassertEntry(kind, key, outcome));
+        }
+      }
+      // Every owed subject is settled now (a throw above leaves its mark for the next pass).
+      if (owed.length) await this.cp.clearSwitchesOwed(kind, tenantId, scopeId, owed);
       return results;
     };
 

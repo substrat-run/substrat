@@ -359,12 +359,14 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       scope: env.SCOPE,
       controlPlane: env.CONTROL_PLANE,
       systemSwitchDelegation: {
-        switch: async ({ scopeId: s, to }) => {
+        switch: async ({ scopeId: s, to, fence }) => {
           if (unreachable.has(s)) throw new Error('vertical unreachable during system-switch');
+          // #2045: a current deployment honours the switch fence, and says so.
+          const fenced = fence !== undefined ? { fenced: true as const } : {};
           const at = store.get(s);
-          if (at === undefined || at === 'wiped') return { held: false, changed: false, permissions: [] };
+          if (at === undefined || at === 'wiped') return { held: false, changed: false, permissions: [], ...fenced };
           store.set(s, to);
-          return { held: true, changed: at !== to, permissions: [] };
+          return { held: true, changed: at !== to, permissions: [], ...fenced };
         },
         status: async ({ scopeId: s }) => {
           const at = store.get(s);

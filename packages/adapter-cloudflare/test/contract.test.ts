@@ -301,10 +301,16 @@ systemSwitchContractSuite('adapter-cloudflare, scope-local permissions', async (
  * this host, so its own DO holds a live grant. That is what makes "the placeholder was
  * not switched" observable — its schedules still fire after the delegated revoke.
  */
+/**
+ * #2045: a fake deployment that honours the switch fence — what every deployment built with it
+ * answers. A fake that should model a deployment from before the fence leaves this out.
+ */
+const fencedFor = (a: { fence?: string }) => (a.fence !== undefined ? { fenced: true as const } : {});
+
 describe('#1666 — the switch is moved in the serving deployment, and audited here', () => {
   const staff = platformActorId.parse(ulid());
   const SCHED = moduleId.parse('@test/sched');
-  type Call = { tenantId: string; scopeId: string; moduleId: string; to: 'on' | 'off'; tenantHeld?: boolean };
+  type Call = { tenantId: string; scopeId: string; moduleId: string; to: 'on' | 'off'; tenantHeld?: boolean; fence?: string };
 
   const setup = async (
     answer: (call: Call) => { held: boolean; changed: boolean; permissions: string[]; deniesTenantGrants?: true },
@@ -320,7 +326,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
         switch: async (a) => {
           calls.push({ ...a });
           const out = answer(a);
-          return { ...out, permissions: out.permissions.map((p) => permissionKey.parse(p)) };
+          return { ...fencedFor(a), ...out, permissions: out.permissions.map((p) => permissionKey.parse(p)) };
         },
         // Not exercised by this describe block (#1674 has its own), but required by
         // `SystemSwitchDelegation` — a fake that cannot answer the read would make a
@@ -521,8 +527,9 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
 
   it('a retry after the far end moved but the answer was lost is audited too — changed: false is no excuse', async () => {
     // The far end applies the switch and THEN the answer is lost (a crash between the
-    // mutation and the outcome row looks the same from the log's side). The retry finds
-    // it already off and answers `changed: false` — and still leaves its own pair of rows.
+    // mutation and the outcome row looks the same from the log's side). #2045: the call retries
+    // its move once under its own fence, finds it already off (`changed: false`), and succeeds.
+    // An operator's repeat still leaves its own pair of rows.
     let off = false;
     let lose = true;
     const { host, t, s, audit } = await setup(() => {
@@ -535,10 +542,10 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
       return { held: true, changed, permissions: changed ? ['sched:tick'] : [] };
     });
     const input = { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'retry me' };
-    await expect(host.admin.revokeFromSystem(staff, input)).rejects.toThrow(/connection reset/);
+    expect(await host.admin.revokeFromSystem(staff, input)).toMatchObject({ changed: false });
     expect(await host.admin.revokeFromSystem(staff, input)).toMatchObject({ changed: false });
     const log = await rows(audit);
-    expect(log.map((r) => r.phase)).toEqual(['intent', 'failed', 'intent', 'applied']);
+    expect(log.map((r) => r.phase)).toEqual(['intent', 'applied', 'intent', 'applied']);
     expect(log[0]!.operationId).not.toBe(log[2]!.operationId);
     expect(log[3]).toMatchObject({ operationId: log[2]!.operationId, changed: false });
   });
@@ -605,8 +612,13 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     await expect(
       host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' }),
     ).rejects.toThrow(/no deployment serving scope/);
-    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off', tenantHeld: false, fence: expect.any(String) }]);
-    expect((await rows(audit)).map((r) => r.phase)).toEqual(['intent', 'failed']);
+    // #2045: the move and its one retry, under the same fence.
+    const call = { tenantId: t, scopeId: s, moduleId: SCHED, to: 'off', tenantHeld: false, fence: calls[0]!.fence };
+    expect(calls).toEqual([call, call]);
+    expect((await rows(audit)).map((r) => [r.phase, r.recordKept])).toEqual([
+      ['intent', undefined],
+      ['failed', true],
+    ]);
   });
 
   it('refuses a scope the directory does not have before reaching anything', async () => {
@@ -642,7 +654,7 @@ describe('#1674 — the status read is delegated exactly like the switch, and jo
         switch: async (a) => {
           const changed = position !== a.to;
           position = a.to;
-          return { held: true, changed, permissions: changed ? [permissionKey.parse('sched:tick')] : [] };
+          return { ...fencedFor(a), held: true, changed, permissions: changed ? [permissionKey.parse('sched:tick')] : [] };
         },
         status: async (a) => {
           statusCalls.push({ ...a });
@@ -753,10 +765,10 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
           deployment.switchCalls.push(a.to);
           if (deployment.fail) throw new Error('vertical unreachable during system-switch');
           // A wiped store holds nothing for the module until its own provision seats it.
-          if (deployment.position === 'wiped') return { held: false, changed: false, permissions: [] };
+          if (deployment.position === 'wiped') return { ...fencedFor(a), held: false, changed: false, permissions: [] };
           const changed = deployment.position !== a.to;
           deployment.position = a.to;
-          return { held: true, changed, permissions: changed ? [permissionKey.parse('sched:tick')] : [] };
+          return { ...fencedFor(a), held: true, changed, permissions: changed ? [permissionKey.parse('sched:tick')] : [] };
         },
         status: async () =>
           deployment.position === 'wiped' ? [] : [{ moduleId: SCHED, schedules: deployment.position }],
@@ -852,21 +864,23 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
     expect(deployment.switchCalls).toEqual([]);
   });
 
-  it('a restore through the record: ON updates it before the far end moves, and a failed ON puts it back', async () => {
+  it('a restore through the record: ON updates it before the far end moves, and a failed ON is owed', async () => {
     const { host, node, deployment } = await setup();
     deployment.fail = true;
     await expect(
       host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'fixed' }),
     ).rejects.toThrow(/unreachable/);
-    // The far end did not move, so neither does the record: still off, still the incident.
+    // #2045: the move threw twice, so no readback can settle it. The record keeps the operator's ON
+    // under its fence, and the subject is owed the next re-assert.
     expect(await host.admin.listSystemSwitches(staff, { scopeId: node.scopeId })).toEqual([
-      expect.objectContaining({ position: 'off', reason: 'incident 7', vertical: 'sched-vertical' }),
+      expect.objectContaining({ position: 'on', reason: 'fixed', vertical: 'sched-vertical' }),
     ]);
+    expect(deployment.position).toBe('off');
     deployment.fail = false;
-    await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'fixed' });
-    expect(await host.admin.listSystemSwitches(staff, { scopeId: node.scopeId })).toEqual([
-      expect.objectContaining({ position: 'on', reason: 'fixed' }),
-    ]);
+    // The re-assert converges the scope to the record — ON, which a record turns on only when owed.
+    expect(await host.admin.reassertSystemSwitches(staff, node)).toEqual([{ moduleId: SCHED, held: true, changed: true }]);
+    expect(deployment.position).toBe('on');
+    // Settled: the mark is gone, and a record of ON turns nothing on again.
     expect(await host.admin.reassertSystemSwitches(staff, node)).toEqual([]);
   });
 });
@@ -919,7 +933,7 @@ describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', (
       systemSwitchDelegation: {
         switch: async (a) => {
           deployment.calls.push(a.to);
-          if (a.to === 'off' && deployment.offMovedEarlier) return { held: true, changed: true, permissions: [] };
+          if (a.to === 'off' && deployment.offMovedEarlier) return { ...fencedFor(a), held: true, changed: true, permissions: [] };
           if (a.to === 'on' && deployment.duringOn) {
             const hook = deployment.duringOn;
             deployment.duringOn = null;
@@ -927,7 +941,7 @@ describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', (
           }
           const changed = deployment.position !== a.to;
           deployment.position = a.to;
-          return { held: true, changed, permissions: [] };
+          return { ...fencedFor(a), held: true, changed, permissions: [] };
         },
         status: async () => [{ moduleId: SCHED, schedules: deployment.position }],
       },
@@ -1045,7 +1059,7 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
           if (deployment.fail) throw new Error('vertical unreachable during system-switch');
           const changed = deployment.position !== a.to;
           deployment.position = a.to;
-          return { held: true, changed, permissions: [] };
+          return { ...fencedFor(a), held: true, changed, permissions: [] };
         },
         status: async () => [{ moduleId: SCHED, schedules: deployment.position }],
       },
@@ -1098,23 +1112,28 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
     expect(String(during)).toContain(node.scopeId);
   });
 
-  it('an OFF whose move throws takes its record back, so nothing records a switch that did not happen (#1823)', async () => {
+  it('an OFF whose move throws twice keeps its record and is owed the re-assert that completes it (#2045)', async () => {
     const { host, node, deployment, outcomes, records } = await setup('none', 0);
     deployment.fail = true;
     await expect(host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).rejects.toThrow(/unreachable/);
-    expect(await records()).toEqual([]);
-    expect((await outcomes()).map((o) => [o.phase, o.recordError])).toEqual([['failed', undefined]]);
+    expect(deployment.calls).toBe(2); // the move, and its one retry
+    expect(await records()).toEqual([expect.objectContaining({ position: 'off' })]);
+    expect((await outcomes()).map((o) => [o.phase, (o as { recordKept?: true }).recordKept])).toEqual([['failed', true]]);
+    deployment.fail = false;
+    await host.admin.reassertSystemSwitches(staff, node);
+    expect(deployment.position).toBe('off');
   });
 
-  it("a failed ON whose record undo fails twice names it on the failed row, rather than dropping it", async () => {
-    const { host, node, deployment, outcomes } = await setup('restoreSwitchRecord', 2);
+  it('a failed ON keeps its record too, so no undo is attempted that could fail (#2045)', async () => {
+    const { host, node, deployment, outcomes, records } = await setup('restoreSwitchRecord', 2);
     await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
     deployment.fail = true;
     await expect(host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'fixed' })).rejects.toThrow(/unreachable/);
     expect((await outcomes()).map((o) => [o.phase, o.recordError])).toEqual([
       ['applied', undefined],
-      ['failed', 'control plane unreachable'],
+      ['failed', undefined],
     ]);
+    expect(await records()).toEqual([expect.objectContaining({ position: 'on', reason: 'fixed' })]);
   });
 });
 
@@ -3860,24 +3879,20 @@ describe('#1823 — an OFF that throws after the scope moved keeps its record', 
     await host.close();
   });
 
-  it('an ON that throws and cannot be read back is undone to OFF — the side a re-assert completes', async () => {
+  it('an ON that throws twice keeps its record and is owed: the re-assert settles the scope on it (#2045)', async () => {
     const { counting, host, node, failedOn } = await offScope();
     counting.failClaimReads = true;
-    counting.aroundStatusRead = async (_n, phase) => {
-      if (phase === 'before') throw new Error('status down');
-    };
     await expect(host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'all clear' })).rejects.toThrow(
       /hold claims down/,
     );
     counting.failClaimReads = false;
-    counting.aroundStatusRead = null;
 
-    // The scope did move on, but nothing could say so: the record went back to `off`, unkept…
-    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'off']]);
-    expect(await failedOn()).toEqual([expect.not.objectContaining({ recordKept: true })]);
-    // …and the re-assert completes it toward off rather than leaving a module running unrecorded.
+    // The scope did move on, and the record kept the operator's ON under its fence.
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'on']]);
+    expect(await failedOn()).toEqual([expect.objectContaining({ recordKept: true, reassertOwed: true })]);
+    // The re-assert it is owed settles the scope on the record, and finds it there.
     await host.admin.reassertSystemSwitches(staff, node);
-    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'on']]);
     await host.close();
   });
 });

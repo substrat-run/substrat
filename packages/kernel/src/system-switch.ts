@@ -225,6 +225,13 @@ export interface SwitchOutcome {
    * the fence, which applies every move it is sent.
    */
   superseded?: true;
+  /**
+   * #2045 (Codex r2): this code honoured the call's fence — set on every answer to a move that
+   * carried one, superseded or not. A deployment built before the fence drops the field and the
+   * fence with it, and would apply an older call's move after a newer one, so the platform refuses
+   * a fenced move whose answer lacks this, as it refuses an OFF without `deniesTenantGrants`.
+   */
+  fenced?: true;
 }
 
 /**
@@ -422,9 +429,10 @@ export function switchSubjectGrants(
           | { fence: string }
           | undefined);
   if (input.fence !== undefined && stored !== undefined && stored.fence > input.fence) {
-    return { held: true, changed: false, permissions: [], superseded: true };
+    return { held: true, changed: false, permissions: [], superseded: true, fenced: true };
   }
-  const outcome = applySwitch(db, input, object);
+  const outcome: SwitchOutcome = applySwitch(db, input, object);
+  if (input.fence !== undefined) outcome.fenced = true;
   if (input.fence !== undefined && outcome.held) {
     db.run(
       `INSERT INTO _substrat_switch_fences (subject, object, fence) VALUES (?, ?, ?)

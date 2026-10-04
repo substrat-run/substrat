@@ -320,6 +320,7 @@ import {
   systemSwitchedOffMessage,
   tenantSystemSwitchedOffMessage,
   PEER_SWITCHES_DDL,
+  SWITCH_OWED_DDL,
   SWITCH_FENCES_DDL,
   recordWriteSuperseded,
   switchFencesOf,
@@ -2104,6 +2105,7 @@ export class SqliteScopeHost implements ScopeHost {
       ${IMPERSONATION_DDL}
       ${SYSTEM_SWITCHES_DDL}
       ${PEER_SWITCHES_DDL}
+      ${SWITCH_OWED_DDL}
       CREATE TABLE IF NOT EXISTS _substrat_admin_log (
         id TEXT PRIMARY KEY,
         actor TEXT NOT NULL,
@@ -9315,6 +9317,7 @@ export class SqliteScopeHost implements ScopeHost {
           'orgs', // K-22 org records
           '_substrat_system_switches', // #1674: the schedule switch's record, per scope
           '_substrat_peer_switches', // #2029: the peer switch's record, per scope
+          '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {

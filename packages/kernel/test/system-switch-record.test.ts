@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   PEER_SWITCHES_DDL,
   SYSTEM_SWITCHES_DDL,
+  SWITCH_OWED_DDL,
   forgetSwitchesOf,
+  markSwitchOwed,
+  switchesOwedOf,
   recordWriteSuperseded,
   switchFencesOf,
   switchesBackfillSqlOf,
@@ -167,11 +170,14 @@ describe('the schedule switch record (#1674)', () => {
       ]);
     });
 
-    it('ON updates only a row that exists, and answers the prior row, which a failed ON puts back', () => {
+    it('ON upserts too (#2045), answers the prior row, and a failed ON puts it back', () => {
       const { db, sql } = fresh();
       create(db);
-      // No row: ON creates none, so a restore of something never switched off records nothing.
-      expect(recordSwitchedOn(sql, write({ reason: 'noop' }))).toBeNull();
+      // No row: ON writes one, carrying its fence; its undo (it held nothing) removes it again.
+      const none = write({ reason: 'first on', operationId: '01Z' });
+      expect(recordSwitchedOn(sql, none)).toBeNull();
+      expect(listSystemSwitchRecords(sql)).toMatchObject([{ position: 'on', operationId: '01Z' }]);
+      restoreSwitchRecord(sql, { kind: 'system', tenantId: T, scopeId: S, key: M, operationId: '01Z' }, null);
       expect(listSystemSwitchRecords(sql)).toEqual([]);
 
       recordSwitchedOff(sql, write());
@@ -412,6 +418,17 @@ describe('the peer switch record (#2029)', () => {
     expect(switchedOffOf(sql, 'peer', T, S)).toEqual([]);
   });
 
+  it('#2045: a first-ever ON writes a row carrying its fence, so an OLDER OFF after it is refused', () => {
+    const { db, sql } = fresh();
+    db.exec(PEER_SWITCHES_DDL);
+    const row = { kind: 'peer' as const, tenantId: T, scopeId: S, key: V, actor: 'staff', at: 'x' };
+    recordSwitchedOn(sql, { ...row, reason: 'B: never off', operationId: '01B' });
+    const olderOff = { ...row, reason: 'A: delayed', operationId: '01A' };
+    expect(recordWriteSuperseded(recordSwitchedOff(sql, olderOff), olderOff)).toBe(true);
+    expect([...switchRecordsOf(sql, 'peer', T, S)]).toEqual([[V, 'on']]);
+    expect([...switchFencesOf(sql, 'peer', T, S)]).toEqual([[V, '01B']]);
+  });
+
   it('keeps a peer and a module of the same spelling apart', () => {
     const { db, sql } = fresh();
     db.exec(PEER_SWITCHES_DDL);
@@ -430,7 +447,6 @@ describe('the peer switch record (#2029)', () => {
     const { db, sql } = fresh();
     db.exec(PEER_SWITCHES_DDL);
     const row = { kind: 'peer' as const, tenantId: T, scopeId: S, key: V, actor: 'staff', at: 'x' };
-    recordSwitchedOn(sql, { ...row, reason: 'never off', operationId: '01A' }); // no row: nothing
     recordSwitchedOff(sql, { ...row, reason: 'newer', operationId: '01C' });
     const olderOn = { ...row, reason: 'older on', operationId: '01B' };
     const prior = recordSwitchedOn(sql, olderOn);
@@ -445,14 +461,17 @@ describe('the peer switch record (#2029)', () => {
     expect([...switchRecordsOf(sql, 'peer', T, S)]).toEqual([[V, 'on']]);
   });
 
-  it('a reaped scope forgets both kinds', () => {
+  it('a reaped scope forgets both kinds, and its owed marks (#2045)', () => {
     const { db, sql } = fresh();
     db.exec(PEER_SWITCHES_DDL);
+    db.exec(SWITCH_OWED_DDL);
+    markSwitchOwed(sql, 'peer', T, S, V);
     const row = { tenantId: T, scopeId: S, actor: 'staff', reason: 'r', operationId: '01A', at: 'x' };
     recordSwitchedOff(sql, { kind: 'peer', key: V, ...row });
     recordSwitchedOff(sql, { kind: 'system', key: '@m/x', ...row });
     forgetSwitchesOf(sql, S);
     expect(switchedOffOf(sql, 'peer', T, S)).toEqual([]);
     expect(switchedOffOf(sql, 'system', T, S)).toEqual([]);
+    expect(switchesOwedOf(sql, 'peer', T, S)).toEqual([]);
   });
 });

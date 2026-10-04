@@ -1242,6 +1242,13 @@ describe('VerticalClient.peerSwitch (#1706)', () => {
     ]);
   });
 
+  it("carries the deployment's fence attestation through, and an older answer's silence as absent (#2045)", async () => {
+    const fenced = answering(() => Response.json({ held: true, changed: true, permissions: [], fenced: true }));
+    await expect(fenced.peerSwitch({ ...input, fence: '01F' })).resolves.toMatchObject({ fenced: true });
+    const old = answering(() => Response.json({ held: true, changed: true, permissions: [] }));
+    expect((await old.peerSwitch({ ...input, fence: '01F' })).fenced).toBeUndefined();
+  });
+
   it("posts the platform's tenantHeld when it is given (#2030)", async () => {
     const seen: { path: string; body: unknown }[] = [];
     const client = answering(

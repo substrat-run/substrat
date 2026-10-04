@@ -159,6 +159,66 @@ export const switchSupersededMessage = (kind: SwitchKind, scopeId: string, key: 
 /** The record table of one kind. */
 export const switchesTableOf = (kind: SwitchKind): string => RECORDS[kind].table;
 
+/**
+ * #2045 (Codex r2): the subjects whose scope may not be where their record says — a switch call
+ * whose move threw twice, so neither it nor any readback could settle the scope while an older
+ * call's move may still be in flight. The record holds that call's position under the newest
+ * fence, and the next re-assert moves the scope to it, in EITHER direction, then clears the mark.
+ * Without a mark a re-assert keeps #1674's rule: a record never turns anything on.
+ */
+export const SWITCH_OWED_DDL = `
+  CREATE TABLE IF NOT EXISTS _substrat_switch_owed (
+    tenant_id TEXT NOT NULL,
+    scope_id  TEXT NOT NULL,
+    -- 'system' or 'peer', and the module id or the peer's slug.
+    kind      TEXT NOT NULL,
+    subject   TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, scope_id, kind, subject)
+  );
+`;
+
+/** #2045: mark one subject's scope as owed a re-assert to its record. Idempotent. */
+export function markSwitchOwed(db: SwitchSql, kind: SwitchKind, tenantId: string, scopeId: string, key: string): void {
+  db.run(
+    `INSERT OR IGNORE INTO _substrat_switch_owed (tenant_id, scope_id, kind, subject) VALUES (?, ?, ?, ?)`,
+    tenantId,
+    scopeId,
+    kind,
+    key,
+  );
+}
+
+/** #2045: the subjects of one kind marked owed on one scope. */
+export function switchesOwedOf(db: SwitchSql, kind: SwitchKind, tenantId: string, scopeId: string): string[] {
+  return db
+    .all(
+      `SELECT subject FROM _substrat_switch_owed WHERE tenant_id = ? AND scope_id = ? AND kind = ? ORDER BY subject`,
+      tenantId,
+      scopeId,
+      kind,
+    )
+    .map((r) => String(r.subject));
+}
+
+/** #2045: a re-assert settled these subjects' scope on their record; their marks go. */
+export function clearSwitchesOwed(
+  db: SwitchSql,
+  kind: SwitchKind,
+  tenantId: string,
+  scopeId: string,
+  keys: readonly string[],
+): void {
+  for (const key of keys) {
+    db.run(
+      `DELETE FROM _substrat_switch_owed WHERE tenant_id = ? AND scope_id = ? AND kind = ? AND subject = ?`,
+      tenantId,
+      scopeId,
+      kind,
+      key,
+    );
+  }
+}
+
 /** Each kind's DDL, for a pass that creates a table with its backfill. */
 export const switchesDdlOf = (kind: SwitchKind): string => RECORDS[kind].ddl;
 
@@ -175,8 +235,8 @@ export const switchesDdlOf = (kind: SwitchKind): string => RECORDS[kind].ddl;
  * have. Of those, only the LATEST per (tenant, scope, subject) is taken, by the intent's ULID
  * id. `at` is the intent's, the same instant the status read's who/why join reports. A key
  * whose calls include no applied OFF gets no row, even when its latest applied call is an ON:
- * a live restore of a switch never pulled writes none either (`recordSwitchedOn`), and the
- * backfill must not record what the live path would not.
+ * history wrote no scope fence (#2045), so there is no fence for such a row to keep pace with,
+ * and an ON-only key needs no record to re-assert.
  *
  * `INSERT OR IGNORE`, so a row the switch wrote itself is never overwritten by history.
  * The adapters run it only on the construction that creates the table, so it runs once.
@@ -480,6 +540,17 @@ export const reassertEntry = (
 ): SystemSwitchReassert =>
   ({ [RECORDS[kind].payloadKey]: key, held: outcome.held, changed: outcome.changed }) as unknown as SystemSwitchReassert;
 
+/**
+ * #2045: the audit row (less its `operationId`) for a re-assert's ON that moved something — a
+ * record of ON beside a scope that was off, converged to the record under its fence.
+ */
+export const reassertOnRow = (kind: SwitchKind, key: string, permissions: readonly string[]) => ({
+  ...switchAuditSubject(kind, key, 'on'),
+  phase: 'applied' as const,
+  changed: true as const,
+  permissions: [...permissions],
+});
+
 /** The audit row (less its `operationId`) for a re-assert's own OFF that moved something — both adapters. */
 export const reassertOffRow = (kind: SwitchKind, key: string, permissions: readonly string[]) => ({
   ...switchAuditSubject(kind, key, 'off'),
@@ -640,19 +711,25 @@ export const switchSubjectOf = (kind: SwitchKind, key: string): string => `${REC
  * installed (the kernel's `held` check, for the same reason).
  */
 export function recordSwitchedOff(db: SwitchSql, row: SwitchRecordWrite): SwitchRecordPrior {
+  return writeRecord(db, row, 'off');
+}
+
+/** Both writes' upsert: the row as this call's position, unless a newer call's row is there (#2045). */
+function writeRecord(db: SwitchSql, row: SwitchRecordWrite, position: 'on' | 'off'): SwitchRecordPrior {
   const { table, key } = RECORDS[row.kind];
   const prior = priorOf(db, row);
   if (supersededBy(prior, row)) return prior;
   db.run(
     `INSERT INTO ${table}
        (tenant_id, scope_id, ${key}, position, actor, reason, operation_id, switched_at)
-     VALUES (?, ?, ?, 'off', ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (tenant_id, scope_id, ${key}) DO UPDATE SET
-       position = 'off', actor = excluded.actor, reason = excluded.reason,
+       position = excluded.position, actor = excluded.actor, reason = excluded.reason,
        operation_id = excluded.operation_id, switched_at = excluded.switched_at`,
     row.tenantId,
     row.scopeId,
     row.key,
+    position,
     row.actor,
     row.reason,
     row.operationId,
@@ -662,18 +739,19 @@ export function recordSwitchedOff(db: SwitchSql, row: SwitchRecordWrite): Switch
 }
 
 /**
- * ON's write, made BEFORE the scope's switch moves, and only to a row that exists. Before,
- * because the other order fails unsafely: a scope switched on whose record write then
- * failed would still read `off`, and the next reconcile would switch the operator's
- * restore back off. This order fails toward a record of `on` beside a live marker, which
- * the marker wins. Answers the row as it was, for `restoreSwitchRecord`.
+ * ON's write, made BEFORE the scope's switch moves. Before, because the other order fails
+ * unsafely: a scope switched on whose record write then failed would still read `off`, and the
+ * next reconcile would switch the operator's restore back off. Answers the row as it was, for
+ * `restoreSwitchRecord`.
+ *
+ * #2045: an upsert, like OFF's. An ON with no row before it writes one, because its move stores
+ * its id in the scope's fence: without a row carrying the same id, an OLDER OFF arriving after
+ * it would find no row to be refused by, record itself, and leave the directory behind the scope
+ * (Codex r2). The directory's fence is never behind the scope's. An ON that holds nothing still
+ * leaves no row: its undo removes the one it wrote.
  */
 export function recordSwitchedOn(db: SwitchSql, row: SwitchRecordWrite): SwitchRecordPrior {
-  const prior = priorOf(db, row);
-  if (prior && !supersededBy(prior, row)) {
-    setRecordRow(db, row, { position: 'on', actor: row.actor, reason: row.reason, operationId: row.operationId, at: row.at });
-  }
-  return prior;
+  return writeRecord(db, row, 'on');
 }
 
 /**
@@ -716,4 +794,5 @@ export function restoreSwitchRecord(
  */
 export function forgetSwitchesOf(db: SwitchSql, scopeId: string): void {
   for (const kind of SWITCH_KINDS) db.run(`DELETE FROM ${RECORDS[kind].table} WHERE scope_id = ?`, scopeId);
+  db.run(`DELETE FROM _substrat_switch_owed WHERE scope_id = ?`, scopeId);
 }

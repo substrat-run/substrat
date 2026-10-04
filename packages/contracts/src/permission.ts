@@ -246,6 +246,11 @@ export const systemSwitchOutcome = z.object({
    * nothing (the switch fence). A deployment built before the fence omits it and applies every move.
    */
   superseded: z.literal(true).optional(),
+  /**
+   * #2045: the answering code honoured the move's fence. A deployment built before the fence omits
+   * it, and the platform refuses a fenced move whose answer lacks it.
+   */
+  fenced: z.literal(true).optional(),
 });
 export type SystemSwitchOutcome = z.infer<typeof systemSwitchOutcome>;
 

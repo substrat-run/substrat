@@ -342,7 +342,7 @@ describe('the switch fence (#2045)', () => {
   it('a move older than the one applied is refused and writes nothing', () => {
     const { sql } = fresh();
     expect(move(sql, 'on', '01B')).toMatchObject({ held: true });
-    expect(move(sql, 'off', '01A')).toEqual({ held: true, changed: false, permissions: [], superseded: true });
+    expect(move(sql, 'off', '01A')).toEqual({ held: true, changed: false, permissions: [], superseded: true, fenced: true });
     expect(peerSwitchedOff(sql, V)).toBe(false);
   });
 
@@ -355,6 +355,12 @@ describe('the switch fence (#2045)', () => {
     // The same call again (a re-assert under the record's fence) applies, idempotently.
     expect(move(sql, 'off', '01B')).toMatchObject({ held: true, changed: false });
     expect(move(sql, 'off', '01B').superseded).toBeUndefined();
+  });
+
+  it('every move that carried a fence attests it (`fenced`); one that carried none does not (#2045 r2)', () => {
+    const { sql } = fresh();
+    expect(move(sql, 'off', '01A').fenced).toBe(true);
+    expect(move(sql, 'on').fenced).toBeUndefined();
   });
 
   it('a move with no fence (a caller from before it) applies and leaves the fence alone', () => {
