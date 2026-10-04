@@ -625,6 +625,18 @@ export interface AdminEntryInput {
  * recorded answer to #969; `docs/architecture/kernel-design.md` §8 says why.
  */
 /** #1713: one hosted scope, its directory lifecycle, and what its deployment last acknowledged. */
+/**
+ * #2016, Codex #2037 r2: the condition every delivery-bookkeeping write carries, in its own statement —
+ * the scope (bound as the last parameter) still exists, is not reaped, and its tenant is not reaped.
+ * A heal selects its targets, then writes its asks and its receipts after a network round trip; a
+ * delete or a reap that commits in between has already forgotten the scope's rows
+ * (`forgetLifecycleDeliveries`), and an unconditional write would bring them back as orphans.
+ */
+const STILL_DELIVERED = `EXISTS (
+  SELECT 1 FROM scopes s JOIN tenants t ON t.tenant_id = s.tenant_id
+   WHERE s.scope_id = ? AND s.status <> 'reaped' AND t.status <> 'reaped'
+)`;
+
 export interface LifecycleTargetRow {
   tenant_id: string;
   scope_id: string;
@@ -4323,7 +4335,12 @@ export class ControlPlaneDO extends DurableObject {
   /** #2016: note that the heal asked these scopes for their tenant record at `at`, before it asks. */
   recordTenantAsks(scopeIds: string[], at: string): void {
     for (const scopeId of scopeIds) {
-      this.sql.exec('INSERT OR REPLACE INTO scope_tenant_asks (scope_id, asked_at) VALUES (?, ?)', scopeId, at);
+      this.sql.exec(
+        `INSERT OR REPLACE INTO scope_tenant_asks (scope_id, asked_at) SELECT ?, ? WHERE ${STILL_DELIVERED}`,
+        scopeId,
+        at,
+        scopeId,
+      );
     }
   }
 
@@ -4331,11 +4348,13 @@ export class ControlPlaneDO extends DurableObject {
    *  whether it answered that the scope holds a record of its tenant. */
   recordLifecycleReceipt(scopeId: string, delivered: string, at: string, tenantRecorded = false): void {
     this.sql.exec(
-      'INSERT OR REPLACE INTO scope_lifecycle_receipts (scope_id, delivered, at, tenant_recorded) VALUES (?, ?, ?, ?)',
+      `INSERT OR REPLACE INTO scope_lifecycle_receipts (scope_id, delivered, at, tenant_recorded)
+       SELECT ?, ?, ?, ? WHERE ${STILL_DELIVERED}`,
       scopeId,
       delivered,
       at,
       tenantRecorded ? 1 : 0,
+      scopeId,
     );
   }
 

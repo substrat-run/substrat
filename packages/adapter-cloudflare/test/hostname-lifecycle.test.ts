@@ -654,12 +654,17 @@ describe('the tenant-record walk rotates past deployments that never answer (#20
   const USE = permissionKey.parse('perm:use');
   const unreachable = new Set<string>();
   const asked: string[] = [];
+  /** Run after the deployment answered and before the heal writes its receipt — the window in which
+   *  a delete or a reap commits between the heal's select and its bookkeeping write. */
+  let duringDelivery: ((s: ScopeId) => Promise<void>) | undefined;
   const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
   const lifecycleDelegation: LifecycleDelegation = {
     deliver: async ({ tenantId: t, scopeId: s, lifecycle }) => {
       asked.push(s);
       if (unreachable.has(s)) throw new Error('deployment unreachable');
-      return deployment().setLifecycleLocal(s, lifecycle, t);
+      const answer = await deployment().setLifecycleLocal(s, lifecycle, t);
+      await duringDelivery?.(s);
+      return answer;
     },
   };
   const directoryName = `tenant-walk-${ulid()}`;
@@ -747,6 +752,70 @@ describe('the tenant-record walk rotates past deployments that never answer (#20
     expect(await bookkeepingOf(preview)).toEqual({ asks: 0, receipts: 0 });
     // The twin: its install keeps its own.
     expect(await bookkeepingOf(install)).toEqual({ asks: 1, receipts: 1 });
+  });
+
+  /** The two bookkeeping writes a heal makes after its select, made late, straight to the directory. */
+  const lateWrites = async (s: ScopeId) => {
+    const dir = env.CONTROL_PLANE.get(directory.idFromName('')) as unknown as {
+      recordTenantAsks(ids: string[], at: string): Promise<void>;
+      recordLifecycleReceipt(id: string, delivered: string, at: string, tenantRecorded?: boolean): Promise<void>;
+    };
+    const at = new Date().toISOString();
+    await dir.recordTenantAsks([s], at);
+    await dir.recordLifecycleReceipt(s, 'active/active@0.0.0', at, true);
+  };
+
+  describe('a write that lands after the scope is gone recreates nothing (Codex #2037 r2)', () => {
+    it('twin: a scope still served records both', async () => {
+      const t = await tenantOf();
+      const s = await served(t);
+      await lateWrites(s);
+      expect(await bookkeepingOf(s)).toEqual({ asks: 1, receipts: 1 });
+    });
+
+    it('after a delete', async () => {
+      const t = await tenantOf();
+      const install = await served(t);
+      const preview = await served(t, { kind: 'preview', forkedFrom: install });
+      await platform().deleteSnapshot(actor, t, preview);
+      await lateWrites(preview);
+      expect(await bookkeepingOf(preview)).toEqual({ asks: 0, receipts: 0 });
+    });
+
+    it('after a scope reap', async () => {
+      const t = await tenantOf();
+      const s = await served(t);
+      await platform().admin.archiveScope(actor, t, s);
+      await platform().admin.reapScope(actor, t, s, { force: true });
+      await lateWrites(s);
+      expect(await bookkeepingOf(s)).toEqual({ asks: 0, receipts: 0 });
+    });
+
+    it('after a tenant reap', async () => {
+      const t = await tenantOf();
+      const s = await served(t);
+      await platform().admin.setTenantStatus(actor, t, 'deleting');
+      await platform().admin.reapTenant(actor, t);
+      await lateWrites(s);
+      expect(await bookkeepingOf(s)).toEqual({ asks: 0, receipts: 0 });
+    });
+
+    it('a preview deleted while its delivery is in flight keeps neither its ask nor a receipt', async () => {
+      const t = await tenantOf();
+      const install = await served(t);
+      const preview = await served(t, { kind: 'preview', forkedFrom: install });
+      duringDelivery = async (s) => {
+        if (s === preview) await platform().deleteSnapshot(actor, t, preview);
+      };
+      try {
+        await platform().healLifecycles(actor);
+      } finally {
+        duringDelivery = undefined;
+      }
+      expect(asked).toContain(preview);
+      // The deployment answered, so the heal went on to write the receipt; the delete had won.
+      expect(await bookkeepingOf(preview)).toEqual({ asks: 0, receipts: 0 });
+    });
   });
 
   it('a reaped scope, and a reaped tenant\'s scopes, keep no delivery bookkeeping', async () => {
