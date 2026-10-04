@@ -616,29 +616,18 @@ describe('meridian on workerd — an upload reaches its own tenant\'s bucket and
     expect(await up.att.open(up.rec.id)).not.toBeNull();
   });
 
-  it("a mismatched (tenant, scope) pair reaches neither tenant's bytes: refused at the gate, both buckets unchanged", async () => {
-    // A CP-less host trusts the router's signed (tenant, scope) pair rather than re-reading a
-    // directory, so this pair is what a vertical bug — not a request — could produce. The
-    // bucket follows the TENANT, so the worst it could touch is tenant A's own; the scope's
-    // grants are keyed by tenant too, so tenant A's principal holds nothing in B's scope.
+  it("a mismatched (tenant, scope) pair reaches neither tenant's bytes: refused at the door, both buckets unchanged", async () => {
+    // A CP-less host re-reads no directory, so this pair is what a vertical bug — not a request —
+    // could produce. The scope's own record holds the pair (#2016): B's scope was provisioned for
+    // tenant B, so tenant A is refused at the door, before its bucket is resolved or a grant read.
     const b = await provisionInstall(tenantB);
     const host = hostFor(env);
-    const upB = await uploadAgreement(host, b.t, b.s);
+    await uploadAgreement(host, b.t, b.s);
     const beforeA = await keysIn(tenantA);
     const beforeB = await keysIn(tenantB);
 
-    const crossed = await host.attachments(owner, tenantA, b.s);
-    await expect(
-      crossed.upload({
-        entity: upB.rec.entity,
-        filename: DOCX.filename,
-        contentType: DOCX.contentType,
-        visibility: 'internal',
-        body: DOCX.body,
-      }),
-    ).rejects.toThrow(/permission denied/);
-    await expect(crossed.open(upB.rec.id)).rejects.toThrow(/permission denied/);
-    expect(await keysIn(tenantA)).toEqual(beforeA); // the refused upload's bytes were taken back
+    await expect(host.attachments(owner, tenantA, b.s)).rejects.toThrow(`unknown scope for tenant: (${tenantA}, ${b.s})`);
+    expect(await keysIn(tenantA)).toEqual(beforeA);
     expect(await keysIn(tenantB)).toEqual(beforeB);
   });
 

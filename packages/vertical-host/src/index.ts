@@ -58,6 +58,8 @@ import {
   projectedIdentityLink,
   ownerSeat,
   ownerClaimLink,
+  platformActorId,
+  type PlatformActorId,
   ownerTransferPair,
   distinctOwnerTransfer,
   ownerTransferRecord,
@@ -182,7 +184,9 @@ export interface VerticalScopeHost {
     /** #1722: `opts.loadStamp`, the stamp a carry leaves on the copy it lands, and `opts.expect`,
      *  the marker the carry read: the load is refused if the store moved since. A host built
      *  before them has no `loadMarkerLocal` either, so the platform never sends `expect` there.
-     *  #2005: `opts.markCopy`, the directory's classification when the scope is not primary. */
+     *  #2005: `opts.markCopy`, the directory's classification when the scope is not primary.
+     *  #2016: `opts.tenantId`, the tenant restored for, recorded as the scope's own; a scope
+     *  provisioned for another tenant refuses the load. A host built before it ignores it. */
     opts?: {
       switchedOff?: ModuleId[];
       /** #1823: as on `provisionScopeLocal`. */
@@ -192,6 +196,7 @@ export interface VerticalScopeHost {
       loadStamp?: string;
       expect?: LoadMarker;
       markCopy?: ScopeLineage;
+      tenantId?: TenantId;
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   /** #2005: mark one scope a copy in its own storage, given the directory's classification of it,
@@ -241,7 +246,9 @@ export interface VerticalScopeHost {
     /** #1722 (Codex #2008 r13): the load stamp read with `revision`. */
     loadStamp?: string | null,
   ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
-  snapshotScopeLocal(source: ScopeId, dest: ScopeId): Promise<{ tables: number }>;
+  /** #2016: `tenantId`, the tenant the platform snapshots for: the source must not be another
+   *  tenant's, and the copy records it as its own. A host built before it ignores it. */
+  snapshotScopeLocal(source: ScopeId, dest: ScopeId, tenantId?: TenantId): Promise<{ tables: number }>;
   deleteScopeLocal(scopeId: ScopeId): Promise<void>;
   migrationBookmarksLocal(
     scopeId: ScopeId,
@@ -375,6 +382,9 @@ export interface VerticalScopeHost {
   setLifecycleLocal?(
     scopeId: ScopeId,
     lifecycle: ScopeLifecycle,
+    /** #2016: the tenant the directory delivers for; a scope of another tenant refuses it, and a
+     *  scope provisioned before its tenant receipt existed records it. Ignored by an older host. */
+    tenantId?: TenantId,
   ): Promise<LifecycleDelivery>;
   /**
    * The far end of the schedule kill switch's status read (#1674): every module this
@@ -575,6 +585,8 @@ const ownerClaimBody = z.object({
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
   origin: z.string().url(),
+  /** The platform actor that asked (#1686) — optional, so a control plane from before it still mints. */
+  actor: platformActorId.optional(),
 });
 
 /** `/internal/owner-transfer` body (#1665): the address plus `ownerTransferInput`'s two principals. */
@@ -661,6 +673,8 @@ const systemSwitchBody = z.object({
 const lifecycleBody = z.object({
   scopeId: scopeIdOf,
   lifecycle: scopeLifecycle,
+  /** #2016: the tenant the directory holds the scope under; absent from an older platform. */
+  tenantId: tenantIdOf.optional(),
 });
 
 /**
@@ -753,13 +767,15 @@ export interface PlatformSurfaceDeps<Env> {
    * Mint a short-lived claim link for an UNCLAIMED owner seat (#925) — what the dashboard
    * hands the installer once the first-sign-in window has closed (or instead of relying on
    * it). Return `null` when the seat is already claimed (⇒ 409). The link is answered to the
-   * platform and never persisted by it; the vertical stores only the token's hash. Omit ⇒
-   * `/internal/owner-claim` answers 501.
+   * platform and never persisted by it; the vertical stores only the secret's hash. Omit ⇒
+   * `/internal/owner-claim` answers 501. vertical-auth's `mintOwnerClaimLink` is the reference:
+   * since #1686 the link is a `become` capability, and `input.actor` is the platform actor that
+   * asked — recorded as its minter — when the control plane names one.
    */
   mintOwnerClaim?: (
     env: Env,
     ref: { tenantId: TenantId; scopeId: ScopeId },
-    input: { origin: string },
+    input: { origin: string; actor?: PlatformActorId },
   ) => Promise<OwnerClaimLink | null>;
   /**
    * Move the scope's owner of record from `from` to `to` (#1665). vertical-auth's IdentityDO
@@ -872,6 +888,7 @@ export function mountPlatformSurface<Env extends object>(
       loadStamp: body.loadStamp,
       expect: body.expect,
       markCopy: body.markCopy,
+      tenantId: body.tenantId,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
@@ -1188,8 +1205,10 @@ export function mountPlatformSurface<Env extends object>(
   // Scope-storage lifecycle (preview-and-snapshots.md §9): copy a scope into a sibling DO /
   // wipe a reaped fork — both inside this deployment; no bytes cross the boundary.
   app.post('/internal/snapshot', async (c) => {
-    const body = z.object({ sourceScopeId: scopeIdOf, newScopeId: scopeIdOf }).parse(await c.req.json());
-    return c.json(await deps.hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId), 201);
+    const body = z
+      .object({ sourceScopeId: scopeIdOf, newScopeId: scopeIdOf, tenantId: tenantIdOf.optional() })
+      .parse(await c.req.json());
+    return c.json(await deps.hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId, body.tenantId), 201);
   });
 
   app.post('/internal/delete-scope', async (c) => {
@@ -1406,7 +1425,7 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.setLifecycleLocal) {
       return c.json({ error: 'this deployment cannot hold a scope by its lifecycle (#1713) — redeploy it' }, 501);
     }
-    return c.json(await host.setLifecycleLocal(body.scopeId, body.lifecycle));
+    return c.json(await host.setLifecycleLocal(body.scopeId, body.lifecycle, body.tenantId));
   });
 
   // The status read (#1674): the far end of `HostAdmin.systemGrantsStatus` for a scope
@@ -1678,7 +1697,7 @@ export function mountPlatformSurface<Env extends object>(
     const link = await deps.mintOwnerClaim(
       c.env,
       { tenantId: body.tenantId, scopeId: body.scopeId },
-      { origin: body.origin },
+      { origin: body.origin, ...(body.actor ? { actor: body.actor } : {}) },
     );
     if (!link) {
       throw new HTTPException(409, {

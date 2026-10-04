@@ -923,18 +923,33 @@ function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined
  */
 function lifecycleDelegationFor(env: Env): LifecycleDelegation | undefined {
   if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  return lifecycleDelegationOver(
+    (t, s) => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE }).admin.getScopeRecord(SWEEP_ACTOR, t, s),
+    resolveVerticalForScopeFor(env),
+  );
+}
+
+/**
+ * `lifecycleDelegationFor`'s body over its two reads — the directory's record of the scope and the
+ * deployment serving it — so the delivery it sends is testable without a dispatch namespace. The
+ * delivery names the tenant the DIRECTORY holds the scope under (#2016), which the deployment holds
+ * against the scope's own record.
+ */
+export function lifecycleDelegationOver(
+  scopeRecord: (tenantId: TenantId, scopeId: ScopeId) => Promise<Scope | undefined>,
+  clientFor: (scope: Scope) => Promise<Pick<VerticalClient, 'setLifecycle'> | undefined>,
+): LifecycleDelegation {
   return {
     deliver: async (a) => {
-      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
-      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
-      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      const rec = await scopeRecord(a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await clientFor(rec) : undefined;
       if (!client) {
         throw new Error(
           `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
             `cannot deliver its lifecycle`,
         );
       }
-      return client.setLifecycle({ scopeId: a.scopeId, lifecycle: a.lifecycle });
+      return client.setLifecycle({ scopeId: a.scopeId, lifecycle: a.lifecycle, tenantId: a.tenantId });
     },
   };
 }

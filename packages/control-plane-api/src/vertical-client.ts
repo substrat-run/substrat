@@ -7,6 +7,7 @@ import type {
   EntitlementGrant,
   ModuleId,
   PermissionKey,
+  PlatformActorId,
   PlatformRequest,
   PlatformRequestFilter,
   PlatformRequestId,
@@ -539,7 +540,13 @@ export class VerticalClient {
    * stored: `provisionResultFrom` drops secret-shaped keys from an ack that installers
    * persist, and this is the deliberate opposite — a credential that lives one exchange.
    */
-  async mintOwnerClaim(input: { tenantId: TenantId; scopeId: ScopeId; origin: string }): Promise<OwnerClaimLink> {
+  async mintOwnerClaim(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    origin: string;
+    /** Who asked (#1686) — the vertical records it as the claim link's minter. */
+    actor?: PlatformActorId;
+  }): Promise<OwnerClaimLink> {
     return ownerClaimLink.parse(await this.postInternal<unknown>('/internal/owner-claim', input, 'owner-claim'));
   }
 
@@ -720,6 +727,9 @@ export class VerticalClient {
   async setLifecycle(input: {
     scopeId: ScopeId;
     lifecycle: ScopeLifecycle;
+    /** #2016: the tenant the directory holds the scope under; the deployment refuses a scope
+     *  provisioned for another, and records it on a scope that predates its tenant receipt. */
+    tenantId?: TenantId;
   }): Promise<LifecycleDelivery> {
     const verb = 'lifecycle';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
@@ -970,6 +980,8 @@ export class VerticalClient {
   async snapshotScope(input: {
     sourceScopeId: ScopeId;
     newScopeId: ScopeId;
+    /** #2016: the tenant snapshotted for — the source must be its, and the copy records it. */
+    tenantId?: TenantId;
   }): Promise<{ tables: number }> {
     return this.postInternal<{ tables: number }>('/internal/snapshot', input, 'snapshot');
   }

@@ -2,6 +2,8 @@
 declare module 'cloudflare:test' {
   interface ProvidedEnv {
     SCOPE: DurableObjectNamespace;
+    /** #1686: vertical-auth's identity directory — owner-claim.test.ts. */
+    AUTH: DurableObjectNamespace<import('@substrat-run/vertical-auth').IdentityDO>;
     CONTROL_PLANE: DurableObjectNamespace;
     /** #1899: the schedule suite's own directory — its sweep counts every active scope in it. */
     SCHED_CONTROL_PLANE: DurableObjectNamespace;

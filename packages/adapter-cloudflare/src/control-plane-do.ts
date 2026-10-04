@@ -1141,10 +1141,14 @@ const DIRECTORY_DDL = `
   -- directory, so the platform delivers a scope's lifecycle to it, and the heal sweep
   -- re-delivers wherever this differs from the directory. No row reads as active/active,
   -- which is what a deployment holding no lifecycle runs as.
+  -- #2016: tenant_recorded, whether that deployment answered that the scope holds a record of its
+  -- tenant (1) or not (0); NULL is never asked. The heal keeps delivering to any served scope, a
+  -- copy as much as a primary, until it answers 1.
   CREATE TABLE IF NOT EXISTS scope_lifecycle_receipts (
     scope_id TEXT PRIMARY KEY,
     delivered TEXT NOT NULL,
-    at TEXT NOT NULL
+    at TEXT NOT NULL,
+    tenant_recorded INTEGER
   );
   -- #1713: the lifecycle's revisions, one counter per subject ("scope:<id>" counts a
   -- scope's status transitions, "tenant:<id>" a tenant's status changes), each bumped in
@@ -1510,6 +1514,8 @@ export class ControlPlaneDO extends DurableObject {
     }
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.addColumn('tenants', 'deleting_at TEXT');
+    // #2016: whether a scope's deployment holds a record of its tenant (see the table's DDL).
+    this.addColumn('scope_lifecycle_receipts', 'tenant_recorded INTEGER');
     // #412 provenance: the manager tenant that provisioned this one (NULL = direct staff).
     this.addColumn('tenants', 'provisioned_by_tenant TEXT REFERENCES tenants(tenant_id)');
     // §4.7 custom-hostname issuance: CF's hostname id + the DNS records to publish (JSON).
@@ -4199,7 +4205,15 @@ export class ControlPlaneDO extends DurableObject {
    * scope every pass is what puts a hold back on a store a carry or a restore landed without it,
    * and held scopes are few. Drifted rows first, so held ones never starve them.
    */
-  lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): LifecycleTargetRow[] {
+  lifecycleTargets(filter: {
+    tenantId?: string;
+    scopeId?: string;
+    drift?: boolean;
+    /** #2016: only the served scopes whose deployment has not answered that it holds a record of
+     *  the scope's tenant, whatever their kind, least recently asked first. */
+    unrecorded?: boolean;
+    limit?: number;
+  }): LifecycleTargetRow[] {
     const where = [
       's.vertical IS NOT NULL',
       "s.status NOT IN ('provisioning', 'reaped')",
@@ -4227,7 +4241,14 @@ export class ControlPlaneDO extends DurableObject {
       where.push(`(${drifted} OR s.status NOT IN ('active', 'archived') OR t.status <> 'active')`);
       params.push(...driftParams);
     }
-    params.push(...driftParams, filter.limit ?? 1000);
+    if (filter.unrecorded) where.push('COALESCE(r.tenant_recorded, 0) <> 1');
+    // The unrecorded walk rotates: the scope asked longest ago (or never) comes first, so a scope
+    // that keeps answering 0 cannot starve the rest of a bounded pass.
+    const order = filter.unrecorded
+      ? 'r.at IS NOT NULL, r.at, s.scope_id'
+      : `CASE WHEN ${drifted} THEN 0 ELSE 1 END, s.scope_id`;
+    if (!filter.unrecorded) params.push(...driftParams);
+    params.push(filter.limit ?? 1000);
     return this.sql
       .exec(
         `SELECT s.tenant_id, s.scope_id, s.status AS scope_status, t.status AS tenant_status, r.delivered,
@@ -4238,7 +4259,7 @@ export class ControlPlaneDO extends DurableObject {
            LEFT JOIN lifecycle_revisions rs ON rs.subject = 'scope:' || s.scope_id
            LEFT JOIN lifecycle_revisions rt ON rt.subject = 'tenant:' || s.tenant_id
           WHERE ${where.join(' AND ')}
-          ORDER BY CASE WHEN ${drifted} THEN 0 ELSE 1 END, s.scope_id
+          ORDER BY ${order}
           LIMIT ?`,
         ...params,
       )
@@ -4279,13 +4300,15 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  /** #1713: record what a scope's deployment acknowledged holding (`lifecycleReceipt`). */
-  recordLifecycleReceipt(scopeId: string, delivered: string, at: string): void {
+  /** #1713: record what a scope's deployment acknowledged holding (`lifecycleReceipt`), and #2016:
+   *  whether it answered that the scope holds a record of its tenant. */
+  recordLifecycleReceipt(scopeId: string, delivered: string, at: string, tenantRecorded = false): void {
     this.sql.exec(
-      'INSERT OR REPLACE INTO scope_lifecycle_receipts (scope_id, delivered, at) VALUES (?, ?, ?)',
+      'INSERT OR REPLACE INTO scope_lifecycle_receipts (scope_id, delivered, at, tenant_recorded) VALUES (?, ?, ?, ?)',
       scopeId,
       delivered,
       at,
+      tenantRecorded ? 1 : 0,
     );
   }
 
