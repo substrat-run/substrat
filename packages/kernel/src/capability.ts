@@ -318,7 +318,6 @@ export function capabilityRecordOf(row: CapabilityRow): CapabilityRecord {
   );
 }
 
-
 /** A fresh capability secret: 256 bits, base64url, prefixed. Only its hash is ever stored. */
 export function mintCapabilitySecret(): string {
   return CAPABILITY_SECRET_PREFIX + toBase64url(crypto.getRandomValues(new Uint8Array(32)));

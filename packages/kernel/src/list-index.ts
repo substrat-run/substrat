@@ -38,8 +38,8 @@
  * skipped, because `status > 'open'` excludes its own ties. So every walk here
  * is over `(sortColumn, idColumn)` and the cursor is composite — which is the
  * `|`-joined form `pagination.ts` already pins ("first part always `|`-free").
- * Where the sort column IS the id, the pair collapses and the cursor is the bare
- * value, unchanged from what shipped.
+ * Where the sort column IS the id, the pair collapses and the cursor carries the
+ * id alone (its envelope has no separate `id`, K-44).
  */
 import { PAGE_CURSOR_RESTART, SubstratError, ULID_PATTERN, z } from '@substrat-run/contracts';
 import { fromBase64url, toBase64url } from './base64url.js';
