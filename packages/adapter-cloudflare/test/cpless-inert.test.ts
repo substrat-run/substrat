@@ -1,6 +1,15 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { moduleId, permissionKey, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle } from '@substrat-run/contracts';
+import {
+  connectionId as connectionIdOf,
+  moduleId,
+  permissionKey,
+  principalId,
+  scopeId,
+  tenantId,
+  type ScopeId,
+  type ScopeLifecycle,
+} from '@substrat-run/contracts';
 import { scheduleMod } from '@substrat-run/contract-tests';
 import { INERT_SCOPE_REASON, ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -274,6 +283,46 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
     await hostFor().setLifecycleLocal(s, life('active', 'active'));
     await act(s);
     expect(ran).toContain(s);
+  });
+
+  it('a held scope is refused before its tenant\'s attachment bucket is resolved (#1995)', async () => {
+    const s = await seat();
+    const resolved: string[] = [];
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      attachmentBuckets: (tenant) => {
+        resolved.push(tenant);
+        return {};
+      },
+    });
+    // The connector's bytes legs (#574, #711) reach the same bucket from the platform's side.
+    const conn = connectionIdOf.parse(ulid());
+    const upload = () =>
+      host.connectorAttachmentUploadLocal(conn, t, s, {
+        entity: { entityType: 'item', entityId: 'i1' },
+        filename: 'a.txt',
+        contentType: 'text/plain',
+        visibility: 'customer',
+        body: new TextEncoder().encode('a'),
+      });
+    const open = () => host.connectorAttachmentOpenLocal(conn, t, s, ulid());
+    const refused = /scope not active \(status: suspended\)/;
+
+    await host.setLifecycleLocal(s, life('suspended'));
+    await expect(host.attachments(owner, t, s)).rejects.toThrow(refused);
+    await expect(upload()).rejects.toThrow(refused);
+    await expect(open()).rejects.toThrow(refused);
+    expect(resolved).toEqual([]);
+
+    // The twin: live again, each door gets past the gate to the tenant's bucket. What it does
+    // there (this connection holds no grant) is the attachments suite's business, not this one's.
+    await host.setLifecycleLocal(s, life('active'));
+    await host.attachments(owner, t, s);
+    expect(resolved).toEqual([t]);
+    await upload().catch((e: unknown) => expect(String(e)).not.toMatch(refused));
+    expect(resolved).toEqual([t, t]);
+    await open().catch((e: unknown) => expect(String(e)).not.toMatch(refused));
+    expect(resolved).toEqual([t, t, t]);
   });
 
   it('an archived scope is held too', async () => {

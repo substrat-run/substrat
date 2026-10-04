@@ -1,3 +1,4 @@
+import { env as ambientEnv } from 'cloudflare:workers';
 import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
 import {
   delegatedReadParams,
@@ -221,6 +222,8 @@ import {
   type VerticalCaller,
   type VerticalResolution,
   type DeclaredMigration,
+  ATTACHMENT_BLOB_BINDING,
+  blobStoreBindingName,
   lifecycleDelivery,
   scopeLifecycle,
   type LifecycleDelivery,
@@ -1781,12 +1784,14 @@ export interface CloudflareScopeHostOptions {
   blobStores?: R2BlobStores;
   /**
    * Worker-side reach to the per-tenant attachment bucket (#473): given a tenant, return
-   * the `R2Bucket` binding carrying its attachments — typically
-   * `env[blobStoreBindingName('<BINDING>', tenantId)]`, where `<BINDING>` is the
-   * vertical's declared `blobStoreNeed.binding`. The VERTICAL's worker supplies this
-   * because only it knows its declared binding name; the kernel owns everything else
-   * (key derivation, permission gates, metadata facts). Omitted (or resolving null),
-   * `attachments()` refuses loudly rather than serving ungated bytes.
+   * the `R2Bucket` binding carrying its attachments. Omitted, the host resolves it itself
+   * (#1995): `env[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)]` off the
+   * script's own env — the binding the platform attaches per installed tenant once the push
+   * declares the store, which it does for any vertical whose modules declare attachment
+   * targets. So a deployed vertical wires nothing, and the tenant is always the one this
+   * host has already validated against the scope. Pass this only to point attachments
+   * somewhere else (a test's bucket, a host with no such env). Resolving null, the
+   * attachment surface refuses loudly rather than serving ungated bytes.
    */
   attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /**
@@ -1975,6 +1980,15 @@ export const SWITCH_HOLD_EXTRA_WAITS = 3;
  */
 export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
 
+/**
+ * The attachment bucket a host resolves when it was handed no resolver (#1995): the
+ * platform's per-tenant binding, read off this script's own env, named by the one shared
+ * encoding (`blobStoreBindingName`) for the tenant the caller passed in.
+ */
+function ambientAttachmentBucket(tenantId: string): unknown {
+  return (ambientEnv as unknown as Record<string, unknown>)[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)] ?? null;
+}
+
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
 export interface SwitchHoldClaim {
   claimId: string;
@@ -2028,8 +2042,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly tenantStores?: D1TenantStores;
   /** The live R2 client for per-tenant blob stores (#473); undefined ⇒ refuse loudly. */
   private readonly blobStores?: R2BlobStores;
-  /** Worker-side attachment-bucket resolver (#473); undefined ⇒ attachments() refuses. */
-  private readonly attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
+  /** Worker-side attachment-bucket resolver (#473); the ambient per-tenant binding unless overridden (#1995). */
+  private readonly attachmentBuckets: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly executors = new Map<string, RegisteredEffector>();
@@ -2097,7 +2111,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
-    this.attachmentBuckets = options.attachmentBuckets;
+    this.attachmentBuckets = options.attachmentBuckets ?? ambientAttachmentBucket;
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.fetchImpl = options.fetch ?? globalFetch;
@@ -3470,20 +3484,15 @@ export class CloudflareScopeHost implements ScopeHost {
     );
   }
 
-  /** Resolve the per-tenant R2 blob store, or fail closed exactly as `attachments` did. */
+  /** Resolve the per-tenant R2 blob store, or fail closed. */
   private async resolveAttachmentStore(tenantId: TenantId): Promise<TenantBlobStore> {
-    if (!this.attachmentBuckets) {
-      throw new Error(
-        `attachments are not configured on this host (#473): pass ` +
-          `CloudflareScopeHostOptions.attachmentBuckets — (tenantId) => ` +
-          `env[blobStoreBindingName('<BINDING>', tenantId)] for the vertical's declared blob store`,
-      );
-    }
     const bucket = await this.attachmentBuckets(tenantId);
     if (!bucket) {
       throw new Error(
-        `no attachment bucket resolved for tenant ${tenantId} (#473) — is the per-tenant blob ` +
-          `store provisioned and its r2_bucket binding attached to the serving script?`,
+        `no attachment bucket resolved for tenant ${tenantId} (#473, #1995) — this script has no ` +
+          `${blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)} binding. A vertical whose modules declare ` +
+          `attachmentTargets gets one per installed tenant once it is pushed with a CLI that declares the ` +
+          `store (re-push); off the platform, pass CloudflareScopeHostOptions.attachmentBuckets.`,
       );
     }
     return r2TenantBlobStore(bucket);
@@ -8858,6 +8867,9 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     upload: AttachmentUploadInput,
   ): Promise<AttachmentRecord> {
+    // The lifecycle gate every attachments door takes (#1713), ahead of the bucket: a held
+    // scope's provider bytes wait for the delivery's retry rather than land (#1995).
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).upload(upload);
@@ -8877,6 +8889,8 @@ export class CloudflareScopeHost implements ScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<OpenedAttachment | null> {
+    // Same gate as the upload leg: a held scope's bytes are not read out of its bucket.
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface(

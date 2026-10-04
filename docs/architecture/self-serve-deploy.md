@@ -170,8 +170,12 @@ serving script's bindings are re-derived on every upload. Store deletion at tena
 tracked follow-up — the ledger row is the teardown list.
 
 **Per-tenant blob stores (#473) — the same shape, for attachment bytes.** A vertical that needs
-to store file bytes (a signed contract PDF, field photos as work evidence) declares a
-**`blobStoreNeed`** in `runtimeNeeds.blobStores` — the fourth store shape, and the exact
+to store file bytes (a signed contract PDF, field photos as work evidence) has a
+**`blobStoreNeed`** in `runtimeNeeds.blobStores` — for attachment bytes, declared by the push
+rather than the builder (#1995): any module declaring `attachmentTargets` makes `substrat push`
+add the platform-fixed `ATTACHMENTS` store, and the Cloudflare host resolves
+`env[blobStoreBindingName('ATTACHMENTS', tenantId)]` itself, so no worker wires a bucket. It
+is the fourth store shape, and the exact
 `tenantStoreNeed` story with R2 in place of D1: the platform mints one bucket **per tenant** in
 the tenant lifecycle, the builder supplies **no bucket id**, so it is a *need* the platform
 provisions, never a `r2_bucket` *binding* the bundle carries. (A hand-authored static `r2_bucket`

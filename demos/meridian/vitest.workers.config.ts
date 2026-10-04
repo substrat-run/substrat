@@ -16,6 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 import { resolveWranglerConfig } from '@substrat-run/cli/dist/push.js';
+import { ATTACHMENT_BLOB_BINDING, blobStoreBindingName } from '@substrat-run/contracts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /**
@@ -30,6 +31,13 @@ const pkg = JSON.parse(readFileSync(join(here, 'package.json'), 'utf8')) as {
 const installEntitlements = pkg.substrat.entitlements?.length ? pkg.substrat.entitlements : [pkg.substrat.slug];
 
 const { build: _build, assets: _assets, ...derived } = resolveWranglerConfig(here).cfg;
+
+/**
+ * Two installed tenants' attachment buckets, bound the way the control plane binds them on a
+ * pushed script (#1995): one `r2_bucket` per tenant under `blobStoreBindingName`, side by side
+ * on the one worker. The worker is handed no resolver — the host reads these itself.
+ */
+const ATTACHMENT_TENANTS = ['01JTESTATTACHTENANT000000A', '01JTESTATTACHTENANT000000B'];
 const config = join(here, 'node_modules/.cache/workerd-test/wrangler.json');
 mkdirSync(dirname(config), { recursive: true });
 writeFileSync(
@@ -37,6 +45,10 @@ writeFileSync(
   JSON.stringify({
     ...derived,
     main: resolve(here, String(derived.main)),
+    r2_buckets: ATTACHMENT_TENANTS.map((t) => ({
+      binding: blobStoreBindingName(ATTACHMENT_BLOB_BINDING, t),
+      bucket_name: `attachments-${t.toLowerCase()}`,
+    })),
     // The two shared secrets the platform and the router present, and the version the
     // deploy injects (#1242). Test values; a real deploy injects its own.
     vars: {
@@ -45,6 +57,7 @@ writeFileSync(
       SUBSTRAT_VERSION_ID: '01JTESTVRSN0000000000000M0',
       // Read by the suite only — the worker never looks at it.
       TEST_INSTALL_ENTITLEMENTS: JSON.stringify(installEntitlements),
+      TEST_ATTACHMENT_TENANTS: JSON.stringify(ATTACHMENT_TENANTS),
     },
   }),
 );
