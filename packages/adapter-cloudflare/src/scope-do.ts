@@ -394,6 +394,15 @@ const PROVISIONED_FOR_KEY = 'provisioned_for';
 const tenantReceiptRefusal = (held: string, asked: string): string =>
   `refused: this scope was provisioned for tenant ${held}, not ${asked}`;
 
+/** #2016: how a tenant reads against a scope's record (`ScopeDO.tenantVerdict`). */
+export type TenantVerdict = 'recorded' | 'inferred' | 'foreign' | 'unknown';
+
+/** #2016: why `tenantId` is foreign to a scope (`held`, the receipt `tenantVerdict` read), in one wording. */
+const foreignTenant = (held: string | null, tenantId: string): string =>
+  held !== null
+    ? tenantReceiptRefusal(held, tenantId)
+    : `refused: this scope holds role rows for another tenant and none for ${tenantId}`;
+
 /** #2016: the load refusals `tenantReceiptRefusal` raised, told apart by identity, not by text. */
 const tenantRefusals = new WeakSet<Error>();
 
@@ -1573,12 +1582,13 @@ export function defineScopeDO(
 
     /**
      * #2016: what one door into this scope needs from its storage on a CP-less host, in ONE call —
-     * whether `tenantId` is foreign to the scope (`tenantVerdict`), and the lifecycle the platform
+     * how `tenantId` reads against the scope (`tenantVerdict`), and the lifecycle the platform
      * delivered (#1713). The coordinator refuses a foreign pair before any guard, handler or store
-     * lookup runs. Read without migrating, like `servesTenant`.
+     * lookup runs, and reports an `unknown` one it lets through. Read without migrating, like
+     * `servesTenant`.
      */
-    admission(tenantId: TenantId): { foreign: boolean; lifecycle: StoredScopeLifecycle | null } {
-      return { foreign: this.tenantVerdict(tenantId).verdict === 'foreign', lifecycle: readLifecycle(this.switchSql()) };
+    admission(tenantId: TenantId): { verdict: TenantVerdict; lifecycle: StoredScopeLifecycle | null } {
+      return { verdict: this.tenantVerdict(tenantId).verdict, lifecycle: readLifecycle(this.switchSql()) };
     }
 
     /**
@@ -1596,7 +1606,7 @@ export function defineScopeDO(
      * `held` is the receipt read, so a refusal can name it. Read without migrating, so asking about
      * a foreign scope leaves its DO as empty as it found it.
      */
-    private tenantVerdict(tenantId: TenantId): { verdict: 'recorded' | 'inferred' | 'foreign' | 'unknown'; held: string | null } {
+    private tenantVerdict(tenantId: string): { verdict: TenantVerdict; held: string | null } {
       const held = this.provisionedFor();
       if (held !== null) return { verdict: held === tenantId ? 'recorded' : 'foreign', held };
       if (!this.hasTable('_substrat_roles')) return { verdict: 'unknown', held };
@@ -1605,6 +1615,16 @@ export function defineScopeDO(
       }
       const anyRole = this.sql.exec('SELECT 1 FROM _substrat_roles LIMIT 1').toArray().length > 0;
       return { verdict: anyRole ? 'foreign' : 'unknown', held };
+    }
+
+    /**
+     * #2016: whether a scope with no receipt and no role rows holds data — module migrations
+     * applied, by a provision or a load — rather than being a DO nothing ever provisioned here.
+     * Only such a scope takes its tenant from a lifecycle delivery: recording one in an empty DO
+     * would make `servesTenant` answer for a scope this deployment does not hold.
+     */
+    private holdsData(): boolean {
+      return this.hasTable('_substrat_migrations') && this.sql.exec('SELECT 1 FROM _substrat_migrations LIMIT 1').toArray().length > 0;
     }
 
     /** #1738: the tenant this scope's `provisioned_for` receipt names, or null; read without migrating. */
@@ -4555,17 +4575,18 @@ export function defineScopeDO(
     ): LifecycleDelivery | { refused: 'tenant'; message: string } {
       const { verdict, held } = tenantId === undefined ? { verdict: null, held: null } : this.tenantVerdict(tenantId);
       if (verdict === 'foreign') {
-        const why = held !== null
-          ? tenantReceiptRefusal(held, tenantId!)
-          : `refused: this scope holds role rows for another tenant and none for ${tenantId}`;
-        return { refused: 'tenant', message: `lifecycle delivery ${why}` };
+        return { refused: 'tenant', message: `lifecycle delivery ${foreignTenant(held, tenantId!)}` };
       }
+      // The back-fill: a scope provisioned before the receipt (its role rows agree), or one whose
+      // tenant nothing recorded although it holds data (a load from a world that keeps its roles
+      // elsewhere). The directory's word records it; a DO never provisioned here records nothing.
+      const backfill = verdict === 'inferred' || (verdict === 'unknown' && this.holdsData());
       let out!: LifecycleDelivery;
       this.revision.transactionSync(() => {
         // A write the carry fences on, not bookkeeping: it happens once per legacy scope, and
         // over-counting only refuses a restore that could have landed. A carried-away copy takes
         // no write at all, so it is left to the next projection.
-        if (verdict === 'inferred' && !this.carriedAwayCopy) {
+        if (backfill && !this.carriedAwayCopy) {
           this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId!);
         }
         out = this.revision.bookkeeping(() => writeLifecycle(this.switchSql(), next));
@@ -6700,11 +6721,16 @@ export function defineScopeDO(
           // moves, so a misdirected projection can never re-point a scope or leave its roles behind.
           // A restore does not trip this: `importDump` keeps the destination's own receipt and
           // never the dump's (#2016), so the repair projection that follows finds its own tenant.
-          const held = this.provisionedFor();
-          if (held !== null && held !== tenantId) {
+          // #2016: a scope with no receipt yet takes its first one only where its role rows agree
+          // (`tenantVerdict`, the same reading the lifecycle back-fill uses), so a projection for
+          // another tenant cannot pin a legacy scope to it.
+          const { verdict, held } = this.tenantVerdict(tenantId);
+          if (verdict === 'foreign') {
             throw substratError(
               'conflict',
-              `applyProjection refused: this scope was provisioned for tenant ${held}, and a projection for tenant ${tenantId} would re-point it`,
+              held !== null
+                ? `applyProjection refused: this scope was provisioned for tenant ${held}, and a projection for tenant ${tenantId} would re-point it`
+                : `applyProjection ${foreignTenant(held, tenantId)}`,
             );
           }
           // Written before any guard below can return early, so every projection leaves it.
