@@ -1202,6 +1202,14 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
  *   `moveSession` relinks rather than links for that reason, and a merge relinks too.
  * - **A session holds only its current conversation's messages.** When it moves, the old
  *   thread's messages are taken off it (`unseatSession`) before the new ones go on.
+ *
+ * **What it costs, and the bound.** Each public message holds one edge per session on its
+ * conversation, so a write links that many times and a live fan-out walks that many
+ * ancestors per row (each read once, #1853). The count is small by construction: every
+ * widget opening opens its OWN conversation (`bindOpening`), a follow-up receives the one
+ * session that moved onto it, and the only way a conversation gains more is a person
+ * merging another of the same contact's conversations into it. So it is one, plus one per
+ * merged-in chat. #2044 is the representation that would make it one edge regardless.
  */
 function sessionsOn(ctx: OperationContext, conversationId: string): { id: string }[] {
   return ctx.sql.query<{ id: string }>('SELECT id FROM ticket0_widget_sessions WHERE conversation_id = ?', [
