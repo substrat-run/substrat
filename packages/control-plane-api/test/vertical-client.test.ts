@@ -702,6 +702,15 @@ describe('VerticalClient.systemSwitch (#1666)', () => {
     expect(seen[0]?.body).toEqual({ scopeId: s, moduleId: '@test/sched', to: 'off', tenantHeld: true });
   });
 
+  it("carries the deployment's tenant-grant attestation through, and an older answer's silence as absent (#1823)", async () => {
+    const outcome = { held: true, changed: true, permissions: ['sched:tick'] };
+    const attested = answering(() => new Response(JSON.stringify({ ...outcome, deniesTenantGrants: true }), { status: 200 }));
+    await expect(attested.systemSwitch({ ...input, tenantHeld: true })).resolves.toEqual({ ...outcome, deniesTenantGrants: true });
+    // An older deployment omits it: the parse leaves it absent for the platform to refuse on.
+    const older = answering(() => new Response(JSON.stringify(outcome), { status: 200 }));
+    expect(await older.systemSwitch({ ...input, tenantHeld: true })).not.toHaveProperty('deniesTenantGrants');
+  });
+
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
   ])('%s — the explicit legacy signal — is a 501 that says to redeploy', async (_name, res) => {

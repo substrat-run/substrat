@@ -2066,6 +2066,25 @@ export const SWITCH_HOLD_EXTRA_WAITS = 3;
 export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
 
 /**
+ * An OFF of a tenant-held module whose far end did not attest `deniesTenantGrants` (#1823): it
+ * switched, but its evaluator still authorizes the module's tenant-level grant on the scope.
+ * Carries the far end's outcome, so the operator's OFF knows whether there is a move to put back.
+ */
+class UnattestedSwitchOff extends Error {
+  constructor(
+    scopeId: ScopeId,
+    moduleId: ModuleId,
+    readonly outcome: SwitchOutcome,
+  ) {
+    super(
+      `the deployment serving scope ${scopeId} predates the kill switch's tenant-grant denial (#1823): ` +
+        `module '${moduleId}' holds a tenant-level grant that its OFF would leave authorizing there. ` +
+        `Redeploy the vertical, then retry.`,
+    );
+  }
+}
+
+/**
  * The attachment bucket a host resolves when it was handed no resolver (#1995): the
  * platform's per-tenant binding, read off this script's own env, named by the one shared
  * encoding (`blobStoreBindingName`) for the tenant the caller passed in.
@@ -5249,6 +5268,13 @@ export class CloudflareScopeHost implements ScopeHost {
       // #1823: a module whose only authority on the scope is a TENANT-level grant has nothing in
       // the scope's storage for the switch to find, so the directory says whether it is held.
       // A caller moving several modules reads them in one call and passes each answer in.
+      // An OFF of a tenant-held module is refused, after the far end answers, unless that answer
+      // attests the evaluator that denies a tenant-level grant (`deniesTenantGrants`). A
+      // deployment built before #1823 drops `tenantHeld`, still answers `held: true` (the module's
+      // scope-level grants were there to switch), and keeps authorizing the tenant-level grant —
+      // so its `held` alone would have the platform record a scope off that is not. Every OFF the
+      // platform drives moves through here: an operator's (`switchSystem`, which then puts the
+      // switch back) and a re-assert's, which every carry ends with.
       const move = async (
         moduleId: ModuleId,
         to: 'on' | 'off',
@@ -5256,9 +5282,13 @@ export class CloudflareScopeHost implements ScopeHost {
         tenantHeld?: boolean,
       ): Promise<SwitchOutcome> => {
         const held = tenantHeld ?? (await this.cp.tenantHeldSystemModules(tenantId, [moduleId], at)).length > 0;
-        return delegation
+        const outcome = await (delegation
           ? delegation.switch({ tenantId, scopeId, moduleId, to, tenantHeld: held })
-          : this.switchInScope(scopeId, moduleId, to, at, held);
+          : this.switchInScope(scopeId, moduleId, to, at, held));
+        if (to === 'off' && held && outcome.held && outcome.deniesTenantGrants !== true) {
+          throw new UnattestedSwitchOff(scopeId, moduleId, outcome);
+        }
+        return outcome;
       };
       /**
        * Is the module switched off on the scope right now? Read from wherever `move` writes — the
@@ -5334,6 +5364,32 @@ export class CloudflareScopeHost implements ScopeHost {
       try {
         outcome = await move(input.moduleId, to, at);
       } catch (err) {
+        if (err instanceof UnattestedSwitchOff) {
+          // The far end switched, and cannot hold it against the tenant-level grant. Refused:
+          // ON gives back exactly what this OFF took (nothing, when it changed nothing), and
+          // then the record goes back too — neither the scope nor the directory says off. An ON
+          // that fails here leaves the scope off, and the readback rule below keeps its record.
+          const putBack = err.outcome.changed
+            ? await move(input.moduleId, 'on', new Date().toISOString(), true).then(
+                () => true,
+                () => false,
+              )
+            : true;
+          if (putBack) {
+            const recordError = await undoRecord();
+            await this.recordAdmin(actor, action, target, null, {
+              ...base,
+              phase: 'refused',
+              error: err.message,
+              ...(recordError ? { recordError } : {}),
+            }).catch(() => undefined);
+            throw substratError(
+              'precondition_failed',
+              `${err.message} Nothing was switched` +
+                (recordError ? `, but its directory record could not be put back (${recordError}).` : '.'),
+            );
+          }
+        }
         // A throw does not say the scope did not move: the move crosses the scope's DO and then
         // the rewind hold, and a throw from the second leaves the scope's switch moved. So the
         // record is undone only when the scope reads back in the OTHER position — an OFF that

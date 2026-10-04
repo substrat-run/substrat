@@ -197,6 +197,15 @@ export interface SwitchOutcome {
   held: boolean;
   changed: boolean;
   permissions: string[];
+  /**
+   * #1823: this code's evaluator denies a module on a scope whose marker is live, its
+   * TENANT-level grants included. Set by `switchSystemSchedules` on every answer, because it
+   * is a fact about the code that answered, not about the call: a deployment built before
+   * #1823 omits it, and its OFF leaves a tenant-level grant authorizing. The platform reads
+   * its absence on an OFF of a module it found tenant-held as "this deployment cannot hold
+   * that OFF", and refuses it rather than record a scope off that is not.
+   */
+  deniesTenantGrants?: true;
 }
 
 /**
@@ -222,13 +231,14 @@ export function switchSystemSchedules(
   db: SwitchSql,
   input: { moduleId: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
 ): SwitchOutcome {
-  return switchSubjectGrants(db, {
+  const outcome = switchSubjectGrants(db, {
     subject: subjectOf(input.moduleId),
     scopeId: input.scopeId,
     to: input.to,
     at: input.at,
     tenantHeld: input.tenantHeld,
   });
+  return { ...outcome, deniesTenantGrants: true };
 }
 
 /** One module `switchRecordedOff` switched off — `SwitchedOffInUnit`'s shape. */

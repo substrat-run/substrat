@@ -52,11 +52,11 @@ describe('switchSystemSchedules (#1666)', () => {
     grant(db, 'a:run', '2026-09-01T00:00:00.000Z'); // A: revoked on its own, before the switch
     grant(db, 'b:run'); // B: live when the switch is pulled
 
-    expect(move(sql, 'off')).toEqual({ held: true, changed: true, permissions: ['b:run'] });
+    expect(move(sql, 'off')).toEqual({ held: true, changed: true, permissions: ['b:run'], deniesTenantGrants: true });
     expect(revokedAt(db, 'a:run')).toBe('2026-09-01T00:00:00.000Z'); // untouched by OFF
     expect(revokedAt(db, 'b:run')).toBe('2026-09-21T10:00:00.000Z');
 
-    expect(move(sql, 'on', '2026-09-21T11:00:00.000Z')).toEqual({ held: true, changed: true, permissions: ['b:run'] });
+    expect(move(sql, 'on', '2026-09-21T11:00:00.000Z')).toEqual({ held: true, changed: true, permissions: ['b:run'], deniesTenantGrants: true });
     expect(revokedAt(db, 'a:run')).toBe('2026-09-01T00:00:00.000Z'); // still revoked, same instant
     expect(revokedAt(db, 'b:run')).toBeNull();
     expect(systemScheduleState(sql, M, '2026-09-21T12:00:00.000Z')).toBe('on');
@@ -90,18 +90,18 @@ describe('switchSystemSchedules (#1666)', () => {
     const { sql } = fresh();
     const tenantMove = (to: 'on' | 'off') =>
       switchSystemSchedules(sql, { moduleId: M, scopeId: S, to, at: '2026-09-21T10:00:00.000Z', tenantHeld: true });
-    expect(tenantMove('off')).toEqual({ held: true, changed: true, permissions: [] });
+    expect(tenantMove('off')).toEqual({ held: true, changed: true, permissions: [], deniesTenantGrants: true });
     expect(systemSwitchedOff(sql, M)).toBe(true);
-    expect(tenantMove('off')).toEqual({ held: true, changed: false, permissions: [] });
-    expect(tenantMove('on')).toEqual({ held: true, changed: true, permissions: [] });
+    expect(tenantMove('off')).toEqual({ held: true, changed: false, permissions: [], deniesTenantGrants: true });
+    expect(tenantMove('on')).toEqual({ held: true, changed: true, permissions: [], deniesTenantGrants: true });
     expect(systemSwitchedOff(sql, M)).toBe(false);
     // Still held while the tenant grant is: a repeat ON is a no-op, not a refusal.
-    expect(tenantMove('on')).toEqual({ held: true, changed: false, permissions: [] });
+    expect(tenantMove('on')).toEqual({ held: true, changed: false, permissions: [], deniesTenantGrants: true });
   });
 
   it('twin: without the tenant, the same empty scope holds nothing and writes nothing', () => {
     const { sql } = fresh();
-    expect(move(sql, 'off')).toEqual({ held: false, changed: false, permissions: [] });
+    expect(move(sql, 'off')).toEqual({ held: false, changed: false, permissions: [], deniesTenantGrants: true });
     expect(systemSwitchedOff(sql, M)).toBe(false);
   });
 
