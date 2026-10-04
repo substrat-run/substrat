@@ -7837,7 +7837,7 @@ export class CloudflareScopeHost implements ScopeHost {
             `identity pool '${parsed.provider}' is bound to tenant ${pool.tenant_id} and cannot link into ${parsed.tenantId}`,
           );
         }
-        const changed = await this.cp.linkIdentity(
+        const changed = await this.directory('linkIdentity',
           parsed.provider,
           parsed.externalId,
           parsed.principal,

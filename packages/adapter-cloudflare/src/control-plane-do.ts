@@ -1280,6 +1280,7 @@ export const REPLIED_METHODS = [
   'provisionScope',
   'createOrg',
   'registerIdentityPool',
+  'linkIdentity',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -3906,7 +3907,7 @@ export class ControlPlaneDO extends DurableObject {
       .toArray()[0] as unknown as { principal_id: string } | undefined;
     if (existing) {
       if (existing.principal_id === principal) return false;
-      throw new Error(
+      throw substratError('conflict',
         `identity ${provider}:${externalId} in tenant ${tenantId} is already bound to ${existing.principal_id}`,
       );
     }

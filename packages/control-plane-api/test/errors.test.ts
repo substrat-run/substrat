@@ -316,6 +316,7 @@ const WAS_500: readonly [sentence: string, status: number, code: ErrorCode][] = 
   ['module not registered on this host: @acme/none', 404, 'not_found'],
   ['scope not migratable (status: archived): 01S', 409, 'conflict'],
   ['scope 01S is reaped — its storage is gone and cannot be read', 409, 'conflict'],
+  ['identity oidc:x:u1 in tenant 01T is already bound to 01P', 409, 'conflict'],
 ];
 
 describe('mapError — refusals that used to answer the generic 500 (#113)', () => {

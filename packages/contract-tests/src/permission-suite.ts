@@ -1639,7 +1639,7 @@ export function permissionContractSuite(
       // ...but a genuine collision must not be swallowed. The old INSERT OR IGNORE
       // silently dropped it and left the second person resolving as the first,
       // without even an audit row to show it happened.
-      await expect(link(impostor)).rejects.toThrow(/already bound/);
+      await expectRefusal(link(impostor), 'conflict', /already bound/);
       expect((await host.admin.resolveIdentity(t1, 'oidc:collide', 'collide'))?.principal).toBe(
         first,
       );

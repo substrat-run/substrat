@@ -9961,7 +9961,7 @@ export class SqliteScopeHost implements ScopeHost {
           | undefined;
         if (existing) {
           if (existing.principal_id === parsed.principal) return; // idempotent, unaudited
-          throw new Error(
+          throw substratError('conflict',
             `identity ${parsed.provider}:${parsed.externalId} in tenant ${parsed.tenantId} ` +
               `is already bound to ${existing.principal_id}`,
           );
