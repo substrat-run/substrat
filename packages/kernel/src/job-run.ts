@@ -391,9 +391,9 @@ export interface JobDriveReport {
   /** Runs whose step exhausted its retries this call. Terminal: `failed`, with the error on the record. */
   failed: number;
   /**
-   * Runs whose pass the system door told to wait (`SYSTEM_DOOR_WAIT`, #1834): the run was left
-   * exactly as it was, with no attempt counted, and is due again on the next call — as a switched-off
-   * schedule is `skipped` without its cadence moving.
+   * Runs whose pass the host's system door told to wait (#1834): no attempt was counted and no error
+   * recorded, as a switched-off schedule is `skipped` without its cadence moving. The run is due
+   * again after `JOB_DEFER_MS`, so a run that keeps waiting never takes the turn of one behind it.
    */
   deferred: number;
   /** Per-run failures, the same shape `ScheduleRunReport.errors` has: what failed and why. */
@@ -516,16 +516,18 @@ export const JOB_STEP_REUSED = 'job_step_reused';
 /**
  * #1834: the reason a host's system door gives a refusal that means "not now", never "no": the
  * module is held off on this scope until its switch is applied again, or the scope kept restarting
- * under the door. Either way nothing ran through the door. The job driver DEFERS a pass refused
- * this way: no step attempt is recorded and the run is not patched, so waiting out a hold or a
- * deploy never spends a run's retry budget, and the run is due again on the next drive.
+ * under the door. It is for a caller READING the refusal. It decides nothing: anyone can throw an
+ * error with this reason, so the job driver never defers on it (`deferral` below is how a host
+ * says which refusals are its own).
  */
 export const SYSTEM_DOOR_WAIT = 'system_door_wait';
 
-/** Is this the system door's "not now" (`SYSTEM_DOOR_WAIT`), read by shape so it survives a copy of the package? */
-export function isSystemDoorWait(err: unknown): boolean {
-  return (err as { extensions?: { reason?: unknown } } | null)?.extensions?.reason === SYSTEM_DOOR_WAIT;
-}
+/**
+ * #1834: how long a deferred run waits before it is due again. Not an attempt: nothing counts and
+ * there is no backoff. It only stops a waiting run from heading the due order on every drive, where
+ * it would take the turn of a run behind it that could make progress.
+ */
+export const JOB_DEFER_MS = 60_000;
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -732,7 +734,7 @@ export interface JobPassOutcome {
   status: 'advanced' | 'completed' | 'retrying' | 'failed' | 'deferred';
   /**
    * The error left on the record. Present exactly on `retrying` and `failed`, and on `deferred`,
-   * where it is the door's refusal and NOT on the record: a deferred pass writes nothing.
+   * where it is the door's refusal and NOT on the record: a deferred pass records no error.
    */
   error?: string;
 }
@@ -763,8 +765,16 @@ export async function runJobPass(options: {
   now: () => string;
   /** Opens the system door for this run's module. Called at most once per pass. */
   openScope: () => Promise<ScopeStub>;
+  /**
+   * #1834: is this thrown value the host's own system door saying "not now"? The HOST answers, by
+   * the identity of what its door threw, never by an error's shape: a step or an operation can throw
+   * any public shape, and a pass that could defer itself would wait forever without spending a retry.
+   * Absent: nothing defers.
+   */
+  deferral?: (err: unknown) => boolean;
 }): Promise<JobPassOutcome> {
   const { store, run, handler, now, openScope } = options;
+  const deferred = (err: unknown): boolean => options.deferral?.(err) === true;
   const jobPolicy = resolveRetryPolicy(options.retry);
   const usedThisPass = new Set<string>();
   let scope: Promise<ScopeStub> | null = null;
@@ -836,7 +846,7 @@ export async function runJobPass(options: {
           value = await fn();
         } catch (err) {
           // #1834: the door's "not now" is not this step's failure, so it is not one of its attempts.
-          if (isSystemDoorWait(err)) throw err;
+          if (deferred(err)) throw err;
           const cause = message(err);
           await store.recordStep(run.id, name, null, attempts, cause, now());
           throw new JobStepFailure(name, attempts, policy, cause);
@@ -892,9 +902,22 @@ export async function runJobPass(options: {
     });
     return { status: done ? 'completed' : 'advanced' };
   } catch (err) {
-    // #1834: the system door said wait. Nothing ran through it, so the run is left exactly as the
-    // last commit wrote it: no attempt counted, no backoff, due again on the next drive.
-    if (isSystemDoorWait(err)) return { status: 'deferred', error: message(err) };
+    // #1834: the host's system door said wait, so the call did not run. The run keeps what the last
+    // commit wrote (its attempts and its last error included); only when it is next due moves.
+    if (deferred(err)) {
+      const at = now();
+      await store.patch(run.id, {
+        status: 'running',
+        cursor: run.cursor,
+        counters: run.counters,
+        attempts: run.attempts,
+        lastError: run.last_error,
+        updatedAt: at,
+        nextAttemptAt: new Date(Date.parse(at) + JOB_DEFER_MS).toISOString(),
+        endedAt: null,
+      });
+      return { status: 'deferred', error: message(err) };
+    }
     const stepFailure = err instanceof JobStepFailure ? err : null;
     const policy = stepFailure?.policy ?? jobPolicy;
     // The RUN's attempts counts consecutive failed passes — what an operator reads as
@@ -949,6 +972,8 @@ export async function runDueJobRuns(options: {
   handlerFor: (run: JobRunRow) => { handler: JobHandler; retry?: ExecutorRetryPolicy } | undefined;
   now: () => string;
   openScope: (run: JobRunRow) => Promise<ScopeStub>;
+  /** #1834: the host's own system-door refusals, by identity (`runJobPass`). */
+  deferral?: (err: unknown) => boolean;
   maxPasses?: number;
   limit?: number;
 }): Promise<JobDriveReport> {
@@ -997,6 +1022,7 @@ export async function runDueJobRuns(options: {
         retry: registered.retry,
         now: options.now,
         openScope: () => options.openScope(run),
+        deferral: options.deferral,
       });
       if (outcome.status === 'completed') {
         report.completed += 1;

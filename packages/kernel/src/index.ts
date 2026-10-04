@@ -542,7 +542,7 @@ export {
   jobRunListLimit,
   JOB_STEP_REUSED,
   SYSTEM_DOOR_WAIT,
-  isSystemDoorWait,
+  JOB_DEFER_MS,
   assertQueueSafe,
   jobRunOf,
   runDueJobRuns,

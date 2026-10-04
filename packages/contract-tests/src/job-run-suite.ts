@@ -62,8 +62,6 @@ export function jobRunContractSuite(
      * The step after which the next pass "is evicted" — set by a test, consumed once.
      */
     let evictAfter: string | null = null;
-    /** #1834: how many more times the `waits` job meets the system door's 'not now'. */
-    let doorWaits = 0;
 
     /** Passes that have entered the walk handler — the replay counter. */
     let passes = 0;
@@ -234,22 +232,14 @@ export function jobRunContractSuite(
         { maxAttempts: 2, baseDelayMs: 0 },
       );
 
-      // #1834: a job whose second call meets the system door's "not now" while `doorWaits` lasts —
-      // the refusal a held module or a restarting scope gets — or, with `plain`, the same refusal
-      // without the reason, which is an ordinary failure. The first call's step commits either way.
+      // #1834: a job whose step throws the system door's PUBLIC "not now" shape itself. A host's
+      // door refusal defers a pass; this is not one, whatever it looks like, and must count.
       host.registerJob(
         JOBS_MODULE,
-        'waits',
+        'mimic',
         async (pass: JobPassContext) => {
-          const { plain } = pass.payload as { plain?: boolean };
-          const scope = await pass.scope();
-          await pass.step('before', () => scope.invoke('jobs/record', { item: 'before' }));
-          await pass.step('after', async () => {
-            if (doorWaits > 0) {
-              doorWaits -= 1;
-              throw substratError('forbidden', 'the system door says not now', plain ? {} : { reason: SYSTEM_DOOR_WAIT });
-            }
-            return scope.invoke('jobs/record', { item: 'after' });
+          await pass.step('mimic', () => {
+            throw substratError('forbidden', 'the system door says not now', { reason: SYSTEM_DOOR_WAIT });
           });
           return { done: true };
         },
@@ -264,30 +254,12 @@ export function jobRunContractSuite(
       await fixture.cleanup();
     });
 
-    it('a pass the system door tells to wait is deferred: no attempt counted, however long the wait (#1834)', async () => {
+    it("a step throwing the system door's public reason is an ordinary failure: only a host's own door refusal defers (#1834)", async () => {
       const s = await newScope();
-      const run = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'waits', instance: 'wait', payload: {} });
-      // Longer than the job's whole budget (2 attempts): a counted refusal would have failed it by now.
-      doorWaits = 5;
-      for (let i = 0; i < 5; i += 1) {
-        expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, deferred: 1, retrying: 0, failed: 0, errors: [] });
-        // Untouched: the run reads as the start left it, with no error and no attempt on it.
-        expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 0, lastError: null, nextAttemptAt: null });
-      }
-      // The wait is over: the same run completes, and the step committed before the wait ran once.
-      expect(await host.runDueJobs(t, s)).toMatchObject({ completed: 1, deferred: 0 });
-      expect(await runOf(s, run.id)).toMatchObject({ status: 'done' });
-      expect(await items(s)).toEqual(['before', 'after']);
-    });
-
-    it('twin: the same refusal without the reason is an ordinary failure, and spends the budget (#1834)', async () => {
-      const s = await newScope();
-      const run = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'waits', instance: 'plain', payload: { plain: true } });
-      doorWaits = 5;
+      const run = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'mimic', instance: 'mimic', payload: {} });
       expect(await host.runDueJobs(t, s)).toMatchObject({ retrying: 1, deferred: 0 });
       expect(await host.runDueJobs(t, s)).toMatchObject({ failed: 1, deferred: 0 });
       expect(await runOf(s, run.id)).toMatchObject({ status: 'failed', lastError: expect.stringMatching(/not now/) });
-      doorWaits = 0;
     });
 
     it('keeps a declared subject when coalescing and refuses a different subject', async () => {

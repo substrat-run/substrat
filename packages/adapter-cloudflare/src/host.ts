@@ -1,6 +1,6 @@
 import { env as ambientEnv } from 'cloudflare:workers';
 import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
-import { isSystemDoorMoved, SYSTEM_DOOR_REGATES } from './system-door.js';
+import { isSystemDoorMoved, SYSTEM_DOOR_MOVED, SYSTEM_DOOR_REGATES, type SystemDoorMoved } from './system-door.js';
 import {
   delegatedReadParams,
   fromWireFailure,
@@ -1095,6 +1095,11 @@ interface ScopeStubRpc {
     vertical?: { honoured: boolean };
     /** #1834: present iff the DO understood `systemDoorInstance`, on the same reasoning. */
     systemDoor?: { honoured: boolean };
+    /**
+     * #1834: the pin missed — this instance is not the one the door's gate read — so nothing ran.
+     * Set only by the DO's pin check, never from an operation's failure: a handler cannot reach it.
+     */
+    systemDoorMoved?: true;
     /** #1705 PR 2: exported-type rows the commit added; absent means none (or an older DO). */
     exported?: number;
     /**
@@ -1296,9 +1301,9 @@ interface ScopeStubRpc {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    /** #1834: the instance the system door's gate read; refused on any other. */
+    /** #1834: the instance the system door's gate read; on any other it answers `SystemDoorMoved`. */
     systemDoorInstance?: string,
-  ): Promise<AttachmentRecord | null>;
+  ): Promise<AttachmentRecord | null | SystemDoorMoved>;
   attachmentRemove(
     attachmentId: string,
     principal: PrincipalId,
@@ -2025,7 +2030,8 @@ interface SystemDoorGate {
 /** #1834: an opened system door. `through` runs one call gated and pinned (`openSystemDoor`). */
 interface SystemDoor {
   moduleId: ModuleId;
-  through<T>(call: (instance: string) => Promise<T>): Promise<T>;
+  /** `call` answers the DO's `SystemDoorMoved` when the pin missed; anything else is its answer. */
+  through<T>(call: (instance: string) => Promise<T | SystemDoorMoved>): Promise<T>;
 }
 
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
@@ -2572,6 +2578,8 @@ export class CloudflareScopeHost implements ScopeHost {
         isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
       now: () => new Date().toISOString(),
       openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
+      // #1834: only this host's own door refusals defer a pass, recognised by identity.
+      deferral: (err) => typeof err === 'object' && err !== null && this.doorWaits.has(err),
       maxPasses: options?.maxPasses,
       limit: options?.limit,
     });
@@ -3489,7 +3497,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const stub = this.scopeStub(scopeId);
     return {
       open: async (attachmentId) => {
-        const record = await door.through((instance) =>
+        const record = await door.through<AttachmentRecord | null>((instance) =>
           stub.systemAttachmentAuthorize(attachmentId, moduleId, tenantId, scopeId, instance),
         );
         return record ? this.openAttachmentBytes(store, scopeId, record) : null;
@@ -4036,35 +4044,49 @@ export class CloudflareScopeHost implements ScopeHost {
     let gate = gated ?? (await regate());
     return {
       moduleId,
-      through: async <T>(call: (instance: string) => Promise<T>): Promise<T> => {
+      through: async <T>(call: (instance: string) => Promise<T | SystemDoorMoved>): Promise<T> => {
         for (let regates = 0; ; regates += 1) {
           if (gate.held) {
-            // `SYSTEM_DOOR_WAIT`: the hold ends when the switch is applied again, so a job run
-            // waits it out without spending its retries (the kernel driver defers the pass).
-            throw substratError(
-              'forbidden',
-              `module '${moduleId}' is held off on this scope: it was rewound to before its schedule ` +
-                'switch was turned off, and it stays off until the switch is applied again',
-              { reason: SYSTEM_DOOR_WAIT },
+            // The hold ends when the switch is applied again: a job run waits it out without
+            // spending its retries, because the driver defers on THIS refusal (`doorWait`).
+            throw this.doorWait(
+              substratError(
+                'forbidden',
+                `module '${moduleId}' is held off on this scope: it was rewound to before its schedule ` +
+                  'switch was turned off, and it stays off until the switch is applied again',
+                { reason: SYSTEM_DOOR_WAIT },
+              ),
             );
           }
-          try {
-            return await call(gate.instance);
-          } catch (err) {
-            if (!isSystemDoorMoved(err)) throw err;
-            if (regates >= SYSTEM_DOOR_REGATES) {
-              throw substratError(
+          const answer = await call(gate.instance);
+          if (!isSystemDoorMoved(answer)) return answer;
+          if (regates >= SYSTEM_DOOR_REGATES) {
+            throw this.doorWait(
+              substratError(
                 'unavailable',
                 `the scope kept restarting under the system door of module '${moduleId}' ` +
                   `(${regates + 1} attempts); nothing ran. Retry later`,
                 { reason: SYSTEM_DOOR_WAIT },
-              );
-            }
-            gate = await regate();
+              ),
+            );
           }
+          gate = await regate();
         }
       },
     };
+  }
+
+  /**
+   * #1834: the refusals this host's system door threw that mean "not now" (a hold, a scope that
+   * kept restarting), by identity. The job driver defers a pass only on one of these, never on an
+   * error's shape, which any step or operation could copy. Held weakly: an error nobody holds goes.
+   */
+  private readonly doorWaits = new WeakSet<object>();
+
+  /** #1834: mark one of this door's own refusals as "not now", and hand it back to throw. */
+  private doorWait(err: Error): Error {
+    this.doorWaits.add(err);
+    return err;
   }
 
   /**
@@ -4631,9 +4653,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const envelope = systemDoor
           ? await systemDoor.through(async (instance) => {
               const sent = await send(instance);
-              const moved = sent.failure && fromWireFailure(sent.failure);
-              if (moved && isSystemDoorMoved(moved)) throw moved;
-              return sent;
+              return sent.systemDoorMoved === true ? SYSTEM_DOOR_MOVED : sent;
             })
           : await send();
         // The operation failed and the DO handed the error back as DATA — so it still

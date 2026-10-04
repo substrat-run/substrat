@@ -1,20 +1,25 @@
 /**
- * #1834: the prefix a scope DO's refusal carries when a system-door call lands on an instance
- * other than the one the door's gate read. A PITR restore always restarts the scope's object, so
- * a call refused this way may be meeting rewound storage the gate never saw. The DO refuses before
- * anything opens, so the call can be gated again and retried. The host tells this refusal apart
- * by its prefix, because an error crossing an RPC boundary keeps its message and little else.
+ * #1834: what the scope DO answers, INSTEAD of running anything, when a system-door call lands on an
+ * instance other than the one the door's gate read. A PITR restore always restarts the scope's
+ * object, so such a call may be meeting rewound storage the gate never saw; the door gates again
+ * and retries. It is an answer, not an error: only the DO's pin check produces it, and nothing an
+ * operation throws can look like it, because an operation's failure travels as `failure`.
  */
-export const SYSTEM_DOOR_MOVED = 'system door moved: ';
+export interface SystemDoorMoved {
+  readonly systemDoorMoved: true;
+}
 
-/** Is this the DO's refusal of a system-door call that landed on another instance? */
-export function isSystemDoorMoved(err: unknown): boolean {
-  return err instanceof Error && err.message.startsWith(SYSTEM_DOOR_MOVED);
+/** The one value of `SystemDoorMoved`. */
+export const SYSTEM_DOOR_MOVED: SystemDoorMoved = { systemDoorMoved: true };
+
+/** Is this answer the DO's "the pin missed", rather than the call's own answer? */
+export function isSystemDoorMoved(answer: unknown): answer is SystemDoorMoved {
+  return typeof answer === 'object' && answer !== null && (answer as { systemDoorMoved?: unknown }).systemDoorMoved === true;
 }
 
 /**
- * #1834: how many times a system-door call is gated again after the DO refused it as moved. Each
- * refusal means the scope's object restarted between the gate and the call. A restart is rare, so
- * a call still moving after this many is refused (`unavailable`) rather than retried without end.
+ * #1834: how many times a system-door call is gated again after the DO answered moved. Each such
+ * answer means the scope's object restarted between the gate and the call. A restart is rare, so a
+ * call still moving after this many is refused (`unavailable`) rather than retried without end.
  */
 export const SYSTEM_DOOR_REGATES = 3;

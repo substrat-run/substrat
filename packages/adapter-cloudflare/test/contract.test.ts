@@ -22,7 +22,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -2333,8 +2333,15 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
       },
       { maxAttempts: 3, baseDelayMs: 0 },
     );
+    // A run that never opens the door: on a held scope it has nothing to wait for.
+    h.registerJob(SCHED, 'idle', () => ({ done: true }));
     return h;
   };
+  /** The deferral's wait, skipped: every running run on the scope is due now. */
+  const dueNow = (s: ScopeId) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
+      state.storage.sql.exec(`UPDATE _substrat_job_runs SET next_attempt_at = NULL WHERE status = 'running'`);
+    });
   /** The ticks the scope's storage holds: what actually ran through the door. */
   const ticksIn = async (s: ScopeId) =>
     (await host.exportScopeLocal(s)).find((table) => table.name === 'sched_ticks')?.rows.length ?? 0;
@@ -2346,23 +2353,45 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const s = await rewoundPastTheSwitch(true, async (sc) => (runId = (await startTick(sc)).id));
     expect(await heldOn(s)).toEqual([SCHED]);
     // Before any reconcile: the pass reaches the door, the door says wait, and nothing ticks. The
-    // pass is DEFERRED, as a held schedule is skipped: the run is left as it was, with no attempt
-    // spent — so drives past the job's whole budget (3) still leave it running and unmarked.
+    // pass is DEFERRED, as a held schedule is skipped: no attempt is spent and no error recorded,
+    // so drives past the job's whole budget (3) still leave it running. Each deferral makes the run
+    // due again only after `JOB_DEFER_MS`, which `dueNow` skips here.
     for (let i = 0; i < 4; i += 1) {
+      const before = Date.now();
       expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({
         attempted: 1, deferred: 1, completed: 0, advanced: 0, failed: 0, retrying: 0, errors: [],
       });
+      const waiting = await runOf(s, runId);
+      expect(waiting).toMatchObject({ status: 'running', attempts: 0, lastError: null });
+      expect(Date.parse(waiting!.nextAttemptAt!)).toBeGreaterThanOrEqual(before + JOB_DEFER_MS);
+      expect((await jobDeployment().runDueJobs(t, s)).attempted).toBe(0); // not due until then
+      await dueNow(s);
     }
-    expect(await runOf(s, runId)).toMatchObject({ status: 'running', attempts: 0, lastError: null });
     expect(await ticksIn(s)).toBe(0);
     // The schedules, unchanged: skipped on the same hold.
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
 
     // ON is the operator's newer word: the hold goes, and the same run's next pass ticks and completes.
     await host.systemSwitchLocal(s, SCHED, 'on');
+    await dueNow(s);
     expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({ completed: 1, errors: [] });
     expect(await runOf(s, runId)).toMatchObject({ status: 'done' });
     expect(await ticksIn(s)).toBe(1);
+  });
+
+  /**
+   * #1834 review: a waiting run must not take the turn of one behind it. The due order is by id, so
+   * an older held run would head every drive; its deferral makes it ineligible for `JOB_DEFER_MS`.
+   */
+  it('#1834: an older held run does not starve a later run, even one run per drive', async () => {
+    let heldId = '';
+    const s = await rewoundPastTheSwitch(true, async (sc) => (heldId = (await startTick(sc)).id));
+    const later = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance: 'later', payload: {} });
+    expect(later.id > heldId).toBe(true); // the held run is first in the due order
+    expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, deferred: 1 });
+    expect(await jobDeployment().runDueJobs(t, s, { limit: 1 })).toMatchObject({ attempted: 1, completed: 1 });
+    expect(await runOf(s, later.id)).toMatchObject({ status: 'done' });
+    expect(await runOf(s, heldId)).toMatchObject({ status: 'running', attempts: 0 });
   });
 
   it('#1834 twin: nothing recorded off — the rewound job run passes the door and completes', async () => {
@@ -2471,6 +2500,25 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect((await asModule(instance)).failure).toBeUndefined();
     expect(await raw.systemAttachmentAuthorize('no-such-attachment', SCHED, t, s, instance)).toBeNull();
     expect(await ticksIn(s)).toBe(1);
+  });
+
+  /**
+   * #1834 review: "moved" is an answer only the DO's pin check gives, never read from an error's
+   * text. An operation failing with the very words of the old refusal reaches its caller as itself,
+   * after ONE invocation: no re-gate, no re-invoke, no `unavailable` in its place.
+   */
+  it("#1834: an operation's error that reads like a moved pin is its own failure, after one invocation", async () => {
+    const s = await newScope();
+    const counting = countingScopes(env.SCOPE);
+    const door = await deployment(counting.ns).getSystemScope(SCHED, t, s);
+    const gatesBefore = counting.doorStateReads;
+    counting.invokes = 0;
+    const text = "system door moved: the scope restarted after the system door's gate read it; gate it again";
+    const refused = await door.invoke('sched/fail', { message: text }).then(() => null, (err: unknown) => err);
+    expect(String(refused)).toContain(text);
+    expect(errorCodeOf(refused)).not.toBe('unavailable');
+    expect(counting.invokes).toBe(1);
+    expect(counting.doorStateReads).toBe(gatesBefore); // never gated again
   });
 
   it("the hold is this scope's only: another scope's module still fires while it holds", async () => {
@@ -3231,6 +3279,9 @@ function countingScopes(ns: DurableObjectNamespace) {
     movingInstance: false,
     /** #1834: how many system-door gates were read while `movingInstance` was set. */
     doorGates: 0,
+    /** #1834: every system-door state read, and every `invoke` sent to a scope. */
+    doorStateReads: 0,
+    invokes: 0,
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -3243,6 +3294,8 @@ function countingScopes(ns: DurableObjectNamespace) {
             ? undefined
             : async (...args: unknown[]) => {
                 counts.scopeCalls += 1;
+                if (prop === 'systemDoorState') counts.doorStateReads += 1;
+                if (prop === 'invoke') counts.invokes += 1;
                 const gate = counts.gateStateRead;
                 if (prop === 'systemDoorState' && gate && id.equals(ns.idFromName(gate.scopeId))) {
                   await gate.until;

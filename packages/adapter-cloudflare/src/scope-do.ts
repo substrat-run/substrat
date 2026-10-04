@@ -1,5 +1,5 @@
 import { REWIND_REFUSED } from './rewind-refusal.js';
-import { SYSTEM_DOOR_MOVED } from './system-door.js';
+import { SYSTEM_DOOR_MOVED, type SystemDoorMoved } from './system-door.js';
 import { DurableObject } from 'cloudflare:workers';
 import {
   ATTACHMENT_ADDED,
@@ -1030,6 +1030,13 @@ export function splitSqlStatements(sql: string): string[] {
   if (cur.trim()) out.push(cur.trim());
   return out;
 }
+
+/**
+ * #1834: the pin missed. Thrown only by `assertSystemDoor`, and module-private, so no operation can
+ * throw one: the two RPCs a door call reaches turn it into the `SystemDoorMoved` ANSWER, by class
+ * identity, and an operation's own error, whatever its text, stays a failure.
+ */
+class SystemDoorMovedError extends Error {}
 
 /** #1834: the brand only `assertSystemDoor` sets, so nothing else can make a `SystemDoorPass`. */
 const SYSTEM_DOOR_PASSED: unique symbol = Symbol('system door passed');
@@ -2222,9 +2229,9 @@ export function defineScopeDO(
       verticalCaller?: VerticalCaller,
       /**
        * #1834: set on a system-door call — the instance whose state read the door's gate
-       * consulted the rewind hold against. Refused (`SYSTEM_DOOR_MOVED`) on any other instance,
-       * because a PITR restore always restarts this object, so another instance may be rewound
-       * storage the gate never saw. The reply carries `systemDoor.honoured`.
+       * consulted the rewind hold against. On any other instance nothing runs and the answer is
+       * `systemDoorMoved` instead, because a PITR restore always restarts this object, so another
+       * instance may be rewound storage the gate never saw. The reply carries `systemDoor.honoured`.
        */
       systemDoorInstance?: string,
     ): Promise<{
@@ -2240,6 +2247,8 @@ export function defineScopeDO(
       vertical?: { honoured: boolean };
       /** #1834: set iff this DO understood `systemDoorInstance`. */
       systemDoor?: { honoured: boolean };
+      /** #1834: the pin missed, so nothing ran — set only by `assertSystemDoor`, never by a failure. */
+      systemDoorMoved?: true;
       /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
       exported?: number;
       /**
@@ -2268,6 +2277,7 @@ export function defineScopeDO(
             systemDoorInstance,
           );
         } catch (err) {
+          if (err instanceof SystemDoorMovedError) return { result: undefined, platformRequests: 0, ...SYSTEM_DOOR_MOVED };
           throw toRpcError(err);
         }
       }
@@ -2288,6 +2298,8 @@ export function defineScopeDO(
           systemDoorInstance,
         );
       } catch (err) {
+        // #1834: the pin missed — an answer, never a failure an operation could have produced.
+        if (err instanceof SystemDoorMovedError) return { result: undefined, platformRequests: 0, ...SYSTEM_DOOR_MOVED };
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
         // coordinator. `toRpcError` is not applied — that exists to make a throw
         // survivable, and this is not a throw.
@@ -3217,12 +3229,13 @@ export function defineScopeDO(
       scopeId: ScopeId,
       /** #1834: the instance the system door's gate read; see `invoke`. */
       systemDoorInstance?: string,
-    ): Promise<AttachmentRecord | null> {
+    ): Promise<AttachmentRecord | null | SystemDoorMoved> {
       await this.ensureMigrations();
       let systemDoor: SystemDoorPass;
       try {
         systemDoor = this.assertSystemDoor(moduleId, systemDoorInstance)!;
       } catch (err) {
+        if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
         throw toRpcError(err);
       }
       if (!this.modules.has(moduleId)) {
@@ -3526,8 +3539,9 @@ export function defineScopeDO(
      * carry the instance the host's door gate read (refused without one: no door gated it), and
      * is refused on any other instance. A PITR restore always restarts this object, so a call
      * landing on a new instance may meet rewound storage whose module the gate never checked
-     * against the rewind hold. Both are refused before anything opens; the moved one carries
-     * `SYSTEM_DOOR_MOVED`, so the door gates again and retries. No module, no pass.
+     * against the rewind hold. Both are refused before anything opens; the moved one is the
+     * module-private `SystemDoorMovedError`, which the RPC answers as `SystemDoorMoved`, so the door
+     * gates again and retries. No module, no pass.
      */
     private assertSystemDoor(moduleId: string | undefined, expected: string | undefined): SystemDoorPass | undefined {
       if (moduleId === undefined) return undefined;
@@ -3535,8 +3549,8 @@ export function defineScopeDO(
       // than run unchecked. The one innocent caller is a worker a deploy behind, still running host
       // code from before the pin, during a rolling deploy. Its refusal is transient: the host and this
       // object ship in the same bundle, so the window lasts as long as the rollout. Nothing ran, and
-      // the reason is the door's "not now" (`SYSTEM_DOOR_WAIT`): a schedule fires on the next pass,
-      // and a job driver that knows the reason defers the pass without spending the run's retries.
+      // the reason says "not now" (`SYSTEM_DOOR_WAIT`) to whoever reads it: a schedule fires on the
+      // next pass, and a job run retries on its next drive.
       if (expected === undefined) {
         throw substratError(
           'forbidden',
@@ -3545,10 +3559,7 @@ export function defineScopeDO(
         );
       }
       if (expected !== this.instanceId) {
-        throw substratError(
-          'unavailable',
-          `${SYSTEM_DOOR_MOVED}the scope restarted after the system door's gate read it; gate it again`,
-        );
+        throw new SystemDoorMovedError("the scope restarted after the system door's gate read it; gate it again");
       }
       return { moduleId, [SYSTEM_DOOR_PASSED]: true };
     }
