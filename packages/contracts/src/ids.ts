@@ -6,6 +6,9 @@ import { z } from 'zod';
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
+/** The id grammar every branded id above parses with — for a check that needs no brand. */
+export const ULID_PATTERN = ULID;
+
 export const tenantId = z.string().regex(ULID).brand<'TenantId'>();
 export type TenantId = z.infer<typeof tenantId>;
 

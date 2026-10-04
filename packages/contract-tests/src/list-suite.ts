@@ -34,6 +34,8 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 import { listMod } from './modules.js';
 
 const PERM_USE = permissionKey.parse('list:use');
+/** A ULID that sorts just after the fixture's `01B` — a legacy cursor's id must be a ULID. */
+const AFTER_01B = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
 
 type Row = Record<string, unknown>;
 
@@ -180,9 +182,10 @@ export function listContractSuite(
       expect(got.entries.map((r) => r['number'])).toEqual(['1001', '1002', '1003', '1004', '1005', '1006']);
     });
 
-    it('names the walk in the cursor', async () => {
-      expect((await page({ limit: 2 })).nextCursor).toBe('asc.number.1002|01B');
-      expect((await page({ limit: 1, sort: 'id', order: 'desc' })).nextCursor).toBe('desc.id.01F');
+    it('hands back an opaque cursor that survives a query string untouched', async () => {
+      const { nextCursor } = await page({ limit: 2 });
+      expect(nextCursor).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(encodeURIComponent(nextCursor!)).toBe(nextCursor);
     });
 
     it('refuses a desc cursor replayed under asc, rather than re-serving rows already read', async () => {
@@ -204,15 +207,21 @@ export function listContractSuite(
      * flight across the deploy keeps going; anywhere else it would replay silently, so it
      * is refused — above all under a declared `desc` default it was never minted in.
      */
+    // The fixture's ids are short, and a legacy cursor is recognised only with a ULID id —
+    // this one sorts just after `01B`, so the walk resumes where `01B`'s cursor would have.
+    const LEGACY = `1002|${AFTER_01B}`;
+
     it('continues a pre-#2001 cursor in the ascending default walk it came from', async () => {
-      const got = await page({ limit: 2, cursor: '1002|01B' });
+      const got = await page({ limit: 2, cursor: LEGACY });
       expect(got.entries.map((r) => r['id'])).toEqual(['01C', '01D']);
     });
 
     it('refuses a pre-#2001 cursor anywhere but that default walk', async () => {
-      await expectRestart(stub.invoke('list/newest', { limit: 2, cursor: '1002|01B' }));
-      await expectRestart(page({ limit: 2, order: 'desc', cursor: '1002|01B' }));
-      await expectRestart(page({ limit: 2, sort: 'status', cursor: 'open|01B' }));
+      await expectRestart(stub.invoke('list/newest', { limit: 2, cursor: LEGACY }));
+      await expectRestart(page({ limit: 2, order: 'desc', cursor: LEGACY }));
+      await expectRestart(page({ limit: 2, sort: 'status', cursor: `open|${AFTER_01B}` }));
+      // Not the exact old shape — an id that is no ULID — so not a position at all.
+      await expectRestart(page({ limit: 2, cursor: '1002|01B' }));
     });
 
     it('filters by a declared column, and the filter survives the whole walk', async () => {
@@ -353,6 +362,38 @@ export function listContractSuite(
         kind: 'repair',
       })) as Page<Row>;
       expect(got.entries.map((r) => r['id'])).toContain('01Z');
+    });
+
+    /**
+     * Sort values a cursor has to carry intact (#2018 review): a pipe, dots and the
+     * readable tag syntax an earlier draft used, unicode, and nothing at all. Walked one
+     * row a page in both directions, so every one of them is a cursor at some point.
+     * Last in the suite, because these rows join the table every walk above reads.
+     */
+    describe('hostile sort values', () => {
+      const HOSTILE = ['', 'a.b.c', 'asc.number.a', 'desc.number.b', 'x|y', 'é😀'];
+      const ids = HOSTILE.map(() => ulid());
+      const hostile = { kind: 'hostile' };
+
+      beforeAll(async () => {
+        for (const [i, number] of HOSTILE.entries()) {
+          await stub.invoke('list/add', { id: ids[i], number, status: 'open', kind: 'hostile' });
+        }
+      });
+
+      it('walk one row a page, in both directions, without skipping or repeating', async () => {
+        expect(await walkAll({ filters: hostile }, 1)).toEqual(ids);
+        expect(await walkAll({ filters: hostile, order: 'desc' }, 1)).toEqual([...ids].reverse());
+      });
+
+      it('continue a pre-#2001 cursor with its whole value, tag syntax and pipes included', async () => {
+        const after = async (cursor: string) =>
+          (await page({ limit: 1, filters: hostile, cursor })).entries.map((r) => r['id']);
+        expect(await after(`asc.number.a|${ids[2]}`)).toEqual([ids[3]]);
+        expect(await after(`desc.number.b|${ids[3]}`)).toEqual([ids[4]]);
+        expect(await after(`x|y|${ids[4]}`)).toEqual([ids[5]]);
+        await expectRestart(page({ limit: 1, filters: hostile, order: 'desc', cursor: `desc.number.b|${ids[3]}` }));
+      });
     });
   });
 }

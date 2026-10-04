@@ -41,8 +41,12 @@
  * Where the sort column IS the id, the pair collapses and the cursor is the bare
  * value, unchanged from what shipped.
  */
-import { PAGE_CURSOR_RESTART, SubstratError } from '@substrat-run/contracts';
+import { PAGE_CURSOR_RESTART, SubstratError, ULID_PATTERN, z } from '@substrat-run/contracts';
+import { fromBase64url, toBase64url } from './base64url.js';
 import type { SqlMigration } from './scope-host.js';
+
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
+declare const TextDecoder: new (label: string, options: { fatal: boolean }) => { decode(input: Uint8Array): string };
 
 /**
  * One paged read's kernel-composed half, as the kernel needs it.
@@ -361,63 +365,107 @@ export class CursorMismatch extends SubstratError {
 }
 
 /**
- * `<order>.<sort>.<position>` — the walk a cursor belongs to, then where in it.
+ * The cursor `ctx.page` mints: base64url of `{ v: 1, order, sort, value, id? }` (K-44).
  *
- * The order is `asc`/`desc` and the sort column is a checked identifier, so
- * neither carries a `.` and the split is on the first two. The position is what
- * a cursor always was (`value|id`, or the bare id), so it still needs no
- * encoding, survives in a query string and reads by eye — the properties K-41
- * kept the walk out of the cursor for, which this keeps too (K-44).
+ * Opaque and versioned, and **distinct from a pre-#2001 cursor by construction**, not by
+ * a guess at what a sort value might look like. A legacy cursor is either `<value>|<id>`,
+ * which carries a `|` that base64url never emits, or a bare ULID, whose first character
+ * (a timestamp digit) can never decode to the `{` an envelope always starts with. A
+ * readable prefix such as `asc.name.` could not promise that: a row named `asc.name.foo`
+ * minted exactly that legacy cursor (#2018 review).
+ *
+ * `id` is present exactly when the walk sorts by something other than the id itself.
  */
-const CURSOR_WALK = new RegExp(
-  `^(?<order>asc|desc)\\.(?<sort>${IDENTIFIER.source.slice(1, -1)})\\.(?<position>[\\s\\S]*)$`,
-);
+const cursorEnvelope = z.strictObject({
+  v: z.literal(1),
+  order: z.enum(['asc', 'desc']),
+  sort: z.string().regex(IDENTIFIER),
+  value: z.string(),
+  id: z.string().optional(),
+});
 
-/** Build the cursor a row hands to the next page — tagged with the walk that minted it. */
+/** Build the cursor a row hands to the next page — the walk that minted it, and where. */
 export function cursorOf(
   row: Record<string, unknown>,
   sortColumn: string,
   idColumn: string,
   order: 'asc' | 'desc',
 ): string {
-  const value = String(row[sortColumn] ?? '');
-  const position = sortColumn === idColumn ? value : `${value}|${String(row[idColumn] ?? '')}`;
-  return `${order}.${sortColumn}.${position}`;
+  const envelope: z.infer<typeof cursorEnvelope> = {
+    v: 1,
+    order,
+    sort: sortColumn,
+    value: String(row[sortColumn] ?? ''),
+    ...(sortColumn === idColumn ? {} : { id: String(row[idColumn] ?? '') }),
+  };
+  return toBase64url(new TextEncoder().encode(JSON.stringify(envelope)));
+}
+
+/** The envelope a cursor decodes to, or `undefined` when it is not one — every field checked. */
+function envelopeOf(cursor: string): z.infer<typeof cursorEnvelope> | undefined {
+  const bytes = fromBase64url(cursor);
+  if (!bytes) return undefined;
+  try {
+    return cursorEnvelope.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A pre-#2001 cursor, recognised only by its exact old shape: `<value>|<id>` with the
+ * id a ULID, or — for a walk sorted by the id itself — the bare ULID. Split on the LAST
+ * `|`, which a ULID cannot contain, so a value that holds one still comes back whole.
+ */
+function legacyPositionOf(
+  cursor: string,
+  plan: ListIndexPlan,
+  sortColumn: string,
+): { value: string; id: string | undefined } | undefined {
+  if (sortColumn === plan.idColumn) return ULID_PATTERN.test(cursor) ? { value: cursor, id: undefined } : undefined;
+  const at = cursor.lastIndexOf('|');
+  if (at === -1) return undefined;
+  const id = cursor.slice(at + 1);
+  return ULID_PATTERN.test(id) ? { value: cursor.slice(0, at), id } : undefined;
 }
 
 /**
  * The position a cursor holds in THIS walk, or a refusal.
  *
- * A bare position is a cursor minted before #2001, and every one of those was
- * walked under the ONLY default there was: ascending, by the first declared sort.
- * So it is continued exactly there — an in-flight page walk survives the deploy —
- * and refused anywhere else, which is where it would silently replay: under a
- * newly honoured `desc` default above all. (A pre-#2001 walk a caller asked to
- * be `desc` loses one page at the boundary, and is told to restart rather than
- * handed the rows it had already read.)
+ * An envelope is continued only in the walk it names. A legacy cursor was minted under
+ * the ONLY default there was — ascending, by the first declared sort — so it is continued
+ * exactly there (an in-flight walk survives the deploy) and refused anywhere else, which
+ * is where it would replay silently: under a newly honoured `desc` default above all.
+ * Anything that is neither is refused too. Every refusal is the same `cursor_restart`.
  */
 function positionIn(
   cursor: string,
   plan: ListIndexPlan,
   sortColumn: string,
   order: 'asc' | 'desc',
-): string {
-  const walk = CURSOR_WALK.exec(cursor)?.groups;
-  if (!walk) {
-    if (order === 'asc' && sortColumn === plan.sortable[0]) return cursor;
-    throw new CursorMismatch(
-      `list: this cursor predates the walk it is replayed in ('${sortColumn}' ${order}) — ` +
-        'restart paging from the first page, without a cursor',
-    );
+): { value: string; id: string | undefined } {
+  const envelope = envelopeOf(cursor);
+  if (envelope) {
+    if (envelope.order !== order || envelope.sort !== sortColumn) {
+      throw new CursorMismatch(
+        `list: this cursor continues a walk by '${envelope.sort}' ${envelope.order}, and this request ` +
+          `asks for '${sortColumn}' ${order} — keep the sort and order the first page was read with, ` +
+          'or restart paging from the first page, without a cursor',
+      );
+    }
+    if ((envelope.id === undefined) !== (sortColumn === plan.idColumn)) {
+      throw new CursorMismatch('list: this cursor is malformed — restart paging from the first page, without a cursor');
+    }
+    return { value: envelope.value, id: envelope.id };
   }
-  if (walk['order'] !== order || walk['sort'] !== sortColumn) {
-    throw new CursorMismatch(
-      `list: this cursor continues a walk by '${walk['sort']}' ${walk['order']}, and this request ` +
-        `asks for '${sortColumn}' ${order} — keep the sort and order the first page was read with, ` +
-        'or restart paging from the first page, without a cursor',
-    );
-  }
-  return walk['position'] as string;
+  const legacy = legacyPositionOf(cursor, plan, sortColumn);
+  if (legacy && order === 'asc' && sortColumn === plan.sortable[0]) return legacy;
+  throw new CursorMismatch(
+    legacy
+      ? `list: this cursor predates the walk it is replayed in ('${sortColumn}' ${order}) — ` +
+          'restart paging from the first page, without a cursor'
+      : 'list: this cursor was not minted by this list — restart paging from the first page, without a cursor',
+  );
 }
 
 /**
@@ -485,8 +533,8 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
 
   const cmp = order === 'asc' ? '>' : '<';
   if (params.cursor !== undefined && params.cursor !== '') {
-    const { value, id } = splitCursor(positionIn(params.cursor, plan, sortColumn, order));
-    if (sortColumn === plan.idColumn || id === undefined) {
+    const { value, id } = positionIn(params.cursor, plan, sortColumn, order);
+    if (id === undefined) {
       where.push(`${sortColumn} ${cmp} ?`);
       args.push(value);
     } else {
