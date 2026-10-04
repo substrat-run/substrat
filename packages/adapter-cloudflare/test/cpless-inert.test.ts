@@ -734,7 +734,9 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
 
       const leak = scopeId.parse(ulid());
       expect(isPairRefusal(await outcome(hostFor().snapshotScopeLocal(source, leak, u)), u, source)).toBe(true);
-      expect(await sql(leak, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_substrat_outbox'`)).toEqual([]);
+      // Nothing was copied: the would-be fork holds none of the source's roles, and no receipt.
+      expect(await sql(leak, 'SELECT tenant_id FROM _substrat_roles')).toEqual([]);
+      expect(await receiptOf(leak)).toBeNull();
     });
 
     it('an older platform\'s snapshot (no tenant) leaves the fork judged by its copied role rows', async () => {

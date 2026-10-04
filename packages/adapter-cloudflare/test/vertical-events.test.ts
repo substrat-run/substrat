@@ -1005,14 +1005,15 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
     const dump = await crm.hostFor().exportScopeLocal(s);
     expect(JSON.stringify(dump)).toContain('provisioned_for');
     await crm.hostFor().restoreScopeLocal(s, dump);
-    // The import drops the dump's receipt; the repair the route always runs puts it back.
-    expect(await receiptOf(s)).toBeNull();
+    // #2016: the import keeps the store's own receipt across the load, so there is no window
+    // without one before the repair the route always runs.
+    expect(await receiptOf(s)).toBe(t);
     await crm.hostFor().projectRolesLocal(t, s, [CRM_OWNER]);
     expect(await receiptOf(s)).toBe(t);
     await expect(serves(t, s)).resolves.toHaveProperty('cursors');
   });
 
-  it('a dump from another tenant\'s scope carries no receipt over: the repair writes this tenant\'s', async () => {
+  it('a dump from another tenant\'s scope carries no receipt over: the store keeps this tenant\'s', async () => {
     const a = tenantId.parse(ulid());
     const b = tenantId.parse(ulid());
     const from = scopeId.parse(ulid());
@@ -1021,8 +1022,8 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
     await crm.provision(b, into);
     const dump = await crm.hostFor().exportScopeLocal(from);
     await crm.hostFor().restoreScopeLocal(into, dump);
-    // After the import alone, the wrong receipt is not there to be believed.
-    expect(await receiptOf(into)).toBeNull();
+    // After the import alone, the dump's receipt is not there to be believed: the store's own is.
+    expect(await receiptOf(into)).toBe(b);
     await crm.hostFor().projectRolesLocal(b, into, [CRM_OWNER]);
     expect(await receiptOf(into)).toBe(b);
     await expect(serves(b, into)).resolves.toHaveProperty('cursors');

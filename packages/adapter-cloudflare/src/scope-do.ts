@@ -1559,12 +1559,12 @@ export function defineScopeDO(
      * pair check), and a stray role row can no longer make a scope serve a tenant it was never
      * provisioned for.
      *
-     * A scope with NO receipt was provisioned before it existed, or has just been restored (a
-     * dump's receipt is dropped on import: it describes the scope the dump came from). Only
-     * then is the old inference used: `provisionScopeLocal` projected role definitions under
-     * the tenant, so a `_substrat_roles` row for it says the same thing. The next projection
-     * (reconcile, or the restore's repair) writes the receipt, after which the inference is
-     * never consulted again.
+     * A scope with NO receipt was provisioned before it existed (a load never brings the dump's:
+     * it describes the scope the dump came from, and the store keeps its own, #2016). Only then
+     * is the old inference used: `provisionScopeLocal` projected role definitions under the
+     * tenant, so a `_substrat_roles` row for it says the same thing. The next projection
+     * (reconcile, or the restore's repair) or lifecycle delivery writes the receipt, after which
+     * the inference is never consulted again.
      *
      * Read without migrating, so asking about a foreign scope leaves its DO as empty as it found it.
      */
