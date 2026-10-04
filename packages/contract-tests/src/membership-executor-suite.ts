@@ -181,6 +181,26 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       expect(await memberOf(w, joe)).toBe(0);
     });
 
+    it('refuses an invite into an org that grants more than the inviter holds — joining confers the org too', async () => {
+      // The org grants invitefix:b at the tenant; bob holds only invitefix:a. The role he
+      // invites at is within his reach, the org it joins is not.
+      const strong = orgId.parse(ulid());
+      await w.host.admin.createOrg(staff, { id: strong, tenantId: w.t, slug: `strong-${strong.slice(-6).toLowerCase()}`, name: 'Strong' });
+      await w.host.admin.grantToOrg(staff, strong, INVITEFIX_B, { tenantId: w.t, scopeId: null });
+      const joe = principalId.parse(ulid());
+      const outcomes = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.bob, 'member', strong));
+      expect(outcomes.map((o) => o.outcome)).toEqual(['refused']);
+      expect(outcomes[0]!.error).toMatch(/inviter .* no longer holds invitefix:b/);
+      expect(await holds(w, joe, INVITEFIX_B)).toBe(false);
+      expect(await memberOf(w, joe, strong)).toBe(0);
+
+      // Twin: an inviter who holds what the org grants may bring someone into it.
+      const ann = principalId.parse(ulid());
+      const twin = await asJoiner(w, ann, 'invitefix/accept', await send(w, w.alice, 'member', strong));
+      expect(twin.map((o) => o.outcome)).toEqual(['delivered']);
+      expect(await holds(w, ann, INVITEFIX_B)).toBe(true);
+    });
+
     it('refuses an invite whose sender was demoted between send and accept', async () => {
       const carol = principalId.parse(ulid());
       await w.host.admin.assignRole(staff, { principalId: carol, roleKey: 'lead', node: { tenantId: w.t, scopeId: null } });

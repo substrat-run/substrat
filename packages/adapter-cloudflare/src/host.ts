@@ -1168,7 +1168,7 @@ interface ScopeStubRpc {
     permissions: PermissionKey[],
   ): Promise<PeerCoverage[]>;
   /** `ctx.canAssign`'s bound for a named principal (#1931); `null` for a role the tenant lacks. */
-  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string, atTenant?: boolean): Promise<Coverage | null>;
+  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string, atTenant?: boolean, orgId?: string): Promise<Coverage | null>;
   assignScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage | null>;
@@ -2390,8 +2390,8 @@ export class CloudflareScopeHost implements ScopeHost {
     return {
       history: async (entity, page) =>
         stub.entityHistory({ entityType: entity.entityType, entityId: entity.entityId, limit: page?.limit, cursor: page?.cursor }),
-      covers: async (principal, roleKey, level) => {
-        const bound = await stub.canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey, level === 'tenant');
+      covers: async (principal, { roleKey, orgId }, level) => {
+        const bound = await stub.canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey, level === 'tenant', orgId);
         if (!bound) throw unknownRoleError(roleKey);
         return coverage.parse(bound);
       },

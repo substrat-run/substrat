@@ -169,19 +169,24 @@ function requestOf<T extends { tenantId: string }>(
   return { request: parsed.data };
 }
 
-/** §5.1's bound for `who` over `roleKey` at the node, or the refusal saying what is missing. */
+/**
+ * §5.1's bound for `who` over everything the effect confers at the node — `roleKey`'s
+ * permissions and, given `orgId`, every permission that org holds there — or the refusal
+ * saying what is missing.
+ */
 async function bounded(
   scope: ExecutorScope,
   who: PrincipalId,
-  roleKey: string,
+  conferred: { roleKey: string; orgId?: string },
   level: 'scope' | 'tenant',
   as: 'inviter' | 'remover',
 ): Promise<Refused | null> {
+  const { roleKey } = conferred;
   try {
-    const bound = await scope.covers(who, roleKey, level);
+    const bound = await scope.covers(who, conferred, level);
     return bound.covered
       ? null
-      : refused(`the ${as} ${who} no longer holds ${bound.missing.join(', ')}, which '${roleKey}' carries`);
+      : refused(`the ${as} ${who} no longer holds ${bound.missing.join(', ')}, which '${roleKey}'${conferred.orgId ? ` or org ${conferred.orgId}` : ''} confers`);
   } catch (err) {
     if (isUnknownRoleError(err, roleKey)) return refused(`no such role in this tenant: ${roleKey}`);
     throw err;
@@ -223,7 +228,9 @@ async function authorizeAdd(
   if (await removedSince(admin, actor, scope, event, request.principal)) {
     return refused(`${request.principal} was removed after this request was made`);
   }
-  const bound = await bounded(scope, inviter.data, request.roleKey, level, 'inviter');
+  // The role AND the org: joining an org grants what the org holds, and its id is
+  // module-written, so the bound reads the org's grants from the directory.
+  const bound = await bounded(scope, inviter.data, { roleKey: request.roleKey, orgId: request.orgId }, level, 'inviter');
   return bound ?? { request, inviter: inviter.data };
 }
 
@@ -237,7 +244,8 @@ async function authorizeRemove(
   if ('refused' in parsed) return parsed;
   const remover = principalId.safeParse(event.actor);
   if (!remover.success) return refused('the removal was not requested by a principal');
-  const bound = await bounded(scope, remover.data, parsed.request.roleKey, level, 'remover');
+  const { roleKey, orgId } = parsed.request;
+  const bound = await bounded(scope, remover.data, { roleKey, orgId }, level, 'remover');
   return bound ?? { request: parsed.request, remover: remover.data };
 }
 

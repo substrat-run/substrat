@@ -160,7 +160,7 @@ export {
   PermissionDenied,
   UNSAFE_allowAllChecker,
 } from './permission-checker.js';
-export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
+export { actorOf, asPrincipal, coversConferred, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
 export { createTupleEvaluator } from './permission-eval.js';
 export type {

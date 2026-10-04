@@ -210,6 +210,7 @@ import {
 import {
   actorOf,
   asPrincipal,
+  coversConferred,
   assertAllowed,
   assertNoSecret,
   assertPermissionKey,
@@ -4323,12 +4324,14 @@ export class SqliteScopeHost implements ScopeHost {
     /** Null for the tenant node — the executor's `level: 'tenant'` (#1184). */
     scopeId: ScopeId | null,
     roleKey: string,
+    /** #1184: an org the assignment also joins — its grants count toward the bound. */
+    orgId?: string,
   ): Promise<Coverage> {
     const role = this.roles.get(`${tenantId}/${roleKey}`);
     if (!role) {
       throw unknownRoleError(roleKey);
     }
-    return this.checker.covers(subject, role.permissions, { tenantId, scopeId });
+    return coversConferred(this.checker, subject, role.permissions, orgId, { tenantId, scopeId });
   }
 
   /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
@@ -5035,12 +5038,13 @@ export class SqliteScopeHost implements ScopeHost {
   private executorScope(rt: ScopeRuntime): ExecutorScope {
     return {
       history: async (entity, page) => readHistory({ sql: scopedSql(rt.db) }, entity, page),
-      covers: (principal, roleKey, level) =>
+      covers: (principal, { roleKey, orgId }, level) =>
         this.assignmentBound(
           asPrincipal(principalId.parse(principal)),
           rt.tenantId,
           level === 'scope' ? rt.scopeId : null,
           roleKey,
+          orgId,
         ),
     };
   }

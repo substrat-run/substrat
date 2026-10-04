@@ -447,27 +447,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
         return { covered: false, missing: [...new Set(required)] as [PermissionKey, ...PermissionKey[]] };
       }
       const subjects = await subjectsOf(subject, node, now);
-      const getRole = roleReaderFor(node.tenantId);
-
-      const held = new Set<string>();
-      for (const nodeObj of nodeObjectsOf(node)) {
-        for (const s of subjects) {
-          const rows = nodeObj.scoped
-            ? scope
-              ? await scope.tuples(s.ref, '')
-              : []
-            : await reader.tenantTuples(node.tenantId, s.ref, '');
-          for (const row of rows) {
-            if (row.object !== nodeObj.obj || !live(row, now)) continue;
-            if (row.relation.startsWith('role:')) {
-              const role = await getRole(row.relation.slice('role:'.length));
-              for (const p of role?.permissions ?? []) held.add(p);
-            } else if (row.relation.startsWith('granted:')) {
-              held.add(row.relation.slice('granted:'.length));
-            }
-          }
-        }
-      }
+      const held = await heldAt(subjects.map((s) => s.ref), node, now);
 
       // Order follows the request so a refusal reads predictably; deduplicated so a caller
       // passing the same key twice does not see it twice.
@@ -478,7 +458,42 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
     },
 
+    /**
+     * What a tuple subject holds at `node` by itself (#1184): its live node-level role and
+     * `granted:` tuples, roles expanded — `covers`' held set for one subject, with no
+     * membership expansion and no switch (an org has neither). Entity-narrowed grants never
+     * count, for `covers`' reason.
+     */
+    async confers(subjectRef: string, node: Node): Promise<PermissionKey[]> {
+      return [...(await heldAt([subjectRef], node, reader.now()))] as PermissionKey[];
+    },
+
     check,
   };
 
+  /** The node-level permissions `refs` hold together at `node` — `covers`' one walk. */
+  async function heldAt(refs: readonly string[], node: Node, now: string): Promise<Set<string>> {
+    const scope = reader.scopeFor(node);
+    const getRole = roleReaderFor(node.tenantId);
+    const held = new Set<string>();
+    for (const nodeObj of nodeObjectsOf(node)) {
+      for (const ref of refs) {
+        const rows = nodeObj.scoped
+          ? scope
+            ? await scope.tuples(ref, '')
+            : []
+          : await reader.tenantTuples(node.tenantId, ref, '');
+        for (const row of rows) {
+          if (row.object !== nodeObj.obj || !live(row, now)) continue;
+          if (row.relation.startsWith('role:')) {
+            const role = await getRole(row.relation.slice('role:'.length));
+            for (const p of role?.permissions ?? []) held.add(p);
+          } else if (row.relation.startsWith('granted:')) {
+            held.add(row.relation.slice('granted:'.length));
+          }
+        }
+      }
+    }
+    return held;
+  }
 }

@@ -968,12 +968,17 @@ export interface ExecutorScope {
   /** One entity's history in this scope — `readHistory`'s answer, oldest first. */
   history(entity: EntityRef, page?: ListPage): Promise<Page<HistoryEntry>>;
   /**
-   * May `principal` confer `roleKey` at this scope's node, or at the tenant node
-   * (`level: 'tenant'`)? The K-21 set comparison `ctx.canAssign` answers, against the
-   * tenant's projected role, narrowing-aware. Throws `unknownRoleError` for a role this
-   * tenant does not define.
+   * May `principal` confer `roleKey` — and, given `orgId`, membership of that org — at this
+   * scope's node, or at the tenant node (`level: 'tenant'`)? The K-21 set comparison
+   * `ctx.canAssign` answers, narrowing-aware, over the tenant's projected role UNION every
+   * permission the org holds at that node (`coversConferred`): joining an org grants what it
+   * holds. Throws `unknownRoleError` for a role this tenant does not define.
    */
-  covers(principal: PrincipalId, roleKey: string, level: 'scope' | 'tenant'): Promise<Coverage>;
+  covers(
+    principal: PrincipalId,
+    conferred: { roleKey: string; orgId?: string },
+    level: 'scope' | 'tenant',
+  ): Promise<Coverage>;
 }
 
 /**
