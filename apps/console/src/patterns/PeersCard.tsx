@@ -3,7 +3,7 @@ import type { PeerGrantsStatusEntry, Scope } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, Table } from '../components';
 import type { Api } from '../lib/api';
 import { peerBadgeStatus, peerStateLabel, peersCardState, switchedOffLine } from '../lib/peers';
-import { errorMessage, performSwitch, submitSwitch, validReason } from '../lib/schedules';
+import { errorMessage, performSwitch, submitSwitch, unknownSwitchToast, validReason } from '../lib/schedules';
 import { ActorCell } from './ActorCell';
 
 const stamp = (iso: string) => iso.replace('T', ' ').replace(/\.\d+Z$/, 'Z');
@@ -84,6 +84,18 @@ export function PeersCard({
       if (attempt === null) return; // a submit was already in flight — this click was skipped
       if (attempt.kind === 'refused') {
         onToast('Refused', errorMessage(attempt.error), 'danger');
+        return;
+      }
+      if (attempt.kind === 'unknown') {
+        // #2010: the call failed without proving nothing moved — its answer was lost on the
+        // way back — so the switch may or may not have moved. Never "Refused", which would
+        // send the operator to retry: show the position read just now instead, or no
+        // position at all when that read failed too.
+        setEntries(attempt.entries);
+        setError(attempt.entries === null ? attempt.readError : null);
+        onToast(...unknownSwitchToast(vertical, scope.slug, attempt), 'danger');
+        setDialog(null);
+        setReason('');
         return;
       }
       if (attempt.kind === 'unconfirmed') {

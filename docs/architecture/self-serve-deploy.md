@@ -345,6 +345,16 @@ it re-deploys. Every verdict — `platform` / `relay` / `allowed` / `unenforced`
 verdict, tenant]; D-30 *meter, don't bill*), so the unenforced tail is a chart, not a
 guess, and a refusal spike or an exfiltration attempt shows up attributed to a vertical.
 
+**The surface bounds where a request lands, not only where it starts (#2011).** The egress
+worker never follows a redirect: every request it lets out — to a declared host, the router
+loopback, the relay or an unenforced version — leaves with `redirect: 'manual'`, so a 3xx goes
+back to the vertical, and the vertical's own `fetch` follows it as a new subrequest that comes
+through the egress worker again and meets the same rules. A vertical relying on `fetch`'s
+default `follow` sees the same response it always did between declared hosts; a redirect to an
+undeclared host gets the refusal a direct call there would. Each 3xx is also metered as a
+`redirect` datapoint beside the verdict that let the request out, with the host it pointed at as
+a fourth blob, so a refusal of a host the vertical never named traces back to whoever sent it there.
+
 **Honest limits, published beside the mechanism (the D-45 rule):**
 
 - **Durable Object subrequests are not intercepted** — Cloudflare outbound workers see
