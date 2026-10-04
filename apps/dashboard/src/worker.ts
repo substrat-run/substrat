@@ -4712,7 +4712,7 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
  */
 const REQUEST_READ_KEYS = [
   'hours', 'since', 'until',
-  'level', 'operation', 'principalKind', 'problemCode', 'surface', 'status',
+  'level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind',
   'buckets', 'facet', 'limit',
 ] as const;
 

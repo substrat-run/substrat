@@ -1,3 +1,4 @@
+import { env as ambientEnv } from 'cloudflare:workers';
 import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
 import {
   delegatedReadParams,
@@ -221,10 +222,13 @@ import {
   type VerticalCaller,
   type VerticalResolution,
   type DeclaredMigration,
+  ATTACHMENT_BLOB_BINDING,
+  blobStoreBindingName,
   lifecycleDelivery,
   scopeLifecycle,
   type LifecycleDelivery,
   type ScopeLifecycle,
+  type StoredScopeLifecycle,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -379,6 +383,10 @@ import {
   lifecycleRefusal,
   isPrimaryScope,
   isPrimaryScopeRow,
+  asyncInvocationId,
+  asyncLinePass,
+  type AsyncLinePass,
+  type EmittedReport,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -490,6 +498,8 @@ interface ControlPlaneStub {
   lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): Promise<LifecycleTargetRow[]>;
   /** #1713: what a scope's deployment acknowledged holding. */
   recordLifecycleReceipt(scopeId: string, delivered: string, at: string): Promise<void>;
+  /** #1713: raise the directory's epoch to at least this; answers the epoch now. */
+  raiseLifecycleEpoch(atLeast: number): Promise<number>;
   createTenant(
     id: string,
     slug: string,
@@ -925,16 +935,16 @@ interface ScopeStubRpc {
    * Same return contract as `migrate()`.
    */
   retryMigrations(): Promise<number | null>;
-  /** Whether the scope was loaded as a copy (#2005): what a CP-less coordinator reads for primacy. */
+  /** Whether the scope is classified a copy (#2005, #2009): what a CP-less coordinator reads for primacy. */
   isCopy(): Promise<boolean>;
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
   /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
-  lifecycle(): Promise<ScopeLifecycle | null>;
+  lifecycle(): Promise<StoredScopeLifecycle | null>;
   /** Store a delivered lifecycle unless a newer one is held (#1713, `writeLifecycle`). */
   setLifecycle(next: ScopeLifecycle): Promise<LifecycleDelivery>;
-  /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
-  clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'carries-events' | 'changed'>;
+  /** Clear a mistaken copy classification (#2005); a load's copied-events mark is kept (#2009). */
+  clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'changed'>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -1603,8 +1613,12 @@ export interface LifecycleDelegation {
   deliver(args: { tenantId: TenantId; scopeId: ScopeId; lifecycle: ScopeLifecycle }): Promise<LifecycleDelivery>;
 }
 
-/** The receipt of a live scope, and what no receipt reads as (#1713). */
-const LIVE_RECEIPT = lifecycleReceipt({ scope: 'active', tenant: 'active' });
+/**
+ * How far ahead of the clock a held lifecycle epoch may be and still be learned past (#1713). An
+ * epoch is the time a directory restore minted it, so a legitimate one is behind its minter's
+ * clock; the skew allows for clocks that disagree, and bounds what a forged answer can move.
+ */
+export const LIFECYCLE_EPOCH_SKEW_MS = 24 * 60 * 60 * 1000;
 
 /** What one delivery pass did (#1713): a transition's push, or one heal sweep. */
 export interface LifecycleDeliveryReport {
@@ -1781,12 +1795,14 @@ export interface CloudflareScopeHostOptions {
   blobStores?: R2BlobStores;
   /**
    * Worker-side reach to the per-tenant attachment bucket (#473): given a tenant, return
-   * the `R2Bucket` binding carrying its attachments — typically
-   * `env[blobStoreBindingName('<BINDING>', tenantId)]`, where `<BINDING>` is the
-   * vertical's declared `blobStoreNeed.binding`. The VERTICAL's worker supplies this
-   * because only it knows its declared binding name; the kernel owns everything else
-   * (key derivation, permission gates, metadata facts). Omitted (or resolving null),
-   * `attachments()` refuses loudly rather than serving ungated bytes.
+   * the `R2Bucket` binding carrying its attachments. Omitted, the host resolves it itself
+   * (#1995): `env[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)]` off the
+   * script's own env — the binding the platform attaches per installed tenant once the push
+   * declares the store, which it does for any vertical whose modules declare attachment
+   * targets. So a deployed vertical wires nothing, and the tenant is always the one this
+   * host has already validated against the scope. Pass this only to point attachments
+   * somewhere else (a test's bucket, a host with no such env). Resolving null, the
+   * attachment surface refuses loudly rather than serving ungated bytes.
    */
   attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /**
@@ -1975,6 +1991,15 @@ export const SWITCH_HOLD_EXTRA_WAITS = 3;
  */
 export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
 
+/**
+ * The attachment bucket a host resolves when it was handed no resolver (#1995): the
+ * platform's per-tenant binding, read off this script's own env, named by the one shared
+ * encoding (`blobStoreBindingName`) for the tenant the caller passed in.
+ */
+function ambientAttachmentBucket(tenantId: string): unknown {
+  return (ambientEnv as unknown as Record<string, unknown>)[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)] ?? null;
+}
+
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
 export interface SwitchHoldClaim {
   claimId: string;
@@ -2028,8 +2053,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly tenantStores?: D1TenantStores;
   /** The live R2 client for per-tenant blob stores (#473); undefined ⇒ refuse loudly. */
   private readonly blobStores?: R2BlobStores;
-  /** Worker-side attachment-bucket resolver (#473); undefined ⇒ attachments() refuses. */
-  private readonly attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
+  /** Worker-side attachment-bucket resolver (#473); the ambient per-tenant binding unless overridden (#1995). */
+  private readonly attachmentBuckets: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly executors = new Map<string, RegisteredEffector>();
@@ -2097,7 +2122,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
-    this.attachmentBuckets = options.attachmentBuckets;
+    this.attachmentBuckets = options.attachmentBuckets ?? ambientAttachmentBucket;
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.fetchImpl = options.fetch ?? globalFetch;
@@ -2273,12 +2298,31 @@ export class CloudflareScopeHost implements ScopeHost {
       routedToPlatform: 0,
     };
     if (this.executors.size === 0) return report;
+    // #1901: one line per attempt, capped per pass. Written on the coordinator, where the
+    // attempt runs — the DO only journals it.
+    const lines = asyncLinePass();
+    try {
+      await this.drainExecutorsPass(tenantId, scopeId, invocationId, report, lines);
+    } finally {
+      lines.end();
+    }
+    return report;
+  }
+
+  private async drainExecutorsPass(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    invocationId: string | null,
+    report: ExecutorDrainReport,
+    lines: AsyncLinePass,
+  ): Promise<void> {
     const stub = this.scopeStub(scopeId);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects, so its deliveries are journaled terminal with the reason and no
     // handler runs. Asked of the directory where there is one. A CP-less host has none, so it
-    // asks the scope's own storage whether it was loaded as a copy (`_substrat_copy_origin`,
-    // which every copy holds) — a preview and a snapshot reach a hosted vertical as restores.
+    // asks the scope's own storage whether it is classified a copy (`_substrat_copy_origin`'s
+    // `is_copy`, #2009, set on the directory's word) — a preview and a snapshot reach a hosted
+    // vertical as restores the platform marks.
     // Asked on the first due event, once per pass: most passes have none, and the directory
     // is one global object.
     let inert: Promise<boolean> | undefined;
@@ -2304,17 +2348,33 @@ export class CloudflareScopeHost implements ScopeHost {
         report.lifecycleHeld = true;
         break drain;
       }
+      // #1901: an attempt's line. The attempt number is the one the journal is about to record.
+      const unitOf = (eventId: string, attempt: number) => ({
+        kind: 'consumer' as const,
+        tenantId,
+        scopeId,
+        invocationId: asyncInvocationId(invocationId),
+        operation: deliveryId,
+        eventType: executor.eventType,
+        eventId,
+        attempt,
+        startedAt: Date.now(),
+      });
       for (const bad of undecodable) {
         report.attempted += 1;
-        await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
+        const attempt = await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
         report.deadLettered += 1;
+        lines.write({ ...unitOf(bad.eventId, attempt), outcome: 'dead-lettered' });
       }
       for (const event of events) {
         report.attempted += 1;
+        const startedAt = Date.now();
         if (await isInert()) {
           // No next attempt, like an undecodable row: a scope does not become primary.
-          await stub.recordExecutorAttempt(event.id, deliveryId, INERT_SCOPE_REASON, null, invocationId);
+          const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, INERT_SCOPE_REASON, null, invocationId);
           report.inert = (report.inert ?? 0) + 1;
+          // Its own outcome, never `delivered`: no handler ran (#2005).
+          lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'inert' });
           continue;
         }
         this.causedBy = event.id;
@@ -2337,17 +2397,21 @@ export class CloudflareScopeHost implements ScopeHost {
               invocationId,
             );
             report.routedToPlatform! += 1;
+            // Handed on, not run here: the platform's drain owns its attempts from now on.
+            lines.write({ ...unitOf(event.id, 1), startedAt, outcome: 'routed' });
           } else if (executor.kind === 'connector') {
             await executor.handler(
               await this.connectorContext(tenantId, scopeId, executor.timeoutMs, event.id),
               event,
             );
-            await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
+            const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
+            lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           } else {
             await executor.handler(this.admin, event);
-            await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
+            const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
+            lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           }
         } catch (err) {
           const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
@@ -2365,12 +2429,17 @@ export class CloudflareScopeHost implements ScopeHost {
           );
           if (exhausted) report.deadLettered += 1;
           else report.retrying += 1;
+          lines.write({
+            ...unitOf(event.id, attempts),
+            startedAt,
+            outcome: exhausted ? 'dead-lettered' : 'retrying',
+            error: err,
+          });
         } finally {
           this.causedBy = null;
         }
       }
     }
-    return report;
   }
 
   async drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport> {
@@ -2682,7 +2751,9 @@ export class CloudflareScopeHost implements ScopeHost {
     destScopeId: ScopeId,
   ): Promise<{ tables: number }> {
     const tables = await this.scopeStub(sourceScopeId).exportDump();
-    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId, exact: true });
+    // #2009: a snapshot is a fork by construction (the control plane's row names `forkedFrom`, so
+    // the directory never calls it primary), and a load classifies nothing by itself: marked here.
+    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId, exact: true, markCopy: true });
     return { tables: tables.length };
   }
 
@@ -2844,10 +2915,11 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * Remove a mistaken copy marker from one scope in THIS deployment (#2005), behind the vertical's
-   * `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS primary.
-   * Refused for a scope classified a copy, and for a marker a real load wrote (one naming copied
-   * events) — removing that would let another scope's queued work run here.
+   * Clear a mistaken copy classification from one scope in THIS deployment (#2005), behind the
+   * vertical's `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS
+   * primary. Refused for a scope classified a copy. A load's copied-events mark is never touched
+   * (#2009), so a primary restored from another scope's backup runs its own effects again and
+   * still never runs the work it copied.
    */
   async clearCopyMarkLocal(
     scopeId: ScopeId,
@@ -2863,13 +2935,6 @@ export class CloudflareScopeHost implements ScopeHost {
     const outcome = await this.scopeStub(scopeId).clearCopyMark(...(expect ? [expect] : []));
     if (outcome === 'changed') {
       throw substratError('precondition_failed', `clear-copy-mark refused: scope ${scopeId}'s store changed since its revision was read`);
-    }
-    if (outcome === 'carries-events') {
-      throw substratError(
-        'conflict',
-        "clear-copy-mark refused: this scope's marker was written by a load of another scope's data and names " +
-          "the events it brought in; removing it would run that scope's queued work here",
-      );
     }
     return { cleared: outcome === 'cleared' };
   }
@@ -3470,20 +3535,15 @@ export class CloudflareScopeHost implements ScopeHost {
     );
   }
 
-  /** Resolve the per-tenant R2 blob store, or fail closed exactly as `attachments` did. */
+  /** Resolve the per-tenant R2 blob store, or fail closed. */
   private async resolveAttachmentStore(tenantId: TenantId): Promise<TenantBlobStore> {
-    if (!this.attachmentBuckets) {
-      throw new Error(
-        `attachments are not configured on this host (#473): pass ` +
-          `CloudflareScopeHostOptions.attachmentBuckets — (tenantId) => ` +
-          `env[blobStoreBindingName('<BINDING>', tenantId)] for the vertical's declared blob store`,
-      );
-    }
     const bucket = await this.attachmentBuckets(tenantId);
     if (!bucket) {
       throw new Error(
-        `no attachment bucket resolved for tenant ${tenantId} (#473) — is the per-tenant blob ` +
-          `store provisioned and its r2_bucket binding attached to the serving script?`,
+        `no attachment bucket resolved for tenant ${tenantId} (#473, #1995) — this script has no ` +
+          `${blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)} binding. A vertical whose modules declare ` +
+          `attachmentTargets gets one per installed tenant once it is pushed with a CLI that declares the ` +
+          `store (re-push); off the platform, pass CloudflareScopeHostOptions.attachmentBuckets.`,
       );
     }
     return r2TenantBlobStore(bucket);
@@ -4274,6 +4334,7 @@ export class CloudflareScopeHost implements ScopeHost {
       return report;
     }
     const now = Date.now();
+    const lines = asyncLinePass();
     for (const schedule of schedules) {
       const last = await stub.scheduleLastRun(schedule.operation);
       const lastRun = last ? Date.parse(last) : null;
@@ -4288,18 +4349,36 @@ export class CloudflareScopeHost implements ScopeHost {
       // produces either way carries it, and so does the row below.
       const invocationId = ulid();
       let status: 'ok' | 'failed' = 'ok';
+      // #1901: the run's line, under the call's own id — the one its `ctx.log` lines carry.
+      const startedAt = Date.now();
+      let emitted: EmittedReport | undefined;
+      let failure: { error: unknown } | undefined;
       try {
         const scope = await this.getSystemScope(moduleId, tenantId, scopeId);
-        await scope.invoke(schedule.operation, schedule.input, { invocationId });
+        await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         report.fired += 1;
       } catch (err) {
         status = 'failed';
+        failure = { error: err };
         report.failed += 1;
         report.errors.push({
           operation: schedule.operation,
           error: err instanceof Error ? err.message : String(err),
         });
       }
+      lines.write({
+        kind: 'schedule',
+        tenantId,
+        scopeId,
+        invocationId,
+        operation: schedule.operation,
+        startedAt,
+        outcome: status,
+        ...failure,
+        dueAt: lastRun === null ? null : new Date(dueAt).toISOString(),
+        latenessMs: lastRun === null ? null : now - dueAt,
+        ...(emitted ? { emitted } : {}),
+      });
       // #1288: 'schedule', whatever this operation happens to be called — including
       // `freshness:<something>`, which is exactly the row the evaluator no longer eats.
       await stub.recordScheduleRun(
@@ -4311,6 +4390,7 @@ export class CloudflareScopeHost implements ScopeHost {
       );
       report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
+    lines.end();
     return report;
   }
 
@@ -7715,8 +7795,9 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Deliver the directory's lifecycle to the deployments serving the matching scopes (#1713):
    * one scope after its transition, a tenant's scopes after the tenant's, or the heal sweep's
-   * drift. Each delivery is the state as read now, so a late one cannot undo a later transition:
-   * the deployment keeps the newest `at` it has seen.
+   * drift. Each delivery carries the directory's revisions, read in the same query as the
+   * statuses, so a late one cannot undo a later transition: the deployment keeps only a delivery
+   * strictly newer than the one it holds.
    *
    * Never throws. A transition is the operator's lever in an incident, and the router refuses
    * the scope's requests as soon as the directory moves (#1730), so a deployment that cannot be
@@ -7737,25 +7818,82 @@ export class CloudflareScopeHost implements ScopeHost {
       console.error('substrat: could not read the scopes to deliver a lifecycle to (#1713)', err);
       return report;
     }
-    for (const t of targets) {
-      const tenantId = t.tenant_id as TenantId;
-      const scopeId = t.scope_id as ScopeId;
-      const parsed = scopeLifecycle.safeParse({ scope: t.scope_status, tenant: t.tenant_status, at: new Date().toISOString() });
-      if (!parsed.success) {
+    for (const first of targets) {
+      const tenantId = first.tenant_id as TenantId;
+      const scopeId = first.scope_id as ScopeId;
+      let t = first;
+      let lifecycle = this.lifecycleOfTarget(t);
+      if (!lifecycle) {
         // A status this code does not know (a newer directory): delivering a guess could lift a hold.
         report.failed += 1;
-        console.error(`substrat: scope ${scopeId} has a lifecycle this code cannot read (#1713)`, parsed.error);
+        console.error(`substrat: scope ${scopeId} has a lifecycle this code cannot read (#1713)`);
         continue;
       }
-      const lifecycle = parsed.data;
-      // A live scope whose deployment already runs it live has nothing to receive: no receipt
-      // reads as active/active, which is what a deployment holding no lifecycle runs as. This
-      // is what keeps an activation, and every transition before a deployment carries the
-      // route, from posting a delivery that changes nothing. A HOLD is always delivered.
-      if (lifecycleRefusal(lifecycle) === null && (t.delivered ?? LIVE_RECEIPT) === LIVE_RECEIPT) continue;
+      // A live scope whose deployment already acknowledged exactly this has nothing to receive,
+      // and neither does one with no receipt in a directory never restored: a deployment holding
+      // no lifecycle runs live. That keeps an activation, and every transition before a
+      // deployment carries the route, from posting a delivery that changes nothing. After a
+      // restore (epoch > 0) no receipt says nothing about what the deployment holds, so it is
+      // delivered. A HOLD is always delivered.
+      if (lifecycleRefusal(lifecycle) === null && (t.delivered === null ? t.epoch === 0 : t.delivered === lifecycleReceipt(lifecycle))) {
+        continue;
+      }
       report.attempted += 1;
       try {
-        const answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+        let answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+        // SINGLE AUTHORITY (the invariant this rests on): an environment has exactly one directory,
+        // the singleton `CONTROL_PLANE.idFromName('control-plane')`. A "fresh directory" restore is
+        // that same object restored after its storage was lost, never a second live writer, and
+        // the raise below always re-reads the CURRENT store and delivers what it says. Two control
+        // planes healing one dispatch namespace at once is a split brain that corrupts far more
+        // than lifecycle, and is out of scope here; fencing it in lifecycle alone would guarantee
+        // nothing.
+        //
+        // The scope refused us as OLDER while holding a revision this directory's history did not
+        // write: an epoch ahead of ours, or ours with other counters. Only another history of the
+        // directory delivers those — the one a fresh-directory restore replaced, whose epoch a
+        // clock running behind (or a restore in the same millisecond) cannot outrank. A scope only
+        // ever holds epochs a directory minted, so this directory learns past it: its epoch is
+        // raised above the one held (monotonic, one statement), and the scope is delivered again.
+        const held = answer.lifecycle.revision;
+        const foreign =
+          !answer.applied &&
+          held !== undefined &&
+          (held.epoch > lifecycle.revision.epoch ||
+            (held.epoch === lifecycle.revision.epoch && lifecycleReceipt(answer.lifecycle) !== lifecycleReceipt(lifecycle)));
+        // Bounded, because the deployment answering is the vertical's own code: only a directory
+        // that has been restored can meet another history (epoch > 0), and a legitimate epoch is
+        // a mint time, so one further ahead than the skew is forged or broken. Either way nothing
+        // is raised; the refusal is an ops failure for an operator to look at.
+        if (foreign && (lifecycle.revision.epoch === 0 || held!.epoch > Date.now() + LIFECYCLE_EPOCH_SKEW_MS)) {
+          report.failed += 1;
+          await this.admin
+            .recordOpsFailure({
+              actor,
+              operation: 'scope.lifecycle',
+              stage: 'foreign-epoch',
+              tenantId,
+              scopeId,
+              message:
+                `the deployment refused this directory's lifecycle while holding epoch ${held!.epoch} ` +
+                `(this directory is at ${lifecycle.revision.epoch}); not raised past it — ` +
+                (lifecycle.revision.epoch === 0
+                  ? 'this directory has never been restored, so no other history should have written it'
+                  : 'it is further ahead of the clock than any directory mints'),
+            })
+            .catch((e: unknown) => console.error('substrat: could not record a foreign lifecycle epoch (#1713)', e));
+          continue;
+        }
+        if (foreign) {
+          await this.cp.raiseLifecycleEpoch(held!.epoch + 1);
+          const [again] = await this.cp.lifecycleTargets({ scopeId });
+          const next = again ? this.lifecycleOfTarget(again) : null;
+          if (again && next) {
+            t = again;
+            lifecycle = next;
+            answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+          }
+        }
         // The receipt is what the scope HOLDS: a newer delivery it kept instead is the truth.
         await this.cp.recordLifecycleReceipt(scopeId, lifecycleReceipt(answer.lifecycle), new Date().toISOString());
         report.delivered += 1;
@@ -7778,6 +7916,17 @@ export class CloudflareScopeHost implements ScopeHost {
       }
     }
     return report;
+  }
+
+  /** One directory row as the lifecycle a delivery carries (#1713), or null for a status this code does not know. */
+  private lifecycleOfTarget(t: LifecycleTargetRow): ScopeLifecycle | null {
+    const parsed = scopeLifecycle.safeParse({
+      scope: t.scope_status,
+      tenant: t.tenant_status,
+      at: new Date().toISOString(),
+      revision: { epoch: t.epoch, scope: t.scope_rev, tenant: t.tenant_rev },
+    });
+    return parsed.success ? parsed.data : null;
   }
 
   /**
@@ -8837,7 +8986,8 @@ export class CloudflareScopeHost implements ScopeHost {
   // side before the call; what runs HERE is the half only this deployment can
   // enforce: the scope's own permission check against its delivered
   // `connection:<id>` tuple, in the scope's own DO. Fail closed — no grant, no
-  // effect — exactly as for any other caller.
+  // effect — exactly as for any other caller. And the lifecycle delivered to the
+  // scope (#1713): a held scope's invoke and bytes doors refuse, as every other door does.
 
   /** Invoke ONE operation in this deployment as a CONNECTION (#574). */
   async connectorInvokeLocal(
@@ -8847,6 +8997,7 @@ export class CloudflareScopeHost implements ScopeHost {
     operation: string,
     input?: unknown,
   ): Promise<unknown> {
+    await this.assertLive(tenantId, scopeId); // #1713: a held scope runs no connector work either
     await this.migrateAndRecord(scopeId);
     return this.buildStub(tenantId, scopeId, undefined, connectionId).invoke(operation, input);
   }
@@ -8858,6 +9009,9 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     upload: AttachmentUploadInput,
   ): Promise<AttachmentRecord> {
+    // The lifecycle gate every attachments door takes (#1713), ahead of the bucket: a held
+    // scope's provider bytes wait for the delivery's retry rather than land (#1995).
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).upload(upload);
@@ -8877,6 +9031,8 @@ export class CloudflareScopeHost implements ScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<OpenedAttachment | null> {
+    // Same gate as the upload leg: a held scope's bytes are not read out of its bucket.
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface(

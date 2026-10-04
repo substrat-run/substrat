@@ -1,6 +1,7 @@
 import {
   INERT_SCOPE_REASON,
   isPrimaryScope,
+  lifecycleRefusal,
   platformIntentFailureMessage,
   ulid,
   type ConnectorHandler,
@@ -29,6 +30,7 @@ import {
   type PlatformRequestFailure,
   type Scope,
   type ScopeId,
+  type ScopeLifecycle,
   type TenantId,
   sweepRunsPayload,
 } from '@substrat-run/contracts';
@@ -70,6 +72,14 @@ export interface PlatformRequestContext {
  */
 export interface PlatformDrainContext extends PlatformRequestContext {
   scope: Pick<Scope, 'kind' | 'forkedFrom'>;
+  /**
+   * The scope's and its tenant's status, from the directory (#1713). A scope that is not active,
+   * or whose tenant is not, has its intents DEFERRED: listed, so the backlog still counts them,
+   * and never dispatched or settled, so no attempt is burned and the first drain after it is live
+   * again runs them. Required for the reason `scope` is: a caller that forgot would drain a held
+   * scope's intents with platform authority.
+   */
+  lifecycle: Pick<ScopeLifecycle, 'scope' | 'tenant'>;
 }
 
 /**
@@ -107,6 +117,11 @@ export interface PlatformDrainReport {
   done: number;
   failed: number;
   pending: number;
+  /**
+   * #1713: the scope's lifecycle held this drain — every listed intent is counted in `pending`,
+   * none was dispatched or settled. Absent otherwise.
+   */
+  held?: true;
 }
 
 /**
@@ -145,6 +160,11 @@ export async function drainScopePlatformRequests(
   opts?: PlatformDrainOptions,
 ): Promise<PlatformDrainReport> {
   const pending = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
+  // #1713: a held scope's intents wait. Not settled `pending` either, since a settle counts an
+  // attempt and the ceiling would give up on an intent nobody tried.
+  if (lifecycleRefusal(ctx.lifecycle) !== null) {
+    return { drained: 0, done: 0, failed: 0, pending: pending.length, held: true };
+  }
   const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0 };
   const primary = isPrimaryScope(ctx.scope);
   for (const request of pending) {

@@ -160,6 +160,7 @@ export type {
   RequestFacets,
   RequestFacetValue,
   RequestRecord,
+  InvocationKind,
   LogPattern,
   LogPatterns,
   LogPatternLevel,
@@ -170,6 +171,8 @@ export {
   REQUEST_FACET_KEYS,
   REQUEST_FACET_TOP,
   LOG_PATTERN_TOP,
+  INVOCATION_KINDS,
+  invocationKindOf,
 } from './observability.js';
 export {
   STORAGE_PAGE_DEFAULT,

@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import { createCfObservabilityReader } from '../src/cf-observability.js';
+import { createCfObservabilityReader, HTTP_METHOD_PATTERN } from '../src/cf-observability.js';
 import { TENANT_METRICS_LIMIT } from '../src/observability.js';
 
 /**
@@ -980,5 +980,128 @@ describe('cf tenant logs — the runtime record folds into the stamped row', () 
     const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({}, '01EV')] : [invocation({}, '01EV'), own]));
     const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events.map((e) => e.message).sort()).toEqual(['POST /api/orders', 'POST /api/orders → 200 (42 ms)']);
+  });
+});
+
+describe('cf tenant logs — async work (#1901)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const consumer = (over: Record<string, unknown> = {}, id = '01CO') =>
+    invocation(
+      {
+        kind: 'consumer',
+        method: null,
+        path: null,
+        status: null,
+        operation: 'executor:notify',
+        eventType: 'ticket.created',
+        eventId: '01EVENT',
+        attempt: 2,
+        outcome: 'retrying',
+        level: 'error',
+        threw: true,
+        durationMs: 12,
+        ...over,
+      },
+      id,
+    );
+
+  it('says what ran and how it ended, at its own level — no method, path or status to show', async () => {
+    const { reader } = readerOver((f) =>
+      keyed(f, 'substrat')
+        ? [
+            consumer(),
+            invocation(
+              { kind: 'schedule', method: null, path: null, status: null, operation: 'digest/send', outcome: 'ok', level: 'info', durationMs: 40, latenessMs: 1200 },
+              '01SC',
+            ),
+            invocation(
+              { kind: 'consumer', method: null, path: null, status: null, operation: null, outcome: 'suppressed', level: 'warn', durationMs: 0, suppressed: 5, suppressedBy: { 'consumer:dead-lettered': 5 } },
+              '01SU',
+            ),
+          ]
+        : [],
+    );
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events.map((e) => [e.message, e.level]).sort()).toEqual([
+      ['consumer executor:notify ← ticket.created (attempt 2) → retrying (12 ms)', 'error'],
+      ['consumer: 5 more lines withheld (consumer:dead-lettered 5)', 'warn'],
+      ['schedule digest/send → ok (40 ms, 1200 ms late)', 'info'],
+    ]);
+  });
+
+  it('lists async work beside requests, with its kind, and filters on it', async () => {
+    const { reader, sent } = readerOver(() => [invocation({}, '01RQ'), consumer()]);
+    const scope = { tenantId: '01TENANT', from: 0, to: 10_000, limit: 10 };
+
+    const all = await reader.tenantRequests!(scope);
+    expect(all.map((r) => [r.kind, r.outcome, r.attempt])).toEqual(
+      expect.arrayContaining([
+        ['request', null, null],
+        ['consumer', 'retrying', 2],
+      ]),
+    );
+
+    // An async kind narrows the query, as any facet does.
+    const consumers = await reader.tenantRequests!({ ...scope, where: { kind: ['consumer'] } });
+    expect(keyed(sent.at(-1)!, 'kind')).toEqual({ key: 'kind', operation: 'eq', type: 'string', value: 'consumer' });
+    expect(consumers.map((r) => r.kind)).toEqual(['consumer']);
+
+    // `request` is spelled by no line, so the query matches what every request line has.
+    const requests = await reader.tenantRequests!({ ...scope, where: { kind: ['request'] } });
+    expect(keyed(sent.at(-1)!, 'kind')).toBeUndefined();
+    expect(keyed(sent.at(-1)!, 'method')).toEqual({ key: 'method', operation: 'regex', type: 'string', value: HTTP_METHOD_PATTERN });
+    expect(requests.map((r) => r.kind)).toEqual(['request']);
+  });
+
+  /** The backend, as far as these filters go: leaves ANDed, groups ORed, then the limit. */
+  const matches = (source: Record<string, unknown>, f: Record<string, unknown>): boolean => {
+    if (f['kind'] === 'group') {
+      const inner = f['filters'] as Array<Record<string, unknown>>;
+      return f['filterCombination'] === 'or' ? inner.some((g) => matches(source, g)) : inner.every((g) => matches(source, g));
+    }
+    const key = String(f['key']);
+    if (key.startsWith('$metadata')) return true;
+    const v = source[key];
+    if (f['operation'] === 'regex') return typeof v === 'string' && new RegExp(String(f['value'])).test(v);
+    return v === f['value'];
+  };
+
+  it('pages requests from behind more async lines than the limit, filtered before it', async () => {
+    // Newest first, as the backend answers: 60 consumer lines, then the window's one request.
+    const lines = [
+      ...Array.from({ length: 60 }, (_, i) => ({ ...consumer({}, `01C${i}`), timestamp: 10_000 - i })),
+      { ...invocation({}, '01RQ'), timestamp: 1_000 },
+    ];
+    const { reader } = readerOver((filters, limit) =>
+      lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit),
+    );
+    const scope = { tenantId: '01TENANT', from: 0, to: 20_000, limit: 50 };
+    expect((await reader.tenantRequests!({ ...scope, where: { kind: ['request'] } })).map((r) => r.kind)).toEqual(['request']);
+    // Both kinds at once: the alternatives are one OR group, so the request is still found.
+    const both = await reader.tenantRequests!({ ...scope, limit: 100, where: { kind: ['request', 'consumer'] } });
+    expect(both.filter((r) => r.kind === 'request')).toHaveLength(1);
+    expect(both.filter((r) => r.kind === 'consumer')).toHaveLength(60);
+    // The twin: a consumer selection pages consumers, never the request.
+    expect((await reader.tenantRequests!({ ...scope, where: { kind: ['consumer'] } })).every((r) => r.kind === 'consumer')).toBe(true);
+  });
+
+  it('counts every RFC 9110 method as a request — a hyphen or a digit included — and nothing else', async () => {
+    const methods = ['M-SEARCH', 'X1', 'PROPFIND', 'get'];
+    const lines = [
+      ...Array.from({ length: 60 }, (_, i) => ({ ...consumer({}, `01C${i}`), timestamp: 10_000 - i })),
+      ...methods.map((method, i) => ({ ...invocation({ method }, `01RQ${i}`), timestamp: 1_000 - i })),
+    ];
+    const { reader } = readerOver((filters, limit) =>
+      lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit),
+    );
+    const scope = { tenantId: '01TENANT', from: 0, to: 20_000, limit: 50 };
+    const alone = await reader.tenantRequests!({ ...scope, where: { kind: ['request'] } });
+    expect(alone.map((r) => r.method).sort()).toEqual([...methods].sort());
+    const mixed = await reader.tenantRequests!({ ...scope, limit: 100, where: { kind: ['request', 'consumer'] } });
+    expect(mixed.filter((r) => r.kind === 'request').map((r) => r.method).sort()).toEqual([...methods].sort());
+    // Not a token: never a method, so never a request by this predicate — nor is an async line's null.
+    const re = new RegExp(HTTP_METHOD_PATTERN);
+    for (const notAMethod of ['', 'GET /x', 'M(SEARCH)', 'null ']) expect(re.test(notAMethod)).toBe(false);
   });
 });

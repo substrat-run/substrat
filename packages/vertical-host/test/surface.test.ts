@@ -1417,7 +1417,7 @@ describe('mountPlatformSurface — the schedule switch (#1666)', () => {
 describe('mountPlatformSurface — the lifecycle delivery (#1713)', () => {
   const post = (host: VerticalScopeHost, body: unknown, headers: Record<string, string> = authed({ 'content-type': 'application/json' })) =>
     appWith(host).request('/internal/lifecycle', { method: 'POST', headers, body: JSON.stringify(body) }, ENV);
-  const lifecycle = { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z' };
+  const lifecycle = { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z', revision: { epoch: 0, scope: 1, tenant: 0 } };
   const body = { scopeId: SCOPE, lifecycle };
 
   it('parses and hands the lifecycle to the host, answering its outcome verbatim', async () => {
@@ -1442,7 +1442,9 @@ describe('mountPlatformSurface — the lifecycle delivery (#1713)', () => {
 
   it.each([
     ['a status no scope can hold', { ...lifecycle, scope: 'paused' }],
-    ['no read time', { scope: 'suspended', tenant: 'active' }],
+    ['no read time', { scope: 'suspended', tenant: 'active', revision: { epoch: 0, scope: 1, tenant: 0 } }],
+    ['no revision (a delivery must be ordered)', { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z' }],
+    ['a negative revision', { ...lifecycle, revision: { epoch: 0, scope: -1, tenant: 0 } }],
   ])('refuses %s, and calls nothing', async (_name, bad) => {
     let called = false;
     const host = fakeHost({

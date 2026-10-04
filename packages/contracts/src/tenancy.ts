@@ -91,28 +91,56 @@ export const scopeStatus = z.enum([
 export type ScopeStatus = z.infer<typeof scopeStatus>;
 
 /**
- * A scope's lifecycle as the directory holds it, delivered to the deployment that serves the
- * scope (#1713). A CP-less vertical has no directory to read, so the platform pushes this on
- * every transition and its heal sweep re-pushes any scope whose last delivered state differs.
- * It is a STATE, never a toggle: `at` is when the platform read it from the directory, and the
- * deployment keeps the newest it has seen, so a push that arrives late cannot undo a later one.
+ * The directory's revision of a scope's lifecycle (#1713), compared in order:
+ *
+ * - `epoch`: which history of the directory this is. Every directory restore mints a newer one,
+ *   so a restored directory, whose counters went back with it, still outranks everything the
+ *   history it replaced delivered. 0 for a directory never restored.
+ * - `scope` counts the scope's status transitions and `tenant` its tenant's status changes, each
+ *   bumped in the same directory transaction as the change it counts.
+ *
+ * A deployment keeps a delivery from a newer epoch whatever its counters; within one epoch, only
+ * one strictly newer on one counter and older on neither. Never a clock.
+ */
+export const lifecycleRevision = z.object({
+  epoch: z.number().int().nonnegative(),
+  scope: z.number().int().nonnegative(),
+  tenant: z.number().int().nonnegative(),
+});
+export type LifecycleRevision = z.infer<typeof lifecycleRevision>;
+
+/**
+ * A scope's lifecycle as the directory holds it, delivered to the deployment that serves it
+ * (#1713). A CP-less vertical has no directory to read, so the platform pushes this on every
+ * transition and its heal sweep re-pushes any scope whose last delivered state differs. It is a
+ * STATE, never a toggle, ordered by `revision`: the deployment keeps only a delivery strictly
+ * newer than the one it holds, so a late delivery cannot undo a later one. `at` is when the
+ * platform read the directory, kept for the reader and never compared.
  */
 export const scopeLifecycle = z.object({
   scope: scopeStatus,
   tenant: tenantStatus,
   at: instant,
+  revision: lifecycleRevision,
 });
 export type ScopeLifecycle = z.infer<typeof scopeLifecycle>;
 
 /**
+ * A lifecycle as a scope may HOLD it: one delivered before revisions existed carries none, and is
+ * older than any delivery that does. Its statuses still hold the scope.
+ */
+export const storedScopeLifecycle = scopeLifecycle.extend({ revision: lifecycleRevision.optional() });
+export type StoredScopeLifecycle = z.infer<typeof storedScopeLifecycle>;
+
+/**
  * What a deployment answers a lifecycle delivery with (#1713). `applied`: the delivery is now the
- * stored state (false when the scope already held a newer one). `changed`: whether the scope's
- * work is held now moved with it. `lifecycle`: what the scope holds after the call.
+ * stored state (false when the scope already held one as new or newer). `changed`: whether the
+ * scope's work is held now moved with it. `lifecycle`: what the scope holds after the call.
  */
 export const lifecycleDelivery = z.object({
   applied: z.boolean(),
   changed: z.boolean(),
-  lifecycle: scopeLifecycle,
+  lifecycle: storedScopeLifecycle,
 });
 export type LifecycleDelivery = z.infer<typeof lifecycleDelivery>;
 

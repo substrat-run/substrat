@@ -124,7 +124,14 @@ export const PROBLEM_EXTENSIONS = {
   forbidden: z.object({ reason: z.string().min(1).optional() }),
   not_found: z.strictObject({}),
   conflict: z.object({ reason: z.string().min(1).optional() }),
-  validation_failed: z.object({ errors: z.array(validationIssue).optional() }),
+  validation_failed: z.object({
+    errors: z.array(validationIssue).optional(),
+    /**
+     * Narrows a refusal a client should act on rather than show — `cursor_restart`
+     * (#2001): the page cursor belongs to another walk, so read the first page again.
+     */
+    reason: z.string().min(1).optional(),
+  }),
   precondition_failed: z.object({
     /**
      * The entity whose version moved under the caller (#129).

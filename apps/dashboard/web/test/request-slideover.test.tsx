@@ -71,6 +71,34 @@ describe('RequestSlideOver', () => {
     expect(text).toContain('acme.assigned');
   });
 
+  // #1901: a consumer's line opened on its own — a sweep's delivery, under its own id — reads
+  // as its outcome at its level. A held or dead-lettered delivery is never a green result.
+  const asyncLine = (source: Record<string, unknown>): ObservabilityLogEvent => ({
+    ...stampedLine,
+    raw: {
+      timestamp: END,
+      source: {
+        substrat: 'invocation', kind: 'consumer', invocationId: 'CALL1', operation: 'executor:notify', eventType: 'acme.assigned',
+        method: null, path: null, status: null, durationMs: 12, entities: [], eventTypes: [], ...source,
+      },
+    },
+  });
+  for (const [name, source, text] of [
+    ['an inert delivery', { outcome: 'inert', level: 'warn', threw: false, attempt: 1 }, 'inert'],
+    ['a dead-lettered delivery that never reached its handler', { outcome: 'dead-lettered', level: 'warn', threw: false, attempt: 1 }, 'dead-lettered'],
+    ['a dead-lettered delivery whose handler threw', { outcome: 'dead-lettered', level: 'error', threw: true, attempt: 3, problemCode: 'unavailable' }, 'dead-lettered #3 unavailable'],
+  ] as const) {
+    it(`opens ${name} as its outcome, never as success`, async () => {
+      vi.spyOn(api, 'appTenantLogs').mockResolvedValue([asyncLine(source)]);
+      vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);
+      await render();
+      const badge = [...container.querySelectorAll('span')].find((el) => el.textContent === text);
+      expect(badge).toBeDefined();
+      expect(badge!.getAttribute('style')).not.toContain('status-success');
+      expect(container.textContent).not.toContain('no status');
+    });
+  }
+
   it('closes on Escape', async () => {
     vi.spyOn(api, 'appTenantLogs').mockResolvedValue([stampedLine]);
     vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);

@@ -97,7 +97,7 @@ interface McpDecl {
   readonly input?: z.ZodObject<z.ZodRawShape>;
   readonly output?: z.ZodType;
   readonly http?: { readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; readonly path: string };
-  readonly paged?: { readonly sortKey?: string; readonly total?: boolean };
+  readonly paged?: { readonly sortKey?: string; readonly order?: 'asc' | 'desc'; readonly total?: boolean };
   /** `false` ⇒ never a tool. An object may enrich what the model is told. */
   readonly mcp?: false | { readonly description?: string };
 }
@@ -186,7 +186,7 @@ function literalPins(input: z.ZodObject<z.ZodRawShape> | undefined): Record<stri
  * is the whole table — a wrong answer with no error anywhere, which is the failure mode
  * this platform spends the most effort refusing.
  */
-function pageFields(sortKey: string | undefined): Record<string, unknown> {
+function pageFields(sortKey: string | undefined, order: 'asc' | 'desc' | undefined): Record<string, unknown> {
   return {
     // The bound is STATED, not just enforced. The ceiling refuses rather than caps, so
     // an agent that cannot see the maximum discovers it by getting an error — and the
@@ -199,7 +199,13 @@ function pageFields(sortKey: string | undefined): Record<string, unknown> {
       description: `How many entries to return (1–${LIST_PAGE_MAX}, default ${LIST_PAGE_DEFAULT}). Above the maximum is refused, not capped.`,
     },
     cursor: { type: 'string', description: 'Continue a previous page — the cursor it returned.' },
-    order: { type: 'string', enum: ['asc', 'desc'], description: 'Walk direction.' },
+    // The DECLARED direction is what a call that names none is served (#2001), so it is
+    // stated; an undeclared one is the handler's own choice, and is not guessed at here.
+    order: {
+      type: 'string',
+      enum: ['asc', 'desc'],
+      ...(order === undefined ? { description: 'Walk direction.' } : { default: order, description: `Walk direction (default ${order}).` }),
+    },
     ...(sortKey === undefined
       ? {}
       : { [LIST_SORT_PARAM]: { type: 'string', description: `Sort column. Defaults to ${sortKey}.` } }),
@@ -238,7 +244,7 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
       type: 'object',
       properties: {
         ...(shape.properties ?? {}),
-        ...(op.paged ? pageFields(op.paged.sortKey) : {}),
+        ...(op.paged ? pageFields(op.paged.sortKey, op.paged.order) : {}),
       },
     };
 

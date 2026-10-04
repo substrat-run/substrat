@@ -28,6 +28,7 @@ import {
   type RequestWhere,
   type ObservabilityReader,
   type TenantRequestScope,
+  invocationKindOf,
 } from './observability.js';
 
 /** Who and what a read is about — the tenant is the narrowing, never widened. */
@@ -44,6 +45,8 @@ function own<R extends { tenantId: string; scopeId: string | null }>(rows: reado
 
 /** A request row's value for a facet, as a filter compares it (status as text). */
 function facetValue(r: RequestCubeRow, key: RequestFacetKey): string | null {
+  // #1901: a row with no kind is a request's.
+  if (key === 'kind') return invocationKindOf(r.kind);
   const v = r[key];
   return v === null || v === undefined ? null : String(v);
 }

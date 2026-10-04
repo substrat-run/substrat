@@ -13,6 +13,7 @@ import {
   principalKindLabel,
   requestReadQuery,
   resultLabel,
+  rowLabel,
   selected,
   toggleFacet,
   whereOf,
@@ -424,7 +425,7 @@ function RequestList({
         const result = resultLabel(r);
         const tone = result.tone === 'error' ? 'var(--status-danger-fg)' : result.tone === 'warn' ? 'var(--status-warning-fg)' : 'var(--text-secondary)';
         const slow = (r.durationMs ?? 0) > 800;
-        const label = r.operation ?? (r.method && r.path ? `${r.method} ${r.path}` : '—');
+        const label = rowLabel(r);
         return (
           <button
             key={r.invocationId ?? `row-${i}`}

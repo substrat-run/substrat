@@ -196,22 +196,21 @@ export const DESK_READS = {
  * The pages beside those counts. 0023 adds nothing for them and must not move them: without
  * statistics each keeps walking its kernel ordering index to the end of the page.
  *
- * Ascending, because that is what reaches `ctx.page` when a caller names no order: the
- * declaration's `order: 'desc'` is applied by neither the route nor the page. Ascending, the
- * unfiltered walk passes every closed conversation before the first live one, and no index
- * shortens that, since the planner keeps the walk that needs no sort.
+ * Descending, as `list-conversations` declares and as a caller naming no order is now served
+ * (#2001). Served ascending, as it was before that, the unfiltered walk passed every closed
+ * conversation before the first live one; newest-first it stops at the first page of recent rows.
  */
 export const INBOX_PAGES = {
   inbox: {
-    sql: 'SELECT * FROM ticket0_conversations WHERE state IN (SELECT value FROM json_each(?)) AND quarantine IS NULL ORDER BY updated_at ASC, id ASC LIMIT ?',
+    sql: 'SELECT * FROM ticket0_conversations WHERE state IN (SELECT value FROM json_each(?)) AND quarantine IS NULL ORDER BY updated_at DESC, id DESC LIMIT ?',
     args: [OPEN, 51],
   },
   channel: {
-    sql: 'SELECT * FROM ticket0_conversations WHERE channel = ? AND state IN (SELECT value FROM json_each(?)) AND quarantine IS NULL ORDER BY updated_at ASC, id ASC LIMIT ?',
+    sql: 'SELECT * FROM ticket0_conversations WHERE channel = ? AND state IN (SELECT value FROM json_each(?)) AND quarantine IS NULL ORDER BY updated_at DESC, id DESC LIMIT ?',
     args: ['email', OPEN, 51],
   },
   assignee: {
-    sql: 'SELECT * FROM ticket0_conversations WHERE assignee = ? AND state IN (SELECT value FROM json_each(?)) AND quarantine IS NULL ORDER BY updated_at ASC, id ASC LIMIT ?',
+    sql: 'SELECT * FROM ticket0_conversations WHERE assignee = ? AND state IN (SELECT value FROM json_each(?)) AND quarantine IS NULL ORDER BY updated_at DESC, id DESC LIMIT ?',
     args: ['agent-1', OPEN, 51],
   },
 } as const satisfies Record<string, Shape>;

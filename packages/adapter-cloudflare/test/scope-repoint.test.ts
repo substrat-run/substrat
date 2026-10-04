@@ -383,7 +383,7 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
       const rec = await hostFor('v1').admin.getScopeRecord(staff, t, sid);
       return drainScopePlatformRequests(
         hostFor('v1'),
-        { tenantId: t, scopeId: sid, vertical: slug, versionId: version.v1, scope: { kind: rec!.kind, forkedFrom: rec!.forkedFrom } },
+        { tenantId: t, scopeId: sid, vertical: slug, versionId: version.v1, scope: { kind: rec!.kind, forkedFrom: rec!.forkedFrom }, lifecycle: { scope: rec!.status, tenant: 'active' } },
         { 'provision-sibling': async (_ctx, r) => (ran.push(`${sid}:${r.id}`), { status: 'done' }) },
       );
     };

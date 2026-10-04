@@ -152,6 +152,84 @@ describe('connector write-back (#574)', () => {
     });
   });
 
+  /**
+   * #1713: the connector doors a CP-less deployment serves for the platform — invoke, land bytes,
+   * open bytes — refuse while the lifecycle delivered to the scope holds it, and serve again once
+   * it is lifted. Reached by the platform's connector pass and dispatch for any scope it holds a
+   * connection to, so the deployment's own gate is what stops them.
+   */
+  describe('the far end holds a suspended scope at every connector door (#1713)', () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const owner = principalId.parse(ulid());
+    const conn = connectionIdOf.parse(ulid());
+    const objs = new Map<string, Uint8Array>();
+    const bucket = {
+      put: async (key: string, value: Uint8Array) => void objs.set(key, new Uint8Array(value)),
+      get: async (key: string) => {
+        const o = objs.get(key);
+        return o ? { arrayBuffer: async () => o.buffer.slice(o.byteOffset, o.byteOffset + o.byteLength) } : null;
+      },
+      delete: async (key: string) => void objs.delete(key),
+      list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
+    };
+    const hostFor = () => new CloudflareScopeHost({ scope: env.SCOPE, secretBox: box(), attachmentBuckets: () => bucket });
+    const upload = (filename: string) =>
+      hostFor().connectorAttachmentUploadLocal(conn, t, s, {
+        entity: { entityType: 'item', entityId: 'i1' },
+        filename,
+        contentType: 'application/pdf',
+        visibility: 'internal',
+        body: new TextEncoder().encode(filename),
+      });
+    const invoke = () => hostFor().connectorInvokeLocal(conn, t, s, 'perm/authorized-emit', { permission: USE });
+    const hold = (scope: 'suspended' | 'active', rev: number) =>
+      hostFor().setLifecycleLocal(s, {
+        scope,
+        tenant: 'active',
+        at: '2026-10-01T00:00:00.000Z' as never,
+        revision: { epoch: 0, scope: rev, tenant: 0 },
+      });
+    let landed: string;
+
+    beforeAll(async () => {
+      await hostFor().provisionScopeLocal({
+        tenantId: t,
+        scopeId: s,
+        owner,
+        roles: [{ key: 'office-admin', permissions: [USE, READ], source: 'vertical' }],
+        ownerRoleKey: 'office-admin',
+        connectionGrants: [
+          { connectionId: conn, permission: USE },
+          { connectionId: conn, permission: READ },
+        ],
+      });
+    });
+
+    it('twin: a live scope serves all three doors', async () => {
+      await invoke();
+      landed = (await upload('live.pdf')).id;
+      expect(await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed)).not.toBeNull();
+    });
+
+    it('held: invoke, land and open each refuse in the directory\'s words, and nothing lands', async () => {
+      await hold('suspended', 1);
+      const refused = /scope not active \(status: suspended\)/;
+      const before = objs.size;
+      await expect(invoke()).rejects.toThrow(refused);
+      await expect(upload('held.pdf')).rejects.toThrow(refused);
+      await expect(hostFor().connectorAttachmentOpenLocal(conn, t, s, landed)).rejects.toThrow(refused);
+      expect(objs.size).toBe(before);
+    });
+
+    it('lifted: all three serve again', async () => {
+      await hold('active', 2);
+      await invoke();
+      expect((await upload('after.pdf')).createdBy).toBe(conn);
+      expect(await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed)).not.toBeNull();
+    });
+  });
+
   describe('the platform end — a delegating CP-full host', () => {
     const t = tenantId.parse(ulid());
     const s = scopeId.parse(ulid());

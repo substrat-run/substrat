@@ -7,7 +7,7 @@ import { shortId } from '../lib/format';
 import { navigate, obsPath } from '../lib/router';
 import { DEV_MOCK } from '../lib/mock';
 import { mockRequestDetail } from '../lib/mock-request-detail';
-import { principalKindLabel } from '../lib/requests';
+import { principalKindLabel, resultLabel } from '../lib/requests';
 import {
   causedTransition,
   followUps as flattenFollowUps,
@@ -269,10 +269,15 @@ export function RequestSlideOver({
   );
 }
 
+/**
+ * The result, as the Requests row says it (`resultLabel`) — one mapping, so a consumer the
+ * slide-over opens on its own (#1901) reads as its outcome at its level, and a held or
+ * dead-lettered delivery never reads as a green success.
+ */
 function ResultBadge({ record }: { record: RequestRecord }) {
-  const s = record.status;
-  const tone = record.threw || (s !== null && s >= 500) ? 'danger' : s !== null && s >= 400 ? 'warning' : 'success';
-  const text = record.threw ? 'threw' : s === null ? 'no status' : `${s}${record.problemCode ? ` ${record.problemCode}` : s < 400 ? ' ok' : ''}`;
+  const result = resultLabel(record);
+  const tone = result.tone === 'error' ? 'danger' : result.tone === 'warn' ? 'warning' : 'success';
+  const text = result.text;
   return (
     <span
       style={{

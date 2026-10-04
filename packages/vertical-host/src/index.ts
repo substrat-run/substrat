@@ -952,7 +952,7 @@ export function mountPlatformSurface<Env extends object>(
   });
 
   // #2005: staff's correction of a MISTAKEN mark, for a scope the directory says IS primary. The
-  // host refuses a scope classified a copy, and a marker a real load wrote.
+  // host refuses a scope classified a copy, and keeps a load's copied-events mark (#2009).
   app.post('/internal/clear-copy-mark', async (c) => {
     const body = z
       .object({

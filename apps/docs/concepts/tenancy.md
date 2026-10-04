@@ -166,7 +166,11 @@ vertical's manifest can declare stores the platform mints for it, one per *tenan
   file on the pure adapter), minted by `provisionTenantStore` and opened through
   `openTenantStore`. An own-store concept — an auth DB, say.
 - **`blobStores`** — object storage (an R2 bucket) behind the kernel's attachment surface,
-  for the documents and images a scope's rows point at rather than contain.
+  for the documents and images a scope's rows point at rather than contain. The attachment
+  store itself is never declared by hand: when any module declares `attachmentTargets`,
+  `substrat push` declares an `ATTACHMENTS` store, the platform binds each installed tenant's
+  bucket as `ATTACHMENTS__<tenant>`, and the Cloudflare host resolves the one for the tenant it
+  is serving. The worker wires nothing.
 
 Both follow the same ownership rule, and it is the load-bearing part: **the builder supplies
 no id.** The vertical declares a *need*; the platform mints the database or bucket, holds the

@@ -162,7 +162,8 @@ here. (The platform's stock issuer supports both — see
 
 ## Paged reads
 
-A paged read's tool schema names `limit`, `cursor`, `order` and `sort` explicitly.
+A paged read's tool schema names `limit`, `cursor`, `order` and `sort` explicitly, and
+states the declared `order` as its default — the direction a call that names none is served.
 
 Over HTTP those ride in the query string and the host supplies them. An MCP call has no
 query string, so a paged tool that did not name them would look to an agent like a list

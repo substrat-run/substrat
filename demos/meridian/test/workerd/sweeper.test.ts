@@ -25,13 +25,15 @@
  * contract that keeps it platform-fed: a scope RESTORED from another's dump (the PR-preview
  * path, a fork of production data) is never on the roster, even once routed traffic has
  * reached it — as ticket0's suite holds for a desk. The last describe holds a different
- * deployment concern on the same worker — attachment text (#1575) — and sits at the end
+ * deployment concern on the same worker — attachments and their text (#1575, #1995) — and sits at the end
  * because the roster cases above count every scope the file has provisioned. No clock is moved: the DO host has none to inject, so the stale leave simply
  * starts in 2020.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
+  ATTACHMENT_BLOB_BINDING,
+  blobStoreBindingName,
   platformActorId,
   principalId,
   scopeId,
@@ -497,45 +499,41 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
   });
 });
 
-// ── attachment text (#1575, K-43) ────────────────────────────────────────────────────
+// ── attachments on a hosted worker (#1575, #1995) ────────────────────────────────────────
 //
 // The kernel parses no file format; the parsers are passed to the host at its composition
 // root, and for a deployed vertical that root is `hostFor` (src/worker.ts). This builds its
 // host from that function — so the wiring under test is the worker's own, not a copy — and
 // runs the extraction job the sweeper's pass would, on workerd, against the real ScopeDO's
-// SQLite (FTS5 and all). The one thing it supplies is a bucket: no deployed vertical
-// resolves a per-tenant bucket yet, so `hostFor` takes `attachmentBuckets` as a seam and an
-// in-memory R2 slice stands in. The twin is a host with no extractors, which records the
-// same upload `unsupported` and finds nothing: a pass that did not depend on the wiring
-// would pass the twin too.
+// SQLite (FTS5 and all).
+//
+// Nothing hands it a bucket (#1995). The config binds two tenants' attachment buckets the way
+// the control plane binds them on a pushed script — `ATTACHMENTS__<tenant>`, side by side on
+// one worker — and the host has to find the right one by itself, from the tenant it validated
+// against the scope. So these cases hold three things at once: an upload works with no
+// wiring, its bytes land in that tenant's bucket and no other, and a tenant with no binding is
+// refused by name rather than written somewhere else. The twin is a host with no extractors,
+// which records the same upload `unsupported` and finds nothing.
 
 const DOCX = ATTACHMENT_TEXT_FIXTURES.find((f) => f.name === 'docx')!;
 
-/** An in-memory `R2Bucket` — the slice `r2TenantBlobStore` reaches through. */
-function fakeBucket() {
-  const objs = new Map<string, { body: Uint8Array; contentType?: string }>();
-  return {
-    put: async (key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }) => {
-      objs.set(key, { body: new Uint8Array(value), contentType: options?.httpMetadata?.contentType });
-    },
-    get: async (key: string) => {
-      const o = objs.get(key);
-      if (!o) return null;
-      return {
-        arrayBuffer: async () => o.body.buffer.slice(o.body.byteOffset, o.body.byteOffset + o.body.byteLength),
-        httpMetadata: o.contentType ? { contentType: o.contentType } : undefined,
-      };
-    },
-    delete: async (key: string) => {
-      objs.delete(key);
-    },
-    list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
-  };
+/** The two tenants the config binds a bucket for. */
+const [tenantA, tenantB] = (JSON.parse(env.TEST_ATTACHMENT_TENANTS) as [string, string]).map((t) => tenantId.parse(t)) as [
+  TenantId,
+  TenantId,
+];
+
+/** A tenant's attachment bucket, as the script holds it. */
+function bucketOf(t: TenantId): R2Bucket {
+  return (env as unknown as Record<string, R2Bucket>)[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, t)]!;
 }
 
-/** A standard install on a fresh scope, as the platform provisions it. */
-async function provisionInstall(): Promise<{ t: TenantId; s: ScopeId }> {
-  const t = tenantId.parse(ulid());
+async function keysIn(t: TenantId): Promise<string[]> {
+  return (await bucketOf(t).list()).objects.map((o) => o.key);
+}
+
+/** A standard install on a fresh scope of tenant `t`, as the platform provisions it. */
+async function provisionInstall(t: TenantId = tenantId.parse(ulid())): Promise<{ t: TenantId; s: ScopeId }> {
   const s = scopeId.parse(ulid());
   const res = await platform('/internal/provision', { tenantId: t, scopeId: s, owner, entitlements: grants(INSTALLED) });
   expect(res.status, await res.clone().text()).toBe(201);
@@ -574,11 +572,10 @@ function textRow(s: ScopeId, id: string) {
   );
 }
 
-describe('meridian on workerd — an uploaded document is searchable by its text (#1575)', () => {
-  it("the worker's own host extracts a DOCX: pending on upload, indexed after the job, findable by a body phrase", async () => {
-    const { t, s } = await provisionInstall();
-    const bucket = fakeBucket();
-    const wired = hostFor(env, { attachmentBuckets: () => bucket });
+describe('meridian on workerd — an upload reaches its own tenant\'s bucket and is searchable by its text (#1575, #1995)', () => {
+  it("the worker's own host, handed no bucket: pending on upload, indexed after the job, findable by a body phrase", async () => {
+    const { t, s } = await provisionInstall(tenantA);
+    const wired = hostFor(env);
     const { att, rec } = await uploadAgreement(wired, t, s);
 
     expect(await textRow(s, rec.id)).toMatchObject({ status: 'pending' });
@@ -591,12 +588,70 @@ describe('meridian on workerd — an uploaded document is searchable by its text
       expect((await att.search(phrase)).map((r) => r.id), phrase).toEqual([rec.id]);
     }
     expect(await att.search('serval')).toEqual([]); // a phrase from no body
+    expect(new Uint8Array((await att.open(rec.id))!.body)).toEqual(new Uint8Array(DOCX.body));
+  });
+
+  it("each tenant's bytes land in its own bucket only, with both buckets bound on the one script", async () => {
+    const a = await provisionInstall(tenantA);
+    const b = await provisionInstall(tenantB);
+    const host = hostFor(env);
+    const beforeA = await keysIn(tenantA);
+    const beforeB = await keysIn(tenantB);
+
+    const up = await uploadAgreement(host, a.t, a.s);
+    const newInA = (await keysIn(tenantA)).filter((k) => !beforeA.includes(k));
+    expect(newInA).toHaveLength(1);
+    expect(newInA[0]).toContain(a.s); // the scope's own prefix, inside the tenant's own bucket
+    expect(await keysIn(tenantB)).toEqual(beforeB); // the neighbour's bucket is untouched
+
+    const upB = await uploadAgreement(host, b.t, b.s);
+    const newInB = (await keysIn(tenantB)).filter((k) => !beforeB.includes(k));
+    expect(newInB).toHaveLength(1);
+    expect(await keysIn(tenantA)).toEqual([...beforeA, ...newInA].sort());
+
+    // Each surface opens its own attachment and not the other's: the id from tenant B's scope
+    // means nothing in tenant A's, whichever bucket the bytes are in.
+    expect(await up.att.open(upB.rec.id)).toBeNull();
+    expect(await upB.att.open(up.rec.id)).toBeNull();
+    expect(await up.att.open(up.rec.id)).not.toBeNull();
+  });
+
+  it("a mismatched (tenant, scope) pair reaches neither tenant's bytes: refused at the gate, both buckets unchanged", async () => {
+    // A CP-less host trusts the router's signed (tenant, scope) pair rather than re-reading a
+    // directory, so this pair is what a vertical bug — not a request — could produce. The
+    // bucket follows the TENANT, so the worst it could touch is tenant A's own; the scope's
+    // grants are keyed by tenant too, so tenant A's principal holds nothing in B's scope.
+    const b = await provisionInstall(tenantB);
+    const host = hostFor(env);
+    const upB = await uploadAgreement(host, b.t, b.s);
+    const beforeA = await keysIn(tenantA);
+    const beforeB = await keysIn(tenantB);
+
+    const crossed = await host.attachments(owner, tenantA, b.s);
+    await expect(
+      crossed.upload({
+        entity: upB.rec.entity,
+        filename: DOCX.filename,
+        contentType: DOCX.contentType,
+        visibility: 'internal',
+        body: DOCX.body,
+      }),
+    ).rejects.toThrow(/permission denied/);
+    await expect(crossed.open(upB.rec.id)).rejects.toThrow(/permission denied/);
+    expect(await keysIn(tenantA)).toEqual(beforeA); // the refused upload's bytes were taken back
+    expect(await keysIn(tenantB)).toEqual(beforeB);
+  });
+
+  it('a tenant whose bucket is not bound is refused by name — never served from a neighbour', async () => {
+    const { t, s } = await provisionInstall(); // a third tenant: installed, no binding on this script
+    await expect(hostFor(env).attachments(owner, t, s)).rejects.toThrow(
+      new RegExp(`no attachment bucket resolved for tenant ${t}.*${blobStoreBindingName(ATTACHMENT_BLOB_BINDING, t)}`),
+    );
   });
 
   it('twin: a host wired with no extractors records the same upload unsupported, and finds nothing', async () => {
-    const { t, s } = await provisionInstall();
-    const bucket = fakeBucket();
-    const bare = new CloudflareScopeHost({ scope: env.SCOPE, attachmentBuckets: () => bucket });
+    const { t, s } = await provisionInstall(tenantA);
+    const bare = new CloudflareScopeHost({ scope: env.SCOPE });
     for (const m of MODULES) bare.registerModule(m);
     const { att, rec } = await uploadAgreement(bare, t, s);
 

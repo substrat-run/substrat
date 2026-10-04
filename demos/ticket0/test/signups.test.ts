@@ -419,3 +419,41 @@ describe('who may read the list', () => {
     expect(total).toBe(rows.length);
   });
 });
+
+// #2001: the declared `order: 'desc'` is what a caller naming no order gets, every page of it.
+describe('the list a screen opens on', () => {
+  it('is newest first when no order is named, and pages on in that order', async () => {
+    const desk = world.substrat;
+    const fresh: string[] = [];
+    for (const email of ['order-a@customer.example', 'order-b@customer.example', 'order-c@customer.example']) {
+      clock.advance(1000);
+      fresh.push((await submit(desk, { kind: 'newsletter', email })).id);
+    }
+
+    const walked: (SignupRow & { created_at: string })[] = [];
+    let cursor: string | null = null;
+    let total = 0;
+    do {
+      const page: CountedPage<SignupRow & { created_at: string }> = (await (
+        await admin(desk)
+      ).invoke('ticket0/list-signups', { limit: 2, ...(cursor ? { cursor } : {}) })) as CountedPage<
+        SignupRow & { created_at: string }
+      >;
+      walked.push(...page.entries);
+      total = page.total;
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+
+    expect(walked.slice(0, 3).map((r) => r.id)).toEqual([...fresh].reverse());
+    const stamps = walked.map((r) => r.created_at);
+    expect(stamps).toEqual([...stamps].sort().reverse());
+    expect(new Set(walked.map((r) => r.id)).size).toBe(walked.length);
+    expect(walked.length).toBe(total);
+
+    const asc = (await (await admin(desk)).invoke('ticket0/list-signups', {
+      order: 'asc',
+      limit: 100,
+    })) as CountedPage<SignupRow>;
+    expect(asc.entries.map((r) => r.id).slice(-3)).toEqual(fresh);
+  });
+});

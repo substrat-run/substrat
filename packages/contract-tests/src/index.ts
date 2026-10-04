@@ -16,6 +16,7 @@ export { timelineContractSuite } from './timeline-suite.js';
 export { concurrencyContractSuite } from './concurrency-suite.js';
 export { emittedReportContractSuite } from './emitted-suite.js';
 export { moduleLogContractSuite } from './module-log-suite.js';
+export { asyncLogContractSuite, type AsyncLogFixture } from './async-log-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
@@ -78,6 +79,7 @@ export {
   freshnessMod,
   searchMod,
   searchModManifest,
+  listDeclaredOps,
   listMod,
   listModManifest,
   parseMod,

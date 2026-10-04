@@ -437,6 +437,10 @@ export interface OperationContext {
    * `SortNotDeclared` for a `?sort=` outside the vocabulary, and
    * `FilterNotDeclared` for a filter outside it — never a silently-ignored
    * parameter, which is how a caller comes to believe a filter is applied.
+   *
+   * `params.order` unset walks ascending; an operation's declared order arrives
+   * already applied by `operationInputsOf`. A cursor replayed under another sort
+   * or order throws `CursorMismatch` (`reason: 'cursor_restart'`) — #2001, K-44.
    */
   page<T>(entityType: string, params: PageParams): Page<T> | CountedPage<T>;
   /**

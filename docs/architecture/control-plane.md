@@ -247,14 +247,35 @@ request. The deployment's own timer, its retries and its background work never p
 So the platform **delivers** the lifecycle. After every scope transition, and after a
 tenant transition (fanned out to every hosted scope under the tenant), the control plane
 posts the scope's state, `{ scope, tenant, at }`, to the deployment's `/internal/lifecycle`.
-The deployment stores it in the scope's own storage. It is a state, not a toggle: `at` is
-when the platform read the directory, and the scope keeps the newest it has seen, so a
-late delivery cannot undo a later transition.
+The deployment stores it in the scope's own storage. It is a state, not a toggle, ordered by
+the directory's own revisions and never by a clock: each scope transition bumps the
+scope's revision, and each tenant status change the tenant's, in the same transaction as
+the change. The scope keeps a delivery only when it is strictly newer on one revision and
+older on neither, so two transitions' overlapping deliveries settle on the later one
+whichever lands last. A directory restore rolls those counters back with everything else,
+so every restore also mints a newer **epoch**, compared before the counters: the restored
+directory's deliveries outrank whatever the history it replaced delivered. The epoch
+describes the directory's store, not its data, so no dump carries it. A restore onto a
+fresh directory object has only the clock to mint from, which may be behind an epoch a
+scope already holds; such a scope refuses the delivery and answers what it holds, and the
+directory then raises its epoch past that (monotonically), re-reads its own store and
+delivers what it says. The raise is bounded: only a directory that has been restored raises
+at all, and never past an epoch more than a day ahead of the clock, because the deployment
+answering is the vertical's own code and an epoch is a mint time. Anything else is an
+ops-failure row (`scope.lifecycle` / `foreign-epoch`) and no raise.
+
+This rests on **one authority per environment**: the directory is the singleton
+`CONTROL_PLANE.idFromName('control-plane')`, so a restore, even onto an emptied object,
+replaces that one writer rather than adding a second, and every raise delivers what the
+current store says. Two control planes healing one dispatch namespace at once is a split
+brain that would corrupt far more than lifecycle. It is out of scope here, because fencing it
+in lifecycle alone would guarantee nothing.
 
 - **One gate.** The CP-less host's `assertLive` reads it at every door that runs the scope's
   work: a request's stub, attachments, a capability or impersonation session, a peer call,
-  a subscription, the system door a schedule and a job take, the retry driver, and the job
-  runner. It refuses in the directory's own words. An operator's reads (dead letters, job
+  a subscription, the system door a schedule and a job take, the retry driver, the job
+  runner, and the connector doors the platform's connector pass reaches (invoke, land and
+  open bytes). It refuses in the directory's own words. An operator's reads (dead letters, job
   runs, platform requests) stay open.
 - **Deferred, never dropped.** The sweeper skips a held scope whole. `runDueSchedules`
   reports every schedule `skipped` with `lifecycleHeld` and moves no cadence row. The
@@ -263,9 +284,15 @@ late delivery cannot undo a later transition.
 - **A missed delivery heals.** A failed delivery never refuses the transition: the directory
   moves and the router refuses at once. Instead, the failure lands as an ops-failure row and
   no receipt is written. The cron's heal pass re-delivers to every hosted scope whose
-  receipt (`scope_lifecycle_receipts`) differs from the directory, and again to every scope
-  held now. That second rule puts a hold back on a store that a carry or a restore landed
+  receipt (`scope_lifecycle_receipts`: the statuses and the full revision the deployment
+  acknowledged) differs from the directory, to every scope with no receipt once the directory
+  has been restored, and again to every scope held now. That second rule puts a hold back on a store that a carry or a restore landed
   without one.
+- **The platform's own drain waits too.** A held scope's platform intents (a connector
+  delivery the control plane runs on the vertical's behalf, a sibling to provision) are
+  listed, so the backlog still counts them, but never run or settled, so no attempt counts
+  toward the give-up ceiling. `PlatformDrainContext.lifecycle` carries the scope's and the
+  tenant's status from the directory, and the drain is the one place that judges it.
 - **Loads.** The stored lifecycle travels with a dump onto the same scope. A load keeps the
   newer of the store's and the dump's, so restoring a backup taken before a suspension does
   not lift it. A copy never inherits its source's lifecycle.

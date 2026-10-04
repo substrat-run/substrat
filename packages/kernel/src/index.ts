@@ -277,6 +277,7 @@ export type {
   ExtractionSignal,
 } from './attachment-extractor.js';
 export {
+  CursorMismatch,
   FilterNotDeclared,
   LIST_INDEX_PREFIX,
   NotListable,
@@ -665,6 +666,17 @@ export type {
   ModuleLogSink,
   ModuleLogContext,
 } from './module-log.js';
+export {
+  asyncInvocationLine,
+  asyncInvocationId,
+  asyncLevelOf,
+  asyncLinePass,
+  consoleInvocationLineSink,
+  ASYNC_LINES_PER_PASS,
+} from './async-invocation-log.js';
+export type { AsyncUnit, AsyncLinePass, InvocationLineSink } from './async-invocation-log.js';
+export { invocationLine } from './invocation-log.js';
+export type { AsyncInvocationKind, AsyncOutcome, InvocationLineFields } from './invocation-log.js';
 export {
   /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
   invocationLog,

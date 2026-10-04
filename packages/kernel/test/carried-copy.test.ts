@@ -71,6 +71,13 @@ describe('isCopyMarkInsert (#2005 × #1722)', () => {
     "INSERT OR REPLACE INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
     "INSERT INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
     "INSERT OR IGNORE INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, ?, ?, ?)",
+    // #2009: the mark sets the classification and nothing else; any other upsert of the row (one
+    // that clears it, or moves the events mark) can loosen the store, and the pre-#2009 marker
+    // insert is a different statement, not this one.
+    MARK_COPY_ORIGIN_SQL.replace('SET is_copy = 1', 'SET is_copy = 0'),
+    MARK_COPY_ORIGIN_SQL.replace('SET is_copy = 1', "SET is_copy = 1, events_through = ''"),
+    MARK_COPY_ORIGIN_SQL.replace("'', ?, 1)", "'', ?, 0)"),
+    "INSERT OR IGNORE INTO _substrat_copy_origin (id, source_scope_id, events_through, copied_at) VALUES (1, NULL, '', ?)",
     `${MARK_COPY_ORIGIN_SQL}; DELETE FROM pv_notes`,
     'INSERT INTO pv_notes (id) VALUES (1)',
     'SELECT 1 FROM _substrat_copy_origin',

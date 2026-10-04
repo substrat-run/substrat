@@ -13,7 +13,13 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { defineEntities } from '../src/model.js';
-import { defineOperations, eventsEmittedBy, peersDeclaredBy, permissionsUsedBy } from '../src/operations.js';
+import {
+  defineOperations,
+  eventsEmittedBy,
+  operationInputsOf,
+  peersDeclaredBy,
+  permissionsUsedBy,
+} from '../src/operations.js';
 
 const entities = defineEntities({
   customer: {
@@ -621,5 +627,39 @@ describe('peersDeclaredBy (#1706)', () => {
     expect(() => peersDeclaredBy(noCheck, { 'acme/board-room': ['ping/run'] })).toThrow(
       /would hold no permission/,
     );
+  });
+});
+
+/** #2001 (K-44): the declared `order` is what a caller naming none gets, on every door. */
+describe('operationInputsOf: a paged read’s declared order', () => {
+  const inputs = operationInputsOf({
+    'acme/newest': {
+      input: z.object({ status: z.string().optional() }),
+      paged: { over: { entity: 'customer', sortable: ['created_at'] }, order: 'desc' },
+    },
+    'acme/oldest': { paged: { over: { entity: 'customer', sortable: ['created_at'] }, order: 'asc' } },
+    'acme/undeclared': { paged: { sortKey: 'id' } },
+  });
+  const parse = (name: string, value: unknown) => inputs[name]!.parse(value) as Record<string, unknown>;
+
+  it('defaults to the declaration when the caller names no order', () => {
+    expect(parse('acme/newest', { limit: 2 })).toEqual({ limit: 2, order: 'desc' });
+    expect(parse('acme/oldest', {})).toEqual({ order: 'asc' });
+  });
+
+  it('defaults an in-process call that passes no input at all', () => {
+    expect(parse('acme/newest', undefined)).toEqual({ order: 'desc' });
+  });
+
+  it('lets an explicit order win', () => {
+    expect(parse('acme/newest', { order: 'asc' })).toEqual({ order: 'asc' });
+  });
+
+  it('leaves order absent where nothing declares one, so a handler’s own fallback decides', () => {
+    expect(parse('acme/undeclared', {})).toEqual({});
+  });
+
+  it('still refuses an order that is neither direction', () => {
+    expect(() => parse('acme/newest', { order: 'sideways' })).toThrow();
   });
 });
