@@ -20,6 +20,17 @@ describe('recordFromLogs', () => {
     expect(r).toMatchObject({ invocationId: 'CALL1', operation: 'desk/assign', status: 200, durationMs: 120, timestamp: 10_000, entities: ['conversation:C1'], eventTypes: ['desk.assigned'], problemCode: null, threw: false });
   });
 
+  it('#1901: reads the request off its own line when the call\'s consumers logged under its id too', () => {
+    const consumer = stamped({ kind: 'consumer', operation: 'executor:notify', outcome: 'retrying', attempt: 1, eventType: 'desk.assigned' }, 10_050);
+    const r = recordFromLogs([consumer, stamped({ operation: 'desk/assign', status: 200, durationMs: 120 })]);
+    expect(r).toMatchObject({ operation: 'desk/assign', status: 200, kind: 'request' });
+    // …and the consumer's line is a mark on the request, not the request.
+    const t = requestTimeline(r!, [consumer], [])!;
+    expect(t.marks).toEqual([expect.objectContaining({ kind: 'log', offsetMs: 170 })]);
+    // A sweep's delivery has no request around it: its own line is the record.
+    expect(recordFromLogs([consumer])).toMatchObject({ kind: 'consumer', outcome: 'retrying', attempt: 1, eventType: 'desk.assigned' });
+  });
+
   it('is null when the call has no stamped line to read', () => {
     expect(recordFromLogs([line({ raw: { source: { substrat: 'log' } } })])).toBeNull();
   });
