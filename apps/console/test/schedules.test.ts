@@ -173,6 +173,43 @@ describe('performSwitch', () => {
     expect(refreshCalls).toBe(0);
   });
 
+  it('a switch refused outright (4xx) or by a deployment that predates it (501) is refused', async () => {
+    for (const status of [403, 404, 409, 501]) {
+      let refreshCalls = 0;
+      const attempt = await performSwitch(
+        () => Promise.reject(new ApiError(status, 'no')),
+        async () => {
+          refreshCalls += 1;
+          return [];
+        },
+      );
+      expect(attempt.kind).toBe('refused');
+      expect(refreshCalls).toBe(0);
+    }
+  });
+
+  /**
+   * #2010: a switch call whose answer was lost — the client's 502 "may or may not have moved",
+   * another 5xx, the console's own request lost in transit — never proves nothing moved. It is
+   * never "Refused" (which sends an operator to retry); the position is read again instead.
+   */
+  it.each([
+    ['a 502 that lost the deployment\'s answer', new ApiError(502, 'the switch may or may not have moved. Confirm its position')],
+    ['a 500', new ApiError(500, 'internal error')],
+    ['a request lost in transit', new ApiError(0, 'control plane unreachable')],
+    ['a non-API failure', new TypeError('Failed to fetch')],
+  ])('%s: unknown, and the position is re-read', async (_name, error) => {
+    const attempt = await performSwitch(() => Promise.reject(error), async () => ['fresh']);
+    expect(attempt).toEqual({ kind: 'unknown', error, entries: ['fresh'] });
+  });
+
+  it('unknown, and the re-read fails too: no position, carrying both failures', async () => {
+    const error = new ApiError(502, 'lost');
+    const readError = new Error('status read timed out');
+    const attempt = await performSwitch(() => Promise.reject(error), () => Promise.reject(readError));
+    expect(attempt).toEqual({ kind: 'unknown', error, entries: null, readError });
+  });
+
   it('its twin: both steps land, and applied carries the fresh read', async () => {
     const attempt = await performSwitch(
       async () => ({ changed: true }),

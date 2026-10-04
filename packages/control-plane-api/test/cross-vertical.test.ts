@@ -71,7 +71,6 @@ describe('VerticalClient — the cross-vertical verbs (#1705 PR 2)', () => {
   describe.each(Object.entries(verbs))('%s', (_name, call) => {
     it.each([
       ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 })],
-      ['an SPA shell (200, not JSON)', () => new Response('<!doctype html><html></html>', { status: 200 })],
     ])('%s is a 501 that says to redeploy — never an empty answer', async (_why, res) => {
       const err = await failure(call(answering(res)));
       expect(err).toBeInstanceOf(ControlPlaneError);
@@ -95,6 +94,24 @@ describe('VerticalClient — the cross-vertical verbs (#1705 PR 2)', () => {
       expect(err!.message).toBe('does not serve it');
     });
 
+    // #2010: a deployment that has the route can act and then lose part of its answer. That is
+    // not its proof that it predates the route, so it is a 502, never "Nothing was read or delivered".
+    it.each([
+      ['truncated JSON', () => new Response('{"events":[', { status: 200, headers: { 'content-type': 'application/json' } })],
+      ['a body whose stream fails mid-read', () =>
+        new Response(new ReadableStream({ start: (c) => c.error(new Error('stream reset')) }), { status: 200 })],
+      ['an HTML document not served as HTML', () => new Response('<!doctype html><html></html>', { status: 200 })],
+      // Codex #2014 r1: an old deployment's app shell and an error page in between look alike.
+      ['an HTML page served as HTML', () =>
+        new Response('<!doctype html><html><body>Gateway timeout</body></html>', { status: 200, headers: { 'content-type': 'text/html' } })],
+    ])('a 200 with %s is a 502 that may or may not have acted, never "predates"', async (_why, res) => {
+      const err = await failure(call(answering(res)));
+      expect(err).toBeInstanceOf(ControlPlaneError);
+      expect(err!.status).toBe(502);
+      expect(err!.message).toMatch(/it may or may not have acted; repeating it is safe/);
+      expect(err!.message).not.toMatch(/predates|Nothing was read/);
+    });
+
     it('a 200 JSON of the wrong shape is a 502, never a guess', async () => {
       const err = await failure(call(answering(() => new Response(JSON.stringify({ ok: true })))));
       expect(err!.status).toBe(502);
@@ -110,6 +127,56 @@ describe('VerticalClient — the cross-vertical verbs (#1705 PR 2)', () => {
       expect(err!.status).toBe(502);
       expect(err!.message).toMatch(/unreachable during .*Network connection lost/);
     });
+  });
+});
+
+/**
+ * The replay lever's far end (#1705 PR 3) is the one cross-vertical WRITE: an answer it lost may
+ * follow a move that happened, so every failure but the deployment's own "predates" says to read
+ * the edge first (#2010).
+ */
+describe('VerticalClient.importCursorMove (#1705 PR 3)', () => {
+  const at = {
+    move: { mode: 'skip', to: 'latest', acknowledge: true },
+    source: { vertical: 'acme/crm', scopeId: s },
+    replayId: ulid(),
+  } as never;
+  const move = (c: VerticalClient) => c.importCursorMove({ tenantId: t, scopeId: s, at });
+
+  it('posts the move to its route and reads the answer', async () => {
+    const seen: { method: string; path: string; body: unknown }[] = [];
+    const moved = {
+      replayId: 'r1',
+      mode: 'skip',
+      source: { vertical: 'acme/crm', scopeId: s },
+      previous: null,
+      cursor: null,
+      archived: { journal: 0, deliveries: 0 },
+    };
+    await expect(move(answering(() => new Response(JSON.stringify(moved)), seen))).resolves.toEqual(moved);
+    expect(seen).toEqual([{ method: 'POST', path: '/internal/import-cursor', body: { tenantId: t, scopeId: s, at } }]);
+  });
+
+  it.each([
+    ['a 404', () => new Response('404 Not Found', { status: 404 })],
+  ])('%s is a 501: nothing moved', async (_why, res) => {
+    const err = await failure(move(answering(res)));
+    expect(err!.status).toBe(501);
+    expect(err!.message).toMatch(/the edge's watermark holds/);
+  });
+
+  it.each([
+    ['truncated JSON', () => new Response('{"replayId":', { status: 200, headers: { 'content-type': 'application/json' } })],
+    ['a body whose stream fails mid-read', () =>
+      new Response(new ReadableStream({ start: (c) => c.error(new Error('stream reset')) }), { status: 200 })],
+    ['a 200 JSON of the wrong shape', () => new Response(JSON.stringify({ ok: true }))],
+    ['an HTML page served as HTML', () =>
+      new Response('<!doctype html><html><body>Gateway timeout</body></html>', { status: 200, headers: { 'content-type': 'text/html' } })],
+  ])('%s is a 502 that says to read the edge before retrying', async (_why, res) => {
+    const err = await failure(move(answering(res)));
+    expect(err!.status).toBe(502);
+    expect(err!.message).toMatch(/the write may have taken effect: read the edge before retrying/);
+    expect(err!.message).not.toMatch(/predates|watermark holds/);
   });
 });
 
