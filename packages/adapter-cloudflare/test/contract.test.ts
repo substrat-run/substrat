@@ -2688,6 +2688,48 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(briefPasses).toBe(1);
   });
 
+  /**
+   * #2034 (#2042 review r1): a coordinator from before leases, in a deploy's overlap with this DO,
+   * drives nothing. Its drive is replayed here call for call against the real DO: #2028's (due keys,
+   * then a re-read it runs without claiming) and #1834's predecessor's (due rows, run as read). Both
+   * re-reads are fenced, so neither drive has a row to run — with a claim holding the run, and with
+   * the run due and unclaimed.
+   */
+  it('#2034: a pre-lease coordinator drives nothing against this DO, claimed or not; the new one drives', async () => {
+    const s = await newScope();
+    type Legacy = {
+      jobRunsDueKeys(now: string, max: number): Promise<{ id: string }[]>;
+      jobRunById(id: string): Promise<{ status: string; next_attempt_at: string | null } | null>;
+      jobRunsDue(now: string, limit: number): Promise<unknown[]>;
+    };
+    const legacy = () => env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as Legacy;
+    /** What an old drive would have run: every row its own reads handed it as running and due. */
+    const oldDrive = async () => {
+      const now = new Date().toISOString();
+      const keys = await legacy().jobRunsDueKeys(now, 500);
+      let runnable = 0;
+      for (const key of keys) {
+        const row = await legacy().jobRunById(key.id);
+        if (row && row.status === 'running' && (row.next_attempt_at === null || row.next_attempt_at <= now)) runnable += 1;
+      }
+      runnable += (await legacy().jobRunsDue(now, 50)).length;
+      return { keys: keys.length, runnable };
+    };
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance: 'legacy', payload: {} });
+    // Due and unclaimed: the old drive sees the key — it is the fence, not the snapshot, that stops it.
+    expect(await oldDrive()).toEqual({ keys: 1, runnable: 0 });
+    // Claimed: a new drive holds it, mid-pass.
+    const counting = countingScopes(env.SCOPE);
+    let during: unknown = null;
+    counting.afterJobClaim = async () => {
+      counting.afterJobClaim = null;
+      during = await oldDrive();
+    };
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
+    expect(during).toEqual({ keys: 0, runnable: 0 });
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done' });
+  });
+
   /** #2028 review: the due order is served by its own index on the DO's SQLite, with no sort step. */
   it('#1834: the due read seeks _substrat_job_runs_due_at and sorts nothing', async () => {
     const s = await newScope();

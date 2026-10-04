@@ -4340,15 +4340,15 @@ export function defineScopeDO(
     }
 
     /**
-     * One run by id, whatever its status. Not called by a coordinator since #2034 (the claim reads
-     * the run back); kept for one a deploy behind, which re-reads a run before each pass.
+     * #2034 (#2042 review r1): the FENCE for a coordinator from before leases. Its only caller is
+     * that coordinator's drive, which re-reads a run here and then runs the pass WITHOUT claiming
+     * it, so a row handed back could run beside a claimed pass. It answers "no such run" to it,
+     * always: the old drive skips, and only a coordinator that claims ever drives. Nothing else
+     * reads a run through this method (the operator read is `jobRunList`). The coordinator ships in
+     * the same script as this class, so an old one exists only for a deploy's overlap.
      */
-    async jobRunById(id: string): Promise<JobRunRow | null> {
-      return (
-        (this.sql.exec('SELECT * FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as unknown as
-          | JobRunRow
-          | undefined) ?? null
-      );
+    async jobRunById(_id: string): Promise<JobRunRow | null> {
+      return null;
     }
 
     /** Insert a fresh run. The coordinator has already refused a non-queue-safe payload. */
@@ -4365,36 +4365,20 @@ export function defineScopeDO(
     }
 
     /**
-     * `running` runs whose backoff has elapsed, oldest first, after `afterId`.
-     *
-     * The cursor is what lets the coordinator page past runs it cannot drive: it
-     * skips any whose job this deployment does not register, and without a cursor
-     * those rows head every batch forever (`runDueJobRuns`). `afterId` is LAST, as
-     * every argument added to an RPC on this interface must be.
+     * Was: `running` runs whose backoff has elapsed, oldest first, after `afterId` — the due read of
+     * a coordinator from before #1834, which drove every row it returned. Now always empty (below).
      */
-    async jobRunsDue(now: string, limit: number, afterId?: string): Promise<JobRunRow[]> {
-      return this.sql
-        .exec(
-          // `afterId` bound TWICE rather than as `?2`: mixing anonymous and numbered
-          // parameters makes the anonymous ones resume from the highest index used,
-          // which is a footgun for the next person to add a clause. Spelled exactly
-          // as the pure adapter spells it.
-          `SELECT * FROM _substrat_job_runs
-            WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-              AND (? IS NULL OR id > ?)
-            ORDER BY id LIMIT ?`,
-          now,
-          afterId ?? null,
-          afterId ?? null,
-          limit,
-        )
-        .toArray() as unknown as JobRunRow[];
+    async jobRunsDue(_now: string, _limit: number, _afterId?: string): Promise<JobRunRow[]> {
+      // #2034 (#2042 review r1): fenced, as `jobRunById` is. Its only caller is a coordinator from
+      // before #1834, which runs every row this returns without claiming it.
+      return [];
     }
 
     /**
      * #1834: the drive's ONE snapshot of due runs — keys only, in the order they became due
-     * (`JOB_RUN_DUE_AT`, then id). Spelled exactly as the pure adapter spells it. `jobRunsDue`
-     * above stays for a coordinator a deploy behind, which still pages by id.
+     * (`JOB_RUN_DUE_AT`, then id). Spelled exactly as the pure adapter spells it. A coordinator
+     * from before #2034 reads this too, but drives nothing from it: its re-read (`jobRunById`)
+     * is fenced.
      */
     async jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]> {
       return this.sql
