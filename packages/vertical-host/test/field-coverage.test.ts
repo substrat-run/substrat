@@ -12,15 +12,13 @@ import {
   z,
   DECLARED_OUTPUT_FIELDS_MAX,
   encodeInvocationRecord,
-  FIELD_COVERAGE_ARMED,
-  FIELD_COVERAGE_BINDING,
+  FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
 } from '@substrat-run/contracts';
-import { INVOCATION_RECORD_KEY, withInvocationLog, type InvocationRecord } from '../src/invocation-log.js';
+import { withInvocationLog, type InvocationRecord } from '../src/invocation-log.js';
+import { ARMED, DISPATCH, ENV, quietly, ROUTER_SECRET as SECRET_ROUTER, routed, stampInto } from './routed.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { observeOutputFields, outputWalkOf } from '../src/field-coverage.js';
-
-const ARMED = { [FIELD_COVERAGE_BINDING]: FIELD_COVERAGE_ARMED };
 
 /** A value no record may ever contain. */
 const SECRET = 'value-4c1d-never-recorded@example.com';
@@ -32,11 +30,8 @@ type Respond = (c: unknown, result: unknown) => Response | Promise<Response>;
 /** One declared operation, a stub answering `result`, and the record the middleware hands down. */
 function harness(decl: Record<string, unknown>, result: () => unknown, opts: { respond?: Respond } = {}) {
   const record: InvocationRecord = {};
-  const app = new Hono();
-  app.use('*', async (c, next) => {
-    (c as unknown as { set: (k: string, v: unknown) => void }).set(INVOCATION_RECORD_KEY, record);
-    await next();
-  });
+  const app = new Hono<{ Bindings: typeof ENV }>();
+  stampInto(app, record);
   mountOperations(
     app,
     { 'acme/op': { ...decl, http: { method: 'GET', path: '/op' } } },
@@ -47,7 +42,7 @@ function harness(decl: Record<string, unknown>, result: () => unknown, opts: { r
       }) as any,
     { mcp: false, ...(opts.respond ? { respond: opts.respond as never } : {}) },
   );
-  const call = (env?: Record<string, unknown>) => app.request('/api/op', {}, env);
+  const call = (headers: Record<string, string> = {}) => quietly(async () => app.request('/api/op', { headers }, ENV));
   return { record, call };
 }
 
@@ -315,10 +310,22 @@ describe('the switch (#1331)', () => {
    * host — the walk is not run and thrown away, it is not run.
    */
   it('unarmed, the walk never touches the result and the record is exactly as before', async () => {
-    for (const env of [undefined, {}, { [FIELD_COVERAGE_BINDING]: 'true' }, { [FIELD_COVERAGE_BINDING]: 'ON' }]) {
+    const { 'x-substrat-router': _signature, ...unsigned } = ARMED;
+    for (const headers of [
+      undefined,
+      routed,
+      { ...routed, [FIELD_COVERAGE_HEADER]: 'true' },
+      { ...routed, [FIELD_COVERAGE_HEADER]: 'ON' },
+      // #1923: the header without the router's signature, or with a guessed one, is a claim.
+      unsigned,
+      { ...ARMED, 'x-substrat-router': 'i-guessed' },
+      { [FIELD_COVERAGE_HEADER]: DISPATCH },
+      // A signed request whose header is not a dispatch id.
+      { ...routed, [FIELD_COVERAGE_HEADER]: 'on' },
+    ]) {
       const { proxy, touched } = spied({ id: 'c1', title: 'T', owner_email: 'x' });
       const { record, call } = harness({ output: card }, () => proxy, { respond: blind });
-      expect((await call(env)).status).toBe(200);
+      expect((await call(headers)).status).toBe(200);
       expect(touched).toEqual([]);
       expect(record).toEqual({ operation: 'acme/op' });
     }
@@ -338,15 +345,6 @@ describe('the switch (#1331)', () => {
  * router meters from. Unarmed, both are byte-for-byte what they were before the walk existed.
  */
 describe('what reaches the line and the router (#1331)', () => {
-  const SECRET_ROUTER = 'router-sekret';
-  const routed = {
-    'x-substrat-router': SECRET_ROUTER,
-    'x-substrat-tenant': '01JZ0000000000000000TEN001',
-    'x-substrat-scope': '01JZ0000000000000000SCP001',
-    'x-substrat-vertical': 'acme/widgets',
-    'x-substrat-surface': 'app',
-  };
-
   function worker(decl: Record<string, unknown>) {
     const app = new Hono();
     mountOperations(
@@ -366,7 +364,7 @@ describe('what reaches the line and the router (#1331)', () => {
   }
 
   /** The response and the line one request produced, with the per-request noise normalised. */
-  async function run(decl: Record<string, unknown>, env: Record<string, unknown>) {
+  async function run(decl: Record<string, unknown>, headers: Record<string, string> = routed) {
     const lines: string[] = [];
     const original = console.log;
     console.log = (first: unknown) => {
@@ -374,8 +372,8 @@ describe('what reaches the line and the router (#1331)', () => {
     };
     try {
       const res = (await worker(decl).fetch!(
-        new Request('https://acme.example/api/op', { headers: routed }),
-        { ROUTER_SECRET: SECRET_ROUTER, ...env },
+        new Request('https://acme.example/api/op', { headers }),
+        { ROUTER_SECRET: SECRET_ROUTER },
         {},
       )) as Response;
       expect(lines).toHaveLength(1);
@@ -388,8 +386,8 @@ describe('what reaches the line and the router (#1331)', () => {
   }
 
   it('unarmed: the line, the router header and the body match a route with no declared output', async () => {
-    const before = await run({}, {});
-    const after = await run({ output: card }, {});
+    const before = await run({});
+    const after = await run({ output: card });
     expect(after.normalised).toBe(before.normalised);
     expect(after.line).not.toHaveProperty('outputFields');
     expect(after.res.headers.get(INVOCATION_RECORD_HEADER)).toBe(before.res.headers.get(INVOCATION_RECORD_HEADER));
@@ -397,9 +395,10 @@ describe('what reaches the line and the router (#1331)', () => {
   });
 
   it('armed: the line carries the field names and no value; the router header is unchanged', async () => {
-    const unarmed = await run({ output: card }, {});
+    const unarmed = await run({ output: card });
     const armed = await run({ output: card }, ARMED);
     expect(armed.line['outputFields']).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
+    expect(armed.line['fieldCoverageId']).toBe(DISPATCH);
     expect(JSON.stringify(armed.line)).not.toContain(SECRET);
     // The router's datapoint carries three named fields and nothing else; the walk adds none.
     expect(armed.res.headers.get(INVOCATION_RECORD_HEADER)).toBe(unarmed.res.headers.get(INVOCATION_RECORD_HEADER));
@@ -407,6 +406,37 @@ describe('what reaches the line and the router (#1331)', () => {
       armed.res.headers.get(INVOCATION_RECORD_HEADER),
     );
     expect(armed.body).toBe(unarmed.body);
+    // #1923: the walk observes only. The caller gets the same status, headers and body.
+    expect(armed.res.status).toBe(unarmed.res.status);
+    expect([...armed.res.headers]).toEqual([...unarmed.res.headers]);
+  });
+
+  it('a forged arming header is never walked, and files no line under any tenant (#1923)', async () => {
+    const { 'x-substrat-router': _signature, ...unsigned } = ARMED;
+    for (const headers of [{ ...ARMED, 'x-substrat-router': 'i-guessed' }, unsigned]) {
+      const { proxy, touched } = spied({ id: 'c1', title: 'T', owner_email: 'x' });
+      const app = new Hono();
+      mountOperations(
+        app,
+        { 'acme/op': { output: card, http: { method: 'GET', path: '/op' } } },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        async () => ({ invoke: async () => proxy }) as any,
+        { mcp: false, respond: blind as never },
+      );
+      const lines: string[] = [];
+      const original = console.log;
+      console.log = (first: unknown) => void (typeof first === 'string' && lines.push(first));
+      try {
+        const res = (await withInvocationLog<Record<string, unknown>>(app as never, {
+          routerSecret: (env) => env['ROUTER_SECRET'] as string,
+        }).fetch!(new Request('https://acme.example/api/op', { headers }), { ROUTER_SECRET: SECRET_ROUTER }, {})) as Response;
+        expect(res.status).toBe(200);
+      } finally {
+        console.log = original;
+      }
+      expect(touched).toEqual([]);
+      expect(lines.filter((l) => l.includes('"substrat":"invocation"'))).toEqual([]);
+    }
   });
 });
 

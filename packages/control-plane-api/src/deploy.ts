@@ -1,4 +1,4 @@
-import { ADMISSIBLE_BINDING_TYPES, PLATFORM_BINDING_PREFIX, substratError } from '@substrat-run/contracts';
+import { ADMISSIBLE_BINDING_TYPES, PLATFORM_BINDING_PREFIX, substratError, verticalScriptStem } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**
@@ -250,8 +250,7 @@ export function assertSandboxContract(m: DeployManifest): void {
  * platform slug is unaffected (`callout-<id>`), so this is backward-compatible.
  */
 export function deploymentRefFor(slug: string, versionId: string): string {
-  const safe = slug.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
-  return `${safe}-${versionId.toLowerCase()}`;
+  return `${verticalScriptStem(slug)}-${versionId.toLowerCase()}`;
 }
 
 /**
@@ -268,7 +267,7 @@ export function deploymentRefFor(slug: string, versionId: string): string {
  * serving scripts (K-30, `<slug>-eu`) hang off this same name when eu/us open.
  */
 export function stableDeploymentRefFor(slug: string): string {
-  return slug.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  return verticalScriptStem(slug);
 }
 
 /** Serving-script migration tags are `v1`, `v2`, … — bumped only when a version adds

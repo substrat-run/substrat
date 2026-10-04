@@ -10,9 +10,10 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, FIELD_COVERAGE_ARMED, FIELD_COVERAGE_BINDING } from '@substrat-run/contracts';
+import { z, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, FIELD_COVERAGE_HEADER } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
 import { INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
+import { ARMED, ENV, quietly, routed, stampInto } from './routed.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { mcpToolsOf, mcpToolName, MCP_PROTOCOL_VERSIONS } from '../src/mcp.js';
 
@@ -878,11 +879,10 @@ describe('the per-request record on a tool call (#1746)', () => {
 
 /**
  * #1331 on the MCP door: a tool call is walked for field coverage exactly as a mounted route
- * is, with the same rules. Armed only by the platform's binding, names only, nothing recorded
+ * is, with the same rules. Armed only by the router (#1923), names only, nothing recorded
  * for a call that failed, and unarmed the result is never so much as looked at.
  */
 describe('the field walk on a tool call (#1331)', () => {
-  const ARMED = { [FIELD_COVERAGE_BINDING]: FIELD_COVERAGE_ARMED };
   /** A value no record may ever contain. */
   const SECRET = 'value-7e2a-never-recorded@example.com';
   const card = z.object({ id: z.string(), title: z.string(), note: z.string().optional(), owner_email: z.string() });
@@ -895,27 +895,26 @@ describe('the field walk on a tool call (#1331)', () => {
   function walked(invoke: (operation: string) => unknown, seed?: (record: InvocationRecord) => void) {
     const record: InvocationRecord = {};
     seed?.(record);
-    const app = new Hono();
-    app.use('*', async (c, next) => {
-      (c as unknown as { set: (k: string, v: unknown) => void }).set(INVOCATION_RECORD_KEY, record);
-      await next();
-    });
+    const app = new Hono<{ Bindings: typeof ENV }>();
+    stampInto(app, record);
     mountOperations(app, ops, async () => ({
       subjectKind: 'principal',
       invoke: async (operation: string) => invoke(operation),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any);
-    const call = (tools: string[], env?: Record<string, unknown>) =>
-      app.request(
-        '/api/mcp',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(
-            tools.map((name, i) => ({ jsonrpc: '2.0', id: i + 1, method: 'tools/call', params: { name, arguments: {} } })),
-          ),
-        },
-        env,
+    const call = (tools: string[], headers: Record<string, string> = {}) =>
+      quietly(async () =>
+        app.request(
+          '/api/mcp',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...headers },
+            body: JSON.stringify(
+              tools.map((name, i) => ({ jsonrpc: '2.0', id: i + 1, method: 'tools/call', params: { name, arguments: {} } })),
+            ),
+          },
+          ENV,
+        ),
       );
     return { record, call };
   }
@@ -936,7 +935,7 @@ describe('the field walk on a tool call (#1331)', () => {
   });
 
   /** Every way a result is looked at while one tool call is answered. */
-  function touchesOf(tool: string, env: Record<string, unknown> | undefined) {
+  function touchesOf(tool: string, headers: Record<string, string> | undefined) {
     const touched: string[] = [];
     const proxy = new Proxy(cardResult(), {
       get(t, k, r) {
@@ -957,7 +956,7 @@ describe('the field walk on a tool call (#1331)', () => {
       },
     });
     const { record, call } = walked(() => proxy);
-    return { touched, record, done: call([tool], env) };
+    return { touched, record, done: call([tool], headers) };
   }
 
   it('unarmed, the walk never touches the result and the record is exactly as before', async () => {
@@ -967,8 +966,17 @@ describe('the field walk on a tool call (#1331)', () => {
     const control = touchesOf('acme_ping', ARMED);
     expect((await control.done).status).toBe(200);
     expect(control.touched.length).toBeGreaterThan(0);
-    for (const env of [undefined, {}, { [FIELD_COVERAGE_BINDING]: 'true' }, { [FIELD_COVERAGE_BINDING]: 'ON' }]) {
-      const run = touchesOf('acme_get-card', env);
+    const { 'x-substrat-router': _signature, ...unsigned } = ARMED;
+    for (const headers of [
+      undefined,
+      routed,
+      { ...routed, [FIELD_COVERAGE_HEADER]: 'true' },
+      { ...routed, [FIELD_COVERAGE_HEADER]: 'ON' },
+      // #1923: unsigned or wrongly signed, the header is a caller's claim.
+      unsigned,
+      { ...ARMED, 'x-substrat-router': 'i-guessed' },
+    ]) {
+      const run = touchesOf('acme_get-card', headers);
       expect((await run.done).status).toBe(200);
       expect(run.touched).toEqual(control.touched);
       expect(run.record).toEqual({ operation: 'acme/get-card', principalKind: 'principal' });
@@ -1026,20 +1034,20 @@ describe('the field walk on a tool call (#1331)', () => {
 
   it("an HTTP call's fields already on the record never ride a tool call — armed or not", async () => {
     const stale = { present: ['id'], empty: [], absent: ['title'] };
-    for (const env of [undefined, ARMED]) {
+    for (const headers of [undefined, ARMED]) {
       const { record, call } = walked(
         () => ({ ok: true }),
         (r) => {
           r.outputFields = stale;
         },
       );
-      await call(['acme_ping'], env);
+      await call(['acme_ping'], headers);
       expect(record).not.toHaveProperty('outputFields');
     }
   });
 
   it('a page held behind a getter is left unobserved, and the walk never runs the getter', async () => {
-    const reads = async (env: Record<string, unknown> | undefined) => {
+    const reads = async (headers: Record<string, string> | undefined) => {
       let ran = 0;
       const { record, call } = walked(() => ({
         get entries() {
@@ -1048,7 +1056,7 @@ describe('the field walk on a tool call (#1331)', () => {
         },
         nextCursor: null,
       }));
-      await call(['acme_list-cards'], env);
+      await call(['acme_list-cards'], headers);
       return { ran, record };
     };
     // The serialiser reads the getter to answer the call; unarmed is that baseline, and

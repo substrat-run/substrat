@@ -58,12 +58,13 @@
 // platform entry, #1893), and the root carries every schema in the vocabulary.
 import {
   encodeInvocationRecord,
+  FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
   type InvocationLevel,
 } from '@substrat-run/contracts/invocation-record';
 import { ulid } from './ulid.js';
-import { readRoutedNode, RouterAssertionError } from './routed-node.js';
+import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
 import type { EmittedReport } from './scope-host.js';
 
@@ -98,7 +99,7 @@ export interface InvocationRecord {
   emitted?: EmittedReport;
   /**
    * #1331: which of the operation's DECLARED output fields its response carried. Filled
-   * only while the field-coverage switch is armed (`FIELD_COVERAGE_BINDING`), and absent
+   * only on a request the router armed the walk for ({@link fieldCoverageArmed}), and absent
    * otherwise — never an empty report, so "not walked" cannot read as "returned nothing".
    */
   outputFields?: OutputFieldsReport;
@@ -294,6 +295,13 @@ export interface InvocationLogLine {
    * existed. A reader treats absence exactly as it treats `null` elsewhere.
    */
   outputFields?: OutputFieldsReport;
+  /**
+   * #1923: the router's dispatch id for the request whose response {@link outputFields}
+   * describes — its provenance. Present exactly when `outputFields` is: a reader joins it to
+   * the router's own line for the request, and counts the report only for the tenant and app
+   * that line names.
+   */
+  fieldCoverageId?: string;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -376,6 +384,8 @@ export interface InvocationLineFields {
   withEntities?: boolean;
   versionId?: string | null;
   outputFields?: OutputFieldsReport;
+  /** #1923: written only beside `outputFields`. */
+  fieldCoverageId?: string;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -406,7 +416,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
     entities: emitted && f.withEntities !== false ? distinct(emitted.events.map((e) => e.entity)) : [],
     versionId: f.versionId ?? null,
-    ...(f.outputFields ? { outputFields: f.outputFields } : {}),
+    ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.async ?? {}),
   };
 }
@@ -456,6 +466,12 @@ function pathOf(url: string): string {
 export interface InvocationStamp {
   invocationId: string;
   record: InvocationRecord;
+  /**
+   * #1923: the dispatch id the router armed this request's field walk with, when it did and
+   * the request's router assertion verified. Decided once, when the stamp begins — see
+   * {@link armedFieldCoverageId}. Written on the line beside the report, as its provenance.
+   */
+  fieldCoverageId?: string;
 }
 
 /**
@@ -481,10 +497,51 @@ export function invocationStampOf(request: object): InvocationStamp | undefined 
   return stamps().get(request);
 }
 
-function beginStamp(request: object): InvocationStamp {
+/**
+ * #1923: whether the per-response field walk is armed for this request — the one question the
+ * walk's two callers in `vertical-host` (the operation routes and the MCP door) ask.
+ *
+ * `false` for a request no stamp covers, and for a stamp begun by a layer that predates the
+ * switch: every version skew between the platform's entry and a vertical's bundled kernel
+ * reads as off, never as on.
+ */
+export function fieldCoverageArmed(request: object): boolean {
+  return typeof stamps().get(request)?.fieldCoverageId === 'string';
+}
+
+function beginStamp<Env>(request: { headers: HeaderReader }, env: Env, options: InvocationLogOptions<Env>): InvocationStamp {
   const stamp: InvocationStamp = { invocationId: ulid(), record: {} };
+  const fieldCoverageId = armedFieldCoverageId(request.headers, env, options);
+  if (fieldCoverageId) stamp.fieldCoverageId = fieldCoverageId;
   stamps().set(request, stamp);
   return stamp;
+}
+
+/**
+ * #1923: the dispatch id the ROUTER armed the field walk with for this request, or `undefined`.
+ *
+ * The header alone is a claim. It is honoured only when its value is a ULID and the request's
+ * router assertion verifies, with the same secret and the same dev opt-out as the tenant on
+ * the line, because it is trusted for the same reason: the router strips every inbound
+ * `x-substrat-*` header, and a caller that reaches the script some other way holds no secret.
+ * An unrouted request, or one whose assertion fails, is never armed.
+ *
+ * The header is read first, so a request the router did not sample — almost all of them —
+ * pays one header read and no verification.
+ */
+function armedFieldCoverageId<Env>(
+  headers: HeaderReader,
+  env: Env,
+  options: InvocationLogOptions<Env>,
+): string | undefined {
+  let id: string | null;
+  try {
+    id = headers.get(FIELD_COVERAGE_HEADER);
+  } catch {
+    return undefined;
+  }
+  if (id === null || !ROUTED_ID.test(id)) return undefined;
+  return routedNodeOrNull(headers, env, options) !== null ? id : undefined;
 }
 
 /** What a finished request looked like, for the line. */
@@ -543,6 +600,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     ...(record.emitted ? { emitted: record.emitted } : {}),
     versionId: versionIdOf(done.env),
     ...(record.outputFields ? { outputFields: record.outputFields } : {}),
+    ...(stamp.fieldCoverageId ? { fieldCoverageId: stamp.fieldCoverageId } : {}),
   });
   console.log(JSON.stringify(line));
 }
@@ -592,7 +650,7 @@ export function invocationLog<Env = unknown>(
     const started = Date.now();
     // Minted per request, before anything can emit. A ULID so it sorts by time like
     // every other id on the spine.
-    const stamp = beginStamp(c.req.raw);
+    const stamp = beginStamp(c.req.raw, c.env, options);
     c.set?.('substratInvocationId', stamp.invocationId);
     c.set?.(INVOCATION_RECORD_KEY, stamp.record);
     let threw = false;
@@ -660,7 +718,7 @@ export function withInvocationLog<Env = unknown>(
     async fetch(request: IncomingRequest, env: Env, ctx: unknown): Promise<{ status: number }> {
       if (invocationStampOf(request)) return inner.call(worker, request, env, ctx);
       const started = Date.now();
-      const stamp = beginStamp(request);
+      const stamp = beginStamp(request, env, options);
       let status: number | null = null;
       let threw = false;
       try {

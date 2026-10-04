@@ -185,6 +185,9 @@ export type { PlatformRuntime } from './platform-runtime.js';
 export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.js';
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';
 export { createCfObservabilityReader } from './cf-observability.js';
+// #1923: the one sanctioned reading of a line's `outputFields` — tenant- and app-scoped, aggregate only.
+export { tallyFieldCoverage, FIELD_COVERAGE_OPERATIONS_MAX } from './field-coverage-tally.js';
+export type { FieldCoverageTally, FieldCoverageScope, OperationFieldCoverage, FieldCoverageCount } from './field-coverage-tally.js';
 // #1877: the aggregate seam under ObservabilityReader, and the store its cache keeps
 // closed blocks in (a Durable Object's SQL in production).
 export { cachedSource, memoryCubeStore, grainFor, blockMsFor, CLOSE_LAG_MS } from './aggregate-source.js';

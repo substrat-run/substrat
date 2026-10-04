@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { instant, permissionKey, tenantId, verticalSlug } from './ids.js';
 import { envVarSpec, capability } from './manifest.js';
 import { declaredSurface } from './routing.js';
+import { platformScriptCollision, platformScriptRefusal } from './script-names.js';
 
 /**
  * The vertical + version registry (#31 step 1; D-33's milestone one).
@@ -159,6 +160,15 @@ export type VerticalServingState = z.infer<typeof verticalServingState>;
 export const registerVerticalInput = vertical
   .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, provisions: true, sendsEmail: true, surfaces: true, listed: true })
   .extend({
+  /**
+   * #1923: a slug that would deploy under one of the platform's own script names is refused
+   * here, at the claim, because its logs would be indistinguishable from that worker's.
+   * Refused on the INPUT only: a stored record is read back with the plain `vertical` schema.
+   */
+  slug: verticalSlug.superRefine((slug, ctx) => {
+    const collision = platformScriptCollision(slug);
+    if (collision) ctx.addIssue({ code: 'custom', message: platformScriptRefusal(slug, collision) });
+  }),
   // Optional on input — a staff/platform push omits it (⇒ platform-owned).
   ownerTenant: tenantId.nullable().default(null),
 });
