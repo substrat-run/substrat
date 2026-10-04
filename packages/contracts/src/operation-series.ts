@@ -31,14 +31,20 @@ export const OPERATION_SERIES_MAX_BUCKETS = 400;
 export const OPERATION_SERIES_MAX_MOVES = 64;
 
 /**
- * An instant the read's primary-key seek can encode: a ULID carries 48 bits of epoch
- * milliseconds, so the window must sit between the epoch and 10889 AD. Refused here, with
- * a validation error, rather than as a `RangeError` from `ulidFloor` inside the read.
+ * The range the read can both seek and bucket, held here so every window the schema accepts
+ * is one the read answers correctly — refused with a validation error, never a `RangeError`
+ * or a wrong bucket inside the read.
+ *
+ * The epoch is the low end: a ULID carries epoch milliseconds, and `ulidFloor` cannot encode
+ * an instant before it. The high end is the last millisecond of 9999: SQLite's date
+ * functions, which place each event in its bucket (`strftime('%s', …)`), answer NULL past
+ * year 9999, so a later event would be bucketed at `since`. A ULID reaches 10889 AD, but a
+ * window the read cannot bucket is not one it should accept.
  */
-const MAX_ULID_TIME = 2 ** 48 - 1;
+export const OPERATION_SERIES_LAST_INSTANT_MS = Date.parse('9999-12-31T23:59:59.999Z');
 const seekable = windowInstant.refine(
-  (v) => Date.parse(v) >= 0 && Date.parse(v) <= MAX_ULID_TIME,
-  { message: 'instant is outside what an event id can encode (the epoch to 10889 AD)' },
+  (v) => Date.parse(v) >= 0 && Date.parse(v) <= OPERATION_SERIES_LAST_INSTANT_MS,
+  { message: 'instant is outside what the read can bucket (the epoch to the end of 9999)' },
 );
 
 /**

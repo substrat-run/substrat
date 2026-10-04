@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { operationSeriesInput, type OperationSeriesInput } from '@substrat-run/contracts';
+import { OPERATION_SERIES_LAST_INSTANT_MS, operationSeriesInput, type OperationSeriesInput } from '@substrat-run/contracts';
 import { createUlid, OPERATION_SERIES_ID_SLACK_MS, operationSeriesQuery, readOperationSeries, type ScopedSql } from '../src/index.js';
 
 /**
@@ -140,15 +140,12 @@ describe('readOperationSeries (#1750)', () => {
     expect(r.series[0]!.total).toBe(0);
   });
 
-  it('reads a schema-valid window at the end of what a ULID encodes, where the slack would pass it', () => {
-    const max = 2 ** 48 - 1;
-    const input = operationSeriesInput.parse({ moves: [CLOSE], since: '+010889-08-02T05:30:50Z', until: '+010889-08-02T05:31:50.655Z', bucketMinutes: 1 });
-    expect(Date.parse(input.until)).toBe(max);
-    expect(read([], input).series[0]!.total).toBe(0);
-    // The twin, at the max itself: an id carrying the largest instant a mint can stamp is
-    // inside the range, so the bound sits above every ULID rather than below the last one.
-    const r = read([{ at: new Date(max - 1).toISOString(), op: 'desk/close', idAt: new Date(max).toISOString() }], input);
-    expect(r.series[0]!.total).toBe(1);
+  it('reads and buckets a window at the last instant the schema accepts, the end of 9999', () => {
+    const input = operationSeriesInput.parse({ moves: [CLOSE], since: '9999-12-31T23:58:00Z', until: '9999-12-31T23:59:59.999Z', bucketMinutes: 1 });
+    expect(Date.parse(input.until)).toBe(OPERATION_SERIES_LAST_INSTANT_MS);
+    const r = read([{ at: '9999-12-31T23:59:59.998Z', op: 'desk/close' }], input);
+    // The bucket START, not only the total: an event SQLite could not date would sit at `since`.
+    expect(r.series[0]!.buckets).toEqual([{ start: '9999-12-31T23:59:00.000Z', count: 1 }]);
   });
 
   it('plans a closed range of the primary key: a minute years ago visits only its own rows', () => {
@@ -194,7 +191,7 @@ describe('operationSeriesInput (#1750)', () => {
     expect(operationSeriesInput.safeParse({ ...base, moves: Array.from({ length: 65 }, () => CLOSE) }).success).toBe(false);
   });
 
-  it('refuses an instant an event id cannot encode as a validation error, and takes the epoch itself', () => {
+  it('refuses an instant the read cannot seek or bucket as a validation error, and takes the epoch itself', () => {
     const epoch = { ...base, since: '1970-01-01T00:00:00.000Z', until: '1970-01-02T00:00:00.000Z' };
     expect(operationSeriesInput.safeParse(epoch).success).toBe(true);
     // The read's seek would otherwise throw a RangeError from `ulidFloor` past the boundary.
@@ -202,10 +199,12 @@ describe('operationSeriesInput (#1750)', () => {
     for (const bad of [
       { ...epoch, since: '1969-12-31T23:59:59.000Z' },
       { ...epoch, since: '1969-12-31T00:00:00.000Z', until: '1969-12-31T23:59:59.999Z' },
+      // One millisecond past the end of 9999, where SQLite's date functions stop.
+      { ...epoch, since: '9999-12-31T23:59:00.000Z', until: '+010000-01-01T00:00:00.000Z' },
     ]) {
       const r = operationSeriesInput.safeParse(bad);
       expect(r.success).toBe(false);
-      expect(JSON.stringify(r.error?.issues)).toContain('outside what an event id can encode');
+      expect(JSON.stringify(r.error?.issues)).toContain('outside what the read can bucket');
     }
   });
 });

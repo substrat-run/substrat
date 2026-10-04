@@ -49,15 +49,6 @@ import { ulidFloor } from './ulid.js';
  */
 export const OPERATION_SERIES_ID_SLACK_MS = 60_000;
 
-/** The largest instant a ULID's 48-bit timestamp holds, 10889 AD — what the input schema allows. */
-const MAX_ULID_TIME = 2 ** 48 - 1;
-/**
- * A key above every ULID: a ULID's first digit is `0`–`7` (48 bits in ten base-32 digits),
- * so `'8'` sorts after all of them. The upper bound when the slack would carry it past what
- * `ulidFloor` can encode — a schema-valid window near the maximum still reads.
- */
-const ABOVE_EVERY_ULID = '8';
-
 /** Joins a pair into one key — a control character no entity or operation name carries. */
 const SEP = '\u001f';
 
@@ -84,7 +75,9 @@ export function operationSeriesQuery(input: OperationSeriesInput): { sql: string
       sinceMs / 1000,
       input.bucketMinutes * 60,
       ulidFloor(sinceMs),
-      untilMs + OPERATION_SERIES_ID_SLACK_MS > MAX_ULID_TIME ? ABOVE_EVERY_ULID : ulidFloor(untilMs + OPERATION_SERIES_ID_SLACK_MS),
+      // `until` is at most the end of 9999 (the input schema's bound), so a minute past it is
+      // far inside what a ULID encodes: `ulidFloor` cannot throw here.
+      ulidFloor(untilMs + OPERATION_SERIES_ID_SLACK_MS),
       new Date(sinceMs).toISOString(),
       new Date(untilMs).toISOString(),
       JSON.stringify(keys),
