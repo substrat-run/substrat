@@ -99,6 +99,16 @@ export const membershipFixtureMod: ModuleRegistration = {
         payload: input.payload,
       });
     }) as unknown as OperationHandler<never, unknown>,
+    /** An acceptance whose payload names whoever the test says — the actor stays the caller. */
+    'invitefix/claim-accepted': ((ctx: OperationContext, input: Invitation & { principal: string }) => {
+      ctx.emit({
+        type: 'invites.accepted',
+        schemaVersion: 1,
+        entity: invitation(input.invitationId),
+        piiClass: 'none',
+        payload: input,
+      });
+    }) as unknown as OperationHandler<never, unknown>,
     /** Whether the caller holds `permission` at this scope — the effect, observed. */
     'invitefix/probe': (async (ctx: OperationContext, input: { permission: PermissionKey }) => ({
       allowed: (await ctx.check(input.permission)).allowed,

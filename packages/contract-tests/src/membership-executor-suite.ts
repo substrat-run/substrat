@@ -254,6 +254,15 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         await expectRefused(w, await asJoiner(w, second, 'invitefix/accept', inv), second, /not first accepted by/);
       });
 
+      it('after an acceptance somebody else wrote in the joiner\'s name', async () => {
+        // The first acceptance's payload names joe, but its kernel-stamped actor is mallory.
+        const joe = principalId.parse(ulid());
+        const mallory = principalId.parse(ulid());
+        const inv = await send(w, w.alice, 'member');
+        await (await w.host.getScope(mallory, w.t, w.s)).invoke('invitefix/claim-accepted', { ...inv, principal: joe });
+        await expectRefused(w, await asJoiner(w, joe, 'invitefix/accept', inv), joe, /not first accepted by/);
+      });
+
       it('with no request shape at all', async () => {
         const joe = principalId.parse(ulid());
         const outcomes = await asJoiner(w, joe, 'invitefix/request', { entityId: joe, payload: { principal: joe } });
