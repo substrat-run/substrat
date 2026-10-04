@@ -9,6 +9,7 @@ import {
   scopeId,
   tenantId,
   type ScopeId,
+  type TenantId,
 } from '@substrat-run/contracts';
 import { drainScopePlatformRequests } from '@substrat-run/control-plane-api';
 import { INERT_SCOPE_REASON, ulid, type PlatformSweepReport } from '@substrat-run/kernel';
@@ -220,7 +221,7 @@ describe('drainContextOf: a copy of a scope drains inert (#2005)', () => {
 
   const drainOne = async (s: ScopeId) => {
     const rec = await host().admin.getScopeRecord(staff, t, s);
-    const ctx = drainContextOf(rec!, vertical);
+    const ctx = drainContextOf(rec!, vertical, await host().admin.getTenant(staff, t));
     let ran = 0;
     const settled: { status: string; lastError: string | null }[] = [];
     const client = {
@@ -247,7 +248,14 @@ describe('drainContextOf: a copy of a scope drains inert (#2005)', () => {
 
   it('twin: the install carries its own kind and lineage, and its intent runs', async () => {
     const { ctx, ran, settled } = await drainOne(scopes.install);
-    expect(ctx).toEqual({ tenantId: t, scopeId: scopes.install, vertical, versionId: null, scope: { kind: 'scope', forkedFrom: null } });
+    expect(ctx).toEqual({
+      tenantId: t,
+      scopeId: scopes.install,
+      vertical,
+      versionId: null,
+      scope: { kind: 'scope', forkedFrom: null },
+      lifecycle: { scope: 'active', tenant: 'active' },
+    });
     expect(ran).toBe(1);
     expect(settled).toEqual([expect.objectContaining({ status: 'done' })]);
   });
@@ -259,4 +267,85 @@ describe('drainContextOf: a copy of a scope drains inert (#2005)', () => {
       expect(settled).toEqual([expect.objectContaining({ status: 'failed', lastError: INERT_SCOPE_REASON })]);
     });
   }
+});
+
+/**
+ * #1713: the drain's lifecycle read from the real directory Durable Object. A suspended scope, and a
+ * live scope under a suspended tenant, carry their status into the context, and the real drain then
+ * leaves the intent pending without running it. A tenant with no record fails closed.
+ */
+describe('drainContextOf: a held scope\'s intents wait (#1713)', () => {
+  const staff = platformActorId.parse(ulid());
+  const host = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const vertical = 'acme/crm';
+
+  beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+
+  const live = async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host().admin.createTenant(staff, { id: t, slug: `held-${t.toLowerCase()}`, name: 'Held' });
+    await host().provisionScope(staff, { tenantId: t, scopeId: s, vertical });
+    await host().admin.activateScope(staff, t, s);
+    return { t, s };
+  };
+  const drainOne = async (t: TenantId, s: ScopeId) => {
+    const ctx = drainContextOf(
+      (await host().admin.getScopeRecord(staff, t, s))!,
+      vertical,
+      await host().admin.getTenant(staff, t),
+    );
+    let ran = 0;
+    const settled: unknown[] = [];
+    const client = {
+      listPlatformRequests: async () => [
+        {
+          id: platformRequestId.parse(ulid()),
+          kind: PROVISION_SIBLING_KIND,
+          payload: {},
+          requestedBy: principalId.parse(ulid()),
+          status: 'pending',
+          attempts: 0,
+          lastError: null,
+          result: null,
+          requestedAt: new Date().toISOString(),
+          settledAt: null,
+        },
+      ],
+      settlePlatformRequest: async (...a: unknown[]) => void settled.push(a),
+    } as never;
+    const report = await drainScopePlatformRequests(client, ctx, { [PROVISION_SIBLING_KIND]: async () => (ran++, { status: 'done' }) });
+    return { ctx, report, ran, settled };
+  };
+
+  it('a suspended scope: held, nothing run, nothing settled; unsuspended, it runs', async () => {
+    const { t, s } = await live();
+    await host().admin.suspendScope(staff, t, s);
+    const held = await drainOne(t, s);
+    expect(held.ctx.lifecycle).toEqual({ scope: 'suspended', tenant: 'active' });
+    expect(held.report).toEqual({ drained: 0, done: 0, failed: 0, pending: 1, held: true });
+    expect([held.ran, held.settled.length]).toEqual([0, 0]);
+    await host().admin.unsuspendScope(staff, t, s);
+    const resumed = await drainOne(t, s);
+    expect([resumed.ran, resumed.report.done]).toEqual([1, 1]);
+  });
+
+  it('a live scope under a suspended tenant: held by the tenant', async () => {
+    const { t, s } = await live();
+    await host().admin.setTenantStatus(staff, t, 'suspended');
+    const held = await drainOne(t, s);
+    expect(held.ctx.lifecycle).toEqual({ scope: 'active', tenant: 'suspended' });
+    expect([held.report.held, held.ran]).toEqual([true, 0]);
+    await host().admin.setTenantStatus(staff, t, 'active');
+    expect((await drainOne(t, s)).ran).toBe(1);
+  });
+
+  it('a tenant with no record fails closed', () => {
+    const ctx = drainContextOf(
+      { tenantId: tenantId.parse(ulid()), id: scopeId.parse(ulid()), verticalVersionId: null, kind: 'scope', forkedFrom: null, status: 'active' },
+      vertical,
+      undefined,
+    );
+    expect(ctx.lifecycle).toEqual({ scope: 'active', tenant: 'reaped' });
+  });
 });
