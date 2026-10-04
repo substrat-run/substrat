@@ -8,6 +8,10 @@ import { fromWireFailure, toWireFailure, type WireFailure } from '@substrat-run/
  * coordinator with its code gone. A returned record crosses intact, so the DO returns the
  * failure (`toWireFailure`) and the coordinator rethrows it, rebuilt with its code
  * (`unwrapReply`). The same envelope `invoke` and the capability verbs answer with.
+ *
+ * ControlPlaneDO answers through one `reply(method, args)` over `REPLIED_METHODS`. The ScopeDO
+ * has a `…Reply` sibling per verb instead, because its old methods flatten their throw
+ * (`toRpcError`) and the sibling has to reach the body underneath.
  */
 export type DoReply<T> = { value: T; failure?: undefined } | { failure: WireFailure };
 

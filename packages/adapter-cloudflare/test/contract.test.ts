@@ -64,6 +64,7 @@ import {
   SWITCH_HOLD_SNAPSHOT_MS,
   SWITCH_HOLDS_NAME,
 } from '../src/host.js';
+import type { DoReply } from '../src/do-reply.js';
 import { SYSTEM_DOOR_REGATES } from '../src/system-door.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
@@ -5055,7 +5056,7 @@ describe('#113 — a refusal raised inside a Durable Object keeps its code acros
 
   it('refuses a method name that is not on the replied list', async () => {
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
-      reply(method: string, args: unknown[]): Promise<{ failure?: { message: string } }>;
+      reply(method: string, args: unknown[]): Promise<DoReply<unknown>>;
     };
     const reply = await stub.reply('wipeDirectory', []);
     expect(reply.failure?.message).toBe('not a replied directory method: wipeDirectory');

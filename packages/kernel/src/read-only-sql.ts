@@ -51,10 +51,14 @@ const FORBIDDEN = new Set([
   'release',
 ]);
 
+/** The gate's refusal: the caller's mistake (`validation_failed`), under the `read-only console:` prefix. */
+const refuse = (reason: string) => substratError('validation_failed', `read-only console: ${reason}`);
+const SINGLE_STATEMENT = 'only a single statement is allowed';
+
 /**
  * Assert `sql` is one read-only statement; returns the trimmed statement to run.
- * Throws an `Error` whose message names the offending token — it crosses the RPC
- * boundary and lands in the console UI, so it is written for the person typing.
+ * Throws a `validation_failed` refusal whose message names the offending token — it
+ * lands in the console UI, so it is written for the person typing.
  */
 export function assertReadOnlyQuery(sql: string): string {
   const tokens: string[] = [];
@@ -88,13 +92,13 @@ export function assertReadOnlyQuery(sql: string): string {
         }
         i += 1;
       }
-      if (statementEnded) throw substratError('validation_failed', 'read-only console: only a single statement is allowed');
+      if (statementEnded) throw refuse(SINGLE_STATEMENT);
       continue;
     }
     if (c === '[') {
       while (i < n && sql[i] !== ']') i += 1;
       i += 1;
-      if (statementEnded) throw substratError('validation_failed', 'read-only console: only a single statement is allowed');
+      if (statementEnded) throw refuse(SINGLE_STATEMENT);
       continue;
     }
     if (c === ';') {
@@ -106,24 +110,24 @@ export function assertReadOnlyQuery(sql: string): string {
     if (/[A-Za-z_]/.test(c)) {
       let j = i;
       while (j < n && /[A-Za-z0-9_]/.test(sql[j]!)) j += 1;
-      if (statementEnded) throw substratError('validation_failed', 'read-only console: only a single statement is allowed');
+      if (statementEnded) throw refuse(SINGLE_STATEMENT);
       tokens.push(sql.slice(i, j).toLowerCase());
       i = j;
       continue;
     }
-    if (statementEnded && /\S/.test(c)) throw substratError('validation_failed', 'read-only console: only a single statement is allowed');
+    if (statementEnded && /\S/.test(c)) throw refuse(SINGLE_STATEMENT);
     i += 1;
   }
 
   const first = tokens[0];
-  if (!first) throw substratError('validation_failed', 'read-only console: empty statement');
+  if (!first) throw refuse('empty statement');
   if (!FIRST_KEYWORDS.has(first)) {
-    throw substratError('validation_failed', `read-only console: statement must start with SELECT, WITH, VALUES, or EXPLAIN (got '${first.toUpperCase()}')`);
+    throw refuse(`statement must start with SELECT, WITH, VALUES, or EXPLAIN (got '${first.toUpperCase()}')`);
   }
   for (const t of tokens) {
     if (FORBIDDEN.has(t)) {
-      throw substratError('validation_failed',
-        `read-only console: '${t.toUpperCase()}' is not allowed (quote it if it names a column or table)`,
+      throw refuse(
+        `'${t.toUpperCase()}' is not allowed (quote it if it names a column or table)`,
       );
     }
   }

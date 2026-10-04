@@ -939,22 +939,6 @@ interface AdminEntry {
   at: string;
 }
 
-/** A capability attachment verb's answer (#1686) — the ScopeDO's `CapabilityAttachmentReply`. */
-type CapabilityAttachmentReply<T> = { value: T; failure?: undefined } | { failure: WireFailure };
-
-/** Rethrow a capability attachment verb's failure, rebuilt with its code; else its value. */
-function unwrapCapabilityReply<T>(reply: CapabilityAttachmentReply<T>): T {
-  if (reply.failure) throw fromWireFailure(reply.failure);
-  return reply.value as T;
-}
-
-/** `applyProjection` with its refusal's code kept across the DO hop (#113). */
-async function projectOnto(
-  stub: ScopeStubRpc,
-  ...args: Parameters<ScopeStubRpc['applyProjection']>
-): Promise<SwitchedOff[]> {
-  return unwrapReply(await stub.applyProjectionReply(...args));
-}
 
 interface ScopeStubRpc {
   /** The applied-migration count if this call applied any, else null (nothing changed). */
@@ -1357,13 +1341,13 @@ interface ScopeStubRpc {
     sessionHash: string,
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>>;
+  ): Promise<DoReply<AttachmentRecord[]>>;
   capabilityAttachmentOpen(
     attachmentId: string,
     sessionHash: string,
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<CapabilityAttachmentReply<AttachmentRecord | null>>;
+  ): Promise<DoReply<AttachmentRecord | null>>;
   /** #1686: always a failure — the refusal of a write through a capability, recorded (K-35). */
   capabilityAttachmentRefuseWrite(
     sessionHash: string,
@@ -1371,7 +1355,7 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     operation: 'attachments.upload' | 'attachments.remove',
     target: { entityType: string } | { attachmentId: string },
-  ): Promise<CapabilityAttachmentReply<never>>;
+  ): Promise<DoReply<never>>;
   /** #1575: extracted-text search as `principal` (or the connection), its failure as data. */
   attachmentSearch(
     term: string,
@@ -1380,7 +1364,7 @@ interface ScopeStubRpc {
     tenantId: TenantId,
     scopeId: ScopeId,
     connectionId?: string,
-  ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>>;
+  ): Promise<DoReply<AttachmentRecord[]>>;
   /** #1575: the same search through a capability session, as an envelope. */
   capabilityAttachmentSearch(
     term: string,
@@ -1388,7 +1372,7 @@ interface ScopeStubRpc {
     sessionHash: string,
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>>;
+  ): Promise<DoReply<AttachmentRecord[]>>;
   /** #1575: the extraction job's record read — no gate, the kernel's own derivation. */
   attachmentTextSource(attachmentId: string): Promise<AttachmentRecord | null>;
   /** #1575: write an extraction outcome; false when the attachment was removed meanwhile. */
@@ -3160,11 +3144,11 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     roles: RoleDefinition[],
   ): Promise<void> {
-    await projectOnto(this.scopeStub(scopeId),
+    unwrapReply(await this.scopeStub(scopeId).applyProjectionReply(
       tenantId,
       roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source })),
       [],
-    );
+    ));
   }
 
   /**
@@ -3791,21 +3775,21 @@ export class CloudflareScopeHost implements ScopeHost {
       const hash = subject.capabilitySession;
       return {
         upload: async (input) =>
-          unwrapCapabilityReply(
+          unwrapReply(
             await stub.capabilityAttachmentRefuseWrite(hash, tenantId, scopeId, 'attachments.upload', {
               entityType: input.entity.entityType,
             }),
           ),
         list: async (entity) =>
-          unwrapCapabilityReply(await stub.capabilityAttachmentList(entity, hash, tenantId, scopeId)),
+          unwrapReply(await stub.capabilityAttachmentList(entity, hash, tenantId, scopeId)),
         open: async (attachmentId) => {
-          const record = unwrapCapabilityReply(
+          const record = unwrapReply(
             await stub.capabilityAttachmentOpen(attachmentId, hash, tenantId, scopeId),
           );
           return record ? this.openAttachmentBytes(store, scopeId, record) : null;
         },
         remove: async (attachmentId) =>
-          unwrapCapabilityReply(
+          unwrapReply(
             await stub.capabilityAttachmentRefuseWrite(hash, tenantId, scopeId, 'attachments.remove', {
               attachmentId,
             }),
@@ -3814,7 +3798,7 @@ export class CloudflareScopeHost implements ScopeHost {
           // Judged here too, so a short term reaches the caller as `SearchTermTooShort`
           // rather than as a message that crossed the RPC boundary. The DO judges again.
           searchMatchExpression(term, 'prefix');
-          return unwrapCapabilityReply(
+          return unwrapReply(
             await stub.capabilityAttachmentSearch(term, searchLimit(options?.limit), hash, tenantId, scopeId),
           );
         },
@@ -3883,7 +3867,7 @@ export class CloudflareScopeHost implements ScopeHost {
           throw new Error('attachments.search is not available on a delivery-scoped surface');
         }
         searchMatchExpression(term, 'prefix');
-        return unwrapCapabilityReply(
+        return unwrapReply(
           await stub.attachmentSearch(term, searchLimit(options?.limit), asPrincipalId, tenantId, scopeId, connectionId),
         );
       },
@@ -8174,6 +8158,14 @@ export class CloudflareScopeHost implements ScopeHost {
 
   // -- helpers --------------------------------------------------------------
 
+  /** A directory write whose refusal must keep its code across the DO hop (#113). */
+  private async directory<M extends RepliedMethod>(
+    method: M,
+    ...args: Parameters<ControlPlaneStub[M]>
+  ): Promise<Awaited<ReturnType<ControlPlaneStub[M]>>> {
+    return unwrapReply(await this.cp.reply(method, args));
+  }
+
   /**
    * The getScope gate (control-plane.md §4.1/§4.2) — the pair check, then the tenant's and
    * the scope's lifecycle — thrown on THIS side of the RPC (#1718). The ControlPlaneDO
@@ -8191,14 +8183,6 @@ export class CloudflareScopeHost implements ScopeHost {
    * without the lifecycle half pays the one DO call the pair check needs. Null with a directory,
    * whose refusal already covered the lifecycle.
    */
-  /** A directory write whose refusal must keep its code across the DO hop (#113). */
-  private async directory<M extends RepliedMethod>(
-    method: M,
-    ...args: Parameters<ControlPlaneStub[M]>
-  ): Promise<Awaited<ReturnType<ControlPlaneStub[M]>>> {
-    return unwrapReply(await this.cp.reply(method, args));
-  }
-
   private async validateScopeAccess(tenantId: TenantId, scopeId: ScopeId): Promise<StoredScopeLifecycle | null> {
     const refusal = await this.cp.scopeAccessRefusal(tenantId, scopeId);
     if (refusal) throw refusal.code ? substratError(refusal.code, refusal.message) : new Error(refusal.message);
@@ -9096,7 +9080,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!scope) throw unknownScopeForTenant(tenantId, scopeId);
     const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
     const connectionKeys = await this.connectionKeyRows(tenantId, scope.vertical);
-    await projectOnto(this.scopeStub(scopeId),
+    unwrapReply(await this.scopeStub(scopeId).applyProjectionReply(
       tenantId,
       roles,
       tuples,
@@ -9104,7 +9088,7 @@ export class CloudflareScopeHost implements ScopeHost {
       undefined,
       identities,
       connectionKeys,
-    );
+    ));
   }
 
   /**
@@ -9157,7 +9141,7 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!keysByVertical.has(vertical)) {
           keysByVertical.set(vertical, this.connectionKeyRows(tenantId, s.vertical));
         }
-        await projectOnto(this.scopeStub(s.scope_id as ScopeId),
+        unwrapReply(await this.scopeStub(s.scope_id as ScopeId).applyProjectionReply(
           tenantId,
           roles,
           tuples,
@@ -9165,7 +9149,7 @@ export class CloudflareScopeHost implements ScopeHost {
           undefined,
           identities,
           await keysByVertical.get(vertical),
-        );
+        ));
       }),
     );
     const failed = settled.flatMap((r, i) => (r.status === 'rejected' ? [{ scope: scopes[i]!.scope_id, reason: r.reason as unknown }] : []));
@@ -9244,7 +9228,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
-    const switchedOff = await projectOnto(stub,
+    const switchedOff = unwrapReply(await stub.applyProjectionReply(
       input.tenantId,
       input.roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source })),
       [], // no tenant-level tuples — a CP-less vertical grants at scope level only
@@ -9341,7 +9325,7 @@ export class CloudflareScopeHost implements ScopeHost {
         ? { scopeId: input.scopeId, moduleIds: input.switchedOff, at: new Date().toISOString(), tenantHeld: input.tenantHeld }
         : undefined,
       services?.map((id) => `principal:${id}`),
-    );
+    ));
     return input.switchedOff ? { switchedOff } : {};
   }
 

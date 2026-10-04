@@ -2267,13 +2267,6 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * The getScope gate (control-plane.md §4.1/§4.2): validate the scope belongs
-   * to the tenant and both records are active, or throw the fail-closed reason.
-   *
-   * Kept for a coordinator from before #1718, which still calls it. The current one
-   * calls `scopeAccessRefusal` instead, because a throw from here reaches it untyped.
-   */
-  /**
    * A directory write, its refusal answered as DATA (#113): the typed throws in these methods
    * would reach the coordinator flattened, so it calls them through here and rethrows the
    * refusal with its code (`unwrapReply`). Called directly, they still throw — a coordinator
@@ -2291,6 +2284,13 @@ export class ControlPlaneDO extends DurableObject {
     });
   }
 
+  /**
+   * The getScope gate (control-plane.md §4.1/§4.2): validate the scope belongs
+   * to the tenant and both records are active, or throw the fail-closed reason.
+   *
+   * Kept for a coordinator from before #1718, which still calls it. The current one
+   * calls `scopeAccessRefusal` instead, because a throw from here reaches it untyped.
+   */
   validateScopeAccess(tenantId: string, scopeId: string): void {
     const refusal = this.scopeAccessRefusal(tenantId, scopeId);
     if (refusal) throw new Error(refusal.message);
@@ -2307,7 +2307,6 @@ export class ControlPlaneDO extends DurableObject {
     tenantId: string,
     scopeId: string,
   ): { code: ErrorCode | null; message: string } | null {
-    const refuse = (code: ErrorCode | null, message: string) => ({ code, message });
     const row = this.sql
       .exec('SELECT tenant_id, status FROM scopes WHERE scope_id = ?', scopeId)
       .toArray()[0] as { tenant_id: string; status: string } | undefined;
@@ -2318,10 +2317,10 @@ export class ControlPlaneDO extends DurableObject {
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
-      return refuse('not_found', `scope has no tenant record: (${tenantId}, ${scopeId})`);
+      return { code: 'not_found', message: `scope has no tenant record: (${tenantId}, ${scopeId})` };
     }
     if (tenantRow.status !== 'active') {
-      return refuse('conflict', `tenant not active (status: ${tenantRow.status}): ${tenantId}`);
+      return { code: 'conflict', message: `tenant not active (status: ${tenantRow.status}): ${tenantId}` };
     }
     if (row.status !== 'active') {
       // A scope stuck in provisioning because its migrations failed must say so.
@@ -2337,13 +2336,14 @@ export class ControlPlaneDO extends DurableObject {
         | { migration_failed_version: string | null; migration_error: string | null }
         | undefined;
       if (failure?.migration_failed_version) {
-        return refuse(
-          null,
-          `migration failed for ${failure.migration_failed_version} — scope fails closed: ` +
+        return {
+          code: null,
+          message:
+            `migration failed for ${failure.migration_failed_version} — scope fails closed: ` +
             `${failure.migration_error ?? 'unknown error'}`,
-        );
+        };
       }
-      return refuse('conflict', `scope not active (status: ${row.status}): ${scopeId}`);
+      return { code: 'conflict', message: `scope not active (status: ${row.status}): ${scopeId}` };
     }
     return null;
   }

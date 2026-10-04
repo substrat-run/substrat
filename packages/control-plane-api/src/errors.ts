@@ -12,6 +12,23 @@ import { SecretBoxUnconfiguredError } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ConnectionRelayError } from './connection-relay.js';
 
+export interface ApiError {
+  status: ContentfulStatusCode;
+  body: Problem;
+}
+
+/** A body built from a code this layer decided, rather than one the throw declared. */
+const coded = (code: ErrorCode, message: string): ApiError => ({
+  status: PROBLEM_CATALOG[code].status as ContentfulStatusCode,
+  body: toProblem(substratError(code, message)),
+});
+
+/** A status raised somewhere else and relayed — `about:blank`, because it is not ours. */
+const relayed = (status: number, message: string): ApiError => ({
+  status: status as ContentfulStatusCode,
+  body: problemForStatus(status, message),
+});
+
 /**
  * Map a `HostAdmin` throw onto a problem document — #113.
  *
@@ -35,23 +52,6 @@ import { ConnectionRelayError } from './connection-relay.js';
  * surface has cross-tenant reach. That is also what makes a new untyped refusal VISIBLE:
  * it answers `internal error` in its first test, rather than being quietly matched.
  */
-export interface ApiError {
-  status: ContentfulStatusCode;
-  body: Problem;
-}
-
-/** A body built from a code this layer decided, rather than one the throw declared. */
-const coded = (code: ErrorCode, message: string): ApiError => ({
-  status: PROBLEM_CATALOG[code].status as ContentfulStatusCode,
-  body: toProblem(substratError(code, message)),
-});
-
-/** A status raised somewhere else and relayed — `about:blank`, because it is not ours. */
-const relayed = (status: number, message: string): ApiError => ({
-  status: status as ContentfulStatusCode,
-  body: problemForStatus(status, message),
-});
-
 export function mapError(err: unknown): ApiError {
   // A ControlPlaneError is a DELIBERATE downstream answer, not an unreviewed throw —
   // the VerticalClient wraps the vertical's own JSON status/message in it. Passing it

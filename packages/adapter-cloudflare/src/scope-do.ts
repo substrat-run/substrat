@@ -944,7 +944,7 @@ function concurrencyRefOf(
  * What a capability attachment verb (#1686) answers: its value, or its failure as DATA —
  * `invoke`'s envelope discipline, since a throw across the RPC keeps only its message.
  */
-export type CapabilityAttachmentReply<T> = { value: T; failure?: undefined } | { failure: WireFailure };
+export type CapabilityAttachmentReply<T> = DoReply<T>;
 
 function attachSubject(principal: PrincipalId, connectionId?: string): CheckSubject {
   return connectionId ? { kind: 'connection', id: connectionId } : { kind: 'principal', id: principal };
@@ -3422,15 +3422,13 @@ export function defineScopeDO(
       connectionId?: string,
     ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>> {
       await this.ensureMigrations();
-      try {
+      return replyOf(() => {
         const ctx = this.operationContext(
           principal, tenantId, scopeId, undefined, connectionId,
           undefined, undefined, undefined, 'attachments.search',
         );
-        return { value: await this.searchAttachmentsAs(ctx, term, limit) };
-      } catch (err) {
-        return { failure: toWireFailure(err) };
-      }
+        return this.searchAttachmentsAs(ctx, term, limit);
+      });
     }
 
     /**
@@ -5092,7 +5090,8 @@ export function defineScopeDO(
       }));
     }
 
-    /** A bounded page of one table. Unknown table names throw — never queried blind. */
+    /** A bounded page of one table. Unknown table names throw — never queried blind. Kept for a
+     *  coordinator from before #113; the current one calls `introspectTableReply`. */
     introspectTable(table: string, limit: number, offset: number): ScopeTablePage {
       try {
         return this.tablePage(table, limit, offset);
@@ -5136,6 +5135,7 @@ export function defineScopeDO(
      * (no sqlite3_stmt_readonly analogue), a transaction that ALWAYS rolls back — a
      * statement the gate misclassified still cannot persist a write. Rows are capped
      * at SCOPE_QUERY_ROW_MAX with `truncated` set, never an error.
+     * Kept for a coordinator from before #113; the current one calls `introspectQueryReply`.
      */
     async introspectQuery(sql: string): Promise<ScopeQueryResult> {
       try {
@@ -6837,6 +6837,11 @@ export function defineScopeDO(
       });
     }
 
+    /** `applyProjection`, its refusal answered as DATA so its code survives the hop (#113). */
+    applyProjectionReply(...args: Parameters<ScopeDO['applyProjection']>): Promise<DoReply<SwitchedOff[]>> {
+      return replyOf(() => this.applyProjection(...args));
+    }
+
     /**
      * Replace this scope's projected view of a tenant's roles + tenant-level tuples
      * with a fresh snapshot, and make it authoritative (source = 'local'). A full
@@ -6844,11 +6849,6 @@ export function defineScopeDO(
      * and the reconciliation sweep both call it (scope-local-permissions.md Phase 2).
      * One enqueued unit, so no half-applied projection is ever visible to a check.
      */
-    /** `applyProjection`, its refusal answered as DATA so its code survives the hop (#113). */
-    applyProjectionReply(...args: Parameters<ScopeDO['applyProjection']>): Promise<DoReply<SwitchedOff[]>> {
-      return replyOf(() => this.applyProjection(...args));
-    }
-
     async applyProjection(
       tenantId: string,
       roles: { role_key: string; permissions: string; source: string }[],
