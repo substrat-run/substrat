@@ -215,6 +215,18 @@ tenant, a joiner other than the one who accepted, a role the invitation was not 
 or an invitation somebody else accepted first. The admin rows record the service actor as
 executing, `onBehalfOf` the inviter, `causedBy` the event.
 
+Removal goes through the same seam: a vertical emits `member.remove-requested` on
+`membership:<principal>`, and the executor takes the role and the membership away, bounded
+by the **remover's** own authority. **Removal wins.** An add is refused when the joiner was
+removed after it was requested, by any recorded removal: a later `member.remove-requested`,
+or an `unassignRole` / `removeMember` admin row naming them. So a join still retrying when
+the person is removed never lands afterwards, and neither does one requested before the
+executor was mounted for someone removed by hand since.
+
+A module shows the effect it asked for as it actually stands with `readExecutorDelivery`
+from `@substrat-run/kernel`: unattempted, retrying, delivered, refused (and why), or
+dead-lettered, read off the delivery journal.
+
 ## How work leaves the scope {#drain}
 
 Consumers run inside the scope. Two kinds of work cannot: a **platform intent** needs

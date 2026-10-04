@@ -193,8 +193,14 @@ permissions, and reported to the accepting call through `onExecutorOutcomes`. Th
 name the platform actor that executed them and, through `attributed` (#977), the inviter
 `onBehalfOf` whom they were written. That answers the `PlatformActorId` question: the actor
 is the hand, and the person whose authority bounded the write is recorded beside it, not
-laundered away. The dashboard mounts it at the tenant node, with its own scope sweeper as
-the backstop. The verticals that mount `vertical-auth`'s invite routes do not need it:
+laundered away. Removal is the mirror: `member.remove-requested`, bounded by the
+remover (§5.1 consequence 1), effected by the same executor. **Removal wins**: an add is
+refused when the joiner was removed after it was requested, by a later
+`member.remove-requested` or by any `unassignRole` / `removeMember` admin row naming them. The
+second clause is what keeps a backlog safe. Requests emitted before any executor was mounted,
+for people removed by hand since, stay refused when a first drain finds them. The dashboard
+mounts it at the tenant node, with its own scope sweeper as the backstop, and shows an
+accepted member as `joining` until the journal says otherwise (`readExecutorDelivery`). The verticals that mount `vertical-auth`'s invite routes do not need it:
 their invite grants a SCOPE role, a scope-local tuple already bounded by
 `assignScopeRoleBounded`, and no org membership.
 
