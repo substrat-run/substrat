@@ -1,4 +1,4 @@
-import type { AppHealthRow, AppMetricsView, AppRow, ConnectorCallsBucket, ReleaseMarker, TeamTrafficSeries, TrafficBucket } from './api';
+import type { AppHealthRow, AppMetricsView, AppRow, BusinessVolumeRow, ConnectorCallsBucket, ReleaseMarker, TeamTrafficSeries, TrafficBucket } from './api';
 import { fleetRows, type FleetRow } from './fleet-rows';
 
 /**
@@ -87,6 +87,23 @@ export function pulseConnectorRows(
       buckets,
     };
   });
+}
+
+/**
+ * The business outcomes Pulse shows by default (#1750): a move that opens a record (out of
+ * the initial state) or ends one (into a terminal state) — "conversations opened and
+ * resolved, deals closed". Every other countable move sits behind "Show all moves".
+ */
+export const isBusinessOutcome = (row: BusinessVolumeRow): boolean => row.terminal || row.fromInitial;
+
+/**
+ * A business row's name. The model carries no display names for entities or states, so the
+ * ids are the words, with their separators read as spaces: an outcome reads as the record
+ * and where it ended up ("conversation resolved"), any other move as the edge it is.
+ */
+export function businessLabel(row: BusinessVolumeRow): string {
+  const words = (id: string) => id.replace(/[-_]+/g, ' ');
+  return isBusinessOutcome(row) ? `${words(row.entityType)} ${words(row.state)}` : `${words(row.entityType)} → ${words(row.state)}`;
 }
 
 /**

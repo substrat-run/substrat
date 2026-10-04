@@ -27,7 +27,9 @@ import {
   PULSE_GRID,
   bucketSpans,
   businessChange,
+  businessLabel,
   deployPills,
+  isBusinessOutcome,
   errorBarsPath,
   metricLinePath,
   pulseAppRows,
@@ -125,6 +127,7 @@ export function Pulse({
   const [connectorError, setConnectorError] = useState(false);
   const [business, setBusiness] = useState<BusinessVolumesView | null>(null);
   const [businessError, setBusinessError] = useState(false);
+  const [allMoves, setAllMoves] = useState(false);
   const prefs = useOverlayPrefs();
 
   useEffect(() => {
@@ -248,6 +251,9 @@ export function Pulse({
   const range = RANGES.find((r) => Number(r.value) === hours);
   const bins = series?.bucketMinutes ? binLabel(series.bucketMinutes) : null;
   const notYet = (business?.apps ?? []).filter((a) => a.unavailable === 'not-yet-available');
+  const outcomes = (business?.rows ?? []).filter(isBusinessOutcome);
+  const businessShown = allMoves ? (business?.rows ?? []) : outcomes;
+  const hiddenMoves = (business?.rows.length ?? 0) - outcomes.length;
 
   // Drag-to-zoom on the sparkline column: any row's sparkline is a handle on the card's
   // one clock. A drag shorter than a click leaves the row's own link to work.
@@ -399,8 +405,8 @@ export function Pulse({
           )) : <Note>No connector calls in this window.</Note>
         ) : <Note>{connectorError ? 'Connector calls are unavailable right now.' : 'Connector call analytics are not available on this plane.'}</Note>}
         <SectionHead cells={['Business today', 'Today', 'Yesterday', 'Change', business ? `Moves per ${binLabel(business.bucketMinutes)}` : 'Moves per bucket', '']} />
-        {businessError ? <Note>Business volumes are unavailable right now.</Note> : business === null ? <Note>Reading business volumes…</Note> : business.rows.length ? (
-          business.rows.map((row) => (
+        {businessError ? <Note>Business volumes are unavailable right now.</Note> : business === null ? <Note>Reading business volumes…</Note> : businessShown.length ? (
+          businessShown.map((row) => (
             <BusinessLine
               key={`${row.scopeId}:${row.entityType}:${row.state}:${row.fromInitial}`}
               row={row}
@@ -410,7 +416,14 @@ export function Pulse({
               handle={handle}
             />
           ))
-        ) : <Note>No app declares a lifecycle whose moves can be counted yet.</Note>}
+        ) : <Note>{business.rows.length ? 'No app declares a move that opens or ends a record.' : 'No app declares a lifecycle whose moves can be counted yet.'}</Note>}
+        {hiddenMoves > 0 && (
+          <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+            <Button variant="ghost" size="sm" aria-pressed={allMoves} onClick={() => setAllMoves((v) => !v)}>
+              {allMoves ? 'Show outcomes only' : `Show all moves (${hiddenMoves} more)`}
+            </Button>
+          </div>
+        )}
         {scopeId && (
           <AppSchedules
             key={`${scopeId}:${nonce}`}
@@ -637,7 +650,7 @@ function BusinessLine({ row, app, bucketMinutes, window, handle }: {
     <div role="row" style={{ display: 'grid', gridTemplateColumns: PULSE_GRID, alignItems: 'center', padding: '0 16px', height: 48, borderTop: '1px solid var(--border-subtle)' }}>
       <span role="cell" style={{ minWidth: 0 }} title={`Counted from ${row.operations.join(', ')}`}>
         <span style={{ display: 'block', fontSize: 13.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {row.entityType} → {row.state}
+          {businessLabel(row)}
         </span>
         {app && <span style={{ display: 'block', fontSize: 12, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{app}</span>}
       </span>

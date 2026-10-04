@@ -376,7 +376,7 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
   expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-b' }));
 });
 
-it('Pulse draws a business row per counted move: today, yesterday, the change, and its series (#1750)', async () => {
+it('Pulse draws the business outcomes by default — today, yesterday, the change, a series — and every move behind a toggle (#1750)', async () => {
   const hour = Math.floor((Date.now() - 3_600_000) / 3_600_000) * 3_600_000;
   vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [], available: true, bucketMinutes: 60 });
   vi.spyOn(api, 'connectorCalls').mockResolvedValue({ available: true, buckets: [] });
@@ -388,6 +388,8 @@ it('Pulse draws a business row per counted move: today, yesterday, the change, a
     rows: [
       { scopeId: 'app-a', entityType: 'order', state: 'closed', terminal: true, fromInitial: false, operations: ['shop/close'], today: 6, yesterday: 4, buckets: [{ start: new Date(hour).toISOString(), count: 6 }] },
       { scopeId: 'app-a', entityType: 'order', state: 'shipped', terminal: false, fromInitial: true, operations: ['shop/ship'], today: 2, yesterday: 0, buckets: [{ start: new Date(hour).toISOString(), count: 2 }] },
+      // Neither opens nor ends an order: counted, but not an outcome.
+      { scopeId: 'app-a', entityType: 'order', state: 'on_hold', terminal: false, fromInitial: false, operations: ['shop/hold'], today: 1, yesterday: 1, buckets: [{ start: new Date(hour).toISOString(), count: 1 }] },
     ],
     apps: [{ scopeId: 'app-a', unavailable: null }, { scopeId: 'app-b', unavailable: 'not-yet-available' }],
   });
@@ -399,16 +401,29 @@ it('Pulse draws a business row per counted move: today, yesterday, the change, a
     root.render(<Observability apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={vi.fn()} />),
   );
   expect(business).toHaveBeenCalledWith({ hours: 24 });
-  const rows = [...container.querySelectorAll('[data-pulse-card] div[role="row"]')]
+  const businessRows = () => [...container.querySelectorAll('[data-pulse-card] div[role="row"]')]
     .filter((r) => r.querySelector('[role="cell"]')?.textContent?.startsWith('order'));
-  expect(rows.map((r) => [...r.querySelectorAll('[role="cell"]')].slice(0, 4).map((c) => c.textContent))).toEqual([
-    ['order → closedApp A', '6', '4', '+50%'],
-    ['order → shippedApp A', '2', '0', 'new'],
+  const cells = () => businessRows().map((r) => [...r.querySelectorAll('[role="cell"]')].slice(0, 4).map((c) => c.textContent));
+  // By default, only what opens or ends an order, named by the model's own ids.
+  expect(cells()).toEqual([
+    ['order closedApp A', '6', '4', '+50%'],
+    ['order shippedApp A', '2', '0', 'new'],
   ]);
+  const rows = businessRows();
   expect(rows[0]!.querySelector('svg path')).not.toBeNull();
   expect(rows[0]!.querySelector('a')?.getAttribute('href')).toContain('entity=order');
   // An app whose code predates the read is named, not silently missing.
   expect(container.textContent).toContain('Business volumes need a re-push of App B.');
+  // The twin: the toggle shows every countable move, the edge written as one.
+  const toggle = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Show all moves (1 more)')!;
+  click(toggle);
+  expect(cells()).toEqual([
+    ['order closedApp A', '6', '4', '+50%'],
+    ['order shippedApp A', '2', '0', 'new'],
+    ['order → on holdApp A', '1', '1', '±0%'],
+  ]);
+  click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Show outcomes only')!);
+  expect(cells()).toHaveLength(2);
 });
 
 it('relative presets retain hours-only requests for legacy readers and shared cache keys', async () => {
