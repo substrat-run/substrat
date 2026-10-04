@@ -4,10 +4,11 @@ import { runDueJobRuns, type JobDueKey, type JobRunPatch, type JobRunRow, type J
 
 /**
  * #1834 (#2028 review r3): a drive's selection is ONE snapshot of due keys, and each run is
- * re-read as it is claimed. A store paged across several reads met rows a concurrent drive moved
+ * re-read just before it runs. A store paged across several reads met rows another writer moved
  * in between, and a drive ran one twice or skipped it. Here a hook moves rows AFTER the snapshot
- * and BEFORE the claims — the window a concurrent drive has — and the drive must act on each row as
- * it is at its claim, each at most once, leaving anything that moved to the next drive.
+ * and BEFORE the re-reads, and the drive must act on each row as it is at its re-read, each at most
+ * once, leaving anything that moved to the next drive. Two OVERLAPPING drives are not covered: the
+ * re-read reserves nothing, and one driver per scope at a time is still the stated bound.
  */
 const NOW = '2026-10-04T12:00:00.000Z';
 const PAST = '2026-10-04T11:00:00.000Z';
@@ -92,7 +93,7 @@ async function drive(store: JobRunStore, ran: string[], limit: number, advance =
   });
 }
 
-describe('#1834: a drive acts on one snapshot, re-read at each claim', () => {
+describe('#1834: a drive acts on one snapshot, each row re-read before it runs', () => {
   it('twin: nothing moves, and the snapshot runs in due order up to the limit', async () => {
     const ran: string[] = [];
     const { store } = storeOf([rowOf('A'), rowOf('B'), rowOf('C')]);
@@ -100,7 +101,7 @@ describe('#1834: a drive acts on one snapshot, re-read at each claim', () => {
     expect(ran).toEqual(['A', 'B']);
   });
 
-  it('a run moved past now after the snapshot is skipped at its claim, and the next drive takes it', async () => {
+  it('a run moved past now after the snapshot is skipped at its re-read, and the next drive takes it', async () => {
     const ran: string[] = [];
     const { store, table } = storeOf([rowOf('A'), rowOf('B'), rowOf('C')], {
       afterSnapshot: (rows) => {
@@ -125,7 +126,7 @@ describe('#1834: a drive acts on one snapshot, re-read at each claim', () => {
   });
 
   // Its pass ADVANCES, so after it the run is still running and due: only the dedupe, not the
-  // claim's re-read, stands between the repeated key and a second pass in the same drive.
+  // re-read, stands between the repeated key and a second pass in the same drive.
   it('a key the snapshot names twice runs once in the drive', async () => {
     const ran: string[] = [];
     const { store } = storeOf([rowOf('A'), rowOf('B')], { duplicate: 'A' });

@@ -489,8 +489,11 @@ export interface JobRunStore {
    * #1834: ONE snapshot of the keys of up to `max` `running` runs whose `next_attempt_at` has passed
    * (or is NULL), in the order they became due (`JOB_RUN_DUE_AT`, then id), read in ONE query.
    *
-   * Keys, not rows: the driver reads each row again when it claims it (`get`), so what it acts on is
-   * never older than that claim. And one read, not pages: a cursor across separate reads met rows
+   * Keys, not rows: the driver re-reads each row (`get`) just before it runs it, so what it acts on
+   * is never older than that re-read. The re-read RESERVES nothing: two drives overlapping on one
+   * scope can both re-read a row as due and both run it, which is why one driver per scope at a time
+   * stays a stated bound (see the file header). And one read, not pages: a cursor across separate
+   * reads met rows
    * that a concurrent drive moved in between, and a drive then saw a run twice, or never.
    */
   dueKeys(now: string, max: number): Promise<JobDueKey[]>;
@@ -1005,10 +1008,14 @@ export async function runJobPass(options: {
  *
  * **Selection is ONE snapshot per drive** (#1834). The drive reads the keys of up to
  * `JOB_DRIVE_SCAN_MAX` due runs in a single query, picks up to `limit` runnable ones
- * (each id once), and re-reads each row as it claims it, skipping one that is no longer
- * `running` or no longer due. A cursor across several reads met rows a concurrent drive
- * had moved in between, and ran one twice or skipped it. A run that moves, or becomes
- * due, after the snapshot is the NEXT drive's business, never this one's.
+ * (each id once), and re-reads each row just before it runs it, skipping one that is no
+ * longer `running` or no longer due. A cursor across several reads met rows that another
+ * writer had moved in between, and ran one twice or skipped it. A run that moves, or
+ * becomes due, after the snapshot is the NEXT drive's business, never this one's.
+ *
+ * The re-read is a READ, not a reservation: it does not make overlapping drives safe. Two
+ * drives on one scope at once can both re-read a row as due and both run its handler. The
+ * one-driver-per-scope bound in the file header still applies.
  *
  * The starvation was spotted while re-reading this file, judged unlikely and left
  * alone — and then found independently by a reviewer. The judgement may even have
@@ -1054,8 +1061,8 @@ export async function runDueJobRuns(options: {
   }
 
   for (const key of picked) {
-    // The claim: the row as it is NOW. One a concurrent drive finished, or moved past this
-    // moment, is skipped; it is the next drive's.
+    // The re-read: the row as it is NOW. One that was finished, or moved past this moment, since
+    // the snapshot is skipped; it is the next drive's. This reserves nothing (see above).
     const row = await options.store.get(key.id);
     if (!row || row.status !== 'running' || (row.next_attempt_at !== null && row.next_attempt_at > options.now())) {
       continue;
