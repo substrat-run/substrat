@@ -202,14 +202,16 @@ executor rather than leaving each host to write one:
 ```ts
 import { registerMembershipExecutor } from '@substrat-run/kernel';
 
-registerMembershipExecutor(host, { actor: SERVICE_ACTOR, level: 'scope' }); // or 'tenant'
+registerMembershipExecutor(host, { actor: SERVICE_ACTOR }); // tenant-level, the only level
 ```
 
 It consumes `member.add-requested`, which `@substrat-run/engine-invites` emits on accept,
-and effects the org membership and the invited role at `level`. Nothing in the payload is
-taken as authority. The inviter is the kernel-stamped actor of the invitation's own
-`invites.sent` event, and the role is assigned only if that inviter **still** holds every
-permission it carries at that node: the same comparison `ctx.canAssign` makes. An inviter
+and effects the org membership and the invited role at the tenant node, as one directory
+unit (`HostAdmin.applyMembership`). Nothing in the payload is taken as authority. The inviter
+is the kernel-stamped actor of the invitation's own `invites.sent` event, and the membership
+is applied only if that inviter **still** holds every permission it would confer: the role's,
+and the org's, read from the directory. That is the comparison `ctx.canAssign` makes,
+widened to the org. One invitation joins one person, once. An inviter
 demoted or removed between send and accept is refused. So is a request that names another
 tenant, a joiner other than the one who accepted, a role the invitation was not sent for,
 or an invitation somebody else accepted first. The admin rows record the service actor as
@@ -219,7 +221,9 @@ Removal goes through the same seam: a vertical emits `member.remove-requested` o
 `membership:<principal>`, and the executor takes the role and the membership away, bounded
 by the **remover's** own authority. **Removal wins.** An add is refused when the joiner was
 removed after it was requested, by any recorded removal: a later `member.remove-requested`,
-or an `unassignRole` / `removeMember` admin row naming them. So a join still retrying when
+or an `unassignRole` / `removeMember` admin row naming them at or after the request less
+`MEMBERSHIP_REMOVAL_SKEW_MS` (5 minutes: the directory and the scope share no clock, so a tie
+and anything within the window go to the removal). So a join still retrying when
 the person is removed never lands afterwards, and neither does one requested before the
 executor was mounted for someone removed by hand since.
 

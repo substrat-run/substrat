@@ -178,31 +178,50 @@ pattern; joining it is cheap to design now and impossible to reconstruct after t
 uncorrelated rows — which is exactly when someone asks.
 
 **The executor is the kernel's, mounted once (#1184).** `registerMembershipExecutor(host,
-{ actor, level })` in `@substrat-run/kernel` consumes `member.add-requested` and effects
-`addMember` plus `assignRole` at the scope or the tenant node. The correlation id is the
-event's own kernel-minted id, carried back as `causedBy` on both admin rows. Nothing in the
-payload is authority, because module code wrote it. The executor takes the inviter from the
-kernel-stamped actor of the invitation's `invites.sent` event, and the joiner from the
-request's own actor, which must also have made the invitation's first acceptance. It then
-asks §5.1's set comparison, at the node it is about to assign at and at execution time,
-whether that inviter still holds the role. A sender demoted or removed since the send is
-refused. The bound is no weaker than `ctx.grant`'s delegation: the most a module can do is
-make the principal who really invoked it look like the sender. A refusal is terminal
-(`refuseDelivery`, a return value module code cannot produce), journaled with the missing
-permissions, and reported to the accepting call through `onExecutorOutcomes`. The admin rows
-name the platform actor that executed them and, through `attributed` (#977), the inviter
-`onBehalfOf` whom they were written. That answers the `PlatformActorId` question: the actor
-is the hand, and the person whose authority bounded the write is recorded beside it, not
-laundered away. Removal is the mirror: `member.remove-requested`, bounded by the
-remover (§5.1 consequence 1), effected by the same executor. **Removal wins**: an add is
-refused when the joiner was removed after it was requested, by a later
-`member.remove-requested` or by any `unassignRole` / `removeMember` admin row naming them. The
-second clause is what keeps a backlog safe. Requests emitted before any executor was mounted,
-for people removed by hand since, stay refused when a first drain finds them. The dashboard
-mounts it at the tenant node, with its own scope sweeper as the backstop, and shows an
-accepted member as `joining` until the journal says otherwise (`readExecutorDelivery`). The verticals that mount `vertical-auth`'s invite routes do not need it:
-their invite grants a SCOPE role, a scope-local tuple already bounded by
-`assignScopeRoleBounded`, and no org membership.
+{ actor })` in `@substrat-run/kernel` consumes `member.add-requested` and effects the org
+membership and the role at the **tenant** node, and only there. A scope-level role lives in
+the scope's store and membership in the directory, and no single operation spans the two.
+A scope role already has an atomic check-and-grant, `assignScopeRoleBounded`, which is what
+`vertical-auth`'s invite routes use.
+
+The correlation id is the event's own kernel-minted id, carried back as `causedBy` on both
+admin rows. Nothing in the payload is authority, because module code wrote it:
+
+- The inviter is the kernel-stamped actor of the invitation's `invites.sent` event. §5.1's
+  set comparison asks, at execution time, whether that inviter still holds everything the
+  join confers: the role's permissions and the org's, read from the directory (joining an
+  org grants what it holds). A sender demoted or removed since the send is refused.
+- The joiner is the request's own actor. It must have made the invitation's first
+  acceptance, and the request must be the first one naming that invitation, so one
+  invitation joins one person once.
+- The bound is no weaker than `ctx.grant`'s delegation: the most a module can do is make
+  the principal who really invoked it look like the sender.
+
+The effect is ONE directory unit, `HostAdmin.applyMembership`: a SQLite transaction, or one
+synchronous ControlPlaneDO method. It holds the final "removed since" check, the membership,
+the role and both audit rows, so an add and a removal of the same person serialize.
+
+A refusal is terminal (`refuseDelivery`, a return value module code cannot produce),
+journaled with the missing permissions, and reported to the accepting call through
+`onExecutorOutcomes`. The admin rows name the platform actor that executed them and,
+through `attributed` (#977), the inviter `onBehalfOf` whom they were written. That answers
+the `PlatformActorId` question: the actor is the hand, and the person whose authority bounded
+the write is recorded beside it, not laundered away.
+
+Removal is the mirror: `member.remove-requested`, bounded by the remover (§5.1 consequence
+1), effected by the same executor, and always recorded even when nothing was held. **Removal
+wins**: an add is refused when the joiner was removed after it was requested.
+
+- A removal through the seam is ordered by outbox id.
+- A removal outside it (an `unassignRole` / `removeMember` row) wins at or after the request
+  less `MEMBERSHIP_REMOVAL_SKEW_MS` (5 minutes). The directory and the scope share no clock,
+  so ties and near-ties go to the removal. The cost: someone removed by staff less than that
+  before accepting a NEW invite is refused, and the invite can be resent.
+- This is what keeps a backlog safe. Requests emitted before any executor was mounted, for
+  people removed by hand since, stay refused when a first drain finds them.
+
+The dashboard mounts it with its own scope sweeper as the backstop, and shows an accepted
+member as `joining` until the journal says otherwise (`readExecutorDelivery`).
 
 ### 4.3 Revocation: tombstone, never delete (K-21, shipped)
 
