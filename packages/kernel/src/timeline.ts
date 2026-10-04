@@ -30,6 +30,7 @@ import {
 } from '@substrat-run/contracts';
 import { rowDecoder, UNDECODED_ACTOR, type RowDecoder } from './row-decode.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
+import { REFUSAL_JOURNAL_PREFIX } from './delivery-refusal.js';
 
 /**
  * Reading an entity's history out of the spine (#800).
@@ -846,6 +847,48 @@ export function readDeadLetters(ctx: TimelineReader, page?: Pick<ListPage, 'limi
   );
   const entries = rows.map(deadLetterOf);
   return pageOf(entries, limit, (e) => `${e.eventId}${DEAD_LETTER_CURSOR_SEPARATOR}${e.consumer}`);
+}
+
+/** What one executor did with one event, as `readExecutorDelivery` reads it (#1184). */
+export type ExecutorDeliveryState = 'unattempted' | 'retrying' | 'delivered' | 'refused' | 'dead-lettered';
+
+export interface ExecutorDelivery {
+  eventId: string;
+  state: ExecutorDeliveryState;
+  /** A refusal's reason, or the last failure. Null when nothing has failed. */
+  error: string | null;
+}
+
+/**
+ * The newest `eventType` event about `entity`, and what executor `executorId` did with it
+ * (#1184) — or null when there is no such event. What a module reads to show the effect it
+ * asked for as it actually stands: still pending, refused and why, or done.
+ *
+ * The journal's own predicates, in one place: no delivery row is `unattempted`; a next
+ * attempt is `retrying`; no error is `delivered`; an error with no next attempt is `refused`
+ * when the handler refused it (`REFUSAL_JOURNAL_PREFIX`) and `dead-lettered` when retries ran
+ * out. Same permission posture as every read here: the caller checks, this does not.
+ */
+export function readExecutorDelivery(
+  ctx: TimelineReader,
+  input: { executorId: string; eventType: string; entity: EntityRef },
+): ExecutorDelivery | null {
+  const row = ctx.sql.query<{ id: string; journaled: string | null; error: string | null; next_attempt_at: string | null }>(
+    `SELECT o.id, d.event_id AS journaled, d.error, d.next_attempt_at
+       FROM _substrat_outbox o
+       LEFT JOIN _substrat_deliveries d ON d.event_id = o.id AND d.consumer_module = ?
+      WHERE o.entity_type = ? AND o.entity_id = ? AND o.type = ?
+      ORDER BY o.id DESC
+      LIMIT 1`,
+    [`executor:${input.executorId}`, input.entity.entityType, input.entity.entityId, input.eventType],
+  )[0];
+  if (!row) return null;
+  if (row.journaled === null) return { eventId: row.id, state: 'unattempted', error: null };
+  if (row.next_attempt_at !== null) return { eventId: row.id, state: 'retrying', error: row.error };
+  if (row.error === null) return { eventId: row.id, state: 'delivered', error: null };
+  return row.error.startsWith(REFUSAL_JOURNAL_PREFIX)
+    ? { eventId: row.id, state: 'refused', error: row.error.slice(REFUSAL_JOURNAL_PREFIX.length) }
+    : { eventId: row.id, state: 'dead-lettered', error: row.error };
 }
 
 /**

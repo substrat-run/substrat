@@ -13,7 +13,6 @@ export type {
   ExecutorOutcome,
   ExecutorRetryPolicy,
   ExecutorScope,
-  DeliveryRefusal,
   ConnectorConnection,
   ScopedConnectorConnection,
   ConnectorContext,
@@ -106,9 +105,6 @@ export {
   backoffAt,
   globalFetch,
   executorOutcomeOf,
-  isDeliveryRefusal,
-  refuseDelivery,
-  refusalJournalText,
   parseValidationRecords,
   resolveRetryPolicy,
   OPS_FAILURE_RETENTION_DAYS,
@@ -520,7 +516,7 @@ export {
   type RefusedGuard,
 } from './refusals.js';
 export { REFUSAL_COLUMNS, mapRefusalRow, refusalListQuery, type RefusalDbRow } from './refusal-query.js';
-export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
+export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters, readExecutorDelivery, type ExecutorDelivery, type ExecutorDeliveryState } from './timeline.js';
 export type { ScopeWalkPage } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 // #1636: one undecodable spine row no longer takes a list — or a delivery loop — with it.
@@ -762,8 +758,20 @@ export {
 } from './vertical-events.js';
 export { attributedHost } from './attribution.js';
 export {
+  isDeliveryRefusal,
+  refuseDelivery,
+  refusalJournalText,
+  REFUSAL_JOURNAL_PREFIX,
+  type DeliveryRefusal,
+} from './delivery-refusal.js';
+export {
   MEMBER_ADD_REQUESTED,
+  MEMBER_REMOVE_REQUESTED,
   MEMBERSHIP_EXECUTOR_ID,
+  membershipEntity,
+  membershipRemoveExecutorId,
+  memberRemoveRequestedPayload,
   registerMembershipExecutor,
+  type MemberRemoveRequestedPayload,
   type MembershipExecutorOptions,
 } from './membership-executor.js';

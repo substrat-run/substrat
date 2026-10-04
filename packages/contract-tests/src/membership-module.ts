@@ -2,9 +2,10 @@ import { moduleManifest, type PermissionKey } from '@substrat-run/contracts';
 import type { ModuleRegistration, OperationContext, OperationHandler } from '@substrat-run/kernel';
 
 /**
- * The invite half the membership executor consumes (#1184), in engine-invites' event
- * shapes and nothing more: `invites.sent` under the inviter, then `invites.accepted` and
- * `member.add-requested` under the joiner, in the accept's own transaction. The executor's
+ * The requests the membership executor consumes (#1184), in engine-invites' event shapes and
+ * nothing more: `invites.sent` under the inviter, then `invites.accepted` and
+ * `member.add-requested` under the joiner, in the accept's own transaction; and
+ * `member.remove-requested` under whoever removes. The executor's
  * contract is the events, so the suite holds it to the events, and `invitefix/request`
  * emits a bare request with whatever payload a test hands it, for the forgeries.
  *
@@ -28,6 +29,7 @@ const membershipFixtureManifest = moduleManifest.parse({
       { type: 'invites.sent', schemaVersion: 1 },
       { type: 'invites.accepted', schemaVersion: 1 },
       { type: 'member.add-requested', schemaVersion: 1 },
+      { type: 'member.remove-requested', schemaVersion: 1 },
     ],
     consumes: [],
   },
@@ -107,6 +109,16 @@ export const membershipFixtureMod: ModuleRegistration = {
         entity: invitation(input.invitationId),
         piiClass: 'none',
         payload: input,
+      });
+    }) as unknown as OperationHandler<never, unknown>,
+    /** Ask for `principal` to be taken out of `orgId` and `roleKey` — as the caller. */
+    'invitefix/remove': ((ctx: OperationContext, input: { principal: string; orgId: string; roleKey: string }) => {
+      ctx.emit({
+        type: 'member.remove-requested',
+        schemaVersion: 1,
+        entity: { entityType: 'membership', entityId: input.principal },
+        piiClass: 'none',
+        payload: { ...input, tenantId: ctx.tenantId },
       });
     }) as unknown as OperationHandler<never, unknown>,
     /** Whether the caller holds `permission` at this scope — the effect, observed. */

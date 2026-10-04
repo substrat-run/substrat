@@ -89,6 +89,15 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
     return outcomes.filter((o) => o.eventType === 'member.add-requested' && o.entity === `membership:${who}`);
   };
 
+  /** `who` asks for `joiner` to be removed; returns what the inline tail did with that request. */
+  const removeAs = async (w: World, who: PrincipalId, joiner: PrincipalId, roleKey: string, org: OrgId = w.org) => {
+    const outcomes: ExecutorOutcome[] = [];
+    await (await w.host.getScope(who, w.t, w.s)).invoke('invitefix/remove', { principal: joiner, orgId: org, roleKey }, {
+      onExecutorOutcomes: (o) => outcomes.push(...o),
+    });
+    return outcomes.filter((o) => o.eventType === 'member.remove-requested' && o.entity === `membership:${joiner}`);
+  };
+
   const holds = async (w: World, who: PrincipalId, permission: PermissionKey, s: ScopeId = w.s) =>
     ((await (await w.host.getScope(who, w.t, s)).invoke('invitefix/probe', { permission })) as { allowed: boolean }).allowed;
 
@@ -286,6 +295,74 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
       // The backstop's rows carry the same correlation id the inline attempt was for.
       expect((await causedBy(w, inline[0]!.eventId)).map((r) => r.action).sort()).toEqual(['addMember', 'assignRole']);
+    });
+
+    describe('removal goes through the same seam, and wins', () => {
+      it('a removal takes the role and the membership away, correlated and attributed to the remover', async () => {
+        const joe = principalId.parse(ulid());
+        await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member'));
+        expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
+
+        const outcomes = await removeAs(w, w.alice, joe, 'member');
+        expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
+        expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
+        expect(await memberOf(w, joe)).toBe(0);
+        const rows = await causedBy(w, outcomes[0]!.eventId);
+        expect(rows.map((r) => r.action).sort()).toEqual(['removeMember', 'unassignRole']);
+        for (const row of rows) expect(row.onBehalfOf).toMatchObject({ principal: w.alice });
+      });
+
+      it('refuses a removal beyond the remover — the bound runs both ways', async () => {
+        const joe = principalId.parse(ulid());
+        await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'lead'));
+        const outcomes = await removeAs(w, w.bob, joe, 'lead');
+        expect(outcomes.map((o) => o.outcome)).toEqual(['refused']);
+        expect(outcomes[0]!.error).toMatch(/remover .* no longer holds invitefix:b/);
+        expect(await holds(w, joe, INVITEFIX_B)).toBe(true);
+      });
+
+      it('an add still retrying when the person is removed is refused when it comes due', async () => {
+        const late = orgId.parse(ulid());
+        const joe = principalId.parse(ulid());
+        const inline = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member', late));
+        expect(inline.map((o) => o.outcome)).toEqual(['retrying']);
+        // Removed while the add waits: nothing to take yet, but the removal is on the record.
+        await removeAs(w, w.alice, joe, 'member', late);
+
+        await w.host.admin.createOrg(staff, { id: late, tenantId: w.t, slug: `late-${late.slice(-6).toLowerCase()}`, name: 'Late' });
+        await w.host.drainDue(w.t, w.s);
+        const dead = (await w.host.executorDeadLetters(w.t, w.s)).find((d) => d.eventId === inline[0]!.eventId);
+        expect(dead?.error).toMatch(/^refused: .* was removed after this request was made/);
+        expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
+        expect(await memberOf(w, joe, late)).toBe(0);
+      });
+
+      it('a removal recorded outside the seam after the request wins too — the backlog a hand-rolled removal left', async () => {
+        const late = orgId.parse(ulid());
+        const joe = principalId.parse(ulid());
+        const inline = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member', late));
+        expect(inline.map((o) => o.outcome)).toEqual(['retrying']);
+        // The old way: the role was granted by hand and taken back by hand, emitting nothing.
+        const node = { tenantId: w.t, scopeId: w.s };
+        await w.host.admin.assignRole(staff, { principalId: joe, roleKey: 'member', node });
+        await w.host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node });
+
+        await w.host.admin.createOrg(staff, { id: late, tenantId: w.t, slug: `late-${late.slice(-6).toLowerCase()}`, name: 'Late' });
+        await w.host.drainDue(w.t, w.s);
+        const dead = (await w.host.executorDeadLetters(w.t, w.s)).find((d) => d.eventId === inline[0]!.eventId);
+        expect(dead?.error).toMatch(/was removed after this request was made/);
+        expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
+      });
+
+      it('twin: a removal recorded BEFORE the request does not block it', async () => {
+        const joe = principalId.parse(ulid());
+        const node = { tenantId: w.t, scopeId: w.s };
+        await w.host.admin.assignRole(staff, { principalId: joe, roleKey: 'member', node });
+        await w.host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node });
+        const outcomes = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member'));
+        expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
+        expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
+      });
     });
 
     // Last: it mounts a second executor on this host, which every later accept would also run.
