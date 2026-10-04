@@ -37,6 +37,7 @@ import {
   type PlatformActorId,
   type PrincipalId,
 } from '@substrat-run/contracts';
+import { toBase64url } from './base64url.js';
 import { PermissionDenied } from './permission-checker.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
@@ -79,7 +80,6 @@ declare const crypto: {
   subtle: { digest(algorithm: 'SHA-256', data: Uint8Array): Promise<ArrayBuffer> };
 };
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
-declare const btoa: (input: string) => string;
 
 /**
  * The two spine tables, kernel-owned so no vertical carries a migration for them. Shared by
@@ -318,20 +318,14 @@ export function capabilityRecordOf(row: CapabilityRow): CapabilityRecord {
   );
 }
 
-const b64url = (bytes: Uint8Array): string => {
-  let s = '';
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-};
-
 /** A fresh capability secret: 256 bits, base64url, prefixed. Only its hash is ever stored. */
 export function mintCapabilitySecret(): string {
-  return CAPABILITY_SECRET_PREFIX + b64url(crypto.getRandomValues(new Uint8Array(32)));
+  return CAPABILITY_SECRET_PREFIX + toBase64url(crypto.getRandomValues(new Uint8Array(32)));
 }
 
 /** A fresh session token — the same construction, its own prefix. */
 export function mintCapabilitySessionToken(): string {
-  return CAPABILITY_SESSION_PREFIX + b64url(crypto.getRandomValues(new Uint8Array(32)));
+  return CAPABILITY_SESSION_PREFIX + toBase64url(crypto.getRandomValues(new Uint8Array(32)));
 }
 
 /**

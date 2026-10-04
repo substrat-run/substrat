@@ -430,6 +430,32 @@ describe('the list is rules, not a blob', () => {
     await unblock(two.id);
   });
 
+  // #2001: the declared `order: 'desc'` is what a caller naming no order gets, every page of it.
+  it('is newest first when no order is named, and pages on in that order', async () => {
+    const made: BlockRule[] = [];
+    for (const value of ['a.order.example', 'b.order.example', 'c.order.example']) {
+      // The real clock: a few milliseconds apart so `created_at` alone decides.
+      await new Promise((r) => setTimeout(r, 5));
+      made.push(await block('domain', value));
+    }
+
+    const admin = await at('admin');
+    const walked: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: CountedPage<BlockRule> = (await admin.invoke('ticket0/list-block-rules', {
+        limit: 1,
+        ...(cursor ? { cursor } : {}),
+      })) as CountedPage<BlockRule>;
+      walked.push(...page.entries.map((r) => r.id));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(walked).toEqual(made.map((r) => r.id).reverse());
+
+    const asc = (await admin.invoke('ticket0/list-block-rules', { order: 'asc' })) as CountedPage<BlockRule>;
+    expect(asc.entries.map((r) => r.id)).toEqual(made.map((r) => r.id));
+  });
+
   it('refuses to remove a rule that is not there', async () => {
     await expect(unblock('01ARZ3NDEKTSV4RRFFQ69G5FAV')).rejects.toThrow(/block rule not found/);
   });

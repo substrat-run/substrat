@@ -6227,7 +6227,7 @@ export function defineScopeDO(
           >[];
           const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
           const nextCursor =
-            last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn);
+            last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order);
           const page = { entries: rows as T[], nextCursor };
           if (!params.total) return page;
           const counted = sql

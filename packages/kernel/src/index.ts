@@ -277,6 +277,7 @@ export type {
   ExtractionSignal,
 } from './attachment-extractor.js';
 export {
+  CursorMismatch,
   FilterNotDeclared,
   LIST_INDEX_PREFIX,
   NotListable,
