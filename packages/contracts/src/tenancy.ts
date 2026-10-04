@@ -91,12 +91,19 @@ export const scopeStatus = z.enum([
 export type ScopeStatus = z.infer<typeof scopeStatus>;
 
 /**
- * The directory's revision of a scope's lifecycle (#1713): `scope` counts the scope's status
- * transitions and `tenant` its tenant's status changes, each bumped in the same directory
- * transaction as the change it counts. Monotonic, so a deployment orders deliveries by them and
- * never by a clock: a delivery is kept only when it is newer on one and older on neither.
+ * The directory's revision of a scope's lifecycle (#1713), compared in order:
+ *
+ * - `epoch`: which history of the directory this is. Every directory restore mints a newer one,
+ *   so a restored directory, whose counters went back with it, still outranks everything the
+ *   history it replaced delivered. 0 for a directory never restored.
+ * - `scope` counts the scope's status transitions and `tenant` its tenant's status changes, each
+ *   bumped in the same directory transaction as the change it counts.
+ *
+ * A deployment keeps a delivery from a newer epoch whatever its counters; within one epoch, only
+ * one strictly newer on one counter and older on neither. Never a clock.
  */
 export const lifecycleRevision = z.object({
+  epoch: z.number().int().nonnegative(),
   scope: z.number().int().nonnegative(),
   tenant: z.number().int().nonnegative(),
 });

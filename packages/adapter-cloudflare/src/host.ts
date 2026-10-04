@@ -1604,9 +1604,6 @@ export interface LifecycleDelegation {
   deliver(args: { tenantId: TenantId; scopeId: ScopeId; lifecycle: ScopeLifecycle }): Promise<LifecycleDelivery>;
 }
 
-/** The receipt of a live scope, and what no receipt reads as (#1713). */
-const LIVE_RECEIPT = lifecycleReceipt({ scope: 'active', tenant: 'active' });
-
 /** What one delivery pass did (#1713): a transition's push, or one heal sweep. */
 export interface LifecycleDeliveryReport {
   /** Scopes the pass delivered to. */
@@ -7746,7 +7743,7 @@ export class CloudflareScopeHost implements ScopeHost {
         scope: t.scope_status,
         tenant: t.tenant_status,
         at: new Date().toISOString(),
-        revision: { scope: t.scope_rev, tenant: t.tenant_rev },
+        revision: { epoch: t.epoch, scope: t.scope_rev, tenant: t.tenant_rev },
       });
       if (!parsed.success) {
         // A status this code does not know (a newer directory): delivering a guess could lift a hold.
@@ -7755,11 +7752,15 @@ export class CloudflareScopeHost implements ScopeHost {
         continue;
       }
       const lifecycle = parsed.data;
-      // A live scope whose deployment already runs it live has nothing to receive: no receipt
-      // reads as active/active, which is what a deployment holding no lifecycle runs as. This
-      // is what keeps an activation, and every transition before a deployment carries the
-      // route, from posting a delivery that changes nothing. A HOLD is always delivered.
-      if (lifecycleRefusal(lifecycle) === null && (t.delivered ?? LIVE_RECEIPT) === LIVE_RECEIPT) continue;
+      // A live scope whose deployment already acknowledged exactly this has nothing to receive,
+      // and neither does one with no receipt in a directory never restored: a deployment holding
+      // no lifecycle runs live. That keeps an activation, and every transition before a
+      // deployment carries the route, from posting a delivery that changes nothing. After a
+      // restore (epoch > 0) no receipt says nothing about what the deployment holds, so it is
+      // delivered. A HOLD is always delivered.
+      if (lifecycleRefusal(lifecycle) === null && (t.delivered === null ? t.epoch === 0 : t.delivered === lifecycleReceipt(lifecycle))) {
+        continue;
+      }
       report.attempted += 1;
       try {
         const answer = await delegation.deliver({ tenantId, scopeId, lifecycle });

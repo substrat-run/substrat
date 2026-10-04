@@ -632,7 +632,8 @@ export interface LifecycleTargetRow {
   tenant_status: string;
   /** `lifecycleReceipt` of the acknowledged state, or null when none was. */
   delivered: string | null;
-  /** The directory's revisions of the scope's status and the tenant's (0 when never changed). */
+  /** The directory's epoch, and its revisions of the scope's status and the tenant's (0 when never changed). */
+  epoch: number;
   scope_rev: number;
   tenant_rev: number;
 }
@@ -1146,8 +1147,9 @@ const DIRECTORY_DDL = `
   );
   -- #1713: the lifecycle's revisions, one counter per subject ("scope:<id>" counts a
   -- scope's status transitions, "tenant:<id>" a tenant's status changes), each bumped in
-  -- the same transaction as the change it counts. A deployment orders deliveries by them,
-  -- never by a clock. No row reads as 0.
+  -- the same transaction as the change it counts, and "directory:epoch", the history the
+  -- directory is in, minted afresh by every restore (importDump). A deployment orders
+  -- deliveries by them, never by a clock. No row reads as 0.
   CREATE TABLE IF NOT EXISTS lifecycle_revisions (
     subject TEXT PRIMARY KEY,
     revision INTEGER NOT NULL
@@ -1659,6 +1661,8 @@ export class ControlPlaneDO extends DurableObject {
     // nothing.
     assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
     await this.ctx.storage.transaction(async () => {
+      // #1713: the epoch this directory was in, read before the drops take it.
+      const epochBefore = this.lifecycleEpoch();
       this.sql.exec('PRAGMA defer_foreign_keys = ON');
       // `_cf_*` is workerd's, and dropping it is refused (SQLITE_AUTH), as `exportDump` says.
       const existing = this.sql
@@ -1682,6 +1686,14 @@ export class ControlPlaneDO extends DurableObject {
           for (const row of rows) this.sql.exec(sql, ...(row as unknown[]));
         },
       });
+      // #1713: a restore is a new history. Its lifecycle counters went back with it, so it
+      // mints an epoch newer than the one it replaced and the one the dump carried — and than
+      // any minted on a directory this store no longer remembers, since an epoch is a time.
+      // Every deployment then takes this history's deliveries, whatever its counters say.
+      this.sql.exec(
+        "INSERT OR REPLACE INTO lifecycle_revisions (subject, revision) VALUES ('directory:epoch', ?)",
+        Math.max(epochBefore + 1, this.lifecycleEpoch() + 1, Date.now()),
+      );
     });
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next
@@ -4186,13 +4198,23 @@ export class ControlPlaneDO extends DurableObject {
       where.push('s.scope_id = ?');
       params.push(filter.scopeId);
     }
-    const drifted = "COALESCE(r.delivered, 'active/active') <> s.status || '/' || t.status";
-    if (filter.drift) where.push(`(${drifted} OR s.status NOT IN ('active', 'archived') OR t.status <> 'active')`);
-    params.push(filter.limit ?? 1000);
+    const epoch = this.lifecycleEpoch();
+    // What the deployment would acknowledge now (`lifecycleReceipt`): the statuses and the full
+    // revision. No receipt is drift only after a restore (epoch > 0), when what the deployment
+    // holds is unknown; before any, a live scope with no receipt runs as its deployment does.
+    const acked =
+      "s.status || '/' || t.status || '@' || ? || '.' || COALESCE(rs.revision, 0) || '.' || COALESCE(rt.revision, 0)";
+    const drifted = `(r.delivered IS NULL AND ? > 0) OR r.delivered <> ${acked}`;
+    const driftParams = [epoch, epoch];
+    if (filter.drift) {
+      where.push(`(${drifted} OR s.status NOT IN ('active', 'archived') OR t.status <> 'active')`);
+      params.push(...driftParams);
+    }
+    params.push(...driftParams, filter.limit ?? 1000);
     return this.sql
       .exec(
         `SELECT s.tenant_id, s.scope_id, s.status AS scope_status, t.status AS tenant_status, r.delivered,
-                COALESCE(rs.revision, 0) AS scope_rev, COALESCE(rt.revision, 0) AS tenant_rev
+                ${epoch} AS epoch, COALESCE(rs.revision, 0) AS scope_rev, COALESCE(rt.revision, 0) AS tenant_rev
            FROM scopes s
            JOIN tenants t ON t.tenant_id = s.tenant_id
            LEFT JOIN scope_lifecycle_receipts r ON r.scope_id = s.scope_id
@@ -4204,6 +4226,14 @@ export class ControlPlaneDO extends DurableObject {
         ...params,
       )
       .toArray() as unknown as LifecycleTargetRow[];
+  }
+
+  /** #1713: the directory's epoch (`lifecycleRevision.epoch`): 0 until a restore mints one. */
+  private lifecycleEpoch(): number {
+    const row = this.sql
+      .exec("SELECT revision FROM lifecycle_revisions WHERE subject = 'directory:epoch'")
+      .toArray()[0] as { revision: number } | undefined;
+    return row?.revision ?? 0;
   }
 
   /** #1713: count one lifecycle change of a scope or a tenant. Call inside the change's transaction. */

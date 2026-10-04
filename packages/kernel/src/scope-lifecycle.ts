@@ -58,18 +58,21 @@ export function parseLifecycle(value: unknown): StoredScopeLifecycle | null {
 }
 
 /** What a lifecycle held before revisions existed counts as: older than every revisioned one. */
-const UNREVISED: LifecycleRevision = { scope: -1, tenant: -1 };
+const UNREVISED: LifecycleRevision = { epoch: -1, scope: -1, tenant: -1 };
 
 /**
- * Whether `next` replaces `current`: strictly newer on at least one revision and older on neither.
+ * Whether `next` replaces `current`. A newer epoch always does: it is a later history of the
+ * directory (a restore), whose counters may be lower than the ones the replaced history reached.
+ * Within one epoch, `next` must be strictly newer on at least one counter and older on neither.
  * An equal revision is the same directory state delivered again, and refused, so that no two
- * deliveries can tie. Revisions that disagree (newer on one, older on the other) cannot come from
+ * deliveries can tie. Counters that disagree (newer on one, older on the other) cannot come from
  * one directory read and are refused too.
  */
 function supersedes(next: StoredScopeLifecycle, current: StoredScopeLifecycle | null): boolean {
   if (current === null) return true;
   const n = next.revision ?? UNREVISED;
   const c = current.revision ?? UNREVISED;
+  if (n.epoch !== c.epoch) return n.epoch > c.epoch;
   return n.scope >= c.scope && n.tenant >= c.tenant && (n.scope > c.scope || n.tenant > c.tenant);
 }
 
@@ -126,8 +129,11 @@ export function lifecycleRefusal(
 
 /**
  * The directory's record of what a deployment last acknowledged, compared with the directory's
- * own lifecycle by the heal sweep. The statuses only, never `at` or the revision: a re-read of an
- * unchanged directory is not drift.
+ * own lifecycle by the heal sweep: the statuses AND the full revision, so a restore that left the
+ * statuses as they were still reads as drift, and the scope is brought onto the new epoch. Never
+ * `at`, so a re-read of an unchanged directory is not drift. A lifecycle stored before revisions
+ * has none, and reads as drift against any directory.
  */
-export const lifecycleReceipt = (state: Pick<ScopeLifecycle, 'scope' | 'tenant'>): string =>
-  `${state.scope}/${state.tenant}`;
+export const lifecycleReceipt = (state: Pick<StoredScopeLifecycle, 'scope' | 'tenant' | 'revision'>): string =>
+  `${state.scope}/${state.tenant}` +
+  (state.revision ? `@${state.revision.epoch}.${state.revision.scope}.${state.revision.tenant}` : '');
