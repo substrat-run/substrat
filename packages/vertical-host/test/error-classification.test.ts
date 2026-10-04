@@ -11,7 +11,8 @@ import {
   type ErrorCode,
 } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
-import { classifyError, problemFor } from '../src/errors.js';
+import { Hono } from 'hono';
+import { classifyError, problemFor, problemOf } from '../src/errors.js';
 
 /**
  * The classifier's end of #113: a throw that declared what it is outranks every guess.
@@ -181,6 +182,30 @@ describe('a vertical door on the gate and introspection refusals (#113)', () => 
     // The same through `mountOperations`' wrapper, whose cause is the refusal.
     const wrapped = new HTTPException(classifyError(refusal)!.status, { message: classifyError(refusal)!.message, cause: refusal });
     expect(problemFor(wrapped).body).toEqual(body);
+  });
+
+  it('a public surface that maps its own errors cannot widen the gate either', async () => {
+    // A vertical's own `onError`, deciding a status first and rendering through `problemOf`.
+    const app = new Hono();
+    app.get('/thing', () => {
+      throw gate[0];
+    });
+    app.get('/other', () => {
+      throw new Error('seat taken');
+    });
+    app.onError((err, c) => {
+      const { status, body } = problemOf({ status: 409, message: (err as Error).message }, err, c.req.path);
+      return c.json(body, status);
+    });
+    const gated = await app.request('/thing');
+    expect(gated.status).toBe(404);
+    const body = (await gated.json()) as Record<string, unknown>;
+    expect(body.code).toBe('not_found');
+    expect(body.detail).toBe(NO_APPLICATION_DETAIL);
+    // The twin: the vertical's own decision stands for an ordinary error.
+    const ordinary = await app.request('/other');
+    expect(ordinary.status).toBe(409);
+    expect(((await ordinary.json()) as Record<string, unknown>).detail).toBe('seat taken');
   });
 
   it('the twin: a conflict that is not the gate keeps its own status and sentence', () => {

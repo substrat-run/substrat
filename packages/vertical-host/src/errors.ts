@@ -136,6 +136,9 @@ function atTheEdge(err: unknown): unknown {
   return isScopeGateRefusal(err) ? substratError('not_found', NO_APPLICATION_DETAIL) : err;
 }
 
+/** The gate's neutral answer, classified: what no mapper may widen. */
+const NEUTRAL_GATE: ErrorClassification = { status: 404, message: NO_APPLICATION_DETAIL };
+
 /** A classified failure, rendered — the status to answer with and the body to send. */
 export interface ClassifiedProblem {
   readonly status: ContentfulStatusCode;
@@ -187,13 +190,20 @@ export function problemFor(err: unknown, instance?: string): ClassifiedProblem {
  * `mountPlatformSurface`'s `deps.mapError` is one: a vertical may map its own throws to
  * a status before this vocabulary is consulted, and its answer must still become a
  * problem body rather than the only `{ error }` left on the surface.
+ *
+ * **Except a scope-gate refusal (#113).** The caller's decision does not reach it: the
+ * neutral 404 replaces the status, the message and the body, so no mapper can widen the
+ * gate's answer back into the sentence that names the scope's status. Answer with the
+ * RETURNED status, not the one passed in.
  */
 export function problemOf(
-  seen: ErrorClassification,
+  decided: ErrorClassification,
   err: unknown,
   instance?: string,
 ): ClassifiedProblem {
-  const inner = atTheEdge(typedCause(err));
+  const raw = typedCause(err);
+  const seen = isScopeGateRefusal(raw) ? NEUTRAL_GATE : decided;
+  const inner = atTheEdge(raw);
   const code = errorCodeOf(inner);
   const body =
     code !== undefined && PROBLEM_CATALOG[code].status === seen.status

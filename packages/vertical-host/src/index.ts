@@ -1833,8 +1833,10 @@ export function mountPlatformSurface<Env extends object>(
         stack: err instanceof Error ? err.stack : undefined,
       });
     }
-    const { body } = problemOf(seen, err, c.req.path);
-    return c.body(JSON.stringify(body), seen.status, {
+    // The returned status, not `seen`'s: a scope-gate refusal answers the neutral 404 whatever a
+    // mapper decided (#113).
+    const { status, body } = problemOf(seen, err, c.req.path);
+    return c.body(JSON.stringify(body), status, {
       'content-type': PROBLEM_CONTENT_TYPE,
     });
   });

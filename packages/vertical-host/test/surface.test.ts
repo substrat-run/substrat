@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { PLATFORM_SECRET_HEADER, substratError } from '@substrat-run/contracts';
+import { NO_APPLICATION_DETAIL, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import { mountPlatformSurface, registeredScopeSweepHost, type VerticalScopeHost } from '../src/index.js';
 
 const SECRET = 'sekret';
@@ -1647,6 +1647,39 @@ describe('mountPlatformSurface — the envelope is problem+json', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.title).toBe('Conflict');
     expect(body.error).toBe('seat taken');
+  });
+});
+
+describe('mountPlatformSurface — a mapper cannot widen the scope gate (#113)', () => {
+  const gated = (refusal: Error) =>
+    fakeHost({
+      exportScopeLocal: async () => {
+        throw refusal;
+      },
+    });
+  // A mapper that claims everything — the shape that used to win over the neutral answer.
+  const greedy = { mapError: (e: unknown) => ({ status: 409, message: e instanceof Error ? e.message : String(e) }) };
+
+  it.each([
+    substratError('conflict', `scope not active (status: suspended): ${SCOPE}`, { reason: SCOPE_GATE_REASONS.notActive }),
+    substratError('not_found', `scope has no tenant record: (${TENANT}, ${SCOPE})`, { reason: SCOPE_GATE_REASONS.unrecorded }),
+  ])('answers the neutral 404 for $message, whatever the mapper decided', async (refusal) => {
+    const res = await appWith(gated(refusal), greedy).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('not_found');
+    expect(body.detail).toBe(NO_APPLICATION_DETAIL);
+    expect(JSON.stringify(body)).not.toMatch(/suspended|tenant record/);
+  });
+
+  it('the twin: the same mapper still answers an ordinary throw', async () => {
+    const res = await appWith(gated(new Error('seat taken')), greedy).request(
+      '/internal/export?scopeId=' + SCOPE,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as Record<string, unknown>).detail).toBe('seat taken');
   });
 });
 
