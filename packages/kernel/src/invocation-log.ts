@@ -201,6 +201,14 @@ declare const URL: new (input: string) => { pathname: string };
 export interface InvocationLogLine {
   /** Discriminator — what lets a reader tell this line from a vertical's own output. */
   substrat: 'invocation';
+  /**
+   * #1901: what kind of work the line is about. ABSENT on a request's line — the line every
+   * reader already knew — and present only on the scope host's lines for async work: a
+   * consumer delivery (`consumer`) or a schedule run (`schedule`). A reader treats a missing
+   * `kind` as `request`, which keeps every line written before this field existed meaning
+   * what it meant.
+   */
+  kind?: AsyncInvocationKind;
   tenantId: string;
   scopeId: string | null;
   vertical: string | null;
@@ -210,9 +218,10 @@ export interface InvocationLogLine {
    * null only this writer would produce — one representation across the platform.
    */
   surface: string | null;
-  method: string;
-  /** Path ONLY — see `pathOf`. */
-  path: string;
+  /** The request's method. `null` on an async line (#1901), which no request carried. */
+  method: string | null;
+  /** Path ONLY — see `pathOf`. `null` on an async line (#1901). */
+  path: string | null;
   /**
    * #1237: the id every event this invocation emitted is stamped with.
    *
@@ -238,6 +247,9 @@ export interface InvocationLogLine {
    *
    * `null` therefore survives only for a genuine escape: an error that got past the
    * envelope itself, which `threw` marks.
+   *
+   * Always `null` on an async line (#1901): no caller received a status. Its `outcome` and
+   * `level` say how it ended instead.
    */
   status: number | null;
   /** The error escaped even `onError` — rare, and the most interesting line on the page. */
@@ -282,6 +294,114 @@ export interface InvocationLogLine {
    * existed. A reader treats absence exactly as it treats `null` elsewhere.
    */
   outputFields?: OutputFieldsReport;
+  /*
+   * #1901: the async line's own fields. Present only when `kind` is, and written by
+   * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
+   * never an event's payload or a handler's error text.
+   */
+  /** How the unit ended — see {@link AsyncOutcome}. */
+  outcome?: AsyncOutcome;
+  /** A consumer's event type. */
+  eventType?: string | null;
+  /** A consumer's event id — the join to the spine's outbox and delivery journal. */
+  eventId?: string | null;
+  /** Which attempt at this delivery the line is about, counting from 1. */
+  attempt?: number | null;
+  /** A schedule run's due time (ISO 8601), or `null` for a schedule's first run. */
+  dueAt?: string | null;
+  /** How late the run started against `dueAt`, in milliseconds; `null` on a first run. */
+  latenessMs?: number | null;
+  /** A `suppressed` line's count of the lines the pass's cap withheld. */
+  suppressed?: number;
+  /** The same count per `<kind>:<outcome>`, so a storm of one outcome is named, not averaged. */
+  suppressedBy?: Record<string, number>;
+}
+
+/** #1901: the kinds of async work a scope host writes a line for. A request has no `kind`. */
+export type AsyncInvocationKind = 'consumer' | 'schedule';
+
+/**
+ * #1901: how a unit of async work ended.
+ *
+ * - `delivered` — a consumer's handler ran and its delivery is journaled done.
+ * - `retrying` — the handler threw and the delivery is due again later.
+ * - `dead-lettered` — the delivery is journaled failed for good: the handler threw on its
+ *   last attempt, or the event never reached it (undecodable, a schema version the consumer
+ *   does not take, withheld by the producer).
+ * - `inert` — a copy of a scope (#2005): the delivery is journaled terminal and NO handler
+ *   ran. Never `delivered`, because nothing was.
+ * - `routed` — the delivery was handed to the platform's drain to run with authority this
+ *   host lacks (a connector on a control-plane-less host).
+ * - `ok` / `failed` — a schedule run.
+ * - `suppressed` — the pass's line cap was reached; the line counts what it withheld.
+ */
+export type AsyncOutcome =
+  | 'delivered'
+  | 'retrying'
+  | 'dead-lettered'
+  | 'inert'
+  | 'routed'
+  | 'ok'
+  | 'failed'
+  | 'suppressed';
+
+/**
+ * The fields of an invocation line, before defaults. The ONE place the line's grammar lives
+ * (#1901): the request writer below and the scope host's async writer both build through
+ * {@link invocationLine}, so a field added to one is a field added to both, in one order.
+ */
+export interface InvocationLineFields {
+  kind?: AsyncInvocationKind;
+  tenantId: string;
+  scopeId: string | null;
+  vertical?: string | null;
+  surface?: string | null;
+  method?: string | null;
+  path?: string | null;
+  invocationId: string;
+  status?: number | null;
+  threw: boolean;
+  durationMs: number;
+  level: InvocationLevel;
+  operation?: string | null;
+  problemCode?: string | null;
+  principalKind?: string | null;
+  emitted?: EmittedReport;
+  versionId?: string | null;
+  outputFields?: OutputFieldsReport;
+  async?: Pick<
+    InvocationLogLine,
+    'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
+  >;
+}
+
+/** Build a line. Unfilled fields are `null` (or empty), as the line's contract says. */
+export function invocationLine(f: InvocationLineFields): InvocationLogLine {
+  const emitted = f.emitted;
+  return {
+    substrat: 'invocation',
+    ...(f.kind ? { kind: f.kind } : {}),
+    tenantId: f.tenantId,
+    scopeId: f.scopeId,
+    vertical: f.vertical ?? null,
+    surface: f.surface ?? null,
+    method: f.method ?? null,
+    path: f.path ?? null,
+    status: f.status ?? null,
+    threw: f.threw,
+    durationMs: f.durationMs,
+    invocationId: f.invocationId,
+    level: f.level,
+    operation: f.operation ?? null,
+    problemCode: f.problemCode ?? null,
+    principalKind: f.principalKind ?? null,
+    eventCount: emitted ? emitted.total : null,
+    eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
+    entities: emitted ? distinct(emitted.events.map((e) => e.entity)) : [],
+    versionId: f.versionId ?? null,
+    ...(f.outputFields ? { outputFields: f.outputFields } : {}),
+    ...(f.async ?? {}),
+  };
 }
 
 /** Distinct values, first occurrence wins — the order a reader expects to see them in. */
@@ -398,9 +518,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
   const node = routedNodeOrNull(done.request.headers, done.env, options);
   if (!node) return;
   const { record, invocationId } = stamp;
-  const emitted = record.emitted;
-  const line: InvocationLogLine = {
-    substrat: 'invocation',
+  const line = invocationLine({
     tenantId: node.tenantId,
     scopeId: node.scopeId,
     vertical: node.verticalSlug,
@@ -412,15 +530,13 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     durationMs: Date.now() - done.started,
     invocationId,
     level: invocationLevelOf(done.status, done.threw, record.problemCode),
-    operation: record.operation ?? null,
-    problemCode: record.problemCode ?? null,
-    principalKind: record.principalKind ?? null,
-    eventCount: emitted ? emitted.total : null,
-    eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
-    entities: emitted ? distinct(emitted.events.map((e) => e.entity)) : [],
+    operation: record.operation,
+    problemCode: record.problemCode,
+    principalKind: record.principalKind,
+    ...(record.emitted ? { emitted: record.emitted } : {}),
     versionId: versionIdOf(done.env),
     ...(record.outputFields ? { outputFields: record.outputFields } : {}),
-  };
+  });
   console.log(JSON.stringify(line));
 }
 
