@@ -1,3 +1,4 @@
+import { env as ambientEnv } from 'cloudflare:workers';
 import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
 import {
   delegatedReadParams,
@@ -221,6 +222,8 @@ import {
   type VerticalCaller,
   type VerticalResolution,
   type DeclaredMigration,
+  ATTACHMENT_BLOB_BINDING,
+  blobStoreBindingName,
   lifecycleDelivery,
   scopeLifecycle,
   type LifecycleDelivery,
@@ -928,7 +931,7 @@ interface ScopeStubRpc {
    * Same return contract as `migrate()`.
    */
   retryMigrations(): Promise<number | null>;
-  /** Whether the scope was loaded as a copy (#2005): what a CP-less coordinator reads for primacy. */
+  /** Whether the scope is classified a copy (#2005, #2009): what a CP-less coordinator reads for primacy. */
   isCopy(): Promise<boolean>;
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
@@ -936,8 +939,8 @@ interface ScopeStubRpc {
   lifecycle(): Promise<StoredScopeLifecycle | null>;
   /** Store a delivered lifecycle unless a newer one is held (#1713, `writeLifecycle`). */
   setLifecycle(next: ScopeLifecycle): Promise<LifecycleDelivery>;
-  /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
-  clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'carries-events' | 'changed'>;
+  /** Clear a mistaken copy classification (#2005); a load's copied-events mark is kept (#2009). */
+  clearCopyMark(expect?: LoadMarker): Promise<'cleared' | 'absent' | 'changed'>;
   /**
    * The executor's due events, decoded per row (#1636): a row that will not decode is in
    * `undecodable`, for the coordinator to dead-letter, and never in `events`.
@@ -1788,12 +1791,14 @@ export interface CloudflareScopeHostOptions {
   blobStores?: R2BlobStores;
   /**
    * Worker-side reach to the per-tenant attachment bucket (#473): given a tenant, return
-   * the `R2Bucket` binding carrying its attachments — typically
-   * `env[blobStoreBindingName('<BINDING>', tenantId)]`, where `<BINDING>` is the
-   * vertical's declared `blobStoreNeed.binding`. The VERTICAL's worker supplies this
-   * because only it knows its declared binding name; the kernel owns everything else
-   * (key derivation, permission gates, metadata facts). Omitted (or resolving null),
-   * `attachments()` refuses loudly rather than serving ungated bytes.
+   * the `R2Bucket` binding carrying its attachments. Omitted, the host resolves it itself
+   * (#1995): `env[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)]` off the
+   * script's own env — the binding the platform attaches per installed tenant once the push
+   * declares the store, which it does for any vertical whose modules declare attachment
+   * targets. So a deployed vertical wires nothing, and the tenant is always the one this
+   * host has already validated against the scope. Pass this only to point attachments
+   * somewhere else (a test's bucket, a host with no such env). Resolving null, the
+   * attachment surface refuses loudly rather than serving ungated bytes.
    */
   attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /**
@@ -1982,6 +1987,15 @@ export const SWITCH_HOLD_EXTRA_WAITS = 3;
  */
 export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
 
+/**
+ * The attachment bucket a host resolves when it was handed no resolver (#1995): the
+ * platform's per-tenant binding, read off this script's own env, named by the one shared
+ * encoding (`blobStoreBindingName`) for the tenant the caller passed in.
+ */
+function ambientAttachmentBucket(tenantId: string): unknown {
+  return (ambientEnv as unknown as Record<string, unknown>)[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)] ?? null;
+}
+
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
 export interface SwitchHoldClaim {
   claimId: string;
@@ -2035,8 +2049,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly tenantStores?: D1TenantStores;
   /** The live R2 client for per-tenant blob stores (#473); undefined ⇒ refuse loudly. */
   private readonly blobStores?: R2BlobStores;
-  /** Worker-side attachment-bucket resolver (#473); undefined ⇒ attachments() refuses. */
-  private readonly attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
+  /** Worker-side attachment-bucket resolver (#473); the ambient per-tenant binding unless overridden (#1995). */
+  private readonly attachmentBuckets: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly executors = new Map<string, RegisteredEffector>();
@@ -2104,7 +2118,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
-    this.attachmentBuckets = options.attachmentBuckets;
+    this.attachmentBuckets = options.attachmentBuckets ?? ambientAttachmentBucket;
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.fetchImpl = options.fetch ?? globalFetch;
@@ -2284,8 +2298,9 @@ export class CloudflareScopeHost implements ScopeHost {
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects, so its deliveries are journaled terminal with the reason and no
     // handler runs. Asked of the directory where there is one. A CP-less host has none, so it
-    // asks the scope's own storage whether it was loaded as a copy (`_substrat_copy_origin`,
-    // which every copy holds) — a preview and a snapshot reach a hosted vertical as restores.
+    // asks the scope's own storage whether it is classified a copy (`_substrat_copy_origin`'s
+    // `is_copy`, #2009, set on the directory's word) — a preview and a snapshot reach a hosted
+    // vertical as restores the platform marks.
     // Asked on the first due event, once per pass: most passes have none, and the directory
     // is one global object.
     let inert: Promise<boolean> | undefined;
@@ -2689,7 +2704,9 @@ export class CloudflareScopeHost implements ScopeHost {
     destScopeId: ScopeId,
   ): Promise<{ tables: number }> {
     const tables = await this.scopeStub(sourceScopeId).exportDump();
-    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId, exact: true });
+    // #2009: a snapshot is a fork by construction (the control plane's row names `forkedFrom`, so
+    // the directory never calls it primary), and a load classifies nothing by itself: marked here.
+    await this.scopeStub(destScopeId).importDump(tables, destScopeId, { sourceScopeId, exact: true, markCopy: true });
     return { tables: tables.length };
   }
 
@@ -2851,10 +2868,11 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * Remove a mistaken copy marker from one scope in THIS deployment (#2005), behind the vertical's
-   * `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS primary.
-   * Refused for a scope classified a copy, and for a marker a real load wrote (one naming copied
-   * events) — removing that would let another scope's queued work run here.
+   * Clear a mistaken copy classification from one scope in THIS deployment (#2005), behind the
+   * vertical's `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS
+   * primary. Refused for a scope classified a copy. A load's copied-events mark is never touched
+   * (#2009), so a primary restored from another scope's backup runs its own effects again and
+   * still never runs the work it copied.
    */
   async clearCopyMarkLocal(
     scopeId: ScopeId,
@@ -2870,13 +2888,6 @@ export class CloudflareScopeHost implements ScopeHost {
     const outcome = await this.scopeStub(scopeId).clearCopyMark(...(expect ? [expect] : []));
     if (outcome === 'changed') {
       throw substratError('precondition_failed', `clear-copy-mark refused: scope ${scopeId}'s store changed since its revision was read`);
-    }
-    if (outcome === 'carries-events') {
-      throw substratError(
-        'conflict',
-        "clear-copy-mark refused: this scope's marker was written by a load of another scope's data and names " +
-          "the events it brought in; removing it would run that scope's queued work here",
-      );
     }
     return { cleared: outcome === 'cleared' };
   }
@@ -3477,20 +3488,15 @@ export class CloudflareScopeHost implements ScopeHost {
     );
   }
 
-  /** Resolve the per-tenant R2 blob store, or fail closed exactly as `attachments` did. */
+  /** Resolve the per-tenant R2 blob store, or fail closed. */
   private async resolveAttachmentStore(tenantId: TenantId): Promise<TenantBlobStore> {
-    if (!this.attachmentBuckets) {
-      throw new Error(
-        `attachments are not configured on this host (#473): pass ` +
-          `CloudflareScopeHostOptions.attachmentBuckets — (tenantId) => ` +
-          `env[blobStoreBindingName('<BINDING>', tenantId)] for the vertical's declared blob store`,
-      );
-    }
     const bucket = await this.attachmentBuckets(tenantId);
     if (!bucket) {
       throw new Error(
-        `no attachment bucket resolved for tenant ${tenantId} (#473) — is the per-tenant blob ` +
-          `store provisioned and its r2_bucket binding attached to the serving script?`,
+        `no attachment bucket resolved for tenant ${tenantId} (#473, #1995) — this script has no ` +
+          `${blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)} binding. A vertical whose modules declare ` +
+          `attachmentTargets gets one per installed tenant once it is pushed with a CLI that declares the ` +
+          `store (re-push); off the platform, pass CloudflareScopeHostOptions.attachmentBuckets.`,
       );
     }
     return r2TenantBlobStore(bucket);
@@ -8936,7 +8942,9 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     upload: AttachmentUploadInput,
   ): Promise<AttachmentRecord> {
-    await this.assertLive(tenantId, scopeId); // #1713: a held scope runs no connector work either
+    // The lifecycle gate every attachments door takes (#1713), ahead of the bucket: a held
+    // scope's provider bytes wait for the delivery's retry rather than land (#1995).
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ connectionId }, tenantId, scopeId, store).upload(upload);
@@ -8956,7 +8964,8 @@ export class CloudflareScopeHost implements ScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<OpenedAttachment | null> {
-    await this.assertLive(tenantId, scopeId); // #1713: a held scope runs no connector work either
+    // Same gate as the upload leg: a held scope's bytes are not read out of its bucket.
+    await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface(

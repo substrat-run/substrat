@@ -4717,11 +4717,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // The correction for a MISTAKEN copy marker (#2005): a scope the directory says IS primary,
-  // marked by a misclassification, a race or an operator, whose executors a CP-less host would
-  // otherwise hold inert for good. One scope at a time, staff only by default-deny (the path is on
-  // neither allowlist), logged as `clearScopeCopyMark`. Refused for a scope the directory calls a
-  // copy, and, by the vertical, for a marker a real load wrote: that one names the events it
-  // brought in, and removing it would run another scope's queued work here.
+  // marked by a misclassification, a race or an operator, or restored from another scope's backup
+  // before #2009 split the two facts, whose executors a CP-less host would otherwise hold inert
+  // for good. One scope at a time, staff only by default-deny (the path is on neither allowlist),
+  // logged as `clearScopeCopyMark`. Refused for a scope the directory calls a copy. Clears the
+  // classification only: the events a load brought in stay marked, so they never run here.
   app.post('/tenants/:tenantId/scopes/:scopeId/clear-copy-mark', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -8223,6 +8223,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
     let row: ProvisionScopeInput;
     let restore: (() => Promise<unknown>) | null;
+    /** #2009: the directory's classification of the row below, which every restore of it carries. */
+    const markCopyOfRow = () => {
+      const lineage = copyLineageOf({ kind: row.kind ?? '', forkedFrom: row.forkedFrom ?? null });
+      return lineage ? { markCopy: lineage } : {};
+    };
     if (source) {
       // A fresh fork. Export from where the prod data lives TODAY. The canonical
       // `admin.exportScope` first — it writes the K-24 audit entry (and the co-located
@@ -8253,7 +8258,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // there; restore re-projects the vertical's roles from the dump's tuples). A one-shot
       // DO storage blip heals on the in-request retry WITHOUT burning a CI attempt (which
       // pushes a fresh version per try) — #559 (2).
-      restore = () => target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true });
+      // #2009: a load classifies nothing by itself, so the restore carries the directory's
+      // classification of the row below, as every restore onto a non-primary scope does.
+      restore = () =>
+        target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true, ...markCopyOfRow() });
     } else {
       // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
       // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
@@ -8270,7 +8278,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         jurisdiction: 'global',
         expiresAt: expiresAt ?? undefined,
       };
-      restore = target ? () => target.restoreScope(tenantId, previewId, []) : null;
+      // #2009: marked a copy on the directory's word, as the fork above.
+      restore = target ? () => target.restoreScope(tenantId, previewId, [], markCopyOfRow()) : null;
     }
     try {
       // Inside the try: a host writes the directory row FIRST and then migrates, projects and

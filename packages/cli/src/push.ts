@@ -10,7 +10,9 @@ import {
   ASSET_PART_PREFIX,
   assetHash,
   assetsNeed,
+  ATTACHMENT_BLOB_BINDING,
   buildPermissionRegistry,
+  declaresAttachmentTargets,
   DECLARED_MIGRATIONS_MAX,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
   DEPLOY_MANIFEST_BYTES_SAFE,
@@ -33,6 +35,7 @@ import {
   type RuntimeNeeds,
   type VersionOrigin,
   type DeployManifest,
+  withAttachmentBlobStore,
 } from '@substrat-run/contracts';
 import {
   lint,
@@ -313,6 +316,9 @@ export interface DeclaredSurface {
   readonly declaredEventsTruncated: boolean;
   /** Every module's SQL migrations (#1677) — see {@link flattenDeclaredMigrations}. */
   readonly migrations: ReturnType<typeof flattenDeclaredMigrations>;
+  /** True when any module declares an attachment target (#1995): the push then declares the
+   *  platform's attachment blob store itself — see `withAttachmentBlobStore`. */
+  readonly declaresAttachments: boolean;
 }
 
 export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
@@ -421,6 +427,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       freshness: flattenDeclaredFreshness(mod.permissions),
       declaredEvents: declaredEvents.events,
       declaredEventsTruncated: declaredEvents.truncated,
+      declaresAttachments: declaresAttachmentTargets(mod.permissions.modules.map((m) => m.manifest)),
       migrations: flattenDeclaredMigrations(
         mod.permissions,
         typeof mod.__substratKernel?.moduleMigrations === 'function'
@@ -1373,6 +1380,29 @@ export function declaredStoresOf(cfg: Record<string, unknown>): {
 }
 
 /**
+ * A vertical's own static binding may not take the attachment store's name (#1995). When the
+ * push declares that store, the platform binds `ATTACHMENTS__<tenant>` once per installed
+ * tenant on the same script, and the host reads attachment bytes through exactly that name —
+ * an own binding called `ATTACHMENTS`, or anything under `ATTACHMENTS__`, would be a second
+ * meaning for it. Refused before the upload rather than resolved by whichever binding wins.
+ */
+export function assertAttachmentBindingFree(
+  bindings: readonly { name: string }[],
+  blobStores: readonly { binding: string }[],
+): void {
+  if (!blobStores.some((s) => s.binding === ATTACHMENT_BLOB_BINDING)) return;
+  const taken = bindings.find(
+    (b) => b.name === ATTACHMENT_BLOB_BINDING || b.name.startsWith(`${ATTACHMENT_BLOB_BINDING}__`),
+  );
+  if (taken) {
+    throw new Error(
+      `this vertical declares attachment targets, so the platform binds each tenant's attachment bucket as ` +
+        `${ATTACHMENT_BLOB_BINDING}__<tenant> — and its own binding '${taken.name}' takes that name. Rename the binding.`,
+    );
+  }
+}
+
+/**
  * Where the derived wrangler config is written for the build.
  *
  * ABSOLUTE, and that is the whole point: `wrangler` is spawned with `cwd` set to this
@@ -1462,8 +1492,20 @@ export async function push(
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
   // The same import reads the entry's `envSpec` export (#1206); when it exists it is the copy
   // that ships, and a drifted package.json duplicate refuses the push.
-  const { registry, envSpec: derivedEnvSpec, schedules, freshness, declaredEvents, declaredEventsTruncated, migrations } =
-    await deriveDeclaredSurface(opts.dir);
+  const {
+    registry,
+    envSpec: derivedEnvSpec,
+    schedules,
+    freshness,
+    declaredEvents,
+    declaredEventsTruncated,
+    migrations,
+    declaresAttachments,
+  } = await deriveDeclaredSurface(opts.dir);
+  // #1995: attachment bytes need a per-tenant bucket, and no vertical should have to remember
+  // to ask for one — a module declaring an attachment target IS the request.
+  const blobStores = withAttachmentBlobStore(needs, declaresAttachments);
+  assertAttachmentBindingFree(bindings, blobStores);
 
   // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build
   // rather than before it, because this is where the push has always read the permission
@@ -1523,8 +1565,9 @@ export async function push(
     ...(needs?.tenantStores?.length ? { tenantStores: needs.tenantStores } : {}),
     // Per-tenant blob stores (#473) travel the same way — a NEED, never a static
     // r2_bucket binding: the platform mints one bucket per tenant, so there is no id to
-    // declare. Carried here for admission + the tenant lifecycle.
-    ...(needs?.blobStores?.length ? { blobStores: needs.blobStores } : {}),
+    // declare. Carried here for admission + the tenant lifecycle. The attachment store is
+    // added from the modules' `attachmentTargets` (#1995), not hand-declared.
+    ...(blobStores.length ? { blobStores } : {}),
     // Static files (#340): the routing config plus the full content-addressed manifest.
     // Sent even when the directory came out EMPTY — an empty `files` list is a vertical
     // that declared assets and built none, which the control plane should see as such

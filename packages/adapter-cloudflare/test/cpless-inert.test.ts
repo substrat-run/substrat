@@ -1,22 +1,34 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { moduleId, permissionKey, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle } from '@substrat-run/contracts';
+import {
+  connectionId as connectionIdOf,
+  moduleId,
+  permissionKey,
+  principalId,
+  scopeId,
+  tenantId,
+  type ScopeId,
+  type ScopeLifecycle,
+} from '@substrat-run/contracts';
 import { scheduleMod } from '@substrat-run/contract-tests';
 import { INERT_SCOPE_REASON, ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 
 /**
  * #2005 on a CP-LESS host — the hosted-vertical shape, with no control-plane directory to ask
- * what kind of scope it serves. A preview or a snapshot reaches such a vertical as a restore,
- * and every copy records that it is one (`_substrat_copy_origin`), so the coordinator reads the
- * scope's own storage instead: a copy's plain executor never runs, and its delivery is journaled
- * inert. (A connector never runs on a CP-less host at all; that is #574's routing.)
+ * what kind of scope it serves. A preview or a snapshot reaches such a vertical as a restore the
+ * platform flags with the directory's classification (`markCopy`), and the store records that it
+ * is a copy (`_substrat_copy_origin.is_copy`), so the coordinator reads the scope's own storage
+ * instead: a copy's plain executor never runs, and its delivery is journaled inert. (A connector
+ * never runs on a CP-less host at all; that is #574's routing.)
  */
 describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
   const t = tenantId.parse(ulid());
   const owner = principalId.parse(ulid());
   const USE = permissionKey.parse('perm:use');
   const ran: string[] = [];
+  /** The event ids the executor ran, so a copied event can be told from the scope's own. */
+  const ranIds: string[] = [];
   let install: ScopeId;
 
   const hostFor = () => {
@@ -24,6 +36,7 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE });
     host.registerExecutor('cpless-effector', 'perm.acted', async (_admin, event) => {
       ran.push(event.scopeId);
+      ranIds.push(event.id);
     });
     return host;
   };
@@ -35,7 +48,12 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
       roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
       ownerRoleKey: 'office-admin',
     });
-  const act = async (s: ScopeId) => (await hostFor().getScope(owner, t, s)).invoke('perm/authorized-emit', { permission: USE });
+  const act = async (s: ScopeId, host = hostFor()) => (await host.getScope(owner, t, s)).invoke('perm/authorized-emit', { permission: USE });
+  /** The scope's copy-origin rows, as column → value. */
+  const originOf = async (s: ScopeId) => {
+    const d = (await hostFor().exportScopeLocal(s)).find((x) => x.name === '_substrat_copy_origin');
+    return (d?.rows ?? []).map((r) => Object.fromEntries(d!.columns.map((c, i) => [c, (r as unknown[])[i]])));
+  };
   const inertIn = async (s: ScopeId) =>
     (await hostFor().executorDeadLetters(t, s)).filter((d) => d.error === INERT_SCOPE_REASON).length;
 
@@ -50,9 +68,13 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
     expect(await inertIn(install)).toBe(0);
   });
 
-  it("a copy (a preview fork or a snapshot, restored from the install's export): held inert", async () => {
+  const PREVIEW = { kind: 'preview', forkedFrom: null };
+  const FORK = (from = install) => ({ kind: 'preview', forkedFrom: from });
+  const INSTALL = { kind: 'scope', forkedFrom: null };
+
+  it("a copy (a preview fork, restored from the install's export): held inert", async () => {
     const copy = scopeId.parse(ulid());
-    await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(install), { sourceScopeId: install });
+    await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(install), { sourceScopeId: install, markCopy: FORK() });
     await act(copy);
     expect(ran).not.toContain(copy);
     expect(await inertIn(copy)).toBe(1);
@@ -61,9 +83,17 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
     expect(ran).not.toContain(copy);
   });
 
+  it('a snapshot (copied inside this deployment): held inert', async () => {
+    const snap = scopeId.parse(ulid());
+    await hostFor().snapshotScopeLocal(install, snap);
+    await act(snap);
+    expect(ran).not.toContain(snap);
+    expect(await inertIn(snap)).toBe(1);
+  });
+
   it('a clean-room preview (a restore of nothing, then seated): held inert', async () => {
     const clean = scopeId.parse(ulid());
-    await hostFor().restoreScopeLocal(clean, []);
+    await hostFor().restoreScopeLocal(clean, [], { markCopy: PREVIEW });
     await seat(clean);
     await act(clean);
     expect(ran).not.toContain(clean);
@@ -79,10 +109,6 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
       await seat(s);
       return s;
     };
-    const PREVIEW = { kind: 'preview', forkedFrom: null };
-    const INSTALL = { kind: 'scope', forkedFrom: null };
-    const originOf = async (s: ScopeId) =>
-      (await hostFor().exportScopeLocal(s)).find((t) => t.name === '_substrat_copy_origin')?.rows ?? [];
 
     it('reads as an install until it is marked — the gap this closes', async () => {
       const s = await legacy();
@@ -134,27 +160,25 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
       expect(ran).toContain(s);
     });
 
-    it('refuses to clear a scope classified a copy, and a marker a real load wrote', async () => {
+    it('refuses to clear a scope classified a copy', async () => {
       const s = await legacy();
       await hostFor().markCopyLocal(s, PREVIEW);
       await expect(hostFor().clearCopyMarkLocal(s, PREVIEW)).rejects.toThrow(/copy/);
-      // A real load of another scope's data names the events it brought in: removing that
-      // marker would run the source's queued work here.
-      const copy = scopeId.parse(ulid());
-      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(install), { sourceScopeId: install });
-      const before = await originOf(copy);
-      await expect(hostFor().clearCopyMarkLocal(copy, INSTALL)).rejects.toThrow(/another scope/);
-      expect(await originOf(copy)).toEqual(before);
+      await act(s);
+      expect(ran).not.toContain(s);
     });
 
-    it("the next case along: an existing origin is kept as it is — its mark and source", async () => {
+    it("the next case along: marking a load's origin sets the classification and keeps its mark and source", async () => {
       const copy = scopeId.parse(ulid());
       await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(install), { sourceScopeId: install });
-      const before = await originOf(copy);
-      expect(before).toHaveLength(1);
-      expect(await hostFor().markCopyLocal(copy, PREVIEW)).toEqual({ marked: false });
-      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(copy), { sourceScopeId: copy, exact: true, markCopy: PREVIEW });
-      expect(await originOf(copy)).toEqual(before);
+      const [before] = await originOf(copy);
+      expect(before).toBeDefined();
+      expect(await hostFor().markCopyLocal(copy, FORK())).toEqual({ marked: true });
+      expect(await hostFor().markCopyLocal(copy, FORK())).toEqual({ marked: false });
+      const marked = { ...before, is_copy: 1 };
+      expect(await originOf(copy)).toEqual([marked]);
+      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(copy), { sourceScopeId: copy, exact: true, markCopy: FORK() });
+      expect(await originOf(copy)).toEqual([marked]);
     });
   });
 
@@ -163,6 +187,117 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
     const before = ran.length;
     await act(install);
     expect(ran.slice(before)).toEqual([install]);
+  });
+
+  // #2009: a load into another scope id moves the copied-events mark and classifies nothing. One
+  // install's backup restored onto another install is such a load, and the directory still calls
+  // the destination primary, so its own effects run, while the work it copied never does.
+  describe('the copied-events mark and the copy classification are separate facts (#2009)', () => {
+    /** A host with no executor: an event emitted through it stays queued for every executor. */
+    const quiet = () => new CloudflareScopeHost({ scope: env.SCOPE });
+    /** An install holding one event no executor has reached yet, and that event's id. */
+    const queuedSource = async () => {
+      const s = scopeId.parse(ulid());
+      await seat(s);
+      await act(s, quiet());
+      const outbox = (await hostFor().exportScopeLocal(s)).find((d) => d.name === '_substrat_outbox')!;
+      const id = outbox.rows.map((r) => (r as unknown[])[outbox.columns.indexOf('id')] as string).sort().at(-1)!;
+      return { s, id };
+    };
+    /** A dump as a kernel before #2009 wrote it: the origin row has no `is_copy` column. */
+    const withoutClassification = (dump: Awaited<ReturnType<CloudflareScopeHost['exportScopeLocal']>>) =>
+      dump.map((d) => {
+        if (d.name !== '_substrat_copy_origin') return d;
+        const at = d.columns.indexOf('is_copy');
+        if (at < 0) return d;
+        return {
+          ...d,
+          columns: d.columns.filter((_, i) => i !== at),
+          rows: d.rows.map((r) => (r as unknown[]).filter((_, i) => i !== at)),
+        };
+      });
+
+    it('twin: the queued event is real work, which its own scope runs', async () => {
+      const src = await queuedSource();
+      await act(src.s);
+      expect(ranIds).toContain(src.id);
+    });
+
+    it("one install's backup restored onto another install: its own executors run, and the copied event never does", async () => {
+      const src = await queuedSource();
+      const dest = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(dest, await hostFor().exportScopeLocal(src.s), { sourceScopeId: src.s });
+      expect(await originOf(dest)).toEqual([
+        expect.objectContaining({ source_scope_id: src.s, events_through: src.id, is_copy: 0 }),
+      ]);
+      const before = ranIds.length;
+      await act(dest);
+      expect(ran).toContain(dest);
+      expect(await inertIn(dest)).toBe(0);
+      expect(ranIds.slice(before)).toHaveLength(1);
+      expect(ranIds).not.toContain(src.id);
+      expect((await hostFor().drainDue(t, dest)).attempted).toBe(0);
+      expect(ranIds).not.toContain(src.id);
+    });
+
+    it('the same load flagged by the directory (a preview fork) is held inert, and its copied event never runs', async () => {
+      const src = await queuedSource();
+      const dest = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(dest, await hostFor().exportScopeLocal(src.s), {
+        sourceScopeId: src.s,
+        markCopy: FORK(src.s),
+      });
+      expect(await originOf(dest)).toEqual([expect.objectContaining({ events_through: src.id, is_copy: 1 })]);
+      await act(dest);
+      expect(ran).not.toContain(dest);
+      expect(await inertIn(dest)).toBe(1);
+      expect(ranIds).not.toContain(src.id);
+    });
+
+    it("a load classifies by the directory, not by the dump: a copy's export restored onto an install is not a copy", async () => {
+      const src = await queuedSource();
+      const preview = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(preview, await hostFor().exportScopeLocal(src.s), {
+        sourceScopeId: src.s,
+        markCopy: FORK(src.s),
+      });
+      const dest = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(dest, await hostFor().exportScopeLocal(preview), { sourceScopeId: preview });
+      expect(await originOf(dest)).toEqual([
+        expect.objectContaining({ source_scope_id: preview, events_through: src.id, is_copy: 0 }),
+      ]);
+      await act(dest);
+      expect(ran).toContain(dest);
+      expect(ranIds).not.toContain(src.id);
+    });
+
+    it('a legacy origin row (before the column) still reads as a copy; clearing it lets the scope run and keeps the copied event held', async () => {
+      const src = await queuedSource();
+      const dest = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(dest, await hostFor().exportScopeLocal(src.s), { sourceScopeId: src.s });
+      // The same store as a pre-#2009 kernel left it: a backup of it, returned to it.
+      await hostFor().restoreScopeLocal(dest, withoutClassification(await hostFor().exportScopeLocal(dest)), {
+        sourceScopeId: dest,
+        exact: true,
+      });
+      const [legacy] = await originOf(dest);
+      expect(legacy).toMatchObject({ events_through: src.id, is_copy: null });
+      await act(dest);
+      expect(ran).not.toContain(dest);
+      expect(await inertIn(dest)).toBe(1);
+
+      // Staff's correction clears the classification only; before #2009 it refused this row.
+      expect(await hostFor().clearCopyMarkLocal(dest, INSTALL)).toEqual({ cleared: true });
+      expect(await hostFor().clearCopyMarkLocal(dest, INSTALL)).toEqual({ cleared: false });
+      expect(await originOf(dest)).toEqual([{ ...legacy, is_copy: 0 }]);
+      const before = ranIds.length;
+      await act(dest);
+      expect(ran).toContain(dest);
+      expect(ranIds.slice(before)).toHaveLength(1);
+      expect(ranIds).not.toContain(src.id);
+      expect((await hostFor().drainDue(t, dest)).attempted).toBe(0);
+      expect(ranIds).not.toContain(src.id);
+    });
   });
 });
 
@@ -283,6 +418,46 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
     await hostFor().setLifecycleLocal(s, life('active', 'active'));
     await act(s);
     expect(ran).toContain(s);
+  });
+
+  it('a held scope is refused before its tenant\'s attachment bucket is resolved (#1995)', async () => {
+    const s = await seat();
+    const resolved: string[] = [];
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      attachmentBuckets: (tenant) => {
+        resolved.push(tenant);
+        return {};
+      },
+    });
+    // The connector's bytes legs (#574, #711) reach the same bucket from the platform's side.
+    const conn = connectionIdOf.parse(ulid());
+    const upload = () =>
+      host.connectorAttachmentUploadLocal(conn, t, s, {
+        entity: { entityType: 'item', entityId: 'i1' },
+        filename: 'a.txt',
+        contentType: 'text/plain',
+        visibility: 'customer',
+        body: new TextEncoder().encode('a'),
+      });
+    const open = () => host.connectorAttachmentOpenLocal(conn, t, s, ulid());
+    const refused = /scope not active \(status: suspended\)/;
+
+    await host.setLifecycleLocal(s, life('suspended'));
+    await expect(host.attachments(owner, t, s)).rejects.toThrow(refused);
+    await expect(upload()).rejects.toThrow(refused);
+    await expect(open()).rejects.toThrow(refused);
+    expect(resolved).toEqual([]);
+
+    // The twin: live again, each door gets past the gate to the tenant's bucket. What it does
+    // there (this connection holds no grant) is the attachments suite's business, not this one's.
+    await host.setLifecycleLocal(s, life('active'));
+    await host.attachments(owner, t, s);
+    expect(resolved).toEqual([t]);
+    await upload().catch((e: unknown) => expect(String(e)).not.toMatch(refused));
+    expect(resolved).toEqual([t, t]);
+    await open().catch((e: unknown) => expect(String(e)).not.toMatch(refused));
+    expect(resolved).toEqual([t, t, t]);
   });
 
   it('an archived scope is held too', async () => {

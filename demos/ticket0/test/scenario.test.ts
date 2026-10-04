@@ -2237,7 +2237,9 @@ describe('the audit spine', () => {
     const anna = await at(world.substrat, 'agent');
     const page = (await anna.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
     const target = page.entries[0]!;
-    await anna.invoke('ticket0/tag-conversation', { conversationId: target.id, tag: 'billing' });
+    // A tag the seed never applies: tagging is idempotent, so a tag the conversation
+    // already carries announces nothing and the outbox would show some other row.
+    await anna.invoke('ticket0/tag-conversation', { conversationId: target.id, tag: 'audit-trail' });
 
     const evt = outbox(world.substrat, 'ticket0.conversation-tagged')!;
     expect(evt).toBeDefined();
@@ -2245,7 +2247,7 @@ describe('the audit spine', () => {
     expect(evt.entity_id).toBe(target.id);
     expect(JSON.parse(evt.payload!)).toEqual({
       conversation_id: target.id,
-      tag: 'billing',
+      tag: 'audit-trail',
       created_at: expect.any(String),
     });
   });
@@ -2567,7 +2569,8 @@ describe('closing the month', () => {
     const assistant = await at(world.substrat, 'assistant');
     const anna = await at(world.substrat, 'agent');
     const page = (await anna.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
-    const open = page.entries.find((c) => c.state !== 'closed')!;
+    // `record-answer` takes a conversation still being worked, so not a resolved one either.
+    const open = page.entries.find((c) => c.state === 'new' || c.state === 'open')!;
     await expect(
       assistant.invoke('ticket0/record-answer', {
         conversationId: open.id,
@@ -2580,5 +2583,56 @@ describe('closing the month', () => {
         outcome: 'drafted',
       }),
     ).rejects.toThrow(/horizon/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// #2001: the declared `order: 'desc'` is what a caller naming no order gets, every page of it.
+describe('the inbox opens on what moved last', () => {
+  it('is newest first when no order is named, and pages on in that order', async () => {
+    const relay = await at(world.substrat, 'relay');
+    const fresh: string[] = [];
+    for (const n of [1, 2]) {
+      // The real clock: a few milliseconds apart so `updated_at` alone decides.
+      await new Promise((r) => setTimeout(r, 5));
+      const msg = (await relay.invoke('ticket0/ingest-message', {
+        conversationId: null,
+        contactEmail: `newest-${n}@customer.example`,
+        contactName: `Newest ${n}`,
+        subject: `The newest thing, number ${n}`,
+        bodyText: 'Hello?',
+        emailMessageId: `<newest-${n}@mail.example>`,
+      })) as Message;
+      fresh.push(msg.conversation_id);
+    }
+
+    type Row = Conversation & { updated_at: string };
+    const anna = await at(world.substrat, 'agent');
+    const walked: Row[] = [];
+    let cursor: string | null = null;
+    let total = 0;
+    do {
+      const page: CountedPage<Row> = (await anna.invoke('ticket0/list-conversations', {
+        limit: 2,
+        ...(cursor ? { cursor } : {}),
+      })) as CountedPage<Row>;
+      walked.push(...page.entries);
+      total = page.total;
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+
+    expect(walked.slice(0, 2).map((c) => c.id)).toEqual([...fresh].reverse());
+    const stamps = walked.map((c) => c.updated_at);
+    expect(stamps).toEqual([...stamps].sort().reverse());
+    expect(new Set(walked.map((c) => c.id)).size).toBe(walked.length);
+    expect(walked.length).toBe(total);
+    expect(walked.length).toBeGreaterThan(2);
+
+    const asc = (await anna.invoke('ticket0/list-conversations', {
+      order: 'asc',
+      limit: 100,
+    })) as CountedPage<Row>;
+    expect(asc.entries.map((c) => c.id).slice(-2)).toEqual(fresh);
   });
 });

@@ -277,4 +277,38 @@ describe('Kallkälla Kaffe e-commerce scenario (concept §9)', () => {
     await expect(guest.invoke('shop/catalog', { includeUnpublished: true })).rejects.toThrow(/permission denied/);
     await expect(gustav.invoke('shop/catalog', { includeUnpublished: true })).rejects.toThrow(/permission denied/);
   });
+
+  // #2001: the declared `order: 'desc'` is what a caller naming no order gets, every page of it.
+  it('12. the order book is newest first when no order is named, on every page', async () => {
+    await astrid.invoke('shop/set-stock', { variantId: w.chelbesaVariantId, onHand: 20 });
+    const placed: number[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      const cart = await elin.invoke<{ id: string }>('shop/create-cart');
+      await elin.invoke('shop/add-to-cart', { cartId: cart.id, variantId: w.chelbesaVariantId, qty: 1 });
+      const { order } = await elin.invoke<{ order: OrderRow }>('shop/checkout', {
+        cartId: cart.id,
+        customerId: w.elinCustomerId,
+        paymentMethod: 'invoice',
+      });
+      placed.push(order.number);
+    }
+
+    const numbers: number[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: Page<OrderRow> = await astrid.invoke<Page<OrderRow>>('shop/orders', {
+        limit: 1,
+        ...(cursor ? { cursor } : {}),
+      });
+      numbers.push(...page.entries.map((o) => o.number));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    // §5's order, then the two above: the last one placed heads the book.
+    expect(numbers).toHaveLength(3);
+    expect(numbers.slice(0, 2)).toEqual([placed[1], placed[0]]);
+    expect(numbers[2]).toBeLessThan(placed[0]!);
+
+    const asc = await astrid.invoke<Page<OrderRow>>('shop/orders', { order: 'asc' });
+    expect(asc.entries.map((o) => o.number)).toEqual([...numbers].reverse());
+  });
 });

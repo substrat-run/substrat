@@ -159,6 +159,32 @@ describe('engine-invoicing', () => {
     expect(await list()).toHaveLength(0);
   });
 
+  // #2001: the declared `order: 'desc'` is what a caller naming no order gets, every page of it.
+  it('lists newest first when no order is named, and pages on in that order', async () => {
+    // One open basis per customer, so three customers make three bases.
+    for (const id of ['A', 'B', 'C']) {
+      const event = completed(`wo-${id}`, [line('arbete', '100')]);
+      const customer = { entityType: 'customer', entityId: `01JEXAMPLECUSTOMER0000000${id}` };
+      await h.emit({ ...event, payload: { ...(event.payload as object), customer } } as DomainEventInput);
+    }
+
+    const numbers: number[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: Page<UnderlagRow> = await reader.invoke<Page<UnderlagRow>>('invoicing/list', {
+        limit: 1,
+        ...(cursor ? { cursor } : {}),
+      });
+      numbers.push(...page.entries.map((u) => u.number));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    // The per-scope running number, issued in the order the three completions arrived.
+    expect(numbers).toEqual([3, 2, 1]);
+
+    const asc = await reader.invoke<Page<UnderlagRow>>('invoicing/list', { order: 'asc' });
+    expect(asc.entries.map((u) => u.number)).toEqual([1, 2, 3]);
+  });
+
   it('accumulates into ONE open underlag per customer', async () => {
     await h.emit(completed('wo-1', [line('arbete', '100')]));
     await h.emit(completed('wo-2', [line('arbete', '200')]));

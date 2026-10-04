@@ -143,6 +143,18 @@ export function inertScopeContractSuite(adapterName: string, makeFixture: () => 
         });
       }
 
+      // #2009: the store's own copy classification is set only on the directory's word, so a
+      // preview loaded by a platform that did not send that word (a release-skew window) holds
+      // `is_copy = 0`. The egress gate never reads it: the route read is the directory's, so the
+      // preview's outbound I/O is still refused there.
+      it('a preview whose own store does not record it a copy still resolves not primary (#2009)', async () => {
+        const preview = await scope({ kind: 'preview', forkedFrom: primary, forkedAt: new Date().toISOString() });
+        await host.restoreScope(staff, t, preview, await host.admin.exportScope(staff, t, primary));
+        const origin = (await host.admin.exportScope(staff, t, preview)).tables.find((d) => d.name === '_substrat_copy_origin');
+        expect(origin?.rows.map((r) => (r as unknown[])[origin.columns.indexOf('is_copy')])).toEqual([0]);
+        expect((await host.admin.resolveHostname(await bound(preview)))?.primary).toBe(false);
+      });
+
       // The addresses a non-primary scope may still write to: every surface of the SAME scope.
       it("carries the scope's own hostnames — its sibling surfaces — and no other scope's", async () => {
         const preview = await scope({ kind: 'preview' });

@@ -78,6 +78,7 @@ export {
   freshnessMod,
   searchMod,
   searchModManifest,
+  listDeclaredOps,
   listMod,
   listModManifest,
   parseMod,

@@ -95,8 +95,27 @@ export type TenantStoreHandle = z.infer<typeof tenantStoreHandle>;
  * On the pure adapter there is no binding to name — the handle's `ref` is the whole reach.
  */
 export function tenantStoreBindingName(binding: string, tenantId: string): string {
-  return `${binding}__${tenantId}`;
+  return perTenantBindingName(binding, tenantId);
 }
+
+/**
+ * The ONE encoding behind {@link tenantStoreBindingName} and {@link blobStoreBindingName}
+ * (#1995). Both halves are checked rather than assumed: a ULID has no `_`, so
+ * `<BINDING>__<ULID>` splits exactly one way and names exactly one tenant — but only if the
+ * id IS a ULID. An unchecked join of `X__<another id>` would name a different binding than
+ * the tenant it claims to be. Refused here, once, for every caller.
+ */
+function perTenantBindingName(binding: string, tenant: string): string {
+  if (!BINDING_NAME.test(binding)) {
+    throw new Error(`not a per-tenant binding name: '${binding}' (expected SCREAMING_SNAKE)`);
+  }
+  if (!tenantId.safeParse(tenant).success) {
+    throw new Error(`not a tenant id: '${tenant}' — a per-tenant binding is named by a ULID only`);
+  }
+  return `${binding}__${tenant}`;
+}
+
+const BINDING_NAME = /^[A-Z][A-Z0-9_]*$/;
 
 /**
  * A **per-tenant blob store** the platform provisions and hands to the vertical (#473) —
@@ -138,7 +157,52 @@ export type BlobStoreHandle = z.infer<typeof blobStoreHandle>;
  * `D1Database`. On the pure adapter there is no binding to name.
  */
 export function blobStoreBindingName(binding: string, tenantId: string): string {
-  return `${binding}__${tenantId}`;
+  return perTenantBindingName(binding, tenantId);
+}
+
+/**
+ * The blob store attachment bytes live in (#1995). Fixed by the platform rather than named
+ * by each vertical, because both ends of it are platform code: the push declares it for any
+ * vertical whose modules declare `attachmentTargets` ({@link withAttachmentBlobStore}), and
+ * the Cloudflare host resolves `env[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)]`
+ * by itself. A vertical that had to remember either half was the defect: every deployed one
+ * forgot both, and no upload could succeed on a hosted deploy.
+ */
+export const ATTACHMENT_BLOB_BINDING = 'ATTACHMENTS';
+
+/** Whether any of these module manifests declares an attachment target (#1995). */
+export function declaresAttachmentTargets(
+  modules: readonly { readonly attachmentTargets?: readonly unknown[] }[],
+): boolean {
+  return modules.some((m) => (m.attachmentTargets?.length ?? 0) > 0);
+}
+
+/**
+ * The blob stores a push declares (#1995): the vertical's own `runtimeNeeds.blobStores`, plus
+ * {@link ATTACHMENT_BLOB_BINDING} when any module declares an attachment target — derived
+ * from the same module manifests the permission surface is, so the need cannot drift from
+ * the declaration that creates it. A hand-declared blob store of that name IS the attachment
+ * store (the kind is a single literal), so it is kept once. A per-tenant RELATIONAL store
+ * of that name is refused: it would be bound under the very `ATTACHMENTS__<tenant>` name the
+ * host reads attachment bytes through. (A static binding of the name is the push's to refuse,
+ * since only it reads the wrangler config those come from.)
+ */
+export function withAttachmentBlobStore(
+  needs: { readonly blobStores?: readonly BlobStoreNeed[]; readonly tenantStores?: readonly { binding: string }[] } | undefined,
+  /** {@link declaresAttachmentTargets} over the vertical's modules. */
+  attaches: boolean,
+): BlobStoreNeed[] {
+  const stores = [...(needs?.blobStores ?? [])];
+  if (needs?.tenantStores?.some((s) => s.binding === ATTACHMENT_BLOB_BINDING)) {
+    throw new Error(
+      `runtimeNeeds.tenantStores declares '${ATTACHMENT_BLOB_BINDING}', the binding the platform keeps for ` +
+        `attachment bytes (#1995) — rename that store; attachments need no declaration of their own`,
+    );
+  }
+  if (attaches && !stores.some((s) => s.binding === ATTACHMENT_BLOB_BINDING)) {
+    stores.push({ binding: ATTACHMENT_BLOB_BINDING, kind: 'blob' });
+  }
+  return stores;
 }
 
 /**

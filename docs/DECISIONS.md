@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-104 decisions · 61 plan · 43 kernel
+105 decisions · 61 plan · 44 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -110,9 +110,10 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-39](decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md) | 2026-08-19 | kernel | Payload changes are loud-failure replaces; dual-emit is unavailable, not merely awkward <br>*amends D-28* | #128 |
 | [K-40](decisions/K-040-an-entity-s-state-machine-is-declared-in-the-model-not-w.md) | 2026-08-21 | kernel | An entity's state machine is declared in the model, not written a second time as guards | #844 |
 | [D-58](decisions/D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md) | 2026-08-22 | plan | D-46's Durable-Object limit is enforcement-only; DO-originated egress is observable <br>*amends D-46* | #863, #858 |
-| [K-41](decisions/K-041-a-list-read-declares-its-filter-and-sort-vocabulary-and-t.md) | 2026-08-22 | kernel | A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it <br>*amends K-18* | #811, #129, #132 |
+| [K-41](decisions/K-041-a-list-read-declares-its-filter-and-sort-vocabulary-and-t.md) | 2026-08-22 | kernel | A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it <br>*amends K-18* <br>*amended by K-44* | #811, #129, #132 |
 | [K-42](decisions/K-042-an-impersonated-operation-carries-two-actors-and-the-permis.md) | 2026-08-26 | kernel | An impersonated operation carries two actors, and the permission model answers as the impersonated one | #868, #85, #44 |
 | [D-59](decisions/D-059-the-model-provider-seam-is-a-table-platform-billed-inference-is-a-cr.md) | 2026-08-29 | plan | The model-provider seam is a table; platform-billed inference is a credential-resolution rule, not a provider <br>*amends D-30* | #1054, #1073 |
 | [D-60](decisions/D-060-the-dashboard-is-an-ordinary-sandbox-clean-vertical-its-privile.md) | 2026-09-02 | plan | The Dashboard is an ordinary sandbox-clean vertical: its privileged half is a platform intent, not a narrowed credential <br>*awaiting ratification* | #1185, #978, #977 |
 | [D-61](decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md) | 2026-09-20 | plan | DO-originated egress is observed and never refused: D-46's limit stands, and no platform-authored code enters a customer's bundle <br>*awaiting ratification* | #861, #1579 |
 | [K-43](decisions/K-043-the-kernel-indexes-attachment-text-it-does-not-parse-file-fo.md) | 2026-10-02 | kernel | The kernel indexes attachment text; it does not parse file formats | #1575, #1976 |
+| [K-44](decisions/K-044-a-paged-read-is-served-in-its-declared-order-and-its-cursor.md) | 2026-10-04 | kernel | A paged read is served in its declared order, and its cursor names the walk that minted it <br>*awaiting ratification* <br>*amends K-41* | #2001 |

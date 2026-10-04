@@ -11055,7 +11055,7 @@ export class SqliteScopeHost implements ScopeHost {
         // the tie-break) rather than a field the caller could name.
         const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
         const nextCursor =
-          last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn);
+          last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order);
         const page = { entries: rows as T[], nextCursor };
         if (!params.total) return page;
         const counted = rt.db.prepare(q.countSql).all(...(q.countParams as never[])) as {
@@ -11522,6 +11522,9 @@ export class SqliteScopeHost implements ScopeHost {
     // executes, the table always already has `kind` in its key, never `invocation_id`.
     this.ensureColumn(db, '_substrat_schedule_state', 'invocation_id', 'invocation_id TEXT');
     this.ensureColumn(db, '_substrat_job_runs', 'subject_id', 'subject_id TEXT');
+    // #2009: the copy classification on a scope DB built before it (NULL reads as a copy; see
+    // `COPY_ORIGIN_DDL`).
+    this.ensureColumn(db, '_substrat_copy_origin', 'is_copy', 'is_copy INTEGER');
     // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
     // that is never pruned. No index leads with invocation_id, so without this one SQLite
     // walks the PRIMARY KEY from the oldest event until it reaches the call, and reading a

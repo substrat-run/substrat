@@ -77,6 +77,26 @@ describe('engine-workorder', () => {
     expect(second.number).toBe(2);
   });
 
+  // #2001: the declared `order: 'desc'` is what a caller naming no order gets, every page of it.
+  it('lists newest first when no order is named, and pages on in that order', async () => {
+    for (const title of ['ett', 'två', 'tre']) await create(title);
+
+    const numbers: number[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: Page<WorkOrder> = await staff.invoke<Page<WorkOrder>>('workorder/list', {
+        limit: 1,
+        ...(cursor ? { cursor } : {}),
+      });
+      numbers.push(...page.entries.map((o) => o.number));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(numbers).toEqual([3, 2, 1]);
+
+    const asc = await staff.invoke<Page<WorkOrder>>('workorder/list', { order: 'asc' });
+    expect(asc.entries.map((o) => o.number)).toEqual([1, 2, 3]);
+  });
+
   it('rejects a malformed create rather than writing a partial row', async () => {
     await expect(
       h.run((ctx) => createWorkOrder(ctx, { facility: FACILITY, customer: CUSTOMER, kind: '', title: '' })),
