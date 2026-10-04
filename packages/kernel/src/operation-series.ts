@@ -12,15 +12,23 @@
  * work is the window's rows whatever lies after it — a window years ago visits only its own.
  * An event id is minted from the instant the operation ran (#956) by a mint whose floor only
  * rises, so an id never carries a time BEFORE its own `occurred_at`: every event at or after
- * `since` has an id at or above `ulidFloor(since)`, and the key range is half-open like the
- * window: below `ulidFloor(until)`.
+ * `since` has an id at or above `ulidFloor(since)`. The key range ends at
+ * `ulidFloor(until + OPERATION_SERIES_ID_SLACK_MS)`, a fixed sliver past the window.
  * `occurred_at` stays the exact filter on both ends; the key range only bounds the scan.
  *
- * What the closed range gives up, stated: a clock that stepped back is held at the mint's
- * floor, so its ids can run AHEAD of their instants, and an event whose id ran past
- * `until` is not counted by that window. The lag is the size of the step back (an NTP
- * correction: milliseconds), so only an event in the window's last milliseconds can miss —
- * the price of a read whose work does not grow with everything written after its window.
+ * The slack is for ids that run AHEAD of their instants. `createUlid` (ulid.ts) holds a
+ * clock that is at or behind its floor at `lastTime` — and bumps a millisecond on the
+ * (astronomically rare) random overflow — and `seedFrom` raises that floor to the outbox's
+ * `MAX(id)` when a writer wakes. So an event in the window's last moments can carry an id
+ * past `until`, by as much as the clock stepped back. The mint itself sets no bound on
+ * that; the wall clock does: the Durable Object host reads the platform's NTP-disciplined
+ * clock, whose corrections are sub-second. `OPERATION_SERIES_ID_SLACK_MS` covers that with
+ * two orders of margin, at the cost of scanning one more minute of rows. `occurred_at`
+ * stays the exact filter, so the slack admits rows to the scan, never to the count.
+ *
+ * Past the slack, stated: a step back larger than a minute (a pure host's injected clock
+ * rewound by hand, a floor seeded from an id planted in the future) leaves an id beyond
+ * the range, and that event is not counted by a window ending before its id.
  *
  * The bucket arithmetic casts its parameters: a driver may bind a JS number as REAL, and
  * then the division would place an event at its own instant instead of its bucket's start.
@@ -34,6 +42,12 @@
 import type { OperationSeriesInput, OperationSeriesResult } from '@substrat-run/contracts';
 import type { TimelineReader } from './timeline.js';
 import { ulidFloor } from './ulid.js';
+
+/**
+ * How far past `until` the key range reaches, for an id held at the mint's floor while its
+ * instant was inside the window (see the header for where the size comes from).
+ */
+export const OPERATION_SERIES_ID_SLACK_MS = 60_000;
 
 /** Joins a pair into one key — a control character no entity or operation name carries. */
 const SEP = '\u001f';
@@ -61,7 +75,7 @@ export function operationSeriesQuery(input: OperationSeriesInput): { sql: string
       sinceMs / 1000,
       input.bucketMinutes * 60,
       ulidFloor(sinceMs),
-      ulidFloor(untilMs),
+      ulidFloor(untilMs + OPERATION_SERIES_ID_SLACK_MS),
       new Date(sinceMs).toISOString(),
       new Date(untilMs).toISOString(),
       JSON.stringify(keys),

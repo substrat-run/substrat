@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { operationSeriesInput, type OperationSeriesInput } from '@substrat-run/contracts';
-import { createUlid, operationSeriesQuery, readOperationSeries, type ScopedSql } from '../src/index.js';
+import { createUlid, OPERATION_SERIES_ID_SLACK_MS, operationSeriesQuery, readOperationSeries, type ScopedSql } from '../src/index.js';
 
 /**
  * Business volumes per bucket (#1750), against a real outbox: the read is one aggregate
@@ -118,17 +118,26 @@ describe('readOperationSeries (#1750)', () => {
     expect(r.series.map((s) => s.total)).toEqual([1, 1]);
   });
 
-  it('counts an event whose id ran ahead of its instant inside the window, and not one whose id ran past `until`', () => {
+  it('counts an event whose id ran ahead of its instant — inside the window, or past `until` within the slack — and nothing truly after `until`', () => {
     const { reader, sqls } = readerOver([
       // A clock held at the floor: the id is hours ahead, still inside the window.
       { at: '2026-10-03T10:00:00.000Z', op: 'desk/close', idAt: '2026-10-03T20:00:00.000Z' },
       { at: '2026-10-03T11:00:00.000Z', op: 'desk/close' },
-      // The stated cost of the closed key range: an id past `until` is outside it.
-      { at: '2026-10-03T23:59:59.999Z', op: 'desk/close', idAt: '2026-10-04T00:00:00.001Z' },
+      // The window's last instant, its id held a few seconds past `until`: counted.
+      { at: '2026-10-03T23:59:59.999Z', op: 'desk/close', idAt: '2026-10-04T00:00:05.000Z' },
+      // Truly after `until`, its id inside the slack: in the scan, never in the count.
+      { at: '2026-10-04T00:00:10.000Z', op: 'desk/close' },
     ]);
     const r = readOperationSeries({ sql: reader }, { moves: [CLOSE], since: '2026-10-03T00:00:00.000Z', until: '2026-10-04T00:00:00.000Z', bucketMinutes: 60 });
-    expect(r.series[0]!.total).toBe(2);
+    expect(r.series[0]!.total).toBe(3);
+    expect(r.series[0]!.buckets.at(-1)).toEqual({ start: '2026-10-03T23:00:00.000Z', count: 1 });
     expect(sqls).toHaveLength(1);
+  });
+
+  it('past the slack, an id held further ahead is the stated cost: not counted by that window', () => {
+    const late = new Date(Date.parse('2026-10-04T00:00:00.000Z') + OPERATION_SERIES_ID_SLACK_MS).toISOString();
+    const r = read([{ at: '2026-10-03T23:59:59.999Z', op: 'desk/close', idAt: late }]);
+    expect(r.series[0]!.total).toBe(0);
   });
 
   it('plans a closed range of the primary key: a minute years ago visits only its own rows', () => {
@@ -147,9 +156,10 @@ describe('readOperationSeries (#1750)', () => {
     const plan = db.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...(q.params as never[])) as Array<{ detail: string }>;
     expect(plan.some((p) => /SEARCH _substrat_outbox USING INDEX sqlite_autoindex__substrat_outbox_1 \(id>\? AND id<\?\)/.test(p.detail))).toBe(true);
     expect(plan.filter((p) => /^SCAN _substrat_outbox\b/.test(p.detail))).toEqual([]);
-    // Rows the range itself holds: the one minute, not the two days after it.
+    // Rows the range itself holds: the minute and the slack's minute past it — not the two
+    // days written after them.
     const visited = db.prepare('SELECT COUNT(*) AS n FROM _substrat_outbox WHERE id >= ? AND id < ?').get(q.params[2] as string, q.params[3] as string) as { n: number };
-    expect(visited.n).toBe(1);
+    expect(visited.n).toBe(2);
     expect(readOperationSeries({ sql: { query: <T>(s: string, p: unknown[] = []) => db.prepare(s).all(...(p as never[])) as T[] } as Pick<ScopedSql, 'query'> }, input).series[0]!.total).toBe(1);
   });
 

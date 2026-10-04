@@ -499,7 +499,7 @@ export {
   type ImpersonationRow,
 } from './impersonation.js';
 export { readLifecycleFlow } from './lifecycle-flow.js';
-export { operationSeriesQuery, readOperationSeries } from './operation-series.js';
+export { OPERATION_SERIES_ID_SLACK_MS, operationSeriesQuery, readOperationSeries } from './operation-series.js';
 export {
   REFUSALS_DDL,
   REFUSALS_INDEX,
