@@ -501,6 +501,12 @@ importers:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+      miniflare:
+        specifier: ^4.20260310.0
+        version: 4.20260310.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

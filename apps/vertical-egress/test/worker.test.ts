@@ -29,6 +29,10 @@ const envWith = (over: Partial<Env> = {}): Env => ({
   ...over,
 });
 
+/** An Analytics Engine binding that collects every datapoint into `points`. */
+const meterInto = (points: unknown[]) =>
+  ({ writeDataPoint: (p: unknown) => void points.push(p) }) as unknown as AnalyticsEngineDataset;
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe('vertical egress worker', () => {
@@ -316,8 +320,6 @@ describe('a non-primary scope reaches no third party (#2005)', () => {
     hosts,
     ...(primary === undefined ? {} : { primary }),
   });
-  const meterInto = (points: unknown[]) =>
-    ({ writeDataPoint: (p: unknown) => void points.push(p) }) as unknown as AnalyticsEngineDataset;
 
   for (const [name, hosts] of [
     ['a host its version declares', ['api.scrive.com']],
@@ -464,22 +466,23 @@ describe("a non-primary scope reads other platform apps and writes only its own 
 });
 
 /**
- * #2005: a redirect this worker FOLLOWED would be its own subrequest, which nothing polices. So a
- * copy's allowed requests leave with `redirect: 'manual'` on every path: the platform loopback,
- * the relay, and its own custom domain. A 3xx goes back to the copy's code, and its request to
- * the new location comes through here again and meets the inert rule. An install's requests go
- * as they came.
+ * #2011 (and #2005 before it, for copies only): a redirect this worker FOLLOWED would be its own
+ * subrequest, which nothing polices. So every request it lets out leaves with `redirect: 'manual'`
+ * — install or copy, on every path: the platform loopback, the relay, a declared host, an
+ * unenforced version, a copy's own custom domain. The 3xx goes back to the vertical, whose own
+ * `fetch` follows it through this worker again (proved on workerd in `redirect.workerd.test.ts`).
  */
-describe("a copy's allowed requests are never redirected past the inert rule (#2005)", () => {
+describe('no allowed request is redirected past the policy (#2011, #2005)', () => {
   const OWN = 'shop-acme--pr-7.global.substrat.run';
-  const policy = (primary: boolean): OutboundPolicy => ({
+  const policy = (primary: boolean, hosts: string[] | null = ['preview.example.com', 'api.scrive.com']): OutboundPolicy => ({
     slug: 'acme-shop',
     tenant: '01TENANT',
-    hosts: ['preview.example.com'],
+    hosts,
     primary,
     hostname: OWN,
     hostnames: [OWN, 'preview.example.com'],
   });
+  const EXFIL = 'https://exfil.example.com/collect';
   /**
    * A router binding that behaves like a Fetcher dispatching to an app that answers 302 to a third
    * party: it follows only when the request it is handed says `follow`, through the global fetch,
@@ -490,51 +493,110 @@ describe("a copy's allowed requests are never redirected past the inert rule (#2
     const fetcher = {
       fetch: async (request: Request) => {
         seen.push(request);
-        const location = 'https://exfil.example.com/collect';
-        if (request.redirect === 'follow') return fetch(location);
-        return new Response(null, { status: 302, headers: { location } });
+        if (request.redirect === 'follow') return fetch(EXFIL);
+        return new Response(null, { status: 302, headers: { location: EXFIL } });
       },
     } as unknown as Fetcher;
     return { fetcher, seen };
   };
 
-  it("a copy's GET to another app that 302s to a third party is not followed: the copy gets the 3xx", async () => {
-    const internet = vi.fn(async () => new Response('exfiltrated', { status: 200 }));
-    vi.stubGlobal('fetch', internet);
-    const r = redirectingRouter();
-    const res = await worker.fetch(
-      new Request('https://crm-acme.global.substrat.run/api/read'),
-      envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(false) }),
-    );
-    expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://exfil.example.com/collect');
-    expect(internet).not.toHaveBeenCalled();
-    expect(r.seen[0]!.redirect).toBe('manual');
-  });
-
-  it('twin: an install keeps the redirect mode it asked for, and the router follows', async () => {
-    const internet = vi.fn(async () => new Response('followed', { status: 200 }));
-    vi.stubGlobal('fetch', internet);
-    const r = redirectingRouter();
-    const res = await worker.fetch(
-      new Request('https://crm-acme.global.substrat.run/api/read'),
-      envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(true) }),
-    );
-    expect(await res.text()).toBe('followed');
-    expect(r.seen[0]!.redirect).toBe('follow');
-  });
-
-  for (const [name, url] of [
-    ['the relay', 'https://console.substrat.net/internal/x'],
-    ['its own custom domain', 'https://preview.example.com/api/write'],
-  ] as const) {
-    it(`${name}: a copy's request leaves with redirect manual, an install's as it came`, async () => {
-      const seen: Request[] = [];
-      vi.stubGlobal('fetch', vi.fn(async (req: Request) => (seen.push(req), new Response('ok', { status: 200 }))));
-      for (const primary of [false, true]) {
-        await worker.fetch(new Request(url, { method: 'POST', body: '{}' }), envWith({ OUTBOUND_POLICY: policy(primary) }));
-      }
-      expect(seen.map((r) => r.redirect)).toEqual(['manual', 'follow']);
+  for (const primary of [false, true]) {
+    const who = primary ? 'an install' : 'a copy';
+    it(`${who}'s GET to another app that 302s to a third party is not followed: the vertical gets the 3xx`, async () => {
+      const internet = vi.fn(async () => new Response('exfiltrated', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+      const r = redirectingRouter();
+      const res = await worker.fetch(
+        new Request('https://crm-acme.global.substrat.run/api/read'),
+        envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(primary) }),
+      );
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe(EXFIL);
+      expect(internet).not.toHaveBeenCalled();
+      expect(r.seen[0]!.redirect).toBe('manual');
     });
   }
+
+  /** Stub the internet with `respond`, and return every request that reached it. */
+  const captureFetch = (respond: () => Response = () => new Response('ok')) => {
+    const seen: Request[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (req: Request) => (seen.push(req), respond())));
+    return seen;
+  };
+
+  // Every path a request leaves by, for both kinds of scope — each one with the policy that lets
+  // it out there.
+  const paths = [
+    ['the relay', 'https://console.substrat.net/internal/x', [true, false]],
+    ['its own custom domain', 'https://preview.example.com/api/write', [true, false]],
+    ['a declared host', 'https://api.scrive.com/api/v2/documents', [true]],
+  ] as const;
+  for (const [name, url, primaries] of paths) {
+    for (const primary of primaries) {
+      it(`${name}: ${primary ? 'an install' : 'a copy'}'s request leaves with redirect manual, and the 3xx comes back`, async () => {
+        const seen = captureFetch(() => new Response(null, { status: 307, headers: { location: EXFIL } }));
+        const res = await worker.fetch(new Request(url, { method: 'POST', body: '{}' }), envWith({ OUTBOUND_POLICY: policy(primary) }));
+        expect(res.status).toBe(307);
+        expect(seen.map((r) => [r.redirect, r.method, new URL(r.url).hostname])).toEqual([['manual', 'POST', new URL(url).hostname]]);
+      });
+    }
+  }
+
+  it('an unenforced version (hosts: null) leaves with redirect manual too', async () => {
+    const seen = captureFetch();
+    await worker.fetch(new Request('https://anything.example.org/x'), envWith({ OUTBOUND_POLICY: policy(true, null) }));
+    await worker.fetch(new Request('https://anything.example.org/x'), envWith({ OUTBOUND_POLICY: undefined }));
+    expect(seen.map((r) => r.redirect)).toEqual(['manual', 'manual']);
+  });
+
+  it('carries the body and headers through unchanged — only the redirect mode is set', async () => {
+    const seen = captureFetch();
+    await worker.fetch(
+      new Request('https://api.scrive.com/x', { method: 'PUT', body: 'payload', headers: { authorization: 'Bearer t' } }),
+      envWith({ OUTBOUND_POLICY: policy(true) }),
+    );
+    expect(seen[0]!.method).toBe('PUT');
+    expect(seen[0]!.headers.get('authorization')).toBe('Bearer t');
+    expect(await seen[0]!.text()).toBe('payload');
+  });
+
+  describe('a redirect is metered beside the verdict that let the request out', () => {
+    const meterWith = (respond: () => Response, over: Partial<Env> = {}) => {
+      const points: { blobs: string[] }[] = [];
+      captureFetch(respond);
+      return { points, env: envWith({ ANALYTICS: meterInto(points), OUTBOUND_POLICY: policy(true), ...over }) };
+    };
+
+    it('blobs = [the host that redirected, redirect, tenant, the host it pointed at]', async () => {
+      const { points, env } = meterWith(() => new Response(null, { status: 302, headers: { location: EXFIL } }));
+      await worker.fetch(new Request('https://api.scrive.com/x'), env);
+      expect(points.map((p) => p.blobs)).toEqual([
+        ['api.scrive.com', 'allowed', '01TENANT'],
+        ['api.scrive.com', 'redirect', '01TENANT', 'exfil.example.com'],
+      ]);
+    });
+
+    it('on the loopback too', async () => {
+      const { points, env } = meterWith(() => new Response('unused'), { ROUTER: redirectingRouter().fetcher });
+      await worker.fetch(new Request('https://crm-acme.global.substrat.run/api/read'), env);
+      expect(points.map((p) => p.blobs)).toEqual([
+        ['crm-acme.global.substrat.run', 'platform', '01TENANT'],
+        ['crm-acme.global.substrat.run', 'redirect', '01TENANT', 'exfil.example.com'],
+      ]);
+    });
+
+    it('a relative Location resolves against the request it answers', async () => {
+      const { points, env } = meterWith(() => new Response(null, { status: 301, headers: { location: '/v2/x' } }));
+      await worker.fetch(new Request('https://api.scrive.com/x'), env);
+      expect(points[1]!.blobs[3]).toBe('api.scrive.com');
+    });
+
+    it('twin: a 2xx, and a 3xx with no Location (304), meter the verdict alone', async () => {
+      for (const respond of [() => new Response('ok'), () => new Response(null, { status: 304 })]) {
+        const { points, env } = meterWith(respond);
+        await worker.fetch(new Request('https://api.scrive.com/x'), env);
+        expect(points.map((p) => p.blobs[1])).toEqual(['allowed']);
+      }
+    });
+  });
 });
