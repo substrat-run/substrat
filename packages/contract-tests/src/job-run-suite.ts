@@ -514,12 +514,12 @@ export function jobRunContractSuite(
       });
 
       /**
-       * #2042 r2: a lease left behind is charged as a failed attempt only if its pass had ENTERED.
+       * #2042 r2: a lease left behind is charged as a failed attempt only if its pass had BEGUN.
        * Seeded through a restore, so the takeover reads exactly these rows on each adapter's SQL.
        */
       describe('an expired lease left behind', () => {
         const T0 = '2026-09-01T00:00:00.000Z';
-        const seedLease = async (entered: boolean) => {
+        const seedLease = async (began: boolean) => {
           const s = await newScope();
           leasedPasses = [];
           await host.restoreScope(staff, t, s, {
@@ -534,14 +534,14 @@ export function jobRunContractSuite(
                   'job TEXT NOT NULL, instance TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, ' +
                   "cursor TEXT, counters TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, " +
                   'last_error TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
-                  'next_attempt_at TEXT, ended_at TEXT, lease_owner TEXT, lease_entered_at TEXT)',
+                  'next_attempt_at TEXT, ended_at TEXT, lease_owner TEXT, lease_began_at TEXT)',
                 columns: [
                   'id', 'module_id', 'job', 'instance', 'payload', 'status', 'cursor', 'counters', 'attempts',
-                  'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at', 'lease_owner', 'lease_entered_at',
+                  'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at', 'lease_owner', 'lease_began_at',
                 ],
                 rows: [[
                   'left-behind', JOBS_MODULE, 'once', 'default', '{}', 'running', null, '{}', 0,
-                  null, T0, T0, T0, null, 'a-drive-that-died', entered ? T0 : null,
+                  null, T0, T0, T0, null, 'a-drive-that-died', began ? T0 : null,
                 ]],
               },
             ],
@@ -549,14 +549,14 @@ export function jobRunContractSuite(
           return s;
         };
 
-        it('whose pass never entered is taken over for free: with maxAttempts 1 the run still runs', async () => {
+        it('whose pass never began is taken over for free: with maxAttempts 1 the run still runs', async () => {
           const s = await seedLease(false);
           expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
           expect(leasedPasses).toEqual(['left-behind']);
           expect(await runOf(s, 'left-behind')).toMatchObject({ status: 'done', attempts: 0, lastError: null });
         });
 
-        it('twin: whose pass had entered is charged, and with maxAttempts 1 the takeover ends the run', async () => {
+        it('twin: whose pass had begun is charged, and with maxAttempts 1 the takeover ends the run', async () => {
           const s = await seedLease(true);
           expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, failed: 1, completed: 0 });
           expect(leasedPasses).toEqual([]);

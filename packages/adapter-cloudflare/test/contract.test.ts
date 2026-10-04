@@ -2660,7 +2660,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
 
   /**
    * #2034 (#2042 review r1): a claim's answer that comes back after its lease ran out is not
-   * entered. The claim is written in the DO; before its answer reaches the drive, the lease
+   * begun. The claim is written in the DO; before its answer reaches the drive, the lease
    * expires and another drive takes the run over and finishes it. The late drive runs nothing.
    */
   it('#2034: a claim answered after its lease ran out runs nothing; another drive has the run', async () => {
@@ -2677,7 +2677,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1, completed: 0 });
     expect(rival).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
     expect(briefPasses).toBe(1);
-    // The late claim never entered its pass, so the takeover cost nothing (#2042 r2).
+    // The late claim never began its pass, so the takeover cost nothing (#2042 r2).
     expect(await runOf(s, run.id)).toMatchObject({ status: 'done', leaseOwner: null, attempts: 0, lastError: null });
   });
 
@@ -2688,7 +2688,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const counting = countingScopes(env.SCOPE);
     counting.afterJobClaim = async () => {
       counting.afterJobClaim = null;
-      // Still its own lease, but less than the entry margin of it left: the DO's entry refuses.
+      // Still its own lease, but its reply left less than the margin of it: the drive does not begin.
       await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
@@ -2702,40 +2702,40 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   /**
-   * #2034 (#2042 review r3): an entry is judged by the DO's clock as it runs. Here the entry RPC is
+   * #2034 (#2042 review r3, r4): BEGIN is judged by the DO's clock as it runs. Here the BEGIN RPC is
    * held in transit until the lease is over; the DO then refuses to stamp it, whether or not a
    * rival took the run over meanwhile.
    */
-  it('#2034: an entry delayed past its lease stamps nothing, and a rival runs the run once', async () => {
+  it('#2034: a BEGIN delayed past its lease stamps nothing, and a rival runs the run once', async () => {
     const s = await newScope();
     briefPasses = 0;
     const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late-entry', payload: {} });
     const counting = countingScopes(env.SCOPE);
     let rival: unknown = null;
-    counting.beforeJobEnter = async () => {
-      counting.beforeJobEnter = null;
+    counting.beforeJobBegin = async () => {
+      counting.beforeJobBegin = null;
       await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
       rival = await jobDeployment().runDueJobs(t, s);
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
-    expect(counting.jobEnterAnswers).toEqual([false]);
+    expect(counting.jobBeginAnswers).toEqual([false]);
     expect(rival).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
     expect(briefPasses).toBe(1);
     expect(await runOf(s, run.id)).toMatchObject({ status: 'done', attempts: 0 });
   });
 
-  it('#2034: an entry delayed past its lease with no rival is refused by the DO itself', async () => {
+  it('#2034: a BEGIN delayed past its lease with no rival is refused by the DO itself', async () => {
     const s = await newScope();
     briefPasses = 0;
     const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late-alone', payload: {} });
     const counting = countingScopes(env.SCOPE);
-    counting.beforeJobEnter = async () => {
-      counting.beforeJobEnter = null;
+    counting.beforeJobBegin = async () => {
+      counting.beforeJobBegin = null;
       await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
     // Still the claim's own lease, so only the DO's own clock can have refused the stamp.
-    expect(counting.jobEnterAnswers).toEqual([false]);
+    expect(counting.jobBeginAnswers).toEqual([false]);
     expect(briefPasses).toBe(0);
     expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 0, leaseOwner: null });
   });
@@ -2772,7 +2772,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(briefPasses).toBe(0);
   });
 
-  it('#2034: twin — an entry resets the admission misses', async () => {
+  it('#2034: twin — a BEGIN resets the admission misses', async () => {
     const s = await newScope();
     briefPasses = 0;
     const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late-then-prompt', payload: {} });
@@ -2789,30 +2789,29 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(briefPasses).toBe(1);
   });
 
-  it("#2034: the DO's entry statement clears the admission misses the outcome patch wrote", async () => {
+  it("#2034: the DO's miss counts relatively, by its own clock, and BEGIN clears the count", async () => {
     const s = await newScope();
     const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'reset', payload: {} });
     type Store = {
-      jobRunClaim(id: string, owner: string, now: string, until: string): Promise<unknown>;
-      jobRunEnter(id: string, owner: string, marginMs: number): Promise<boolean>;
-      jobRunPatch(id: string, patch: Record<string, unknown>, owner: string): Promise<boolean>;
+      jobRunClaim(id: string, owner: string, leaseMs: number): Promise<unknown>;
+      jobRunBegin(id: string, owner: string, marginMs: number): Promise<boolean>;
+      jobRunMiss(id: string, owner: string, note: string): Promise<{ misses: number; failed: boolean } | null>;
     };
     const stub = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as Store;
-    const lease = () => {
-      const now = new Date();
-      return [now.toISOString(), new Date(now.getTime() + 60_000).toISOString()] as const;
-    };
-    await stub.jobRunClaim(run.id, 'first', ...lease());
-    expect(
-      await stub.jobRunPatch(run.id, {
-        status: 'running', cursor: null, counters: '{}', attempts: 0, lastError: null,
-        updatedAt: new Date().toISOString(), nextAttemptAt: null, endedAt: null, admissionMisses: 4,
-      }, 'first'),
-    ).toBe(true);
-    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 4 });
-    await stub.jobRunClaim(run.id, 'second', ...lease());
-    expect(await stub.jobRunEnter(run.id, 'second', 1_000)).toBe(true);
-    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 0, leaseOwner: 'second' });
+    const due = () => dueNow(s);
+    for (const [owner, expected] of [['a', 1], ['b', 2], ['c', 3]] as const) {
+      expect(await stub.jobRunClaim(run.id, owner, 60_000)).not.toBeNull();
+      expect(await stub.jobRunMiss(run.id, owner, 'slow')).toEqual({ misses: expected, failed: false });
+      await due();
+    }
+    // A miss by a claim that no longer holds the run writes nothing.
+    expect(await stub.jobRunMiss(run.id, 'c', 'stale')).toBeNull();
+    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 3, leaseOwner: null });
+    expect(await stub.jobRunClaim(run.id, 'd', 60_000)).not.toBeNull();
+    expect(await stub.jobRunBegin(run.id, 'd', 1_000)).toBe(true);
+    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 0, leaseOwner: 'd' });
+    // Begun: a miss is refused — the pass is committed.
+    expect(await stub.jobRunMiss(run.id, 'd', 'late')).toBeNull();
   });
 
   it('#2034: twin — a claim answered in time runs its pass once', async () => {
@@ -3805,9 +3804,9 @@ function countingScopes(ns: DurableObjectNamespace) {
     afterDueKeys: null as (() => Promise<void>) | null,
     /** #2034 (#2042 r1): runs after a claim was written in the scope, before its answer returns: a slow answer. */
     afterJobClaim: null as (() => Promise<void>) | null,
-    /** #2034 (#2042 r3): runs before an entry reaches the scope (an entry delayed in transit); then sees its answer. */
-    beforeJobEnter: null as (() => Promise<void>) | null,
-    jobEnterAnswers: [] as boolean[],
+    /** #2034 (#2042 r3, r4): runs before a BEGIN reaches the scope (delayed in transit); then sees its answer. */
+    beforeJobBegin: null as (() => Promise<void>) | null,
+    jobBeginAnswers: [] as boolean[],
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -3832,11 +3831,11 @@ function countingScopes(ns: DurableObjectNamespace) {
                   const answer = (await real[prop]!(...args)) as { state: string; instance: string };
                   return { ...answer, instance: crypto.randomUUID() };
                 }
-                if (prop === 'jobRunEnter') {
-                  if (counts.beforeJobEnter) await counts.beforeJobEnter();
-                  const entered = (await real[prop]!(...args)) as boolean;
-                  counts.jobEnterAnswers.push(entered);
-                  return entered;
+                if (prop === 'jobRunBegin') {
+                  if (counts.beforeJobBegin) await counts.beforeJobBegin();
+                  const began = (await real[prop]!(...args)) as boolean;
+                  counts.jobBeginAnswers.push(began);
+                  return began;
                 }
                 const statusRead = prop === 'systemGrantsStatus' ? ++counts.statusReads : 0;
                 if (statusRead && counts.aroundStatusRead) await counts.aroundStatusRead(statusRead, 'before');

@@ -34,17 +34,17 @@ it('adds the lease columns on wake to a scope DO built before them, and drives i
     // the write it would have flushed is lost with it.
     await runInDurableObject(stub(), (_instance, state) => {
       state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_owner');
-      state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_entered_at');
+      state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_began_at');
       state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN admission_misses');
     });
     expect(await columns()).not.toContain('lease_owner');
-    expect(await columns()).not.toContain('lease_entered_at');
+    expect(await columns()).not.toContain('lease_began_at');
     expect(await columns()).not.toContain('admission_misses');
     await runInDurableObject(stub(), (_instance, state) => state.abort('evicted for lease column upgrade')).catch(() => undefined);
     expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
     expect((await host.jobRuns(t, s)).find((run) => run.id === old.id)).toMatchObject({ status: 'done', leaseOwner: null });
     expect(await columns()).toContain('lease_owner');
-    expect(await columns()).toContain('lease_entered_at');
+    expect(await columns()).toContain('lease_began_at');
     expect(await columns()).toContain('admission_misses');
   } finally {
     await host.admin.archiveScope(staff, t, s);

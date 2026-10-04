@@ -1,5 +1,6 @@
 import {
   JOB_LEASE_EXPIRED_NOTE,
+  admissionMissOutcome,
   type JobDueKey,
   type JobRunPatch,
   type JobRunRow,
@@ -9,10 +10,13 @@ import {
 
 /**
  * An in-memory `JobRunStore` holding the same lines the adapters' SQL holds: the due read, the
- * claim's compare-and-set (#2034), and every write conditional on `running` and on the lease.
- * Hooks let a test stop a drive at a precise point: `afterSnapshot` runs once a snapshot is taken
- * (and may be async, to hold two drives there together); `duplicate` repeats a key in it;
- * `afterClaim` holds a won claim's answer back.
+ * claim's compare-and-set (#2034), BEGIN, the admission miss, and every write conditional on
+ * `running` and on the lease. Every lease time is the STORE's clock as the operation runs (#2042
+ * r4) — `clock`, which a test may set apart from the drive's to model a skew.
+ *
+ * Hooks stop a drive at a precise point: `afterSnapshot` runs once a snapshot is taken (and may be
+ * async, to hold two drives there together); `duplicate` repeats a key in it; `afterClaim` holds a
+ * won claim's reply back; `beforeBegin` holds BEGIN before it runs, `afterBegin` its reply after.
  */
 export function memoryJobStore(
   rows: JobRunRow[],
@@ -21,22 +25,26 @@ export function memoryJobStore(
     duplicate?: string;
     /** Every claim attempt, won or not, in order. */
     claims?: { id: string; owner: string; won: boolean }[];
-    /** Runs after a won claim is written, before its answer reaches the drive: a slow answer. */
+    /** Runs after a won claim is written, before its reply reaches the drive: a slow reply. */
     afterClaim?: (id: string) => unknown;
-    /** Runs before an entry statement executes: an entry delayed in transit (#2042 r3). */
-    beforeEnter?: (id: string) => unknown;
-    /** Runs after an entry statement executed, before its answer reaches the drive. */
-    afterEnter?: (id: string, entered: boolean) => unknown;
-    /** The store's own clock, read as an entry runs. Default: the latest time a drive handed it. */
+    /** Runs before BEGIN executes: a BEGIN delayed in transit. */
+    beforeBegin?: (id: string) => unknown;
+    /** Runs after BEGIN executed, before its reply reaches the drive. */
+    afterBegin?: (id: string, began: boolean) => unknown;
+    /** The store's own clock. Default: the latest `now` a drive's snapshot passed in. */
     clock?: () => string;
   } = {},
 ) {
   const table = new Map<string, JobRunRow>(
-    rows.map((r) => [r.id, { ...r, lease_owner: r.lease_owner ?? null, lease_entered_at: r.lease_entered_at ?? null }]),
+    rows.map((r) => [
+      r.id,
+      { ...r, lease_owner: r.lease_owner ?? null, lease_began_at: r.lease_began_at ?? null, admission_misses: r.admission_misses ?? null },
+    ]),
   );
   const steps = new Map<string, JobStepRow>();
-  /** The latest `now` a drive passed in: the default clock an entry is judged by. */
   let lastSeen = new Date(0).toISOString();
+  const now = () => opts.clock?.() ?? lastSeen;
+  const plus = (at: string, ms: number) => new Date(Date.parse(at) + ms).toISOString();
   const holds = (r: JobRunRow | undefined, owner: string): r is JobRunRow =>
     !!r && r.status === 'running' && (r.lease_owner ?? null) === owner;
   const apply = (id: string, p: JobRunPatch, owner: string): boolean => {
@@ -52,23 +60,23 @@ export function memoryJobStore(
       updated_at: p.updatedAt,
       next_attempt_at: p.nextAttemptAt,
       ended_at: p.endedAt,
-      admission_misses: p.admissionMisses,
       lease_owner: null,
-      lease_entered_at: null,
+      lease_began_at: null,
     });
     return true;
   };
-  const renew = (id: string, owner: string, until: string): boolean => {
+  const renew = (id: string, owner: string, leaseMs: number): boolean => {
     const r = table.get(id);
     if (!holds(r, owner)) return false;
-    table.set(id, { ...r, next_attempt_at: until });
+    table.set(id, { ...r, next_attempt_at: plus(now(), leaseMs) });
     return true;
   };
   const store: JobRunStore = {
     startOrJoin: async (_key, row) => row,
-    dueKeys: async (now, max) => {
+    dueKeys: async (at, max) => {
+      lastSeen = at;
       const keys: JobDueKey[] = [...table.values()]
-        .filter((r) => r.status === 'running' && (r.next_attempt_at === null || r.next_attempt_at <= now))
+        .filter((r) => r.status === 'running' && (r.next_attempt_at === null || r.next_attempt_at <= at))
         .sort((a, b) => (a.next_attempt_at ?? a.started_at).localeCompare(b.next_attempt_at ?? b.started_at) || a.id.localeCompare(b.id))
         .slice(0, max)
         .map((r) => ({ id: r.id, module_id: r.module_id, job: r.job }));
@@ -79,20 +87,20 @@ export function memoryJobStore(
       await opts.afterSnapshot?.(table);
       return keys;
     },
-    claim: async (id, owner, now, until) => {
-      lastSeen = now;
+    claim: async (id, owner, leaseMs) => {
+      const at = now();
       const r = table.get(id);
-      const won = !!r && r.status === 'running' && (r.next_attempt_at === null || r.next_attempt_at <= now);
+      const won = !!r && r.status === 'running' && (r.next_attempt_at === null || r.next_attempt_at <= at);
       opts.claims?.push({ id, owner, won });
       if (!won) return null;
-      // Charged only when the lease taken over had entered its pass (#2042 r2).
-      const takeover = (r.lease_entered_at ?? null) !== null;
+      // Charged only when the lease taken over had BEGUN its pass (#2042 r2, r4).
+      const takeover = (r.lease_began_at ?? null) !== null;
       const claimed: JobRunRow = {
         ...r,
         lease_owner: owner,
-        lease_entered_at: null,
-        next_attempt_at: until,
-        updated_at: now,
+        lease_began_at: null,
+        next_attempt_at: plus(at, leaseMs),
+        updated_at: at,
         attempts: r.attempts + (takeover ? 1 : 0),
         last_error: takeover ? JOB_LEASE_EXPIRED_NOTE : r.last_error,
       };
@@ -100,15 +108,33 @@ export function memoryJobStore(
       await opts.afterClaim?.(id);
       return { run: { ...claimed }, takeover };
     },
-    enter: async (id, owner, marginMs) => {
-      await opts.beforeEnter?.(id);
-      const now = opts.clock?.() ?? lastSeen;
-      const enterBy = new Date(Date.parse(now) + marginMs).toISOString();
+    begin: async (id, owner, marginMs) => {
+      await opts.beforeBegin?.(id);
+      const at = now();
       const r = table.get(id);
-      const entered = holds(r, owner) && r.next_attempt_at !== null && r.next_attempt_at > enterBy;
-      if (entered) table.set(id, { ...r, lease_entered_at: now, admission_misses: null });
-      await opts.afterEnter?.(id, entered);
-      return entered;
+      const began = holds(r, owner) && r.next_attempt_at !== null && r.next_attempt_at > plus(at, marginMs);
+      if (began) table.set(id, { ...r, lease_began_at: at, admission_misses: null });
+      await opts.afterBegin?.(id, began);
+      return began;
+    },
+    miss: async (id, owner, note) => {
+      const r = table.get(id);
+      if (!holds(r, owner) || (r.lease_began_at ?? null) !== null) return null;
+      const at = now();
+      const misses = (r.admission_misses ?? 0) + 1;
+      const o = admissionMissOutcome(misses, at, note);
+      table.set(id, {
+        ...r,
+        admission_misses: misses,
+        updated_at: at,
+        lease_owner: null,
+        lease_began_at: null,
+        status: o.status,
+        next_attempt_at: o.nextAttemptAt,
+        ended_at: o.endedAt,
+        last_error: o.lastError ?? r.last_error,
+      });
+      return { misses, failed: o.status === 'failed' };
     },
     list: async () => [...table.values()],
     patch: async (id, p, owner) => apply(id, p, owner),
@@ -117,10 +143,10 @@ export function memoryJobStore(
       for (const key of [...steps.keys()]) if (key.startsWith(`${id}/`)) steps.delete(key);
       return true;
     },
-    beginStep: async (runId, name, owner, until) =>
-      renew(runId, owner, until) ? { held: true, row: steps.get(`${runId}/${name}`) ?? null } : { held: false, row: null },
-    recordStep: async (runId, name, result, attempts, lastError, _at, owner, until) => {
-      if (!renew(runId, owner, until)) return false;
+    beginStep: async (runId, name, owner, leaseMs) =>
+      renew(runId, owner, leaseMs) ? { held: true, row: steps.get(`${runId}/${name}`) ?? null } : { held: false, row: null },
+    recordStep: async (runId, name, result, attempts, lastError, _at, owner, leaseMs) => {
+      if (!renew(runId, owner, leaseMs)) return false;
       steps.set(`${runId}/${name}`, { step: name, result, attempts, last_error: lastError });
       return true;
     },

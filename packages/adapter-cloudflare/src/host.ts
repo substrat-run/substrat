@@ -1252,11 +1252,12 @@ interface ScopeStubRpc {
   jobRunInsert(row: JobRunRow): Promise<void>;
   jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]>;
   jobRunList(filter: JobRunFilter): Promise<JobRunRow[]>;
-  jobRunClaim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null>;
-  jobRunEnter(id: string, owner: string, marginMs: number): Promise<boolean>;
+  jobRunClaim(id: string, owner: string, leaseMs: number): Promise<JobRunClaim | null>;
+  jobRunBegin(id: string, owner: string, marginMs: number): Promise<boolean>;
+  jobRunMiss(id: string, owner: string, note: string): Promise<{ misses: number; failed: boolean } | null>;
   jobRunPatch(id: string, patch: JobRunPatch, owner?: string): Promise<boolean>;
   jobCommitPass(id: string, patch: JobRunPatch, owner?: string): Promise<boolean>;
-  jobStepBegin(runId: string, step: string, owner: string, leaseUntil: string): Promise<{ held: boolean; row: JobStepRow | null }>;
+  jobStepBegin(runId: string, step: string, owner: string, leaseMs: number): Promise<{ held: boolean; row: JobStepRow | null }>;
   jobStepRecord(
     runId: string,
     step: string,
@@ -1265,7 +1266,7 @@ interface ScopeStubRpc {
     lastError: string | null,
     at: string,
     owner?: string,
-    leaseUntil?: string,
+    leaseMs?: number,
   ): Promise<boolean>;
   /** This scope's live `connection:<id>` grant tuples (#726 gap 1) — the read-back.
    *  Unions the scope's own tuples with the projected tenant-level ones, because a
@@ -2604,14 +2605,15 @@ export class CloudflareScopeHost implements ScopeHost {
     return {
       startOrJoin: (key, row) => stub.jobRunStartOrJoin(key.moduleId, key.job, key.instance, row),
       dueKeys: (now, max) => stub.jobRunsDueKeys(now, max),
-      claim: (id, owner, now, leaseUntil) => stub.jobRunClaim(id, owner, now, leaseUntil),
-      enter: (id, owner, marginMs) => stub.jobRunEnter(id, owner, marginMs),
+      claim: (id, owner, leaseMs) => stub.jobRunClaim(id, owner, leaseMs),
+      begin: (id, owner, marginMs) => stub.jobRunBegin(id, owner, marginMs),
+      miss: (id, owner, note) => stub.jobRunMiss(id, owner, note),
       list: (filter) => stub.jobRunList(filter),
       patch: (id, patch, owner) => stub.jobRunPatch(id, patch, owner),
       commitPass: (id, patch, owner) => stub.jobCommitPass(id, patch, owner),
-      beginStep: (runId, name, owner, leaseUntil) => stub.jobStepBegin(runId, name, owner, leaseUntil),
-      recordStep: (runId, name, result, attempts, lastError, at, owner, leaseUntil) =>
-        stub.jobStepRecord(runId, name, result, attempts, lastError, at, owner, leaseUntil),
+      beginStep: (runId, name, owner, leaseMs) => stub.jobStepBegin(runId, name, owner, leaseMs),
+      recordStep: (runId, name, result, attempts, lastError, at, owner, leaseMs) =>
+        stub.jobStepRecord(runId, name, result, attempts, lastError, at, owner, leaseMs),
     };
   }
 

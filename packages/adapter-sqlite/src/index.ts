@@ -306,7 +306,10 @@ import {
   JOB_RUN_PATCH_SQL,
   JOB_RUN_CLAIM_SQL,
   JOB_RUN_RENEW_SQL,
-  JOB_RUN_ENTER_SQL,
+  JOB_RUN_BEGIN_SQL,
+  JOB_RUN_MISS_SQL,
+  JOB_RUN_MISS_SETTLE_SQL,
+  admissionMissOutcome,
   JOB_STEP_RECORD_SQL,
   JOB_LEASE_EXPIRED_NOTE,
   assertLeaseMs,
@@ -5282,9 +5285,15 @@ export class SqliteScopeHost implements ScopeHost {
     // kernel's statement, so both adapters hold the same line.
     const patchRun = db.prepare(JOB_RUN_PATCH_SQL);
     const patchArgs = (id: string, p: JobRunPatch, owner: string) =>
-      [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, p.admissionMisses, id, owner] as const;
-    const enteredAt = db.prepare('SELECT lease_entered_at FROM _substrat_job_runs WHERE id = ?');
-    const enterRun = db.prepare(JOB_RUN_ENTER_SQL);
+      [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id, owner] as const;
+    const beganAt = db.prepare('SELECT lease_began_at FROM _substrat_job_runs WHERE id = ?');
+    const beginRun = db.prepare(JOB_RUN_BEGIN_SQL);
+    const missRun = db.prepare(JOB_RUN_MISS_SQL);
+    const missSettle = db.prepare(JOB_RUN_MISS_SETTLE_SQL);
+    // #2042 r4: every lease time is this host's clock as the statement runs, inside its turn —
+    // never a time the drive computed, which a skew or a wait in the queue would make wrong.
+    const now = (): string => this.clock();
+    const plus = (at: string, ms: number): string => new Date(Date.parse(at) + ms).toISOString();
     const claimRun = db.prepare(JOB_RUN_CLAIM_SQL);
     const renewRun = db.prepare(JOB_RUN_RENEW_SQL);
     const recordStepRow = db.prepare(JOB_STEP_RECORD_SQL);
@@ -5313,16 +5322,26 @@ export class SqliteScopeHost implements ScopeHost {
       return true;
     });
     // #2034: the claim, and whether it took over a lease, read in the same transaction.
-    const claimTx = db.transaction((id: string, owner: string, now: string, until: string): JobRunClaim | null => {
-      // #2042 r2: a takeover is charged only when the lease it takes had entered its pass.
-      const before = enteredAt.get(id) as { lease_entered_at: string | null } | undefined;
-      const claimed = row(claimRun.get(owner, until, now, JOB_LEASE_EXPIRED_NOTE, id, now));
-      return claimed && { run: claimed, takeover: (before?.lease_entered_at ?? null) !== null };
+    const claimTx = db.transaction((id: string, owner: string, leaseMs: number): JobRunClaim | null => {
+      // #2042 r2, r4: a takeover is charged only when the lease it takes had BEGUN its pass.
+      const before = beganAt.get(id) as { lease_began_at: string | null } | undefined;
+      const at = now();
+      const claimed = row(claimRun.get(owner, plus(at, leaseMs), at, JOB_LEASE_EXPIRED_NOTE, id, at));
+      return claimed && { run: claimed, takeover: (before?.lease_began_at ?? null) !== null };
+    });
+    // #2042 r3, r4: an admission miss — the relative count, then the backoff or failure it calls for.
+    const missTx = db.transaction((id: string, owner: string, note: string) => {
+      const at = now();
+      const counted = missRun.get(at, id, owner) as { admission_misses: number } | undefined;
+      if (!counted) return null;
+      const o = admissionMissOutcome(counted.admission_misses, at, note);
+      missSettle.run(o.status, o.nextAttemptAt, o.endedAt, o.lastError, id, counted.admission_misses);
+      return { misses: counted.admission_misses, failed: o.status === 'failed' };
     });
     const recordStepTx = db.transaction(
       (runId: string, name: string, result: string | null, attempts: number, lastError: string | null,
-        at: string, owner: string, until: string): boolean => {
-        if (renewRun.run(until, runId, owner).changes === 0) return false;
+        at: string, owner: string, leaseMs: number): boolean => {
+        if (renewRun.run(plus(now(), leaseMs), runId, owner).changes === 0) return false;
         recordStepRow.run(runId, name, result, attempts, lastError, at, runId, owner);
         return true;
       },
@@ -5333,14 +5352,14 @@ export class SqliteScopeHost implements ScopeHost {
     const turn = <T>(fn: () => T): Promise<T> => rt.actor.enqueue(fn);
     return {
       startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
-      claim: (id: string, owner: string, now: string, until: string) => turn(() => claimTx(id, owner, now, until)),
-      // #2042 r3: judged by this host's clock as the statement runs, inside its turn — never by a
-      // deadline the driver computed before its call waited in the queue.
-      enter: (id: string, owner: string, marginMs: number) =>
+      claim: (id: string, owner: string, leaseMs: number) => turn(() => claimTx(id, owner, leaseMs)),
+      // #2042 r4: BEGIN, the commitment point, judged by this host's clock as it runs.
+      begin: (id: string, owner: string, marginMs: number) =>
         turn(() => {
-          const now = this.clock();
-          return enterRun.run(now, id, owner, new Date(Date.parse(now) + marginMs).toISOString()).changes > 0;
+          const at = now();
+          return beginRun.run(at, id, owner, plus(at, marginMs)).changes > 0;
         }),
+      miss: (id: string, owner: string, note: string) => turn(() => missTx(id, owner, note)),
       // #1834: the drive's one snapshot — keys only, in the order runs became due.
       dueKeys: (now: string, max: number) =>
         turn(() => db
@@ -5377,9 +5396,9 @@ export class SqliteScopeHost implements ScopeHost {
         turn(() => patchRun.run(...patchArgs(id, p, owner)).changes > 0),
       commitPass: (id: string, p: JobRunPatch, owner: string) => turn(() => commitPassTx(id, p, owner)),
       // #2034: a step boundary renews the lease; a pass that lost it reads nothing.
-      beginStep: (runId: string, name: string, owner: string, until: string) =>
+      beginStep: (runId: string, name: string, owner: string, leaseMs: number) =>
         turn(() => {
-          if (renewRun.run(until, runId, owner).changes === 0) return { held: false, row: null };
+          if (renewRun.run(plus(now(), leaseMs), runId, owner).changes === 0) return { held: false, row: null };
           return { held: true, row: (stepRow.get(runId, name) as JobStepRow | undefined) ?? null };
         }),
       recordStep: (
@@ -5390,11 +5409,11 @@ export class SqliteScopeHost implements ScopeHost {
         lastError: string | null,
         at: string,
         owner: string,
-        until: string,
+        leaseMs: number,
       ) =>
         // Only while the run is still `running` (#1632) and this pass holds it (#2034), renewing
         // the lease in the same transaction — see `JOB_STEP_RECORD_SQL`.
-        turn(() => recordStepTx(runId, name, result, attempts, lastError, at, owner, until)),
+        turn(() => recordStepTx(runId, name, result, attempts, lastError, at, owner, leaseMs)),
     };
   }
 
@@ -11735,9 +11754,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_job_runs', 'subject_id', 'subject_id TEXT');
     // #2034: the lease, on a scope DB built before it. NULL = nobody holds the run.
     this.ensureColumn(db, '_substrat_job_runs', 'lease_owner', 'lease_owner TEXT');
-    // #2042 r2: whether the holder entered its pass. NULL = it has not, which is right for any lease
+    // #2042 r2, r4: whether the holder BEGAN its pass. NULL = it has not, which is right for any lease
     // already there: a takeover of it costs nothing.
-    this.ensureColumn(db, '_substrat_job_runs', 'lease_entered_at', 'lease_entered_at TEXT');
+    this.ensureColumn(db, '_substrat_job_runs', 'lease_began_at', 'lease_began_at TEXT');
     // #2042 r3: consecutive admission misses. NULL = none, right for every run already there.
     this.ensureColumn(db, '_substrat_job_runs', 'admission_misses', 'admission_misses INTEGER');
     // #2009: the copy classification on a scope DB built before it (NULL reads as a copy; see

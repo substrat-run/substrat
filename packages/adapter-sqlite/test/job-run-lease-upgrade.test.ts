@@ -30,7 +30,7 @@ it('adds the lease columns to a scope built before them, and drives its runs (#2
     const old = await host.startJobRun(t, s, { moduleId: PERM, job: 'walk' });
     await host.close();
     const db = new Database(join(dir, `${t}__${s}.sqlite`));
-    try { db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_owner'); db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_entered_at'); db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN admission_misses'); }
+    try { db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_owner'); db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_began_at'); db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN admission_misses'); }
     finally { db.close(); }
 
     host = open();
