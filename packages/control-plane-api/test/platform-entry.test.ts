@@ -6,7 +6,20 @@ import { pathToFileURL } from 'node:url';
 import { invocationLog } from '@substrat-run/vertical-host';
 import { createWfpUploader } from '../src/wfp.js';
 import type { VerticalBundle } from '../src/deploy.js';
-import { PLATFORM_ENTRY_MODULE, platformEntrySkipReason, withPlatformEntry } from '../src/platform-entry.js';
+import {
+  PLATFORM_SWEEPER_BINDING,
+  PLATFORM_SWEEPER_CLASS,
+  PLATFORM_SWEEPER_VAR,
+  type DeployManifest,
+} from '@substrat-run/contracts';
+import { PLATFORM_SWEEPER_VAR as VERTICAL_HOST_SWEEPER_VAR } from '@substrat-run/vertical-host';
+import {
+  PLATFORM_ENTRY_MODULE,
+  PLATFORM_SWEEPER_MODULE,
+  platformEntrySkipReason,
+  platformSweeperDecision,
+  withPlatformEntry,
+} from '../src/platform-entry.js';
 
 /**
  * The platform's entry (#1893): what the uploader puts in front of a vertical's bundle,
@@ -196,5 +209,178 @@ describe('the generated entry, run (#1893)', () => {
     const none = await load('export const x = 1;');
     expect(none['default']).toBeUndefined();
     expect(none['x']).toBe(1);
+  });
+});
+
+/**
+ * The scope sweeper the platform supplies (#1902): decided ONCE, at push, from the push's
+ * DECLARATION — `sweeperClasses`, or the conventional names when an older CLI sent none — and
+ * never from the bundle's bytes; then carried out by every upload of the version as recorded.
+ */
+describe('the platform supplies the scope sweeper (#1902)', () => {
+  const scope = { type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' };
+  const ownSweeper = { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'SweeperDO' };
+  const SCHEDULES: DeployManifest['schedules'] = [{ moduleId: 'm', operation: 'm/tick', cadence: { everyMinutes: 5 }, permissions: [] }];
+  type Declared = Parameters<typeof platformSweeperDecision>[0];
+  /** What a push declared; `scheduled` stands in for `schedules` so a case reads as the old facts did. */
+  const decide = ({ scheduled, ...f }: Partial<Declared> & { scheduled?: boolean } = {}) =>
+    platformSweeperDecision({ bindings: [scope], ...(scheduled ? { schedules: SCHEDULES } : {}), ...f }, bundle());
+  const refusal = (f: Parameters<typeof decide>[0]) => {
+    const decided = decide(f);
+    if (!('refuse' in decided)) throw new Error(`expected a refusal, got ${JSON.stringify(decided)}`);
+    return decided.refuse;
+  };
+  const vertical = (extra: Partial<VerticalBundle> = {}) => ({ ...bundle(), doClasses: ['ScopeDO'], bindings: [scope], ...extra });
+
+  it('spells the platform’s names one way, here and in the vertical-host copy that must import nothing', () => {
+    expect(VERTICAL_HOST_SWEEPER_VAR).toBe(PLATFORM_SWEEPER_VAR);
+  });
+
+  describe('the decision, from the push’s declaration', () => {
+    it('supplies one when the push declared schedules and no sweeper of its own', () => {
+      expect(decide({ scheduled: true, sweeperClasses: [] })).toEqual({ supply: true });
+    });
+
+    it('gives a version with no schedules none, whatever else it declares', () => {
+      for (const sweeperClasses of [[], undefined]) {
+        expect(decide({ sweeperClasses })).toEqual({ supply: false });
+      }
+    });
+
+    it('keeps a vertical’s own sweeper, by whatever name the push read', () => {
+      expect(decide({ scheduled: true, sweeperClasses: ['SweeperDO'], bindings: [scope, ownSweeper] })).toEqual({ supply: false });
+      const timer = { type: 'durable_object_namespace', name: 'TIMER', class_name: 'Timer' };
+      expect(decide({ scheduled: true, sweeperClasses: ['Timer'], bindings: [scope, timer] })).toMatchObject({
+        supply: false,
+      });
+    });
+
+    it('refuses an own sweeper no binding names — its alarm would never run', () => {
+      expect(refusal({ scheduled: true, sweeperClasses: ['SweeperDO'] })).toMatch(
+        /exports its own sweeper \(SweeperDO\), but no Durable Object binding names that class/,
+      );
+    });
+
+    it('refuses to supply under names the version already binds to something else', () => {
+      expect(
+        refusal({ scheduled: true, sweeperClasses: [], bindings: [scope, { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'Other' }] }),
+      ).toMatch(/already binds the name 'SWEEPER'/);
+      expect(
+        refusal({ scheduled: true, sweeperClasses: [], bindings: [scope, { type: 'durable_object_namespace', name: 'X', class_name: 'SweeperDO' }] }),
+      ).toMatch(/already binds the class 'SweeperDO'/);
+    });
+
+    describe('a push from a CLI that predates sweeperClasses', () => {
+      it('reads SWEEPER bound to SweeperDO as the vertical’s own', () => {
+        expect(decide({ scheduled: true, bindings: [scope, ownSweeper] })).toMatchObject({ supply: false });
+      });
+
+      it('supplies one when neither name is bound', () => {
+        expect(decide({ scheduled: true })).toEqual({ supply: true });
+      });
+
+      it('refuses the half-matches it cannot tell apart', () => {
+        expect(
+          refusal({ scheduled: true, bindings: [scope, { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'Timer' }] }),
+        ).toMatch(/predates them.*binds the name 'SWEEPER' to another class/);
+        expect(
+          refusal({ scheduled: true, bindings: [scope, { type: 'durable_object_namespace', name: 'TIMER', class_name: 'SweeperDO' }] }),
+        ).toMatch(/binds the class 'SweeperDO' under another name/);
+      });
+    });
+
+    it('never reads the bytes: a bundle full of sweeper code changes nothing', () => {
+      const code = js('worker.js', 'class S { noteScope(){} forgetScope(){} sweepNow(){} ensureArmed(){} } export default {}');
+      expect(platformSweeperDecision({ bindings: [scope], schedules: SCHEDULES }, bundle([code]))).toEqual({ supply: true });
+    });
+
+    it('refuses to record "supplied" for a bundle the platform entry would not wrap', () => {
+      const old = bundle([js('worker.js', 'console.log(JSON.stringify({ substrat: "invocation", status }))')]);
+      const decision = platformSweeperDecision({ bindings: [scope], schedules: SCHEDULES, sweeperClasses: [] }, old);
+      expect(decision).toEqual({ refuse: expect.stringMatching(/cannot take one \(the bundle writes the invocation line/) });
+      // …and a bundle that needs nothing from the platform is not refused for it.
+      expect(platformSweeperDecision({ bindings: [scope] }, old)).toEqual({ supply: false });
+    });
+  });
+
+  describe('the upload, carrying out what was recorded', () => {
+    it('adds the module, the re-export, the class and the binding when the version records it', () => {
+      const out = withPlatformEntry(vertical({ supplySweeper: true }));
+      expect(out.modules.map((m) => m.name)).toEqual([PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE, 'worker.js']);
+      expect(textOf(out.modules[0]!)).toContain(`export { SweeperDO } from "./${PLATFORM_SWEEPER_MODULE}"`);
+      expect(textOf(out.modules[1]!)).toContain('export {\n  SweeperDO\n}');
+      expect(out.doClasses).toEqual(['ScopeDO', PLATFORM_SWEEPER_CLASS]);
+      expect(out.bindings).toEqual([
+        scope,
+        { type: 'durable_object_namespace', name: PLATFORM_SWEEPER_BINDING, class_name: PLATFORM_SWEEPER_CLASS },
+        { type: 'plain_text', name: PLATFORM_SWEEPER_VAR, text: PLATFORM_SWEEPER_BINDING },
+      ]);
+    });
+
+    it('adds nothing when the version records no sweeper — including one pushed before the record existed', () => {
+      for (const own of [vertical(), vertical({ supplySweeper: false }), vertical({ doClasses: ['ScopeDO', 'SweeperDO'], bindings: [scope, ownSweeper] })]) {
+        const out = withPlatformEntry(own);
+        expect(out.modules.map((m) => m.name)).toEqual([PLATFORM_ENTRY_MODULE, 'worker.js']);
+        expect(out.doClasses).toEqual(own.doClasses);
+        expect(out.bindings).toEqual(own.bindings);
+      }
+    });
+
+    it('never refuses: whatever the bindings, it does what the version recorded', () => {
+      // A declaration the push would refuse today, on a version recorded before — still uploads.
+      const half = vertical({ bindings: [scope, { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'Timer' }] });
+      expect(() => withPlatformEntry(half)).not.toThrow();
+    });
+
+    it('supplies once to a vertical that dropped its own, keeping the class its migrations named', () => {
+      // meridian's shape: `SweeperDO` stays in an append-only migration history after the export goes.
+      const out = withPlatformEntry(vertical({ supplySweeper: true, doClasses: ['ScopeDO', 'SweeperDO'] }));
+      expect(out.doClasses).toEqual(['ScopeDO', 'SweeperDO']);
+      expect(out.bindings.filter((b) => b.name === PLATFORM_SWEEPER_BINDING)).toHaveLength(1);
+    });
+
+    it('replaces a re-served archive’s sweeper module rather than stacking a second', () => {
+      const first = withPlatformEntry(vertical({ supplySweeper: true }));
+      // What the archive script gives back: the modules as uploaded, the manifest as pushed.
+      const again = withPlatformEntry(vertical({ supplySweeper: true, modules: first.modules }));
+      expect(again.modules.map((m) => m.name)).toEqual([PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE, 'worker.js']);
+      expect(textOf(again.modules[0]!)).toBe(textOf(first.modules[0]!));
+    });
+  });
+
+  describe('through the uploader', () => {
+    async function upload(extra: Partial<VerticalBundle>, inPlace?: { priorDoClasses: string[]; priorMigrationTag: string }) {
+      let body: FormData | undefined;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url: unknown, init: { body?: FormData }) => {
+          body = init.body;
+          return new Response('{}', { status: 200 });
+        }),
+      );
+      const full: VerticalBundle = { ...vertical(extra), compatibilityDate: '2025-01-01', compatibilityFlags: [] } as VerticalBundle;
+      await createWfpUploader({ accountId: 'a', namespace: 'n', apiToken: 't' })('acme-01k', full, inPlace);
+      return { meta: JSON.parse(await (body!.get('metadata') as File).text()) as Record<string, any>, body: body! };
+    }
+
+    it('declares the class in a fresh script’s migration and binds it', async () => {
+      const { meta, body } = await upload({ supplySweeper: true });
+      expect(meta['migrations']).toEqual({ new_tag: 'v1', new_sqlite_classes: ['ScopeDO', 'SweeperDO'] });
+      expect(meta['bindings']).toContainEqual({ type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'SweeperDO' });
+      expect(meta['bindings']).toContainEqual({ type: 'plain_text', name: 'SUBSTRAT_SCOPE_SWEEPER', text: 'SWEEPER' });
+      expect(body.get(PLATFORM_SWEEPER_MODULE)).toBeInstanceOf(File);
+    });
+
+    it('takes over a serving script’s own SweeperDO with no migration — the namespace, roster and alarm carry over', async () => {
+      // The serving script already declares `SweeperDO` (the vertical's hand-wired one, until this version).
+      const { meta } = await upload({ supplySweeper: true }, { priorDoClasses: ['ScopeDO', 'SweeperDO'], priorMigrationTag: 'v2' });
+      expect(meta['migrations']).toBeUndefined();
+      expect(meta['bindings']).toContainEqual({ type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'SweeperDO' });
+    });
+
+    it('adds the class under the next tag to a serving script that never had one', async () => {
+      const { meta } = await upload({ supplySweeper: true }, { priorDoClasses: ['ScopeDO'], priorMigrationTag: 'v1' });
+      expect(meta['migrations']).toEqual({ old_tag: 'v1', new_tag: 'v2', new_sqlite_classes: ['SweeperDO'] });
+    });
   });
 });

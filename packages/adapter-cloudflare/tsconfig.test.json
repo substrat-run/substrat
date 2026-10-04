@@ -4,5 +4,5 @@
     "noEmit": true,
     "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"]
   },
-  "include": ["src", "test", "vitest.config.ts"]
+  "include": ["src", "test", "supplied-sweeper", "vitest.config.ts", "vitest.supplied-sweeper.config.ts"]
 }

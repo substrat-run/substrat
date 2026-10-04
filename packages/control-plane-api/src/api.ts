@@ -89,6 +89,8 @@ import {
   migrationsOnTop,
   errorCodeOf,
   capabilityFilterQuery,
+  PLATFORM_FEATURES_HEADER,
+  PLATFORM_FEATURE_SCOPE_SWEEPER,
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
@@ -200,6 +202,7 @@ import type {
   ScopeBackupStore,
 } from './backups.js';
 import { backupDirectoryIfDue } from './directory-backup.js';
+import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
 import {
   isCustomHostname,
@@ -1338,15 +1341,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // The CLI version advisory (#971), stamped on EVERY response — including the 401 the
   // auth middleware below answers with, since a CLI too old to authenticate is exactly
   // the one that needs to hear it. Registered first so nothing can return around it.
-  // Nothing configured ⇒ no header touched, byte-identical to before this existed.
+  // Nothing configured ⇒ no advisory header.
+  //
+  // Beside it, the capability half of the same handshake (#1902): what this plane provides
+  // that a CLI may leave out on its strength. Stamped unconfigured, because it is a fact about
+  // this code rather than about a deployment — the uploader this package ships supplies the
+  // scope sweeper. The CLI asks before omitting one and refuses on silence, which is what an
+  // older plane answers.
   const advisory = options.cliAdvisory;
-  if (advisory?.minVersion || advisory?.latestVersion) {
-    app.use('*', async (c, next) => {
-      await next();
-      if (advisory.minVersion) c.header(CLI_MIN_VERSION_HEADER, advisory.minVersion);
-      if (advisory.latestVersion) c.header(CLI_LATEST_VERSION_HEADER, advisory.latestVersion);
-    });
-  }
+  app.use('*', async (c, next) => {
+    await next();
+    c.header(PLATFORM_FEATURES_HEADER, PLATFORM_FEATURE_SCOPE_SWEEPER);
+    if (advisory?.minVersion) c.header(CLI_MIN_VERSION_HEADER, advisory.minVersion);
+    if (advisory?.latestVersion) c.header(CLI_LATEST_VERSION_HEADER, advisory.latestVersion);
+  });
 
   // Fail closed, before any route runs: no principal, no reach.
   //
@@ -6430,6 +6438,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
     const manifest = storedDeployManifest.parse(JSON.parse(manifestJson));
+    // #1902: the classes this upload DEPLOYS — the manifest's, plus the platform's sweeper when
+    // the version's recorded decision supplies it. The upload, the migration delta and the
+    // serving record below all read this one set; the manifest's own `doClasses` would leave
+    // the record a class short of the script, and the next serve re-declaring a live class.
+    const doClasses = deployedDoClasses(manifest.doClasses, manifest.platformSweeper);
     const serving = await host.admin.verticalServing(actor, slug);
     const ref = serving?.ref ?? stableDeploymentRefFor(slug);
     const modules = await options.fetchVerticalModules(version.deploymentRef);
@@ -6457,7 +6470,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityDate: manifest.compatibilityDate,
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
-        doClasses: manifest.doClasses,
+        doClasses,
         bindings: [...manifest.bindings, ...storeBindings],
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
@@ -6467,6 +6480,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // #1054: the model runtime is bound only for a version that ASKED for it, so the
         // capability is visible in the manifest diff at admit rather than fleet-wide.
         ...(manifest.usesModels ? { usesModels: true } : {}),
+        // #1902: the sweeper decision the PUSH made and recorded, reused — never re-made, so a
+        // promote or a backout cannot refuse a version that was accepted. A version pushed
+        // before the record existed has none and keeps what it had: no platform sweeper.
+        ...(manifest.platformSweeper ? { supplySweeper: true } : {}),
         // #340/#578: the version's static files travel with it onto the serving script —
         // from the RETAINED manifest, with no bytes. The runtime's asset store dedupes
         // per SCRIPT (not namespace-wide — the #578 finding), so the serving script only
@@ -6493,18 +6510,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }
         : undefined,
     );
-    const addedClasses = serving
-      ? manifest.doClasses.some((cls) => !serving.doClasses.includes(cls))
-      : false;
+    const addedClasses = serving ? doClasses.some((cls) => !serving.doClasses.includes(cls)) : false;
     await admin.setVerticalServing(actor, slug, {
       ref,
       versionId,
       // The serving script's class set only ever GROWS (DO classes cannot be deleted
       // while their storage lives), so record the union, and the tag only moves when
       // a migration actually rode the upload.
-      doClasses: serving
-        ? [...new Set([...serving.doClasses, ...manifest.doClasses])]
-        : manifest.doClasses,
+      doClasses: serving ? [...new Set([...serving.doClasses, ...doClasses])] : doClasses,
       migrationTag: serving
         ? addedClasses
           ? nextMigrationTag(serving.migrationTag)
@@ -7007,6 +7020,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
 
+    // #1902: whether this version's uploads carry the platform's scope sweeper — decided here,
+    // ONCE, before anything is uploaded, and recorded with the version below so every later
+    // upload of it reuses the answer. A declaration that contradicts itself is refused now,
+    // while it is still a push; it can never become a promote or a backout that refuses.
+    const sweeper = platformSweeperDecision(manifest, { entry: manifest.entry, modules });
+    if ('refuse' in sweeper) return c.json({ error: sweeper.refuse }, 422);
+
     // Mint the version id first: the deploymentRef (the dispatch script name) is keyed
     // on it, so it is CF-valid and unique per version.
     const id = ulid();
@@ -7022,6 +7042,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // #1242: the freshly minted version id — this archive script IS that version,
         // and a preview routed at it stamps the signals `version` dimension honestly.
         versionId: id,
+        // #1902: the platform's scope sweeper, as decided above and recorded with the version.
+        ...(sweeper.supply ? { supplySweeper: true } : {}),
         // #340: the verified bytes go up with the bundle. The manifest's routing config
         // rides along untouched — it decides what the RUNTIME does with paths, and carries
         // no reach, so there is nothing in it for the sandbox contract to refuse.
@@ -7101,7 +7123,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ...(origin ? { origin } : {}),
       // Retained for the serving upload (#286): the archive script keeps the module
       // bytes, this keeps their shape (entry, compat, doClasses, bindings).
-      manifestJson: JSON.stringify(manifest),
+      // #1902: with the sweeper decision the push made, which no later upload re-makes.
+      manifestJson: JSON.stringify({ ...manifest, platformSweeper: sweeper.supply }),
     });
     // Same spirit as the permission-surface gate, advisory tier: when the push DECLARES
     // surfaces, name any surface that hostnames are still bound to but the declaration

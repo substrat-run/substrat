@@ -74,3 +74,8 @@ apps/*/wrangler.generated.jsonc
 
 # A local pnpm store, created by a `pnpm install --store-dir` run in this checkout
 .pnpm-store/
+
+# A vertical's worker as the platform uploads it (#1902, tools/workerd-as-uploaded.mjs):
+# the platform's entry and sweeper modules, written for the workerd suite to run. Outside
+# node_modules, because the workers pool does not transform imports made from in there.
+.workerd-uploaded/

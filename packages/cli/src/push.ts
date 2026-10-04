@@ -24,6 +24,8 @@ import {
   envVarSpec,
   runtimeNeeds,
   RUNTIME_BASELINE,
+  PLATFORM_FEATURES_HEADER,
+  PLATFORM_FEATURE_SCOPE_SWEEPER,
   type AssetEntry,
   type AssetsNeed,
   type DeclaredBinding,
@@ -49,7 +51,12 @@ import { walkPages } from '@substrat-run/control-plane-client';
 import { parseJsonBody } from './http.js';
 import { planeFor } from './plane.js';
 import { failureMessage } from './problem.js';
-import { exportedSweeperNamesOf, sweeperOffence, type ScheduleRef } from './schedule-sweeper.js';
+import {
+  exportedSweeperNamesOf,
+  platformCanSupplySweeper,
+  sweeperOffence,
+  type ScheduleRef,
+} from './schedule-sweeper.js';
 
 /**
  * Where this push runs: the generated deploy workflow runs THIS SAME CLI inside GitHub
@@ -1080,16 +1087,17 @@ export function assertLayerRules(
 }
 
 /**
- * Declared schedules, and something to run them (#1646).
+ * Declared schedules, and something to run them (#1646, #1902).
  *
  * A vertical's modules — its own, and every engine it composes — may declare recurring work
- * (`manifest.schedules`). On a hosted deploy nothing runs it unless the worker brings its own
- * timer: an exported `defineScopeSweeperDO` class, bound as a Durable Object. The control
- * plane's cron reaches only its own module-less host, and a dispatch script's `triggers.crons`
- * is not honoured, so a vertical without one deploys cleanly, provisions cleanly, and its
- * schedules simply never fire — no error anywhere, because nothing ever tries. This repo's
- * `lint:schedule-sweeper` refuses that for the verticals in it; an external vertical's only
- * check is this one, on the push.
+ * (`manifest.schedules`). On a hosted deploy nothing runs it but a `defineScopeSweeperDO`
+ * class, bound as a Durable Object: the control plane's cron reaches only its own module-less
+ * host, and a dispatch script's `triggers.crons` is not honoured. Since #1902 the uploader
+ * supplies that class to a vertical whose entry exports none, so what this refuses is the
+ * wiring that would still leave the schedules unrun — an own sweeper nothing binds, the
+ * platform's names taken by something else, a vertical-host too old to hand the supplied
+ * sweeper its host (`sweeperOffence`). This repo's `lint:schedule-sweeper` refuses the same
+ * for the verticals in it; an external vertical's only check is this one, on the push.
  *
  * The signals, and why each is the one used:
  *
@@ -1107,8 +1115,9 @@ export function assertLayerRules(
  *     the only place that fact is legible. Reading source also lets `push --check` make the
  *     same check with no build at all.
  *
- * What it cannot see is whether the sweeper's roster is ever filled (`noteScope` from
- * `onProvision`): that is runtime wiring, and the refusal's remedy names it instead.
+ * What it cannot see is whether an own sweeper's roster is ever filled (`noteScope` from
+ * `onProvision`): that is runtime wiring. The platform's sweeper is filled by
+ * `mountPlatformSurface` itself.
  *
  * `--allow-unswept-schedules` pushes anyway and says so — for a sweeper wired in a shape this
  * reader does not follow (built by a helper of your own, say), where refusing would be refusing
@@ -1120,25 +1129,32 @@ export function assertSchedulesAreSwept(
   schedules: readonly ScheduleRef[] | undefined,
   allow = false,
   log: (message: string) => void = console.log,
+  /** The entry's sweeper classes, when the caller has already read them (`sweeperClassesOf`). */
+  known?: string[],
 ): void {
   if (!schedules || schedules.length === 0) return;
-  const main = typeof cfg.main === 'string' ? cfg.main : undefined;
-  const entryPath = main ? resolve(dir, main) : undefined;
-  if (!entryPath || !existsSync(entryPath)) {
+  const exportedNames = known ?? sweeperClassesOf(dir, cfg);
+  if (!exportedNames) {
     // The build would fail on this anyway; say what this check could not do rather than
     // refusing a sweeper it never got to look for.
+    const main = typeof cfg.main === 'string' ? cfg.main : undefined;
     log(
       `note: the worker entry ${main ? `"${main}" ` : ''}was not found — whether a sweeper runs this ` +
         "vertical's declared schedules was NOT checked",
     );
     return;
   }
-  const exportedNames = exportedSweeperNamesOf(entryPath);
-  const boundClassNames = declaredStoresOf(cfg)
-    .bindings.filter((b) => b.type === 'durable_object_namespace')
+  const bindings = declaredStoresOf(cfg).bindings;
+  const boundClassNames = bindings
+    .filter((b) => b.type === 'durable_object_namespace')
     .map((b) => (b as { class_name?: string }).class_name)
     .filter((c): c is string => Boolean(c));
-  const why = sweeperOffence(schedules, { exportedNames, boundClassNames });
+  const why = sweeperOffence(schedules, {
+    exportedNames,
+    boundClassNames,
+    boundBindingNames: bindings.map((b) => b.name),
+    platformCanSupply: platformCanSupplySweeper(dir),
+  });
   if (!why) return;
   if (allow) {
     log(
@@ -1152,16 +1168,9 @@ export function assertSchedulesAreSwept(
     [
       `this vertical ${why}`,
       '',
-      '  The wiring, in the worker entry (the `npm create substrat` template does exactly this):',
-      '',
-      "    import { defineScopeSweeperDO, SCOPE_SWEEPER_NAME } from '@substrat-run/adapter-cloudflare';",
-      '    export const SweeperDO = defineScopeSweeperDO<Env>({ host: hostFor });',
-      '    // …and in mountPlatformSurface, so provisioned scopes join its roster:',
-      '    onProvision: async (env, b) => {',
-      '      await env.SWEEPER.get(env.SWEEPER.idFromName(SCOPE_SWEEPER_NAME)).noteScope(b.tenantId, b.scopeId);',
-      '    },',
-      '',
-      '  plus its binding — in package.json:',
+      '  A vertical that exports no `defineScopeSweeperDO` class is given one at upload (#1902):',
+      '  its `mountPlatformSurface` hands that sweeper its host and keeps its roster, so there is',
+      '  nothing to wire. A vertical that exports its own keeps it, bound in package.json:',
       '',
       '    "runtimeNeeds": { "stores": [ …, { "binding": "SWEEPER", "class": "SweeperDO" } ] }',
       '',
@@ -1169,6 +1178,61 @@ export function assertSchedulesAreSwept(
       '  another way already runs these, push with --allow-unswept-schedules to say so.',
     ].join('\n'),
   );
+}
+
+/**
+ * Does the target control plane supply the scope sweeper (#1902)? A vertical whose entry
+ * exports none leaves it to the platform, and a plane from before #1902 supplies nothing —
+ * it would accept the version, and the schedules would never fire, with no error anywhere.
+ * So the plane must SAY so: every response from a current one lists
+ * `PLATFORM_FEATURE_SCOPE_SWEEPER` in `PLATFORM_FEATURES_HEADER` (the capability half of the
+ * handshake the CLI version advisory rides). One cheap read of the slug's versions asks; its
+ * status does not matter — a 401 or a 404 carries the header too — and silence is a refusal.
+ */
+export async function assertPlaneSuppliesSweeper(
+  opts: { controlPlaneUrl: string; authHeader: Record<string, string>; slug: string },
+  allow = false,
+  log: (message: string) => void = console.log,
+): Promise<void> {
+  const res = await planeFor(opts.controlPlaneUrl, opts.authHeader).request(
+    `/verticals/${encodeURIComponent(opts.slug)}/versions?limit=1`,
+    { method: 'GET' },
+  );
+  await res.body?.cancel();
+  if (planeSupplies(res.headers, PLATFORM_FEATURE_SCOPE_SWEEPER)) return;
+  const why =
+    `this vertical declares schedules and exports no sweeper, leaving it to the platform — but the ` +
+    `control plane at ${opts.controlPlaneUrl} does not say it supplies one (no '${PLATFORM_FEATURE_SCOPE_SWEEPER}' ` +
+    `in its ${PLATFORM_FEATURES_HEADER} header), so it predates #1902 and the schedules would never fire.`;
+  if (allow) {
+    log(`warning: --allow-unswept-schedules — ${why}\n  Pushing anyway, as asked.`);
+    return;
+  }
+  throw new Error(
+    `${why}\n\n  Push again once the platform is updated, or export your own defineScopeSweeperDO class ` +
+      '(bound as a store) for this version. --allow-unswept-schedules pushes anyway.',
+  );
+}
+
+/** Whether a control plane's response lists `feature` among the platform's features (#1902). */
+export function planeSupplies(headers: Headers, feature: string): boolean {
+  return (headers.get(PLATFORM_FEATURES_HEADER) ?? '')
+    .split(',')
+    .map((f) => f.trim())
+    .includes(feature);
+}
+
+/**
+ * The classes the worker entry exports as its own `defineScopeSweeperDO` sweeper — the
+ * manifest's `sweeperClasses` (#1902), what the control plane decides from, once at push,
+ * whether to supply the platform's. `[]` when it exports none; `undefined` when the entry cannot be read, which the
+ * manifest carries as absence rather than as a claim of "none".
+ */
+export function sweeperClassesOf(dir: string, cfg: Record<string, unknown>): string[] | undefined {
+  const main = typeof cfg.main === 'string' ? cfg.main : undefined;
+  const entryPath = main ? resolve(dir, main) : undefined;
+  if (!entryPath || !existsSync(entryPath)) return undefined;
+  return exportedSweeperNamesOf(entryPath);
 }
 
 export interface PushOptions {
@@ -1512,7 +1576,14 @@ export async function push(
   // entry, and a vertical's entry may import something its own build produces. Still before
   // anything is uploaded; a vertical that wants the refusal in a second runs
   // `substrat push --check`, which makes the same check with no build at all.
-  assertSchedulesAreSwept(opts.dir, cfg, schedules, opts.allowUnsweptSchedules);
+  const sweeperClasses = sweeperClassesOf(opts.dir, cfg);
+  assertSchedulesAreSwept(opts.dir, cfg, schedules, opts.allowUnsweptSchedules, console.log, sweeperClasses);
+  // #1902: leaving the sweeper out is safe only where the platform puts one in. Asked of the
+  // plane itself, before the build is uploaded — a plane that predates it would accept the
+  // version and never run its schedules.
+  if (schedules?.length && sweeperClasses?.length === 0) {
+    await assertPlaneSuppliesSweeper(opts, opts.allowUnsweptSchedules);
+  }
 
   if (migrations.omitted) {
     console.warn(
@@ -1608,6 +1679,9 @@ export async function push(
     // schedule-health view needs `everyMinutes`, which exists nowhere off the manifest.
     ...(schedules ? { schedules } : {}),
     ...(freshness ? { freshness } : {}),
+    // #1902: the vertical's own sweeper classes, `[]` for none — what the control plane decides
+    // from whether to supply the platform's. Absent only when the entry could not be read.
+    ...(sweeperClasses ? { sweeperClasses } : {}),
     // ALWAYS sent, `[]` when the modules declare none — the same reasoning `outbound`
     // below carries. Absence means "pushed before this field existed", which the flow
     // view reads as "nothing to compare"; a new-CLI push with no events must not read

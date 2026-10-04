@@ -1,16 +1,35 @@
 // tsx --test tools/schedule-sweeper.test.mts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deployables, offense, parseExportedSweeperNames, parseWranglerBindingClasses, type ScheduleRef } from './schedule-sweeper.mts';
+import {
+  deployables,
+  offense,
+  parseExportedSweeperNames,
+  parseWranglerBindings,
+  type ScheduleRef,
+} from './schedule-sweeper.mts';
+import { platformCanSupplySweeper } from '../packages/cli/dist/schedule-sweeper.js';
 
 const SCHEDULES: ScheduleRef[] = [{ moduleId: '@substrat-run/demo-todo', operation: 'todo/reap-abandoned' }];
 
-test('a vertical with schedules and no SweeperDO export is refused, naming the module and schedule', () => {
-  const why = offense(SCHEDULES, { exportedNames: [], boundClassNames: [] });
+test('a vertical with schedules and no SweeperDO export passes: the platform supplies one (#1902)', () => {
+  assert.equal(offense(SCHEDULES, { exportedNames: [], boundClassNames: [], platformCanSupply: true }), null);
+});
+
+test('…unless its vertical-host is too old to hand the supplied one a host, which names the module and schedule', () => {
+  const why = offense(SCHEDULES, { exportedNames: [], boundClassNames: [], platformCanSupply: false });
   assert.ok(why, 'expected a refusal');
   assert.match(why!, /@substrat-run\/demo-todo/);
   assert.match(why!, /todo\/reap-abandoned/);
-  assert.match(why!, /defineScopeSweeperDO/);
+  assert.match(why!, /vertical-host/);
+});
+
+test('…or it binds the platform’s names to something else', () => {
+  assert.match(offense(SCHEDULES, { exportedNames: [], boundClassNames: ['SweeperDO'] }) ?? '', /class name 'SweeperDO'/);
+  assert.match(
+    offense(SCHEDULES, { exportedNames: [], boundClassNames: ['X'], boundBindingNames: ['SWEEPER'] }) ?? '',
+    /binding 'SWEEPER'/,
+  );
 });
 
 test('its twin — schedules plus a bound, exported sweeper — passes', () => {
@@ -28,7 +47,7 @@ test('a vertical composing an engine that declares schedules is still caught (no
   // handed to it, however it was collected — the loading half is proven by the
   // integration test below, which walks the real MODULES array meridian composes.
   const composed: ScheduleRef[] = [{ moduleId: '@substrat-run/engine-absence', operation: 'absence/expire-stale' }];
-  const why = offense(composed, { exportedNames: [], boundClassNames: [] });
+  const why = offense(composed, { exportedNames: [], boundClassNames: [], platformCanSupply: false });
   assert.ok(why);
   assert.match(why!, /engine-absence/);
   assert.match(why!, /absence\/expire-stale/);
@@ -80,7 +99,7 @@ test('parseExportedSweeperNames: an unrelated export is not mistaken for a sweep
   assert.deepEqual(parseExportedSweeperNames(src), []);
 });
 
-test('parseWranglerBindingClasses: reads durable_objects.bindings, JSONC comments and all', () => {
+test('parseWranglerBindings: reads durable_objects.bindings, JSONC comments and all', () => {
   const src = `{
     // a comment
     "durable_objects": {
@@ -90,14 +109,14 @@ test('parseWranglerBindingClasses: reads durable_objects.bindings, JSONC comment
       ]
     }
   }`;
-  assert.deepEqual(parseWranglerBindingClasses(src).sort(), ['ScopeDO', 'SweeperDO']);
+  assert.deepEqual(parseWranglerBindings(src).map((b) => b.class_name).sort(), ['ScopeDO', 'SweeperDO']);
 });
 
-test('parseWranglerBindingClasses: a config with no durable_objects block is empty, not a failure', () => {
-  assert.deepEqual(parseWranglerBindingClasses('{ "name": "x" }'), []);
+test('parseWranglerBindings: a config with no durable_objects block is empty, not a failure', () => {
+  assert.deepEqual(parseWranglerBindings('{ "name": "x" }'), []);
 });
 
-test('every current deployable vertical loads, and every schedule it declares (composed or not) has an exported, bound sweeper', async () => {
+test('every current deployable vertical loads, and every schedule it declares (composed or not) has a sweeper to run it', async () => {
   const dirs = deployables();
   assert.ok(dirs.length > 0, 'expected at least one deployable vertical');
 
@@ -106,7 +125,7 @@ test('every current deployable vertical loads, and every schedule it declares (c
   const { pathToFileURL } = await import('node:url');
 
   const offenders: string[] = [];
-  for (const { dir, permissionsEntry, storeClasses } of dirs) {
+  for (const { dir, permissionsEntry, stores } of dirs) {
     const entryPath = join(dir, permissionsEntry);
     assert.ok(existsSync(entryPath), `${entryPath} should exist for a declared substrat.permissions entry`);
     const mod = (await import(pathToFileURL(entryPath).href)) as {
@@ -122,11 +141,18 @@ test('every current deployable vertical loads, and every schedule it declares (c
     const workerPath = join(dir, 'src', 'worker.ts');
     const exportedNames = parseExportedSweeperNames(readFileSync(workerPath, 'utf8'));
     const wranglerPath = join(dir, 'wrangler.jsonc');
-    const boundClassNames = existsSync(wranglerPath)
-      ? [...storeClasses, ...parseWranglerBindingClasses(readFileSync(wranglerPath, 'utf8'))]
-      : [...storeClasses];
+    const bound = [
+      ...stores.map((st) => ({ name: st.binding, class_name: st.class })),
+      ...(existsSync(wranglerPath) ? parseWranglerBindings(readFileSync(wranglerPath, 'utf8')) : []),
+    ];
+    const present = (xs: (string | undefined)[]) => xs.filter((x): x is string => Boolean(x));
 
-    const why = offense(schedules, { exportedNames, boundClassNames });
+    const why = offense(schedules, {
+      exportedNames,
+      boundClassNames: present(bound.map((b) => b.class_name)),
+      boundBindingNames: present(bound.map((b) => b.name)),
+      platformCanSupply: platformCanSupplySweeper(dir),
+    });
     if (why) offenders.push(`${dir}: ${why}`);
   }
   assert.deepEqual(offenders, []);

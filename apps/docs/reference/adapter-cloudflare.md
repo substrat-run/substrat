@@ -55,7 +55,9 @@ pnpm add @substrat-run/adapter-cloudflare
   inside them: draining retryable executor deliveries and firing the
   [schedules](/concepts/modules#recurring-work-schedules) the manifest declares. The platform
   sweeper reaps and reconciles from above; this one runs *your* recurring work where your data
-  is.
+  is. A pushed vertical that declares schedules and exports none is given one at upload, as
+  `SweeperDO` bound to `SWEEPER` ([`substrat push`](/reference/cli)); wire your own only to
+  change what it does.
 - **Per-tenant stores** — `createD1TenantStores` and `createR2BlobStores`, the platform's
   reach into a minted D1 database or R2 bucket. Worth understanding for what they are *not*:
   this is the **control-plane** path — minting at provision, out-of-band SQL, ops inspection.

@@ -122,6 +122,58 @@ export type FreshnessSpec = z.infer<typeof freshnessSpec>;
  */
 export const PLATFORM_BINDING_PREFIX = 'SUBSTRAT_';
 
+/**
+ * The response header a control plane lists the platform behaviours it provides in (#1902),
+ * comma-separated, on every response — the capability half of the handshake whose version
+ * half is `x-substrat-cli-min-version`. A CLI that would omit something on the strength of
+ * the platform providing it asks first, and refuses when the plane does not say so: a plane
+ * that predates a behaviour stays silent, and silence is never read as yes.
+ */
+export const PLATFORM_FEATURES_HEADER = 'x-substrat-platform-features';
+
+/** The platform supplies the scope sweeper to a version that declares schedules and brings none (#1902). */
+export const PLATFORM_FEATURE_SCOPE_SWEEPER = 'scope-sweeper';
+
+/**
+ * The names the platform's scope sweeper takes in an upload (#1902): its Durable Object class
+ * and binding — the ones the template and the hosted demos used by hand, so a vertical that
+ * drops its own keeps the same namespace — and the var that tells `mountPlatformSurface` the
+ * roster is its to keep. Here, in the one package every side imports, so the push's check, the
+ * control plane's decision and the uploader cannot spell them differently.
+ */
+export const PLATFORM_SWEEPER_CLASS = 'SweeperDO';
+export const PLATFORM_SWEEPER_BINDING = 'SWEEPER';
+export const PLATFORM_SWEEPER_VAR = 'SUBSTRAT_SCOPE_SWEEPER';
+
+/** Why a vertical's sweeper wiring cannot work, as {@link sweeperConflict} reads it. */
+export type SweeperConflict =
+  /** It exports its own sweeper class(es), and no Durable Object binding names one. */
+  | { kind: 'own-unbound'; own: readonly string[] }
+  /** It exports none, and binds the platform's binding name to something else. */
+  | { kind: 'binding-taken' }
+  /** It exports none, and binds the platform's class name under another binding. */
+  | { kind: 'class-taken' };
+
+/**
+ * The one rule both the push (`substrat push`, `lint:schedule-sweeper`) and the control plane
+ * judge a vertical's sweeper wiring by (#1902) — each words the answer for its own reader, and
+ * neither can judge it differently. `own` is the worker entry's own `defineScopeSweeperDO`
+ * classes; `boundClassNames` the Durable Object classes its config binds, `boundBindingNames`
+ * every binding name it declares. `null` when the wiring works: an own sweeper that is bound,
+ * or none and the platform's names free.
+ */
+export function sweeperConflict(
+  own: readonly string[],
+  wiring: { boundClassNames: readonly (string | undefined)[]; boundBindingNames: readonly string[] },
+): SweeperConflict | null {
+  if (own.length > 0) {
+    return own.some((c) => wiring.boundClassNames.includes(c)) ? null : { kind: 'own-unbound', own };
+  }
+  if (wiring.boundBindingNames.includes(PLATFORM_SWEEPER_BINDING)) return { kind: 'binding-taken' };
+  if (wiring.boundClassNames.includes(PLATFORM_SWEEPER_CLASS)) return { kind: 'class-taken' };
+  return null;
+}
+
 // A single declared environment variable — the config a deployment must provide,
 // self-describing so a host/console can render a settings form (placeholder +
 // description) and validate the required keys before deploy. `secret: true` marks a

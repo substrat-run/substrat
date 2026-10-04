@@ -111,7 +111,13 @@ export type {
   DeployManifest,
 } from './deploy.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
-export { withPlatformEntry, platformEntrySkipReason, PLATFORM_ENTRY_MODULE } from './platform-entry.js';
+export {
+  withPlatformEntry,
+  platformEntrySkipReason,
+  platformSweeperDecision,
+  PLATFORM_ENTRY_MODULE,
+  PLATFORM_SWEEPER_MODULE,
+} from './platform-entry.js';
 export type {
   WfpUploaderOptions,
   PatchScriptBindingsFn,

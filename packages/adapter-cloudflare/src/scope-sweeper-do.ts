@@ -1,5 +1,4 @@
 import { DurableObject } from 'cloudflare:workers';
-import { scopeId as scopeIdSchema, tenantId as tenantIdSchema } from '@substrat-run/contracts';
 import type { ScopeId, TenantId, SweepRunsPayload } from '@substrat-run/contracts';
 import type {
   ExecutorDrainReport,
@@ -18,6 +17,22 @@ import type {
  * `PLATFORM_SWEEPER_NAME` gives the directory-backed trigger.
  */
 export const SCOPE_SWEEPER_NAME = 'scope-sweeper';
+
+/**
+ * A tenant or scope id: a ULID, exactly what `@substrat-run/contracts`' `tenantId` and
+ * `scopeId` schemas accept. Checked with the pattern rather than through those schemas since
+ * #1902, because this file is bundled into the sweeper the platform supplies to every upload
+ * that needs one, and a runtime import of contracts pulls zod in with it (the #1893 reason
+ * `routed-node.ts` gives). `test/scope-sweeper.test.ts` holds it to the schemas.
+ */
+export const SWEEPER_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+function parseId<T extends string>(value: unknown, what: string): T {
+  if (typeof value !== 'string' || !SWEEPER_ID.test(value)) {
+    throw new TypeError(`${what} must be a ULID, got ${JSON.stringify(value)}`);
+  }
+  return value as T;
+}
 
 /** Roster keys in the sweeper's own storage: `scope:<scopeId>` → tenantId. */
 const ROSTER_PREFIX = 'scope:';
@@ -178,7 +193,11 @@ export interface ScopeSweeperDo {
  * while the roster is non-empty, so a deployment with no scopes costs nothing —
  * `noteScope` (re)arms when the first scope arrives.
  *
- * Wire-up (the create-substrat template is the reference):
+ * A pushed vertical rarely calls this itself any more (#1902): the uploader supplies a
+ * sweeper built from it — `SweeperDO` bound as `SWEEPER`, its host the one the vertical's
+ * `mountPlatformSurface` registers — to a version that declares schedules and exports none.
+ * Wire one by hand to change what the platform's does (`runJobs`, `startJobs`, a different
+ * interval), or for a deployment not pushed through the platform:
  *
  * ```ts
  * export const SweeperDO = defineScopeSweeperDO<Env>({
@@ -200,15 +219,15 @@ export function defineScopeSweeperDO<Env>(
     async noteScope(tenantId: TenantId, scopeId: ScopeId): Promise<{ scopes: number }> {
       // Parse, don't trust: RPC delivers plain strings; a malformed id must fail
       // loudly here, not surface as a stuck roster entry that never sweeps.
-      const t = tenantIdSchema.parse(tenantId);
-      const s = scopeIdSchema.parse(scopeId);
+      const t = parseId<TenantId>(tenantId, 'tenantId');
+      const s = parseId<ScopeId>(scopeId, 'scopeId');
       await this.ctx.storage.put(`${ROSTER_PREFIX}${s}`, t);
       await this.ensureArmed();
       return { scopes: await this.#rosterSize() };
     }
 
     async forgetScope(scopeId: ScopeId): Promise<{ scopes: number }> {
-      const s = scopeIdSchema.parse(scopeId);
+      const s = parseId<ScopeId>(scopeId, 'scopeId');
       await this.ctx.storage.delete([`${ROSTER_PREFIX}${s}`, `${JOB_START_PREFIX}${s}`]);
       // The alarm is left as-is: an empty-roster pass simply does not re-arm.
       return { scopes: await this.#rosterSize() };

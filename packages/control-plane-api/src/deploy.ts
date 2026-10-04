@@ -61,6 +61,9 @@ export interface VerticalBundle {
    *  as `env.AI`. Travels with the version, so who holds the capability is a property of
    *  the code that shipped rather than of the fleet's config. */
   usesModels?: boolean;
+  /** Carry the platform's scope sweeper (#1902) — the decision the push made and the
+   *  version records (`platformSweeper`), never re-made by an upload. */
+  supplySweeper?: boolean;
   /** The version REGISTRY id this bundle deploys (#1242) — injected as the
    *  `SUBSTRAT_VERSION_ID` plain-text binding so the running scope host can stamp the
    *  signals `version` dimension (#1231) on the records it writes. Optional: a caller

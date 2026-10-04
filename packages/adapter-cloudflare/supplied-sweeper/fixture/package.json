@@ -1,0 +1,12 @@
+{
+  "name": "fixture-scheduled-vertical",
+  "private": true,
+  "type": "module",
+  "substrat": {
+    "permissions": "perms.ts",
+    "runtimeNeeds": {
+      "entry": "worker.ts",
+      "stores": [{ "binding": "SCOPE", "class": "ScopeDO" }]
+    }
+  }
+}

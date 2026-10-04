@@ -1105,6 +1105,20 @@ export const deployManifest = z.object({
    *  twice over. */
   freshness: z.array(freshnessSpec.extend({ moduleId })).optional(),
   /**
+   * The Durable Object classes the worker entry exports as its OWN scope sweeper — the
+   * names bound to a `defineScopeSweeperDO(...)` call, as the push read them from source
+   * (#1902). The control plane decides from this, once at push, whether the version's
+   * uploads carry the platform's sweeper (recorded as the stored manifest's
+   * `platformSweeper`) when it declares `schedules`: `[]` means the vertical brings none, so it is given
+   * one; a name here means it brings its own, which is kept, and a binding must name it or
+   * the push is refused.
+   *
+   * ABSENT means a CLI from before the field: the decision then reads the conventional
+   * names instead (`SWEEPER` bound to `SweeperDO`), and refuses what it cannot tell apart.
+   * Never inferred from the bundle's bytes — an export's name says nothing about its class.
+   */
+  sweeperClasses: z.array(z.string().min(1)).max(16).optional(),
+  /**
    * Every SQL migration the vertical's modules ship (#1677), module by module in
    * registration order and each module's own order, with its SQL verbatim. It is what the
    * promote dialog and `substrat promote` read to show the migrations a promote would run.
@@ -1153,6 +1167,16 @@ export type DeployManifest = z.infer<typeof deployManifest>;
  */
 export const storedDeployManifest = deployManifest.extend({
   registry: permissionRegistry.optional(),
+  /**
+   * The control plane's own decision, recorded at push (#1902): whether this version's
+   * uploads carry the platform's scope sweeper. Made ONCE, when the version is pushed, from
+   * `schedules` and `sweeperClasses`, and reused by every later upload of the version —
+   * promote, re-serve, backout — so none of them re-decides, and none can refuse a version
+   * that was accepted. Never read from the push: `deployManifest` has no such field, so a CLI
+   * cannot claim it. ABSENT means a version pushed before the decision existed, which keeps
+   * exactly what it had: no platform sweeper.
+   */
+  platformSweeper: z.boolean().optional(),
   // The caps are the push boundary's, not history's: lowering one must never make a
   // stored version unreadable.
   migrations: z.array(declaredMigration).optional(),

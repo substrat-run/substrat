@@ -1752,6 +1752,9 @@ importers:
       '@substrat-run/attachment-extractors':
         specifier: workspace:^
         version: link:../attachment-extractors
+      '@substrat-run/cli':
+        specifier: workspace:^
+        version: link:../cli
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../contract-tests

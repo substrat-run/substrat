@@ -36,6 +36,7 @@ import {
   type UndrainedEvents,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from './platform-call.js';
+import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
 import {
   z,
   PROBLEM_CONTENT_TYPE,
@@ -803,6 +804,11 @@ export function mountPlatformSurface<Env extends object>(
   app: Hono<{ Bindings: Env }>,
   deps: PlatformSurfaceDeps<Env>,
 ): void {
+  // #1902: the host the platform's sweeper runs passes through, when the upload supplied one
+  // (`scope-sweep-host.ts`). Registered on every mount, since nothing at mount time can tell
+  // a hosted script from a local one, and a registration nobody reads costs nothing.
+  registerScopeSweepHost(deps.hostFor as (env: never) => unknown);
+
   // ── ONE gate for the entire surface (replaces the per-route copy-pasted try/catch) ──
   app.use('/internal/*', async (c, next) => {
     try {
@@ -1171,6 +1177,8 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/delete-scope', async (c) => {
     const body = z.object({ scopeId: scopeIdOf, tenantId: tenantIdOf.optional() }).parse(await c.req.json());
     await deps.hostFor(c.env).deleteScopeLocal(body.scopeId);
+    // #1902: a reaped scope's alarm must never wake it again.
+    await platformSweeperOf(c.env)?.forgetScope(body.scopeId);
     await deps.onDeleteScope?.(c.env, body.scopeId, body.tenantId);
     return c.json({ deleted: body.scopeId });
   });
@@ -1529,6 +1537,10 @@ export function mountPlatformSurface<Env extends object>(
       switchedOff: body.switchedOff,
     });
     await deps.onProvision?.(c.env, body);
+    // #1902: onto the platform-supplied sweeper's roster, so the scope's schedules run. Last, so
+    // only a scope whose provision got this far — the vertical's hook included — is swept; the
+    // platform retries a failed provision, and the note is idempotent like the rest of it.
+    await platformSweeperOf(c.env)?.noteScope(body.tenantId, body.scopeId);
     return c.json(
       {
         tenantId: body.tenantId,
@@ -1587,6 +1599,9 @@ export function mountPlatformSurface<Env extends object>(
      * re-run it), so calling it here asks nothing new of a vertical. `slug` and `name`
      * are absent — the platform does not carry them on a reconcile, and both are
      * optional for exactly this kind of caller.
+     *
+     * The platform's sweeper is noted here for the same reason (#1902): a scope provisioned
+     * before its vertical's upload carried a sweeper joins the roster on its next reconcile.
      */
     await deps.onProvision?.(c.env, {
       tenantId: body.tenantId,
@@ -1597,6 +1612,7 @@ export function mountPlatformSurface<Env extends object>(
       ...(body.connectionGrants ? { connectionGrants: body.connectionGrants } : {}),
       ...(body.connectionKeys ? { connectionKeys: body.connectionKeys } : {}),
     });
+    await platformSweeperOf(c.env)?.noteScope(body.tenantId, body.scopeId);
     return c.json({
       tenantId: body.tenantId,
       scopeId: body.scopeId,
@@ -1801,6 +1817,7 @@ export * from './live.js';
 export * from './invocation-log.js';
 export * from './routed-node.js';
 export * from './platform-call.js';
+export * from './scope-sweep-host.js';
 export {
   classifyError,
   isPlatformFault,

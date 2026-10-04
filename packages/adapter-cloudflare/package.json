@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run -c vitest.supplied-sweeper.config.ts",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
@@ -39,6 +39,7 @@
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/attachment-extractors": "workspace:^",
+    "@substrat-run/cli": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
