@@ -17,8 +17,25 @@ const STAFF_EMAIL = 'cli@substrat.run';
 const STAFF_ACTOR = ulid();
 
 /** Mint the signed session a logged-in browser would hold (the cookie the broker reads). */
-function sessionFor(email: string): Promise<string> {
-  return mintSession(oidcEnv, { id: ulid(), email, name: 'CLI Tester' });
+function sessionFor(email: string, claim: { emailVerified?: boolean } = { emailVerified: true }): Promise<string> {
+  return mintSession(oidcEnv, { id: ulid(), email, name: 'CLI Tester', ...claim });
+}
+
+/** Drive the broker from a browser session to the bearer the CLI is handed. */
+async function cliTokenFor(session: string): Promise<string> {
+  const verifier = `verifier-${ulid()}`;
+  const challenge = await pkceS256(verifier);
+  const authRes = await SELF.fetch(
+    `https://cp.test/api/auth/cli?port=8976&state=s&challenge=${encodeURIComponent(challenge)}`,
+    { headers: { cookie: `${SESSION_COOKIE}=${session}` }, redirect: 'manual' },
+  );
+  const code = new URL(authRes.headers.get('location')!).searchParams.get('code')!;
+  const res = await SELF.fetch('https://cp.test/api/auth/cli/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code, verifier }),
+  });
+  return ((await res.json()) as { token: string }).token;
 }
 
 async function seedRoster(email: string, actor: string): Promise<void> {
@@ -107,7 +124,9 @@ describe('CLI login broker', () => {
     const { token } = (await exch.json()) as { token: string };
     expect(token).toBeTruthy();
     // (diagnostic) the issued token must itself verify to the rostered email.
-    expect(await verifySession(oidcEnv, token)).toMatchObject({ email: STAFF_EMAIL });
+    // `email_verified` crossed the broker with the address it qualifies (#1359) — without
+    // it, the roster would refuse every CLI login by default.
+    expect(await verifySession(oidcEnv, token)).toMatchObject({ email: STAFF_EMAIL, emailVerified: true });
 
     // 4. The bearer authenticates against the deploy/admin surface, via the roster.
     const authed = await SELF.fetch('https://cp.test/api/tenants', {
@@ -139,5 +158,18 @@ describe('CLI login broker', () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(401);
+  });
+
+  it.each([
+    ['false', false],
+    ['absent', undefined],
+  ] as const)('carries a %s claim through, and the roster refuses the bearer for it', async (_label, verified) => {
+    const token = await cliTokenFor(await sessionFor(STAFF_EMAIL, { emailVerified: verified }));
+    expect((await verifySession(oidcEnv, token))?.emailVerified).toBe(verified);
+    const res = await SELF.fetch('https://cp.test/api/tenants', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toMatch(verified === false ? /not verified/ : /sign in again/);
   });
 });

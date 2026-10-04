@@ -27,7 +27,7 @@ import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgeme
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
-import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
+import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
@@ -54,7 +54,6 @@ import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, a
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { identifyingEmailOf, type EmailIdentifierEnv } from './email-identifier.js';
 import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
 import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
@@ -99,7 +98,7 @@ const STAFF = platformActorId.parse('01JZ000000000000000000DAS1');
 // connected-mode gating is unit-testable. `CATALOG`/`ensureCatalog`/`availableCatalog`
 // are imported at the top of the file.
 
-interface Env extends OidcEnv, EmailIdentifierEnv {
+interface Env extends OidcEnv, EmailIdentityEnv {
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
   /**
@@ -635,7 +634,7 @@ async function resolveAccount(
   // A session with no usable address — none at all, or one the gate refuses (#1359) —
   // seeds nothing, so the heal runs again once there is one rather than writing an
   // empty or unverified owner row for good.
-  const ownerEmail = identifyingEmailOf(env, user);
+  const ownerEmail = identifyEmail(env, user).email;
   if (node && ownerEmail) await ensureRosterSeeded(host, STAFF, node, ownerEmail);
   return node;
 }
@@ -649,7 +648,7 @@ async function resolveAccount(
  * only action that cannot be tenant-narrowed (there is no tenant yet), so it stays
  * a controlled platform action, gated by the authenticated session.
  */
-async function createTeam(host: ScopeHost, env: Env, user: { id: string; email?: string | null }, name: string): Promise<DashboardNode> {
+async function createTeam(host: ScopeHost, env: Env, user: SessionUser, name: string): Promise<DashboardNode> {
   await ensureIdentityPool(host, STAFF, resolveMemoFor(env.CONTROL_PLANE));
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
@@ -667,7 +666,9 @@ async function createTeam(host: ScopeHost, env: Env, user: { id: string; email?:
   const org = orgId.parse(ulid());
   await host.admin.createOrg(STAFF, { id: org, tenantId: t, slug: 'team', name });
   const scope = await host.getScope(owner, t, s);
-  await scope.invoke('dashboard/init-team', { orgId: org, ownerEmail: user.email ?? '' });
+  // The owner row takes the address only if the issuer verified it (#1359) — one rule for
+  // every roster row, so nothing that later matches on email can read an unverified one.
+  await scope.invoke('dashboard/init-team', { orgId: org, ownerEmail: identifyEmail(env, user).email ?? '' });
   // Mirror the owner into the shared plane's directory so `substrat push` can
   // resolve this workspace immediately (see mirrorBuilderIdentity).
   await mirrorBuilderIdentity(env, host, user.id, t);
@@ -926,9 +927,8 @@ app.get('/api/me', async (c) => {
  * The claim is the session's own email and no other. A session whose OIDC identity
  * carries no email cannot be vouched for at all, so it gets `{ desk: null }` — the
  * same answer as an unconfigured deployment, because from the page's side it is the
- * same fact: nothing to embed. So does a session whose address the
- * `OIDC_REQUIRE_EMAIL_VERIFIED` gate refuses (#1359): the signature would vouch for a
- * person the issuer did not.
+ * same fact: nothing to embed. So does a session whose address the issuer did not verify
+ * (#1359): the signature would vouch for a person the issuer did not.
  */
 app.get('/api/support/identity', async (c) => {
   const desk = c.env.SUPPORT_DESK_ORIGIN;
@@ -937,7 +937,7 @@ app.get('/api/support/identity', async (c) => {
   if (!desk || !secret) return c.json({ desk: null });
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   if (!user) return c.json({ error: 'unauthorized' }, 401);
-  const email = identifyingEmailOf(c.env, user);
+  const { email } = identifyEmail(c.env, user);
   if (!email) return c.json({ desk: null });
   c.header('cache-control', 'no-store');
   return c.json({ desk, user: email, signature: await signVisitorIdentity(secret, email) });
@@ -1355,14 +1355,16 @@ app.post('/api/invites/accept', async (c) => {
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   if (!user) throw new HTTPException(401, { message: 'unauthorized' });
   // The invite is addressed to an email, so the address IS the identity being claimed. A
-  // session with none cannot claim it, and with the gate on (#1359) neither can one the
-  // issuer did not verify.
-  const email = identifyingEmailOf(c.env, user);
-  if (!email) {
+  // session with none cannot claim it, and neither can one the issuer did not verify
+  // (#1359) — including one minted before the claim was carried, which signing in again
+  // fixes, and the message says which.
+  const identity = identifyEmail(c.env, user);
+  if (identity.refused) {
     throw new HTTPException(403, {
-      message: 'this invite needs a verified email address — verify it with your sign-in provider, then open the link again',
+      message: `this invite needs a verified email address: ${emailRefusalMessage(identity.refused)}. Then open the link again.`,
     });
   }
+  const email = identity.email;
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const claim = await verifyInviteToken(c.env, token);
   if (!claim) throw new HTTPException(400, { message: 'this invite link is invalid or has expired' });

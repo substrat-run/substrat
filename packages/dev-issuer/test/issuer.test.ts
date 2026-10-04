@@ -7,7 +7,7 @@
  * suite passes, a vertical needs no dev branch to log in locally.
  */
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
-import { beginLogin, completeLogin, type OidcEnv } from '@substrat-run/oidc-rp';
+import { beginLogin, completeLogin, identifyEmail, type OidcEnv } from '@substrat-run/oidc-rp';
 import { createDevIssuer, DEV_CLIENT_ID } from '../src/issuer.js';
 import { devLogin } from '../src/harness.js';
 import { mcpResourceOf } from '@substrat-run/contracts';
@@ -97,6 +97,10 @@ describe('the full login round-trip', () => {
     expect(done.user.id).toBe('dev|harald');
     expect(done.user.email).toBe('harald@example.test');
     expect(done.user.name).toBe('Harald Berg');
+    // The dev issuer asserts every persona's address verified, so a local login passes the
+    // platform's default `email_verified` rule (#1359) exactly as a real one does.
+    expect(done.user.emailVerified).toBe(true);
+    expect(identifyEmail({}, done.user)).toEqual({ email: 'harald@example.test' });
     expect(done.returnTo).toBe('/orders');
     expect(done.session).toBeTruthy();
   });
