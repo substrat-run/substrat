@@ -256,6 +256,8 @@ export interface ProvisionInstanceInput {
    * A vertical that predates the field ignores it, and the re-assert after the call covers it.
    */
   switchedOff?: ModuleId[];
+  /** Of `switchedOff`, the modules held on this scope only by a tenant-level grant (#1823). */
+  tenantHeld?: ModuleId[];
 }
 
 export interface ConfigureInstanceInput {
@@ -358,6 +360,8 @@ export interface ReconcileInstanceInput {
   tenantStores?: TenantStoreHandle[];
   /** The recorded-off modules, switched off in the reconcile's own unit (#1742) — as at provision. */
   switchedOff?: ModuleId[];
+  /** Of `switchedOff`, the modules held only by a tenant-level grant (#1823) — as at provision. */
+  tenantHeld?: ModuleId[];
 }
 
 /**
@@ -1033,6 +1037,7 @@ export class VerticalClient {
      *  A vertical that predates the field ignores it. */
     opts?: {
       switchedOff?: ModuleId[];
+      tenantHeld?: ModuleId[];
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -1051,6 +1056,7 @@ export class VerticalClient {
         scopeId,
         tables,
         ...(opts?.switchedOff ? { switchedOff: opts.switchedOff } : {}),
+        ...(opts?.tenantHeld ? { tenantHeld: opts.tenantHeld } : {}),
         ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
         ...(opts?.exact ? { exact: true } : {}),
         ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),

@@ -2012,7 +2012,7 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
   afterAll(async () => host.close());
 
   /** The reconcile's kernel half, as `/internal/reconcile` calls it. */
-  const reconcile = (s: ScopeId, extra: { switchedOff?: ModuleId[] } = {}, on = host) =>
+  const reconcile = (s: ScopeId, extra: { switchedOff?: ModuleId[]; tenantHeld?: ModuleId[] } = {}, on = host) =>
     on.provisionScopeLocal({ tenantId: t, scopeId: s, owner, roles, ownerRoleKey: 'office-admin', ...extra });
   const newScope = async (): Promise<ScopeId> => {
     const s = scopeId.parse(ulid());
@@ -2024,6 +2024,39 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
   const wipe = (s: ScopeId) => host.restoreScopeLocal(s, []);
   const pass = (s: ScopeId) => host.runDueSchedules(SCHED, t, s);
   const tookBack = { moduleId: SCHED, held: true, changed: true, permissions: ['sched:tick'] };
+
+  // #1823: a module whose only authority on the scope is a TENANT-level grant has nothing here
+  // for the in-unit OFF to find. The platform names it in `tenantHeld`, and the unit holds it.
+  // Read IMMEDIATELY after the call, before any re-assert: that is the window the carry closes.
+  const TENANT_ONLY = moduleId.parse('@test/tenant-only');
+  const tenantOnlyOff = { moduleId: TENANT_ONLY, held: true, changed: true, permissions: [] };
+  const offIn = async (s: ScopeId) =>
+    (await host.systemGrantsStatusLocal(s)).filter((e) => e.moduleId === TENANT_ONLY).map((e) => e.schedules);
+
+  it('a reconcile carrying tenantHeld switches a tenant-only module off in its own unit (#1823)', async () => {
+    const s = await newScope();
+    expect(await reconcile(s, { switchedOff: [TENANT_ONLY], tenantHeld: [TENANT_ONLY] })).toEqual({
+      switchedOff: [tenantOnlyOff],
+    });
+    expect(await offIn(s)).toEqual(['off']);
+  });
+
+  it('twin: the same carry without tenantHeld holds nothing for that module, and writes nothing (#1823)', async () => {
+    const s = await newScope();
+    expect(await reconcile(s, { switchedOff: [TENANT_ONLY] })).toEqual({
+      switchedOff: [{ moduleId: TENANT_ONLY, held: false, changed: false, permissions: [] }],
+    });
+    expect(await offIn(s)).toEqual([]);
+  });
+
+  it('a restore carrying tenantHeld lands the tenant-only module off in the replay (#1823)', async () => {
+    const s = await newScope();
+    const before = await host.exportScopeLocal(s);
+    expect(await host.restoreScopeLocal(s, before, { switchedOff: [TENANT_ONLY], tenantHeld: [TENANT_ONLY] })).toMatchObject({
+      switchedOff: [tenantOnlyOff],
+    });
+    expect(await offIn(s)).toEqual(['off']);
+  });
 
   it('a wiped scope reconciled WITH its off list runs nothing on the very next pass, and ON gives back what the unit took', async () => {
     const s = await newScope();

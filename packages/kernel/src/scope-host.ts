@@ -1793,6 +1793,14 @@ export interface HostAdmin {
    */
   listSystemSwitches(actor: PlatformActorId, filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecord[]>;
   /**
+   * Which of these modules the tenant holds a live TENANT-level `system:` grant for (#1823).
+   * A module whose only authority on a scope is such a grant has nothing in the scope's
+   * storage, so a switch carried into a deployment (a hosted provision, reconcile or restore)
+   * names these as `tenantHeld`, and the deployment's in-unit OFF holds them too. Order follows
+   * `moduleIds`. Access-logged (K-24), as the fleet read is.
+   */
+  tenantHeldSystemModules(actor: PlatformActorId, tenantId: TenantId, moduleIds: readonly ModuleId[]): Promise<ModuleId[]>;
+  /**
    * Put the directory's OFF positions back into one scope (#1674), for a scope whose storage
    * lost them: a wipe then re-provision, or a restore of a dump taken before the switch was
    * pulled. Every module the record holds `off` on the scope is switched off again, through

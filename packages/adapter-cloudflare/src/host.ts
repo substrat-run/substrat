@@ -2787,6 +2787,8 @@ export class CloudflareScopeHost implements ScopeHost {
      *  primary; the restore then marks it a copy. Refused if it classifies a primary. */
     opts?: {
       switchedOff?: readonly ModuleId[];
+      /** #1823: of `switchedOff`, the modules held only by a tenant-level grant. */
+      tenantHeld?: readonly ModuleId[];
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -2796,7 +2798,9 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     if (opts?.markCopy) assertCopyLineage(opts.markCopy);
     const load = {
-      switchOff: opts?.switchedOff ? { moduleIds: opts.switchedOff, at: new Date().toISOString() } : undefined,
+      switchOff: opts?.switchedOff
+        ? { moduleIds: opts.switchedOff, at: new Date().toISOString(), tenantHeld: opts.tenantHeld }
+        : undefined,
       sourceScopeId: opts?.sourceScopeId,
       exact: opts?.exact,
       loadStamp: opts?.loadStamp,
@@ -5571,6 +5575,13 @@ export class CloudflareScopeHost implements ScopeHost {
           rows.length,
         );
         return rows.map((r) => systemSwitchRecord.parse(r));
+      },
+      tenantHeldSystemModules: async (actor: PlatformActorId, tenantId: TenantId, moduleIds: readonly ModuleId[]) => {
+        const held = moduleIds.length
+          ? await this.cp.tenantHeldSystemModules(tenantId, moduleIds, new Date().toISOString())
+          : [];
+        await this.recordAccess(actor, 'tenantHeldSystemModules', { tenantId }, { moduleIds: [...moduleIds] }, held.length);
+        return held as ModuleId[];
       },
       reassertSystemSwitches: reassertSystemSwitchesOf,
       // #1672 — the platform's two capability verbs. Audited AFTER the write, on both, and
@@ -8817,6 +8828,9 @@ export class CloudflareScopeHost implements ScopeHost {
      *  platform's own re-assert arrives. Applies to THIS scope only, and only turns off. Absent
      *  ⇒ nothing is switched here, and the platform's re-assert after the call does it. */
     switchedOff?: readonly ModuleId[];
+    /** #1823: of `switchedOff`, the modules held on this scope only by a tenant-level grant,
+     *  which this deployment has no directory to read. Held for the in-unit OFF all the same. */
+    tenantHeld?: readonly ModuleId[];
   }): Promise<{ switchedOff?: SwitchedOff[] }> {
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
@@ -8915,7 +8929,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // #1742: the recorded-off modules, switched off after the seat in the same unit, on the
       // scope this call provisions — the one the seat's tuples name.
       input.switchedOff
-        ? { scopeId: input.scopeId, moduleIds: input.switchedOff, at: new Date().toISOString() }
+        ? { scopeId: input.scopeId, moduleIds: input.switchedOff, at: new Date().toISOString(), tenantHeld: input.tenantHeld }
         : undefined,
       services?.map((id) => `principal:${id}`),
     );

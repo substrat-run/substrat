@@ -7108,6 +7108,12 @@ export class SqliteScopeHost implements ScopeHost {
         );
         return rows.map((r) => systemSwitchRecord.parse(r));
       },
+      tenantHeldSystemModules: async (actor: PlatformActorId, tenantId: TenantId, moduleIds: readonly ModuleId[]) => {
+        const now = this.clock();
+        const held = moduleIds.filter((m) => tenantHoldsSystemGrant(switchSqlOf(this.directory), tenantId, m, now));
+        this.recordAccess(actor, 'tenantHeldSystemModules', { tenantId }, { moduleIds: [...moduleIds] }, held.length);
+        return held;
+      },
       reassertSystemSwitches: async (
         actor: PlatformActorId,
         node: { tenantId: TenantId; scopeId: ScopeId },

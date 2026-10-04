@@ -1747,14 +1747,14 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     );
   /** A host that records what the provision and restore halves were handed, and answers a move. */
   const recording = () => {
-    const seen: { verb: string; scopeId: string; switchedOff: unknown }[] = [];
+    const seen: { verb: string; scopeId: string; switchedOff: unknown; tenantHeld?: unknown }[] = [];
     const host = fakeHost({
       provisionScopeLocal: async (input) => {
-        seen.push({ verb: 'provision', scopeId: input.scopeId, switchedOff: input.switchedOff });
+        seen.push({ verb: 'provision', scopeId: input.scopeId, switchedOff: input.switchedOff, tenantHeld: input.tenantHeld });
         return input.switchedOff ? { switchedOff: [moved] } : undefined;
       },
       restoreScopeLocal: async (scopeId, _tables, opts) => {
-        seen.push({ verb: 'restore', scopeId, switchedOff: opts?.switchedOff });
+        seen.push({ verb: 'restore', scopeId, switchedOff: opts?.switchedOff, tenantHeld: opts?.tenantHeld });
         return { tables: 0, ...(opts?.switchedOff ? { switchedOff: [moved] } : {}) };
       },
     });
@@ -1775,6 +1775,19 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
       { verb: 'provision', scopeId: SCOPE, switchedOff: [SCHED] },
       { verb: 'restore', scopeId: SCOPE, switchedOff: [SCHED] },
     ]);
+  });
+
+  it('hands the host the tenant-held modules beside the list, on all three routes (#1823)', async () => {
+    const { host, seen } = recording();
+    const carry = { switchedOff: [SCHED], tenantHeld: [SCHED] };
+    await post(host, '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER, ...carry });
+    await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, ...carry });
+    await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], ...carry });
+    expect(seen.map((x) => x.tenantHeld)).toEqual([[SCHED], [SCHED], [SCHED]]);
+    // A malformed one is refused before the host is called.
+    const bad = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], switchedOff: [SCHED], tenantHeld: 'all' });
+    expect(bad.status).toBe(400);
+    expect(seen).toHaveLength(3);
   });
 
   it('a body without the list hands the host none, and the answer carries none — the pre-#1742 shape', async () => {

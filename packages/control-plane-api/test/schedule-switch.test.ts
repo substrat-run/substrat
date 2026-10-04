@@ -6,6 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { assertAllowed, ulid, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
 import {
   moduleId,
+  permissionKey,
   moduleManifest,
   platformActorId,
   scopeId,
@@ -693,7 +694,7 @@ describe('the record is carried into the deployment and its in-unit move audited
   const FORGED = moduleId.parse('@test/never-switched');
   let dir: string;
   let host: SqliteScopeHost;
-  const bodies: { verb: string; scopeId: string; switchedOff?: unknown }[] = [];
+  const bodies: { verb: string; scopeId: string; switchedOff?: unknown; tenantHeld?: unknown }[] = [];
   /** #1869: where each restore was told its tables came from. */
   const restoreSources: { sourceScopeId?: string; exact?: boolean }[] = [];
   /** A move per module the platform sent, plus one the record never switched off. */
@@ -705,8 +706,8 @@ describe('the record is carried into the deployment and its in-unit move audited
       : {};
 
   const deployment = {
-    reconcileInstance: async (input: { tenantId: string; scopeId: string; switchedOff?: string[] }) => {
-      bodies.push({ verb: 'reconcile', scopeId: input.scopeId, switchedOff: input.switchedOff });
+    reconcileInstance: async (input: { tenantId: string; scopeId: string; switchedOff?: string[]; tenantHeld?: string[] }) => {
+      bodies.push({ verb: 'reconcile', scopeId: input.scopeId, switchedOff: input.switchedOff, tenantHeld: input.tenantHeld });
       return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid(), ...report(input.switchedOff) };
     },
     provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string; switchedOff?: string[] }) => {
@@ -717,9 +718,9 @@ describe('the record is carried into the deployment and its in-unit move audited
       _t: string,
       s: string,
       _tables: unknown,
-      opts?: { switchedOff?: string[]; sourceScopeId?: string; exact?: boolean },
+      opts?: { switchedOff?: string[]; tenantHeld?: string[]; sourceScopeId?: string; exact?: boolean },
     ) => {
-      bodies.push({ verb: 'restore', scopeId: s, switchedOff: opts?.switchedOff });
+      bodies.push({ verb: 'restore', scopeId: s, switchedOff: opts?.switchedOff, tenantHeld: opts?.tenantHeld });
       restoreSources.push({ sourceScopeId: opts?.sourceScopeId, exact: opts?.exact });
       return { tables: 0, ...report(opts?.switchedOff) };
     },
@@ -770,6 +771,30 @@ describe('the record is carried into the deployment and its in-unit move audited
     expect(await reasserts(off)).toEqual([inUnitRow]);
     expect(JSON.stringify(await reasserts(off))).not.toContain(FORGED);
     expect(await reasserts(on)).toEqual([]);
+  });
+
+  it('a recorded-off module held only by a tenant-level grant rides as tenantHeld, the others do not (#1823)', async () => {
+    const TENANT_ONLY = moduleId.parse('@test/tenant-only');
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.grantToSystem(staff, {
+      moduleId: TENANT_ONLY,
+      permission: permissionKey.parse('x:run'),
+      node: { tenantId: t, scopeId: null },
+      grantedBy: staff,
+    });
+    for (const moduleId of [TICK, TENANT_ONLY]) {
+      await host.admin.revokeFromSystem(staff, { moduleId, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    }
+    bodies.length = 0;
+    expect((await app().request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers: asStaff })).status).toBe(200);
+    const dump = { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [{ name: 't', ddl: 'CREATE TABLE t (x)', columns: ['x'], rows: [] }] };
+    expect((await app().request(`/tenants/${t}/scopes/${s}/restore`, { method: 'POST', headers: asStaff, body: JSON.stringify(dump) })).status).toBe(200);
+    expect(bodies).toEqual([
+      { verb: 'reconcile', scopeId: s, switchedOff: [TICK, TENANT_ONLY], tenantHeld: [TENANT_ONLY] },
+      { verb: 'restore', scopeId: s, switchedOff: [TICK, TENANT_ONLY], tenantHeld: [TENANT_ONLY] },
+    ]);
   });
 
   it('the install route carries the record, never the caller: a switchedOff in its body is dropped', async () => {

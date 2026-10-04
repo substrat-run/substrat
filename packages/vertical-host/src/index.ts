@@ -169,6 +169,9 @@ export interface VerticalScopeHost {
      * field and answers `void`, and the platform's re-assert after the call covers it.
      */
     switchedOff?: ModuleId[];
+    /** #1823: of `switchedOff`, the modules held only by a tenant-level grant, which this
+     *  deployment has no directory to read — held for the in-unit OFF all the same. */
+    tenantHeld?: ModuleId[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
@@ -182,6 +185,8 @@ export interface VerticalScopeHost {
      *  #2005: `opts.markCopy`, the directory's classification when the scope is not primary. */
     opts?: {
       switchedOff?: ModuleId[];
+      /** #1823: as on `provisionScopeLocal`. */
+      tenantHeld?: ModuleId[];
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -458,6 +463,7 @@ const provisionBody = z.object({
   connectionGrants: z.array(projectedConnectionGrant).optional(),
   connectionKeys: z.array(projectedConnectionKey).optional(),
   switchedOff: z.array(moduleIdOf).optional(),
+  tenantHeld: z.array(moduleIdOf).optional(),
 });
 /** The parsed provision body handed to `onProvision`. */
 export type ProvisionBody = z.infer<typeof provisionBody>;
@@ -476,6 +482,7 @@ const reconcileBody = z.object({
    * field can name another. The host switches them off in the seat's own unit.
    */
   switchedOff: z.array(moduleIdOf).optional(),
+  tenantHeld: z.array(moduleIdOf).optional(),
 });
 
 /**
@@ -524,6 +531,7 @@ const restoreBody = z.object({
   scopeId: scopeIdOf,
   /** #1742: as on the reconcile — applied to `scopeId`, in the restore's own event. */
   switchedOff: z.array(moduleIdOf).optional(),
+  tenantHeld: z.array(moduleIdOf).optional(),
   /** #1869: the scope the dump was captured from. Only its node grants are re-pointed at
    *  `scopeId`; a platform that predates the field sends none, and the host falls back. */
   sourceScopeId: scopeIdOf.optional(),
@@ -858,6 +866,7 @@ export function mountPlatformSurface<Env extends object>(
     const host = deps.hostFor(c.env);
     const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
       switchedOff: body.switchedOff,
+      tenantHeld: body.tenantHeld,
       sourceScopeId: body.sourceScopeId,
       exact: body.exact,
       loadStamp: body.loadStamp,
@@ -1544,6 +1553,7 @@ export function mountPlatformSurface<Env extends object>(
       connectionGrants: body.connectionGrants,
       connectionKeys: body.connectionKeys,
       switchedOff: body.switchedOff,
+      tenantHeld: body.tenantHeld,
     });
     await deps.onProvision?.(c.env, body);
     // #1902: onto the platform-supplied sweeper's roster, so the scope's schedules run. Last, so
@@ -1591,6 +1601,7 @@ export function mountPlatformSurface<Env extends object>(
       connectionKeys: body.connectionKeys,
       // #1742: back off inside the seat's unit — see `provisionScopeLocal`.
       switchedOff: body.switchedOff,
+      tenantHeld: body.tenantHeld,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this

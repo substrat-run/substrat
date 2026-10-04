@@ -83,14 +83,21 @@ export async function reconcilePayloadFor(
  */
 export interface SwitchCarry {
   switchedOff?: ModuleId[];
+  /**
+   * Of `switchedOff`, the modules the tenant holds a live tenant-level grant for (#1823). Such a
+   * module has nothing in the scope's storage, so the deployment's in-unit OFF finds it held
+   * only because the platform says so. Absent when none is.
+   */
+  tenantHeld?: ModuleId[];
 }
 
 /**
  * Read the record for one scope, for `SwitchCarry`. The fleet read, narrowed to this scope
- * and `off`; access-logged like the gather's other reads.
+ * and `off`, and of those the modules the tenant holds a tenant-level grant for (#1823);
+ * access-logged like the gather's other reads.
  */
 export async function switchCarryFor(
-  admin: Pick<HostAdmin, 'listSystemSwitches'>,
+  admin: Pick<HostAdmin, 'listSystemSwitches' | 'tenantHeldSystemModules'>,
   actor: PlatformActorId,
   node: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<SwitchCarry> {
@@ -99,7 +106,10 @@ export async function switchCarryFor(
     tenantId: node.tenantId,
     scopeId: node.scopeId,
   });
-  return rows.length ? { switchedOff: rows.map((r) => r.moduleId) } : {};
+  if (!rows.length) return {};
+  const switchedOff = rows.map((r) => r.moduleId);
+  const tenantHeld = await admin.tenantHeldSystemModules(actor, node.tenantId, switchedOff);
+  return { switchedOff, ...(tenantHeld.length ? { tenantHeld } : {}) };
 }
 
 /**
@@ -120,7 +130,7 @@ export async function switchCarryFor(
  * Its own narrow admin slice: unlike the gather above, this one writes.
  */
 export async function reconcileThenReassert<T extends { switchedOff?: SwitchedOffInUnit[] } | 'unsupported'>(
-  admin: Pick<HostAdmin, 'reassertSystemSwitches' | 'listSystemSwitches'>,
+  admin: Pick<HostAdmin, 'reassertSystemSwitches' | 'listSystemSwitches' | 'tenantHeldSystemModules'>,
   actor: PlatformActorId,
   node: { tenantId: TenantId; scopeId: ScopeId },
   reconcile: (carry: SwitchCarry) => Promise<T>,
