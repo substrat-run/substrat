@@ -3619,6 +3619,68 @@ describe('#1823 — an OFF that throws after the scope moved keeps its record', 
     expect(errorCodeOf(e)).toBe('conflict');
     await host.close();
   });
+
+  /** A scope switched OFF cleanly, through a host whose scope calls the test can fail. */
+  const offScope = async () => {
+    const counting = countingScopes(env.SCOPE);
+    const host = new CloudflareScopeHost({
+      scope: counting.ns,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `on-${t.slice(-10).toLowerCase()}`, name: 'On' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    await host.admin.activateScope(staff, t, s);
+    const node = { tenantId: t, scopeId: s };
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'incident' });
+    const failedOn = async () =>
+      (await host.admin.auditLog(staff, { scopeId: s, action: ['restoreToSystem'] }))
+        .map((e) => e.after as { phase: string; recordKept?: boolean })
+        .filter((a) => a.phase === 'failed');
+    return { counting, host, node, failedOn };
+  };
+
+  it('an ON that throws after the scope moved keeps its record ON, so no re-assert undoes it', async () => {
+    const { counting, host, node, failedOn } = await offScope();
+    counting.failClaimReads = true;
+    await expect(host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'all clear' })).rejects.toThrow(
+      /hold claims down/,
+    );
+    counting.failClaimReads = false;
+
+    // The scope switched on, and the record says so — not flipped back to `off` beside it.
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'on']]);
+    expect(await failedOn()).toEqual([expect.objectContaining({ phase: 'failed', recordKept: true })]);
+    // And the re-assert a wipe or restore runs reads `on`, so it leaves the module on.
+    await host.admin.reassertSystemSwitches(staff, node);
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => e.schedules)).toEqual(['on']);
+    await host.close();
+  });
+
+  it('an ON that throws and cannot be read back is undone to OFF — the side a re-assert completes', async () => {
+    const { counting, host, node, failedOn } = await offScope();
+    counting.failClaimReads = true;
+    counting.aroundStatusRead = async (_n, phase) => {
+      if (phase === 'before') throw new Error('status down');
+    };
+    await expect(host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'all clear' })).rejects.toThrow(
+      /hold claims down/,
+    );
+    counting.failClaimReads = false;
+    counting.aroundStatusRead = null;
+
+    // The scope did move on, but nothing could say so: the record went back to `off`, unkept…
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['on', 'off']]);
+    expect(await failedOn()).toEqual([expect.not.objectContaining({ recordKept: true })]);
+    // …and the re-assert completes it toward off rather than leaving a module running unrecorded.
+    await host.admin.reassertSystemSwitches(staff, node);
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+    await host.close();
+  });
 });
 
 /**

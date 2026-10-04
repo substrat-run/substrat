@@ -5155,9 +5155,9 @@ export class CloudflareScopeHost implements ScopeHost {
       };
       /**
        * Is the module switched off on the scope right now? Read from wherever `move` writes — the
-       * deployment's status read or this scope's own — for an OFF whose move threw (#1823): the
-       * marker may already have landed before the throw (`switchInScope` writes it, then reads
-       * and releases the rewind hold), and then the directory's record must stay.
+       * deployment's status read or this scope's own — for a move that threw (#1823): the switch
+       * may already have moved before the throw (`switchInScope` moves it, then works the rewind
+       * hold), and then the directory's record must stay.
        */
       const isOff = async (moduleId: ModuleId): Promise<boolean> => {
         const rows = delegation
@@ -5227,22 +5227,26 @@ export class CloudflareScopeHost implements ScopeHost {
       try {
         outcome = await move(input.moduleId, to, at);
       } catch (err) {
-        // A throw does not say the scope did not move: the move crosses the scope's DO and, for
-        // an OFF, the rewind hold after it, and a throw from the second leaves the marker live.
-        // So an OFF's record is undone only when the scope reads back NOT off; a read that fails
-        // too keeps it. Never a scope switched off with no record — a wipe or restore would have
-        // nothing to re-assert, and #1743's refusal nothing to read. Kept beside a scope that did
-        // not move, the record fails toward off, which the next re-assert completes. (An ON's
-        // undo puts the record back to `off`, the same direction.)
-        const keptOff = to === 'off' && (await isOff(input.moduleId).catch(() => true));
-        const recordError = keptOff ? null : await undoRecord();
+        // A throw does not say the scope did not move: the move crosses the scope's DO and then
+        // the rewind hold, and a throw from the second leaves the scope's switch moved. So the
+        // record is undone only when the scope reads back in the OTHER position — an OFF that
+        // reads not off, an ON that still reads off — and kept when it reads back as asked.
+        // Undoing an ON that landed would put the record back to `off` beside a scope that is
+        // on, and the next re-assert would switch the operator's ON back off. A read that fails
+        // too counts as off, both ways, so what is left fails toward off: an OFF keeps its
+        // record (never a scope switched off with no record — a wipe or restore would have
+        // nothing to re-assert, and #1743's refusal nothing to read), and an ON is undone back
+        // to `off`, which the next re-assert completes if the scope did move.
+        const off = await isOff(input.moduleId).catch(() => true);
+        const recordKept = off === (to === 'off');
+        const recordError = recordKept ? null : await undoRecord();
         // Best effort: the original error is what the caller must see, and the intent row
         // already says an attempt was made.
         await this.recordAdmin(actor, action, target, null, {
           ...base,
           phase: 'failed',
           error: errorOf(err),
-          ...(keptOff ? { recordKept: true } : {}),
+          ...(recordKept ? { recordKept: true } : {}),
           ...(recordError ? { recordError } : {}),
         }).catch(() => undefined);
         throw err;
