@@ -1435,7 +1435,7 @@ app.post('/api/invites/accept', async (c) => {
     await scope.invoke('dashboard/withdraw-refused-accept', { invitationId: claim.invitationId });
     throw new HTTPException(409, {
       message:
-        'this invite can no longer be applied: whoever sent it no longer has the access it grants. ' +
+        'this invite can no longer be applied, most often because whoever sent it no longer has the access it grants. ' +
         'Ask a team admin to invite you again.',
     });
   }
