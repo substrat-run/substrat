@@ -230,6 +230,11 @@ import {
   moduleLog,
   consoleLogSink,
   type ModuleLogSink,
+  asyncInvocationId,
+  asyncLinePass,
+  consoleInvocationLineSink,
+  type AsyncLinePass,
+  type InvocationLineSink,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
   assertReadOnlyQuery,
@@ -651,6 +656,13 @@ interface ScopeRuntime {
    * caller's.
    */
   invocationId: string | null;
+  /**
+   * #1901: the id a unit of async work with no call around it logs under — a consumer a
+   * seed or an import delivered — set for its handler's duration and cleared after. Read by
+   * `ctx.log` only, never the spine: an event a consumer emits outside a call still records
+   * no invocation (#1525), while its log lines join the consumer's own line.
+   */
+  unitInvocationId: string | null;
 }
 
 /** One `_substrat_attachments` row (#473), as SELECTed. */
@@ -742,6 +754,11 @@ export interface SqliteScopeHostOptions {
    * is what a deployment's log platform indexes. A test passes a collector.
    */
   logSink?: ModuleLogSink;
+  /**
+   * #1901: where the invocation lines of async work go — one per consumer delivery and
+   * schedule run. Defaults to the console, as `logSink` does; a test passes a collector.
+   */
+  invocationLineSink?: InvocationLineSink;
   /**
    * The version REGISTRY id of the vertical version this host runs (#1242) — stamped
    * into the outbox `version` column at emit, the signals dimension (#1231) that joins
@@ -1577,6 +1594,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly versionId: string | null;
   /** #1746: where `ctx.log` lines go — the console unless a caller (a test) says otherwise. */
   private readonly logSink: ModuleLogSink;
+  /** #1901: where async work's invocation lines go. */
+  private readonly invocationLineSink: InvocationLineSink;
   // The mint for event ids (#956) is NOT here: it lives on `ScopeRuntime`, one per
   // scope, seeded from that scope's persisted maximum (#1335). Its own monotonic
   // floor, because the timestamp it stamps comes from `this.clock` — a scripted
@@ -1592,6 +1611,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
     this.logSink = options.logSink ?? consoleLogSink;
+    this.invocationLineSink = options.invocationLineSink ?? consoleInvocationLineSink;
     this.dir = options.dir;
     mkdirSync(this.dir, { recursive: true });
     this.directory = new Database(join(this.dir, '_directory.sqlite'));
@@ -3906,6 +3926,23 @@ export class SqliteScopeHost implements ScopeHost {
          VALUES (?, ?, ?, ?, NULL)`,
       );
 
+      // #1901: one line per (event, importing module), as for the scope's own consumers. The
+      // handler runs as the producer's peer, so that is who the line says it ran as.
+      const lines = asyncLinePass(this.invocationLineSink);
+      const unitOf = (moduleId: string, eventId: string, eventType: string) => ({
+        kind: 'consumer' as const,
+        tenantId: rt.tenantId,
+        scopeId: rt.scopeId,
+        invocationId: asyncInvocationId(null),
+        operation: moduleId,
+        eventType,
+        eventId,
+        attempt: 1,
+        startedAt: Date.now(),
+        principalKind: subject.kind,
+        versionId: this.versionId,
+      });
+
       // Named and not carried: a dead letter per importing module, so the operator who reads
       // this scope's dead letters sees what the producer sent and why it did not arrive.
       for (const w of batch.withheld) {
@@ -3913,6 +3950,7 @@ export class SqliteScopeHost implements ScopeHost {
           w.entity.entityType, w.entity.entityId, 0, w.reason, at);
         for (const moduleId of this.crossVertical.modulesImporting(source.vertical, w.type)) {
           deadLetter.run(w.id, moduleId, at, withheldNote(w.reason, source.vertical));
+          lines.write({ ...unitOf(moduleId, w.id, w.type), outcome: 'dead-lettered' });
         }
         result.withheld += 1;
       }
@@ -3929,14 +3967,17 @@ export class SqliteScopeHost implements ScopeHost {
             // this scope's code changed between the two, so it is refused by version (K-39)
             // exactly as the producer would have refused it.
             deadLetter.run(e.id, imp.moduleId, at, withheldNote('version', source.vertical));
+            lines.write({ ...unitOf(imp.moduleId, e.id, e.type), outcome: 'dead-lettered' });
             result.deadLettered += 1;
             continue;
           }
           const { hops: _hops, ...fact } = e;
           const event: ImportedEvent = structuredClone({ ...fact, source });
+          const unit = unitOf(imp.moduleId, e.id, e.type);
           // What the handler emits was emitted BECAUSE of the producer's event (#1237). The id
           // resolves through `_substrat_imports`, which the row above has just written.
           rt.causedBy = e.id;
+          rt.unitInvocationId = unit.invocationId;
           rt.db.exec('BEGIN IMMEDIATE');
           try {
             // As the producer's principal, admitted above: the handler's checks are real ones,
@@ -3951,14 +3992,17 @@ export class SqliteScopeHost implements ScopeHost {
               .run(e.id, imp.moduleId, new Date().toISOString());
             rt.db.exec('COMMIT');
             result.delivered += 1;
+            lines.write({ ...unit, outcome: 'delivered' });
           } catch (err) {
             rt.db.exec('ROLLBACK');
             // Dead-letter (v0), the consumer's rule: one failure is terminal, and the events
             // behind it still arrive.
             deadLetter.run(e.id, imp.moduleId, new Date().toISOString(), String(err));
             result.deadLettered += 1;
+            lines.write({ ...unit, outcome: 'dead-lettered', error: err });
           } finally {
             rt.causedBy = null;
+            rt.unitInvocationId = null;
           }
         }
         if (!ran) result.duplicates += 1;
@@ -3968,6 +4012,7 @@ export class SqliteScopeHost implements ScopeHost {
       // rows above absorb it.
       rt.db.prepare(IMPORT_CURSOR_ADVANCE_SQL).run(source.scopeId, source.vertical, batch.next, at);
       result.cursor = batch.next;
+      lines.end();
       // What the handlers emitted reaches this scope's own consumers and executors in the same
       // tail, under the ordinary cascade cap.
       await this.dispatch(rt, null);
@@ -4466,6 +4511,7 @@ export class SqliteScopeHost implements ScopeHost {
     // for what the same two columns mean there.
 
     const now = Date.parse(nowIso);
+    const lines = asyncLinePass(this.invocationLineSink);
     for (const schedule of mod.schedules) {
       const lastRunAt = gate.lastRuns.get(schedule.operation) ?? null;
       const lastRun = lastRunAt ? Date.parse(lastRunAt) : null;
@@ -4482,18 +4528,38 @@ export class SqliteScopeHost implements ScopeHost {
       // produces either way carries it, and so does the row below.
       const invocationId = ulid();
       let status: 'ok' | 'failed' = 'ok';
+      // #1901: the run's line, under the call's own id — the one its `ctx.log` lines carry.
+      const startedAt = Date.now();
+      let emitted: EmittedReport | undefined;
+      let failure: { error: unknown } | undefined;
       try {
         const stub = await this.getSystemScope(moduleId, tenantId, scopeId);
-        await stub.invoke(schedule.operation, schedule.input, { invocationId });
+        await stub.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         report.fired += 1;
       } catch (err) {
         status = 'failed';
+        failure = { error: err };
         report.failed += 1;
         report.errors.push({
           operation: schedule.operation,
           error: err instanceof Error ? err.message : String(err),
         });
       }
+      lines.write({
+        kind: 'schedule',
+        tenantId,
+        scopeId,
+        invocationId,
+        operation: schedule.operation,
+        startedAt,
+        outcome: status,
+        ...failure,
+        // Against the host's clock, which is what decided the run was due.
+        dueAt: lastRun === null ? null : new Date(dueAt).toISOString(),
+        latenessMs: lastRun === null ? null : now - dueAt,
+        ...(emitted ? { emitted } : {}),
+        versionId: this.versionId,
+      });
       // On the scope actor (#1678): the cadence row joined whatever transaction an invoke
       // held open, so its rollback forgot the run and the next pass fired it AGAIN.
       await rt.actor.turn(() =>
@@ -4509,6 +4575,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
       report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
+    lines.end();
     return report;
   }
 
@@ -4951,6 +5018,21 @@ export class SqliteScopeHost implements ScopeHost {
       deadLettered: 0,
     };
     if (this.executors.size === 0) return report;
+    const lines = asyncLinePass(this.invocationLineSink);
+    try {
+      await this.dispatchExecutorsPass(rt, invocationId, report, lines);
+    } finally {
+      lines.end();
+    }
+    return report;
+  }
+
+  private async dispatchExecutorsPass(
+    rt: ScopeRuntime,
+    invocationId: string | null,
+    report: ExecutorDrainReport,
+    lines: AsyncLinePass,
+  ): Promise<void> {
     const now = new Date().toISOString();
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects. Every executor is host code acting with platform authority — a
@@ -4977,6 +5059,20 @@ export class SqliteScopeHost implements ScopeHost {
 
       for (const row of rows) {
         report.attempted += 1;
+        // #1901: this attempt's line. The attempt number is the journal's, read before the
+        // attempt is recorded — what `recordExecutorDelivery` is about to make it.
+        const unit = {
+          kind: 'consumer' as const,
+          tenantId: rt.tenantId,
+          scopeId: rt.scopeId,
+          invocationId: asyncInvocationId(invocationId),
+          operation: deliveryId,
+          eventType: executor.eventType,
+          eventId: row.id,
+          attempt: this.executorAttemptsOf(rt, row.id, deliveryId) + 1,
+          startedAt: Date.now(),
+          versionId: this.versionId,
+        };
         let event: DomainEvent;
         try {
           event = domainEventOf(row);
@@ -4989,11 +5085,14 @@ export class SqliteScopeHost implements ScopeHost {
           // handler's transient failure keeps its backoff below.
           this.recordExecutorDelivery(rt, row.id, deliveryId, String(err), TERMINAL_RETRY, invocationId);
           report.deadLettered += 1;
+          lines.write({ ...unit, outcome: 'dead-lettered' });
           continue;
         }
         if (isInert()) {
           this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, TERMINAL_RETRY, invocationId);
           report.inert = (report.inert ?? 0) + 1;
+          // Its own outcome, never `delivered`: no handler ran (#2005).
+          lines.write({ ...unit, outcome: 'inert' });
           continue;
         }
         this.causedBy = event.id;
@@ -5007,6 +5106,7 @@ export class SqliteScopeHost implements ScopeHost {
           }
           this.recordExecutorDelivery(rt, row.id, deliveryId, null, executor.retry, invocationId);
           report.delivered += 1;
+          lines.write({ ...unit, outcome: 'delivered' });
         } catch (err) {
           const dead = this.recordExecutorDelivery(
             rt,
@@ -5018,12 +5118,23 @@ export class SqliteScopeHost implements ScopeHost {
           );
           if (dead) report.deadLettered += 1;
           else report.retrying += 1;
+          lines.write({ ...unit, outcome: dead ? 'dead-lettered' : 'retrying', error: err });
         } finally {
           this.causedBy = null;
         }
       }
     }
-    return report;
+  }
+
+  /** How many attempts a delivery has had — the journal's count. */
+  private executorAttemptsOf(rt: ScopeRuntime, eventId: string, deliveryId: string): number {
+    return (
+      (
+        rt.db
+          .prepare('SELECT attempts FROM _substrat_deliveries WHERE event_id = ? AND consumer_module = ?')
+          .get(eventId, deliveryId) as { attempts: number } | undefined
+      )?.attempts ?? 0
+    );
   }
 
   /**
@@ -5549,6 +5660,16 @@ export class SqliteScopeHost implements ScopeHost {
      */
     invocationId: string | null,
   ): Promise<void> {
+    // #1901: one line per delivery, capped per drain.
+    const lines = asyncLinePass(this.invocationLineSink);
+    try {
+      await this.dispatchRounds(rt, invocationId, lines);
+    } finally {
+      lines.end();
+    }
+  }
+
+  private async dispatchRounds(rt: ScopeRuntime, invocationId: string | null, lines: AsyncLinePass): Promise<void> {
     for (let round = 0; round < 50; round++) {
       let deliveredAny = false;
       for (const mod of this.modules.values()) {
@@ -5565,6 +5686,20 @@ export class SqliteScopeHost implements ScopeHost {
             )
             .all(consumer.eventType, mod.id) as OutboxRow[];
           for (const row of rows) {
+            // #1901: this delivery's line — the call's id when it runs in one, else its own.
+            const unit = {
+              kind: 'consumer' as const,
+              tenantId: rt.tenantId,
+              scopeId: rt.scopeId,
+              invocationId: asyncInvocationId(invocationId),
+              operation: mod.id,
+              eventType: consumer.eventType,
+              eventId: row.id,
+              // A module consumer is tried once: a throw dead-letters it (v0).
+              attempt: 1,
+              startedAt: Date.now(),
+              versionId: this.versionId,
+            };
             let event: DomainEvent;
             try {
               event = domainEventOf(row);
@@ -5582,6 +5717,8 @@ export class SqliteScopeHost implements ScopeHost {
                    VALUES (?, ?, ?, ?, ?)`,
                 )
                 .run(row.id, mod.id, new Date().toISOString(), String(err), invocationId);
+              // Never reached the handler, so nothing threw in it: a warning, not an error.
+              lines.write({ ...unit, outcome: 'dead-lettered' });
               continue;
             }
             const ctx = this.operationContext(rt, asPrincipal(this.systemPrincipal), {
@@ -5592,6 +5729,8 @@ export class SqliteScopeHost implements ScopeHost {
             // consumers never did, which is exactly where a backwards walk stopped.
             // On the runtime rather than the host — see `ScopeRuntime.causedBy`.
             rt.causedBy = event.id;
+            // #1901: the handler's `ctx.log` lines join this delivery's line.
+            rt.unitInvocationId = unit.invocationId;
             rt.db.exec('BEGIN IMMEDIATE');
             try {
               await consumer.handler(ctx, event);
@@ -5604,6 +5743,7 @@ export class SqliteScopeHost implements ScopeHost {
                 .run(event.id, mod.id, new Date().toISOString(), invocationId);
               rt.db.exec('COMMIT');
               deliveredAny = true;
+              lines.write({ ...unit, outcome: 'delivered' });
             } catch (err) {
               rt.db.exec('ROLLBACK');
               // Dead-letter (v0): journal the failure so one poison event
@@ -5615,7 +5755,9 @@ export class SqliteScopeHost implements ScopeHost {
                    VALUES (?, ?, ?, ?, ?)`,
                 )
                 .run(event.id, mod.id, new Date().toISOString(), String(err), invocationId);
+              lines.write({ ...unit, outcome: 'dead-lettered', error: err });
             } finally {
+              rt.unitInvocationId = null;
               // Cleared on BOTH paths. Left set, the id would leak onto every later
               // emit in this scope — an operation's own event stamped as caused by
               // whatever happened to be delivered last, which is worse than no cause
@@ -10943,7 +11085,7 @@ export class SqliteScopeHost implements ScopeHost {
           tenantId: rt.tenantId,
           scopeId: rt.scopeId,
           operation: operation ?? null,
-          invocationId: () => rt.invocationId,
+          invocationId: () => rt.invocationId ?? rt.unitInvocationId,
           // A consumer runs under the system override, so it logs as `system`.
           principalKind: overrideActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
@@ -11577,6 +11719,7 @@ export class SqliteScopeHost implements ScopeHost {
       mintEventId,
       causedBy: null,
       invocationId: null,
+      unitInvocationId: null,
     };
     this.scopes.set(key, created);
     this.scopesById.set(scopeId, created);
