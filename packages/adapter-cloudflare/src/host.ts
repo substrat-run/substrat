@@ -1920,9 +1920,10 @@ function assertCopyLineage(lineage: ScopeLineage): void {
  * A control-plane stand-in for a CP-less vertical (scope-local-permissions.md Phase 3).
  * The hot path a served scope actually touches becomes trust-the-upstream:
  *   - `scopeAccessRefusal` / `setMigrationState` → no-op: the router gates the scope's
- *     lifecycle + tenancy from the shared directory, and the vertical trusts the asserted
- *     node rather than re-reading a directory it does not have. Its own half of the
- *     lifecycle gate reads the scope's storage instead (`assertLive`, #1713).
+ *     lifecycle + tenancy from the shared directory, and the vertical does not re-read a
+ *     directory it does not have. Its own half of both gates reads the scope's storage
+ *     instead (`admit`): the tenant the scope was provisioned for (#2016) and the lifecycle
+ *     the platform delivered (#1713).
  *   - `tenantHoldsEntitlement` → true: the SKU was enforced on the shared control plane
  *     at provision (before `provisionInstance`), so a scope that EXISTS here was granted
  *     it upstream — a single-vertical deployment holds its own entitlements by construction.
