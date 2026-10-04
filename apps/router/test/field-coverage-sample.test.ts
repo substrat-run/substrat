@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fieldCoverageSampled, fieldCoverageSampleRate } from '../src/field-coverage-sample.js';
+import { fieldCoverageSampled, fieldCoverageSampleRate, mintDispatchId } from '../src/field-coverage-sample.js';
 
 describe('field-coverage sampling (#1923)', () => {
   it('reads a decimal rate in (0, 1]', () => {
@@ -35,5 +35,16 @@ describe('field-coverage sampling (#1923)', () => {
     for (let i = 0; i < 20_000; i++) if (fieldCoverageSampled(0.1, lcg)) hits++;
     expect(hits / 20_000).toBeGreaterThan(0.09);
     expect(hits / 20_000).toBeLessThan(0.11);
+  });
+});
+
+describe('mintDispatchId (#1923)', () => {
+  it('mints a ULID the vertical stamp accepts, encoding the time', () => {
+    const now = Date.UTC(2026, 9, 4, 12, 30);
+    const id = mintDispatchId(now);
+    expect(id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    expect([...id.slice(0, 10)].reduce((t, ch) => t * 32 + B32.indexOf(ch), 0)).toBe(now);
+    expect(mintDispatchId()).not.toBe(mintDispatchId());
   });
 });

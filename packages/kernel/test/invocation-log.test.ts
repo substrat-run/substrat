@@ -556,7 +556,9 @@ describe('the line’s outputFields (#1331)', () => {
  * only on a request whose router assertion verifies — the same terms as the tenant.
  */
 describe('arming the field walk (#1923)', () => {
-  const ARM = { 'x-substrat-field-coverage': 'on' };
+  /** The router's dispatch id for a sampled request: a ULID. */
+  const DISPATCH = '01JZ0000000000000000DSP001';
+  const ARM = { 'x-substrat-field-coverage': DISPATCH };
   const options = {
     routerSecret: (env: Env) => env.ROUTER_SECRET,
     allowUnsigned: (env: Env) => env.ALLOW_DEV_NODE === 'true',
@@ -597,9 +599,9 @@ describe('arming the field walk (#1923)', () => {
     expect(await armedBy({ ...routed, ...ARM })).toBe(true);
   });
 
-  it('is off without the header, or with any other value', async () => {
+  it('is off without the header, or with any value that is not a dispatch id', async () => {
     expect(await armedBy(routed)).toBe(false);
-    for (const v of ['ON', 'true', '1', 'on,on', '']) {
+    for (const v of ['on', 'ON', 'true', '1', '', DISPATCH.toLowerCase(), `${DISPATCH}0`, DISPATCH.slice(1), `${DISPATCH},${DISPATCH}`]) {
       expect(await armedBy({ ...routed, 'x-substrat-field-coverage': v }), v).toBe(false);
     }
   });
@@ -629,6 +631,35 @@ describe('arming the field walk (#1923)', () => {
     const req = new Request('https://acme.example/', { headers: { ...routed, ...ARM } });
     expect(fieldCoverageArmed(req)).toBe(false);
     expect(fieldCoverageArmed({})).toBe(false);
+  });
+
+  it("writes the router's dispatch id beside the report, and neither without arming", async () => {
+    const lineOf = async (headers: Record<string, string>) => {
+      const cap = capture();
+      try {
+        const worker = withInvocationLog<Env>(
+          {
+            fetch: async (req) => {
+              // What a mount does when the walk is armed — and what a vertical's own code could
+              // do when it is not.
+              invocationStampOf(req)!.record.outputFields = { present: ['id'], empty: [], absent: [] };
+              return new Response('ok');
+            },
+          },
+          options,
+        );
+        await worker.fetch!(new Request('https://acme.example/api/x', { headers }), ENV, {});
+        return cap.lines[0]!;
+      } finally {
+        cap.restore();
+      }
+    };
+    const armed = await lineOf({ ...routed, ...ARM });
+    expect(armed.outputFields).toEqual({ present: ['id'], empty: [], absent: [] });
+    expect(armed.fieldCoverageId).toBe(DISPATCH);
+    // Unarmed, a report the vertical wrote itself carries no provenance, so no reader counts it.
+    const unarmed = await lineOf(routed);
+    expect(unarmed).not.toHaveProperty('fieldCoverageId');
   });
 
   it('decides once, when the stamp begins: a request with no header never verifies anything', async () => {

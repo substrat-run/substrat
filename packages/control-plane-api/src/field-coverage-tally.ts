@@ -1,6 +1,7 @@
 /**
  * The one sanctioned reading of `outputFields` (#1923 part c): per-(operation, field) counts for
- * ONE tenant, from the stamped invocation lines its app's scripts wrote.
+ * ONE tenant, from the stamped invocation lines its app's scripts wrote, joined to the router's
+ * own line for each request.
  *
  * ## Why the reading needs rules at all
  *
@@ -9,13 +10,22 @@
  * `console.log` a line that looks exactly like the platform's, naming any tenant id it likes.
  * So nothing on a line is taken as given except what the reader resolved itself:
  *
- * - **The tenant is the caller's, never the line's.** `tenantId` is required, there is no
- *   "every tenant" spelling, and a line naming a different tenant is dropped without trace —
- *   not even counted as refused, since a count of someone else's lines is a fact about them.
- * - **The script is the app's, never the line's.** A line counts only if one of the app's
- *   own script families wrote it (`$metadata.service`, stamped by the log platform, which a
- *   vertical cannot set). That is what stops one vertical inflating another app's counts for
- *   a tenant both serve: its forged lines come from its own script.
+ * - **The tenant is the caller's, never the line's.** `tenantId` is required, and there is no
+ *   "every tenant" spelling.
+ * - **The tenant and app a report counts for are the ROUTER's.** A report counts only when
+ *   its `fieldCoverageId` — the dispatch id the router armed the walk with — matches the
+ *   router's own line for that request, and that line names this tenant and this app. Router
+ *   lines are read from the router's service only (`ROUTER_SERVICES`, `$metadata.service`,
+ *   which the log platform stamps and a vertical cannot set). A vertical serving tenants A and
+ *   B that writes a report naming B during A's request has only A's id to give it, which joins
+ *   to A; an invented id joins to nothing. Each id counts once.
+ * - **The script is the app's.** A vertical line counts only if one of the app's own script
+ *   families wrote it, which keeps one app's lines out of another's tally before the join.
+ * - **Silence about other tenants.** A line that does not join is dropped without trace —
+ *   not counted as refused — since a count of someone else's lines is a fact about them.
+ *
+ * What remains is the accepted residual: a vertical can mislabel the report of a response it
+ * actually served for that tenant, the same way it can mislabel `operation`.
  * - **Names are bounded, and declared when the caller can say so.** A report is refused whole
  *   when it is not three string arrays, names a field twice, names more than the declared
  *   half's cap, or names a field longer than an operation name may be. Given the operation's
@@ -34,7 +44,7 @@
  * Every count is per response serialisation, never per row: a paged read of 200 rows is one
  * response (#1331).
  */
-import { DECLARED_OUTPUT_FIELDS_MAX, INVOCATION_RECORD_FIELD_MAX } from '@substrat-run/contracts';
+import { DECLARED_OUTPUT_FIELDS_MAX, FIELD_COVERAGE_ID_FIELD, INVOCATION_RECORD_FIELD_MAX } from '@substrat-run/contracts';
 import type { OutputFieldsReport } from '@substrat-run/kernel';
 import { ownsInvocation } from './cf-observability.js';
 import { serviceFamilyMatcher } from './service-family.js';
@@ -75,6 +85,8 @@ export interface FieldCoverageTally {
 export interface FieldCoverageScope {
   /** The tenant, forced from the principal the way every tenant read forces it. */
   tenantId: string;
+  /** The app's vertical slug, as the router resolves it onto its line (`vertical`). */
+  vertical: string;
   /** The app's script family stems. Empty names no script, so nothing counts. */
   services: readonly string[];
   /**
@@ -82,6 +94,43 @@ export interface FieldCoverageScope {
    * on an operation not in this map, or naming a field outside its list, is refused.
    */
   declared?: Readonly<Record<string, readonly string[]>>;
+}
+
+/**
+ * The router's scripts, by exact name — the only services whose lines are provenance. Pinned
+ * here, never taken from a caller or a line: the router's `wrangler.jsonc` names them, and a
+ * test holds the two together.
+ */
+export const ROUTER_SERVICES: readonly string[] = ['substrat-router', 'substrat-router-test'];
+
+/** A dispatch id: the ULID the router mints for a sampled request. */
+const DISPATCH_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** The service a raw event was logged by, as the log platform stamped it. */
+function serviceOf(event: object): unknown {
+  const metadata = (event as Record<string, unknown>)['$metadata'];
+  return metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>)['service'] : undefined;
+}
+
+/**
+ * The dispatch ids the router minted for THIS tenant's requests to THIS app, from the
+ * router's own request lines (`router: 'request'`). Anything not logged by a router service is
+ * ignored, whatever it says.
+ */
+function dispatchIdsFor(routerEvents: Iterable<unknown>, scope: FieldCoverageScope): Set<string> {
+  const ids = new Set<string>();
+  for (const event of routerEvents) {
+    if (event === null || typeof event !== 'object') continue;
+    const service = serviceOf(event);
+    if (typeof service !== 'string' || !ROUTER_SERVICES.includes(service)) continue;
+    const source = (event as Record<string, unknown>)['source'];
+    if (source === null || typeof source !== 'object') continue;
+    const line = source as Record<string, unknown>;
+    if (line['router'] !== 'request' || line['tenantId'] !== scope.tenantId || line['vertical'] !== scope.vertical) continue;
+    const id = line[FIELD_COVERAGE_ID_FIELD];
+    if (typeof id === 'string' && DISPATCH_ID.test(id)) ids.add(id);
+  }
+  return ids;
 }
 
 /**
@@ -115,15 +164,25 @@ function namesOf(report: unknown, allowed: ReadonlySet<string> | undefined): Out
 
 /**
  * Tally the field coverage in `events` — raw Workers Logs events (`{ source, $metadata }`), as
- * the telemetry query returns them — for one tenant and one app.
+ * the telemetry query returns them — for one tenant and one app, counting only the reports
+ * whose dispatch id `routerEvents` (the router's own request lines) vouches for.
  *
  * The query that fetched them should already filter on both; this checks them again, because
  * the tally is the thing a view trusts, and a query is one forgotten parameter from fleet-wide.
  */
-export function tallyFieldCoverage(events: Iterable<unknown>, scope: FieldCoverageScope): FieldCoverageTally {
+export function tallyFieldCoverage(
+  events: Iterable<unknown>,
+  routerEvents: Iterable<unknown>,
+  scope: FieldCoverageScope,
+): FieldCoverageTally {
   if (typeof scope.tenantId !== 'string' || scope.tenantId.length === 0) {
     throw new TypeError('a field-coverage tally is for one tenant, and names it');
   }
+  if (typeof scope.vertical !== 'string' || scope.vertical.length === 0) {
+    throw new TypeError('a field-coverage tally is for one app, and names it');
+  }
+  const dispatched = dispatchIdsFor(routerEvents, scope);
+  const counted = new Set<string>();
   const operations = new Map<string, { responses: number; fields: Map<string, FieldCoverageCount> }>();
   const ownService = serviceFamilyMatcher(scope.services);
   // Each operation's declared names as a set, built the first time a report needs it.
@@ -135,14 +194,23 @@ export function tallyFieldCoverage(events: Iterable<unknown>, scope: FieldCovera
     // The same isolation predicate the tenant log reads use: a stamped line naming this tenant.
     if (!ownsInvocation(event as Record<string, unknown>, { tenantId: scope.tenantId })) continue;
     const line = (event as { source: Record<string, unknown> }).source;
-    const metadata = (event as Record<string, unknown>)['$metadata'];
-    const service = metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>)['service'] : undefined;
-    if (!ownService(service)) continue;
+    if (!ownService(serviceOf(event))) continue;
     // A line with no report was not walked (unarmed, failed, or nothing declared): no data.
     if (!('outputFields' in line)) continue;
+    // The provenance: the router minted this id for this tenant's request to this app. A line
+    // that does not join is not this tenant's as far as anything trusted says, and is dropped
+    // as silently as a line naming another tenant.
+    const id = line[FIELD_COVERAGE_ID_FIELD];
+    if (typeof id !== 'string' || !dispatched.has(id)) continue;
 
     // From here the line is this tenant's, from this app: a bad report is the app's own fault,
-    // and is counted as refused rather than ignored.
+    // and is counted as refused rather than ignored. So is a second report on one dispatch id:
+    // one request is one response, and the first report on it is the one that counts.
+    if (counted.has(id)) {
+      refused++;
+      continue;
+    }
+    counted.add(id);
     const operation = line['operation'];
     // An async line (`kind`) has no response to report on, whatever it says.
     if (line['kind'] !== undefined || typeof operation !== 'string' || operation.length === 0 || operation.length > INVOCATION_RECORD_FIELD_MAX) {

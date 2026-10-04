@@ -12,12 +12,11 @@ import {
   z,
   DECLARED_OUTPUT_FIELDS_MAX,
   encodeInvocationRecord,
-  FIELD_COVERAGE_ARMED,
   FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
 } from '@substrat-run/contracts';
 import { withInvocationLog, type InvocationRecord } from '../src/invocation-log.js';
-import { ARMED, ENV, quietly, ROUTER_SECRET as SECRET_ROUTER, routed, stampInto } from './routed.js';
+import { ARMED, DISPATCH, ENV, quietly, ROUTER_SECRET as SECRET_ROUTER, routed, stampInto } from './routed.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { observeOutputFields, outputWalkOf } from '../src/field-coverage.js';
 
@@ -320,7 +319,9 @@ describe('the switch (#1331)', () => {
       // #1923: the header without the router's signature, or with a guessed one, is a claim.
       unsigned,
       { ...ARMED, 'x-substrat-router': 'i-guessed' },
-      { [FIELD_COVERAGE_HEADER]: FIELD_COVERAGE_ARMED },
+      { [FIELD_COVERAGE_HEADER]: DISPATCH },
+      // A signed request whose header is not a dispatch id.
+      { ...routed, [FIELD_COVERAGE_HEADER]: 'on' },
     ]) {
       const { proxy, touched } = spied({ id: 'c1', title: 'T', owner_email: 'x' });
       const { record, call } = harness({ output: card }, () => proxy, { respond: blind });
@@ -397,6 +398,7 @@ describe('what reaches the line and the router (#1331)', () => {
     const unarmed = await run({ output: card });
     const armed = await run({ output: card }, ARMED);
     expect(armed.line['outputFields']).toEqual({ present: ['id', 'title', 'owner_email'], empty: [], absent: ['note'] });
+    expect(armed.line['fieldCoverageId']).toBe(DISPATCH);
     expect(JSON.stringify(armed.line)).not.toContain(SECRET);
     // The router's datapoint carries three named fields and nothing else; the walk adds none.
     expect(armed.res.headers.get(INVOCATION_RECORD_HEADER)).toBe(unarmed.res.headers.get(INVOCATION_RECORD_HEADER));

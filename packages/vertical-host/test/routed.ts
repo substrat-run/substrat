@@ -2,7 +2,7 @@
  * #1923: a routed request as the field walk's suites need it — the router's signature and
  * node, the arming header beside them, and the real stamp in front of an app.
  */
-import { FIELD_COVERAGE_ARMED, FIELD_COVERAGE_HEADER } from '@substrat-run/contracts';
+import { FIELD_COVERAGE_HEADER } from '@substrat-run/contracts';
 import type { Hono } from 'hono';
 import { invocationLog, INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
 
@@ -18,8 +18,11 @@ export const routed: Record<string, string> = {
   'x-substrat-surface': 'app',
 };
 
-/** What the router sends on a sampled request: the arming header beside a signed node. */
-export const ARMED: Record<string, string> = { ...routed, [FIELD_COVERAGE_HEADER]: FIELD_COVERAGE_ARMED };
+/** The dispatch id the router minted for a sampled request. */
+export const DISPATCH = '01JZ0000000000000000DSP001';
+
+/** What the router sends on a sampled request: the arming header, carrying its id, beside a signed node. */
+export const ARMED: Record<string, string> = { ...routed, [FIELD_COVERAGE_HEADER]: DISPATCH };
 
 /** The bindings the stamp reads the secret from. */
 export const ENV = { ROUTER_SECRET };

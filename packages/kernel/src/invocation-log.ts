@@ -58,14 +58,13 @@
 // platform entry, #1893), and the root carries every schema in the vocabulary.
 import {
   encodeInvocationRecord,
-  FIELD_COVERAGE_ARMED,
   FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
   type InvocationLevel,
 } from '@substrat-run/contracts/invocation-record';
 import { ulid } from './ulid.js';
-import { readRoutedNode, RouterAssertionError } from './routed-node.js';
+import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
 import type { EmittedReport } from './scope-host.js';
 
@@ -296,6 +295,13 @@ export interface InvocationLogLine {
    * existed. A reader treats absence exactly as it treats `null` elsewhere.
    */
   outputFields?: OutputFieldsReport;
+  /**
+   * #1923: the router's dispatch id for the request whose response {@link outputFields}
+   * describes — its provenance. Present exactly when `outputFields` is: a reader joins it to
+   * the router's own line for the request, and counts the report only for the tenant and app
+   * that line names.
+   */
+  fieldCoverageId?: string;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -378,6 +384,8 @@ export interface InvocationLineFields {
   withEntities?: boolean;
   versionId?: string | null;
   outputFields?: OutputFieldsReport;
+  /** #1923: written only beside `outputFields`. */
+  fieldCoverageId?: string;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -408,7 +416,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
     entities: emitted && f.withEntities !== false ? distinct(emitted.events.map((e) => e.entity)) : [],
     versionId: f.versionId ?? null,
-    ...(f.outputFields ? { outputFields: f.outputFields } : {}),
+    ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.async ?? {}),
   };
 }
@@ -459,10 +467,11 @@ export interface InvocationStamp {
   invocationId: string;
   record: InvocationRecord;
   /**
-   * #1923: the router asked for this request's response fields to be walked, and the request's
-   * router assertion verified. Decided once, when the stamp begins — see {@link armsFieldCoverage}.
+   * #1923: the dispatch id the router armed this request's field walk with, when it did and
+   * the request's router assertion verified. Decided once, when the stamp begins — see
+   * {@link armedFieldCoverageId}. Written on the line beside the report, as its provenance.
    */
-  fieldCoverage?: boolean;
+  fieldCoverageId?: string;
 }
 
 /**
@@ -497,34 +506,42 @@ export function invocationStampOf(request: object): InvocationStamp | undefined 
  * reads as off, never as on.
  */
 export function fieldCoverageArmed(request: object): boolean {
-  return stamps().get(request)?.fieldCoverage === true;
+  return typeof stamps().get(request)?.fieldCoverageId === 'string';
 }
 
 function beginStamp<Env>(request: { headers: HeaderReader }, env: Env, options: InvocationLogOptions<Env>): InvocationStamp {
-  const stamp: InvocationStamp = { invocationId: ulid(), record: {}, fieldCoverage: armsFieldCoverage(request.headers, env, options) };
+  const stamp: InvocationStamp = { invocationId: ulid(), record: {} };
+  const fieldCoverageId = armedFieldCoverageId(request.headers, env, options);
+  if (fieldCoverageId) stamp.fieldCoverageId = fieldCoverageId;
   stamps().set(request, stamp);
   return stamp;
 }
 
 /**
- * #1923: did the ROUTER arm the field walk for this request?
+ * #1923: the dispatch id the ROUTER armed the field walk with for this request, or `undefined`.
  *
- * The header alone is a claim. It is honoured only on a request whose router assertion
- * verifies, with the same secret and the same dev opt-out as the tenant on the line, because
- * it is trusted for the same reason: the router strips every inbound `x-substrat-*` header,
- * and a caller that reaches the script some other way holds no secret. An unrouted request,
- * or one whose assertion fails, is never armed.
+ * The header alone is a claim. It is honoured only when its value is a ULID and the request's
+ * router assertion verifies, with the same secret and the same dev opt-out as the tenant on
+ * the line, because it is trusted for the same reason: the router strips every inbound
+ * `x-substrat-*` header, and a caller that reaches the script some other way holds no secret.
+ * An unrouted request, or one whose assertion fails, is never armed.
  *
  * The header is read first, so a request the router did not sample — almost all of them —
  * pays one header read and no verification.
  */
-function armsFieldCoverage<Env>(headers: HeaderReader, env: Env, options: InvocationLogOptions<Env>): boolean {
+function armedFieldCoverageId<Env>(
+  headers: HeaderReader,
+  env: Env,
+  options: InvocationLogOptions<Env>,
+): string | undefined {
+  let id: string | null;
   try {
-    if (headers.get(FIELD_COVERAGE_HEADER) !== FIELD_COVERAGE_ARMED) return false;
+    id = headers.get(FIELD_COVERAGE_HEADER);
   } catch {
-    return false;
+    return undefined;
   }
-  return routedNodeOrNull(headers, env, options) !== null;
+  if (id === null || !ROUTED_ID.test(id)) return undefined;
+  return routedNodeOrNull(headers, env, options) !== null ? id : undefined;
 }
 
 /** What a finished request looked like, for the line. */
@@ -583,6 +600,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     ...(record.emitted ? { emitted: record.emitted } : {}),
     versionId: versionIdOf(done.env),
     ...(record.outputFields ? { outputFields: record.outputFields } : {}),
+    ...(stamp.fieldCoverageId ? { fieldCoverageId: stamp.fieldCoverageId } : {}),
   });
   console.log(JSON.stringify(line));
 }

@@ -289,26 +289,38 @@ any one record.
 **Arming (#1923).** The walk is armed per request by the router, never by a binding: a
 binding changes only on a push, so turning it off would mean re-pushing every vertical. The
 router reads `FIELD_COVERAGE_SAMPLE_RATE` (a decimal in `(0, 1]`; absent, unparseable,
-negative or above one is off) and, on a request inside the sample, sends
-`x-substrat-field-coverage: on` beside its assertion, drawn once so a retried dispatch is the
-same request in or out of it. The stamp (`withInvocationLog`, or the `invocationLog`
-middleware) honours the header only when the request's router assertion verifies, with the
-same secret and dev opt-out as the line's tenant. The router strips every inbound
-`x-substrat-*` header, so a caller cannot send it through the router, and a caller that
-reaches a script another way holds no secret. An unsampled request pays one header read. A
-version skew in either direction (an older entry, an older `vertical-host`) reads as off.
-The walk only reads: an armed response has the same status, headers and body as an unarmed
-one, and a walk that throws leaves the response unobserved, never failed.
+negative or above one is off). On a request inside the sample it mints a dispatch id (a
+ULID), sends it as `x-substrat-field-coverage: <id>` beside its assertion, and writes the same
+id as `fieldCoverageId` on its own request line, next to the tenant and app it resolved. The
+draw happens once, so a retried dispatch is the same request, with the same id. The stamp
+(`withInvocationLog`, or the `invocationLog` middleware) honours the header only when its
+value is a ULID and the request's router assertion verifies, with the same secret and dev
+opt-out as the line's tenant, and writes the id on the line beside `outputFields`. The router
+strips every inbound `x-substrat-*` header, so a caller cannot send it through the router, and
+a caller that reaches a script another way holds no secret. An unsampled request pays one
+header read. A version skew in either direction reads as off. The walk only reads: an armed
+response has the same status, headers and body as an unarmed one, and a walk that throws
+leaves the response unobserved, never failed.
 
 **Reading it (#1923).** The report is vertical-asserted, like `operation`. A vertical can
-mislabel its own responses, and its code can log a line shaped like the platform's naming
-any tenant. So the one sanctioned reading is `tallyFieldCoverage` (`control-plane-api`): one
-tenant, the caller's, with no every-tenant spelling; lines from the app's own script family
-only (`$metadata.service`, which the log platform stamps); reports refused whole when
-malformed, duplicated, past the declared half's 200-name cap, or (given the declaration)
-naming a field or operation it lacks; and counts per (operation, field) with the number of
-responses behind them, never a path, scope, id or time. A request record (`/tenant-requests`)
-does not carry `outputFields` at all. No read route or store is built on the tally yet.
+mislabel its own responses, and its code can log a line shaped like the platform's naming any
+tenant. So the one sanctioned reading is `tallyFieldCoverage` (`control-plane-api`), and it
+attributes a report by the ROUTER's line, never by the vertical's:
+
+- one tenant, the caller's, and one app, with no every-tenant spelling;
+- a report counts only when its `fieldCoverageId` matches a router request line, read from the
+  router's own services only (`ROUTER_SERVICES`, by `$metadata.service`), that names this
+  tenant and this app; each id counts once;
+- vertical lines from the app's own script family only;
+- reports refused whole when malformed, duplicated, past the declared half's 200-name cap, or
+  (given the declaration) naming a field or operation it lacks;
+- counts per (operation, field) with the number of responses behind them, never a path,
+  scope, id or time.
+
+The residual is narrow: a vertical can mislabel the report of a response it actually served for
+that tenant. Every per-event read (tenant logs, service logs, request records) withholds
+`outputFields` and `fieldCoverageId`, so the report is never readable beside one request. No
+read route or store is built on the tally yet.
 
 The MCP door is walked with the same function and the same rules (#1923). A tool's walk is
 derived from its operation's declared `output` when the tool list is derived, the switch is read

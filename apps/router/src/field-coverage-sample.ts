@@ -26,3 +26,20 @@ export function fieldCoverageSampleRate(value: unknown): number {
 export function fieldCoverageSampled(rate: number, random: () => number = Math.random): boolean {
   return rate > 0 && rate <= 1 && (rate === 1 || random() < rate);
 }
+
+const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+/**
+ * A dispatch id for a sampled request: a ULID (48-bit time, 80 random bits), minted here
+ * rather than with the kernel's `ulid`, which the router does not depend on. It needs no
+ * monotonic order and no secrecy. What it carries is that the router's own line for the
+ * request names it beside the tenant and app the router resolved, and only platform code
+ * writes that line.
+ */
+export function mintDispatchId(now: number = Date.now()): string {
+  let time = '';
+  for (let i = 0, t = now; i < 10; i++, t = Math.floor(t / 32)) time = B32[t % 32] + time;
+  let rand = '';
+  for (const byte of crypto.getRandomValues(new Uint8Array(16))) rand += B32[byte % 32];
+  return time + rand;
+}

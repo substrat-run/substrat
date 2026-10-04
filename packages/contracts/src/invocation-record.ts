@@ -76,8 +76,8 @@ export function decodeInvocationRecord(value: string | null | undefined): {
 
 /**
  * The switch that arms the per-response field walk (#1331) for ONE request (#1923): a
- * request header the router asserts, and the walk runs only when it reads exactly
- * {@link FIELD_COVERAGE_ARMED}.
+ * request header the router asserts, whose value is the DISPATCH ID the router minted for
+ * that request — a ULID. Anything that is not one is off.
  *
  * A request header rather than a binding on the vertical's script, because a binding changes
  * only on a push: turning the walk off would have meant re-pushing every vertical, and it
@@ -90,13 +90,22 @@ export function decodeInvocationRecord(value: string | null | undefined): {
  * every inbound `x-substrat-*` header, so a caller cannot arm it by sending it. A request with
  * no header pays one header read and nothing else.
  *
+ * The id is the provenance of the report the walk writes. The vertical's line carries it as
+ * {@link FIELD_COVERAGE_ID_FIELD}, and the router logs the same id on its own line for the
+ * request, beside the tenant and app it resolved. A reader counts a report only when the
+ * router's line for its id names the tenant and app it is asking about. The router's line is
+ * platform code's, so a vertical cannot file a report under a tenant it did not serve.
+ *
  * Here rather than in `vertical-host` or the kernel, because the router depends on neither,
  * and both ends must agree on the spelling.
  */
 export const FIELD_COVERAGE_HEADER = 'x-substrat-field-coverage';
 
-/** The one value of {@link FIELD_COVERAGE_HEADER} that arms the walk. Anything else is off. */
-export const FIELD_COVERAGE_ARMED = 'on';
+/**
+ * The key the dispatch id is written under, on the vertical's invocation line and on the
+ * router's request line alike: the two halves of the join (#1923).
+ */
+export const FIELD_COVERAGE_ID_FIELD = 'fieldCoverageId';
 
 /** The level a request is filed under (#1746). See {@link invocationLevelOf}. */
 export type InvocationLevel = 'error' | 'warn' | 'info';

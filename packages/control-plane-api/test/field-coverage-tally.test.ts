@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DECLARED_OUTPUT_FIELDS_MAX } from '@substrat-run/contracts';
-import { FIELD_COVERAGE_OPERATIONS_MAX, tallyFieldCoverage } from '../src/field-coverage-tally.js';
+import { readFileSync } from 'node:fs';
+import { FIELD_COVERAGE_OPERATIONS_MAX, ROUTER_SERVICES, tallyFieldCoverage, type FieldCoverageScope } from '../src/field-coverage-tally.js';
 import { createCfObservabilityReader } from '../src/cf-observability.js';
 import { serviceFamilyMatcher } from '../src/service-family.js';
 
 /**
  * #1923 part (c): `outputFields` is asserted by the vertical, so the one reading of it is
- * tenant-scoped, app-scoped and aggregate-only. Each rule here has its positive twin.
+ * tenant-scoped, app-scoped and aggregate-only, and counts a report only for the tenant and app
+ * the ROUTER's own line names for its dispatch id. Each rule here has its positive twin.
  */
 
 const TENANT = '01JZ0000000000000000TEN001';
@@ -15,7 +17,13 @@ const SERVICES = ['acme-widgets'];
 /** A value no tally may ever contain: a path naming one record. */
 const RECORD_PATH = '/api/customers/cust-4c1d-never-in-a-tally';
 
-/** A stamped line as Workers Logs returns it. */
+const APP = 'acme/widgets';
+
+/** A fresh dispatch id: a ULID, as the router mints one. */
+let minted = 0;
+const dispatchId = () => `01JZ${String(++minted).padStart(22, '0')}`;
+
+/** A stamped line as Workers Logs returns it, armed with a fresh dispatch id unless given one. */
 const line = (over: Record<string, unknown> = {}, service = 'acme-widgets') => ({
   timestamp: 1000,
   source: {
@@ -29,16 +37,32 @@ const line = (over: Record<string, unknown> = {}, service = 'acme-widgets') => (
     invocationId: '01JZ0000000000000000INV001',
     operation: 'acme/get-card',
     outputFields: { present: ['id', 'title'], empty: ['note'], absent: ['owner_email'] },
+    fieldCoverageId: dispatchId(),
     ...over,
   },
   $metadata: { id: 'ev', requestId: 'req', service },
 });
 
-const scope = { tenantId: TENANT, services: SERVICES };
+/** The router's own request line for one dispatch, as Workers Logs returns it. */
+const routerLine = (id: unknown, tenantId = TENANT, vertical = APP, service = 'substrat-router') => ({
+  timestamp: 999,
+  source: { router: 'request', tenantId, scopeId: '01JZ0000000000000000SCP001', vertical, status: 200, fieldCoverageId: id },
+  $metadata: { id: 'rv', requestId: 'rreq', service },
+});
+
+const idOf = (event: unknown) => ((event as { source?: Record<string, unknown> })?.source ?? {})['fieldCoverageId'];
+
+/** The router's lines vouching for every line's id, for `tenantId` and this app. */
+const vouched = (events: unknown[], tenantId = TENANT) => events.map((e) => routerLine(idOf(e), tenantId));
+
+const scope: FieldCoverageScope = { tenantId: TENANT, vertical: APP, services: SERVICES };
+
+/** The tally over `events`, with the router having dispatched every one of them for the scope's tenant. */
+const tally = (events: unknown[], sc: FieldCoverageScope = scope) => tallyFieldCoverage(events, vouched(events, sc.tenantId), sc);
 
 describe('tallyFieldCoverage (#1923)', () => {
   it('counts per (operation, field), one per response', () => {
-    const tally = tallyFieldCoverage(
+    const result = tally(
       [
         line(),
         line({ outputFields: { present: ['id', 'title', 'note'], empty: [], absent: ['owner_email'] } }),
@@ -46,7 +70,7 @@ describe('tallyFieldCoverage (#1923)', () => {
       ],
       scope,
     );
-    expect(tally).toEqual({
+    expect(result).toEqual({
       tenantId: TENANT,
       refused: 0,
       operations: [
@@ -66,41 +90,41 @@ describe('tallyFieldCoverage (#1923)', () => {
   });
 
   it("keeps nothing per request: no path, scope, id, time or the line's own tenant", () => {
-    const text = JSON.stringify(tallyFieldCoverage([line(), line()], scope));
+    const text = JSON.stringify(tally([line(), line()], scope));
     for (const leak of [RECORD_PATH, '01JZ0000000000000000SCP001', '01JZ0000000000000000INV001', 'acme/widgets', '"timestamp"']) {
       expect(text).not.toContain(leak);
     }
   });
 
   it("drops another tenant's lines without trace — not counted, not refused", () => {
-    const tally = tallyFieldCoverage([line({ tenantId: OTHER }), line({ tenantId: OTHER, outputFields: 'junk' })], scope);
-    expect(tally).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
+    const result = tally([line({ tenantId: OTHER }), line({ tenantId: OTHER, outputFields: 'junk' })], scope);
+    expect(result).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
     // The twin: the same lines, asked about by that tenant, are its own.
-    expect(tallyFieldCoverage([line({ tenantId: OTHER })], { ...scope, tenantId: OTHER }).operations).toHaveLength(1);
+    expect(tally([line({ tenantId: OTHER })], { ...scope, tenantId: OTHER }).operations).toHaveLength(1);
   });
 
   it('has no every-tenant spelling', () => {
     for (const tenantId of ['', undefined, null]) {
-      expect(() => tallyFieldCoverage([line()], { ...scope, tenantId: tenantId as never })).toThrow(/one tenant/);
+      expect(() => tally([line()], { ...scope, tenantId: tenantId as never })).toThrow(/one tenant/);
     }
     // A string is a tenant id like any other, and matches only lines that name it.
-    expect(tallyFieldCoverage([line()], { ...scope, tenantId: '*' }).operations).toEqual([]);
+    expect(tally([line()], { ...scope, tenantId: '*' }).operations).toEqual([]);
   });
 
   it("drops a line another app's script wrote, even naming this tenant", () => {
     // A vertical serving the same tenant forges a platform-shaped line: its service is its own.
     const forged = [line({}, 'other-vertical'), line({}, 'acme-widgets-crm'), { ...line(), $metadata: {} }, { source: line().source }];
-    expect(tallyFieldCoverage(forged, scope)).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
-    expect(tallyFieldCoverage([line()], { ...scope, services: [] }).operations).toEqual([]);
+    expect(tally(forged, scope)).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
+    expect(tally([line()], { ...scope, services: [] }).operations).toEqual([]);
     // The family: a per-version and a jurisdictional script are the app's own.
     for (const service of ['acme-widgets-01jz0000000000000000ver001', 'acme-widgets-eu']) {
-      expect(tallyFieldCoverage([line({}, service)], scope).operations, service).toHaveLength(1);
+      expect(tally([line({}, service)], scope).operations, service).toHaveLength(1);
     }
   });
 
   it('skips a line with no report: unwalked is not "returned nothing"', () => {
     const { outputFields: _, ...unwalked } = line().source;
-    expect(tallyFieldCoverage([{ ...line(), source: unwalked }], scope)).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
+    expect(tally([{ ...line(), source: unwalked }], scope)).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
   });
 
   it('refuses a malformed report whole, and counts it as refused', () => {
@@ -118,27 +142,27 @@ describe('tallyFieldCoverage (#1923)', () => {
       { present: [], empty: [], absent: [] },
       { present: Array.from({ length: DECLARED_OUTPUT_FIELDS_MAX + 1 }, (_, i) => `f${i}`), empty: [], absent: [] },
     ];
-    const tally = tallyFieldCoverage(
+    const result = tally(
       bad.map((outputFields) => line({ outputFields })),
       scope,
     );
-    expect(tally).toEqual({ tenantId: TENANT, operations: [], refused: bad.length });
+    expect(result).toEqual({ tenantId: TENANT, operations: [], refused: bad.length });
     // A report at the cap is still one.
     const atCap = { present: Array.from({ length: DECLARED_OUTPUT_FIELDS_MAX }, (_, i) => `f${i}`), empty: [], absent: [] };
-    expect(tallyFieldCoverage([line({ outputFields: atCap })], scope).operations[0]!.fields).toHaveLength(DECLARED_OUTPUT_FIELDS_MAX);
+    expect(tally([line({ outputFields: atCap })], scope).operations[0]!.fields).toHaveLength(DECLARED_OUTPUT_FIELDS_MAX);
   });
 
   it('refuses a report with no usable operation, or on an async line', () => {
-    const tally = tallyFieldCoverage(
+    const result = tally(
       [line({ operation: null }), line({ operation: '' }), line({ operation: 'x'.repeat(129) }), line({ kind: 'consumer' })],
       scope,
     );
-    expect(tally).toEqual({ tenantId: TENANT, operations: [], refused: 4 });
+    expect(result).toEqual({ tenantId: TENANT, operations: [], refused: 4 });
   });
 
   it('given the declaration, refuses names and operations outside it', () => {
     const declared = { 'acme/get-card': ['id', 'title', 'note', 'owner_email'] };
-    const tally = tallyFieldCoverage(
+    const result = tally(
       [
         line(),
         line({ outputFields: { present: ['id', 'injected'], empty: [], absent: [] } }),
@@ -147,8 +171,8 @@ describe('tallyFieldCoverage (#1923)', () => {
       ],
       { ...scope, declared },
     );
-    expect(tally.refused).toBe(3);
-    expect(tally.operations.map((o) => [o.operation, o.responses])).toEqual([['acme/get-card', 1]]);
+    expect(result.refused).toBe(3);
+    expect(result.operations.map((o) => [o.operation, o.responses])).toEqual([['acme/get-card', 1]]);
   });
 
   it('bounds the answer however many names a vertical invents', () => {
@@ -156,22 +180,100 @@ describe('tallyFieldCoverage (#1923)', () => {
     const drifting = Array.from({ length: DECLARED_OUTPUT_FIELDS_MAX + 5 }, (_, i) =>
       line({ outputFields: { present: [`f${i}`], empty: [], absent: [] } }),
     );
-    const one = tallyFieldCoverage(drifting, scope);
+    const one = tally(drifting, scope);
     expect(one.operations[0]!.fields).toHaveLength(DECLARED_OUTPUT_FIELDS_MAX);
     expect(one.refused).toBe(5);
 
     // And inventing operations stops at the operation cap.
     const many = Array.from({ length: FIELD_COVERAGE_OPERATIONS_MAX + 3 }, (_, i) => line({ operation: `acme/op-${i}` }));
-    const capped = tallyFieldCoverage(many, scope);
+    const capped = tally(many, scope);
     expect(capped.operations).toHaveLength(FIELD_COVERAGE_OPERATIONS_MAX);
     expect(capped.refused).toBe(3);
     // A known operation still counts past the cap.
-    expect(tallyFieldCoverage([...many, line({ operation: 'acme/op-0' })], scope).refused).toBe(3);
+    expect(tally([...many, line({ operation: 'acme/op-0' })], scope).refused).toBe(3);
   });
 
   it('ignores what is not a stamped line at all', () => {
     const noise = [null, 1, 'x', {}, { source: null }, { source: { substrat: 'other', tenantId: TENANT } }];
-    expect(tallyFieldCoverage(noise, scope)).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
+    expect(tally(noise, scope)).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
+  });
+});
+
+/**
+ * The provenance join (Codex r1 on #2024): a report counts only for the tenant and app the
+ * router's own line names for its dispatch id. A vertical serving tenants A and B can log
+ * anything, under its own service — never under the router's.
+ */
+describe('the router join (#1923)', () => {
+  const B = OTHER;
+
+  it("a forged same-service line naming B, written during A's request, is not counted for B", () => {
+    // A's real request: the router minted `id` for tenant A and this app.
+    const real = line();
+    const id = idOf(real);
+    // During it, the vertical logs a report naming tenant B and reusing A's id.
+    const forged = line({ tenantId: B, fieldCoverageId: id, outputFields: { present: ['id', 'injected'], empty: [], absent: [] } });
+    const router = [routerLine(id, TENANT)];
+    expect(tallyFieldCoverage([real, forged], router, { ...scope, tenantId: B })).toEqual({ tenantId: B, operations: [], refused: 0 });
+    // The twin: the id is A's, so A's tally counts A's real report.
+    expect(tallyFieldCoverage([real, forged], router, scope).operations).toHaveLength(1);
+  });
+
+  it("a copied id of A's attributes to A, whichever tenant the line names", () => {
+    const id = dispatchId();
+    // The line names B, the router says the id was A's: only A's tally could see it, and A's
+    // tally drops it because the line is not shaped as A's. Nothing reaches B either way.
+    const copied = line({ tenantId: B, fieldCoverageId: id });
+    expect(tallyFieldCoverage([copied], [routerLine(id, TENANT)], { ...scope, tenantId: B }).operations).toEqual([]);
+    expect(tallyFieldCoverage([copied], [routerLine(id, TENANT)], scope).operations).toEqual([]);
+    // A line naming A with A's id is A's.
+    const own = line({ fieldCoverageId: id });
+    expect(tallyFieldCoverage([own], [routerLine(id, TENANT)], scope).operations).toHaveLength(1);
+  });
+
+  it('an invented id, a missing id or a malformed one is dropped without trace', () => {
+    const lines = [line(), line({ fieldCoverageId: undefined }), line({ fieldCoverageId: 'not-a-ulid' }), line({ fieldCoverageId: 7 })];
+    // The router vouched for none of these ids.
+    expect(tallyFieldCoverage(lines, [routerLine(dispatchId())], scope)).toEqual({ tenantId: TENANT, operations: [], refused: 0 });
+    const { fieldCoverageId: _, ...unstamped } = line().source;
+    expect(tallyFieldCoverage([{ ...line(), source: unstamped }], [], scope).operations).toEqual([]);
+  });
+
+  it('a replayed id is counted once', () => {
+    const id = dispatchId();
+    const result = tallyFieldCoverage([line({ fieldCoverageId: id }), line({ fieldCoverageId: id }), line({ fieldCoverageId: id })], [routerLine(id)], scope);
+    expect(result.operations.map((o) => o.responses)).toEqual([1]);
+    expect(result.refused).toBe(2);
+  });
+
+  it("joins to another app's dispatch for the same tenant: dropped", () => {
+    const id = dispatchId();
+    expect(tallyFieldCoverage([line({ fieldCoverageId: id })], [routerLine(id, TENANT, 'other/app')], scope).operations).toEqual([]);
+    expect(tallyFieldCoverage([line({ fieldCoverageId: id })], [routerLine(id, TENANT, APP)], scope).operations).toHaveLength(1);
+  });
+
+  it("reads provenance from the router's service only — a vertical's router-shaped line is not one", () => {
+    const id = dispatchId();
+    const real = line({ fieldCoverageId: id });
+    for (const service of ['acme-widgets', 'substrat-router-evil', 'Substrat-Router']) {
+      expect(tallyFieldCoverage([real], [routerLine(id, TENANT, APP, service)], scope).operations, service).toEqual([]);
+    }
+    expect(tallyFieldCoverage([real], [{ ...routerLine(id), $metadata: {} }], scope).operations).toEqual([]);
+    for (const service of ROUTER_SERVICES) {
+      expect(tallyFieldCoverage([real], [routerLine(id, TENANT, APP, service)], scope).operations, service).toHaveLength(1);
+    }
+  });
+
+  it('pins the router services to the names its wrangler config deploys', () => {
+    const config = readFileSync(new URL('../../../apps/router/wrangler.jsonc', import.meta.url), 'utf8');
+    const name = /^\t"name": "([^"]+)"/m.exec(config)?.[1];
+    expect(name).toBe('substrat-router');
+    const envs = [...config.matchAll(/^\t\t"([a-z]+)": \{$/gm)].map((m) => `${name}-${m[1]}`);
+    expect([...ROUTER_SERVICES].sort()).toEqual([name, ...envs].sort());
+  });
+
+  it('names its app', () => {
+    expect(() => tallyFieldCoverage([], [], { ...scope, vertical: '' })).toThrow(/one app/);
   });
 });
 
@@ -233,6 +335,6 @@ describe('per-event reads never carry outputFields (#1923)', () => {
   });
 
   it('the tally, reading the unprojected events, still counts it', () => {
-    expect(tallyFieldCoverage([line()], scope).operations).toHaveLength(1);
+    expect(tally([line()], scope).operations).toHaveLength(1);
   });
 });

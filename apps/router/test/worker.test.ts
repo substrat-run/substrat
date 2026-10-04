@@ -896,11 +896,38 @@ describe('field-coverage sampling (#1923)', () => {
     }
   });
 
-  it('arms every request at rate 1, beside the signed assertion', async () => {
+  /** The router's own request lines, as `record` writes them. */
+  async function withRouterLines<T>(fn: () => Promise<T>) {
+    const lines: Array<Record<string, unknown>> = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((first: unknown) => {
+      if (typeof first === 'string' && first.includes('"router":"request"')) lines.push(JSON.parse(first));
+    });
+    try {
+      return { result: await fn(), lines };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("arms every request at rate 1 with a fresh dispatch id, which the router's own line carries", async () => {
     const fsm = spyVertical();
-    await worker.fetch(get('https://acme.example.com/'), envAt('1', fsm.binding));
-    expect(fsm.seen().headers.get(HEADER)).toBe('on');
+    const { lines } = await withRouterLines(() => worker.fetch(get('https://acme.example.com/'), envAt('1', fsm.binding)));
+    const id = fsm.seen().headers.get(HEADER);
+    expect(id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(fsm.seen().headers.get('x-substrat-router')).toBe(SECRET);
+    // The provenance a reader joins on: this tenant, this app, this id — written by the router.
+    expect(lines).toEqual([expect.objectContaining({ tenantId: T, vertical: 'fsm', fieldCoverageId: id })]);
+
+    const again = spyVertical();
+    await withRouterLines(() => worker.fetch(get('https://acme.example.com/'), envAt('1', again.binding)));
+    expect(again.seen().headers.get(HEADER)).not.toBe(id);
+  });
+
+  it("an unsampled request's router line carries no id", async () => {
+    const fsm = spyVertical();
+    const { lines } = await withRouterLines(() => worker.fetch(get('https://acme.example.com/'), envAt(undefined, fsm.binding)));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toHaveProperty('fieldCoverageId');
   });
 
   it('arms a request only when it falls inside the rate', async () => {
@@ -909,7 +936,7 @@ describe('field-coverage sampling (#1923)', () => {
       random.mockReturnValue(0.009);
       const inside = spyVertical();
       await worker.fetch(get('https://acme.example.com/'), envAt('0.01', inside.binding));
-      expect(inside.seen().headers.get(HEADER)).toBe('on');
+      expect(inside.seen().headers.get(HEADER)).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
 
       random.mockReturnValue(0.01);
       const outside = spyVertical();
@@ -932,8 +959,10 @@ describe('field-coverage sampling (#1923)', () => {
       },
     } as unknown as Fetcher;
     try {
-      expect((await worker.fetch(get('https://acme.example.com/'), envAt('0.5', flaky))).status).toBe(200);
-      expect(sent).toEqual(['on', 'on']);
+      const { lines } = await withRouterLines(() => worker.fetch(get('https://acme.example.com/'), envAt('0.5', flaky)));
+      expect(lines.map((l) => l['fieldCoverageId'])).toEqual([sent[0]]);
+      expect(sent[0]).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+      expect(sent).toEqual([sent[0], sent[0]]);
       expect(random).toHaveBeenCalledTimes(1);
     } finally {
       random.mockRestore();

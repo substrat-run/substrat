@@ -4,6 +4,7 @@ import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
+import { FIELD_COVERAGE_ID_FIELD } from '@substrat-run/contracts';
 import type {
   ObservabilityReader,
   ObservedEgressRow,
@@ -475,15 +476,17 @@ function withRuntimeTimings(e: RecentLogEvent, byRequest: Map<string, Record<str
 
 /**
  * #1923: a raw event as it may leave a per-event read — the stamped line WITHOUT its
- * `outputFields`. That report is one response's data, beside a path that can name a record,
+ * `outputFields` (or the dispatch id beside it). That report is one response's data, beside a path that can name a record,
  * and its only sanctioned reading is the aggregate `tallyFieldCoverage`, which reads the
  * unprojected events. Every per-event read projects through `projectEvent`, so stripping here
  * keeps it off all of them.
  */
 function withoutOutputFields(e: Record<string, unknown>): Record<string, unknown> {
   const source = e['source'];
-  if (source === null || typeof source !== 'object' || !('outputFields' in source)) return e;
-  const { outputFields: _report, ...rest } = source as Record<string, unknown>;
+  if (source === null || typeof source !== 'object') return e;
+  if (!('outputFields' in source) && !(FIELD_COVERAGE_ID_FIELD in source)) return e;
+  // The dispatch id goes with it: it is the report's provenance and means nothing without it.
+  const { outputFields: _report, [FIELD_COVERAGE_ID_FIELD]: _id, ...rest } = source as Record<string, unknown>;
   return { ...e, source: rest };
 }
 

@@ -23,8 +23,8 @@ import {
 } from '@substrat-run/adapter-cloudflare/routing';
 import {
   decodeInvocationRecord,
-  FIELD_COVERAGE_ARMED,
   FIELD_COVERAGE_HEADER,
+  FIELD_COVERAGE_ID_FIELD,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
   peerCallRequest,
@@ -33,7 +33,7 @@ import {
   type PeerCaller,
   type RouteTarget,
 } from '@substrat-run/contracts';
-import { fieldCoverageSampled, fieldCoverageSampleRate } from './field-coverage-sample.js';
+import { fieldCoverageSampled, fieldCoverageSampleRate, mintDispatchId } from './field-coverage-sample.js';
 
 export interface Env {
   /**
@@ -206,7 +206,7 @@ function verticalFor(env: Env, target: RouteTarget, hostname: string): Fetcher |
 function assertNode(
   request: Request,
   target: RouteTarget,
-  { secret, fieldCoverage = false }: { secret?: string; fieldCoverage?: boolean },
+  { secret, fieldCoverageId }: { secret?: string; fieldCoverageId?: string | null },
 ): Request {
   const headers = new Headers();
   for (const [k, v] of request.headers) {
@@ -217,9 +217,9 @@ function assertNode(
   headers.set('x-substrat-surface', target.surface);
   if (target.verticalSlug) headers.set('x-substrat-vertical', target.verticalSlug);
   if (secret) headers.set('x-substrat-router', secret);
-  // #1923: this request is in the field-coverage sample. Under the stripped prefix like the
-  // rest, so the only copy a vertical ever sees is this one.
-  if (fieldCoverage) headers.set(FIELD_COVERAGE_HEADER, FIELD_COVERAGE_ARMED);
+  // #1923: this request is in the field-coverage sample, and the value is its dispatch id. Under
+  // the stripped prefix like the rest, so the only copy a vertical ever sees is this one.
+  if (fieldCoverageId) headers.set(FIELD_COVERAGE_HEADER, fieldCoverageId);
   return new Request(request, { headers });
 }
 
@@ -305,6 +305,8 @@ function record(
     threw: boolean;
     durationMs: number;
     invocation: ReturnType<typeof decodeInvocationRecord>;
+    /** #1923: the request's field-coverage dispatch id, when it was in the sample. */
+    fieldCoverageId: string | null;
   },
 ): void {
   const statusClass = `${Math.floor(m.status / 100)}xx`;
@@ -339,6 +341,9 @@ function record(
       rayId: m.rayId,
       status: m.status,
       durationMs: m.durationMs,
+      // #1923: the provenance a field-coverage report is joined to — only this line, written
+      // by the router, says which tenant and app a dispatch id was minted for.
+      ...(m.fieldCoverageId ? { [FIELD_COVERAGE_ID_FIELD]: m.fieldCoverageId } : {}),
     }),
   );
 }
@@ -401,6 +406,8 @@ async function dispatch(
   request: Request,
   target: RouteTarget,
   hostname: string,
+  /** #1923: the dispatch id of a request in the field-coverage sample; the same on a retry. */
+  fieldCoverageId: string | null,
 ): Promise<Response> {
   const vertical = verticalFor(env, target, hostname);
   if (!vertical) {
@@ -420,13 +427,7 @@ async function dispatch(
   // termination and processing at the edge, ahead of this worker, and the DO
   // jurisdiction pins storage and execution (K-7). Both halves are configuration.
   // Re-checking it in code would be a third enforcement point that can disagree.
-  //
-  // #1923: whether this request is in the field-coverage sample, drawn once, so a retry is
-  // the same request in or out of it.
-  const assertion = {
-    secret: env.ROUTER_SECRET,
-    fieldCoverage: fieldCoverageSampled(fieldCoverageSampleRate(env.FIELD_COVERAGE_SAMPLE_RATE)),
-  };
+  const assertion = { secret: env.ROUTER_SECRET, fieldCoverageId };
   const forwarded = assertNode(request, target, assertion);
 
   try {
@@ -489,8 +490,13 @@ export default {
     let status = 500;
     let threw = true;
     let invocation = decodeInvocationRecord(null);
+    // #1923: whether this request is in the field-coverage sample, drawn once, so a retry is
+    // the same request in or out of it. Its id rides the assertion and this router's line.
+    const fieldCoverageId = fieldCoverageSampled(fieldCoverageSampleRate(env.FIELD_COVERAGE_SAMPLE_RATE))
+      ? mintDispatchId()
+      : null;
     try {
-      let response = await dispatch(env, request, target, hostname);
+      let response = await dispatch(env, request, target, hostname, fieldCoverageId);
       status = response.status;
       threw = false;
       // #1904: the vertical's record of what ran, for the datapoint — and never for the caller.
@@ -521,6 +527,7 @@ export default {
         threw,
         durationMs: Date.now() - startedAt,
         invocation,
+        fieldCoverageId,
       });
     }
   },
