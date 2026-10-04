@@ -174,6 +174,11 @@ export interface VerticalScopeHost {
     /** #1823: of `switchedOff`, the modules held only by a tenant-level grant, which this
      *  deployment has no directory to read — held for the in-unit OFF all the same. */
     tenantHeld?: ModuleId[];
+    /** #2029: the peers the platform's record holds OFF here, switched off in the same unit; and
+     *  (#2030) of those, the ones held only by a tenant-level grant. A host built before them
+     *  ignores both, and the platform's re-assert after the call covers them. */
+    switchedOffPeers?: string[];
+    tenantHeldPeers?: string[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
@@ -191,6 +196,9 @@ export interface VerticalScopeHost {
       switchedOff?: ModuleId[];
       /** #1823: as on `provisionScopeLocal`. */
       tenantHeld?: ModuleId[];
+      /** #2029: as on `provisionScopeLocal`. */
+      switchedOffPeers?: string[];
+      tenantHeldPeers?: string[];
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -416,7 +424,13 @@ export interface VerticalScopeHost {
     options?: InvokeOptions,
   ): Promise<unknown>;
   /** The far end of the peer kill switch (#1706). Optional, 501 when absent, like the rest. */
-  peerSwitchLocal?(scopeId: ScopeId, vertical: string, to: 'on' | 'off'): Promise<PeerSwitchOutcome>;
+  peerSwitchLocal?(
+    scopeId: ScopeId,
+    vertical: string,
+    to: 'on' | 'off',
+    /** #2030: the platform holds a live tenant-level grant for the peer — see the route's body. */
+    opts?: { tenantHeld?: boolean },
+  ): Promise<PeerSwitchOutcome>;
   /**
    * The cross-vertical far ends (#1705 PR 2): the producer's release after a watermark, the
    * consumer's imports and watermarks, and a batch applied to the consumer. Each proves the
@@ -474,6 +488,9 @@ const provisionBody = z.object({
   connectionKeys: z.array(projectedConnectionKey).optional(),
   switchedOff: z.array(moduleIdOf).optional(),
   tenantHeld: z.array(moduleIdOf).optional(),
+  /** #2029: the recorded-off peers, and (#2030) those held only by a tenant-level grant. */
+  switchedOffPeers: z.array(verticalSlugOf).optional(),
+  tenantHeldPeers: z.array(verticalSlugOf).optional(),
 });
 /** The parsed provision body handed to `onProvision`. */
 export type ProvisionBody = z.infer<typeof provisionBody>;
@@ -493,6 +510,9 @@ const reconcileBody = z.object({
    */
   switchedOff: z.array(moduleIdOf).optional(),
   tenantHeld: z.array(moduleIdOf).optional(),
+  /** #2029: the recorded-off peers, and (#2030) those held only by a tenant-level grant. */
+  switchedOffPeers: z.array(verticalSlugOf).optional(),
+  tenantHeldPeers: z.array(verticalSlugOf).optional(),
 });
 
 /**
@@ -542,6 +562,9 @@ const restoreBody = z.object({
   /** #1742: as on the reconcile — applied to `scopeId`, in the restore's own event. */
   switchedOff: z.array(moduleIdOf).optional(),
   tenantHeld: z.array(moduleIdOf).optional(),
+  /** #2029: the recorded-off peers, and (#2030) those held only by a tenant-level grant. */
+  switchedOffPeers: z.array(verticalSlugOf).optional(),
+  tenantHeldPeers: z.array(verticalSlugOf).optional(),
   /** #1869: the scope the dump was captured from. Only its node grants are re-pointed at
    *  `scopeId`; a platform that predates the field sends none, and the host falls back. */
   sourceScopeId: scopeIdOf.optional(),
@@ -700,6 +723,12 @@ const peerSwitchBody = z.object({
   scopeId: scopeIdOf,
   vertical: verticalSlugOf,
   to: z.enum(['on', 'off']),
+  /**
+   * #2030: the platform's directory holds a live TENANT-level `vertical:` grant for the peer.
+   * This deployment has no directory to read it from, and a peer whose only authority on the
+   * scope is that grant must still be switchable here. A platform built before it sends none.
+   */
+  tenantHeld: z.boolean().optional(),
 });
 
 /**
@@ -883,6 +912,8 @@ export function mountPlatformSurface<Env extends object>(
     const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
+      switchedOffPeers: body.switchedOffPeers,
+      tenantHeldPeers: body.tenantHeldPeers,
       sourceScopeId: body.sourceScopeId,
       exact: body.exact,
       loadStamp: body.loadStamp,
@@ -1487,7 +1518,7 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.peerSwitchLocal) {
       return c.json({ error: 'this deployment cannot switch peers (#1706) — redeploy it' }, 501);
     }
-    return c.json(await host.peerSwitchLocal(body.scopeId, body.vertical, body.to));
+    return c.json(await host.peerSwitchLocal(body.scopeId, body.vertical, body.to, { tenantHeld: body.tenantHeld }));
   });
 
   // The cross-vertical far ends (#1705 PR 2). The shared control plane runs the phase for every
@@ -1573,6 +1604,8 @@ export function mountPlatformSurface<Env extends object>(
       connectionKeys: body.connectionKeys,
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
+      switchedOffPeers: body.switchedOffPeers,
+      tenantHeldPeers: body.tenantHeldPeers,
     });
     await deps.onProvision?.(c.env, body);
     // #1902: onto the platform-supplied sweeper's roster, so the scope's schedules run. Last, so
@@ -1621,6 +1654,8 @@ export function mountPlatformSurface<Env extends object>(
       // #1742: back off inside the seat's unit — see `provisionScopeLocal`.
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
+      switchedOffPeers: body.switchedOffPeers,
+      tenantHeldPeers: body.tenantHeldPeers,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this

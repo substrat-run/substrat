@@ -13,28 +13,32 @@ import {
   SWEEP_RUN_RETENTION_DAYS,
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
-  SYSTEM_SWITCHES_BACKFILL_SQL,
-  SYSTEM_SWITCHES_TABLE,
+  PEER_SWITCHES_DDL,
+  SWITCH_KINDS,
   SYSTEM_SWITCHES_DDL,
-  forgetSystemSwitchesOf,
+  forgetSwitchesOf,
   listSystemSwitchRecords,
-  recordSystemSwitchedOff,
-  recordSystemSwitchedOn,
-  restoreSystemSwitchRecord,
+  recordSwitchedOff,
+  recordSwitchedOn,
+  restoreSwitchRecord,
   scopesSwitchedOffFor,
-  tenantHoldsSystemGrant,
-  switchedOffModulesOf,
-  systemSwitchRecordsOf,
-  systemSwitchesTableExists,
+  switchRecordsOf,
+  switchedOffOf,
+  switchesBackfillSqlOf,
+  switchesDdlOf,
+  switchesTableExists,
+  switchesTableOf,
+  tenantHoldsGrant,
   VERSION_MIGRATIONS_DDL,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
   versionsAwaitSplit,
   writeVersionMigrations,
   type SystemSwitchRecordFilter,
-  type SystemSwitchRecordPrior,
+  type SwitchKind,
+  type SwitchRecordPrior,
+  type SwitchRecordWrite,
   type SystemSwitchRecordRow,
-  type SystemSwitchRecordWrite,
   MODEL_USAGE_RETENTION_DAYS,
   DO_SQL_LIMITS,
   ulid,
@@ -1003,6 +1007,7 @@ const DIRECTORY_DDL = `
   );
   ${IMPERSONATION_DDL}
   ${SYSTEM_SWITCHES_DDL}
+  ${PEER_SWITCHES_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_admin_log (
     id TEXT PRIMARY KEY,
     actor TEXT NOT NULL,
@@ -1350,19 +1355,19 @@ export class ControlPlaneDO extends DurableObject {
    * construction. A directory restore runs `buildDirectorySchema` inside its own transaction
    * instead (`importDump`).
    *
-   * The schedule switch's record (#1674) is backfilled from the admin log on a run that
-   * creates its table, and its table is created in the SAME transaction as the backfill
-   * (Copilot review): the gate is "the table does not exist yet", so a table committed ahead
-   * of a backfill that then failed would read as already migrated on every later run. On
+   * Each kill switch's record (#1674, and #2029's for a peer) is backfilled from the admin log
+   * on a run that creates its table, and its table is created in the SAME transaction as the
+   * backfill (Copilot review): the gate is "the table does not exist yet", so a table committed
+   * ahead of a backfill that then failed would read as already migrated on every later run. On
    * such a run its statements are held back from the loop below and run with the backfill.
    */
   private applyDirectorySchema(): void {
-    const switchRecordIsNew = !systemSwitchesTableExists(this.kernelSql);
-    this.buildDirectorySchema({ holdSwitchRecord: switchRecordIsNew });
-    if (switchRecordIsNew) {
+    const newRecords = SWITCH_KINDS.filter((kind) => !switchesTableExists(this.kernelSql, kind));
+    this.buildDirectorySchema({ holdSwitchRecords: newRecords });
+    for (const kind of newRecords) {
       this.ctx.storage.transactionSync(() => {
-        for (const stmt of splitSqlStatements(SYSTEM_SWITCHES_DDL)) this.sql.exec(stmt);
-        this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+        for (const stmt of splitSqlStatements(switchesDdlOf(kind))) this.sql.exec(stmt);
+        this.sql.exec(switchesBackfillSqlOf(kind));
       });
     }
   }
@@ -1371,12 +1376,13 @@ export class ControlPlaneDO extends DurableObject {
    * The directory's tables as this code builds them, carrying whatever the directory already
    * holds forward to that shape: the construction's pass, and a restore's (#1898, #1912), which
    * runs it inside its transaction onto an emptied directory, before loading any row.
-   * `holdSwitchRecord` leaves the #1674 record's statements to the caller, which creates the
-   * table with its backfill.
+   * `holdSwitchRecords` leaves those kinds' record statements (#1674, #2029) to the caller, which
+   * creates each table with its backfill.
    */
-  private buildDirectorySchema({ holdSwitchRecord }: { holdSwitchRecord: boolean }): void {
+  private buildDirectorySchema({ holdSwitchRecords }: { holdSwitchRecords: readonly SwitchKind[] }): void {
+    const held = holdSwitchRecords.map(switchesTableOf);
     for (const stmt of DIRECTORY_DDL_PLAN.loop) {
-      if (holdSwitchRecord && stmt.includes(SYSTEM_SWITCHES_TABLE)) continue;
+      if (held.some((table) => stmt.includes(table))) continue;
       this.sql.exec(stmt);
     }
     this.ensureDirectoryColumns();
@@ -1706,7 +1712,7 @@ export class ControlPlaneDO extends DurableObject {
       // Every table from this code's DDL, onto an empty directory, so none of the pass's
       // rebuilds fires (each would reach `transactionSync`, which this async transaction cannot
       // hold): every table is created on the current shape.
-      this.buildDirectorySchema({ holdSwitchRecord: false });
+      this.buildDirectorySchema({ holdSwitchRecords: [] });
       // Refuses a table this code does not build, adds unknown columns bare, loads the rows by
       // name, then the legacy scope and #1674 backfills, all inside this transaction.
       loadDirectoryDump(tables, {
@@ -1854,6 +1860,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_entitlements', // per-tenant SKU flags
       'orgs', // K-22 org records
       '_substrat_system_switches', // #1674: the schedule switch's record, per scope
+      '_substrat_peer_switches', // #2029: the peer switch's record, per scope
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -2387,7 +2394,7 @@ export class ControlPlaneDO extends DurableObject {
         this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
       }
       if (to === 'reaped') {
-        forgetSystemSwitchesOf(this.kernelSql, scopeId);
+        forgetSwitchesOf(this.kernelSql, scopeId);
         this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
       }
       this.bumpLifecycleRevision(`scope:${scopeId}`); // #1713, with the status it counts
@@ -2966,7 +2973,7 @@ export class ControlPlaneDO extends DurableObject {
   deleteScopeDirectory(scopeId: string): void {
     this.ctx.storage.transactionSync(() => {
       this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
-      forgetSystemSwitchesOf(this.kernelSql, scopeId);
+      forgetSwitchesOf(this.kernelSql, scopeId);
       this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
       this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
     });
@@ -3713,33 +3720,33 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  // -- the schedule switch's record (#1674) — `system-switch-record.ts` is the whole rule ---
+  // -- the kill switches' record (#1674, #2029) — `system-switch-record.ts` is the whole rule ---
 
   /** OFF's write, before the scope's switch moves (#1823). Answers the row as it was. */
-  recordSystemSwitchedOff(row: SystemSwitchRecordWrite): SystemSwitchRecordPrior {
-    return recordSystemSwitchedOff(this.kernelSql, row);
+  recordSwitchedOff(row: SwitchRecordWrite): SwitchRecordPrior {
+    return recordSwitchedOff(this.kernelSql, row);
   }
 
   /** ON's write, before the scope moves. Answers the row as it was, for a failed ON to restore. */
-  recordSystemSwitchedOn(row: SystemSwitchRecordWrite): SystemSwitchRecordPrior {
-    return recordSystemSwitchedOn(this.kernelSql, row);
+  recordSwitchedOn(row: SwitchRecordWrite): SwitchRecordPrior {
+    return recordSwitchedOn(this.kernelSql, row);
   }
 
   /** Put a row back as the switch call's record write found it — the move that followed it failed. */
-  restoreSystemSwitchRecord(
-    key: { tenantId: string; scopeId: string; moduleId: string; operationId: string },
-    prior: SystemSwitchRecordPrior,
+  restoreSwitchRecord(
+    key: { kind: SwitchKind; tenantId: string; scopeId: string; key: string; operationId: string },
+    prior: SwitchRecordPrior,
   ): void {
-    restoreSystemSwitchRecord(this.kernelSql, key, prior);
+    restoreSwitchRecord(this.kernelSql, key, prior);
   }
 
   /**
-   * #1823: which of these modules the tenant holds a live TENANT-level grant for — what the
-   * switch passes the scope as `tenantHeld`, so a module whose only authority there is a tenant
-   * tuple is still switchable. Read here, where the tenant tuples live.
+   * #1823 (#2030 for a peer): which of these subjects the tenant holds a live TENANT-level grant
+   * for — what the switch passes the scope as `tenantHeld`, so a subject whose only authority
+   * there is a tenant tuple is still switchable. Read here, where the tenant tuples live.
    */
-  tenantHeldSystemModules(tenantId: string, moduleIds: readonly string[], now: string): string[] {
-    return moduleIds.filter((m) => tenantHoldsSystemGrant(this.kernelSql, tenantId, m, now));
+  tenantHeldOf(kind: SwitchKind, tenantId: string, keys: readonly string[], now: string): string[] {
+    return keys.filter((k) => tenantHoldsGrant(this.kernelSql, kind, tenantId, k, now));
   }
 
   /** The fleet read. */
@@ -3747,14 +3754,14 @@ export class ControlPlaneDO extends DurableObject {
     return listSystemSwitchRecords(this.kernelSql, filter);
   }
 
-  /** One scope's recorded positions, by module — the status read's `recorded` join. */
-  systemSwitchRecordsOf(tenantId: string, scopeId: string): [string, 'on' | 'off'][] {
-    return [...systemSwitchRecordsOf(this.kernelSql, tenantId, scopeId)];
+  /** One scope's recorded positions of one kind, by subject — the status read's `recorded` join. */
+  switchRecordsOf(kind: SwitchKind, tenantId: string, scopeId: string): [string, 'on' | 'off'][] {
+    return [...switchRecordsOf(this.kernelSql, kind, tenantId, scopeId)];
   }
 
-  /** The modules a re-assert switches back off on one scope. */
-  switchedOffModulesOf(tenantId: string, scopeId: string): string[] {
-    return switchedOffModulesOf(this.kernelSql, tenantId, scopeId);
+  /** The subjects of one kind a re-assert switches back off on one scope. */
+  switchedOffOf(kind: SwitchKind, tenantId: string, scopeId: string): string[] {
+    return switchedOffOf(this.kernelSql, kind, tenantId, scopeId);
   }
 
   /** The tenant's LIVE connection grants (#592) — the provision/reconcile gather read. */

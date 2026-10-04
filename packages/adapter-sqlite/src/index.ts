@@ -308,12 +308,10 @@ import {
   DELIVERY_ERROR_REDACTION_SQL,
   REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
-  switchSystemSchedules,
   admitPeer,
   collectPeers,
   peerSeats,
   resolveVerticalInstanceFrom,
-  switchPeer,
   type PeerDeclarations,
   peerGrantsStatus,
   systemGrantsStatus,
@@ -321,21 +319,30 @@ import {
   systemSwitchedOff,
   systemSwitchedOffMessage,
   tenantSystemSwitchedOffMessage,
-  SYSTEM_SWITCHES_BACKFILL_SQL,
+  PEER_SWITCHES_DDL,
+  SWITCH_KINDS,
   SYSTEM_SWITCHES_DDL,
-  forgetSystemSwitchesOf,
+  forgetSwitchesOf,
   listSystemSwitchRecords,
-  recordSystemSwitchedOff,
-  recordSystemSwitchedOn,
-  restoreSystemSwitchRecord,
+  moveSwitch,
+  reassertActionOf,
+  recordSwitchedOff,
+  recordSwitchedOn,
+  reportKeyOf,
+  restoreSwitchRecord,
   scopesSwitchedOffFor,
-  tenantHoldsSystemGrant,
-  switchedOffModulesOf,
+  switchActionOf,
+  switchAuditSubject,
+  switchKeyField,
+  switchNotFoundMessage,
+  switchRecordsOf,
+  switchedOffOf,
+  switchesBackfillSqlOf,
+  switchesTableExists,
+  tenantHoldsGrant,
   inUnitMovesToAudit,
   staleCarryRevertRow,
   staleCarryReverts,
-  systemSwitchRecordsOf,
-  systemSwitchesTableExists,
   withRecorded,
   VERSION_MIGRATIONS_DDL,
   splitManifestMigrations,
@@ -345,7 +352,8 @@ import {
   type SystemSwitchReassert,
   type SystemSwitchReassertOptions,
   type SystemSwitchRecordFilter,
-  type SystemSwitchRecordPrior,
+  type SwitchKind,
+  type SwitchRecordPrior,
   type SwitchOutcome,
   type SwitchSql,
   type PeerGrantsRow,
@@ -2089,6 +2097,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
       ${IMPERSONATION_DDL}
       ${SYSTEM_SWITCHES_DDL}
+      ${PEER_SWITCHES_DDL}
       CREATE TABLE IF NOT EXISTS _substrat_admin_log (
         id TEXT PRIMARY KEY,
         actor TEXT NOT NULL,
@@ -2265,9 +2274,10 @@ export class SqliteScopeHost implements ScopeHost {
    */
   private ensureDirectorySchema(): void {
     this.directory.transaction(() => {
-      const switchRecordIsNew = !systemSwitchesTableExists(switchSqlOf(this.directory));
+      // Each kill switch's record (#1674, #2029) is backfilled on the pass that creates its table.
+      const newRecords = SWITCH_KINDS.filter((kind) => !switchesTableExists(switchSqlOf(this.directory), kind));
       this.buildDirectorySchema();
-      if (switchRecordIsNew) this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      for (const kind of newRecords) this.directory.exec(switchesBackfillSqlOf(kind));
     })();
     this.splitVersionMigrations();
   }
@@ -2768,10 +2778,10 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * `HostAdmin.reassertSystemSwitches`' body (#1674), run inside a turn the caller already
-   * holds on the scope's actor: every module the directory records OFF on the scope is
-   * switched off again. Already off answers `changed: false` and writes nothing, and a
-   * module with no authority reaching the scope (no grant here, no tenant-level grant) is left
-   * alone. Audited only when something moved.
+   * holds on the scope's actor: every module, and (#2029) every peer, the directory records OFF
+   * on the scope is switched off again. Already off answers `changed: false` and writes nothing,
+   * and a subject with no authority reaching the scope (no grant here, no tenant-level grant) is
+   * left alone. Audited only when something moved, under each kind's re-assert action.
    *
    * `audit` receives each row. By default it writes to the admin log at once. A caller running
    * this inside a scope transaction that may still roll back (a restore's replay) collects
@@ -2784,45 +2794,50 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     opts?: SystemSwitchReassertOptions,
-    audit: (after: Record<string, unknown>) => void = (after) =>
-      this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, after),
+    audit: (action: AdminAction, after: Record<string, unknown>) => void = (action, after) =>
+      this.recordAdmin(actor, action, { tenantId, scopeId }, null, after),
   ): SystemSwitchReassert[] {
     const at = new Date().toISOString();
-    // #1742 review: a move the deployment made from a stale list — the module was restored
-    // ON after the list was read — is undone first, so the operator's ON stands.
-    const recorded = systemSwitchRecordsOf(switchSqlOf(this.directory), tenantId, scopeId);
-    // One synchronous turn: no switch can land between this read and the moves below.
-    const reverted = new Set(staleCarryReverts(recorded, opts?.appliedInUnit));
-    for (const moduleId of reverted) {
-      const outcome = rt.db.transaction(() =>
-        switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'on', at }),
-      )();
-      if (outcome.changed) audit({ operationId: ulid(), ...staleCarryRevertRow(moduleId, outcome) });
-    }
-    const recordedOff = switchedOffModulesOf(switchSqlOf(this.directory), tenantId, scopeId);
-    // #1742: what a deployment already switched off inside its own unit, audited here — the
-    // switch below answers `changed: false` for it and would write no row.
-    // A move the revert above undid is not credited as an in-unit OFF.
-    const applied = opts?.appliedInUnit?.filter((a) => !reverted.has(a.moduleId));
-    for (const row of inUnitMovesToAudit(recordedOff, applied)) audit({ operationId: ulid(), ...row });
-    return recordedOff.map((moduleId) => {
-      // #1823: a module whose only authority here is a tenant-level grant is held too.
-      const tenantHeld = tenantHoldsSystemGrant(switchSqlOf(this.directory), tenantId, moduleId, this.clock());
-      const outcome = rt.db.transaction(() =>
-        switchSystemSchedules(switchSqlOf(rt.db), { moduleId, scopeId, to: 'off', at, tenantHeld }),
-      )();
-      if (outcome.changed) {
-        audit({
-          operationId: ulid(),
-          moduleId,
-          schedules: 'off',
-          phase: 'applied',
-          changed: true,
-          permissions: outcome.permissions,
-        });
+    const directorySql = switchSqlOf(this.directory);
+    const results: SystemSwitchReassert[] = [];
+    for (const kind of SWITCH_KINDS) {
+      const action = reassertActionOf(kind);
+      const move = (key: string, to: 'on' | 'off', tenantHeld?: boolean) =>
+        rt.db.transaction(() => moveSwitch(switchSqlOf(rt.db), kind, { key, scopeId, to, at, tenantHeld }))();
+      // #1742 review: a move the deployment made from a stale list — the subject was restored
+      // ON after the list was read — is undone first, so the operator's ON stands.
+      const recorded = switchRecordsOf(directorySql, kind, tenantId, scopeId);
+      // One synchronous turn: no switch can land between this read and the moves below.
+      const reverted = new Set(staleCarryReverts(kind, recorded, opts?.appliedInUnit));
+      for (const key of reverted) {
+        const outcome = move(key, 'on');
+        if (outcome.changed) audit(action, { operationId: ulid(), ...staleCarryRevertRow(kind, key, outcome) });
       }
-      return { moduleId, held: outcome.held, changed: outcome.changed };
-    });
+      const recordedOff = switchedOffOf(directorySql, kind, tenantId, scopeId);
+      // #1742: what a deployment already switched off inside its own unit, audited here — the
+      // switch below answers `changed: false` for it and would write no row.
+      // A move the revert above undid is not credited as an in-unit OFF.
+      const applied = opts?.appliedInUnit?.filter((a) => {
+        const key = reportKeyOf(kind, a);
+        return key === undefined || !reverted.has(key);
+      });
+      for (const row of inUnitMovesToAudit(kind, recordedOff, applied)) audit(action, { operationId: ulid(), ...row });
+      for (const key of recordedOff) {
+        // #1823 (#2030): a subject whose only authority here is a tenant-level grant is held too.
+        const outcome = move(key, 'off', tenantHoldsGrant(directorySql, kind, tenantId, key, this.clock()));
+        if (outcome.changed) {
+          audit(action, {
+            operationId: ulid(),
+            ...switchAuditSubject(kind, key, 'off'),
+            phase: 'applied',
+            changed: true,
+            permissions: outcome.permissions,
+          });
+        }
+        results.push({ ...switchKeyField(kind, key), held: outcome.held, changed: outcome.changed } as SystemSwitchReassert);
+      }
+    }
+    return results;
   }
 
   async provisionTenantStore(
@@ -3550,13 +3565,13 @@ export class SqliteScopeHost implements ScopeHost {
     // the directory's recorded-off modules go back off in the load's own turn, as a
     // provision's seat does — no schedule pass can run in between.
     // The re-assert's audit rows are written only once the load has committed.
-    const rows: Record<string, unknown>[] = [];
+    const rows: [AdminAction, Record<string, unknown>][] = [];
     // #1869: the re-point's source is the separate hint when given; the dump is otherwise as sent.
     const source = { tables: dump.tables, scopeId: opts?.sourceScopeId ?? dump.scopeId };
     await this.loadDump(tenantId, scopeId, source, (rt) =>
-      this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (after) => rows.push(after)),
+      this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (action, after) => rows.push([action, after])),
     );
-    for (const after of rows) this.recordAdmin(actor, 'reassertSystemSwitch', { tenantId, scopeId }, null, after);
+    for (const [action, after] of rows) this.recordAdmin(actor, action, { tenantId, scopeId }, null, after);
     this.recordAdmin(
       actor,
       'restoreScope',
@@ -3618,7 +3633,7 @@ export class SqliteScopeHost implements ScopeHost {
     // orphaned bytes with no record (the §9 hazard).
     this.directory.prepare('DELETE FROM hostnames WHERE scope_id = ?').run(scopeId);
     rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
-    forgetSystemSwitchesOf(switchSqlOf(this.directory), scopeId);
+    forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
     this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
       forkedFrom: rec.forkedFrom,
@@ -6416,7 +6431,7 @@ export class SqliteScopeHost implements ScopeHost {
         } else {
           this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
         }
-        if (to === 'reaped') forgetSystemSwitchesOf(switchSqlOf(this.directory), scopeId);
+        if (to === 'reaped') forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
         // The audit target carries the scope's vertical (control-plane.md §4.4:
         // "vertical stays null until §4.2 lifecycle actions that name one"). It is
         // read from the scope rather than passed in, so the trail cannot disagree
@@ -6507,14 +6522,21 @@ export class SqliteScopeHost implements ScopeHost {
         ? this.runtime(node.tenantId, node.scopeId).actor.turn(body)
         : Promise.resolve().then(body);
 
-    /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
-    const switchSystem = async (
+    /**
+     * One kill switch moved on one scope — the ONE body `revokeFromSystem` / `restoreToSystem`
+     * (#1666, a module's `system:` authority) and `revokeFromPeer` / `restoreToPeer` (#1706, a
+     * peer vertical's) share, so the two levers cannot disagree about the record, the audit or
+     * the undo. `kind` says which; `key` is the module id or the peer's slug.
+     */
+    const switchSubject = async (
       actor: PlatformActorId,
-      raw: SystemSwitch,
+      kind: SwitchKind,
+      node: { tenantId: TenantId; scopeId: ScopeId },
+      key: string,
+      reason: string,
       to: 'on' | 'off',
-    ): Promise<SystemSwitchResult> => {
-      const input = systemSwitch.parse(raw);
-      const { tenantId, scopeId } = input.node;
+    ): Promise<{ operationId: string; outcome: SwitchOutcome }> => {
+      const { tenantId, scopeId } = node;
       const scope = this.directory
         .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
         .get(scopeId) as { tenant_id: string } | undefined;
@@ -6526,20 +6548,20 @@ export class SqliteScopeHost implements ScopeHost {
       // scope's file are separate databases, so a crash between them leaves an intent with
       // no recorded outcome — never a moved switch with no audit row.
       const operationId = ulid();
-      const action = to === 'off' ? 'revokeFromSystem' : 'restoreToSystem';
+      const action = switchActionOf(kind, to);
       const target = { tenantId, scopeId };
-      const base = { operationId, moduleId: input.moduleId, schedules: to };
-      this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
-      // The directory's record (#1674), written BEFORE the scope moves, both ways, and undone
-      // if the move throws or holds nothing — see `recordSystemSwitchedOn` and (#1823)
-      // `recordSystemSwitchedOff` for why that order is the safe one.
+      const base = { operationId, ...switchAuditSubject(kind, key, to) };
+      this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason });
+      // The directory's record (#1674; #2029 for a peer), written BEFORE the scope moves, both
+      // ways, and undone if the move throws or holds nothing — see `recordSwitchedOn` and
+      // (#1823) `recordSwitchedOff` for why that order is the safe one.
       const at = new Date().toISOString();
       const directorySql = switchSqlOf(this.directory);
-      const record = { tenantId, scopeId, moduleId: input.moduleId, actor, reason: input.reason, operationId, at };
+      const record = { kind, tenantId, scopeId, key, actor, reason, operationId, at };
       const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
-      let prior: SystemSwitchRecordPrior;
+      let prior: SwitchRecordPrior;
       try {
-        prior = to === 'on' ? recordSystemSwitchedOn(directorySql, record) : recordSystemSwitchedOff(directorySql, record);
+        prior = to === 'on' ? recordSwitchedOn(directorySql, record) : recordSwitchedOff(directorySql, record);
       } catch (err) {
         // Nothing has moved: fail the call here, audited — the Cloudflare adapter's posture.
         try {
@@ -6551,7 +6573,7 @@ export class SqliteScopeHost implements ScopeHost {
       }
       /** The record's undo, after the scope's move threw or held nothing: retried once, never swallowed. */
       const undoRecord = (): string | null => {
-        const undo = () => restoreSystemSwitchRecord(directorySql, record, prior);
+        const undo = () => restoreSwitchRecord(directorySql, record, prior);
         try {
           undo();
           return null;
@@ -6572,14 +6594,13 @@ export class SqliteScopeHost implements ScopeHost {
         // with it — after this verb had already audited `applied`. `turn` is re-entrant, so a
         // caller already inside one of this scope's tasks joins it rather than deadlocking.
         //
-        // #1823: read in the same turn, so no tenant grant moves between the read and the switch.
-        // The directory is this process's own database, so the read is synchronous.
+        // #1823 (#2030 for a peer): read in the same turn, so no tenant grant moves between the
+        // read and the switch. The directory is this process's own database, so the read is
+        // synchronous.
         const rt = this.runtime(tenantId, scopeId);
         outcome = await rt.actor.turn(() => {
-          const tenantHeld = tenantHoldsSystemGrant(directorySql, tenantId, input.moduleId, this.clock());
-          return rt.db.transaction(() =>
-            switchSystemSchedules(switchSqlOf(rt.db), { moduleId: input.moduleId, scopeId, to, at, tenantHeld }),
-          )();
+          const tenantHeld = tenantHoldsGrant(directorySql, kind, tenantId, key, this.clock());
+          return rt.db.transaction(() => moveSwitch(switchSqlOf(rt.db), kind, { key, scopeId, to, at, tenantHeld }))();
         });
       } catch (err) {
         const recordError = undoRecord();
@@ -6595,10 +6616,10 @@ export class SqliteScopeHost implements ScopeHost {
         }
         throw err;
       }
-      // A call that held nothing moved nothing (the module has no authority reaching the scope,
-      // its own or the tenant's), so its record write is undone: left `off`, it
-      // would switch the module off the day it is installed; left `on`, the next reconcile of
-      // a wiped scope would leave the module running.
+      // A call that held nothing moved nothing (the subject has no authority reaching the
+      // scope, its own or the tenant's), so its record write is undone: left `off`, it would
+      // switch the subject off the day it is installed; left `on`, the next reconcile of a
+      // wiped scope would leave it running.
       const recordError = outcome.held ? null : undoRecord();
       this.recordAdmin(actor, action, target, null, {
         ...base,
@@ -6610,11 +6631,21 @@ export class SqliteScopeHost implements ScopeHost {
       if (!outcome.held) {
         throw substratError(
           'not_found',
-          `scope ${scopeId} holds no system grant for module '${input.moduleId}' — nothing to switch ${to} ` +
-            `(check the module id: it is the module's manifest id, e.g. '@substrat-run/engine-absence')` +
+          switchNotFoundMessage(kind, scopeId, key, to) +
             (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
         );
       }
+      return { operationId, outcome };
+    };
+
+    /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
+    const switchSystem = async (
+      actor: PlatformActorId,
+      raw: SystemSwitch,
+      to: 'on' | 'off',
+    ): Promise<SystemSwitchResult> => {
+      const input = systemSwitch.parse(raw);
+      const { operationId, outcome } = await switchSubject(actor, 'system', input.node, input.moduleId, input.reason, to);
       return {
         operationId,
         moduleId: input.moduleId,
@@ -6624,67 +6655,14 @@ export class SqliteScopeHost implements ScopeHost {
       };
     };
 
-    /**
-     * #1706: move one PEER's kill switch on one scope — see `HostAdmin.revokeFromPeer`. The
-     * schedule switch's body with the subject swapped (`switchPeer` → `switchSubjectGrants`):
-     * audit first, one turn on the scope actor, outcome after, `not_found` when nothing was held.
-     */
+    /** #1706: move one PEER's kill switch on one scope — see `HostAdmin.revokeFromPeer`. */
     const switchPeerAt = async (
       actor: PlatformActorId,
       raw: PeerSwitch,
       to: 'on' | 'off',
     ): Promise<PeerSwitchResult> => {
       const input = peerSwitch.parse(raw);
-      const { tenantId, scopeId } = input.node;
-      const scope = this.directory
-        .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
-        .get(scopeId) as { tenant_id: string } | undefined;
-      if (!scope || scope.tenant_id !== tenantId) {
-        throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-      }
-      const operationId = ulid();
-      const action = to === 'off' ? 'revokeFromPeer' : 'restoreToPeer';
-      const target = { tenantId, scopeId };
-      const base = { operationId, vertical: input.vertical, calls: to };
-      this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason: input.reason });
-      let outcome: SwitchOutcome;
-      try {
-        const rt = this.runtime(tenantId, scopeId);
-        outcome = await rt.actor.turn(() =>
-          rt.db.transaction(() =>
-            switchPeer(switchSqlOf(rt.db), {
-              vertical: input.vertical,
-              scopeId,
-              to,
-              at: new Date().toISOString(),
-            }),
-          )(),
-        );
-      } catch (err) {
-        try {
-          this.recordAdmin(actor, action, target, null, {
-            ...base,
-            phase: 'failed',
-            error: err instanceof Error ? err.message : String(err),
-          });
-        } catch {
-          // Best effort: the original error is what the caller must see.
-        }
-        throw err;
-      }
-      this.recordAdmin(actor, action, target, null, {
-        ...base,
-        phase: outcome.held ? 'applied' : 'refused',
-        changed: outcome.changed,
-        permissions: outcome.permissions,
-      });
-      if (!outcome.held) {
-        throw substratError(
-          'not_found',
-          `scope ${scopeId} holds no grant for peer '${input.vertical}' — nothing to switch ${to} ` +
-            `(check the slug: it is the calling vertical's registry id, as the target's \`peers\` names it)`,
-        );
-      }
+      const { operationId, outcome } = await switchSubject(actor, 'peer', input.node, input.vertical, input.reason, to);
       return {
         operationId,
         vertical: input.vertical,
@@ -6772,7 +6750,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
       const offModules = new Set(states.filter((s) => s.schedules === 'off').map((s) => s.moduleId));
       const explanations = offModules.size > 0 ? lastSwitchedOff(tenantId, scopeId, offModules) : new Map();
-      const recorded = systemSwitchRecordsOf(switchSqlOf(this.directory), tenantId, scopeId);
+      const recorded = switchRecordsOf(switchSqlOf(this.directory), 'system', tenantId, scopeId);
       const result = withRecorded(states, recorded).map((s) => ({
         moduleId: s.moduleId as ModuleId,
         schedules: s.schedules,
@@ -7125,9 +7103,17 @@ export class SqliteScopeHost implements ScopeHost {
       },
       tenantHeldSystemModules: async (actor: PlatformActorId, tenantId: TenantId, moduleIds: readonly ModuleId[]) => {
         const now = this.clock();
-        const held = moduleIds.filter((m) => tenantHoldsSystemGrant(switchSqlOf(this.directory), tenantId, m, now));
+        const held = moduleIds.filter((m) => tenantHoldsGrant(switchSqlOf(this.directory), 'system', tenantId, m, now));
         this.recordAccess(actor, 'tenantHeldSystemModules', { tenantId }, { moduleIds: [...moduleIds] }, held.length);
         return held;
+      },
+      peerSwitchCarry: async (actor: PlatformActorId, node: { tenantId: TenantId; scopeId: ScopeId }) => {
+        const directorySql = switchSqlOf(this.directory);
+        const switchedOffPeers = switchedOffOf(directorySql, 'peer', node.tenantId, node.scopeId);
+        const now = this.clock();
+        const tenantHeldPeers = switchedOffPeers.filter((v) => tenantHoldsGrant(directorySql, 'peer', node.tenantId, v, now));
+        this.recordAccess(actor, 'peerSwitchCarry', node, null, switchedOffPeers.length);
+        return { switchedOffPeers, tenantHeldPeers };
       },
       reassertSystemSwitches: async (
         actor: PlatformActorId,
@@ -9312,6 +9298,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_entitlements', // per-tenant SKU flags
           'orgs', // K-22 org records
           '_substrat_system_switches', // #1674: the schedule switch's record, per scope
+          '_substrat_peer_switches', // #2029: the peer switch's record, per scope
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {

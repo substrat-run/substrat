@@ -1802,6 +1802,17 @@ export interface HostAdmin {
    */
   tenantHeldSystemModules(actor: PlatformActorId, tenantId: TenantId, moduleIds: readonly ModuleId[]): Promise<ModuleId[]>;
   /**
+   * The peer half of a carry (#2029): the peers the directory records OFF on this one scope
+   * (`revokeFromPeer` writes the record, as `revokeFromSystem` writes the module's), and of those
+   * the ones the tenant holds a live tenant-level `vertical:` grant for (#2030). Carried into a
+   * deployment's provision, reconcile or restore beside the modules, so its in-unit OFF puts them
+   * back off too. Empty lists when none is. Access-logged (K-24), as the module reads are.
+   */
+  peerSwitchCarry(
+    actor: PlatformActorId,
+    node: { tenantId: TenantId; scopeId: ScopeId },
+  ): Promise<{ switchedOffPeers: string[]; tenantHeldPeers: string[] }>;
+  /**
    * Put the directory's OFF positions back into one scope (#1674), for a scope whose storage
    * lost them: a wipe then re-provision, or a restore of a dump taken before the switch was
    * pulled. Every module the record holds `off` on the scope is switched off again, through
@@ -1828,6 +1839,10 @@ export interface HostAdmin {
    * deployment applying it. That move is undone (switched back on) and audited as
    * `staleCarry`, BEFORE the record is read again for the OFF pass. Only a module recorded
    * `on` is ever switched on here.
+   *
+   * Every kind of switch (#2029): after the modules, every peer the record holds `off` on the
+   * scope is switched off again the same way (through `revokeFromPeer`'s switch), audited as
+   * `reassertPeerSwitch`, and answered as an entry naming `vertical` rather than `moduleId`.
    */
   reassertSystemSwitches(
     actor: PlatformActorId,

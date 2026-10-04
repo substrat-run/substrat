@@ -172,6 +172,16 @@ const peerFixture = (prefix: string) => async () => {
   });
   return {
     host,
+    // #2030: the directory's tenant tuple, as a tenant-level grant writes it. No platform verb
+    // grants a peer tenant-wide yet, so the fixture writes the row itself.
+    seatTenantGrant: async (tenant: string, subject: string, permission: string) => {
+      (host as unknown as { directory: { prepare(q: string): { run(...a: unknown[]): void } } }).directory
+        .prepare(
+          `INSERT OR REPLACE INTO _substrat_tenant_tuples (tenant_id, subject, relation, object, expires_at)
+           VALUES (?, ?, ?, ?, NULL)`,
+        )
+        .run(tenant, subject, `granted:${permission}`, `tenant:${tenant}`);
+    },
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

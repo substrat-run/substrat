@@ -76,8 +76,8 @@ export async function reconcilePayloadFor(
 }
 
 /**
- * What a reconcile, provision or restore carries of the switch (#1742): the modules the
- * directory records OFF on this one scope. Spread into the call's body, so the deployment
+ * What a reconcile, provision or restore carries of the switches (#1742): the modules (and,
+ * #2029, the peers) the directory records OFF on this one scope. Spread into the call's body, so the deployment
  * switches them off again inside the unit that re-creates the scope's grants. Empty when
  * nothing is recorded off, so a body for a scope never switched off is unchanged.
  */
@@ -89,27 +89,41 @@ export interface SwitchCarry {
    * only because the platform says so. Absent when none is.
    */
   tenantHeld?: ModuleId[];
+  /**
+   * #2029: the peers the directory records OFF on this scope, switched off again in the same
+   * unit. A deployment built before the field strips it, and the re-assert after the call
+   * switches them off instead. Absent when none is.
+   */
+  switchedOffPeers?: string[];
+  /** Of `switchedOffPeers`, those held on this scope only by a tenant-level grant (#2030). */
+  tenantHeldPeers?: string[];
 }
+
+/** The slice of `HostAdmin` that `switchCarryFor` reads. */
+export type SwitchCarryAdmin = Pick<HostAdmin, 'listSystemSwitches' | 'tenantHeldSystemModules' | 'peerSwitchCarry'>;
 
 /**
  * Read the record for one scope, for `SwitchCarry`. The fleet read, narrowed to this scope
- * and `off`, and of those the modules the tenant holds a tenant-level grant for (#1823);
- * access-logged like the gather's other reads.
+ * and `off`, and of those the modules the tenant holds a tenant-level grant for (#1823); then
+ * the same for the peers (#2029). Access-logged like the gather's other reads.
  */
 export async function switchCarryFor(
-  admin: Pick<HostAdmin, 'listSystemSwitches' | 'tenantHeldSystemModules'>,
+  admin: SwitchCarryAdmin,
   actor: PlatformActorId,
   node: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<SwitchCarry> {
-  const rows = await admin.listSystemSwitches(actor, {
-    position: 'off',
-    tenantId: node.tenantId,
-    scopeId: node.scopeId,
-  });
-  if (!rows.length) return {};
+  const [rows, peers] = await Promise.all([
+    admin.listSystemSwitches(actor, { position: 'off', tenantId: node.tenantId, scopeId: node.scopeId }),
+    admin.peerSwitchCarry(actor, node),
+  ]);
   const switchedOff = rows.map((r) => r.moduleId);
-  const tenantHeld = await admin.tenantHeldSystemModules(actor, node.tenantId, switchedOff);
-  return { switchedOff, ...(tenantHeld.length ? { tenantHeld } : {}) };
+  const tenantHeld = switchedOff.length ? await admin.tenantHeldSystemModules(actor, node.tenantId, switchedOff) : [];
+  return {
+    ...(switchedOff.length ? { switchedOff } : {}),
+    ...(tenantHeld.length ? { tenantHeld } : {}),
+    ...(peers.switchedOffPeers.length ? { switchedOffPeers: peers.switchedOffPeers } : {}),
+    ...(peers.tenantHeldPeers.length ? { tenantHeldPeers: peers.tenantHeldPeers } : {}),
+  };
 }
 
 /**
@@ -130,7 +144,7 @@ export async function switchCarryFor(
  * Its own narrow admin slice: unlike the gather above, this one writes.
  */
 export async function reconcileThenReassert<T extends { switchedOff?: SwitchedOffInUnit[] } | 'unsupported'>(
-  admin: Pick<HostAdmin, 'reassertSystemSwitches' | 'listSystemSwitches' | 'tenantHeldSystemModules'>,
+  admin: Pick<HostAdmin, 'reassertSystemSwitches'> & SwitchCarryAdmin,
   actor: PlatformActorId,
   node: { tenantId: TenantId; scopeId: ScopeId },
   reconcile: (carry: SwitchCarry) => Promise<T>,

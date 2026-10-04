@@ -983,6 +983,26 @@ it('restoreScope sends the stamp a carry leaves on its copy, and none when not g
   ]);
 });
 
+it('restoreScope sends the recorded-off peers and their tenant-held ones, and reads back a peer move (#2029)', async () => {
+  const bodies: unknown[] = [];
+  const moved = { vertical: 'acme/board-room', held: true, changed: true, permissions: [] };
+  const client = new VerticalClient({
+    fetch: (async (_u: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ tables: 0, switchedOff: [moved] });
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  const out = await client.restoreScope(t, s, [], {
+    switchedOffPeers: ['acme/board-room'],
+    tenantHeldPeers: ['acme/board-room'],
+  });
+  expect(bodies).toEqual([
+    { tenantId: t, scopeId: s, tables: [], switchedOffPeers: ['acme/board-room'], tenantHeldPeers: ['acme/board-room'] },
+  ]);
+  expect(out).toEqual({ tables: 0, switchedOff: [moved] });
+});
+
 it('exportScopeStamped asks for the stamp and reads it off the export, null from a deployment that sends none (#1722)', async () => {
   const replies = [
     new Response('[]', { status: 200, headers: { 'x-substrat-load-stamp': 'stamp-3', 'x-substrat-write-revision': '7' } }),
@@ -1220,6 +1240,16 @@ describe('VerticalClient.peerSwitch (#1706)', () => {
     expect(seen).toEqual([
       { path: '/internal/peer-switch', body: { scopeId: s, vertical: 'acme/board-room', to: 'off' } },
     ]);
+  });
+
+  it("posts the platform's tenantHeld when it is given (#2030)", async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const client = answering(
+      () => new Response(JSON.stringify({ held: true, changed: true, permissions: [] }), { status: 200 }),
+      seen,
+    );
+    await client.peerSwitch({ ...input, tenantHeld: true });
+    expect(seen[0]?.body).toEqual({ scopeId: s, vertical: 'acme/board-room', to: 'off', tenantHeld: true });
   });
 
   it('a peer the scope holds nothing for is an answer, not a legacy signal', async () => {

@@ -977,7 +977,7 @@ function peerSwitchDelegationFor(env: Env): PeerSwitchDelegation | undefined {
             `cannot switch peer '${a.vertical}' ${a.to}`,
         );
       }
-      return client.peerSwitch({ scopeId: a.scopeId, vertical: a.vertical, to: a.to });
+      return client.peerSwitch({ scopeId: a.scopeId, vertical: a.vertical, to: a.to, tenantHeld: a.tenantHeld });
     },
     status: async (a) => {
       const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });

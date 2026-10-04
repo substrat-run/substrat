@@ -7,7 +7,9 @@ import {
   systemSwitchedOff,
   systemSwitchedOffMessage,
   switchRecordedOff,
-  tenantHoldsSystemGrant,
+  peerSwitchedOff,
+  recordedOffFromWire,
+  tenantHoldsGrant,
   tenantSystemSwitchedOffMessage,
   type SwitchSql,
 } from '../src/index.js';
@@ -115,9 +117,40 @@ describe('switchSystemSchedules (#1666)', () => {
     expect(systemSwitchedOff(sql, M)).toBe(true);
     expect(systemSwitchedOff(sql, '@m/y')).toBe(false);
   });
+
+  it('#2029: switchRecordedOff switches the recorded-off peers too, tenant-held ones included', () => {
+    const { db, sql } = fresh();
+    db.prepare(`INSERT INTO _substrat_tuples VALUES (?, ?, ?, NULL, NULL)`).run('vertical:acme/a', 'granted:p:read', `scope:${S}`);
+    const out = switchRecordedOff(sql, {
+      scopeId: S,
+      moduleIds: [],
+      at: 'x',
+      verticals: ['acme/a', 'acme/tenant-only', 'acme/nothing'],
+      tenantHeldVerticals: ['acme/tenant-only'],
+    });
+    expect(out.map((o) => [o.vertical, o.held, o.changed, o.permissions])).toEqual([
+      ['acme/a', true, true, ['p:read']],
+      ['acme/tenant-only', true, true, []],
+      ['acme/nothing', false, false, []],
+    ]);
+    expect(peerSwitchedOff(sql, 'acme/a')).toBe(true);
+    expect(peerSwitchedOff(sql, 'acme/tenant-only')).toBe(true);
+    expect(peerSwitchedOff(sql, 'acme/nothing')).toBe(false);
+  });
+
+  it('#2029: a wire carry names nothing to switch only when it names neither kind', () => {
+    expect(recordedOffFromWire({})).toBeUndefined();
+    expect(recordedOffFromWire({ switchedOff: [], switchedOffPeers: [] })).toBeUndefined();
+    expect(recordedOffFromWire({ switchedOffPeers: ['acme/a'], tenantHeldPeers: ['acme/a'] })).toEqual({
+      moduleIds: [],
+      tenantHeld: undefined,
+      verticals: ['acme/a'],
+      tenantHeldVerticals: ['acme/a'],
+    });
+  });
 });
 
-describe('tenantHoldsSystemGrant (#1823)', () => {
+describe('tenantHoldsGrant (#1823)', () => {
   const T = 't1';
   const M = '@m/x';
   const NOW = '2026-09-21T10:00:00.000Z';
@@ -149,9 +182,17 @@ describe('tenantHoldsSystemGrant (#1823)', () => {
 
   it('a live tenant-level grant holds; nothing, of course, does not', () => {
     const { sql, put } = fresh();
-    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(false);
+    expect(tenantHoldsGrant(sql, 'system', T, M, NOW)).toBe(false);
     put({});
-    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(true);
+    expect(tenantHoldsGrant(sql, 'system', T, M, NOW)).toBe(true);
+  });
+
+  it('#2030: a peer’s tenant grant is asked for as `vertical:<slug>`, never as a module', () => {
+    const { sql, put } = fresh();
+    put({ subject: 'vertical:acme/a' });
+    expect(tenantHoldsGrant(sql, 'peer', T, 'acme/a', NOW)).toBe(true);
+    expect(tenantHoldsGrant(sql, 'system', T, 'acme/a', NOW)).toBe(false);
+    expect(tenantHoldsGrant(sql, 'peer', T, M, NOW)).toBe(false);
   });
 
   it('only a live grant of THIS module, tenant and tenant node counts', () => {
@@ -161,9 +202,9 @@ describe('tenantHoldsSystemGrant (#1823)', () => {
     put({ subject: 'system:@m/other' });
     put({ tenant: 't2' });
     put({ relation: 'role:admin' });
-    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(false);
+    expect(tenantHoldsGrant(sql, 'system', T, M, NOW)).toBe(false);
     put({ relation: 'granted:x:later', expires: '2027-01-01T00:00:00.000Z' });
-    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(true);
+    expect(tenantHoldsGrant(sql, 'system', T, M, NOW)).toBe(true);
   });
 });
 

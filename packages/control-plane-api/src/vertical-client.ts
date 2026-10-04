@@ -259,6 +259,10 @@ export interface ProvisionInstanceInput {
   switchedOff?: ModuleId[];
   /** Of `switchedOff`, the modules held on this scope only by a tenant-level grant (#1823). */
   tenantHeld?: ModuleId[];
+  /** #2029: the peers the record holds OFF here, switched off in the same unit; a vertical that
+   *  predates the field ignores it. And of those, the ones held only by a tenant grant (#2030). */
+  switchedOffPeers?: string[];
+  tenantHeldPeers?: string[];
 }
 
 export interface ConfigureInstanceInput {
@@ -363,6 +367,9 @@ export interface ReconcileInstanceInput {
   switchedOff?: ModuleId[];
   /** Of `switchedOff`, the modules held only by a tenant-level grant (#1823) — as at provision. */
   tenantHeld?: ModuleId[];
+  /** #2029: the recorded-off peers, and those held only by a tenant grant — as at provision. */
+  switchedOffPeers?: string[];
+  tenantHeldPeers?: string[];
 }
 
 /**
@@ -872,7 +879,13 @@ export class VerticalClient {
    * it is, because the request may have landed and the switch may have moved before the
    * answer was lost.
    */
-  async peerSwitch(input: { scopeId: ScopeId; vertical: string; to: 'on' | 'off' }): Promise<PeerSwitchOutcome> {
+  async peerSwitch(input: {
+    scopeId: ScopeId;
+    vertical: string;
+    to: 'on' | 'off';
+    /** #2030: the platform holds a live tenant-level grant for the peer — see the route's body. */
+    tenantHeld?: boolean;
+  }): Promise<PeerSwitchOutcome> {
     const verb = 'peer-switch';
     const lost =
       `the switch for peer '${input.vertical}' on scope ${input.scopeId} may or may not have moved. ` +
@@ -1050,6 +1063,9 @@ export class VerticalClient {
     opts?: {
       switchedOff?: ModuleId[];
       tenantHeld?: ModuleId[];
+      /** #2029: the recorded-off peers, and those held only by a tenant grant (#2030). */
+      switchedOffPeers?: string[];
+      tenantHeldPeers?: string[];
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -1069,6 +1085,8 @@ export class VerticalClient {
         tables,
         ...(opts?.switchedOff ? { switchedOff: opts.switchedOff } : {}),
         ...(opts?.tenantHeld ? { tenantHeld: opts.tenantHeld } : {}),
+        ...(opts?.switchedOffPeers ? { switchedOffPeers: opts.switchedOffPeers } : {}),
+        ...(opts?.tenantHeldPeers ? { tenantHeldPeers: opts.tenantHeldPeers } : {}),
         ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
         ...(opts?.exact ? { exact: true } : {}),
         ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),

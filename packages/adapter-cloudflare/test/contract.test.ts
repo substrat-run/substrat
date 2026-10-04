@@ -168,7 +168,17 @@ const peerFixture = async () => {
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
-  return { host, cleanup: async () => host.close() };
+  // #2030: the directory's tenant tuple, then the projection every tenant-level write fans out
+  // to the tenant's scopes. No platform verb grants a peer tenant-wide yet, so the fixture does.
+  const internals = host as unknown as {
+    cp: { writeTenantTuple(t: string, s: string, r: string, o: string, e: string | null): Promise<unknown> };
+    fanOut(t: string): Promise<void>;
+  };
+  const seatTenantGrant = async (tenant: string, subject: string, permission: string) => {
+    await internals.cp.writeTenantTuple(tenant, subject, `granted:${permission}`, `tenant:${tenant}`, null);
+    await internals.fanOut(tenant);
+  };
+  return { host, seatTenantGrant, cleanup: async () => host.close() };
 };
 peerContractSuite('adapter-cloudflare', peerFixture);
 verticalResolutionContractSuite('adapter-cloudflare', peerFixture);
@@ -883,7 +893,7 @@ describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', (
             if (typeof value !== 'function') return value;
             return async (...a: unknown[]) => {
               const result = await target[prop as string]!(...a);
-              if (prop === 'systemSwitchRecordsOf' && afterRecordsRead) {
+              if (prop === 'switchRecordsOf' && afterRecordsRead) {
                 const hook = afterRecordsRead;
                 afterRecordsRead = null; // one-shot
                 await hook();
@@ -1056,7 +1066,7 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
   };
 
   it('an OFF whose record write fails moves nothing: the call fails, audited, and a repeat records and moves (#1823)', async () => {
-    const { host, node, deployment, outcomes, records } = await setup('recordSystemSwitchedOff', 1);
+    const { host, node, deployment, outcomes, records } = await setup('recordSwitchedOff', 1);
     const e = await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' }).then(() => null, (x: unknown) => x);
     expect(String(e)).toMatch(/control plane unreachable/);
     expect(deployment.calls).toBe(0);
@@ -1097,7 +1107,7 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
   });
 
   it("a failed ON whose record undo fails twice names it on the failed row, rather than dropping it", async () => {
-    const { host, node, deployment, outcomes } = await setup('restoreSystemSwitchRecord', 2);
+    const { host, node, deployment, outcomes } = await setup('restoreSwitchRecord', 2);
     await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
     deployment.fail = true;
     await expect(host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'fixed' })).rejects.toThrow(/unreachable/);
@@ -3435,12 +3445,49 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(reports.every((r) => r.fired === 2)).toBe(true);
     expect(counting.holdReads).toBe(1);
 
+    // Fresh scopes: the eight above are remembered clear now (#2029), and would read nothing.
+    const fresh = await Promise.all(Array.from({ length: 8 }, () => newScope()));
     const failing = countingScopes(env.SCOPE);
     failing.failReads = true;
     const cold = deployment(failing.ns);
-    const failed = await Promise.all(scopes.map((s) => pass(s, cold)));
+    const failed = await Promise.all(fresh.map((s) => pass(s, cold)));
     expect(failing.holdReads).toBe(1);
     expect(failed.flatMap((r) => r.errors).filter((e) => e.operation === 'switch-hold')).toHaveLength(1);
+  });
+
+  /**
+   * #2029: a host lives for one request, so its snapshot does not outlive it. A scope instance a
+   * door found with no claim at all is remembered clear for the isolate, and later doors on it read
+   * nothing from the hold object: a scope never rewound costs no hold read after its first. A
+   * rewind restarts the scope, and the new instance reads the hold afresh.
+   */
+  it('a scope instance read clear costs no further hold read, and a rewound one reads again', async () => {
+    const s = await newScope();
+    const first = countingScopes(env.SCOPE);
+    await pass(s, deployment(first.ns));
+    expect(first.holdReads).toBe(1);
+    const later = countingScopes(env.SCOPE);
+    for (let i = 0; i < 3; i++) await pass(s, deployment(later.ns));
+    expect(later.holdReads).toBe(0);
+    // Rewound past its switch: a new instance, which reads the hold, finds the claim, and holds.
+    const atBookmark = await host.exportScopeLocal(s);
+    await off(s);
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm-before-switch', { force: true });
+    await landRewind(env.SCOPE, s, atBookmark);
+    const after = countingScopes(env.SCOPE);
+    expect(await pass(s, deployment(after.ns))).toMatchObject({ fired: 0, switchedOff: true });
+    expect(after.holdReads).toBe(1);
+  });
+
+  it('twin: a failed read is not remembered — the next door on that instance reads again', async () => {
+    const s = await newScope();
+    const failing = countingScopes(env.SCOPE);
+    failing.failReads = true;
+    await pass(s, deployment(failing.ns));
+    const next = countingScopes(env.SCOPE);
+    await pass(s, deployment(next.ns));
+    expect(next.holdReads).toBe(1);
   });
 
   it('a consult does not join a read that went out longer ago than the snapshot age', async () => {
@@ -3538,6 +3585,64 @@ describe('#1819 — the co-located rewind holds, and the CP-full switch releases
     const s = await rewound();
     await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: node(s), reason: 'fixed' });
     expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 2, failed: 0 });
+  });
+
+  /**
+   * #2029, fixing #1823 × #1834 as merged: a module held on a scope ONLY by a tenant-level grant
+   * has no row there, so a rewind to before its switch leaves it `ungranted` in the scope, not
+   * `on`, while the tenant grant still authorizes it. The system door used to read the hold only
+   * for an `on` module, so such a module ran on the rewound scope. It now reads the hold for every
+   * subject the scope does not already have off.
+   */
+  describe('a module held only by a tenant-level grant (#2029 × #1823)', () => {
+    const tick = async (s: ScopeId) => (await host.getSystemScope(SCHED, t, s)).invoke('sched/tick');
+    /** Provisioned by a host that registers no module, so the scope seats no `system:` grant at all. */
+    const bareScope = async (): Promise<ScopeId> => {
+      const s = scopeId.parse(ulid());
+      const bare = new CloudflareScopeHost({
+        scope: env.SCOPE,
+        controlPlane: env.CONTROL_PLANE,
+        secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      });
+      await bare.provisionScope(staff, node(s));
+      await host.admin.activateScope(staff, t, s);
+      return s;
+    };
+    beforeAll(async () => {
+      await host.admin.grantToSystem(staff, {
+        moduleId: SCHED,
+        permission: permissionKey.parse('sched:tick'),
+        node: { tenantId: t, scopeId: null },
+        grantedBy: staff,
+      });
+    });
+
+    it('the rewound module is held at the door before any reconcile, and runs again after ON', async () => {
+      const s = await bareScope();
+      await expect(tick(s)).resolves.toBeUndefined(); // the tenant grant authorizes it here
+      const atBookmark = await host.admin.exportScope(staff, t, s);
+      await expect(
+        host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: node(s), reason: 'incident' }),
+      ).resolves.toMatchObject({ changed: true, permissions: [] });
+      await armRewind(env.SCOPE, s);
+      await host.admin.rewindScope(staff, t, s, 'bm', { force: true, localApply: true });
+      await landRewind(env.SCOPE, s, atBookmark.tables);
+      expect((await holdsOf(env.SCOPE).switchHoldsAll()).filter((h) => h.scopeId === s).map((h) => h.moduleId)).toEqual([
+        SCHED,
+      ]);
+      await expect(tick(s)).rejects.toMatchObject({ code: 'forbidden', message: expect.stringMatching(/held off/) });
+      await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: node(s), reason: 'fixed' });
+      await expect(tick(s)).resolves.toBeUndefined();
+    });
+
+    it('twin: nothing switched off — the rewound module is not held, and runs', async () => {
+      const s = await bareScope();
+      const atBookmark = await host.admin.exportScope(staff, t, s);
+      await armRewind(env.SCOPE, s);
+      await host.admin.rewindScope(staff, t, s, 'bm', { force: true, localApply: true });
+      await landRewind(env.SCOPE, s, atBookmark.tables);
+      await expect(tick(s)).resolves.toBeUndefined();
+    });
   });
 });
 
