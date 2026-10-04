@@ -72,6 +72,10 @@ describe('membership executor — a removal outside the seam against the skew wi
     return outcomes.filter((o) => o.entity === `membership:${joe}`).map((o) => o.outcome);
   };
 
+  it('the window is five minutes — the documented trade-off, pinned', () => {
+    expect(MEMBERSHIP_REMOVAL_SKEW_MS).toBe(5 * 60_000);
+  });
+
   it('a tie goes to the removal', async () => {
     const joe = principalId.parse(ulid());
     clock.set(await removedByHand(joe)); // the request is stamped in the removal's own millisecond
@@ -81,14 +85,14 @@ describe('membership executor — a removal outside the seam against the skew wi
   it('a removal stamped BEFORE the request, but within the window, still wins — the clocks are not comparable that finely', async () => {
     const joe = principalId.parse(ulid());
     const removedAt = await removedByHand(joe);
-    clock.set(new Date(Date.parse(removedAt) + MEMBERSHIP_REMOVAL_SKEW_MS - 1_000));
+    clock.set(new Date(Date.parse(removedAt) + 4 * 60_000)); // four minutes later: inside the window
     expect(await invitedAndAccepted(joe)).toEqual(['refused']);
   });
 
   it('twin: a removal further back than the window does not block a new invite', async () => {
     const joe = principalId.parse(ulid());
     const removedAt = await removedByHand(joe);
-    clock.set(new Date(Date.parse(removedAt) + MEMBERSHIP_REMOVAL_SKEW_MS + 1_000));
+    clock.set(new Date(Date.parse(removedAt) + 6 * 60_000)); // six minutes later: outside it
     expect(await invitedAndAccepted(joe)).toEqual(['delivered']);
   });
 });
