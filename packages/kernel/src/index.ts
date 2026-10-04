@@ -686,6 +686,8 @@ export {
   invocationStampOf,
   /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
   withInvocationLog,
+  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
+  fieldCoverageArmed,
 } from './invocation-log.js';
 export type {
   /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */

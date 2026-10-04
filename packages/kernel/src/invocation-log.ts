@@ -58,6 +58,8 @@
 // platform entry, #1893), and the root carries every schema in the vocabulary.
 import {
   encodeInvocationRecord,
+  FIELD_COVERAGE_ARMED,
+  FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
   type InvocationLevel,
@@ -98,7 +100,7 @@ export interface InvocationRecord {
   emitted?: EmittedReport;
   /**
    * #1331: which of the operation's DECLARED output fields its response carried. Filled
-   * only while the field-coverage switch is armed (`FIELD_COVERAGE_BINDING`), and absent
+   * only on a request the router armed the walk for ({@link fieldCoverageArmed}), and absent
    * otherwise — never an empty report, so "not walked" cannot read as "returned nothing".
    */
   outputFields?: OutputFieldsReport;
@@ -456,6 +458,11 @@ function pathOf(url: string): string {
 export interface InvocationStamp {
   invocationId: string;
   record: InvocationRecord;
+  /**
+   * #1923: the router asked for this request's response fields to be walked, and the request's
+   * router assertion verified. Decided once, when the stamp begins — see {@link armsFieldCoverage}.
+   */
+  fieldCoverage?: boolean;
 }
 
 /**
@@ -481,10 +488,44 @@ export function invocationStampOf(request: object): InvocationStamp | undefined 
   return stamps().get(request);
 }
 
-function beginStamp(request: object): InvocationStamp {
+/**
+ * #1923: whether the per-response field walk is armed for this request — the one question the
+ * walk's two callers in `vertical-host` (the operation routes and the MCP door) ask.
+ *
+ * `false` for a request no stamp covers, and for a stamp begun by a layer that predates the
+ * switch: every version skew between the platform's entry and a vertical's bundled kernel
+ * reads as off, never as on.
+ */
+export function fieldCoverageArmed(request: object): boolean {
+  return stamps().get(request)?.fieldCoverage === true;
+}
+
+function beginStamp<Env>(request: { headers: HeaderReader }, env: Env, options: InvocationLogOptions<Env>): InvocationStamp {
   const stamp: InvocationStamp = { invocationId: ulid(), record: {} };
+  if (armsFieldCoverage(request.headers, env, options)) stamp.fieldCoverage = true;
   stamps().set(request, stamp);
   return stamp;
+}
+
+/**
+ * #1923: did the ROUTER arm the field walk for this request?
+ *
+ * The header alone is a claim. It is honoured only on a request whose router assertion
+ * verifies, with the same secret and the same dev opt-out as the tenant on the line, because
+ * it is trusted for the same reason: the router strips every inbound `x-substrat-*` header,
+ * and a caller that reaches the script some other way holds no secret. An unrouted request,
+ * or one whose assertion fails, is never armed.
+ *
+ * The header is read first, so a request the router did not sample — almost all of them —
+ * pays one header read and no verification.
+ */
+function armsFieldCoverage<Env>(headers: HeaderReader, env: Env, options: InvocationLogOptions<Env>): boolean {
+  try {
+    if (headers.get(FIELD_COVERAGE_HEADER) !== FIELD_COVERAGE_ARMED) return false;
+  } catch {
+    return false;
+  }
+  return routedNodeOrNull(headers, env, options) !== null;
 }
 
 /** What a finished request looked like, for the line. */
@@ -592,7 +633,7 @@ export function invocationLog<Env = unknown>(
     const started = Date.now();
     // Minted per request, before anything can emit. A ULID so it sorts by time like
     // every other id on the spine.
-    const stamp = beginStamp(c.req.raw);
+    const stamp = beginStamp(c.req.raw, c.env, options);
     c.set?.('substratInvocationId', stamp.invocationId);
     c.set?.(INVOCATION_RECORD_KEY, stamp.record);
     let threw = false;
@@ -660,7 +701,7 @@ export function withInvocationLog<Env = unknown>(
     async fetch(request: IncomingRequest, env: Env, ctx: unknown): Promise<{ status: number }> {
       if (invocationStampOf(request)) return inner.call(worker, request, env, ctx);
       const started = Date.now();
-      const stamp = beginStamp(request);
+      const stamp = beginStamp(request, env, options);
       let status: number | null = null;
       let threw = false;
       try {

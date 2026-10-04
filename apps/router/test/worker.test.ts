@@ -861,3 +861,82 @@ describe('router kick (platform-intents)', () => {
     }
   });
 });
+
+/**
+ * #1923: the router arms the per-response field walk on a sampled fraction of requests, by a
+ * header under the stripped prefix. Off unless its rate says otherwise.
+ */
+describe('field-coverage sampling (#1923)', () => {
+  const HEADER = 'x-substrat-field-coverage';
+  const envAt = (rate: string | undefined, binding: Fetcher) =>
+    ({
+      ROUTER_SECRET: SECRET,
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: binding,
+      ...(rate === undefined ? {} : { FIELD_COVERAGE_SAMPLE_RATE: rate }),
+    }) as unknown as Env;
+
+  it('sends no header with no rate configured, and never draws a number', async () => {
+    const random = vi.spyOn(Math, 'random');
+    try {
+      const fsm = spyVertical();
+      await worker.fetch(get('https://acme.example.com/'), envAt(undefined, fsm.binding));
+      expect(fsm.seen().headers.get(HEADER)).toBeNull();
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it('strips a caller-supplied copy, whatever the rate', async () => {
+    for (const rate of [undefined, '0', 'nonsense', '5']) {
+      const fsm = spyVertical();
+      await worker.fetch(get('https://acme.example.com/', { [HEADER]: 'on' }), envAt(rate, fsm.binding));
+      expect(fsm.seen().headers.get(HEADER), String(rate)).toBeNull();
+    }
+  });
+
+  it('arms every request at rate 1, beside the signed assertion', async () => {
+    const fsm = spyVertical();
+    await worker.fetch(get('https://acme.example.com/'), envAt('1', fsm.binding));
+    expect(fsm.seen().headers.get(HEADER)).toBe('on');
+    expect(fsm.seen().headers.get('x-substrat-router')).toBe(SECRET);
+  });
+
+  it('arms a request only when it falls inside the rate', async () => {
+    const random = vi.spyOn(Math, 'random');
+    try {
+      random.mockReturnValue(0.009);
+      const inside = spyVertical();
+      await worker.fetch(get('https://acme.example.com/'), envAt('0.01', inside.binding));
+      expect(inside.seen().headers.get(HEADER)).toBe('on');
+
+      random.mockReturnValue(0.01);
+      const outside = spyVertical();
+      await worker.fetch(get('https://acme.example.com/'), envAt('0.01', outside.binding));
+      expect(outside.seen().headers.get(HEADER)).toBeNull();
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it('draws once per request, so a retried dispatch is the same request in or out of the sample', async () => {
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.1);
+    const sent: Array<string | null> = [];
+    let attempts = 0;
+    const flaky = {
+      fetch: async (req: Request) => {
+        sent.push(req.headers.get(HEADER));
+        if (++attempts === 1) throw new Error('Worker not found.');
+        return new Response('ok');
+      },
+    } as unknown as Fetcher;
+    try {
+      expect((await worker.fetch(get('https://acme.example.com/'), envAt('0.5', flaky))).status).toBe(200);
+      expect(sent).toEqual(['on', 'on']);
+      expect(random).toHaveBeenCalledTimes(1);
+    } finally {
+      random.mockRestore();
+    }
+  });
+});

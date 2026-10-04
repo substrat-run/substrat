@@ -11,6 +11,7 @@ export {
   INVOCATION_RECORD_KEY,
   invocationStampOf,
   withInvocationLog,
+  fieldCoverageArmed,
 } from '@substrat-run/kernel';
 export type {
   InvocationLogLine,

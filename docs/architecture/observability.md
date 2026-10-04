@@ -259,7 +259,7 @@ It carries them as additive top-level fields, which Workers Logs indexes like `t
 | `principalKind` | `ScopeStub.subjectKind`, decided by the door that minted the stub: `principal`, `connection`, `system`, `capability`, `vertical` | the stub is the vertical's own and does not say |
 | `eventCount`, `eventTypes`, `entities` | `InvokeOptions.onEmitted`: the rows the operation added to the outbox, read after its commit and **before** the consumer drain | not recorded. `0` and `[]` are a fact: the call emitted nothing |
 | `versionId` | the platform's `SUBSTRAT_VERSION_ID` binding | a local run, or a script pushed before the binding existed |
-| `outputFields` | `mountOperations`' field walk (#1331): `{ present, empty, absent }`, the operation's declared output field names split three ways: carried with a value, carried as `null`, or not carried at all | **omitted, not `null`**: the walk is off unless the platform arms `SUBSTRAT_FIELD_COVERAGE=on`, and an unarmed line stays byte-for-byte what it was. Also omitted for a failed call, an empty list, or an operation declaring no output fields. Set by `mountOperations`' routes and by the MCP mount's tool calls alike |
+| `outputFields` | `mountOperations`' field walk (#1331): `{ present, empty, absent }`, the operation's declared output field names split three ways: carried with a value, carried as `null`, or not carried at all | **omitted, not `null`**: the walk runs only on a request the router armed (below), and an unarmed line stays byte-for-byte what it was. Also omitted for a failed call, an empty list, or an operation declaring no output fields. Set by `mountOperations`' routes and by the MCP mount's tool calls alike |
 
 `outputFields` is the observed half of field coverage, whose declared half (#1321) rides the
 deploy manifest. The walk costs O(declared fields), never O(response): it asks the result
@@ -285,6 +285,30 @@ it came from. Any store built from it must still **aggregate per (operation, fie
 counts over a window, and never keep the per-request buckets. The question field coverage
 asks is "is this field ever returned", and a count answers it without holding a fact about
 any one record.
+
+**Arming (#1923).** The walk is armed per request by the router, never by a binding: a
+binding changes only on a push, so turning it off would mean re-pushing every vertical. The
+router reads `FIELD_COVERAGE_SAMPLE_RATE` (a decimal in `(0, 1]`; absent, unparseable,
+negative or above one is off) and, on a request inside the sample, sends
+`x-substrat-field-coverage: on` beside its assertion, drawn once so a retried dispatch is the
+same request in or out of it. The stamp (`withInvocationLog`, or the `invocationLog`
+middleware) honours the header only when the request's router assertion verifies, with the
+same secret and dev opt-out as the line's tenant. The router strips every inbound
+`x-substrat-*` header, so a caller cannot send it through the router, and a caller that
+reaches a script another way holds no secret. An unsampled request pays one header read. A
+version skew in either direction (an older entry, an older `vertical-host`) reads as off.
+The walk only reads: an armed response has the same status, headers and body as an unarmed
+one, and a walk that throws leaves the response unobserved, never failed.
+
+**Reading it (#1923).** The report is vertical-asserted, like `operation`. A vertical can
+mislabel its own responses, and its code can log a line shaped like the platform's naming
+any tenant. So the one sanctioned reading is `tallyFieldCoverage` (`control-plane-api`): one
+tenant, the caller's, with no every-tenant spelling; lines from the app's own script family
+only (`$metadata.service`, which the log platform stamps); reports refused whole when
+malformed, duplicated, past the declared half's 200-name cap, or (given the declaration)
+naming a field or operation it lacks; and counts per (operation, field) with the number of
+responses behind them, never a path, scope, id or time. A request record (`/tenant-requests`)
+does not carry `outputFields` at all. No read route or store is built on the tally yet.
 
 The MCP door is walked with the same function and the same rules (#1923). A tool's walk is
 derived from its operation's declared `output` when the tool list is derived, the switch is read

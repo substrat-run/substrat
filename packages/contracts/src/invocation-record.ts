@@ -75,21 +75,55 @@ export function decodeInvocationRecord(value: string | null | undefined): {
 }
 
 /**
- * The switch that arms the per-response field walk (#1331), as a binding on the vertical's
- * env: the walk runs only when this reads exactly {@link FIELD_COVERAGE_ARMED}.
+ * The switch that arms the per-response field walk (#1331) for ONE request (#1923): a
+ * request header the router asserts, and the walk runs only when it reads exactly
+ * {@link FIELD_COVERAGE_ARMED}.
  *
- * Off by default, and nothing sets it yet — so until the platform injects it the walk costs
- * a request nothing. A `SUBSTRAT_` name on purpose: the deploy check refuses that namespace
- * in a vertical's declared bindings, so arming it is the platform's decision (the model
- * binding's fleet switch is the precedent), never a vertical's.
+ * A request header rather than a binding on the vertical's script, because a binding changes
+ * only on a push: turning the walk off would have meant re-pushing every vertical, and it
+ * could only be on for every request or none. The router decides per request instead, and
+ * sends it on a sampled fraction of them (`FIELD_COVERAGE_SAMPLE_RATE` on the router), so
+ * off is instant and the walk's cost is bounded by the rate.
  *
- * Here rather than in `vertical-host`, which reads it, because the side that will inject it
- * does not depend on that package, and the two must agree on the spelling.
+ * Trusted on exactly the terms the tenant assertion is: the vertical's stamp honours it only
+ * on a request whose router assertion verifies (`readRoutedNode`), and the router strips
+ * every inbound `x-substrat-*` header, so a caller cannot arm it by sending it. A request with
+ * no header pays one header read and nothing else.
+ *
+ * Here rather than in `vertical-host` or the kernel, because the router depends on neither,
+ * and both ends must agree on the spelling.
  */
-export const FIELD_COVERAGE_BINDING = 'SUBSTRAT_FIELD_COVERAGE';
+export const FIELD_COVERAGE_HEADER = 'x-substrat-field-coverage';
 
-/** The one value of {@link FIELD_COVERAGE_BINDING} that arms the walk. Anything else is off. */
+/** The one value of {@link FIELD_COVERAGE_HEADER} that arms the walk. Anything else is off. */
 export const FIELD_COVERAGE_ARMED = 'on';
+
+/**
+ * The router's sample rate, read from its `FIELD_COVERAGE_SAMPLE_RATE` var: a fraction of
+ * requests in `[0, 1]`, written as a decimal (`0.01` is one request in a hundred).
+ *
+ * Strict, and every doubt is off: absent, empty, unparseable, `NaN`, infinite, negative or
+ * ABOVE `1` reads as `0`. Above one is refused rather than clamped because the likely
+ * meaning of `50` is "one in fifty" or "fifty percent", and clamping either to every request
+ * would be the most expensive reading of a typo. The walk is off by default; a router nobody
+ * configured arms nothing.
+ */
+export function fieldCoverageSampleRate(value: unknown): number {
+  if (typeof value !== 'string' && typeof value !== 'number') return 0;
+  const rate = typeof value === 'number' ? value : value.trim() === '' ? NaN : Number(value);
+  if (!Number.isFinite(rate) || rate <= 0 || rate > 1) return 0;
+  return rate;
+}
+
+/**
+ * Whether one request is in the sample. `random` is `Math.random` in the router and a fixed
+ * value in a test. A rate of `0` never samples and never draws.
+ */
+export function fieldCoverageSampled(rate: number, random: () => number = Math.random): boolean {
+  if (!(rate > 0) || rate > 1) return false;
+  if (rate === 1) return true;
+  return random() < rate;
+}
 
 /** The level a request is filed under (#1746). See {@link invocationLevelOf}. */
 export type InvocationLevel = 'error' | 'warn' | 'info';

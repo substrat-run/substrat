@@ -114,11 +114,10 @@ export const freshnessSpec = z.object({
 export type FreshnessSpec = z.infer<typeof freshnessSpec>;
 
 /**
- * The binding namespace the platform injects into a pushed script — `SUBSTRAT_VERSION_ID`,
- * `SUBSTRAT_FIELD_COVERAGE` (#1331) — and a vertical therefore never names. Refused in a
- * declared binding (`assertSandboxContract`) and in a declared env var (`envVarSpec` below):
- * a vertical whose config could set `SUBSTRAT_FIELD_COVERAGE=on` would arm a platform switch
- * from its own settings form.
+ * The binding namespace the platform injects into a pushed script — `SUBSTRAT_VERSION_ID` —
+ * and a vertical therefore never names. Refused in a declared binding (`assertSandboxContract`)
+ * and in a declared env var (`envVarSpec` below): a vertical whose config could set a
+ * `SUBSTRAT_` value would be speaking for the platform from its own settings form.
  */
 export const PLATFORM_BINDING_PREFIX = 'SUBSTRAT_';
 

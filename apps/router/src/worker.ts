@@ -23,6 +23,10 @@ import {
 } from '@substrat-run/adapter-cloudflare/routing';
 import {
   decodeInvocationRecord,
+  FIELD_COVERAGE_ARMED,
+  FIELD_COVERAGE_HEADER,
+  fieldCoverageSampled,
+  fieldCoverageSampleRate,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
   peerCallRequest,
@@ -50,6 +54,13 @@ export interface Env {
    * boundary hold in code even when the config slips.
    */
   ROUTER_SECRET?: string;
+  /**
+   * #1923: the fraction of dispatched requests the router arms the per-response field walk
+   * for (`FIELD_COVERAGE_HEADER`), as a decimal in `(0, 1]` — `0.01` is one in a hundred.
+   * Absent is off, and so is anything `fieldCoverageSampleRate` does not read as a rate.
+   * A router var, so the walk is turned on, down or off without re-pushing any vertical.
+   */
+  FIELD_COVERAGE_SAMPLE_RATE?: string;
   /**
    * The Workers-for-Platforms dispatch namespace holding every pushed vertical
    * (orchestration.md §5.4). The router dispatches on the scope's bound version's
@@ -193,7 +204,7 @@ function verticalFor(env: Env, target: RouteTarget, hostname: string): Fetcher |
  * router must be the only thing that can write them. Stripping by prefix rather than
  * by name means a header added later is covered by default instead of by remembering.
  */
-function assertNode(request: Request, target: RouteTarget, secret?: string): Request {
+function assertNode(request: Request, target: RouteTarget, secret?: string, fieldCoverage = false): Request {
   const headers = new Headers();
   for (const [k, v] of request.headers) {
     if (!k.toLowerCase().startsWith(ASSERTED_PREFIX)) headers.set(k, v);
@@ -203,6 +214,9 @@ function assertNode(request: Request, target: RouteTarget, secret?: string): Req
   headers.set('x-substrat-surface', target.surface);
   if (target.verticalSlug) headers.set('x-substrat-vertical', target.verticalSlug);
   if (secret) headers.set('x-substrat-router', secret);
+  // #1923: this request is in the field-coverage sample. Under the stripped prefix like the
+  // rest, so the only copy a vertical ever sees is this one.
+  if (fieldCoverage) headers.set(FIELD_COVERAGE_HEADER, FIELD_COVERAGE_ARMED);
   return new Request(request, { headers });
 }
 
@@ -403,14 +417,18 @@ async function dispatch(
   // termination and processing at the edge, ahead of this worker, and the DO
   // jurisdiction pins storage and execution (K-7). Both halves are configuration.
   // Re-checking it in code would be a third enforcement point that can disagree.
-  const forwarded = assertNode(request, target, env.ROUTER_SECRET);
+  //
+  // #1923: whether this request is in the field-coverage sample, drawn once, so a retry is
+  // the same request in or out of it.
+  const sampled = fieldCoverageSampled(fieldCoverageSampleRate(env.FIELD_COVERAGE_SAMPLE_RATE));
+  const forwarded = assertNode(request, target, env.ROUTER_SECRET, sampled);
 
   try {
     return await vertical.fetch(forwarded);
   } catch (e) {
     if (!isTransientDispatchFailure(e) || !isReplayable(request)) throw e;
     try {
-      return await vertical.fetch(assertNode(request, target, env.ROUTER_SECRET));
+      return await vertical.fetch(assertNode(request, target, env.ROUTER_SECRET, sampled));
     } catch (retryError) {
       if (!isTransientDispatchFailure(retryError)) throw retryError;
       // Twice is enough to distinguish a propagation gap from a script that is

@@ -3,6 +3,7 @@ import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type CubeStore, type RequestCubeRow } from './aggregate-source.js';
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
+import { serviceFamilyPattern } from './service-family.js';
 import type {
   ObservabilityReader,
   ObservedEgressRow,
@@ -79,27 +80,20 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
   return filters;
 }
 
-/** A lowercased ULID, as it ends a per-version script name (`deploymentRefFor`). */
-const SCRIPT_ULID = '[0-9a-hjkmnp-tv-z]{26}';
-
 /**
- * #1877: one vertical's script FAMILY, as a filter on `$metadata.service` — the field
- * Workers Logs indexes every event by. The stem itself is the serving script; `<stem>-<ulid>`
- * is a per-version script (previews, legacy scopes); `<stem>-eu` / `-us` a jurisdictional one
- * (K-30).
+ * #1877: one vertical's script FAMILY, as a filter on `$metadata.service` (`service-family.ts`
+ * says which names are in it).
  *
  * Two leaves, both required: `starts_with` is the one the store can narrow a scan on, and the
- * anchored regex is what makes it exact — another vertical whose stem merely begins with this
- * one (`ticket0` and `ticket0-crm`) is not in the family.
+ * anchored regex is what makes it exact.
  */
 function familyFilter(stem: string): TelemetryFilter {
-  const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return {
     kind: 'group',
     filterCombination: 'and',
     filters: [
       { key: '$metadata.service', operation: 'starts_with', type: 'string', value: stem },
-      { key: '$metadata.service', operation: 'regex', type: 'string', value: `^${escaped}(-${SCRIPT_ULID})?(-(eu|us))?$` },
+      { key: '$metadata.service', operation: 'regex', type: 'string', value: serviceFamilyPattern(stem) },
     ],
   };
 }

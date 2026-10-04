@@ -10,6 +10,11 @@
 //                                           # global secret the control plane + verticals hold
 //   pnpm --filter @substrat-run/router run deploy
 //
+// Optional (#1923): the field-coverage walk's sample rate, a decimal in (0, 1] — `0.01` is
+// one dispatched request in a hundred. Absent, or anything else, is off. Set as a secret so
+// it changes without a code deploy, and never with a vertical re-push:
+//   wrangler secret put FIELD_COVERAGE_SAMPLE_RATE      # `wrangler secret delete` turns it off
+//
 // Then bind hostnames with `HostAdmin.bindHostname` (console, or the control-plane
 // API) and set them `active`. Until a hostname is bound and active, the router
 // answers 404 — a name it does not know is a name it will not serve.
