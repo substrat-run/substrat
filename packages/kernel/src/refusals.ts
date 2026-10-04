@@ -17,9 +17,10 @@
  * `ctx.atomic` and recovered from is the vertical's business — its operation committed.
  *
  * **What a row holds, and what it never does.** Keys and vocabulary only: the record's type
- * and id, state names, operation and predicate names, the problem code (held to the
- * `problemReason` grammar), the actor's id and the call's. Never the error's message, the operation's input, or a guard's config — any of
- * those can quote what a person typed. So a row has nothing for a subject erasure to rewrite
+ * (held to the entity-type grammar, `refusalEntityType`) and id, state names, operation and
+ * predicate names, the problem code (held to the `problemReason` grammar), the actor's id
+ * and the call's. Never the error's message, the operation's input, or a guard's config —
+ * any of those can quote what a person typed. So a row has nothing for a subject erasure to rewrite
  * (master-plan §5.3: pseudonymous keys and transaction facts remain), which is the denial
  * log's position too, and it is kept the way the denial log is: `drained_at` marks a shipped
  * row, and rows drain rather than expire.
@@ -29,6 +30,7 @@ import {
   INVALID_TRANSITION,
   problemReason,
   UNRECOGNIZED_REFUSAL_REASON,
+  refusalEntityType,
   refusedRecordOf,
   refusedTransitionOf,
   type RefusedTransition,
@@ -211,7 +213,9 @@ export function refusalInsert(row: RefusalRow): { sql: string; params: (string |
       guard ? 'guard' : 'transition',
       row.tenantId,
       row.scopeId,
-      r.entityType,
+      // The type reaches here from code that may be handed request data; kept only when it
+      // is spelled as one. The id stays: it is the record's key, the join every log shares.
+      refusalEntityType(r.entityType),
       r.entityId,
       transition?.from ?? null,
       transition?.attempted ?? null,

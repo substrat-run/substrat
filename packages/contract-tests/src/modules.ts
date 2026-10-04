@@ -1608,14 +1608,21 @@ export const gateMod: ModuleRegistration = {
     // #1745: refuses with a conflict unless the input says `open`. It writes first, so a
     // case can see the rollback took the predicate's own write too, and its message quotes
     // the input's `note` — which a recorded refusal must never carry. A `reason` in the input
-    // becomes the problem's reason, so a case can put request text there too.
+    // becomes the problem's reason, and an `entityType` the record's type, so a case can put
+    // request text in either.
     'gate/must-be-open': (ctx, _config, input) => {
-      const { id, open, note, reason } = input as { id: string; open?: boolean; note?: string; reason?: string };
+      const { id, open, note, reason, entityType } = input as {
+        id: string;
+        open?: boolean;
+        note?: string;
+        reason?: string;
+        entityType?: string;
+      };
       ctx.sql.exec('INSERT INTO guarded_t (v) VALUES (?)', [`gate saw ${id}`]);
       if (!open) {
         throw nameRefusedRecord(
           substratError('conflict', `gate closed for ${id}: ${String(note)}`, { reason: reason ?? 'gate_closed' }),
-          { entityType: 'guarded-thing', entityId: id },
+          { entityType: entityType ?? 'guarded-thing', entityId: id },
         );
       }
     },

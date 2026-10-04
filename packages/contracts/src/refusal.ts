@@ -3,6 +3,7 @@ import { actor } from './events.js';
 import { impersonationStamp } from './impersonation.js';
 import { scopeId, tenantId } from './ids.js';
 import { lifecycleActorKind } from './lifecycle-flow.js';
+import { OBJECT_NAMESPACE, isKernelNamespace } from './object-ref.js';
 
 /**
  * The read side of the refusal log (#1745) — a scope-local record of every lifecycle move
@@ -59,6 +60,8 @@ export const refusalRecord = z.object({
   /**
    * The record the refusal was about. Null when the refusing code did not name it — the
    * caller of `assertTransition`, or a guard predicate that did not `nameRefusedRecord`.
+   * The type is `UNDECLARED_ENTITY_TYPE` when what it was handed is not spelled as one
+   * (`refusalEntityType`).
    */
   entityType: z.string().nullable(),
   entityId: z.string().nullable(),
@@ -139,4 +142,30 @@ export function refusedRecordOf(err: unknown): { entityType: string; entityId: s
   if (err === null || typeof err !== 'object') return null;
   const r = (err as Record<symbol, unknown>)[REFUSED_RECORD];
   return r !== null && typeof r === 'object' ? (r as { entityType: string; entityId: string }) : null;
+}
+
+/** What a refusal row stores as its entity type when the one it was handed is not one. */
+export const UNDECLARED_ENTITY_TYPE = 'undeclared';
+/** The longest entity type a refusal row keeps. */
+export const REFUSAL_ENTITY_TYPE_MAX = 64;
+
+/**
+ * The entity type a refusal row keeps (#1745): the one it was handed when that is spelled as
+ * an entity type — the tuple namespace grammar (`OBJECT_NAMESPACE`, which `ctx.link` and every
+ * entity-narrowed grant are held to), not a kernel namespace, at most
+ * `REFUSAL_ENTITY_TYPE_MAX` — and `UNDECLARED_ENTITY_TYPE` otherwise. Null stays null: the
+ * record was not named.
+ *
+ * Needed because the type reaches a row from code that is handed request data — a guard
+ * predicate naming its record with `nameRefusedRecord` — and the ref takes any string. The
+ * grammar refuses an address, a sentence, anything with a space; it cannot tell a bare word
+ * from a type, which no runtime registry of a scope's entity types exists to do.
+ */
+export function refusalEntityType(entityType: string | null): string | null {
+  if (entityType === null) return null;
+  return entityType.length <= REFUSAL_ENTITY_TYPE_MAX &&
+    OBJECT_NAMESPACE.test(entityType) &&
+    !isKernelNamespace(entityType)
+    ? entityType
+    : UNDECLARED_ENTITY_TYPE;
 }

@@ -6998,6 +6998,16 @@ export function scopeHostContractSuite(
       expect(leakRow).toMatchObject({ kind: 'guard', reason: 'unrecognized', entityId: 'g-leak' });
       expect(JSON.stringify(leakRow)).not.toMatch(/ada@example\.com|call ada/);
 
+      // The same for the record's type, which a predicate names from whatever it was handed:
+      // kept only when spelled as an entity type. The id stays — it is the record's key.
+      const typed = ulid();
+      await expect(
+        stub.invoke('guarded/open', { id: 'g-typed', entityType: 'ada@example.com' }, { invocationId: typed }),
+      ).rejects.toThrow(/gate closed/);
+      const [typedRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: typed });
+      expect(typedRow).toMatchObject({ kind: 'guard', entityType: 'undeclared', entityId: 'g-typed' });
+      expect(JSON.stringify(typedRow)).not.toMatch(/ada@example\.com/);
+
       // The rollback took the predicate's own write with it, and the handler never ran —
       // the refusal row is the one write that survived.
       expect(await stub.invoke<string[]>('guarded/rows')).toEqual(rowsBefore);

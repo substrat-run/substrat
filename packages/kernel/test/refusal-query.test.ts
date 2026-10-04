@@ -119,6 +119,48 @@ describe('guard refusals (#1745, K-38)', () => {
     ...over,
   });
 
+  it('keeps a record type only when it is spelled as one, for either kind; the id stays', () => {
+    const d = db();
+    const cases: [string, string][] = [
+      ['ada@example.com', 'undeclared'],
+      ['call me maybe', 'undeclared'],
+      ['principal', 'undeclared'], // a kernel namespace is never an entity type
+      ['x'.repeat(65), 'undeclared'],
+      ['aiTurn', 'aiTurn'],
+      ['work-order', 'work-order'],
+      ['guarded_thing', 'guarded_thing'],
+    ];
+    for (const [given] of cases) {
+      for (const refused of [
+        guard({ entityType: given, entityId: `id-${given.length}` }),
+        { entityType: given, entityId: `id-${given.length}`, from: 'closed', operation: 'shop/complete', attempted: null },
+      ]) {
+        const q = refusalInsert({
+          tenantId: T,
+          scopeId: S,
+          refused,
+          invokedOperation: 'x',
+          actor: JSON.stringify(ALICE),
+          impersonation: null,
+          invocationId: given,
+          at: '2026-10-01T12:00:00.000Z',
+        });
+        d.prepare(q.sql).run(...q.params);
+      }
+    }
+    const stored = d.prepare('SELECT entity_type, entity_id, invocation_id FROM _substrat_refusals').all() as {
+      entity_type: string;
+      entity_id: string;
+      invocation_id: string;
+    }[];
+    for (const [given, kept] of cases) {
+      const rows = stored.filter((r) => r.invocation_id === given);
+      expect(rows.map((r) => r.entity_type), given).toEqual([kept, kept]);
+      expect(rows.every((r) => r.entity_id === `id-${given.length}`)).toBe(true);
+    }
+    expect(JSON.stringify(stored.map(({ entity_type }) => entity_type))).not.toContain('ada@example.com');
+  });
+
   it('never stores a reason outside the code grammar, whoever calls the INSERT', () => {
     const d = db();
     const q = refusalInsert({
