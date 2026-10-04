@@ -189,22 +189,50 @@ describe('serviceFamilyMatcher', () => {
   });
 });
 
-/** The per-request view stays without the report: aggregate-only means no request record carries it. */
-describe('request records never carry outputFields (#1923)', () => {
+/**
+ * The per-event reads stay without the report: aggregate-only means no request record, tenant
+ * log line or service log line carries it (Codex r1 on #2024).
+ */
+describe('per-event reads never carry outputFields (#1923)', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('a stamped line with a report lists as a request record without it', async () => {
+  /** A backend that answers every query with the given events. */
+  function readerAnswering(events: unknown[]) {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(JSON.stringify({ success: true, result: { events: { events: [line()] } } }), { status: 200 }),
-      ),
+      vi.fn(async () => new Response(JSON.stringify({ success: true, result: { events: { events } } }), { status: 200 })),
     );
-    const reader = createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'substrat_router_test' });
-    const records = await reader.tenantRequests!({ tenantId: TENANT, from: 0, to: 10_000, limit: 10 });
+    return createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'substrat_router_test' });
+  }
+
+  const carriesNoReport = (value: unknown) => {
+    const text = JSON.stringify(value);
+    expect(text).not.toContain('outputFields');
+    expect(text).not.toContain('owner_email');
+  };
+
+  it('a request record', async () => {
+    const records = await readerAnswering([line()]).tenantRequests!({ tenantId: TENANT, from: 0, to: 10_000, limit: 10 });
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({ operation: 'acme/get-card' });
-    expect(records[0]).not.toHaveProperty('outputFields');
-    expect(JSON.stringify(records)).not.toContain('owner_email');
+    carriesNoReport(records);
+  });
+
+  it("a tenant log line — the stamped line's raw event included", async () => {
+    const events = await readerAnswering([line()]).tenantLogs!({ tenantId: TENANT, hours: 24, limit: 10 });
+    expect(events).toHaveLength(1);
+    // The rest of the line is still there: only the report is withheld.
+    expect((events[0]!.raw as { source: Record<string, unknown> }).source).toMatchObject({ operation: 'acme/get-card', tenantId: TENANT });
+    carriesNoReport(events);
+  });
+
+  it('a service log line', async () => {
+    const events = await readerAnswering([line()]).recentLogs({ services: SERVICES, hours: 24, limit: 10 });
+    expect(events).toHaveLength(1);
+    carriesNoReport(events);
+  });
+
+  it('the tally, reading the unprojected events, still counts it', () => {
+    expect(tallyFieldCoverage([line()], scope).operations).toHaveLength(1);
   });
 });

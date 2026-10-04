@@ -474,6 +474,20 @@ function withRuntimeTimings(e: RecentLogEvent, byRequest: Map<string, Record<str
 }
 
 /**
+ * #1923: a raw event as it may leave a per-event read — the stamped line WITHOUT its
+ * `outputFields`. That report is one response's data, beside a path that can name a record,
+ * and its only sanctioned reading is the aggregate `tallyFieldCoverage`, which reads the
+ * unprojected events. Every per-event read projects through `projectEvent`, so stripping here
+ * keeps it off all of them.
+ */
+function withoutOutputFields(e: Record<string, unknown>): Record<string, unknown> {
+  const source = e['source'];
+  if (source === null || typeof source !== 'object' || !('outputFields' in source)) return e;
+  const { outputFields: _report, ...rest } = source as Record<string, unknown>;
+  return { ...e, source: rest };
+}
+
+/**
  * One backend event → the seam's neutral `RecentLogEvent`.
  *
  * Shared by the service-grain and tenant-grain readers so a field learned in one is not
@@ -501,7 +515,7 @@ function projectEvent(e: Record<string, unknown>): RecentLogEvent {
     requestId: str(metadata['requestId']) ?? str(workers['requestId']),
     cpuTimeMs: num(workers['cpuTimeMs']),
     wallTimeMs: num(workers['wallTimeMs']),
-    raw: e,
+    raw: withoutOutputFields(e),
   };
 }
 
