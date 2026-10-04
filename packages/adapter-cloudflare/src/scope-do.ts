@@ -257,6 +257,9 @@ import {
   redactSecrets,
   redactSecretText,
   moduleLog,
+  asyncInvocationId,
+  asyncLinePass,
+  type AsyncLinePass,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
   readCapabilityPage,
@@ -1622,11 +1625,29 @@ export function defineScopeDO(
           );
         };
 
+        // #1901: one line per (event, importing module), as for the scope's own consumers.
+        // The handler runs as the producer's peer, so that is who the line says it ran as.
+        const lines = asyncLinePass();
+        const unitOf = (moduleId: string, eventId: string, eventType: string) => ({
+          kind: 'consumer' as const,
+          tenantId,
+          scopeId,
+          invocationId: asyncInvocationId(null),
+          operation: moduleId,
+          eventType,
+          eventId,
+          attempt: 1,
+          startedAt: Date.now(),
+          principalKind: peerSubject.kind,
+          versionId: this.env.SUBSTRAT_VERSION_ID ?? null,
+        });
+
         for (const w of batch.withheld) {
           this.sql.exec(IMPORT_RECORD_SQL, w.id, source.scopeId, source.vertical, w.type, w.schemaVersion,
             w.occurredAt, w.entity.entityType, w.entity.entityId, 0, w.reason, at);
           for (const moduleId of this.crossVertical.modulesImporting(source.vertical, w.type)) {
             deadLetter(w.id, moduleId, at, withheldNote(w.reason, source.vertical));
+            lines.write({ ...unitOf(moduleId, w.id, w.type), outcome: 'dead-lettered' });
           }
           result.withheld += 1;
         }
@@ -1640,12 +1661,15 @@ export function defineScopeDO(
             ran = true;
             if (imp.schemaVersion !== e.schemaVersion) {
               deadLetter(e.id, imp.moduleId, at, withheldNote('version', source.vertical));
+              lines.write({ ...unitOf(imp.moduleId, e.id, e.type), outcome: 'dead-lettered' });
               result.deadLettered += 1;
               continue;
             }
             const { hops: _hops, ...fact } = e;
             const event: ImportedEvent = structuredClone({ ...fact, source });
+            const unit = unitOf(imp.moduleId, e.id, e.type);
             this.causedBy = e.id;
+            this.unitInvocationId = unit.invocationId;
             try {
               await this.revision.transaction(async () => {
                 // As the producer's principal: real checks against the grants this vertical's
@@ -1660,12 +1684,15 @@ export function defineScopeDO(
                 );
               });
               result.delivered += 1;
+              lines.write({ ...unit, outcome: 'delivered' });
             } catch (err) {
               // Dead-letter (v0), outside the rolled-back transaction.
               deadLetter(e.id, imp.moduleId, new Date().toISOString(), String(err));
               result.deadLettered += 1;
+              lines.write({ ...unit, outcome: 'dead-lettered', error: err });
             } finally {
               this.causedBy = null;
+              this.unitInvocationId = null;
             }
           }
           if (!ran) result.duplicates += 1;
@@ -1673,6 +1700,7 @@ export function defineScopeDO(
 
         this.sql.exec(IMPORT_CURSOR_ADVANCE_SQL, source.scopeId, source.vertical, batch.next, at);
         result.cursor = batch.next;
+        lines.end();
         await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return result;
       });
@@ -5688,6 +5716,13 @@ export function defineScopeDO(
      * later alarm-driven drain with a call it had nothing to do with.
      */
     private invocationId: string | null = null;
+    /**
+     * #1901: the id a unit of async work with no call around it logs under — a consumer a
+     * seed or an import delivered — set for its handler's duration and cleared after. Read
+     * by `ctx.log` only, never the spine: an event a consumer emits outside a call still
+     * records no invocation (#1525), while its log lines join the consumer's own line.
+     */
+    private unitInvocationId: string | null = null;
 
     private async dispatch(
       tenantId: TenantId,
@@ -5698,6 +5733,21 @@ export function defineScopeDO(
        * whole cascade is one call's work.
        */
       invocationId: string | null,
+    ): Promise<void> {
+      // #1901: one line per delivery, capped per drain.
+      const lines = asyncLinePass();
+      try {
+        await this.dispatchRounds(tenantId, scopeId, invocationId, lines);
+      } finally {
+        lines.end();
+      }
+    }
+
+    private async dispatchRounds(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      invocationId: string | null,
+      lines: AsyncLinePass,
     ): Promise<void> {
       for (let round = 0; round < 50; round++) {
         let deliveredAny = false;
@@ -5717,6 +5767,20 @@ export function defineScopeDO(
               )
               .toArray() as unknown as OutboxRow[];
             for (const row of rows) {
+              // #1901: this delivery's line — the call's id when it runs in one, else its own.
+              const unit = {
+                kind: 'consumer' as const,
+                tenantId,
+                scopeId,
+                invocationId: asyncInvocationId(invocationId),
+                operation: mod.id,
+                eventType: consumer.eventType,
+                eventId: row.id,
+                // A module consumer is tried once: a throw dead-letters it (v0).
+                attempt: 1,
+                startedAt: Date.now(),
+                versionId: this.env.SUBSTRAT_VERSION_ID ?? null,
+              };
               let event: DomainEvent;
               try {
                 event = domainEventOf(row);
@@ -5736,12 +5800,16 @@ export function defineScopeDO(
                   String(err),
                   invocationId,
                 );
+                // Never reached the handler, so nothing threw in it: a warning, not an error.
+                lines.write({ ...unit, outcome: 'dead-lettered' });
                 continue;
               }
               // #1237: anything this consumer emits was emitted BECAUSE of this event
               // — the step a backwards walk used to stop dead at, since a consumer
               // emit records no operation either.
               this.causedBy = event.id;
+              // #1901: the handler's `ctx.log` lines join this delivery's line.
+              this.unitInvocationId = unit.invocationId;
               try {
                 await this.revision.transaction(async () => {
                   const ctx = this.operationContext(this.systemPrincipal, tenantId, scopeId, {
@@ -5759,6 +5827,7 @@ export function defineScopeDO(
                   );
                 });
                 deliveredAny = true;
+                lines.write({ ...unit, outcome: 'delivered' });
               } catch (err) {
                 // Dead-letter (v0): journal the failure so one poison event
                 // can't wedge the loop. Written outside the rolled-back txn.
@@ -5772,7 +5841,9 @@ export function defineScopeDO(
                   String(err),
                   invocationId,
                 );
+                lines.write({ ...unit, outcome: 'dead-lettered', error: err });
               } finally {
+                this.unitInvocationId = null;
                 // Cleared on BOTH paths. Left set, the id leaks onto every later emit
                 // this DO makes — an operation's own event stamped as caused by
                 // whatever was delivered last, which is worse than recording nothing
@@ -6090,7 +6161,7 @@ export function defineScopeDO(
           tenantId,
           scopeId,
           operation: operation ?? null,
-          invocationId: () => this.invocationId,
+          invocationId: () => this.invocationId ?? this.unitInvocationId,
           principalKind: systemActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
           // log's text is not JSON.
