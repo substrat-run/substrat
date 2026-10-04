@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AUTO_ADMISSION_NOTE, substratError, type ErrorCode } from '@substrat-run/contracts';
+import { AUTO_ADMISSION_NOTE, SCOPE_GATE_REASONS, substratError, type ErrorCode } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { mapError } from '../src/errors.js';
 
@@ -279,5 +279,18 @@ describe('mapError — the last pattern families keep their status and code (#11
     const mapped = mapError(new Error(sentence));
     expect(mapped.status).toBe(500);
     expect(mapped.body.detail).toBeUndefined();
+  });
+});
+
+describe('mapError — the scope gate keeps its own answer on the control plane (#113)', () => {
+  // A vertical's public edge answers these as the router does; the operator's surface does not.
+  it.each([
+    [substratError('conflict', 'scope not active (status: suspended): 01S', { reason: SCOPE_GATE_REASONS.notActive }), 409],
+    [substratError('not_found', 'scope has no tenant record: (01T, 01S)', { reason: SCOPE_GATE_REASONS.unrecorded }), 404],
+  ] as const)('%s → %i, naming what it is', (refusal, status) => {
+    const { status: answered, body } = mapError(refusal);
+    expect(answered).toBe(status);
+    expect(body.detail).toBe(refusal.message);
+    expect(body.reason).toBe(refusal.extensions.reason);
   });
 });

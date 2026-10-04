@@ -199,6 +199,7 @@ import {
   callsOfManifestJson,
   outboundOfManifestJson,
   listLimitOf,
+  SCOPE_GATE_REASONS,
   substratError,
   assertReplayableDump,
   delegatedReadRecord,
@@ -3650,10 +3651,12 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
       .get(tenantId) as { status: string } | undefined;
     if (!tenantRow) {
-      throw substratError('not_found', `scope has no tenant record: (${tenantId}, ${scopeId})`);
+      throw substratError('not_found', `scope has no tenant record: (${tenantId}, ${scopeId})`, {
+        reason: SCOPE_GATE_REASONS.unrecorded,
+      });
     }
     if (tenantRow.status !== 'active') {
-      throw substratError('conflict', `tenant not active (status: ${tenantRow.status}): ${tenantId}`);
+      throw substratError('conflict', `tenant not active (status: ${tenantRow.status}): ${tenantId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     // `provisioning` is handled BELOW rather than here, because a scope that never
     // finished setting up should still retry its migrations when touched — that lazy
@@ -3662,7 +3665,7 @@ export class SqliteScopeHost implements ScopeHost {
     // deliberate states, and running migrations for them would be work on behalf of a
     // request that is going to be refused anyway.
     if (row.status !== 'active' && row.status !== 'provisioning') {
-      throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
 
     const rt = this.runtime(tenantId, scopeId);
@@ -3673,7 +3676,7 @@ export class SqliteScopeHost implements ScopeHost {
       // the scope exists on the vertical's side (K-31). Refused, but only after the
       // retry above has had its chance — and if THAT is what failed, it threw with
       // the migration's own message, which is the one an operator needs.
-      throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options);
   }
@@ -3712,7 +3715,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
     }
     if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     const rt = this.runtime(conn.tenant_id as TenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -3746,7 +3749,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
     }
     if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     const rt = this.runtime(conn.tenant_id as TenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -3787,7 +3790,7 @@ export class SqliteScopeHost implements ScopeHost {
       throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -3813,7 +3816,7 @@ export class SqliteScopeHost implements ScopeHost {
       throw substratError('not_found', `unknown scope: ${scopeId}`);
     }
     if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -4124,10 +4127,10 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare('SELECT status FROM tenants WHERE tenant_id = ?')
       .get(tenantId) as { status: string } | undefined;
     if (!tenant || tenant.status !== 'active') {
-      throw substratError('conflict', `tenant not active (status: ${tenant?.status ?? 'missing'}): ${tenantId}`);
+      throw substratError('conflict', `tenant not active (status: ${tenant?.status ?? 'missing'}): ${tenantId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`);
+      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);

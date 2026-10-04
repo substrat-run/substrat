@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import {
   connectionId, dataSubjectId, errorCodeOf, moduleManifest, permissionKey,
-  platformActorId, principalId, scopeId, tenantId, type ScopeId,
+  platformActorId, principalId, scopeId, SCOPE_GATE_REASONS, tenantId, type ScopeId, type SubstratError,
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
@@ -151,6 +151,7 @@ describe('the scope gate on a scope with no tenant record (#113)', () => {
       const refusal = await host.getScope(alice, t, s).then(() => undefined, (e: unknown) => e);
       expect(errorCodeOf(refusal)).toBe('not_found');
       expect((refusal as Error).message).toBe(`scope has no tenant record: (${t}, ${s})`);
+      expect((refusal as SubstratError).extensions.reason).toBe(SCOPE_GATE_REASONS.unrecorded);
     } finally {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

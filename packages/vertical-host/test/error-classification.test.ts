@@ -6,6 +6,8 @@ import {
   problemTypeFor,
   substratError,
   toWireFailure,
+  NO_APPLICATION_DETAIL,
+  SCOPE_GATE_REASONS,
   type ErrorCode,
 } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
@@ -159,15 +161,35 @@ describe('classifyError on a ScopeDO refusing a projection for another tenant (#
 });
 
 /**
- * #113: the directory refusals that reach a vertical door too — the scope-access gate and the
- * introspection read — pinned by the status and code a vertical answers with. Typed now, so a
- * vertical answers what the control plane answers; untyped they were the caller's 400.
+ * #113: the directory refusals that reach a vertical door too. The scope gate's (a tenant or
+ * scope not active, a scope with no tenant record) answer the router's neutral 404 at this public
+ * edge; the introspection read answers its own code. Untyped, all of them were the caller's 400.
  */
 describe('a vertical door on the gate and introspection refusals (#113)', () => {
+  const gate: readonly Error[] = [
+    substratError('conflict', 'tenant not active (status: suspended): 01T', { reason: SCOPE_GATE_REASONS.notActive }),
+    substratError('conflict', 'scope not active (status: archived): 01S', { reason: SCOPE_GATE_REASONS.notActive }),
+    substratError('not_found', 'scope has no tenant record: (01T, 01S)', { reason: SCOPE_GATE_REASONS.unrecorded }),
+  ];
+
+  it.each(gate.map((e) => [e.message, e] as const))('%s → the router\'s neutral 404', (_m, refusal) => {
+    const { status, body } = problemFor(refusal);
+    expect(status).toBe(404);
+    expect(body.code).toBe('not_found');
+    expect(body.detail).toBe(NO_APPLICATION_DETAIL);
+    expect(body.reason).toBeUndefined();
+    // The same through `mountOperations`' wrapper, whose cause is the refusal.
+    const wrapped = new HTTPException(classifyError(refusal)!.status, { message: classifyError(refusal)!.message, cause: refusal });
+    expect(problemFor(wrapped).body).toEqual(body);
+  });
+
+  it('the twin: a conflict that is not the gate keeps its own status and sentence', () => {
+    const { status, body } = problemFor(substratError('conflict', 'tenant not active (status: suspended): 01T'));
+    expect(status).toBe(409);
+    expect(body.detail).toBe('tenant not active (status: suspended): 01T');
+  });
+
   const cases: readonly [sentence: string, code: ErrorCode, status: number][] = [
-    ['tenant not active (status: suspended): 01T', 'conflict', 409],
-    ['scope not active (status: archived): 01S', 'conflict', 409],
-    ['scope has no tenant record: (01T, 01S)', 'not_found', 404],
     [`unknown table 'ghost'`, 'not_found', 404],
     ['read-only console: empty statement', 'validation_failed', 400],
   ];

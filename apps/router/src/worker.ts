@@ -27,6 +27,7 @@ import {
   FIELD_COVERAGE_ID_FIELD,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
+  NO_APPLICATION_DETAIL,
   peerCallRequest,
   peerCallResponse,
   peerCaller,
@@ -478,7 +479,9 @@ export default {
       // Unknown, non-active lifecycle, still validating, or failed — all the same from outside. Which of
       // those it is belongs in the console, not in a response to an anonymous caller.
       // Not metered either: with no resolved tenant there is no index to write under.
-      return new Response('No application is configured for this hostname.', {
+      // A vertical answers a scope-gate refusal with this same detail (#113), so a request that
+      // raced a suspension reads exactly as one refused here.
+      return new Response(NO_APPLICATION_DETAIL, {
         status: 404,
         headers: { 'content-type': 'text/plain; charset=utf-8' },
       });

@@ -19,9 +19,12 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
   errorCodeOf,
+  isScopeGateRefusal,
+  NO_APPLICATION_DETAIL,
   PROBLEM_CATALOG,
   PROBLEM_CONTENT_TYPE,
   problemForStatus,
+  substratError,
   toProblem,
   type Problem,
 } from '@substrat-run/contracts';
@@ -97,7 +100,8 @@ function isParseFailure(err: unknown): boolean {
  * the status a generic throw acquires on the way here, so it stays open to the
  * patterns below. A route that means "400, final" gets 400 either way.
  */
-export function classifyError(err: unknown): ErrorClassification | undefined {
+export function classifyError(thrown: unknown): ErrorClassification | undefined {
+  const err = atTheEdge(thrown);
   const message = messageOf(err);
   const explicit = err instanceof HTTPException ? err.status : undefined;
   if (explicit !== undefined && explicit !== 400) return { status: explicit, message };
@@ -117,6 +121,19 @@ export function classifyError(err: unknown): ErrorClassification | undefined {
   if (/not found|unknown scope/i.test(message)) return { status: 404, message };
   if (/invalid transition|immutable/i.test(message)) return { status: 409, message };
   return explicit === undefined ? undefined : { status: explicit, message };
+}
+
+/**
+ * The scope gate's refusal as the public edge answers it (#113): the router's neutral 404.
+ *
+ * A request reaches a vertical only after the router resolved its hostname to a serving scope,
+ * and the router answers a scope that is not serving with `NO_APPLICATION_DETAIL`. A gate
+ * refusal here is that same state, met by a request that raced the directory, so it gets the
+ * same answer, and a caller cannot tell the race from the routing. The control plane keeps the
+ * refusal as thrown (`conflict` naming the status), for the operator.
+ */
+function atTheEdge(err: unknown): unknown {
+  return isScopeGateRefusal(err) ? substratError('not_found', NO_APPLICATION_DETAIL) : err;
 }
 
 /** A classified failure, rendered — the status to answer with and the body to send. */
@@ -176,7 +193,7 @@ export function problemOf(
   err: unknown,
   instance?: string,
 ): ClassifiedProblem {
-  const inner = typedCause(err);
+  const inner = atTheEdge(typedCause(err));
   const code = errorCodeOf(inner);
   const body =
     code !== undefined && PROBLEM_CATALOG[code].status === seen.status

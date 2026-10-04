@@ -451,6 +451,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../../packages/vertical-host
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

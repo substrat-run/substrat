@@ -7,6 +7,8 @@ import {
   connectionId,
   errorCodeOf,
   instant,
+  SCOPE_GATE_REASONS,
+  type SubstratError,
   toProblem,
   moduleId,
   orgId,
@@ -5041,6 +5043,7 @@ describe('#113 — a refusal raised inside a Durable Object keeps its code acros
     const orphan = await refusal(host.getScope(alice, t, s));
     expect(errorCodeOf(orphan)).toBe('not_found');
     expect(orphan.message).toBe(`scope has no tenant record: (${t}, ${s})`);
+    expect((orphan as SubstratError).extensions.reason).toBe(SCOPE_GATE_REASONS.unrecorded);
   });
 
   it('a directory method called directly still throws, for a coordinator from before the envelope', async () => {

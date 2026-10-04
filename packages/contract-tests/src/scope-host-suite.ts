@@ -5,6 +5,8 @@ import {
   dataSubjectId,
   domainEvent,
   errorCodeOf,
+  SCOPE_GATE_REASONS,
+  type SubstratError,
   eventId,
   instant,
   moduleManifest,
@@ -8335,6 +8337,26 @@ export function scopeHostContractSuite(
 
     // #113: the last directory refusals the control plane matched by message, each typed now.
     // Asserted on the code — the thing a transport renders — with its positive twin beside it.
+
+    it('marks the scope gate\'s refusal as the gate\'s, so a public edge can answer it neutrally (#113)', async () => {
+      const t = tenantId.parse(ulid());
+      const sc = scopeId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: `gate-${t.toLowerCase()}`, name: 'Gate Co' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: sc });
+      await host.admin.activateScope(staff, t, sc);
+      await host.admin.suspendScope(staff, t, sc);
+      const scopeHeld = await host.getScope(alice, t, sc).then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(scopeHeld)).toBe('conflict');
+      expect((scopeHeld as SubstratError).extensions.reason).toBe(SCOPE_GATE_REASONS.notActive);
+      await host.admin.unsuspendScope(staff, t, sc);
+      await host.admin.setTenantStatus(staff, t, 'suspended');
+      const tenantHeld = await host.getScope(alice, t, sc).then(() => undefined, (e: unknown) => e);
+      expect((tenantHeld as SubstratError).extensions.reason).toBe(SCOPE_GATE_REASONS.notActive);
+      // The twin: an admin refusal of the same code is not the gate's.
+      const illegal = await host.admin.unarchiveScope(staff, t, sc).then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(illegal)).toBe('conflict');
+      expect((illegal as SubstratError).extensions.reason).toBeUndefined();
+    });
 
     it('refuses to provision a scope under a non-active tenant, typed conflict (#113)', async () => {
       const t = tenantId.parse(ulid());

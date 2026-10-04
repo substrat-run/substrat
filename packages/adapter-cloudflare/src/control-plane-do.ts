@@ -68,7 +68,7 @@ import type {
   VerticalResolution,
   ErrorCode,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, substratError } from '@substrat-run/contracts';
+import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -2306,7 +2306,7 @@ export class ControlPlaneDO extends DurableObject {
   scopeAccessRefusal(
     tenantId: string,
     scopeId: string,
-  ): { code: ErrorCode | null; message: string } | null {
+  ): { code: ErrorCode | null; message: string; reason?: string } | null {
     const row = this.sql
       .exec('SELECT tenant_id, status FROM scopes WHERE scope_id = ?', scopeId)
       .toArray()[0] as { tenant_id: string; status: string } | undefined;
@@ -2317,10 +2317,14 @@ export class ControlPlaneDO extends DurableObject {
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
-      return { code: 'not_found', message: `scope has no tenant record: (${tenantId}, ${scopeId})` };
+      return { code: 'not_found', message: `scope has no tenant record: (${tenantId}, ${scopeId})`, reason: SCOPE_GATE_REASONS.unrecorded };
     }
     if (tenantRow.status !== 'active') {
-      return { code: 'conflict', message: `tenant not active (status: ${tenantRow.status}): ${tenantId}` };
+      return {
+        code: 'conflict',
+        message: `tenant not active (status: ${tenantRow.status}): ${tenantId}`,
+        reason: SCOPE_GATE_REASONS.notActive,
+      };
     }
     if (row.status !== 'active') {
       // A scope stuck in provisioning because its migrations failed must say so.
@@ -2343,7 +2347,11 @@ export class ControlPlaneDO extends DurableObject {
             `${failure.migration_error ?? 'unknown error'}`,
         };
       }
-      return { code: 'conflict', message: `scope not active (status: ${row.status}): ${scopeId}` };
+      return {
+        code: 'conflict',
+        message: `scope not active (status: ${row.status}): ${scopeId}`,
+        reason: SCOPE_GATE_REASONS.notActive,
+      };
     }
     return null;
   }

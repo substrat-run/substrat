@@ -206,6 +206,7 @@ import {
   type TenantStoreHandle,
   callsOfManifestJson,
   outboundOfManifestJson,
+  SCOPE_GATE_REASONS,
   substratError,
   redrainEventsInput,
   coverage,
@@ -605,7 +606,7 @@ interface ControlPlaneStub {
   scopeAccessRefusal(
     tenantId: string,
     scopeId: string,
-  ): Promise<{ code: ErrorCode | null; message: string } | null | undefined>;
+  ): Promise<{ code: ErrorCode | null; message: string; reason?: string } | null | undefined>;
   /** A scope lifecycle transition, its refusal answered as data (#1718). */
   transitionScopeOrRefusal(
     tenantId: string,
@@ -8185,7 +8186,11 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private async validateScopeAccess(tenantId: TenantId, scopeId: ScopeId): Promise<StoredScopeLifecycle | null> {
     const refusal = await this.cp.scopeAccessRefusal(tenantId, scopeId);
-    if (refusal) throw refusal.code ? substratError(refusal.code, refusal.message) : new Error(refusal.message);
+    if (refusal) {
+      throw refusal.code
+        ? substratError(refusal.code, refusal.message, refusal.reason ? { reason: refusal.reason } : undefined)
+        : new Error(refusal.message);
+    }
     if (!this.cpLess) return null;
     const { verdict, lifecycle } = await this.scopeStub(scopeId).admission(tenantId);
     if (verdict === 'foreign') throw unknownScopeForTenant(tenantId, scopeId);
@@ -8214,7 +8219,7 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private async assertLive(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const refusal = lifecycleRefusal(await this.validateScopeAccess(tenantId, scopeId), { tenantId, scopeId });
-    if (refusal) throw substratError('conflict', refusal);
+    if (refusal) throw substratError('conflict', refusal, { reason: SCOPE_GATE_REASONS.notActive });
   }
 
   /**
