@@ -498,7 +498,9 @@ export {
 export { readLifecycleFlow } from './lifecycle-flow.js';
 export {
   REFUSALS_DDL,
+  REFUSALS_INDEX,
   REFUSALS_REBUILD,
+  REFUSALS_TABLE_DDL,
   markGuardRefusal,
   refusalInsert,
   refusalOf,

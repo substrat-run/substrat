@@ -33,7 +33,8 @@ import {
 } from '@substrat-run/contracts';
 import { ulid } from './ulid.js';
 
-export const REFUSALS_DDL = `
+/** The table alone — what `REFUSALS_REBUILD` creates under its scratch name. */
+export const REFUSALS_TABLE_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_refusals (
     id TEXT PRIMARY KEY,
     -- 'transition' (assertTransition) or 'guard' (a manifest-declared guard, K-38).
@@ -64,9 +65,18 @@ export const REFUSALS_DDL = `
     at TEXT NOT NULL,
     drained_at TEXT
   );
-  -- The process map's read: one entity type's refusals in a window.
+`;
+
+/** The process map's read: one entity type's refusals in a window. */
+export const REFUSALS_INDEX = `
   CREATE INDEX IF NOT EXISTS _substrat_refusals_entity_at ON _substrat_refusals (entity_type, at);
 `;
+
+/**
+ * The table and its index. The adapters interpolate the two literals above instead, which
+ * is what `lint:spine-ddl` can resolve; this is for a caller that wants the whole thing.
+ */
+export const REFUSALS_DDL = REFUSALS_TABLE_DDL + REFUSALS_INDEX;
 
 /**
  * `_substrat_refusals` rebuilt to the shape above on a store created before guard refusals:
@@ -75,7 +85,7 @@ export const REFUSALS_DDL = `
  * reasons (#1288), detected the same way (`refusalsAdmitGuards`, off `sqlite_master.sql`,
  * which DO SQLite serves and `PRAGMA` does not).
  *
- * The new table is `REFUSALS_DDL` under a temporary name, so the rebuilt shape cannot drift
+ * The new table is `REFUSALS_TABLE_DDL` under a temporary name, so the rebuilt shape cannot drift
  * from the created one, and every row is copied verbatim: the two new columns are NULL on a
  * transition row written before them, which the reader takes as "implied by the kind". The
  * index is dropped with the old table and created again on the renamed one.
@@ -84,15 +94,12 @@ export const REFUSALS_DDL = `
  * between the DROP and the RENAME leaves the next wake's `CREATE TABLE IF NOT EXISTS` an
  * empty table of the new shape, detection reads it as migrated, and the copied rows are
  * orphaned in the scratch table. The leading `DROP TABLE IF EXISTS` makes a re-run start
- * clean. A restore never reaches this: it builds the table from `REFUSALS_DDL` and loads a
+ * clean. A restore never reaches this: it builds the table from the current DDL and loads a
  * legacy dump's rows by column name.
  */
 export const REFUSALS_REBUILD = `
   DROP TABLE IF EXISTS _substrat_refusals_new;
-  ${REFUSALS_DDL.replace('CREATE TABLE IF NOT EXISTS _substrat_refusals (', 'CREATE TABLE _substrat_refusals_new (').replace(
-    /\s*-- The process map's read[\s\S]*$/,
-    '',
-  )}
+  ${REFUSALS_TABLE_DDL.replace('CREATE TABLE IF NOT EXISTS _substrat_refusals (', 'CREATE TABLE _substrat_refusals_new (')}
   INSERT INTO _substrat_refusals_new
     (id, kind, tenant_id, scope_id, entity_type, entity_id, from_state, attempted_state,
      operation, invoked_operation, actor, impersonation, invocation_id, at, drained_at)
@@ -101,7 +108,7 @@ export const REFUSALS_REBUILD = `
       FROM _substrat_refusals;
   DROP TABLE _substrat_refusals;
   ALTER TABLE _substrat_refusals_new RENAME TO _substrat_refusals;
-  CREATE INDEX IF NOT EXISTS _substrat_refusals_entity_at ON _substrat_refusals (entity_type, at);
+  ${REFUSALS_INDEX}
 `;
 
 /**

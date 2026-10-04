@@ -6974,8 +6974,7 @@ export function scopeHostContractSuite(
       expect(rows[0]!.decodeError).toBeUndefined();
       // Keys and vocabulary only: neither the input nor the message the caller saw.
       expect(JSON.stringify(rows[0])).not.toMatch(/ada@example\.com|gate closed|call me/);
-      // Both attempts recorded, each once.
-      expect(await host.admin.listRefusals(staff, t1, s1, { entityId: 'g-refused' })).toHaveLength(2);
+      // Both attempts recorded, each once, and as guards.
       expect(await host.admin.listRefusals(staff, t1, s1, { kind: 'guard', entityId: 'g-refused' })).toHaveLength(2);
       expect(await host.admin.listRefusals(staff, t1, s1, { kind: 'transition', entityId: 'g-refused' })).toEqual([]);
 

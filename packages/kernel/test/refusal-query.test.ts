@@ -151,7 +151,6 @@ describe('guard refusals (#1745, K-38)', () => {
     expect(read(d, { kind: 'transition' }).map((r) => [r.kind, r.guard, r.reason])).toEqual([
       ['transition', null, 'invalid_transition'],
     ]);
-    expect(read(d)).toHaveLength(2);
   });
 
   it('marks only a conflict as a guard refusal, and never a throw that already is a refused transition', () => {
@@ -191,7 +190,8 @@ describe('guard refusals (#1745, K-38)', () => {
 });
 
 describe('REFUSALS_REBUILD (#1745): a store from before guard refusals', () => {
-  // The table #1928 shipped. Frozen: it is what deployed scopes hold.
+  // The table #1928 shipped. Frozen: it is what deployed scopes hold. The adapters' copy is
+  // `PRE_GUARD_REFUSALS_DDL` in contract-tests, which the kernel cannot import.
   const PRE_GUARD = `
     CREATE TABLE _substrat_refusals (
       id TEXT PRIMARY KEY,

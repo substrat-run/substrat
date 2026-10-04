@@ -493,7 +493,8 @@ import {
   type EntityVersionRow,
   type InvokeOptions,
   IDEMPOTENCY_DDL,
-  REFUSALS_DDL,
+  REFUSALS_TABLE_DDL,
+  REFUSALS_INDEX,
   refusalInsert,
   refusalOf,
   markGuardRefusal,
@@ -899,7 +900,8 @@ const KERNEL_DDL = `
     drained_at TEXT
   );
   ${IDEMPOTENCY_DDL}
-  ${REFUSALS_DDL}
+  ${REFUSALS_TABLE_DDL}
+  ${REFUSALS_INDEX}
   -- #1672: capabilities — authority carried by a secret (a link share), and the sessions
   -- an exchange trades that secret for. Spine (kernel-written), shared with the DO adapter
   -- from @substrat-run/kernel so the two cannot part company; the column comments are there.
@@ -10585,30 +10587,38 @@ export class SqliteScopeHost implements ScopeHost {
    * read `ensureIdentityKey` already uses — PRAGMA would do here, but not there.
    */
   private ensureScheduleStateKind(db: Database.Database): void {
+    this.rebuildIfStale(db, '_substrat_schedule_state', scheduleStateHasKind, SCHEDULE_STATE_REBUILD);
+  }
+
+  /**
+   * #1745: `_substrat_refusals`, rebuilt to admit a guard row (a nullable `from_state`, plus
+   * `guard` and `reason`) on a scope db whose table predates it.
+   */
+  private ensureRefusalsAdmitGuards(db: Database.Database): void {
+    this.rebuildIfStale(db, '_substrat_refusals', refusalsAdmitGuards, REFUSALS_REBUILD);
+  }
+
+  /**
+   * Run a kernel create-copy-drop-rename `script` over `table` when the stored DDL fails
+   * `isCurrent` — the DO adapter's `rebuildIfStale`, so the two rebuild byte-identically.
+   */
+  private rebuildIfStale(
+    db: Database.Database,
+    table: string,
+    isCurrent: (tableSql: string) => boolean,
+    script: string,
+  ): void {
     const row = db
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get('_substrat_schedule_state') as { sql: string } | undefined;
-    if (!row || scheduleStateHasKind(row.sql)) return;
-    // In a transaction, for the reason the kernel constant spells out: create-copy-
+      .get(table) as { sql: string } | undefined;
+    if (!row || isCurrent(row.sql)) return;
+    // In a transaction, for the reason the kernel constants spell out: create-copy-
     // drop-rename has two intermediate states and BOTH are unrecoverable on the next
     // wake — one dies on the leftover scratch table, one silently orphans the rows
     // behind an empty table `CREATE TABLE IF NOT EXISTS` put back. `db.transaction`
     // nests as a SAVEPOINT, which is what makes this safe on the `loadDump` path too,
     // where the whole replay is already inside one.
-    db.transaction(() => db.exec(SCHEDULE_STATE_REBUILD))();
-  }
-
-  /**
-   * #1745: `_substrat_refusals`, rebuilt to admit a guard row on a scope db whose table
-   * predates it — `REFUSALS_REBUILD`, the DO adapter's statements, detected and wrapped the
-   * way `ensureScheduleStateKind` is above and for the same reasons.
-   */
-  private ensureRefusalsAdmitGuards(db: Database.Database): void {
-    const row = db
-      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get('_substrat_refusals') as { sql: string } | undefined;
-    if (!row || refusalsAdmitGuards(row.sql)) return;
-    db.transaction(() => db.exec(REFUSALS_REBUILD))();
+    db.transaction(() => db.exec(script))();
   }
 
   /**
