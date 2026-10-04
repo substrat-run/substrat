@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   CAPABILITY_SESSION_PREFIX,
   connectionId as connectionIdOf,
@@ -630,6 +630,9 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
     drain: (x, s) => hostFor().drainDue(x, s),
     deadLetters: (x, s) => hostFor().executorDeadLetters(x, s),
     platformRequests: (x, s) => hostFor().listPlatformRequests(x, s),
+    // The sweeper's own entry points: a roster entry carries a stored tenant, which can be stale.
+    schedules: (x, s) => hostFor().runDueSchedules(SCHED, x, s),
+    freshness: (x, s) => hostFor().checkFreshness(SCHED, x, s),
   };
 
   it.each(Object.keys(doors))('%s: the mismatched pair is refused at the door; the provisioned tenant is let through', async (door) => {
@@ -645,6 +648,19 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
     // The twin: whatever the door does next for its own tenant, it is not this refusal.
     const own = await outcome(doors[door]!(t, s));
     expect(isPairRefusal(own, t, s)).toBe(false);
+  });
+
+  it('a sweep entry with a stale tenant reads and writes nothing: schedule and freshness state stay as they were', async () => {
+    const s = await seat();
+    // State to protect: a schedule run and a freshness verdict, both written for the scope's tenant.
+    expect((await hostFor().runDueSchedules(SCHED, t, s)).fired).toBe(2);
+    await hostFor().checkFreshness(SCHED, t, s);
+    const state = () => sql(s, 'SELECT * FROM _substrat_schedule_state ORDER BY kind, schedule_op');
+    const before = await state();
+    expect(before.length).toBeGreaterThan(0);
+    expect(isPairRefusal(await outcome(hostFor().runDueSchedules(SCHED, u, s)), u, s)).toBe(true);
+    expect(isPairRefusal(await outcome(hostFor().checkFreshness(SCHED, u, s)), u, s)).toBe(true);
+    expect(await state()).toEqual(before);
   });
 
   it('the refusal holds however much the tenant holds: a stray role row for it does not let it in', async () => {
@@ -663,13 +679,28 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
     expect(await receiptOf(s)).toBeNull();
   });
 
-  it('a scope that holds neither a receipt nor roles has nothing to hold the pair against, and refuses no one', async () => {
+  const unrecorded = () =>
+    warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"substrat":"tenant-unrecorded"')).map((l) => JSON.parse(l) as { tenantId: string; scopeId: string });
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeAll(() => {
+    warn = vi.spyOn(console, 'warn');
+  });
+  afterEach(() => warn.mockClear());
+
+  it('a scope that holds neither a receipt nor roles has nothing to hold the pair against: admitted, and logged each time', async () => {
     // A load from a world that keeps its roles elsewhere, before its repair: the permission gate
     // still decides what anyone may do in it, exactly as before the cross-check.
     const s = scopeId.parse(ulid());
     await hostFor().restoreScopeLocal(s, []);
     expect(await receiptOf(s)).toBeNull();
     for (const tenant of [t, u]) expect(isPairRefusal(await outcome(doors.system!(tenant, s)), tenant, s)).toBe(false);
+    expect(unrecorded()).toEqual([expect.objectContaining({ tenantId: t, scopeId: s }), expect.objectContaining({ tenantId: u, scopeId: s })]);
+  });
+
+  it('twin: a recorded scope writes no unrecorded line', async () => {
+    const s = await seat();
+    await doors.system!(t, s);
+    expect(unrecorded()).toEqual([]);
   });
 
   describe('the back-fill: only from the platform\'s word, never from a request', () => {
@@ -709,6 +740,74 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
       await dropReceipt(legacy);
       expect(await hostFor().setLifecycleLocal(legacy, life())).toMatchObject({ applied: true });
       expect(await receiptOf(legacy)).toBeNull();
+    });
+
+    it('a first projection whose role rows name another tenant is refused, and pins nothing', async () => {
+      const s = await seat();
+      await dropReceipt(s);
+      const roles = () => sql(s, 'SELECT tenant_id, role_key FROM _substrat_roles ORDER BY tenant_id, role_key');
+      const before = await roles();
+      const e = await outcome(hostFor().projectRolesLocal(u, s, [{ key: 'office-admin', permissions: [USE], source: 'vertical' }]));
+      // Across the Durable Object boundary the code survives only in the message.
+      expect(String((e as Error).message)).toContain('Substrat.conflict');
+      expect(String((e as Error).message)).toContain(`none for ${u}`);
+      expect(await receiptOf(s)).toBeNull();
+      expect(await roles()).toEqual(before);
+      // The provision path refuses the same way.
+      const reprovision = await outcome(
+        hostFor().provisionScopeLocal({
+          tenantId: u,
+          scopeId: s,
+          owner,
+          roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+          ownerRoleKey: 'office-admin',
+        }),
+      );
+      expect(String((reprovision as Error).message)).toContain('Substrat.conflict');
+      expect(await receiptOf(s)).toBeNull();
+      // The twin: its own tenant's projection back-fills it.
+      await hostFor().projectRolesLocal(t, s, [{ key: 'office-admin', permissions: [USE], source: 'vertical' }]);
+      expect(await receiptOf(s)).toBe(t);
+    });
+
+    describe('a scope with data and system grants but no role rows converges on the directory\'s tenant', () => {
+      /** Provisioned (data, migrations, the schedule module's `system:` grants), then stripped of
+       *  its receipt and its role rows: what a load from a world that keeps roles elsewhere leaves. */
+      const unrecordedScope = async () => {
+        const s = await seat();
+        await dropReceipt(s);
+        await sql(s, 'DELETE FROM _substrat_roles');
+        expect(await sql(s, `SELECT 1 FROM _substrat_tuples WHERE subject = ? LIMIT 1`, `system:${SCHED}`)).toHaveLength(1);
+        // Before the back-fill, any tenant gets in — and its system grants authorize it.
+        expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(false);
+        expect((await hostFor().runDueSchedules(SCHED, u, s)).fired).toBe(2);
+        expect(unrecorded().some((l) => l.tenantId === u && l.scopeId === s)).toBe(true);
+        return s;
+      };
+
+      it('by a lifecycle delivery, after which a mismatched tenant is refused', async () => {
+        const s = await unrecordedScope();
+        await hostFor().setLifecycleLocal(s, life(), t);
+        expect(await receiptOf(s)).toBe(t);
+        expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(true);
+        expect(isPairRefusal(await outcome(hostFor().runDueSchedules(SCHED, u, s)), u, s)).toBe(true);
+        warn.mockClear();
+        await doors.system!(t, s);
+        expect(unrecorded()).toEqual([]);
+      });
+
+      it('by a reconcile (every push runs one against the scopes behind it), after which a mismatched tenant is refused', async () => {
+        const s = await unrecordedScope();
+        await hostFor().provisionScopeLocal({
+          tenantId: t,
+          scopeId: s,
+          owner,
+          roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+          ownerRoleKey: 'office-admin',
+        });
+        expect(await receiptOf(s)).toBe(t);
+        expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(true);
+      });
     });
 
     it('a reconcile (the provision path) back-fills too', async () => {
