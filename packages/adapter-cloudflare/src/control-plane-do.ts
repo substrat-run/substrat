@@ -1149,6 +1149,13 @@ const DIRECTORY_DDL = `
     at TEXT NOT NULL,
     tenant_recorded INTEGER
   );
+  -- #2016: when the heal last asked a scope for its tenant record, whatever came of it. Kept apart
+  -- from the receipt, which only an answer writes, so a scope whose deployment never answers still
+  -- rotates behind the rest of the walk instead of heading it every pass.
+  CREATE TABLE IF NOT EXISTS scope_tenant_asks (
+    scope_id TEXT PRIMARY KEY,
+    asked_at TEXT NOT NULL
+  );
   -- #1713: the lifecycle's revisions, one counter per subject ("scope:<id>" counts a
   -- scope's status transitions, "tenant:<id>" a tenant's status changes), each bumped in
   -- the same transaction as the change it counts, and "directory:epoch", the history the
@@ -4232,10 +4239,11 @@ export class ControlPlaneDO extends DurableObject {
       params.push(...driftParams);
     }
     if (filter.unrecorded) where.push('COALESCE(r.tenant_recorded, 0) <> 1');
-    // The unrecorded walk rotates: the scope asked longest ago (or never) comes first, so a scope
-    // that keeps answering 0 cannot starve the rest of a bounded pass.
+    // The unrecorded walk rotates on the ask, not the answer: never asked first, then the one asked
+    // longest ago, so a scope that answers 0, or never answers at all, cannot starve the rest of a
+    // bounded pass.
     const order = filter.unrecorded
-      ? 'r.at IS NOT NULL, r.at, s.scope_id'
+      ? 'a.asked_at IS NOT NULL, a.asked_at, s.scope_id'
       : `CASE WHEN ${drifted} THEN 0 ELSE 1 END, s.scope_id`;
     if (!filter.unrecorded) params.push(...driftParams);
     params.push(filter.limit ?? 1000);
@@ -4246,6 +4254,7 @@ export class ControlPlaneDO extends DurableObject {
            FROM scopes s
            JOIN tenants t ON t.tenant_id = s.tenant_id
            LEFT JOIN scope_lifecycle_receipts r ON r.scope_id = s.scope_id
+           LEFT JOIN scope_tenant_asks a ON a.scope_id = s.scope_id
            LEFT JOIN lifecycle_revisions rs ON rs.subject = 'scope:' || s.scope_id
            LEFT JOIN lifecycle_revisions rt ON rt.subject = 'tenant:' || s.tenant_id
           WHERE ${where.join(' AND ')}
@@ -4288,6 +4297,13 @@ export class ControlPlaneDO extends DurableObject {
       'INSERT INTO lifecycle_revisions (subject, revision) VALUES (?, 1) ON CONFLICT (subject) DO UPDATE SET revision = revision + 1',
       subject,
     );
+  }
+
+  /** #2016: note that the heal asked these scopes for their tenant record at `at`, before it asks. */
+  recordTenantAsks(scopeIds: string[], at: string): void {
+    for (const scopeId of scopeIds) {
+      this.sql.exec('INSERT OR REPLACE INTO scope_tenant_asks (scope_id, asked_at) VALUES (?, ?)', scopeId, at);
+    }
   }
 
   /** #1713: record what a scope's deployment acknowledged holding (`lifecycleReceipt`), and #2016:

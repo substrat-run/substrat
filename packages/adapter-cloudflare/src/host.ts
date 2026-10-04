@@ -509,6 +509,8 @@ interface ControlPlaneStub {
   }): Promise<LifecycleTargetRow[]>;
   /** #1713: what a scope's deployment acknowledged holding. */
   recordLifecycleReceipt(scopeId: string, delivered: string, at: string, tenantRecorded?: boolean): Promise<void>;
+  /** #2016: note the heal's tenant-record asks, success or failure, so the walk rotates. */
+  recordTenantAsks(scopeIds: string[], at: string): Promise<void>;
   /** #1713: raise the directory's epoch to at least this; answers the epoch now. */
   raiseLifecycleEpoch(atLeast: number): Promise<number>;
   createTenant(
@@ -8107,6 +8109,9 @@ export class CloudflareScopeHost implements ScopeHost {
       targets = await this.cp.lifecycleTargets(filter);
       if (filter.drift) {
         const unrecorded = await this.cp.lifecycleTargets({ unrecorded: true, limit: TENANT_UNRECORDED_PER_PASS });
+        // Noted before asking, so an ask that fails (or a deployment that never answers) rotates
+        // behind the scopes not asked yet, and the next pass reaches them.
+        if (unrecorded.length > 0) await this.cp.recordTenantAsks(unrecorded.map((u) => u.scope_id), new Date().toISOString());
         const seen = new Set(targets.map((t) => t.scope_id));
         for (const u of unrecorded) {
           askTenant.add(u.scope_id);

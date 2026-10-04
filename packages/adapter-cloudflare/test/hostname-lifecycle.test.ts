@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, type LifecycleDelegation } from '../src/host.js';
+import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, TENANT_UNRECORDED_PER_PASS, type LifecycleDelegation } from '../src/host.js';
 import { createRouteResolver } from '../src/route-resolver.js';
 import router, { type Env } from '../../../apps/router/src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -640,5 +640,79 @@ describe('the heal asks every served scope for its tenant record until it holds 
     expect(await recordedInDirectory(empty)).toBe(0);
     await platform().healLifecycles(actor);
     expect(askedFor(empty)).toBe(2);
+  });
+});
+
+/**
+ * #2016, Codex #2033 r3: the heal's tenant-record walk rotates on the ASK, not on the answer. A
+ * deployment that cannot be reached writes no receipt, so a walk ordered by the receipt put the same
+ * unreachable scopes first on every pass, and a healthy copy past the per-pass slice was never asked.
+ */
+describe('the tenant-record walk rotates past deployments that never answer (#2016)', () => {
+  const actor = platformActorId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const USE = permissionKey.parse('perm:use');
+  const unreachable = new Set<string>();
+  const asked: string[] = [];
+  const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
+  const lifecycleDelegation: LifecycleDelegation = {
+    deliver: async ({ tenantId: t, scopeId: s, lifecycle }) => {
+      asked.push(s);
+      if (unreachable.has(s)) throw new Error('deployment unreachable');
+      return deployment().setLifecycleLocal(s, lifecycle, t);
+    },
+  };
+  const directoryName = `tenant-walk-${ulid()}`;
+  const directory = {
+    idFromName: () => env.CONTROL_PLANE.idFromName(directoryName),
+    get: (id: DurableObjectId) => env.CONTROL_PLANE.get(id),
+  } as unknown as DurableObjectNamespace;
+  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: directory, lifecycleDelegation });
+  beforeAll(() => warmControlPlane(directory));
+  const receiptOf = (s: ScopeId) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_i, state) =>
+      (state.storage.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray()[0] as { value: string } | undefined)?.value ?? null,
+    );
+
+  it('a full slice of unreachable scopes does not keep a healthy copy from being asked', async () => {
+    const t = tenantId.parse(ulid());
+    await platform().admin.createTenant(actor, { id: t, slug: `walk-${t.toLowerCase()}`, name: 'Walk' });
+    // A whole pass's worth of scopes whose deployment never answers, all created (and so ordered by
+    // id) ahead of the healthy one.
+    for (let i = 0; i < TENANT_UNRECORDED_PER_PASS; i++) {
+      const s = scopeId.parse(ulid());
+      unreachable.add(s);
+      await platform().provisionScope(actor, { tenantId: t, scopeId: s, vertical: 'todo' });
+      await platform().admin.activateScope(actor, t, s);
+    }
+    const install = [...unreachable][0] as ScopeId;
+    const copy = scopeId.parse(ulid());
+    await platform().provisionScope(actor, { tenantId: t, scopeId: copy, vertical: 'todo', kind: 'preview', forkedFrom: install });
+    await platform().admin.activateScope(actor, t, copy);
+    await deployment().provisionScopeLocal({
+      tenantId: t,
+      scopeId: copy,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(copy)), (_i, state) => {
+      state.storage.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+      state.storage.sql.exec('DELETE FROM _substrat_roles');
+    });
+
+    // The first pass fills its slice with the unreachable scopes, all failing.
+    const first = await platform().healLifecycles(actor);
+    expect(first.failed).toBeGreaterThanOrEqual(TENANT_UNRECORDED_PER_PASS);
+    expect(asked).not.toContain(copy);
+    // They rotate behind the scope not asked yet: the next pass reaches the copy.
+    await platform().healLifecycles(actor);
+    expect(asked.filter((s) => s === copy)).toHaveLength(1);
+    expect(await receiptOf(copy)).toBe(t);
+    // And the unreachable ones keep being asked on later passes, without the copy again.
+    const before = asked.length;
+    await platform().healLifecycles(actor);
+    expect(asked.length - before).toBe(TENANT_UNRECORDED_PER_PASS);
+    expect(asked.filter((s) => s === copy)).toHaveLength(1);
   });
 });
