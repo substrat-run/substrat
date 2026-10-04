@@ -128,9 +128,12 @@ describe('#2034: a due run is claimed before its handler runs', () => {
     expect(invoked).toBe(1);
   });
 
+  /** A lease whose drive entered its pass and then died: nobody holds it, and its expiry passed. */
+  const silent = (over: Partial<JobRunRow> = {}) =>
+    rowOf('A', { lease_owner: 'dead', lease_entered_at: iso(T0 - JOB_LEASE_MS), next_attempt_at: iso(T0 - 1), ...over });
+
   it('an expired lease is recovered: the run runs once more, and the silent pass counts as an attempt', async () => {
-    // A drive claimed it and died: a lease, nobody holding it, the expiry passed.
-    const { store, table } = memoryJobStore([rowOf('A', { lease_owner: 'dead', next_attempt_at: iso(T0 - 1) })]);
+    const { store, table } = memoryJobStore([silent()]);
     let invoked = 0;
     const report = await driver(store, { ms: T0 }, () => {
       invoked += 1;
@@ -140,6 +143,14 @@ describe('#2034: a due run is claimed before its handler runs', () => {
     expect(report).toMatchObject({ attempted: 1, retrying: 1 });
     // One for the pass that died, one for this one.
     expect(table.get('A')).toMatchObject({ status: 'running', attempts: 2, last_error: 'upstream said no', lease_owner: null });
+  });
+
+  it('twin: an expired lease whose claim never ENTERED its pass is taken over for free (#2042 r2)', async () => {
+    const { store, table } = memoryJobStore([silent({ lease_entered_at: null })]);
+    await driver(store, { ms: T0 }, () => {
+      throw new Error('upstream said no');
+    })();
+    expect(table.get('A')).toMatchObject({ attempts: 1, last_error: 'upstream said no' });
   });
 
   it('twin: an unleased due run claimed for the first time counts no extra attempt', async () => {
@@ -152,7 +163,7 @@ describe('#2034: a due run is claimed before its handler runs', () => {
 
   it('a pass that keeps dying exhausts the job policy at a takeover, without invoking again', async () => {
     // maxAttempts 3: two attempts already, and the third pass never reported.
-    const { store, table } = memoryJobStore([rowOf('A', { attempts: 2, lease_owner: 'dead', next_attempt_at: iso(T0 - 1) })]);
+    const { store, table } = memoryJobStore([silent({ attempts: 2 })]);
     let invoked = 0;
     const report = await driver(store, { ms: T0 }, () => {
       invoked += 1;
@@ -291,7 +302,76 @@ describe('#2034: a due run is claimed before its handler runs', () => {
       expect(invoked).toBe(1); // the rival's pass, and only it
       expect(late).toMatchObject({ attempted: 0, superseded: 1, completed: 0 });
       expect(await rival).toMatchObject({ attempted: 1, completed: 1 });
-      expect(table.get('A')).toMatchObject({ status: 'done', lease_owner: null });
+      // The late claim never entered, so the rival's takeover cost no attempt (#2042 r2).
+      expect(table.get('A')).toMatchObject({ status: 'done', lease_owner: null, attempts: 0, last_error: null });
+    });
+
+    it('with maxAttempts 1, a late answer and a takeover still run the handler once: the claim that never entered cost nothing (#2042 r2)', async () => {
+      const clock = { ms: T0 };
+      let invoked = 0;
+      const handler = () => {
+        invoked += 1;
+        return { done: true };
+      };
+      let rival: Promise<unknown> | null = null;
+      const { store, table } = memoryJobStore([rowOf('A')], {
+        afterClaim: async () => {
+          if (rival) return;
+          clock.ms += JOB_LEASE_MS;
+          rival = driver(store, clock, handler, { maxAttempts: 1 })();
+          await rival;
+        },
+      });
+      expect(await driver(store, clock, handler, { maxAttempts: 1 })()).toMatchObject({ attempted: 0, superseded: 1 });
+      expect(await rival).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+      expect(invoked).toBe(1);
+      expect(table.get('A')).toMatchObject({ status: 'done', attempts: 0 });
+    });
+
+    it('with maxAttempts 1, a late answer and no rival leaves the run runnable, attempts unchanged, and it runs once next', async () => {
+      const clock = { ms: T0 };
+      let invoked = 0;
+      let slow = true;
+      const { store, table } = memoryJobStore([rowOf('A')], {
+        afterClaim: () => {
+          if (slow) clock.ms += JOB_LEASE_MS; // past the expiry: the entry refuses
+          slow = false;
+        },
+      });
+      const drive = driver(store, clock, () => ((invoked += 1), { done: true }), { maxAttempts: 1 });
+      expect(await drive()).toMatchObject({ attempted: 0, superseded: 1 });
+      // It still held the run, so it released it: due now, unleased, nothing charged.
+      expect(table.get('A')).toMatchObject({ status: 'running', attempts: 0, lease_owner: null, lease_entered_at: null, next_attempt_at: iso(clock.ms) });
+      expect(await drive()).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+      expect(invoked).toBe(1);
+      expect(table.get('A')).toMatchObject({ status: 'done', attempts: 0 });
+    });
+
+    it('twin: an entered pass whose lease expires IS charged, and with maxAttempts 1 the takeover ends the run', async () => {
+      const clock = { ms: T0 };
+      const held = gate();
+      const inside = gate();
+      let invoked = 0;
+      const { store, table } = memoryJobStore([rowOf('A')]);
+      const drive = driver(
+        store,
+        clock,
+        async () => {
+          invoked += 1;
+          inside.open();
+          await held.opened;
+          return { done: true };
+        },
+        { maxAttempts: 1 },
+      );
+      const stale = drive();
+      await inside.opened; // entered, and invoked
+      clock.ms += JOB_LEASE_MS;
+      expect(await drive()).toMatchObject({ attempted: 1, failed: 1, errors: [{ runId: 'A', error: JOB_LEASE_EXPIRED_NOTE }] });
+      expect(invoked).toBe(1);
+      expect(table.get('A')).toMatchObject({ status: 'failed', attempts: 1, last_error: JOB_LEASE_EXPIRED_NOTE });
+      held.open();
+      expect(await stale).toMatchObject({ superseded: 1 });
     });
 
     it('twin: an answer back with most of its lease left enters the pass', async () => {

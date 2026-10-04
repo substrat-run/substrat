@@ -2525,7 +2525,8 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     // A run that never opens the door: on a held scope it has nothing to wait for.
     h.registerJob(SCHED, 'idle', () => ({ done: true }));
     // #2034: the same, counted, on the shortest lease a job can hold.
-    h.registerJob(SCHED, 'brief', () => ((briefPasses += 1), { done: true }), undefined, { leaseMs: JOB_LEASE_MIN_MS });
+    // `maxAttempts: 1`, so a claim wrongly charged an attempt would end the run before it ran (#2042 r2).
+    h.registerJob(SCHED, 'brief', () => ((briefPasses += 1), { done: true }), { maxAttempts: 1 }, { leaseMs: JOB_LEASE_MIN_MS });
     // #2028 review: a handler that KEEPS the door's refusal and throws it again on a later pass,
     // raw or (with `inStep`) as the step's wrapper the driver handed back.
     h.registerJob(
@@ -2674,9 +2675,28 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
       rival = await jobDeployment().runDueJobs(t, s);
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1, completed: 0 });
-    expect(rival).toMatchObject({ attempted: 1, completed: 1 });
+    expect(rival).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
     expect(briefPasses).toBe(1);
-    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', leaseOwner: null });
+    // The late claim never entered its pass, so the takeover cost nothing (#2042 r2).
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', leaseOwner: null, attempts: 0, lastError: null });
+  });
+
+  it('#2034: a claim answered with too little of its lease left enters nothing, and releases the run', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'thin', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    counting.afterJobClaim = async () => {
+      counting.afterJobClaim = null;
+      // Still its own lease, but less than the entry margin of it left: the DO's entry refuses.
+      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+    };
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
+    expect(briefPasses).toBe(0);
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 0, leaseOwner: null });
+    // Released due now, so the next drive runs it, even on `maxAttempts: 1`.
+    expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
+    expect(briefPasses).toBe(1);
   });
 
   it('#2034: twin — a claim answered in time runs its pass once', async () => {

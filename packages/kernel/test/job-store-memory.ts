@@ -25,7 +25,9 @@ export function memoryJobStore(
     afterClaim?: (id: string) => unknown;
   } = {},
 ) {
-  const table = new Map<string, JobRunRow>(rows.map((r) => [r.id, { ...r, lease_owner: r.lease_owner ?? null }]));
+  const table = new Map<string, JobRunRow>(
+    rows.map((r) => [r.id, { ...r, lease_owner: r.lease_owner ?? null, lease_entered_at: r.lease_entered_at ?? null }]),
+  );
   const steps = new Map<string, JobStepRow>();
   const holds = (r: JobRunRow | undefined, owner: string): r is JobRunRow =>
     !!r && r.status === 'running' && (r.lease_owner ?? null) === owner;
@@ -43,6 +45,7 @@ export function memoryJobStore(
       next_attempt_at: p.nextAttemptAt,
       ended_at: p.endedAt,
       lease_owner: null,
+      lease_entered_at: null,
     });
     return true;
   };
@@ -72,10 +75,12 @@ export function memoryJobStore(
       const won = !!r && r.status === 'running' && (r.next_attempt_at === null || r.next_attempt_at <= now);
       opts.claims?.push({ id, owner, won });
       if (!won) return null;
-      const takeover = (r.lease_owner ?? null) !== null;
+      // Charged only when the lease taken over had entered its pass (#2042 r2).
+      const takeover = (r.lease_entered_at ?? null) !== null;
       const claimed: JobRunRow = {
         ...r,
         lease_owner: owner,
+        lease_entered_at: null,
         next_attempt_at: until,
         updated_at: now,
         attempts: r.attempts + (takeover ? 1 : 0),
@@ -84,6 +89,12 @@ export function memoryJobStore(
       table.set(id, claimed);
       await opts.afterClaim?.(id);
       return { run: { ...claimed }, takeover };
+    },
+    enter: async (id, owner, now, enterBy) => {
+      const r = table.get(id);
+      if (!holds(r, owner) || r.next_attempt_at === null || r.next_attempt_at <= enterBy) return false;
+      table.set(id, { ...r, lease_entered_at: now });
+      return true;
     },
     list: async () => [...table.values()],
     patch: async (id, p, owner) => apply(id, p, owner),

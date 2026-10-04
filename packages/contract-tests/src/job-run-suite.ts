@@ -291,6 +291,8 @@ export function jobRunContractSuite(
       };
       host.registerJob(JOBS_MODULE, 'leased', leased, { maxAttempts: 3, baseDelayMs: 0 });
       host.registerJob(JOBS_MODULE, 'brief', leased, { maxAttempts: 3, baseDelayMs: 0 }, { leaseMs: JOB_LEASE_MIN_MS });
+      // #2042 r2: one attempt only, so a takeover wrongly charged ends the run unrun.
+      host.registerJob(JOBS_MODULE, 'once', leased, { maxAttempts: 1, baseDelayMs: 0 });
       // #2034: steps that each take longer than half the lease and, together, longer than all of it;
       // `stepped-brief` waits at the gate between its two steps, on the shortest lease.
       host.registerJob(
@@ -509,6 +511,57 @@ export function jobRunContractSuite(
         expect(await host.runDueJobs(t, s)).toMatchObject({ completed: 1 });
         expect(stepBodies).toEqual(['p1:one']);
         expect(leasedPasses).toEqual([run.id, run.id, run.id]);
+      });
+
+      /**
+       * #2042 r2: a lease left behind is charged as a failed attempt only if its pass had ENTERED.
+       * Seeded through a restore, so the takeover reads exactly these rows on each adapter's SQL.
+       */
+      describe('an expired lease left behind', () => {
+        const T0 = '2026-09-01T00:00:00.000Z';
+        const seedLease = async (entered: boolean) => {
+          const s = await newScope();
+          leasedPasses = [];
+          await host.restoreScope(staff, t, s, {
+            tenantId: t,
+            scopeId: s,
+            capturedAt: T0,
+            tables: [
+              {
+                name: '_substrat_job_runs',
+                ddl:
+                  'CREATE TABLE _substrat_job_runs (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, ' +
+                  'job TEXT NOT NULL, instance TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, ' +
+                  "cursor TEXT, counters TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, " +
+                  'last_error TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+                  'next_attempt_at TEXT, ended_at TEXT, lease_owner TEXT, lease_entered_at TEXT)',
+                columns: [
+                  'id', 'module_id', 'job', 'instance', 'payload', 'status', 'cursor', 'counters', 'attempts',
+                  'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at', 'lease_owner', 'lease_entered_at',
+                ],
+                rows: [[
+                  'left-behind', JOBS_MODULE, 'once', 'default', '{}', 'running', null, '{}', 0,
+                  null, T0, T0, T0, null, 'a-drive-that-died', entered ? T0 : null,
+                ]],
+              },
+            ],
+          });
+          return s;
+        };
+
+        it('whose pass never entered is taken over for free: with maxAttempts 1 the run still runs', async () => {
+          const s = await seedLease(false);
+          expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+          expect(leasedPasses).toEqual(['left-behind']);
+          expect(await runOf(s, 'left-behind')).toMatchObject({ status: 'done', attempts: 0, lastError: null });
+        });
+
+        it('twin: whose pass had entered is charged, and with maxAttempts 1 the takeover ends the run', async () => {
+          const s = await seedLease(true);
+          expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, failed: 1, completed: 0 });
+          expect(leasedPasses).toEqual([]);
+          expect(await runOf(s, 'left-behind')).toMatchObject({ status: 'failed', attempts: 1, leaseOwner: null });
+        });
       });
 
       it("a retry is due on its own backoff, never at the lease's expiry", async () => {

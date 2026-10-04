@@ -306,6 +306,7 @@ import {
   JOB_RUN_PATCH_SQL,
   JOB_RUN_CLAIM_SQL,
   JOB_RUN_RENEW_SQL,
+  JOB_RUN_ENTER_SQL,
   JOB_STEP_RECORD_SQL,
   JOB_LEASE_EXPIRED_NOTE,
   assertLeaseMs,
@@ -5282,7 +5283,8 @@ export class SqliteScopeHost implements ScopeHost {
     const patchRun = db.prepare(JOB_RUN_PATCH_SQL);
     const patchArgs = (id: string, p: JobRunPatch, owner: string) =>
       [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id, owner] as const;
-    const ownerOf = db.prepare('SELECT lease_owner FROM _substrat_job_runs WHERE id = ?');
+    const enteredAt = db.prepare('SELECT lease_entered_at FROM _substrat_job_runs WHERE id = ?');
+    const enterRun = db.prepare(JOB_RUN_ENTER_SQL);
     const claimRun = db.prepare(JOB_RUN_CLAIM_SQL);
     const renewRun = db.prepare(JOB_RUN_RENEW_SQL);
     const recordStepRow = db.prepare(JOB_STEP_RECORD_SQL);
@@ -5312,9 +5314,10 @@ export class SqliteScopeHost implements ScopeHost {
     });
     // #2034: the claim, and whether it took over a lease, read in the same transaction.
     const claimTx = db.transaction((id: string, owner: string, now: string, until: string): JobRunClaim | null => {
-      const before = ownerOf.get(id) as { lease_owner: string | null } | undefined;
+      // #2042 r2: a takeover is charged only when the lease it takes had entered its pass.
+      const before = enteredAt.get(id) as { lease_entered_at: string | null } | undefined;
       const claimed = row(claimRun.get(owner, until, now, JOB_LEASE_EXPIRED_NOTE, id, now));
-      return claimed && { run: claimed, takeover: (before?.lease_owner ?? null) !== null };
+      return claimed && { run: claimed, takeover: (before?.lease_entered_at ?? null) !== null };
     });
     const recordStepTx = db.transaction(
       (runId: string, name: string, result: string | null, attempts: number, lastError: string | null,
@@ -5331,6 +5334,8 @@ export class SqliteScopeHost implements ScopeHost {
     return {
       startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
       claim: (id: string, owner: string, now: string, until: string) => turn(() => claimTx(id, owner, now, until)),
+      enter: (id: string, owner: string, now: string, enterBy: string) =>
+        turn(() => enterRun.run(now, id, owner, enterBy).changes > 0),
       // #1834: the drive's one snapshot — keys only, in the order runs became due.
       dueKeys: (now: string, max: number) =>
         turn(() => db
@@ -11725,6 +11730,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_job_runs', 'subject_id', 'subject_id TEXT');
     // #2034: the lease, on a scope DB built before it. NULL = nobody holds the run.
     this.ensureColumn(db, '_substrat_job_runs', 'lease_owner', 'lease_owner TEXT');
+    // #2042 r2: whether the holder entered its pass. NULL = it has not, which is right for any lease
+    // already there: a takeover of it costs nothing.
+    this.ensureColumn(db, '_substrat_job_runs', 'lease_entered_at', 'lease_entered_at TEXT');
     // #2009: the copy classification on a scope DB built before it (NULL reads as a copy; see
     // `COPY_ORIGIN_DDL`).
     this.ensureColumn(db, '_substrat_copy_origin', 'is_copy', 'is_copy INTEGER');

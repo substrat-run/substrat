@@ -8,7 +8,7 @@ import { warmControlPlane } from './do-warmup.js';
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
 
-it('adds the lease column on wake to a scope DO built before it, and drives its runs (#2034)', async () => {
+it('adds the lease columns on wake to a scope DO built before them, and drives its runs (#2034)', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE, controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
@@ -34,12 +34,15 @@ it('adds the lease column on wake to a scope DO built before it, and drives its 
     // the write it would have flushed is lost with it.
     await runInDurableObject(stub(), (_instance, state) => {
       state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_owner');
+      state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_entered_at');
     });
     expect(await columns()).not.toContain('lease_owner');
+    expect(await columns()).not.toContain('lease_entered_at');
     await runInDurableObject(stub(), (_instance, state) => state.abort('evicted for lease column upgrade')).catch(() => undefined);
     expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
     expect((await host.jobRuns(t, s)).find((run) => run.id === old.id)).toMatchObject({ status: 'done', leaseOwner: null });
     expect(await columns()).toContain('lease_owner');
+    expect(await columns()).toContain('lease_entered_at');
   } finally {
     await host.admin.archiveScope(staff, t, s);
   }

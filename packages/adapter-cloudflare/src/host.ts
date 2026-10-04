@@ -1253,6 +1253,7 @@ interface ScopeStubRpc {
   jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]>;
   jobRunList(filter: JobRunFilter): Promise<JobRunRow[]>;
   jobRunClaim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null>;
+  jobRunEnter(id: string, owner: string, now: string, enterBy: string): Promise<boolean>;
   jobRunPatch(id: string, patch: JobRunPatch, owner?: string): Promise<boolean>;
   jobCommitPass(id: string, patch: JobRunPatch, owner?: string): Promise<boolean>;
   jobStepBegin(runId: string, step: string, owner: string, leaseUntil: string): Promise<{ held: boolean; row: JobStepRow | null }>;
@@ -2604,6 +2605,7 @@ export class CloudflareScopeHost implements ScopeHost {
       startOrJoin: (key, row) => stub.jobRunStartOrJoin(key.moduleId, key.job, key.instance, row),
       dueKeys: (now, max) => stub.jobRunsDueKeys(now, max),
       claim: (id, owner, now, leaseUntil) => stub.jobRunClaim(id, owner, now, leaseUntil),
+      enter: (id, owner, now, enterBy) => stub.jobRunEnter(id, owner, now, enterBy),
       list: (filter) => stub.jobRunList(filter),
       patch: (id, patch, owner) => stub.jobRunPatch(id, patch, owner),
       commitPass: (id, patch, owner) => stub.jobCommitPass(id, patch, owner),

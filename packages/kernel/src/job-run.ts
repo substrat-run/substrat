@@ -81,18 +81,21 @@ import { ulid } from './ulid.js';
  * at a step boundary stops there and runs no further steps.
  *
  * **A lease that expires without a patch is recovered.** The run is due again at the
- * expiry, and the next claim takes it over. That takeover counts as a failed pass —
- * the pass that held it never reported — so `attempts` stays honest and a pass that
- * keeps dying exhausts the job's policy and ends `failed` rather than looping forever.
+ * expiry, and the next claim takes it over. If the lease's pass had ENTERED, that
+ * takeover counts it as a failed pass — it never reported — so `attempts` stays honest
+ * and a pass that keeps dying exhausts the job's policy and ends `failed` rather than
+ * looping forever. A claim that never entered ran nothing, and costs nothing.
  * The expiry has to outlast the longest stretch a pass spends between two steps, which
  * is the job's own number: `registerJob`'s `leaseMs`, default `JOB_LEASE_MS`.
  *
- * A pass is ENTERED only if its claim's answer arrives with more than
- * `JOB_LEASE_ENTRY_MARGIN` of the lease left: an answer that came back late may have
- * expired on the way, and the run may be someone else's already.
+ * A pass is ENTERED by a second compare-and-set (`JOB_RUN_ENTER_SQL`), which holds only
+ * while the claim still owns the lease with more than `JOB_LEASE_ENTRY_MARGIN` of it
+ * left: a claim whose answer came back late may have expired on the way, and the run
+ * may be someone else's already. Only an entered pass invokes the handler.
  *
  * What the lease does NOT cover, by construction: a pass whose lease expires while it
- * is working — past the claim, between two step boundaries, longer than the lease. Once
+ * is working — an entry whose answer took longer than the margin to come back, or a
+ * stretch between two step boundaries longer than the lease. Once
  * it expires another drive may take the run over, and until the stale pass reaches its
  * next step boundary or its outcome (where it learns, and stops), both are running.
  * That stretch is at-least-once, like a step body (see `JobPassContext.step`); the
@@ -157,7 +160,10 @@ export const JOB_RUN_DDL = `
     ended_at TEXT,
     -- #2034: the pass holding the run, minted per claim; NULL = nobody. Every write a
     -- pass makes is conditional on it, and the pass's outcome clears it.
-    lease_owner TEXT
+    lease_owner TEXT,
+    -- #2034 (#2042 r2): when the holder ENTERED its pass (JOB_RUN_ENTER_SQL); NULL = it has
+    -- not, and a claim that never entered is taken over without costing an attempt.
+    lease_entered_at TEXT
   );
   -- The drive's read: WHERE status = 'running' AND (next_attempt_at IS NULL OR <= ?)
   -- ORDER BY id. Leading with status makes the live runs a seekable range over a
@@ -216,7 +222,7 @@ export const JOB_RUN_DDL = `
  */
 export const JOB_RUN_PATCH_SQL = `UPDATE _substrat_job_runs
      SET status = ?, cursor = ?, counters = ?, attempts = ?, last_error = ?,
-         updated_at = ?, next_attempt_at = ?, ended_at = ?, lease_owner = NULL
+         updated_at = ?, next_attempt_at = ?, ended_at = ?, lease_owner = NULL, lease_entered_at = NULL
    WHERE id = ? AND status = 'running' AND lease_owner IS ?`;
 
 /**
@@ -227,10 +233,12 @@ export const JOB_RUN_PATCH_SQL = `UPDATE _substrat_job_runs
  * lease is written in the same statement: `lease_owner`, and `next_attempt_at` pushed
  * out to the lease's expiry, which is what takes the run out of the due read.
  *
- * A run due while it still carries an owner is an EXPIRED lease — its pass never
- * reported — and taking it over counts that pass as failed: `attempts` + 1 and the
- * note as `last_error`. SQLite evaluates every `SET` against the row as it was, so the
- * `CASE`s read the previous owner.
+ * A run due while it still carries an ENTERED lease (`lease_entered_at`) is a pass that
+ * started and never reported, and taking it over counts that pass as failed: `attempts`
+ * + 1 and the note as `last_error`. A lease whose claim never entered its pass (#2042
+ * r2: its answer came back too late, or its drive died before entering) ran nothing,
+ * and is taken over for free. SQLite evaluates every `SET` against the row as it was,
+ * so the `CASE`s read the previous lease.
  *
  * Returns the claimed row, as the claim left it (`RETURNING *`); no row = the claim lost.
  *
@@ -238,11 +246,24 @@ export const JOB_RUN_PATCH_SQL = `UPDATE _substrat_job_runs
  * takeover note), id, now.
  */
 export const JOB_RUN_CLAIM_SQL = `UPDATE _substrat_job_runs
-     SET lease_owner = ?, next_attempt_at = ?, updated_at = ?,
-         attempts = attempts + CASE WHEN lease_owner IS NULL THEN 0 ELSE 1 END,
-         last_error = CASE WHEN lease_owner IS NULL THEN last_error ELSE ? END
+     SET lease_owner = ?, next_attempt_at = ?, updated_at = ?, lease_entered_at = NULL,
+         attempts = attempts + CASE WHEN lease_entered_at IS NULL THEN 0 ELSE 1 END,
+         last_error = CASE WHEN lease_entered_at IS NULL THEN last_error ELSE ? END
    WHERE id = ? AND status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
    RETURNING *`;
+
+/**
+ * #2034 (#2042 r2): ENTER a claimed pass — the one write that lets its drive invoke the handler.
+ *
+ * A compare-and-set: it marks the lease entered only while `lease_owner` is still this claim's
+ * and the lease still runs past `enter_by` (now, plus `JOB_LEASE_ENTRY_MARGIN` of the lease). A
+ * claim whose answer came back late finds its lease gone or nearly gone here, and enters
+ * nothing; only an entered lease costs an attempt when it is taken over.
+ *
+ * Params: lease_entered_at (now), id, lease_owner, enter_by.
+ */
+export const JOB_RUN_ENTER_SQL = `UPDATE _substrat_job_runs SET lease_entered_at = ?
+   WHERE id = ? AND status = 'running' AND lease_owner IS ? AND next_attempt_at > ?`;
 
 /**
  * #2034: renew a pass's lease at a step boundary — only while the pass still holds it.
@@ -544,9 +565,14 @@ export interface JobRunRow {
   readonly ended_at: string | null;
   /** #2034. Optional only for an older scope DO answering before the lease column. */
   readonly lease_owner?: string | null;
+  /** #2034 (#2042 r2): when the holder entered its pass. Optional for the same reason. */
+  readonly lease_entered_at?: string | null;
 }
 
-/** #2034: a won claim — the run as the claim left it, and whether it took over an expired lease. */
+/**
+ * #2034: a won claim — the run as the claim left it, and whether it took over an expired lease
+ * whose pass had entered (which the claim charged as a failed attempt).
+ */
 export interface JobRunClaim {
   readonly run: JobRunRow;
   readonly takeover: boolean;
@@ -629,6 +655,11 @@ export interface JobRunStore {
    * owner before the claim, which only a read in the same transaction can say.
    */
   claim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null>;
+  /**
+   * #2034 (#2042 r2): enter `owner`'s claimed pass (`JOB_RUN_ENTER_SQL`) — true only while it still
+   * holds the lease and the lease runs past `enterBy`. Only an entered pass invokes its handler.
+   */
+  enter(id: string, owner: string, now: string, enterBy: string): Promise<boolean>;
   list(filter: JobRunFilter): Promise<JobRunRow[]>;
   /** A pass outcome, only while `owner` holds the run (`JOB_RUN_PATCH_SQL`). False = refused. */
   patch(id: string, patch: JobRunPatch, owner: string): Promise<boolean>;
@@ -1273,12 +1304,13 @@ export async function runDueJobRuns(options: {
     if (outcome.error !== undefined && outcome.status !== 'deferred') report.errors.push({ runId, error: outcome.error });
   };
   /**
-   * #2034: claim `id` for one pass, under an owner minted for that pass alone — and ENTER it only
-   * if the lease the claim wrote (its own `RETURNING` row) still has more than
-   * `JOB_LEASE_ENTRY_MARGIN` of its length left by this drive's clock now. A claim whose answer
-   * came back late may have expired on the way, and another drive may hold the run already; the
-   * write alone cannot say so, the time left can. A late claim releases the run, due now, if it
-   * still holds it, runs nothing and counts `superseded`.
+   * #2034: claim `id` for one pass, under an owner minted for that pass alone — then ENTER it, with
+   * the second compare-and-set (`JOB_RUN_ENTER_SQL`): only while the claim still holds the lease
+   * with more than `JOB_LEASE_ENTRY_MARGIN` of it left by this drive's clock now. A claim whose
+   * answer came back late may have expired on the way, and another drive may hold the run
+   * already; the entry is what finds out, and a claim that never entered costs no attempt when
+   * it is taken over (#2042 r2). A claim that cannot enter releases the run, due now, if it still
+   * holds it, runs nothing and counts `superseded`.
    */
   const claim = async (id: string, leaseMs: number) => {
     const owner = ulid();
@@ -1286,7 +1318,7 @@ export async function runDueJobRuns(options: {
     const won = await options.store.claim(id, owner, at, plusMs(at, leaseMs));
     if (!won) return null;
     const now = options.now();
-    if (Date.parse(won.run.next_attempt_at!) - Date.parse(now) > leaseMs * JOB_LEASE_ENTRY_MARGIN) {
+    if (await options.store.enter(id, owner, now, plusMs(now, leaseMs * JOB_LEASE_ENTRY_MARGIN))) {
       return { ...won, owner };
     }
     await settle(options.store, won.run, owner, now, {

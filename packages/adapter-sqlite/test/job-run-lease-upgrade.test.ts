@@ -8,7 +8,7 @@ import { permMod } from '@substrat-run/contract-tests';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
-it('adds the lease column to a scope built before it, and drives its runs (#2034)', async () => {
+it('adds the lease columns to a scope built before them, and drives its runs (#2034)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-job-lease-'));
   const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
   const t = tenantId.parse(ulid());
@@ -30,7 +30,7 @@ it('adds the lease column to a scope built before it, and drives its runs (#2034
     const old = await host.startJobRun(t, s, { moduleId: PERM, job: 'walk' });
     await host.close();
     const db = new Database(join(dir, `${t}__${s}.sqlite`));
-    try { db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_owner'); }
+    try { db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_owner'); db.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_entered_at'); }
     finally { db.close(); }
 
     host = open();

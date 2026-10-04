@@ -84,6 +84,7 @@ import {
   JOB_RUN_PATCH_SQL,
   JOB_RUN_CLAIM_SQL,
   JOB_RUN_RENEW_SQL,
+  JOB_RUN_ENTER_SQL,
   JOB_LEASE_EXPIRED_NOTE,
   JOB_STEP_RECORD_SQL,
   DELIVERY_ERROR_REDACTION_SQL,
@@ -4447,14 +4448,20 @@ export function defineScopeDO(
      */
     async jobRunClaim(id: string, owner: string, now: string, leaseUntil: string): Promise<JobRunClaim | null> {
       return this.revision.transactionSync(() => {
-        const before = this.sql.exec('SELECT lease_owner FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as
-          | { lease_owner: string | null }
+        // #2042 r2: a takeover is charged only when the lease it takes had entered its pass.
+        const before = this.sql.exec('SELECT lease_entered_at FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as
+          | { lease_entered_at: string | null }
           | undefined;
         const claimed = this.sql
           .exec(JOB_RUN_CLAIM_SQL, owner, leaseUntil, now, JOB_LEASE_EXPIRED_NOTE, id, now)
           .toArray()[0] as unknown as JobRunRow | undefined;
-        return claimed ? { run: claimed, takeover: (before?.lease_owner ?? null) !== null } : null;
+        return claimed ? { run: claimed, takeover: (before?.lease_entered_at ?? null) !== null } : null;
       });
+    }
+
+    /** #2034 (#2042 r2): enter a claimed pass — `JOB_RUN_ENTER_SQL`, one compare-and-set. */
+    async jobRunEnter(id: string, owner: string, now: string, enterBy: string): Promise<boolean> {
+      return this.sql.exec(JOB_RUN_ENTER_SQL, now, id, owner, enterBy).rowsWritten > 0;
     }
 
     /**
@@ -5333,6 +5340,8 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
         // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.
         'ALTER TABLE _substrat_job_runs ADD COLUMN lease_owner TEXT',
+        // #2042 r2: whether the holder entered its pass. NULL for any lease already there: free to take over.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN lease_entered_at TEXT',
         // Executor retry state (#100). The defaults read as "terminal", which is
         // right for every row already there: each is a completed delivery or a
         // consumer dead-letter.
