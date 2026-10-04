@@ -1,7 +1,9 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  CAPABILITY_SESSION_PREFIX,
   connectionId as connectionIdOf,
+  errorCodeOf,
   moduleId,
   permissionKey,
   principalId,
@@ -9,6 +11,7 @@ import {
   tenantId,
   type ScopeId,
   type ScopeLifecycle,
+  type TenantId,
 } from '@substrat-run/contracts';
 import { scheduleMod } from '@substrat-run/contract-tests';
 import { INERT_SCOPE_REASON, ulid } from '@substrat-run/kernel';
@@ -545,5 +548,232 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
     // Captured before the unsuspend: the store's newer `active` wins over it.
     await hostFor().restoreScopeLocal(s, held, { sourceScopeId: s });
     expect(await hostFor().lifecycleHeld(s)).toBe(false);
+  });
+});
+
+/**
+ * #2016 on a CP-LESS host: no directory re-checks the (tenant, scope) pair the router asserted, so
+ * the scope's own storage does — against the tenant it was provisioned for (its `provisioned_for`
+ * receipt, #1738). Every door refuses a pair it does not agree with in K-3's words, BEFORE any
+ * guard, handler or store lookup runs: no attachment bucket is resolved, no denial is journaled
+ * (the permission gate never ran), nothing is written. Each refusal has its own-tenant twin.
+ */
+describe('a CP-less host refuses a (tenant, scope) pair its scope was not provisioned for (#2016)', () => {
+  const t = tenantId.parse(ulid());
+  const u = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const USE = permissionKey.parse('perm:use');
+  const SCHED = moduleId.parse('@test/sched');
+  const conn = connectionIdOf.parse(ulid());
+  const TOKEN = `${CAPABILITY_SESSION_PREFIX}${'a'.repeat(43)}`;
+  const resolved: string[] = [];
+  let revision = 0;
+  const life = (scope: ScopeLifecycle['scope'] = 'active'): ScopeLifecycle => {
+    revision += 1;
+    return { scope, tenant: 'active', at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'], revision: { epoch: 0, scope: revision, tenant: revision } };
+  };
+
+  const hostFor = () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      attachmentBuckets: (tenant) => {
+        resolved.push(tenant);
+        return {};
+      },
+    });
+    host.registerModule(scheduleMod);
+    return host;
+  };
+  const seat = async (tenant: TenantId = t) => {
+    const s = scopeId.parse(ulid());
+    await hostFor().provisionScopeLocal({
+      tenantId: tenant,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    return s;
+  };
+  const stubOf = (s: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(s));
+  const sql = (s: ScopeId, q: string, ...params: unknown[]) =>
+    runInDurableObject(stubOf(s), (_i, state) => state.storage.sql.exec(q, ...(params as never[])).toArray());
+  const receiptOf = async (s: ScopeId) =>
+    ((await sql(s, `SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`))[0] as { value: string } | undefined)?.value ?? null;
+  const dropReceipt = (s: ScopeId) => sql(s, `DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+  const stray = (s: ScopeId, tenant: TenantId) =>
+    sql(s, `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, revoked_at) VALUES (?, 'stray', '[]', 'vertical', NULL)`, tenant);
+  const denials = async (s: ScopeId) => Number(((await sql(s, 'SELECT COUNT(*) AS n FROM _substrat_denials'))[0] as { n: number }).n);
+  const outcome = (p: Promise<unknown>): Promise<unknown> => p.then(() => undefined, (e: unknown) => e);
+  /** K-3's refusal, exactly: typed `not_found`, naming the pair asked for. */
+  const isPairRefusal = (e: unknown, tenant: TenantId, s: ScopeId) =>
+    errorCodeOf(e) === 'not_found' && String((e as Error).message).includes(`unknown scope for tenant: (${tenant}, ${s})`);
+
+  /** Every door into a scope, called as `tenant`. */
+  const doors: Record<string, (tenant: TenantId, s: ScopeId) => Promise<unknown>> = {
+    invoke: async (x, s) => (await hostFor().getScope(owner, x, s)).invoke('perm/authorized-emit', { permission: USE }),
+    system: (x, s) => hostFor().getSystemScope(SCHED, x, s),
+    attachments: (x, s) => hostFor().attachments(owner, x, s),
+    capabilityExchange: (x, s) => hostFor().exchangeCapability(x, s, 'not-a-capability-secret'),
+    capabilityScope: async (x, s) => (await hostFor().getCapabilityScope(TOKEN, x, s)).invoke('perm/authorized-emit', { permission: USE }),
+    capabilityAttachments: (x, s) => hostFor().getCapabilityAttachments(TOKEN, x, s),
+    peer: (x, s) => hostFor().getVerticalScope({ vertical: 'other-app', scope: scopeId.parse(ulid()) }, x, s),
+    connectorInvoke: (x, s) => hostFor().connectorInvokeLocal(conn, x, s, 'perm/authorized-emit', { permission: USE }),
+    connectorUpload: (x, s) =>
+      hostFor().connectorAttachmentUploadLocal(conn, x, s, {
+        entity: { entityType: 'item', entityId: 'i1' },
+        filename: 'a.txt',
+        contentType: 'text/plain',
+        visibility: 'customer',
+        body: new TextEncoder().encode('a'),
+      }),
+    connectorOpen: (x, s) => hostFor().connectorAttachmentOpenLocal(conn, x, s, ulid()),
+    startJob: (x, s) => hostFor().startJobRun(x, s, { moduleId: SCHED, job: 'noop' }),
+    runJobs: (x, s) => hostFor().runDueJobs(x, s),
+    jobRuns: (x, s) => hostFor().jobRuns(x, s),
+    drain: (x, s) => hostFor().drainDue(x, s),
+    deadLetters: (x, s) => hostFor().executorDeadLetters(x, s),
+    platformRequests: (x, s) => hostFor().listPlatformRequests(x, s),
+  };
+
+  it.each(Object.keys(doors))('%s: the mismatched pair is refused at the door; the provisioned tenant is let through', async (door) => {
+    const s = await seat();
+    resolved.length = 0;
+    const before = await denials(s);
+    const refused = await outcome(doors[door]!(u, s));
+    expect(isPairRefusal(refused, u, s)).toBe(true);
+    // Refused before anything ran: no bucket resolved, no permission check journaled, no job.
+    expect(resolved).toEqual([]);
+    expect(await denials(s)).toBe(before);
+    expect(await hostFor().jobRuns(t, s)).toEqual([]);
+    // The twin: whatever the door does next for its own tenant, it is not this refusal.
+    const own = await outcome(doors[door]!(t, s));
+    expect(isPairRefusal(own, t, s)).toBe(false);
+  });
+
+  it('the refusal holds however much the tenant holds: a stray role row for it does not let it in', async () => {
+    const s = await seat();
+    await stray(s, u);
+    expect(isPairRefusal(await outcome(doors.invoke!(u, s)), u, s)).toBe(true);
+    await doors.invoke!(t, s);
+  });
+
+  it('a scope provisioned before the receipt existed is judged by its role rows', async () => {
+    const s = await seat();
+    await dropReceipt(s);
+    expect(isPairRefusal(await outcome(doors.invoke!(u, s)), u, s)).toBe(true);
+    await doors.invoke!(t, s);
+    // Nothing back-filled it: a door is a read, and a request's tenant is never recorded.
+    expect(await receiptOf(s)).toBeNull();
+  });
+
+  it('a scope that holds neither a receipt nor roles has nothing to hold the pair against, and refuses no one', async () => {
+    // A load from a world that keeps its roles elsewhere, before its repair: the permission gate
+    // still decides what anyone may do in it, exactly as before the cross-check.
+    const s = scopeId.parse(ulid());
+    await hostFor().restoreScopeLocal(s, []);
+    expect(await receiptOf(s)).toBeNull();
+    for (const tenant of [t, u]) expect(isPairRefusal(await outcome(doors.system!(tenant, s)), tenant, s)).toBe(false);
+  });
+
+  describe('the back-fill: only from the platform\'s word, never from a request', () => {
+    it('a lifecycle delivery records the tenant on a legacy scope whose role rows agree; then a stray row stops counting', async () => {
+      const s = await seat();
+      await dropReceipt(s);
+      await stray(s, u);
+      // Legacy and holding a row for `u`: by inference alone, `u` gets in.
+      expect(isPairRefusal(await outcome(doors.invoke!(u, s)), u, s)).toBe(false);
+      expect(await hostFor().setLifecycleLocal(s, life(), t)).toMatchObject({ applied: true });
+      expect(await receiptOf(s)).toBe(t);
+      expect(isPairRefusal(await outcome(doors.invoke!(u, s)), u, s)).toBe(true);
+      await doors.invoke!(t, s);
+    });
+
+    it('a delivery for a tenant the scope is foreign to is refused and stores nothing', async () => {
+      const s = await seat();
+      const e = await outcome(hostFor().setLifecycleLocal(s, life('suspended'), u));
+      expect(errorCodeOf(e)).toBe('conflict');
+      expect(String((e as Error).message)).toContain(t);
+      expect(await hostFor().lifecycleHeld(s)).toBe(false);
+      expect(await receiptOf(s)).toBe(t);
+      // The legacy twin: foreign by its role rows, refused the same way, and nothing recorded.
+      await dropReceipt(s);
+      expect(errorCodeOf(await outcome(hostFor().setLifecycleLocal(s, life('suspended'), u)))).toBe('conflict');
+      expect(await receiptOf(s)).toBeNull();
+      expect(await hostFor().lifecycleHeld(s)).toBe(false);
+    });
+
+    it('a delivery to a scope never provisioned here records no receipt, and one without a tenant records none either', async () => {
+      const bare = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(bare, []);
+      await hostFor().setLifecycleLocal(bare, life(), t);
+      expect(await receiptOf(bare)).toBeNull();
+      // An older platform names no tenant: delivered as before, nothing recorded.
+      const legacy = await seat();
+      await dropReceipt(legacy);
+      expect(await hostFor().setLifecycleLocal(legacy, life())).toMatchObject({ applied: true });
+      expect(await receiptOf(legacy)).toBeNull();
+    });
+
+    it('a reconcile (the provision path) back-fills too', async () => {
+      const s = await seat();
+      await dropReceipt(s);
+      await hostFor().projectRolesLocal(t, s, [{ key: 'office-admin', permissions: [USE], source: 'vertical' }]);
+      expect(await receiptOf(s)).toBe(t);
+    });
+  });
+
+  describe('copies and forks record their own tenant, never the source\'s', () => {
+    it('a snapshot records the tenant the platform names; a source of another tenant is refused before anything is copied', async () => {
+      const source = await seat();
+      const snap = scopeId.parse(ulid());
+      await hostFor().snapshotScopeLocal(source, snap, t);
+      expect(await receiptOf(snap)).toBe(t);
+      await doors.invoke!(t, snap);
+      expect(isPairRefusal(await outcome(doors.invoke!(u, snap)), u, snap)).toBe(true);
+
+      const leak = scopeId.parse(ulid());
+      expect(isPairRefusal(await outcome(hostFor().snapshotScopeLocal(source, leak, u)), u, source)).toBe(true);
+      expect(await sql(leak, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_substrat_outbox'`)).toEqual([]);
+    });
+
+    it('an older platform\'s snapshot (no tenant) leaves the fork judged by its copied role rows', async () => {
+      const source = await seat();
+      const snap = scopeId.parse(ulid());
+      await hostFor().snapshotScopeLocal(source, snap);
+      expect(await receiptOf(snap)).toBeNull();
+      expect(isPairRefusal(await outcome(doors.invoke!(u, snap)), u, snap)).toBe(true);
+      await doors.invoke!(t, snap);
+    });
+
+    it('a copy of another tenant\'s dump into a fresh scope records the restoring tenant', async () => {
+      const source = await seat(u);
+      const copy = scopeId.parse(ulid());
+      await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(source), { sourceScopeId: source, tenantId: t });
+      expect(await receiptOf(copy)).toBe(t);
+      expect(isPairRefusal(await outcome(doors.system!(u, copy)), u, copy)).toBe(true);
+      expect(isPairRefusal(await outcome(doors.system!(t, copy)), t, copy)).toBe(false);
+    });
+
+    it('a restore keeps the scope\'s own receipt across the load, and one naming another tenant is refused untouched', async () => {
+      const own = await seat();
+      const other = await seat(u);
+      const theirs = await hostFor().exportScopeLocal(other);
+      // No tenant named (an older platform): the store keeps its own receipt, never the dump's.
+      await hostFor().restoreScopeLocal(own, theirs, { sourceScopeId: other });
+      expect(await receiptOf(own)).toBe(t);
+      // The platform naming a tenant the store was not provisioned for: refused before the drops.
+      const mine = await seat();
+      const outbox = () => sql(mine, 'SELECT COUNT(*) AS n FROM _substrat_outbox');
+      await doors.invoke!(t, mine);
+      const before = await outbox();
+      const e = await outcome(hostFor().restoreScopeLocal(mine, theirs, { sourceScopeId: other, tenantId: u }));
+      expect(errorCodeOf(e)).toBe('conflict');
+      expect(await receiptOf(mine)).toBe(t);
+      expect(await outbox()).toEqual(before);
+      // The twin: the same restore for its own tenant lands.
+      await hostFor().restoreScopeLocal(mine, theirs, { sourceScopeId: other, tenantId: t });
+      expect(await receiptOf(mine)).toBe(t);
+    });
   });
 });
