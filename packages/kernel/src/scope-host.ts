@@ -1037,7 +1037,8 @@ export interface ScheduleRunReport {
    * The module is switched off on this scope (#1666) — every `skipped` above is that,
    * not a cadence window. Optional and absent otherwise, so a stored or pre-widening
    * report stays valid. A module a PITR rewind holds off until its switch is back in the
-   * scope (#1819, Cloudflare only) reports the same.
+   * scope (#1819, Cloudflare only) reports the same. The system door refuses that module's
+   * other calls too, a job run's among them (#1834).
    */
   switchedOff?: true;
   /**
@@ -4748,6 +4749,12 @@ export interface ScopeHost {
    * one enforcement path, `ctx.check` stays the single gate, no bypass. Events it
    * emits are stamped `{ system: moduleId }`. `ctx.principal` carries the module id
    * so the type holds, but it is **not a person**.
+   *
+   * **It is the one door for that authority** (#1834). A schedule's fire and a job run's
+   * `pass.scope()` both act through it, and so does `getSystemAttachments`. On the hosted adapter it
+   * also refuses (`forbidden`) a module a PITR rewind holds off (#1819), at every call it makes,
+   * not only when it is opened: each call is pinned to the scope instance the door checked, and
+   * a call landing on a restarted one (a rewound scope always is) is checked again first.
    */
   getSystemScope(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<ScopeStub>;
 
