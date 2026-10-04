@@ -716,6 +716,31 @@ export interface ConnectorCallsView {
   buckets: ConnectorCallsBucket[];
 }
 
+/**
+ * One declared lifecycle move of one app (#1750): calls that moved an `entityType` into
+ * `state`, today (the 24 hours ending at the window's end), yesterday (the 24 before), and
+ * per bucket over the window — zero-filled, so a gap is a quiet stretch, not missing data.
+ */
+export interface BusinessVolumeRow {
+  scopeId: string;
+  entityType: string;
+  state: string;
+  terminal: boolean;
+  fromInitial: boolean;
+  operations: string[];
+  today: number;
+  yesterday: number;
+  buckets: Array<{ start: string; count: number }>;
+}
+
+export interface BusinessVolumesView {
+  window: { since: string; until: string };
+  bucketMinutes: number;
+  rows: BusinessVolumeRow[];
+  /** Why an app has no rows: nothing running, no move the model lets be counted, or code that predates the read. */
+  apps: Array<{ scopeId: string; unavailable: 'no-version' | 'no-moves' | 'not-yet-available' | null }>;
+}
+
 /** A deploy moment drawn on the chart (#1236) — a registry fact, not telemetry. */
 export interface ReleaseMarker {
   at: string;
@@ -1908,6 +1933,15 @@ export const api = {
       ...(q.since ? { since: q.since } : {}),
       ...(q.until ? { until: q.until } : {}),
     })}`),
+  businessVolumes: (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) => {
+    const p = new URLSearchParams();
+    for (const s of q.scopeIds ?? []) p.append('scopeId', s);
+    if (q.hours) p.set('hours', String(q.hours));
+    if (q.since) p.set('since', q.since);
+    if (q.until) p.set('until', q.until);
+    const qs = p.toString();
+    return call<BusinessVolumesView>(`/observability/business-volumes${qs ? `?${qs}` : ''}`);
+  },
   /** `since`/`until` are the chart's time cursor — a window ending in the past, which
    *  `hours` cannot name. Sent instead of `hours`, never beside it. */
   appTenantLogs: (

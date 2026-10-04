@@ -145,6 +145,8 @@ import type {
   DeadLetter,
   LifecycleFlowInput,
   LifecycleFlowResult,
+  OperationSeriesInput,
+  OperationSeriesResult,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -2872,6 +2874,19 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: LifecycleFlowInput,
   ): Promise<LifecycleFlowResult>;
+
+  /**
+   * Calls per `(entityType, operation)` per time bucket over the scope's outbox (#1750) —
+   * `readOperationSeries`, hoisted: the business volumes Pulse draws. The caller passes
+   * the pairs (from the running version's declared lifecycles); the scope holds no model.
+   * Reads no payload; logged like every read here.
+   */
+  operationSeries(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: OperationSeriesInput,
+  ): Promise<OperationSeriesResult>;
 
   /**
    * One read-only SQL statement against the scope's database — the console the two

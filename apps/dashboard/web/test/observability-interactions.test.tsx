@@ -376,6 +376,41 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
   expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-b' }));
 });
 
+it('Pulse draws a business row per counted move: today, yesterday, the change, and its series (#1750)', async () => {
+  const hour = Math.floor((Date.now() - 3_600_000) / 3_600_000) * 3_600_000;
+  vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [], available: true, bucketMinutes: 60 });
+  vi.spyOn(api, 'connectorCalls').mockResolvedValue({ available: true, buckets: [] });
+  vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [] });
+  vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
+  const business = vi.spyOn(api, 'businessVolumes').mockResolvedValue({
+    window: { since: new Date(Date.now() - 86_400_000).toISOString(), until: new Date().toISOString() },
+    bucketMinutes: 60,
+    rows: [
+      { scopeId: 'app-a', entityType: 'order', state: 'closed', terminal: true, fromInitial: false, operations: ['shop/close'], today: 6, yesterday: 4, buckets: [{ start: new Date(hour).toISOString(), count: 6 }] },
+      { scopeId: 'app-a', entityType: 'order', state: 'shipped', terminal: false, fromInitial: true, operations: ['shop/ship'], today: 2, yesterday: 0, buckets: [{ start: new Date(hour).toISOString(), count: 2 }] },
+    ],
+    apps: [{ scopeId: 'app-a', unavailable: null }, { scopeId: 'app-b', unavailable: 'not-yet-available' }],
+  });
+  const apps = [
+    { app_scope_id: 'app-a', name: 'App A', vertical_slug: 'shop', status: 'active' },
+    { app_scope_id: 'app-b', name: 'App B', vertical_slug: 'crm', status: 'active' },
+  ] as AppRow[];
+  await act(async () =>
+    root.render(<Observability apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={vi.fn()} />),
+  );
+  expect(business).toHaveBeenCalledWith({ hours: 24 });
+  const rows = [...container.querySelectorAll('[data-pulse-card] div[role="row"]')]
+    .filter((r) => r.querySelector('[role="cell"]')?.textContent?.startsWith('order'));
+  expect(rows.map((r) => [...r.querySelectorAll('[role="cell"]')].slice(0, 4).map((c) => c.textContent))).toEqual([
+    ['order → closedApp A', '6', '4', '+50%'],
+    ['order → shippedApp A', '2', '0', 'new'],
+  ]);
+  expect(rows[0]!.querySelector('svg path')).not.toBeNull();
+  expect(rows[0]!.querySelector('a')?.getAttribute('href')).toContain('entity=order');
+  // An app whose code predates the read is named, not silently missing.
+  expect(container.textContent).toContain('Business volumes need a re-push of App B.');
+});
+
 it('relative presets retain hours-only requests for legacy readers and shared cache keys', async () => {
   const traffic = vi.spyOn(api, 'appTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 });
   const overlays = vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });

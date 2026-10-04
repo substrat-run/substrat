@@ -73,6 +73,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     deadLettersLocal: async (_s: unknown, input?: unknown) =>
       note('deadLettersLocal', { entries: [input], nextCursor: null }) as never,
     lifecycleFlowLocal: async (_s: unknown, input?: unknown) => note('lifecycleFlowLocal', { echoed: input }) as never,
+    operationSeriesLocal: async (_s: unknown, input?: unknown) => note('operationSeriesLocal', { echoed: input }) as never,
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
@@ -779,6 +780,42 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       expect((await postFlow(host, body)).status).toBe(400);
     }
     expect(host.calls).not.toContain('lifecycleFlowLocal');
+  });
+
+  // #1750: business volumes per bucket. POST — the pairs are the body — and parsed here, so
+  // a window past the cap or a fractional anchor never reaches the scope.
+  const SERIES = {
+    moves: [{ entityType: 'conversation', operation: 'desk/close' }],
+    since: '2026-09-01T00:00:00.000Z',
+    until: '2026-09-02T00:00:00.000Z',
+    bucketMinutes: 30,
+  };
+  const postSeries = (host: VerticalScopeHost, body: unknown) =>
+    appWith(host).request(
+      '/internal/operation-series',
+      { method: 'POST', headers: { ...authed(), 'content-type': 'application/json' }, body: JSON.stringify(body) },
+      ENV,
+    );
+
+  it('passes an operation series through to the host, without the scope id', async () => {
+    const host = fakeHost();
+    const res = await postSeries(host, { scopeId: SCOPE, ...SERIES });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ echoed: SERIES });
+    expect(host.calls).toContain('operationSeriesLocal');
+  });
+
+  it('refuses a malformed operation series rather than running it', async () => {
+    const host = fakeHost();
+    for (const body of [
+      { scopeId: SCOPE, ...SERIES, until: '2026-09-09T00:00:01.000Z' },
+      { scopeId: SCOPE, ...SERIES, since: '2026-09-01T00:00:00.500Z' },
+      { scopeId: SCOPE, ...SERIES, moves: [] },
+      { ...SERIES },
+    ]) {
+      expect((await postSeries(host, body)).status).toBe(400);
+    }
+    expect(host.calls).not.toContain('operationSeriesLocal');
   });
 
   it('refuses a malformed dead-letter page rather than widening it', async () => {

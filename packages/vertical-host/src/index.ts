@@ -83,6 +83,7 @@ import {
   invocationEventsInput,
   deadLettersInput,
   lifecycleFlowInput,
+  operationSeriesInput,
   type EntityHistoryInput,
   type EventFacetInput,
   type EventCauseInput,
@@ -94,6 +95,8 @@ import {
   type DeadLetter,
   type LifecycleFlowInput,
   type LifecycleFlowResult,
+  type OperationSeriesInput,
+  type OperationSeriesResult,
   type CauseChain,
   type EventFacetResult,
   type HistoryEntry,
@@ -289,6 +292,7 @@ export interface VerticalScopeHost {
   invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents>;
   deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>>;
   lifecycleFlowLocal(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult>;
+  operationSeriesLocal(scopeId: ScopeId, input: OperationSeriesInput): Promise<OperationSeriesResult>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -1245,6 +1249,17 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/lifecycle-flow', async (c) => {
     const { scopeId, ...input } = lifecycleFlowInput.extend({ scopeId: scopeIdOf }).parse(await c.req.json());
     return c.json(await deps.hostFor(c.env).lifecycleFlowLocal(scopeId, input));
+  });
+
+  // #1750: business volumes per bucket over a scope THIS vertical holds — Pulse's
+  // business rows. POST, like the process map's read, because the pairs travel in the body.
+  app.post('/internal/operation-series', async (c) => {
+    // Two parses rather than `.extend`: the input schema carries refinements, and the
+    // object parse strips `scopeId` on its own.
+    const body: unknown = await c.req.json();
+    const scopeId = scopeIdOf.parse((body as { scopeId?: unknown } | null)?.scopeId);
+    const input = operationSeriesInput.parse(body);
+    return c.json(await deps.hostFor(c.env).operationSeriesLocal(scopeId, input));
   });
 
   app.post('/internal/query', async (c) => {

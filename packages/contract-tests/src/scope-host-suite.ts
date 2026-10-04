@@ -20,6 +20,7 @@ import {
   type EntityRef,
   type ErrorCode,
   type LifecycleFlowResult,
+  type OperationSeriesResult,
   KERNEL_AUTHORED_EVENT_TYPES,
   type OrgId,
   type PlatformRequest,
@@ -2330,6 +2331,53 @@ export function scopeHostContractSuite(
         expect(own.edges.every((e) => e.count === 0)).toBe(true);
         // K-24: the read is recorded against the actor.
         expect((await host.admin.accessLog(staff, { tenantId: t1, method: 'lifecycleFlow' })).length).toBeGreaterThan(0);
+      });
+    });
+
+    describe('operationSeries on both adapters (#1750)', () => {
+      // `readOperationSeries`'s own suite pins the counting over a hand-built outbox; this
+      // proves the wiring — real emits, with real ids, read back through the platform verb.
+      // On the Durable Object it is also the proof that `strftime`, `json_each` and the
+      // primary-key seek run in workerd's SQLite.
+      const MOVES = [{ entityType: 'test-lifecycle', operation: 'test/move' }];
+      /** A window from the current whole second, a minute wide, in one-minute buckets. */
+      const window = () => {
+        const since = Math.floor(Date.now() / 1000) * 1000;
+        return { moves: MOVES, since: new Date(since).toISOString(), until: new Date(since + 60_000).toISOString(), bucketMinutes: 1 };
+      };
+      const total = (r: OperationSeriesResult) => r.series[0]!.total;
+
+      it('counts every call that made the move, inside the window', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        const w = window();
+        const before = total(await host.admin.operationSeries(staff, t1, s1, w));
+        await stub.invoke('test/move', { entityId: 'v1', state: 'draft' });
+        await stub.invoke('test/move', { entityId: 'v1', state: 'live' });
+        await stub.invoke('test/move', { entityId: 'v2', state: 'draft' });
+        const after = await host.admin.operationSeries(staff, t1, s1, w);
+        expect(total(after)).toBe(before + 3);
+        expect(after.series[0]!.buckets.every((b) => Date.parse(b.start) >= Date.parse(w.since))).toBe(true);
+        // The twin: a window that closed before the calls ran counts none of them.
+        const earlier = { ...w, since: new Date(Date.parse(w.since) - 120_000).toISOString(), until: w.since };
+        expect(total(await host.admin.operationSeries(staff, t1, s1, earlier))).toBe(0);
+      });
+
+      it("answers only for the tenant's own scope: a mismatched pair is refused, another tenant's scope counts none of it", async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        const w = window();
+        await stub.invoke('test/move', { entityId: 'v3', state: 'draft' });
+        // The positive twin: t1's own pair sees the move.
+        expect(total(await host.admin.operationSeries(staff, t1, s1, w))).toBeGreaterThanOrEqual(1);
+        // K-3: never another tenant's outbox, and never an empty answer for one either.
+        await expect(host.admin.operationSeries(staff, t2, s1, w)).rejects.toThrow();
+        await expect(host.admin.operationSeries(staff, t1, s2, w)).rejects.toThrow();
+        // t2's own scope answers from its own outbox, in which t1 moved nothing.
+        expect(total(await host.admin.operationSeries(staff, t2, s2, w))).toBe(0);
+        // K-24: the read is recorded against the actor, with the window and no operation names.
+        const rows = await host.admin.accessLog(staff, { tenantId: t1, method: 'operationSeries' });
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows[0]!.params).toContain('test-lifecycle');
+        expect(rows[0]!.params).not.toContain('test/move');
       });
     });
 

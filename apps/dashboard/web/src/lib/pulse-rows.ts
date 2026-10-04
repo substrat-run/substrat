@@ -89,6 +89,18 @@ export function pulseConnectorRows(
   });
 }
 
+/**
+ * A business row's change against yesterday (#1750), as the column reads it: a percentage
+ * when yesterday had moves, `new` when only today did, and nothing when neither did — a
+ * percentage of zero is not a number anyone should be shown.
+ */
+export function businessChange(today: number, yesterday: number): { text: string; tone: 'up' | 'down' | 'flat' } | null {
+  if (yesterday === 0) return today === 0 ? null : { text: 'new', tone: 'up' };
+  const pct = Math.round(((today - yesterday) / yesterday) * 100);
+  if (pct === 0) return { text: '±0%', tone: 'flat' };
+  return { text: `${pct > 0 ? '+' : '−'}${Math.abs(pct)}%`, tone: pct > 0 ? 'up' : 'down' };
+}
+
 /** One sparkline, as the design draws it: a line through each bucket's middle and the area under it. */
 export function sparkPaths(values: number[], spans: Array<[number, number]>, max: number): { line: string; area: string } | null {
   if (values.length === 0) return null;

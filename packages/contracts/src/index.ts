@@ -29,6 +29,7 @@ export * from './tenancy.js';
 export * from './introspection.js';
 export * from './sql-tokens.js';
 export * from './lifecycle-flow.js';
+export * from './operation-series.js';
 export * from './pagination.js';
 export * from './concurrency.js';
 export * from './idempotency.js';
