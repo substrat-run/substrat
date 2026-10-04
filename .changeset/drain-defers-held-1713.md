@@ -1,8 +1,15 @@
 ---
 '@substrat-run/control-plane-api': patch
 '@substrat-run/kernel': patch
+'@substrat-run/contracts': patch
+'@substrat-run/adapter-cloudflare': patch
+'@substrat-run/vertical-host': patch
 ---
 
-The platform's drain now waits on a held scope's intents (#1713). A hosted scope that is suspended or archived, or whose tenant is suspended or deleting, keeps its platform intents (a connector delivery the control plane runs, a sibling to provision) pending: the drain still lists them, so the backlog counts them, but runs none and settles none, so no attempt is counted toward the give-up ceiling. The first drain after the scope is live again runs each one once and reports it as usual; a held drain reports `held: true` with everything in `pending`.
+The rest of #1713: the platform's drain waits on a held scope, lifecycle deliveries carry the directory's revisions, and the connector doors hold too.
 
-`PlatformDrainContext` gains a required `lifecycle: { scope, tenant }`, the scope's and its tenant's status from the directory, so a caller cannot forget it. A scope whose tenant has no record is treated as held. `lifecycleRefusal` now takes just the two statuses, so the drain judges by the same predicate the deployment does.
+**The drain waits.** A hosted scope that is suspended or archived, or whose tenant is suspended or deleting, keeps its platform intents (a connector delivery the control plane runs, a sibling to provision) pending. The drain still lists them, so the backlog counts them, but runs none and settles none, so no attempt counts toward the give-up ceiling. The first drain after the scope is live again runs each one once. A held drain reports `held: true` with everything in `pending`. `PlatformDrainContext` gains a required `lifecycle: { scope, tenant }` from the directory; a scope whose tenant has no record is treated as held. `lifecycleRefusal` takes just the two statuses, so the drain and the deployment judge by one predicate.
+
+**Revisioned deliveries.** Every lifecycle delivery carries the directory's `revision`, and `/internal/lifecycle` refuses one without it (400). A lifecycle a scope stored before revisions existed still holds the scope by its statuses, and any revisioned delivery replaces it.
+
+**The connector doors hold.** On a CP-less host, `connectorInvokeLocal`, `connectorAttachmentUploadLocal` and `connectorAttachmentOpenLocal` (the far end of the platform's connector pass and dispatch) refuse a held scope in the directory's words, as every other door does.

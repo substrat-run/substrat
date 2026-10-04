@@ -256,8 +256,9 @@ whichever lands last.
 
 - **One gate.** The CP-less host's `assertLive` reads it at every door that runs the scope's
   work: a request's stub, attachments, a capability or impersonation session, a peer call,
-  a subscription, the system door a schedule and a job take, the retry driver, and the job
-  runner. It refuses in the directory's own words. An operator's reads (dead letters, job
+  a subscription, the system door a schedule and a job take, the retry driver, the job
+  runner, and the connector doors the platform's connector pass reaches (invoke, land and
+  open bytes). It refuses in the directory's own words. An operator's reads (dead letters, job
   runs, platform requests) stay open.
 - **Deferred, never dropped.** The sweeper skips a held scope whole. `runDueSchedules`
   reports every schedule `skipped` with `lifecycleHeld` and moves no cadence row. The
