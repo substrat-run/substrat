@@ -921,6 +921,43 @@ export type ConsumerHandler = (ctx: OperationContext, event: DomainEvent) => voi
  */
 export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => void | Promise<void>;
 
+/** One membership change for `HostAdmin.applyMembership` (#1184). Tenant-level only. */
+export interface MembershipChange {
+  op: 'add' | 'remove';
+  tenantId: TenantId;
+  principal: PrincipalId;
+  orgId: OrgId;
+  /** The tenant-level role the change assigns or takes away. */
+  roleKey: string;
+  /** `add` only: apply nothing when a removal names `principal` at or after this instant. */
+  unlessRemovedSince?: Instant;
+}
+
+export type MembershipChangeResult = { applied: true } | { applied: false; removedAt: string };
+
+/** The admin actions that take a person out — what `unlessRemovedSince` looks for. */
+export const MEMBERSHIP_REMOVAL_ACTIONS = ['unassignRole', 'removeMember'] as const;
+
+/**
+ * The newest removal of `principal` among admin-log rows (`before` as stored, JSON text or
+ * parsed): `unassignRole` records the assignment (`principalId`), `removeMember` the membership
+ * (`principal`). The one reading both adapters' `applyMembership` judge by.
+ */
+export function removalOf(
+  rows: readonly { at: string; before: unknown }[],
+  principal: PrincipalId,
+): string | undefined {
+  let newest: string | undefined;
+  for (const row of rows) {
+    const before = (typeof row.before === 'string' ? JSON.parse(row.before) : row.before) as
+      | { principalId?: unknown; principal?: unknown }
+      | null;
+    if (before?.principalId !== principal && before?.principal !== principal) continue;
+    if (newest === undefined || row.at > newest) newest = row.at;
+  }
+  return newest;
+}
+
 /**
  * An **executor**: out-of-band host code that effects, outside a scope, what a module
  * asked for inside one (K-22 §4.2; D-18's triage rule — effects on the outside world
@@ -2000,6 +2037,19 @@ export interface HostAdmin {
     principal: PrincipalId,
     orgId: OrgId,
   ): Promise<void>;
+  /**
+   * One membership change, applied as ONE directory unit (#1184): the org membership and the
+   * TENANT-level role together, with both admin-log rows, in a single SQLite transaction or a
+   * single ControlPlaneDO method. Nothing else can land between its check and its writes, so
+   * an add and a removal of the same person serialize: whichever the directory takes first,
+   * the other sees.
+   *
+   * An `add` carrying `unlessRemovedSince` first looks, inside the unit, for an `unassignRole`
+   * or `removeMember` row naming the principal at or after that instant, and applies nothing
+   * when it finds one. A `remove` always records both rows, even when nothing was held: the
+   * membership executor's removal must leave a trace that a still-pending add can see.
+   */
+  applyMembership(actor: PlatformActorId, change: MembershipChange): Promise<MembershipChangeResult>;
   /**
    * Revoke a membership (K-21). **Tombstones, never deletes**: the tuple keeps its
    * row, gains a `revokedAt`, and the permission walk skips it. Deletion would

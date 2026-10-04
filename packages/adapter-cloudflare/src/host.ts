@@ -274,6 +274,7 @@ import {
   type ExecutorDrainReport,
   type ExecutorHandler,
   type ExecutorOutcome,
+  type MembershipChangeResult,
   type ExecutorScope,
   type ExecutorRetryPolicy,
   type MigrateScopeOutcome,
@@ -435,6 +436,7 @@ import type {
   VersionRow,
   VersionListRow,
   LifecycleTargetRow,
+  AdminEntryInput,
 } from './control-plane-do.js';
 
 /**
@@ -715,6 +717,10 @@ interface ControlPlaneStub {
   listOrgs(tenantId: string): Promise<OrgRow[]>;
   /** K-21 tombstone. Returns whether anything changed (idempotent revoke). */
   revokeMember(tenantId: string, subject: string, object: string, at: string): Promise<boolean>;
+  applyMembership(
+    change: { op: 'add' | 'remove'; tenantId: string; principal: string; orgId: string; roleKey: string; unlessRemovedSince?: string },
+    rows: { member: AdminEntryInput; role: AdminEntryInput },
+  ): Promise<MembershipChangeResult>;
   /** Tombstone any tenant tuple by exact (subject, relation, object) — e.g. a role. Idempotent. */
   revokeTenantTuple(tenantId: string, subject: string, relation: string, object: string, at: string): Promise<boolean>;
   listMembers(
@@ -6725,6 +6731,36 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         await this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
         await this.fanOut(tenantId); // membership is a tenant-level tuple
+      },
+      applyMembership: async (actor, change) => {
+        // The rows are minted here, where attribution and `causedBy` live, and written by the
+        // ControlPlaneDO in the same synchronous method as the tuples and the "removed since"
+        // read (#1184): one DO unit, so an add and a removal of the same person serialize.
+        const { tenantId, principal, orgId, roleKey, op } = change;
+        const at = new Date().toISOString();
+        const row = (action: AdminAction, scopeId: null | undefined, change: unknown): AdminEntryInput => ({
+          id: ulid(),
+          actor,
+          action,
+          tenantId,
+          causedBy: this.causedBy,
+          onBehalfOf: this.onBehalfOf,
+          scopeId: scopeId ?? null,
+          vertical: null,
+          before: op === 'remove' ? change : null,
+          after: op === 'add' ? change : null,
+          at,
+        });
+        const result = await this.cp.applyMembership(change, {
+          member: row(op === 'add' ? 'addMember' : 'removeMember', undefined, { principal, orgId }),
+          role: row(op === 'add' ? 'assignRole' : 'unassignRole', null, {
+            principalId: principal,
+            roleKey,
+            node: { tenantId, scopeId: null },
+          }),
+        });
+        if (result.applied) await this.fanOut(tenantId); // tenant-level tuples reach the projections
+        return result;
       },
       removeMember: async (actor, tenantId, principal, orgId) => {
         await requireOrg(tenantId, orgId);

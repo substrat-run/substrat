@@ -382,6 +382,9 @@ import {
   executorOutcomeOf,
   isDeliveryRefusal,
   refusalJournalText,
+  removalOf,
+  MEMBERSHIP_REMOVAL_ACTIONS,
+  type MembershipChangeResult,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
@@ -8579,6 +8582,52 @@ export class SqliteScopeHost implements ScopeHost {
         // tuple carries "what is true now" plus enough to explain a live proof.
         writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`);
         this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
+      },
+      applyMembership: async (actor, change) => {
+        // ONE directory transaction, synchronous throughout (#1184): nothing else on this host
+        // can land between the "removed since" read and the writes, and a failure leaves none.
+        const { tenantId, principal, orgId, roleKey } = change;
+        const subject = `principal:${principal}`;
+        const member = `org:${orgId}`;
+        const role = `role:${roleKey}`;
+        const tenantNode = `tenant:${tenantId}`;
+        const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
+        return this.directory.transaction((): MembershipChangeResult => {
+          requireOrg(tenantId, orgId);
+          if (change.op === 'add') {
+            if (change.unlessRemovedSince) {
+              const removedAt = removalOf(
+                this.directory
+                  .prepare(
+                    `SELECT at, before FROM _substrat_admin_log
+                     WHERE tenant_id = ? AND action IN (SELECT value FROM json_each(?)) AND at >= ?`,
+                  )
+                  .all(tenantId, JSON.stringify(MEMBERSHIP_REMOVAL_ACTIONS), change.unlessRemovedSince) as {
+                  at: string;
+                  before: string | null;
+                }[],
+                principal,
+              );
+              if (removedAt) return { applied: false, removedAt };
+            }
+            writeTenantTuple(tenantId, subject, 'member', member);
+            this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
+            writeTenantTuple(tenantId, subject, role, tenantNode);
+            this.recordAdmin(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment);
+            return { applied: true };
+          }
+          const now = new Date().toISOString();
+          const revoke = this.directory.prepare(
+            `UPDATE _substrat_tenant_tuples SET revoked_at = ?
+             WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+          );
+          revoke.run(now, tenantId, subject, role, tenantNode);
+          revoke.run(now, tenantId, subject, 'member', member);
+          // Recorded whether or not anything was held: a pending add must see this removal.
+          this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null);
+          this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null);
+          return { applied: true };
+        })();
       },
       removeMember: async (actor, tenantId, principal, orgId) => {
         requireOrg(tenantId, orgId);

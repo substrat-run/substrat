@@ -63,19 +63,20 @@ let dir: string;
 let host: SqliteScopeHost;
 let env: Record<string, unknown>;
 let noteScope: ReturnType<typeof vi.fn>;
-/** How many of the executor's next `addMember` calls fail — the transient failure the backstop absorbs. */
+/** How many of the executor's next adds (`applyMembership`) fail — the transient failure the backstop absorbs. */
 let failNextAdds = 0;
 
 /**
  * The host the executor is mounted on: the SQLite host, except that its attributed view's
- * `addMember` can be made to fail. Everything else is the host's own.
+ * add (`applyMembership`) can be made to fail. Everything else is the host's own.
  */
 function flakyHost(real: SqliteScopeHost): ScopeHost {
   const flaky = (admin: HostAdmin): HostAdmin =>
     new Proxy(admin, {
       get(t, key) {
-        if (key === 'addMember' && failNextAdds > 0) {
-          return async () => {
+        if (key === 'applyMembership' && failNextAdds > 0) {
+          return async (...args: Parameters<HostAdmin['applyMembership']>) => {
+            if (args[1].op !== 'add') return t.applyMembership(...args);
             failNextAdds -= 1;
             throw new Error('directory unavailable');
           };

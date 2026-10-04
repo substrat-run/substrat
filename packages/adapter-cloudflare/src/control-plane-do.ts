@@ -1,5 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
+  MEMBERSHIP_REMOVAL_ACTIONS,
+  removalOf,
   IMPERSONATION_COLUMNS,
   IMPERSONATION_DDL,
   impersonationByIdQuery,
@@ -53,6 +55,7 @@ import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
   OnBehalfOf,
+  PrincipalId,
   DeclaredMigration,
   ListPage,
   OpsFailureEntry,
@@ -3076,6 +3079,52 @@ export class ControlPlaneDO extends DurableObject {
    * so a repeat revoke neither moves the timestamp nor produces a second audit
    * row. Returns whether it changed, so the coordinator can skip the audit write.
    */
+  /**
+   * One membership change as ONE DO unit (#1184) — `HostAdmin.applyMembership`. Synchronous,
+   * so no other request into this object runs between the "removed since" read and the
+   * writes: an add and a removal of the same person serialize here. The coordinator mints the
+   * audit rows (ids, actor, attribution, `causedBy`); this writes them with the tuples.
+   */
+  applyMembership(
+    change: { op: 'add' | 'remove'; tenantId: string; principal: string; orgId: string; roleKey: string; unlessRemovedSince?: string },
+    rows: { member: AdminEntryInput; role: AdminEntryInput },
+  ): { applied: true } | { applied: false; removedAt: string } {
+    const { tenantId, principal, orgId, roleKey } = change;
+    if (!this.readOrg(tenantId, orgId)) throw new Error(`unknown org ${orgId} in tenant ${tenantId}`);
+    const subject = `principal:${principal}`;
+    const member = `org:${orgId}`;
+    const role = `role:${roleKey}`;
+    const tenantNode = `tenant:${tenantId}`;
+    if (change.op === 'add') {
+      if (change.unlessRemovedSince) {
+        const removedAt = removalOf(
+          this.sql
+            .exec(
+              `SELECT at, before FROM _substrat_admin_log
+               WHERE tenant_id = ? AND action IN (SELECT value FROM json_each(?)) AND at >= ?`,
+              tenantId,
+              JSON.stringify(MEMBERSHIP_REMOVAL_ACTIONS),
+              change.unlessRemovedSince,
+            )
+            .toArray() as unknown as { at: string; before: string | null }[],
+          principal as PrincipalId,
+        );
+        if (removedAt) return { applied: false, removedAt };
+      }
+      this.writeTenantTuple(tenantId, subject, 'member', member, null);
+      this.recordAdmin(rows.member);
+      this.writeTenantTuple(tenantId, subject, role, tenantNode, null);
+      this.recordAdmin(rows.role);
+      return { applied: true };
+    }
+    this.revokeTenantTuple(tenantId, subject, role, tenantNode, rows.role.at);
+    this.revokeTenantTuple(tenantId, subject, 'member', member, rows.member.at);
+    // Recorded whether or not anything was held: a pending add must see this removal.
+    this.recordAdmin(rows.role);
+    this.recordAdmin(rows.member);
+    return { applied: true };
+  }
+
   revokeMember(tenantId: string, subject: string, object: string, at: string): boolean {
     return this.revokeTenantTuple(tenantId, subject, 'member', object, at);
   }

@@ -1,8 +1,8 @@
 import {
+  instant,
   orgId,
   principalId,
   z,
-  type AdminLogEntry,
   type DomainEvent,
   type EntityRef,
   type HistoryEntry,
@@ -103,21 +103,35 @@ export interface MembershipExecutorOptions {
   /** The platform identity the admin rows record as having executed the write. */
   actor: PlatformActorId;
   /**
-   * Where the role is assigned and removed, and therefore where the bound is asked: the scope
-   * the request came from, or the tenant node. Never mixed, so authority held in one scope
-   * cannot confer a tenant-wide role.
+   * Where the role is assigned and removed, and the bound asked: the tenant node, and only
+   * there. Optional, and `'tenant'` is the only value it takes. A scope-level role lives in
+   * the scope's store while membership lives in the directory, and no single operation spans
+   * the two, so a scope-level add could always interleave with a removal between its writes.
+   * A scope role has its own atomic check-and-grant: `assignScopeRoleBounded`.
    */
-  level: 'scope' | 'tenant';
+  level?: 'tenant';
   retry?: ExecutorRetryPolicy;
 }
 
+/**
+ * How far before a request a removal made OUTSIDE this seam still wins over it (#1184):
+ * 5 minutes. Such a removal is a directory admin row stamped by the directory's clock; the
+ * request is a scope event stamped by the scope's. The two stores share no causal order, so
+ * a tie goes to the removal and so does anything within this skew. The cost, stated: someone
+ * removed by staff less than this before they accept a NEW invite is refused — resend it.
+ * Removals through the seam need no window: they are ordered by outbox id.
+ */
+export const MEMBERSHIP_REMOVAL_SKEW_MS = 5 * 60_000;
+
 /** Mount the membership executor — both paths — on a host. One call, at host construction. */
 export function registerMembershipExecutor(host: ScopeHost, options: MembershipExecutorOptions): void {
+  if (options.level !== undefined && options.level !== 'tenant') {
+    throw new Error(
+      `the membership executor is tenant-level only (got level '${String(options.level)}'): no single operation ` +
+        'spans the directory and a scope store. A scope role has assignScopeRoleBounded.',
+    );
+  }
   const id = options.id ?? MEMBERSHIP_EXECUTOR_ID;
-  const nodeOf = (event: DomainEvent) => ({
-    tenantId: event.tenantId,
-    scopeId: options.level === 'scope' ? event.scopeId : null,
-  });
   // Attributed (#977): the person whose authority bounded the write, beside the platform
   // actor that executed it. `causedBy` is stamped by the host.
   const adminFor = (who: PrincipalId, event: DomainEvent): HostAdmin =>
@@ -127,13 +141,21 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
     id,
     MEMBER_ADD_REQUESTED,
     async (admin, event, scope) => {
-      const decided = await authorizeAdd(admin, options.actor, event, scope, options.level);
+      const decided = await authorizeAdd(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, inviter } = decided;
-      const write = adminFor(inviter, event);
-      await write.addMember(options.actor, event.tenantId, request.principal, request.orgId);
-      await write.assignRole(options.actor, { principalId: request.principal, roleKey: request.roleKey, node: nodeOf(event) });
-      return undefined;
+      // One directory unit: the final "removed since" check, the membership, the role and
+      // their audit rows. A removal made outside the seam lands before it (and refuses it) or
+      // after it (and undoes it) — never between.
+      const applied = await adminFor(inviter, event).applyMembership(options.actor, {
+        op: 'add',
+        tenantId: event.tenantId,
+        principal: request.principal,
+        orgId: request.orgId,
+        roleKey: request.roleKey,
+        unlessRemovedSince: instant.parse(new Date(Date.parse(event.occurredAt) - MEMBERSHIP_REMOVAL_SKEW_MS).toISOString()),
+      });
+      return applied.applied ? undefined : refuseDelivery(`${request.principal} was removed after this request was made`);
     },
     options.retry,
   );
@@ -142,12 +164,18 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
     membershipRemoveExecutorId(id),
     MEMBER_REMOVE_REQUESTED,
     async (_admin, event, scope) => {
-      const decided = await authorizeRemove(event, scope, options.level);
+      const decided = await authorizeRemove(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, remover } = decided;
-      const write = adminFor(remover, event);
-      await write.unassignRole(options.actor, { principalId: request.principal, roleKey: request.roleKey, node: nodeOf(event) });
-      await write.removeMember(options.actor, event.tenantId, request.principal, request.orgId);
+      // One unit, and always recorded — even with nothing held — so an add still pending for
+      // this person sees the removal inside its own unit, wherever its drain runs.
+      await adminFor(remover, event).applyMembership(options.actor, {
+        op: 'remove',
+        tenantId: event.tenantId,
+        principal: request.principal,
+        orgId: request.orgId,
+        roleKey: request.roleKey,
+      });
       return undefined;
     },
     options.retry,
@@ -179,12 +207,11 @@ async function bounded(
   scope: ExecutorScope,
   who: PrincipalId,
   conferred: { roleKey: string; orgId?: string },
-  level: 'scope' | 'tenant',
   as: 'inviter' | 'remover',
 ): Promise<Refused | null> {
   const { roleKey } = conferred;
   try {
-    const bound = await scope.covers(who, conferred, level);
+    const bound = await scope.covers(who, conferred, 'tenant');
     return bound.covered
       ? null
       : refused(`the ${as} ${who} no longer holds ${bound.missing.join(', ')}, which '${roleKey}'${conferred.orgId ? ` or org ${conferred.orgId}` : ''} confers`);
@@ -196,11 +223,8 @@ async function bounded(
 
 /** Everything that decides whether an add may be effected. Reads only. */
 async function authorizeAdd(
-  admin: HostAdmin,
-  actor: PlatformActorId,
   event: DomainEvent,
   scope: ExecutorScope,
-  level: 'scope' | 'tenant',
 ): Promise<Refused | { request: z.infer<typeof memberAddRequested>; inviter: PrincipalId }> {
   const parsed = requestOf(event, memberAddRequested);
   if ('refused' in parsed) return parsed;
@@ -237,12 +261,14 @@ async function authorizeAdd(
   );
   if (earlier) return refused(`invitation ${request.invitationId} was already used, by request ${earlier.id}`);
 
-  if (await removedSince(admin, actor, membership, event, request.principal)) {
+  // A removal through the seam, ordered after this request by outbox id. Removals outside
+  // the seam are judged by `applyMembership`, inside the unit that writes.
+  if (membership.some((e) => e.type === MEMBER_REMOVE_REQUESTED && e.id > event.id)) {
     return refused(`${request.principal} was removed after this request was made`);
   }
   // The role AND the org: joining an org grants what the org holds, and its id is
   // module-written, so the bound reads the org's grants from the directory.
-  const bound = await bounded(scope, inviter.data, { roleKey: request.roleKey, orgId: request.orgId }, level, 'inviter');
+  const bound = await bounded(scope, inviter.data, { roleKey: request.roleKey, orgId: request.orgId }, 'inviter');
   return bound ?? { request, inviter: inviter.data };
 }
 
@@ -250,49 +276,20 @@ async function authorizeAdd(
 async function authorizeRemove(
   event: DomainEvent,
   scope: ExecutorScope,
-  level: 'scope' | 'tenant',
 ): Promise<Refused | { request: MemberRemoveRequestedPayload; remover: PrincipalId }> {
   const parsed = requestOf(event, memberRemoveRequestedPayload);
   if ('refused' in parsed) return parsed;
   const remover = principalId.safeParse(event.actor);
   if (!remover.success) return refused('the removal was not requested by a principal');
   const { roleKey, orgId } = parsed.request;
-  const bound = await bounded(scope, remover.data, { roleKey, orgId }, level, 'remover');
+  const bound = await bounded(scope, remover.data, { roleKey, orgId }, 'remover');
   return bound ?? { request: parsed.request, remover: remover.data };
-}
-
-/**
- * Whether `principal` was removed after `event` was emitted, by any recorded removal: a later
- * `member.remove-requested` on their membership, or a revoking admin row naming them since.
- */
-async function removedSince(
-  admin: HostAdmin,
-  actor: PlatformActorId,
-  membership: readonly HistoryEntry[],
-  event: DomainEvent,
-  principal: PrincipalId,
-): Promise<boolean> {
-  if (membership.some((e) => e.type === MEMBER_REMOVE_REQUESTED && e.id > event.id)) return true;
-  const revoked = await admin.auditLog(actor, {
-    tenantId: event.tenantId,
-    action: ['unassignRole', 'removeMember'],
-    since: event.occurredAt,
-  });
-  // Strictly after: `since` is inclusive, and a revoke stamped in the request's own
-  // millisecond cannot be told apart from one made just before it.
-  return revoked.some((row) => row.at > event.occurredAt && namesPrincipal(row, principal));
 }
 
 /** The invitation an add request names, read the way the executor reads a request. */
 function invitationOf(entry: HistoryEntry): string | undefined {
   const parsed = memberAddRequested.safeParse(entry.payload);
   return parsed.success ? parsed.data.invitationId : undefined;
-}
-
-/** A revoking admin row's subject: `unassignRole` records the assignment, `removeMember` the membership. */
-function namesPrincipal(row: AdminLogEntry, principal: PrincipalId): boolean {
-  const before = row.before as { principalId?: unknown; principal?: unknown } | null;
-  return before?.principalId === principal || before?.principal === principal;
 }
 
 /** One entity's whole history, oldest first. Short by construction: a handful of events. */

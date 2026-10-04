@@ -16,6 +16,7 @@ import {
   registerMembershipExecutor,
   ulid,
   type ExecutorOutcome,
+  type HostAdmin,
   type ScopeHost,
 } from '@substrat-run/kernel';
 import { INVITEFIX_A, INVITEFIX_B, membershipFixtureMod } from './membership-module.js';
@@ -35,8 +36,12 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
   const staff = platformActorId.parse(ulid());
   const vertical = 'invitefix-vertical';
 
-  /** One tenant with two scopes, the two roles, an org, and the executor mounted at `level`. */
-  const world = (level: 'scope' | 'tenant') => {
+  /**
+   * One tenant with two scopes, the two roles, an org, and the executor mounted. `hold`, when
+   * given, holds every add's directory unit until it resolves — the gap a concurrent removal
+   * would race into.
+   */
+  const world = (opts: { hold?: () => Promise<void> } = {}) => {
     const w = {
       fixture: undefined as unknown as ScopeHostFixture,
       host: undefined as unknown as ScopeHost,
@@ -52,7 +57,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       w.host = w.fixture.host;
       w.host.registerModule(membershipFixtureMod);
       // `baseDelayMs: 0` so the backstop case can retry inside a test.
-      registerMembershipExecutor(w.host, { actor: staff, level, retry: { baseDelayMs: 0 } });
+      registerMembershipExecutor(opts.hold ? holding(w.host, opts.hold) : w.host, { actor: staff, retry: { baseDelayMs: 0 } });
       const { host, t } = w;
       await host.admin.createTenant(staff, { id: t, slug: `invitefix-${t.slice(-10).toLowerCase()}`, name: 'Invitefix' });
       await host.admin.grantEntitlement(staff, t, 'invitefix');
@@ -73,6 +78,27 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
   };
 
   type World = ReturnType<typeof world>;
+
+  /** `host`, except that an add's `applyMembership` waits for `hold` before it runs. */
+  const holding = (host: ScopeHost, hold: () => Promise<void>): ScopeHost => {
+    const held = (admin: HostAdmin): HostAdmin =>
+      new Proxy(admin, {
+        get: (t, key) =>
+          key === 'applyMembership'
+            ? async (...args: Parameters<HostAdmin['applyMembership']>) => {
+                if (args[1].op === 'add') await hold();
+                return t.applyMembership(...args);
+              }
+            : Reflect.get(t, key),
+      });
+    return new Proxy(host, {
+      get: (t, key) => {
+        if (key === 'attributed') return (o: Parameters<NonNullable<ScopeHost['attributed']>>[0]) => ({ admin: held(t.attributed!(o).admin) });
+        const v = Reflect.get(t, key) as unknown;
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+      },
+    });
+  };
 
   const send = async (w: World, from: PrincipalId, roleKey: string, org: OrgId = w.org) => {
     const inv = { invitationId: ulid(), orgId: org, roleKey };
@@ -122,8 +148,8 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
     expect(await causedBy(w, outcomes[0]!.eventId)).toEqual([]);
   };
 
-  describe(`membership executor (#1184), scope level: ${adapterName}`, () => {
-    const w = world('scope');
+  describe(`membership executor (#1184): ${adapterName}`, () => {
+    const w = world();
 
     it('an accepted invite makes a member inline, with the admin trail correlated to the event', async () => {
       const joe = principalId.parse(ulid());
@@ -133,9 +159,9 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
       expect(await memberOf(w, joe)).toBe(1);
       expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
-      // The role carried only what was invited, and only in the scope it was accepted in.
+      // The role carried only what was invited — tenant-wide, the one level it assigns at.
       expect(await holds(w, joe, INVITEFIX_B)).toBe(false);
-      expect(await holds(w, joe, INVITEFIX_A, w.s2)).toBe(false);
+      expect(await holds(w, joe, INVITEFIX_A, w.s2)).toBe(true);
 
       // Both rows join the event that caused them, executed by the platform actor on behalf of
       // the inviter whose authority bounded them.
@@ -231,13 +257,11 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       await expectRefused(w, await asJoiner(w, joe, 'invitefix/accept', inv), joe, /invitefix:a, invitefix:b/);
     });
 
-    it('a role held only in this scope may be conferred in this scope', async () => {
-      // The twin of the tenant-level suite's refusal below: the same authority, at the node it holds.
+    it('authority held in one scope does not confer a tenant-wide role', async () => {
       const erin = principalId.parse(ulid());
       await w.host.admin.assignRole(staff, { principalId: erin, roleKey: 'lead', node: { tenantId: w.t, scopeId: w.s } });
       const joe = principalId.parse(ulid());
-      expect((await asJoiner(w, joe, 'invitefix/accept', await send(w, erin, 'lead'))).map((o) => o.outcome)).toEqual(['delivered']);
-      expect(await holds(w, joe, INVITEFIX_B)).toBe(true);
+      await expectRefused(w, await asJoiner(w, joe, 'invitefix/accept', await send(w, erin, 'lead')), joe, /invitefix:a, invitefix:b/);
     });
 
     describe('a request the payload alone vouches for is refused', () => {
@@ -297,7 +321,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         const joe = principalId.parse(ulid());
         const inv = await send(w, w.alice, 'member');
         expect((await asJoiner(w, joe, 'invitefix/accept', inv)).map((o) => o.outcome)).toEqual(['delivered']);
-        const node = { tenantId: w.t, scopeId: w.s };
+        const node = { tenantId: w.t, scopeId: null };
         await w.host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node });
         await w.host.admin.removeMember(staff, w.t, joe, w.org);
 
@@ -385,7 +409,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         const inline = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member', late));
         expect(inline.map((o) => o.outcome)).toEqual(['retrying']);
         // The old way: the role was granted by hand and taken back by hand, emitting nothing.
-        const node = { tenantId: w.t, scopeId: w.s };
+        const node = { tenantId: w.t, scopeId: null };
         await w.host.admin.assignRole(staff, { principalId: joe, roleKey: 'member', node });
         await w.host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node });
 
@@ -396,14 +420,16 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
       });
 
-      it('twin: a removal recorded BEFORE the request does not block it', async () => {
+      it('a removal outside the seam moments BEFORE a new request still wins — the stated cost of the skew window', async () => {
+        // The directory and the scope share no clock, so a removal within
+        // MEMBERSHIP_REMOVAL_SKEW_MS of a request is taken to follow it. A NEW invite accepted
+        // that soon after a staff removal is refused, and is resent. (Outside the window it
+        // lands: held on SQLite, whose host takes a clock — see its own test.)
         const joe = principalId.parse(ulid());
-        const node = { tenantId: w.t, scopeId: w.s };
+        const node = { tenantId: w.t, scopeId: null };
         await w.host.admin.assignRole(staff, { principalId: joe, roleKey: 'member', node });
         await w.host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node });
-        const outcomes = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member'));
-        expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
-        expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
+        await expectRefused(w, await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member')), joe, /was removed after this request was made/);
       });
     });
 
@@ -413,7 +439,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member'));
       // A crash between the effect and its journal row re-runs the handler. A second executor
       // id sees every request as never delivered, which is that re-run, for all of them.
-      registerMembershipExecutor(w.host, { id: 'membership-replay', actor: staff, level: 'scope' });
+      registerMembershipExecutor(w.host, { id: 'membership-replay', actor: staff });
       const report = await w.host.drainDue(w.t, w.s);
       expect(report.retrying).toBe(0);
       expect(report.delivered).toBeGreaterThan(0);
@@ -423,22 +449,61 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
     });
   });
 
-  describe(`membership executor (#1184), tenant level: ${adapterName}`, () => {
-    const w = world('tenant');
+  describe(`membership executor (#1184), tenant level only: ${adapterName}`, () => {
+    it('refuses to mount at a scope level — a type error, and a refusal at run time', async () => {
+      const fixture = await makeFixture();
+      try {
+        expect(() =>
+          // @ts-expect-error — 'scope' is not a level the executor takes.
+          registerMembershipExecutor(fixture.host, { id: 'membership-scope', actor: staff, level: 'scope' }),
+        ).toThrow(/tenant-level only/);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  });
 
-    it('an accepted invite confers the role tenant-wide', async () => {
+  describe(`membership executor (#1184), an add and a removal interleaving: ${adapterName}`, () => {
+    // Every add waits here, after the executor's own checks and before its directory unit.
+    let release: () => void = () => undefined;
+    let gate: Promise<void> = Promise.resolve();
+    const w = world({ hold: () => gate });
+
+    it('a removal landing while an add is held cannot leave the access restored', async () => {
       const joe = principalId.parse(ulid());
-      const outcomes = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'member'));
-      expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
-      expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
-      expect(await holds(w, joe, INVITEFIX_A, w.s2)).toBe(true);
+      const node = { tenantId: w.t, scopeId: null };
+      // joe already holds the role, so taking it away is a real, recorded removal.
+      await w.host.admin.assignRole(staff, { principalId: joe, roleKey: 'member', node });
+      const inv = await send(w, w.alice, 'member');
+      gate = new Promise((r) => (release = r));
+      const accepting = asJoiner(w, joe, 'invitefix/accept', inv);
+      // The add has passed every check and is held in front of its effects. The removal lands.
+      await new Promise((r) => setTimeout(r, 50));
+      await w.host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node });
+      release();
+      const outcomes = await accepting;
+      expect(outcomes.map((o) => o.outcome)).toEqual(['refused']);
+      expect(outcomes[0]!.error).toMatch(/was removed after this request was made/);
+      expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
+      expect(await memberOf(w, joe)).toBe(0);
     });
 
-    it('authority held in one scope does not confer a tenant-wide role', async () => {
-      const erin = principalId.parse(ulid());
-      await w.host.admin.assignRole(staff, { principalId: erin, roleKey: 'lead', node: { tenantId: w.t, scopeId: w.s } });
+    it('a seam removal of someone whose add is held — nothing held yet — still wins', async () => {
+      // Where drains run concurrently (the Durable-Object coordinator), the removal can be
+      // effected while the add waits: it has nothing to take, and records itself anyway, so the
+      // add's own unit sees it. Where they cannot (the pure host's scope actor), the removal
+      // queues behind the add and undoes it. Either way the person ends with nothing.
       const joe = principalId.parse(ulid());
-      await expectRefused(w, await asJoiner(w, joe, 'invitefix/accept', await send(w, erin, 'lead')), joe, /invitefix:a, invitefix:b/);
+      const inv = await send(w, w.alice, 'member');
+      gate = new Promise((r) => (release = r));
+      const accepting = asJoiner(w, joe, 'invitefix/accept', inv);
+      await new Promise((r) => setTimeout(r, 50));
+      const removing = removeAs(w, w.alice, joe, 'member');
+      await new Promise((r) => setTimeout(r, 50));
+      release();
+      await Promise.all([accepting, removing]);
+      expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
+      expect(await memberOf(w, joe)).toBe(0);
     });
   });
 }
