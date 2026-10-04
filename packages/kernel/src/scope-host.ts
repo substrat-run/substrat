@@ -964,7 +964,7 @@ export type ExecutorHandler = (
  * platform authority. Both answer about the event's own (tenant, scope), never another.
  */
 export interface ExecutorScope {
-  /** One entity's history in this scope — `readHistory`'s answer, newest first. */
+  /** One entity's history in this scope — `readHistory`'s answer, oldest first. */
   history(entity: EntityRef, page?: ListPage): Promise<Page<HistoryEntry>>;
   /**
    * May `principal` confer `roleKey` at this scope's node, or at the tenant node

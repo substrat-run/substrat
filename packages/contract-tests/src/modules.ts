@@ -26,6 +26,7 @@ import {
   KERNEL_AUTHORED_EVENT_TYPES,
   substratError,
 } from '@substrat-run/contracts';
+import { membershipFixtureMod } from './membership-module.js';
 import {
   assertAllowed,
   readAttachmentText,
@@ -2894,6 +2895,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // in the kit reads `imp_echo`, so it is inert for every other suite.
   impersonationEchoMod,
   connectorMod,
+  // #1184: the invite events the membership executor consumes. Inert for every other suite —
+  // only `membershipExecutorContractSuite` grants its entitlement or mounts the executor.
+  membershipFixtureMod,
   scheduleMod,
   // #1525: the failed-schedule fixture. A Durable Object bakes its operations in at
   // define time (this array), so registering it on a coordinator mid-test is not

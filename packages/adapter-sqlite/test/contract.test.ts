@@ -9,6 +9,7 @@ import {
   facetRecencyContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  membershipExecutorContractSuite,
   capabilityAttachmentContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -76,6 +77,23 @@ inertScopeContractSuite('adapter-sqlite', async () => {
 });
 
 // The permission suite runs against the DEFAULT checker (the tuple engine).
+// #1184: the membership executor, on the DEFAULT checker — its bound is a permission-set
+// comparison, which an allow-all checker would answer "covered" for everything.
+membershipExecutorContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-membership-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
 permissionContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-perm-'));
   const host = new SqliteScopeHost({

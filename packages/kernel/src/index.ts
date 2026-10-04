@@ -760,3 +760,8 @@ export {
   type RegisteredImport,
 } from './vertical-events.js';
 export { attributedHost } from './attribution.js';
+export {
+  MEMBER_ADD_REQUESTED,
+  registerMembershipExecutor,
+  type MembershipExecutorOptions,
+} from './membership-executor.js';
