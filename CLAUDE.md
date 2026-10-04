@@ -613,8 +613,10 @@ same reason `lint:permissions` does; the scaffold template is materialized throu
 `tools/template-sync.mjs` first, since it is not a workspace member. This gate does not
 prove a schedule actually fires in production — only that the wiring a hosted deploy
 needs is present in source — so #1646 keeps its own production check open after this
-merges. `demos/ticket0` and `demos/meridian` hold the firing half in workerd, running their
-worker as the uploader ships it (`tools/workerd-as-uploaded.mjs`)),
+merges. The supplied sweeper's firing half is held in workerd on a fixture vertical
+(`packages/adapter-cloudflare/supplied-sweeper`), run as the uploader ships it
+(`tools/workerd-as-uploaded.mjs`); the in-repo deployed verticals keep their own sweeper until
+the release carrying #1902 is live),
 `lint:tests`, `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
 both directions and the standing grants the door must carry, see the connector rule

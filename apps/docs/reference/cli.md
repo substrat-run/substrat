@@ -220,7 +220,7 @@ the platform adds nothing. Keep the class bound as a store
 before.
 
 To move from your own sweeper to the platform's, delete the export, its store and the two
-hooks. The platform's sweeper has the same class name, so a deployed vertical keeps its
+hooks, once the control plane you push to supplies one (the push checks). The platform's sweeper has the same class name, so a deployed vertical keeps its
 sweeper's state, its scope list and its scheduled alarm. A vertical that wired its own under
 another class name should keep it: switching would be a class rename, which no upload performs.
 

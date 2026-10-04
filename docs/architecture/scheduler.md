@@ -226,10 +226,16 @@ platform supplies a sweeper only for `schedules`, so a vertical relying on execu
 resumable jobs and declaring no schedule keeps its own. And a version pushed before this ships
 keeps exactly what it had; the platform's sweeper comes with its next push.
 
-The two hosted demos that declare schedules, `demos/ticket0` and `demos/meridian`, no longer
-wire one, and neither does the create-substrat template (#1646, #1902). Each demo runs its
-deployed worker in workerd (`test/workerd/sweeper.test.ts`) AS UPLOADED — the platform's entry
-and sweeper in front, via `tools/workerd-as-uploaded.mjs` — and each suite holds the same five
+The platform's side is proven on a fixture vertical that wires none
+(`packages/adapter-cloudflare/supplied-sweeper`): its worker runs in workerd as the uploader
+ships it — the platform's entry and generated sweeper in front, via
+`tools/workerd-as-uploaded.mjs` — and a provision notes the scope, a pass fires its due schedule,
+and delete forgets it. The in-repo deployed verticals still wire their own until the release
+carrying #1902 is live on the control plane they push to: ticket0's and meridian's deploys push
+to production, and a push that leaves the sweeper to a plane that does not yet supply one is
+refused (the handshake above). Unwiring them, and the create-substrat template, is the
+follow-up. Until then `demos/ticket0` and `demos/meridian` keep their own (#1646), and each runs
+its deployed worker in workerd (`test/workerd/sweeper.test.ts`) and holds the same five
 things for its own vertical: provision notes the scope, a real pass produces a due
 schedule's effect and leaves a not-yet-due twin alone, reconcile notes a scope provisioned
 before the sweeper, a copy restored from a scope's dump and then reached by routed traffic
