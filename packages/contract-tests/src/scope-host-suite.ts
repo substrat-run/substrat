@@ -6978,6 +6978,16 @@ export function scopeHostContractSuite(
       expect(await host.admin.listRefusals(staff, t1, s1, { kind: 'guard', entityId: 'g-refused' })).toHaveLength(2);
       expect(await host.admin.listRefusals(staff, t1, s1, { kind: 'transition', entityId: 'g-refused' })).toEqual([]);
 
+      // The wire takes any non-empty string as a conflict's reason, so a predicate can put
+      // request text there; the row keeps a code or the fixed marker, never the text.
+      const leaked = ulid();
+      await expect(
+        stub.invoke('guarded/open', { id: 'g-leak', reason: 'call ada@example.com' }, { invocationId: leaked }),
+      ).rejects.toThrow(/gate closed/);
+      const [leakRow] = await host.admin.listRefusals(staff, t1, s1, { invocationId: leaked });
+      expect(leakRow).toMatchObject({ kind: 'guard', reason: 'unrecognized', entityId: 'g-leak' });
+      expect(JSON.stringify(leakRow)).not.toMatch(/ada@example\.com|call ada/);
+
       // The rollback took the predicate's own write with it, and the handler never ran —
       // the refusal row is the one write that survived.
       expect(await stub.invoke<string[]>('guarded/rows')).toEqual(rowsBefore);

@@ -21,6 +21,9 @@ import { lifecycleActorKind } from './lifecycle-flow.js';
  * not a retention promise — rows drain rather than expire.
  */
 
+/** What a refusal row stores for a reason outside the `problemReason` grammar. */
+export const UNRECOGNIZED_REFUSAL_REASON = 'unrecognized';
+
 /** How many refusal rows an unbounded read returns — a screenful, newest-first. */
 export const DEFAULT_REFUSAL_LIMIT = 50;
 /** The hard ceiling on one page of refusal rows. */
@@ -40,7 +43,9 @@ export const refusalRecord = z.object({
   /**
    * The problem code the operation failed with — the `reason` on the 409 the caller received:
    * `invalid_transition` for a transition refusal, the predicate's own (`protocol_required`)
-   * for a guard. Null when the refusal carried none and the kind implies none.
+   * for a guard. Null when the refusal carried none and the kind implies none, and
+   * `UNRECOGNIZED_REFUSAL_REASON` when it carried one outside the `problemReason` grammar —
+   * kept as a code, never as whatever text the thrower put there.
    */
   reason: z.string().nullable(),
   /** The guard's named predicate (`protocol/all-signed`) on a `'guard'` row; null otherwise. */

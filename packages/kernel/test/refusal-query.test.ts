@@ -119,6 +119,24 @@ describe('guard refusals (#1745, K-38)', () => {
     ...over,
   });
 
+  it('never stores a reason outside the code grammar, whoever calls the INSERT', () => {
+    const d = db();
+    const q = refusalInsert({
+      tenantId: T,
+      scopeId: S,
+      refused: guard({ reason: 'mail ada@example.com' }),
+      invokedOperation: 'shop/finish',
+      actor: JSON.stringify(ALICE),
+      impersonation: null,
+      invocationId: null,
+      at: '2026-10-01T12:00:00.000Z',
+    });
+    d.prepare(q.sql).run(...q.params);
+    const stored = d.prepare('SELECT * FROM _substrat_refusals').all();
+    expect(JSON.stringify(stored)).not.toContain('ada@example.com');
+    expect(read(d)[0]!.reason).toBe('unrecognized');
+  });
+
   it('writes a guard row with no from-state, and reads it back as a guard', () => {
     const d = db();
     const q = refusalInsert({
@@ -163,6 +181,13 @@ describe('guard refusals (#1745, K-38)', () => {
     const bare = substratError('conflict', 'no');
     markGuardRefusal(bare, 'g/p', 'x/op');
     expect(refusalOf(bare)).toEqual(guard({ predicate: 'g/p', operation: 'x/op', reason: null, entityType: null, entityId: null }));
+
+    // A reason is kept as a code or not at all: request text in it becomes the fixed marker.
+    for (const leaky of ['call ada@example.com', 'x'.repeat(65), 'Ada_Lovelace']) {
+      const e = substratError('conflict', 'no', { reason: leaky });
+      markGuardRefusal(e, 'g/p', 'x/op');
+      expect((refusalOf(e) as RefusedGuard).reason).toBe('unrecognized');
+    }
 
     // A guard failing is not a guard refusing.
     for (const other of [new Error('boom'), substratError('validation_failed', 'bad'), substratError('forbidden', 'no'), 'thrown string', null]) {

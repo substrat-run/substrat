@@ -17,8 +17,8 @@
  * `ctx.atomic` and recovered from is the vertical's business — its operation committed.
  *
  * **What a row holds, and what it never does.** Keys and vocabulary only: the record's type
- * and id, state names, operation and predicate names, the problem code, the actor's id and
- * the call's. Never the error's message, the operation's input, or a guard's config — any of
+ * and id, state names, operation and predicate names, the problem code (held to the
+ * `problemReason` grammar), the actor's id and the call's. Never the error's message, the operation's input, or a guard's config — any of
  * those can quote what a person typed. So a row has nothing for a subject erasure to rewrite
  * (master-plan §5.3: pseudonymous keys and transaction facts remain), which is the denial
  * log's position too, and it is kept the way the denial log is: `drained_at` marks a shipped
@@ -27,6 +27,8 @@
 import {
   errorCodeOf,
   INVALID_TRANSITION,
+  problemReason,
+  UNRECOGNIZED_REFUSAL_REASON,
   refusedRecordOf,
   refusedTransitionOf,
   type RefusedTransition,
@@ -131,7 +133,7 @@ export interface RefusedGuard {
   predicate: string;
   /** The operation the guard stands before. */
   operation: string;
-  /** The problem's `reason` extension, or null when it carried none. */
+  /** The problem's `reason` code (`keptReason`), or null when it carried none. */
   reason: string | null;
   entityType: string | null;
   entityId: string | null;
@@ -151,16 +153,25 @@ const REFUSED_GUARD = Symbol.for('substrat.refused-guard');
 export function markGuardRefusal(err: unknown, predicate: string, operation: string): void {
   if (err === null || typeof err !== 'object' || refusedTransitionOf(err)) return;
   if (errorCodeOf(err) !== 'conflict') return;
-  const reason = (err as { extensions?: { reason?: unknown } }).extensions?.reason;
   const record = refusedRecordOf(err);
   (err as Record<symbol, RefusedGuard>)[REFUSED_GUARD] = {
     kind: 'guard',
     predicate,
     operation,
-    reason: typeof reason === 'string' ? reason : null,
+    reason: keptReason((err as { extensions?: { reason?: unknown } }).extensions?.reason),
     entityType: record?.entityType ?? null,
     entityId: record?.entityId ?? null,
   };
+}
+
+/**
+ * The reason a row keeps: the problem's code when it is one (`problemReason`), the fixed
+ * `UNRECOGNIZED_REFUSAL_REASON` when it is anything else, null when there was none. The
+ * wire accepts any non-empty string here, so a predicate could put request text in it.
+ */
+function keptReason(reason: unknown): string | null {
+  if (reason === undefined || reason === null) return null;
+  return problemReason.safeParse(reason).success ? (reason as string) : UNRECOGNIZED_REFUSAL_REASON;
 }
 
 /** The refusal an operation failed with — a transition, a guard, or null for anything else. */
@@ -207,7 +218,8 @@ export function refusalInsert(row: RefusalRow): { sql: string; params: (string |
       r.operation,
       row.invokedOperation,
       guard?.predicate ?? null,
-      guard ? guard.reason : INVALID_TRANSITION,
+      // Bounded here too, the one INSERT, so no caller of this function can keep raw text.
+      guard ? keptReason(guard.reason) : INVALID_TRANSITION,
       row.actor,
       row.impersonation,
       row.invocationId,

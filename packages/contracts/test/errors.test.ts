@@ -15,6 +15,7 @@ import {
   PROBLEM_EXTENSIONS,
   problem,
   problemDetail,
+  problemReason,
   problemTypeFor,
   SubstratError,
   substratError,
@@ -23,6 +24,17 @@ import {
 } from '../src/index.js';
 
 describe('the taxonomy', () => {
+  it('writes every code in the one grammar a kept reason is held to (#1745)', () => {
+    for (const code of errorCode.options) expect(problemReason.safeParse(code).success, code).toBe(true);
+    for (const reason of ['invalid_transition', 'protocol_required', 'attachment_search_too_many_owners']) {
+      expect(problemReason.safeParse(reason).success, reason).toBe(true);
+    }
+    // A sentence, an address, a near-miss and an overlong slug are not codes.
+    for (const text of ['call ada@example.com', 'Protocol_required', 'protocol-required', '_x', 'x_', 'a__b', '', 'a'.repeat(65)]) {
+      expect(problemReason.safeParse(text).success, text).toBe(false);
+    }
+  });
+
   it('gives every code a status and a title', () => {
     for (const code of errorCode.options) {
       const entry = PROBLEM_CATALOG[code];
