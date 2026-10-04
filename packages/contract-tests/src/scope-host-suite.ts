@@ -19,6 +19,7 @@ import {
   SCOPE_QUERY_ROW_MAX,
   type EntityRef,
   type ErrorCode,
+  type LifecycleFlowResult,
   KERNEL_AUTHORED_EVENT_TYPES,
   type OrgId,
   type PlatformRequest,
@@ -52,6 +53,7 @@ import {
   contractTestInitialModules,
   gateModManifest,
   lateMod,
+  TEST_LIFECYCLE,
   testModManifest,
   victimModManifest,
 } from './modules.js';
@@ -2231,15 +2233,7 @@ export function scopeHostContractSuite(
       await stub.invoke('test/move', { entityId: 'l1' });
       const flow = await host.admin.lifecycleFlow(staff, t1, s1, {
         entityType: 'test-lifecycle',
-        lifecycle: {
-          field: 'state',
-          initial: 'draft',
-          states: {
-            draft: { on: { 'test/move': 'live' } },
-            live: { on: { 'test/move': 'done' } },
-            done: { terminal: true },
-          },
-        },
+        lifecycle: TEST_LIFECYCLE,
         since,
         until: new Date(Date.now() + 60_000).toISOString(),
       });
@@ -2248,6 +2242,95 @@ export function scopeHostContractSuite(
       expect(flow.states.find((s) => s.state === 'done')!.current).toBe(1);
       expect(flow.observation).toMatchObject({ entities: 1, events: 3, inferred: 1, complete: true });
       expect(flow.totals.finished).toBe(1);
+    });
+
+    describe('lifecycleFlow on both adapters (#1744)', () => {
+      let stub: Awaited<ReturnType<ScopeHost['getScope']>>;
+      beforeAll(async () => {
+        stub = await host.getScope(alice, t1, s1);
+      });
+      /** One move, as its own call, returning the instant the outbox stamped on it. */
+      const move = async (entityId: string, state: string): Promise<string> => {
+        const invocationId = ulid();
+        await stub.invoke('test/move', { entityId, state }, { invocationId });
+        const { events } = await host.admin.invocationEvents(staff, t1, s1, { invocationId });
+        expect(events).toHaveLength(1);
+        const at = events[0]!.occurredAt;
+        // The boundaries below are exact instants, so no two moves may share one.
+        while (Date.now() <= Date.parse(at)) await new Promise((r) => setTimeout(r, 2));
+        return at;
+      };
+      const edge = (flow: LifecycleFlowResult, from: string, to: string) =>
+        flow.edges.find((e) => e.from === from && e.to === to && e.declared);
+      const state = (flow: LifecycleFlowResult, name: string) => flow.states.find((s) => s.state === name);
+
+      it('counts an event at `since` and not one at `until`: the window is half-open', async () => {
+        const a = await move('w1', 'draft');
+        const b = await move('w1', 'live');
+        const c = await move('w1', 'done');
+        expect(a < b && b < c).toBe(true);
+        const read = (since: string, until: string) =>
+          host.admin.lifecycleFlow(staff, t1, s1, { entityType: 'test-lifecycle', lifecycle: TEST_LIFECYCLE, since, until });
+
+        // [b, c): the move AT `since` is in; the move AT `until` is not replayed at all,
+        // so "now" is still `live` — and the declared edge it would have taken reads 0.
+        const mid = await read(b, c);
+        expect(edge(mid, 'draft', 'live')!.count).toBe(1);
+        expect(edge(mid, 'live', 'done')!.count).toBe(0);
+        expect(state(mid, 'live')!.current).toBe(1);
+
+        // [a, b): history before `since` is replayed, never counted, and `b` is outside.
+        const before = await read(a, b);
+        expect(edge(before, 'draft', 'live')!.count).toBe(0);
+        expect(state(before, 'draft')!.current).toBeGreaterThanOrEqual(1);
+
+        // The twin: one millisecond past `c` and the same move is counted.
+        const after = await read(b, new Date(Date.parse(c) + 1).toISOString());
+        expect(edge(after, 'draft', 'live')!.count).toBe(1);
+        expect(edge(after, 'live', 'done')!.count).toBe(1);
+        expect(state(after, 'live')!.current).toBe(0);
+      });
+
+      it('lists a move the declaration does not have apart from the declared edges', async () => {
+        const since = await move('u1', 'draft');
+        await move('u1', 'done'); // `test/move` from draft is declared to lead to `live`
+        await move('u2', 'draft');
+        await move('u2', 'limbo'); // a state the declaration does not have at all
+        const flow = await host.admin.lifecycleFlow(staff, t1, s1, {
+          entityType: 'test-lifecycle',
+          lifecycle: TEST_LIFECYCLE,
+          since,
+          until: new Date(Date.now() + 60_000).toISOString(),
+        });
+
+        const undeclared = flow.edges.filter((e) => !e.declared);
+        expect(undeclared).toHaveLength(2);
+        expect(undeclared).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ from: 'draft', to: 'done', operation: 'test/move', count: 1, seenLate: false }),
+            expect.objectContaining({ from: 'draft', to: 'limbo', operation: 'test/move', count: 1, seenLate: false }),
+          ]),
+        );
+        // Not folded into the declared edge out of the same state under the same operation.
+        expect(edge(flow, 'draft', 'live')!.count).toBe(0);
+        expect(state(flow, 'limbo')).toMatchObject({ declared: false, current: 1 });
+      });
+
+      it("answers only for the tenant's own scope: a mismatched pair is refused, another tenant's scope sees none of it", async () => {
+        const since = await move('i1', 'draft');
+        const window = { entityType: 'test-lifecycle', lifecycle: TEST_LIFECYCLE, since, until: new Date(Date.now() + 60_000).toISOString() };
+        // The positive twin: t1's own pair sees the instance just started.
+        expect((await host.admin.lifecycleFlow(staff, t1, s1, window)).totals.started).toBe(1);
+        // K-3: never another tenant's outbox, and never an empty answer for one either.
+        await expect(host.admin.lifecycleFlow(staff, t2, s1, window)).rejects.toThrow();
+        await expect(host.admin.lifecycleFlow(staff, t1, s2, window)).rejects.toThrow();
+        // t2's own scope answers, from its own outbox — in which t1 emitted nothing.
+        const own = await host.admin.lifecycleFlow(staff, t2, s2, window);
+        expect(own.observation).toMatchObject({ entities: 0, events: 0, complete: true });
+        expect(own.edges.every((e) => e.count === 0)).toBe(true);
+        // K-24: the read is recorded against the actor.
+        expect((await host.admin.accessLog(staff, { tenantId: t1, method: 'lifecycleFlow' })).length).toBeGreaterThan(0);
+      });
     });
 
     it('records a refused transition after the rollback, and the replay counts it (#1745)', async () => {
@@ -2259,11 +2342,7 @@ export function scopeHostContractSuite(
       await expect(stub.invoke('test/refuse', { entityId: 'r1', from: 'done' })).rejects.toThrow(/invalid transition/);
       const flow = await host.admin.lifecycleFlow(staff, t1, s1, {
         entityType: 'test-lifecycle',
-        lifecycle: {
-          field: 'state',
-          initial: 'draft',
-          states: { draft: { on: { 'test/move': 'live' } }, live: { on: { 'test/move': 'done' } }, done: { terminal: true } },
-        },
+        lifecycle: TEST_LIFECYCLE,
         since,
         until: new Date(Date.now() + 60_000).toISOString(),
       });

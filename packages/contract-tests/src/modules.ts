@@ -41,8 +41,12 @@ import {
   type OperationHandler,
 } from '@substrat-run/kernel';
 
-/** #1745: the machine `test/refuse` asserts against — `test/move` is illegal from `done`. */
-const REFUSE_LIFECYCLE = {
+/**
+ * #1744: the machine `test/move` walks, in the form `model.json` emits — what the suite
+ * hands `lifecycleFlow`. #1745: also the one `test/refuse` asserts against, where
+ * `test/move` is illegal from `done`.
+ */
+export const TEST_LIFECYCLE = {
   field: 'state',
   initial: 'draft',
   states: {
@@ -50,7 +54,8 @@ const REFUSE_LIFECYCLE = {
     live: { on: { 'test/move': 'done' } },
     done: { terminal: true },
   },
-} as unknown as LifecycleDef;
+} as const;
+const REFUSE_LIFECYCLE = TEST_LIFECYCLE as unknown as LifecycleDef;
 
 /**
  * #1745: `_substrat_refusals` as #1928 shipped it — `from_state NOT NULL`, no `guard` or
