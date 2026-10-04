@@ -3907,6 +3907,11 @@ export class SqliteScopeHost implements ScopeHost {
         stale: false,
         paused: null,
       };
+      // #2004: a copy (a fork, a snapshot, a preview) never consumes another vertical's events.
+      // The sweep visits primary scopes only; this is the same rule at the door (#2005's
+      // `isPrimaryInDirectory`), so a delivery addressed to a copy any other way is a pause:
+      // nothing runs and the watermark stays.
+      if (!this.isPrimaryInDirectory(scopeId)) return { ...result, paused: { reason: INERT_SCOPE_REASON } };
       // #1706's door, for a delivery (`operation: null`): the producer must be a declared peer
       // of this vertical with its switch on. Admitted inside the actor task, before anything
       // runs, so a switch pulled between two passes refuses the second. A refusal is a PAUSE:

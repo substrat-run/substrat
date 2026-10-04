@@ -20,6 +20,7 @@ import {
 import {
   assertAllowed,
   crossVerticalHealth,
+  INERT_SCOPE_REASON,
   runPlatformSweep,
   ulid,
   type CrossVerticalReach,
@@ -1572,6 +1573,83 @@ export function verticalEventsContractSuite(
       expect(String(await refusal(fx.consumer.admin.promoteVersion(staff, producer, 'prod', dropped)))).toMatch(/promotion drops/);
       await fx.consumer.admin.promoteVersion(staff, producer, 'prod', dropped, { exportBreak: true });
       expect(await boundTo(t, pt)).toBe(dropped);
+    });
+
+    // #2004: a copy of a CONSUMER keeps the source's watermark and journal as history, because
+    // they describe the data the copy holds, and has none of its power to consume. The sweep
+    // never visits it, and a delivery addressed to it directly is a pause. A return (the
+    // consumer's own backup restored into it) keeps the watermark and acts on it.
+    it('a copy of a consumer carries its watermark as history, and is fed by neither the sweep nor its door (#2004)', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const one = await create(t, p, 'One');
+      await sweep();
+      const backup = await fx.consumer.admin.exportScope(staff, t, c);
+      const cursorsAt = async (s: ScopeId) => (await fx.consumer.admin.importState(staff, t, s)).cursors;
+      const copied = await cursorsAt(c);
+      expect(copied).toEqual([expect.objectContaining({ source: p, vertical: CRM_VERTICAL })]);
+
+      const fork = scopeId.parse(ulid());
+      await fx.consumer.importScope(staff, { tenantId: t, scopeId: fork, vertical: BOARD_VERTICAL }, backup);
+      const copies: [string, ScopeId][] = [
+        ['a fork', fork],
+        ['a snapshot', await fx.consumer.snapshotScope(staff, t, c)],
+        ['a preview', await fx.consumer.snapshotScope(staff, t, c, { kind: 'preview' })],
+      ];
+      // Carried, as history: the copy holds the data the watermark describes, and the watermark.
+      for (const [name, s] of copies) {
+        expect(await cursorsAt(s), name).toEqual(copied);
+        expect((await board(t, s)).associations.map((r) => r.crm_id), name).toEqual([one]);
+      }
+
+      const two = await create(t, p, 'Two');
+      const { report } = await sweep();
+      // The source is fed; no copy is visited, and each still stands where it was copied.
+      expect(into(report, c)).toMatchObject({ state: 'delivered', delivered: 1 });
+      expect((await board(t, c)).associations.map((r) => r.crm_id)).toEqual([one, two]);
+      for (const [name, s] of copies) {
+        expect(into(report, s), name).toBeUndefined();
+        expect(await cursorsAt(s), name).toEqual(copied);
+        expect((await board(t, s)).associations.map((r) => r.crm_id), name).toEqual([one]);
+      }
+
+      // The door: the batch the source was fed, addressed to each copy from the copy's own
+      // watermark, is a pause. Nothing is journaled and the watermark does not move.
+      const read = await fx.producer.admin.readExportedEvents(staff, t, p, {
+        consumer: BOARD_VERTICAL,
+        after: copied[0]!.cursor,
+        wants: [{ type: 'crm.customer-created', schemaVersion: 1 }],
+        limit: 100,
+      });
+      const batch: ImportBatch = {
+        source: { vertical: CRM_VERTICAL, scopeId: p },
+        after: copied[0]!.cursor,
+        next: read.next!,
+        events: read.events,
+        withheld: read.withheld,
+      };
+      expect(read.events.map((e) => e.id)).toHaveLength(1);
+      for (const [name, s] of copies) {
+        expect(await fx.consumer.deliverToPeer(t, s, batch), name).toMatchObject({
+          delivered: 0,
+          stale: false,
+          paused: { reason: INERT_SCOPE_REASON },
+        });
+        expect(await cursorsAt(s), name).toEqual(copied);
+        const view = await board(t, s);
+        expect(view.associations.map((r) => r.crm_id), name).toEqual([one]);
+        expect(view.imports.map((r) => r.event_id), name).toHaveLength(1);
+      }
+
+      // The return twin: the consumer's own backup, restored into it, rewinds the watermark with
+      // the data, and the next pass acts on it — `Two` arrives again, from the restored position.
+      await fx.consumer.restoreScope(staff, t, c, backup);
+      expect(await cursorsAt(c)).toEqual(copied);
+      expect((await board(t, c)).associations.map((r) => r.crm_id)).toEqual([one]);
+      const after = await sweep();
+      expect(into(after.report, c)).toMatchObject({ state: 'delivered', delivered: 1 });
+      expect((await board(t, c)).associations.map((r) => r.crm_id)).toEqual([one, two]);
     });
 
     it('a fork is neither read nor fed, and two primary installs are refused rather than guessed between', async () => {
