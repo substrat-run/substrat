@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { operationSeriesInput, type OperationSeriesInput } from '@substrat-run/contracts';
-import { createUlid, readOperationSeries, type ScopedSql } from '../src/index.js';
+import { createUlid, operationSeriesQuery, readOperationSeries, type ScopedSql } from '../src/index.js';
 
 /**
  * Business volumes per bucket (#1750), against a real outbox: the read is one aggregate
@@ -118,16 +118,39 @@ describe('readOperationSeries (#1750)', () => {
     expect(r.series.map((s) => s.total)).toEqual([1, 1]);
   });
 
-  it('finds an event whose id ran ahead of its instant (a clock held at the floor), and seeks the key for the rest', () => {
+  it('counts an event whose id ran ahead of its instant inside the window, and not one whose id ran past `until`', () => {
     const { reader, sqls } = readerOver([
-      { at: '2026-10-03T10:00:00.000Z', op: 'desk/close', idAt: '2026-10-05T00:00:00.000Z' },
+      // A clock held at the floor: the id is hours ahead, still inside the window.
+      { at: '2026-10-03T10:00:00.000Z', op: 'desk/close', idAt: '2026-10-03T20:00:00.000Z' },
       { at: '2026-10-03T11:00:00.000Z', op: 'desk/close' },
+      // The stated cost of the closed key range: an id past `until` is outside it.
+      { at: '2026-10-03T23:59:59.999Z', op: 'desk/close', idAt: '2026-10-04T00:00:00.001Z' },
     ]);
     const r = readOperationSeries({ sql: reader }, { moves: [CLOSE], since: '2026-10-03T00:00:00.000Z', until: '2026-10-04T00:00:00.000Z', bucketMinutes: 60 });
     expect(r.series[0]!.total).toBe(2);
-    // One statement, bounded below on the primary key.
     expect(sqls).toHaveLength(1);
-    expect(sqls[0]).toContain('id >= ?');
+  });
+
+  it('plans a closed range of the primary key: a minute years ago visits only its own rows', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(DDL);
+    const mint = createUlid();
+    const ins = db.prepare('INSERT INTO _substrat_outbox (id, occurred_at, entity_type, entity_id, operation, invocation_id) VALUES (?, ?, ?, ?, ?, ?)');
+    // One event per minute for two days, starting years before the window's end.
+    const start = Date.parse('2023-01-01T00:00:00.000Z');
+    for (let i = 0; i < 2880; i++) {
+      const at = start + i * 60_000;
+      ins.run(mint(at), new Date(at).toISOString(), 'conversation', `c${i}`, 'desk/close', `k${i}`);
+    }
+    const input = { moves: [CLOSE], since: '2023-01-01T00:10:00.000Z', until: '2023-01-01T00:11:00.000Z', bucketMinutes: 1 };
+    const q = operationSeriesQuery(input);
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...(q.params as never[])) as Array<{ detail: string }>;
+    expect(plan.some((p) => /SEARCH _substrat_outbox USING INDEX sqlite_autoindex__substrat_outbox_1 \(id>\? AND id<\?\)/.test(p.detail))).toBe(true);
+    expect(plan.filter((p) => /^SCAN _substrat_outbox\b/.test(p.detail))).toEqual([]);
+    // Rows the range itself holds: the one minute, not the two days after it.
+    const visited = db.prepare('SELECT COUNT(*) AS n FROM _substrat_outbox WHERE id >= ? AND id < ?').get(q.params[2] as string, q.params[3] as string) as { n: number };
+    expect(visited.n).toBe(1);
+    expect(readOperationSeries({ sql: { query: <T>(s: string, p: unknown[] = []) => db.prepare(s).all(...(p as never[])) as T[] } as Pick<ScopedSql, 'query'> }, input).series[0]!.total).toBe(1);
   });
 
   it('takes 64 pairs as one bound parameter, below the Durable Object’s 100', () => {

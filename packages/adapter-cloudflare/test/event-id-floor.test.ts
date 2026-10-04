@@ -17,7 +17,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { createUlid, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
+import { createUlid, operationSeriesQuery, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -92,6 +92,48 @@ describe('the event-id floor survives an eviction (#1335)', () => {
       // And `ORDER BY id` — the outbox's cursor — puts it last, where a reader
       // continuing after `planted` is handed it.
       expect(after[after.length - 1]).toBe(fresh[0]);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+/**
+ * #1750: the business-volumes read seeks a CLOSED range of the outbox's primary key, which is
+ * what lets a window years ago cost its own rows and not everything written since. The
+ * kernel's suite asks node's SQLite; this asks the Durable Object's, for exactly what runs.
+ */
+describe('operationSeries plans a closed key range on the DO (#1750)', () => {
+  it('a minute years ago is a SEARCH on the primary key, never a scan of the outbox', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      checker: UNSAFE_allowAllChecker,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    try {
+      const staff = platformActorId.parse(ulid());
+      const t1 = tenantId.parse(ulid());
+      const s1 = scopeId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t1, slug: `series-${ulid().toLowerCase()}`, name: 'Series' });
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'floor-vertical' });
+      await host.admin.activateScope(staff, t1, s1);
+      // Real outbox rows, so the plan is asked of the real table and its real key.
+      await (await host.getScope(principalId.parse(ulid()), t1, s1)).invoke('test/emit-event');
+      const q = operationSeriesQuery({
+        moves: [{ entityType: 'conversation', operation: 'desk/close' }],
+        since: '2023-01-01T00:10:00.000Z',
+        until: '2023-01-01T00:11:00.000Z',
+        bucketMinutes: 1,
+      });
+      const detail = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s1)), (_instance, state) =>
+        state.storage.sql
+          .exec(`EXPLAIN QUERY PLAN ${q.sql}`, ...q.params)
+          .toArray()
+          .map((r) => String(r['detail'])),
+      );
+      expect(detail.some((d) => /^SEARCH _substrat_outbox USING INDEX sqlite_autoindex__substrat_outbox_1 \(id>\? AND id<\?\)/.test(d))).toBe(true);
+      expect(detail.filter((d) => /^SCAN _substrat_outbox\b/.test(d))).toEqual([]);
     } finally {
       await host.close();
     }
