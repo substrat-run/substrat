@@ -273,11 +273,15 @@ import {
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
   type ExecutorHandler,
+  type ExecutorOutcome,
+  type ExecutorScope,
   type ExecutorRetryPolicy,
   type MigrateScopeOutcome,
   type MigrationFrontier,
   backoffAt,
   resolveRetryPolicy,
+  isDeliveryRefusal,
+  refusalJournalText,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
@@ -1163,7 +1167,7 @@ interface ScopeStubRpc {
     permissions: PermissionKey[],
   ): Promise<PeerCoverage[]>;
   /** `ctx.canAssign`'s bound for a named principal (#1931); `null` for a role the tenant lacks. */
-  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage | null>;
+  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string, atTenant?: boolean): Promise<Coverage | null>;
   assignScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage | null>;
@@ -2390,6 +2394,23 @@ export class CloudflareScopeHost implements ScopeHost {
    * delivery cannot wedge the ones behind it. At-least-once still requires
    * idempotent handlers.
    */
+  /**
+   * #1184: the scope reads an executor's handler may make. Plain RPCs to the ScopeDO: the
+   * handler runs here on the coordinator, after the DO's own task has returned.
+   */
+  private executorScope(tenantId: TenantId, scopeId: ScopeId): ExecutorScope {
+    const stub = this.scopeStub(scopeId);
+    return {
+      history: async (entity, page) =>
+        stub.entityHistory({ entityType: entity.entityType, entityId: entity.entityId, limit: page?.limit, cursor: page?.cursor }),
+      covers: async (principal, roleKey, level) => {
+        const bound = await stub.canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey, level === 'tenant');
+        if (!bound) throw unknownRoleError(roleKey);
+        return coverage.parse(bound);
+      },
+    };
+  }
+
   private async drainExecutors(
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -2402,6 +2423,8 @@ export class CloudflareScopeHost implements ScopeHost {
      * call" for every attempt an operation's own tail made.
      */
     invocationId: string | null,
+    /** #1184: what each attempt did, for the emitting call's `onExecutorOutcomes`. */
+    outcomes?: ExecutorOutcome[],
   ): Promise<ExecutorDrainReport> {
     const report: ExecutorDrainReport = {
       attempted: 0,
@@ -2415,7 +2438,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // attempt runs — the DO only journals it.
     const lines = asyncLinePass();
     try {
-      await this.drainExecutorsPass(tenantId, scopeId, invocationId, report, lines);
+      await this.drainExecutorsPass(tenantId, scopeId, invocationId, report, lines, outcomes);
     } finally {
       lines.end();
     }
@@ -2428,6 +2451,7 @@ export class CloudflareScopeHost implements ScopeHost {
     invocationId: string | null,
     report: ExecutorDrainReport,
     lines: AsyncLinePass,
+    outcomes: ExecutorOutcome[] | undefined,
   ): Promise<void> {
     const stub = this.scopeStub(scopeId);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
@@ -2473,6 +2497,16 @@ export class CloudflareScopeHost implements ScopeHost {
         attempt,
         startedAt: Date.now(),
       });
+      const outcomeOf = (event: DomainEvent, outcome: ExecutorOutcome['outcome'], error?: string): void => {
+        outcomes?.push({
+          executorId: id,
+          eventId: event.id,
+          eventType: event.type,
+          entity: `${event.entity.entityType}:${event.entity.entityId}`,
+          outcome,
+          ...(error === undefined ? {} : { error }),
+        });
+      };
       for (const bad of undecodable) {
         report.attempted += 1;
         const attempt = await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
@@ -2486,6 +2520,7 @@ export class CloudflareScopeHost implements ScopeHost {
           // No next attempt, like an undecodable row: a scope does not become primary.
           const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, INERT_SCOPE_REASON, null, invocationId);
           report.inert = (report.inert ?? 0) + 1;
+          outcomeOf(event, 'inert', INERT_SCOPE_REASON);
           // Its own outcome, never `delivered`: no handler ran (#2005).
           lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'inert' });
           continue;
@@ -2510,6 +2545,7 @@ export class CloudflareScopeHost implements ScopeHost {
               invocationId,
             );
             report.routedToPlatform! += 1;
+            outcomeOf(event, 'routed');
             // Handed on, not run here: the platform's drain owns its attempts from now on.
             lines.write({ ...unitOf(event.id, 1), startedAt, outcome: 'routed' });
           } else if (executor.kind === 'connector') {
@@ -2519,11 +2555,23 @@ export class CloudflareScopeHost implements ScopeHost {
             );
             const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
+            outcomeOf(event, 'delivered');
             lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           } else {
-            await executor.handler(this.admin, event);
+            const result = await executor.handler(this.admin, event, this.executorScope(tenantId, scopeId));
+            if (isDeliveryRefusal(result)) {
+              // #1184: the handler's own terminal decision — journaled with its reason, no
+              // next attempt, and listed by `executorDeadLetters` beside an exhausted one.
+              const text = refusalJournalText(result);
+              const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, text, null, invocationId);
+              report.deadLettered += 1;
+              outcomeOf(event, 'refused', result.reason);
+              lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'dead-lettered', error: text });
+              continue;
+            }
             const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
+            outcomeOf(event, 'delivered');
             lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           }
         } catch (err) {
@@ -2542,6 +2590,7 @@ export class CloudflareScopeHost implements ScopeHost {
           );
           if (exhausted) report.deadLettered += 1;
           else report.retrying += 1;
+          outcomeOf(event, exhausted ? 'dead-lettered' : 'retrying', err instanceof Error ? err.message : String(err));
           lines.write({
             ...unitOf(event.id, attempts),
             startedAt,
@@ -4913,12 +4962,14 @@ export class CloudflareScopeHost implements ScopeHost {
         // this scope's outbox — and draining anyway would run executors and
         // connectors as a side effect of a session that may not have side effects.
         // Whatever the outbox already held is the drain sweep's own backstop.
+        // #1184: what this call's executors did inline, for `onExecutorOutcomes`.
+        const executorOutcomes: ExecutorOutcome[] | undefined = invokeOptions?.onExecutorOutcomes ? [] : undefined;
         const drained =
           session?.mode === 'read-only'
             ? { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0, routedToPlatform: 0 }
             // #1525: this drain is part of the call that emitted the events — the
             // coordinator's half of the post-commit tail the DO ran the consumers in.
-            : await this.drainExecutors(tenantId, scopeId, invokeOptions?.invocationId ?? null);
+            : await this.drainExecutors(tenantId, scopeId, invokeOptions?.invocationId ?? null, executorOutcomes);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
         // Routed connector deliveries (#574 phase 3) count too: the inline drain just
@@ -4930,6 +4981,9 @@ export class CloudflareScopeHost implements ScopeHost {
         if (envelope.concurrency) invokeOptions?.onEntityVersion?.(envelope.concurrency.version);
         if (envelope.idempotency?.replayed) invokeOptions?.onIdempotentReplay?.();
         if (envelope.emitted) invokeOptions?.onEmitted?.(envelope.emitted);
+        if (executorOutcomes && session?.mode !== 'read-only' && !envelope.idempotency?.replayed) {
+          invokeOptions?.onExecutorOutcomes?.(executorOutcomes);
+        }
         return envelope.result as O;
       },
     };

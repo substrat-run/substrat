@@ -3768,10 +3768,12 @@ export function defineScopeDO(
       scopeId: ScopeId,
       principal: PrincipalId,
       roleKey: string,
+      /** #1184: bound at the TENANT node instead — a membership executor assigning tenant-wide. */
+      atTenant = false,
     ): Promise<Coverage | null> {
       await this.ensureMigrations();
       return this.queue.enqueue(() =>
-        this.assignmentBound({ kind: 'principal', id: principal }, tenantId, scopeId, roleKey),
+        this.assignmentBound({ kind: 'principal', id: principal }, tenantId, atTenant ? null : scopeId, roleKey),
       );
     }
 
@@ -3807,7 +3809,7 @@ export function defineScopeDO(
     private async assignmentBound(
       subject: CheckSubject,
       tenantId: TenantId,
-      scopeId: ScopeId,
+      scopeId: ScopeId | null,
       roleKey: string,
     ): Promise<Coverage | null> {
       const role = await this.controlPlaneReader().getRole(tenantId, roleKey);

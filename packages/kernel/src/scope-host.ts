@@ -771,6 +771,18 @@ export interface InvokeOptions {
    * uncapped count, so a reader can tell a short list from a truncated one.
    */
   readonly onEmitted?: (report: EmittedReport) => void;
+  /**
+   * Called after the operation COMMITS and its executors ran inline (#1184), with what each
+   * delivery of this call's events did. The inline path is the common case of K-22 §4.2,
+   * so the request holder is the one who can tell a person their accept was refused rather
+   * than report success for an effect that never happened.
+   *
+   * Every delivery the call's post-commit tail attempted, which can include an earlier
+   * call's retry that came due: a caller picks out its own by `eventType` and `entity`.
+   * Never called for a rolled-back operation, a read-only session or an
+   * idempotent replay. Absent from a host that predates it — read that as "not reported".
+   */
+  readonly onExecutorOutcomes?: (outcomes: readonly ExecutorOutcome[]) => void;
 }
 
 /** How many of an invocation's own events `onEmitted` names (#1746). `total` is uncapped. */
@@ -927,8 +939,78 @@ export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => voi
  * It receives `HostAdmin`, not `ctx`: it acts with platform authority, which is
  * precisely what module code must never hold. Admin writes it makes are stamped with
  * the causing event's id (`causedBy`), so the split trail joins.
+ *
+ * A handler that decides an event must never be effected RETURNS `refuseDelivery(reason)`
+ * (#1184). The delivery is journaled terminal with the reason, never retried. A return
+ * value rather than a thrown error, so module code cannot produce one: the most an
+ * operation can do is throw, and a throw is retried like any other failure.
  */
-export type ExecutorHandler = (admin: HostAdmin, event: DomainEvent) => void | Promise<void>;
+export type ExecutorHandler = (
+  admin: HostAdmin,
+  event: DomainEvent,
+  scope: ExecutorScope,
+) => void | DeliveryRefusal | Promise<void | DeliveryRefusal>;
+
+/**
+ * The scope an executor's event came from, as the executor may read it (#1184).
+ *
+ * Here rather than through `HostAdmin` or the host, and the pure adapter is why: its
+ * handler runs INSIDE the scope's actor task, and every host read of a scope re-enqueues
+ * on that actor, so `host.canAssign` from a handler waits on the task holding it and never
+ * returns. The adapter builds this to suit where the handler runs, as it builds a
+ * connector's `openAttachment`.
+ *
+ * Reads only, and checks no permission: the caller is host code that already holds
+ * platform authority. Both answer about the event's own (tenant, scope), never another.
+ */
+export interface ExecutorScope {
+  /** One entity's history in this scope — `readHistory`'s answer, newest first. */
+  history(entity: EntityRef, page?: ListPage): Promise<Page<HistoryEntry>>;
+  /**
+   * May `principal` confer `roleKey` at this scope's node, or at the tenant node
+   * (`level: 'tenant'`)? The K-21 set comparison `ctx.canAssign` answers, against the
+   * tenant's projected role, narrowing-aware. Throws `unknownRoleError` for a role this
+   * tenant does not define.
+   */
+  covers(principal: PrincipalId, roleKey: string, level: 'scope' | 'tenant'): Promise<Coverage>;
+}
+
+const REFUSAL = Symbol('substrat.delivery-refusal');
+
+/** What an executor returns to refuse an event terminally (#1184). Build it with `refuseDelivery`. */
+export interface DeliveryRefusal {
+  readonly [REFUSAL]: true;
+  readonly reason: string;
+}
+
+/** Refuse this delivery for good: journaled terminal with `reason`, never retried (#1184). */
+export function refuseDelivery(reason: string): DeliveryRefusal {
+  return Object.freeze({ [REFUSAL]: true as const, reason });
+}
+
+/** Whether a handler's result is a refusal. The adapters' one test for it. */
+export function isDeliveryRefusal(value: unknown): value is DeliveryRefusal {
+  return typeof value === 'object' && value !== null && (value as Partial<DeliveryRefusal>)[REFUSAL] === true;
+}
+
+/** The journal text a refusal is recorded under — one spelling, so a reader can match it. */
+export const refusalJournalText = (refusal: DeliveryRefusal): string => `refused: ${refusal.reason}`;
+
+/**
+ * What one executor delivery did inside the call that emitted its event (#1184) — what
+ * `InvokeOptions.onExecutorOutcomes` reports. `refused` is terminal by the handler's own
+ * decision; `dead-lettered` is terminal by exhaustion; `retrying` will be tried again.
+ */
+export interface ExecutorOutcome {
+  readonly executorId: string;
+  readonly eventId: string;
+  readonly eventType: string;
+  /** The event's entity, as `<entityType>:<entityId>` — how a caller finds its own event. */
+  readonly entity: string;
+  readonly outcome: 'delivered' | 'retrying' | 'dead-lettered' | 'refused' | 'inert' | 'routed';
+  /** The refusal reason, or the failure's message. Absent on a delivery. */
+  readonly error?: string;
+}
 
 /**
  * How hard the host tries before it gives up on one delivery (#100).

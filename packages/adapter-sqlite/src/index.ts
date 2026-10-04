@@ -287,7 +287,9 @@ import {
   type MigrateScopeOutcome,
   type MigrationFrontier,
   type ExecutorHandler,
+  type ExecutorOutcome,
   type ExecutorRetryPolicy,
+  type ExecutorScope,
   backoffAt,
   platformRequestHistoryQuery,
   platformRequestOf,
@@ -376,6 +378,8 @@ import {
   newImpersonationSession,
   type ImpersonationRow,
   resolveRetryPolicy,
+  isDeliveryRefusal,
+  refusalJournalText,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
@@ -4315,7 +4319,8 @@ export class SqliteScopeHost implements ScopeHost {
   private async assignmentBound(
     subject: CheckSubject,
     tenantId: TenantId,
-    scopeId: ScopeId,
+    /** Null for the tenant node — the executor's `level: 'tenant'` (#1184). */
+    scopeId: ScopeId | null,
     roleKey: string,
   ): Promise<Coverage> {
     const role = this.roles.get(`${tenantId}/${roleKey}`);
@@ -4715,6 +4720,8 @@ export class SqliteScopeHost implements ScopeHost {
         let replayed = false;
         // #1746: what this call itself emitted, for `onEmitted`. Set only after a commit.
         let emittedReport: EmittedReport | undefined;
+        // #1184: what this call's executors did inline, for `onExecutorOutcomes`.
+        const executorOutcomes: ExecutorOutcome[] | undefined = invokeOptions?.onExecutorOutcomes ? [] : undefined;
         const invoked = await rt.actor.enqueue(async () => {
           // #1237: the invocation this call belongs to, for the duration of it. Set
           // INSIDE the actor task — the actor serializes invoke and dispatch alike, so
@@ -4893,7 +4900,7 @@ export class SqliteScopeHost implements ScopeHost {
             // #1525: still inside the actor task that set it, so these deliveries are
             // this call's own work — the same tail its consumers' emits are stamped in.
             await this.dispatch(rt, rt.invocationId);
-            await this.dispatchExecutors(rt, rt.invocationId);
+            await this.dispatchExecutors(rt, rt.invocationId, executorOutcomes);
           }
           if (exportMark !== null && !replayed) {
             const q = exportedSinceQuery(exportTypes, exportMark);
@@ -4914,6 +4921,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
         if (replayed) invokeOptions?.onIdempotentReplay?.();
         if (emittedReport) invokeOptions?.onEmitted?.(emittedReport);
+        if (executorOutcomes && !replayed && session?.mode !== 'read-only') invokeOptions?.onExecutorOutcomes?.(executorOutcomes);
         return invoked;
       },
     };
@@ -5018,6 +5026,24 @@ export class SqliteScopeHost implements ScopeHost {
    * At-least-once still requires idempotent handlers. Retry is the backstop, not a
    * substitute.
    */
+  /**
+   * #1184: the scope reads an executor's handler may make, built over `rt` directly. The
+   * handler runs INSIDE this scope's actor task, so a host read that re-enqueued — the
+   * public `canAssign`, `admin.entityHistory` — would wait on the task holding it.
+   */
+  private executorScope(rt: ScopeRuntime): ExecutorScope {
+    return {
+      history: async (entity, page) => readHistory({ sql: scopedSql(rt.db) }, entity, page),
+      covers: (principal, roleKey, level) =>
+        this.assignmentBound(
+          asPrincipal(principalId.parse(principal)),
+          rt.tenantId,
+          level === 'scope' ? rt.scopeId : null,
+          roleKey,
+        ),
+    };
+  }
+
   private async dispatchExecutors(
     rt: ScopeRuntime,
     /**
@@ -5028,6 +5054,8 @@ export class SqliteScopeHost implements ScopeHost {
      * a recorded fact whose correctness argument differs per adapter drifts.
      */
     invocationId: string | null,
+    /** #1184: what each attempt did, for the emitting call's `onExecutorOutcomes`. */
+    outcomes?: ExecutorOutcome[],
   ): Promise<ExecutorDrainReport> {
     const report: ExecutorDrainReport = {
       attempted: 0,
@@ -5038,7 +5066,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.executors.size === 0) return report;
     const lines = asyncLinePass(this.invocationLineSink);
     try {
-      await this.dispatchExecutorsPass(rt, invocationId, report, lines);
+      await this.dispatchExecutorsPass(rt, invocationId, report, lines, outcomes);
     } finally {
       lines.end();
     }
@@ -5050,8 +5078,10 @@ export class SqliteScopeHost implements ScopeHost {
     invocationId: string | null,
     report: ExecutorDrainReport,
     lines: AsyncLinePass,
+    outcomes: ExecutorOutcome[] | undefined,
   ): Promise<void> {
     const now = new Date().toISOString();
+    const scope = this.executorScope(rt);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects. Every executor is host code acting with platform authority — a
     // connector with the tenant's credential, a plain executor with `HostAdmin` — so its
@@ -5105,24 +5135,47 @@ export class SqliteScopeHost implements ScopeHost {
           lines.write({ ...unit, attempt: attempts, outcome: 'dead-lettered' });
           continue;
         }
+        const outcomeOf = (outcome: ExecutorOutcome['outcome'], error?: string): void => {
+          outcomes?.push({
+            executorId: id,
+            eventId: event.id,
+            eventType: event.type,
+            entity: `${event.entity.entityType}:${event.entity.entityId}`,
+            outcome,
+            ...(error === undefined ? {} : { error }),
+          });
+        };
         if (isInert()) {
           const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, TERMINAL_RETRY, invocationId);
           report.inert = (report.inert ?? 0) + 1;
+          outcomeOf('inert', INERT_SCOPE_REASON);
           // Its own outcome, never `delivered`: no handler ran (#2005).
           lines.write({ ...unit, attempt: attempts, outcome: 'inert' });
           continue;
         }
         this.causedBy = event.id;
         try {
+          let result: unknown;
           if (executor.kind === 'connector') {
             // `true`: dispatchExecutors is only ever reached from inside
             // `rt.actor.enqueue` (invoke's post-commit tail, or drainDue).
             await executor.handler(this.connectorContext(rt, executor.timeoutMs, true, event.id), event);
           } else {
-            await executor.handler(this.admin, event);
+            result = await executor.handler(this.admin, event, scope);
+          }
+          if (isDeliveryRefusal(result)) {
+            // #1184: the handler's own terminal decision — journaled with its reason, never
+            // retried, and visible in `executorDeadLetters` beside an exhausted delivery.
+            const text = refusalJournalText(result);
+            const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, text, TERMINAL_RETRY, invocationId);
+            report.deadLettered += 1;
+            outcomeOf('refused', result.reason);
+            lines.write({ ...unit, attempt: attempts, outcome: 'dead-lettered', error: text });
+            continue;
           }
           const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, null, executor.retry, invocationId);
           report.delivered += 1;
+          outcomeOf('delivered');
           lines.write({ ...unit, attempt: attempts, outcome: 'delivered' });
         } catch (err) {
           const { dead, attempts } = this.recordExecutorDelivery(
@@ -5135,6 +5188,7 @@ export class SqliteScopeHost implements ScopeHost {
           );
           if (dead) report.deadLettered += 1;
           else report.retrying += 1;
+          outcomeOf(dead ? 'dead-lettered' : 'retrying', err instanceof Error ? err.message : String(err));
           lines.write({ ...unit, attempt: attempts, outcome: dead ? 'dead-lettered' : 'retrying', error: err });
         } finally {
           this.causedBy = null;
