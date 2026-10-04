@@ -394,6 +394,9 @@ const PROVISIONED_FOR_KEY = 'provisioned_for';
 const tenantReceiptRefusal = (held: string, asked: string): string =>
   `refused: this scope was provisioned for tenant ${held}, not ${asked}`;
 
+/** #2016: the spine tables whose rows say a scope holds state (`ScopeDO.holdsData`). */
+const HOLDS_DATA_TABLES = ['_substrat_migrations', '_substrat_tuples', '_substrat_outbox', '_substrat_schedule_state'] as const;
+
 /** #2016: how a tenant reads against a scope's record (`ScopeDO.tenantVerdict`). */
 export type TenantVerdict = 'recorded' | 'inferred' | 'foreign' | 'unknown';
 
@@ -1618,13 +1621,20 @@ export function defineScopeDO(
     }
 
     /**
-     * #2016: whether a scope with no receipt and no role rows holds data — module migrations
-     * applied, by a provision or a load — rather than being a DO nothing ever provisioned here.
-     * Only such a scope takes its tenant from a lifecycle delivery: recording one in an empty DO
-     * would make `servesTenant` answer for a scope this deployment does not hold.
+     * #2016: whether a scope with no receipt and no role rows holds state — rather than being a DO
+     * nothing ever provisioned or loaded here. Only such a scope takes its tenant from a lifecycle
+     * delivery: recording one in an empty DO would make `servesTenant` answer for a scope this
+     * deployment does not hold.
+     *
+     * Every provision since #1738 writes the receipt itself (that IS the durable provision marker),
+     * so this only ever judges a scope from before it, or a load from an older platform. A module
+     * with no SQL migrations still leaves spine state, so any of it counts, not migrations alone:
+     * applied migrations, scope tuples (its grants, `system:` ones included), events, schedule state.
      */
     private holdsData(): boolean {
-      return this.hasTable('_substrat_migrations') && this.sql.exec('SELECT 1 FROM _substrat_migrations LIMIT 1').toArray().length > 0;
+      return HOLDS_DATA_TABLES.some(
+        (table) => this.hasTable(table) && this.sql.exec(`SELECT 1 FROM ${table} LIMIT 1`).toArray().length > 0,
+      );
     }
 
     /** #1738: the tenant this scope's `provisioned_for` receipt names, or null; read without migrating. */
@@ -4589,7 +4599,7 @@ export function defineScopeDO(
         if (backfill && !this.carriedAwayCopy) {
           this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId!);
         }
-        out = this.revision.bookkeeping(() => writeLifecycle(this.switchSql(), next));
+        out = { ...this.revision.bookkeeping(() => writeLifecycle(this.switchSql(), next)), tenantRecorded: this.provisionedFor() !== null };
       });
       return out;
     }

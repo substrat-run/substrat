@@ -496,9 +496,15 @@ const toConnection = (r: ConnectionDoRow): Connection =>
 
 interface ControlPlaneStub {
   /** #1713: hosted scopes and their directory lifecycle (`ControlPlaneDO.lifecycleTargets`). */
-  lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): Promise<LifecycleTargetRow[]>;
+  lifecycleTargets(filter: {
+    tenantId?: string;
+    scopeId?: string;
+    drift?: boolean;
+    unrecorded?: boolean;
+    limit?: number;
+  }): Promise<LifecycleTargetRow[]>;
   /** #1713: what a scope's deployment acknowledged holding. */
-  recordLifecycleReceipt(scopeId: string, delivered: string, at: string): Promise<void>;
+  recordLifecycleReceipt(scopeId: string, delivered: string, at: string, tenantRecorded?: boolean): Promise<void>;
   /** #1713: raise the directory's epoch to at least this; answers the epoch now. */
   raiseLifecycleEpoch(atLeast: number): Promise<number>;
   createTenant(
@@ -1631,6 +1637,13 @@ export interface LifecycleDelegation {
  * clock; the skew allows for clocks that disagree, and bounds what a forged answer can move.
  */
 export const LIFECYCLE_EPOCH_SKEW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * #2016: how many served scopes one heal pass asks for their tenant record, beyond the drift and the
+ * holds. Rotated least-recently-asked first, so a deployment that cannot answer yet (a build from
+ * before the record) costs at most this many deliveries a pass and starves nothing.
+ */
+export const TENANT_UNRECORDED_PER_PASS = 50;
 
 /** What one delivery pass did (#1713): a transition's push, or one heal sweep. */
 export interface LifecycleDeliveryReport {
@@ -7884,8 +7897,20 @@ export class CloudflareScopeHost implements ScopeHost {
     const delegation = this.lifecycleDelegation;
     if (!delegation || this.cpLess) return report;
     let targets: LifecycleTargetRow[];
+    // #2016: the heal also asks the served scopes whose deployment has not answered that it holds a
+    // record of the scope's tenant, a copy as much as a primary (no push reconciles a copy), until
+    // each answers that it does. A bounded slice per pass, after the drift and the holds.
+    const askTenant = new Set<string>();
     try {
       targets = await this.cp.lifecycleTargets(filter);
+      if (filter.drift) {
+        const unrecorded = await this.cp.lifecycleTargets({ unrecorded: true, limit: TENANT_UNRECORDED_PER_PASS });
+        const seen = new Set(targets.map((t) => t.scope_id));
+        for (const u of unrecorded) {
+          askTenant.add(u.scope_id);
+          if (!seen.has(u.scope_id)) targets.push(u);
+        }
+      }
     } catch (err) {
       console.error('substrat: could not read the scopes to deliver a lifecycle to (#1713)', err);
       return report;
@@ -7906,8 +7931,12 @@ export class CloudflareScopeHost implements ScopeHost {
       // no lifecycle runs live. That keeps an activation, and every transition before a
       // deployment carries the route, from posting a delivery that changes nothing. After a
       // restore (epoch > 0) no receipt says nothing about what the deployment holds, so it is
-      // delivered. A HOLD is always delivered.
-      if (lifecycleRefusal(lifecycle) === null && (t.delivered === null ? t.epoch === 0 : t.delivered === lifecycleReceipt(lifecycle))) {
+      // delivered. A HOLD is always delivered, and so is a scope the heal asks for its tenant record.
+      if (
+        !askTenant.has(scopeId) &&
+        lifecycleRefusal(lifecycle) === null &&
+        (t.delivered === null ? t.epoch === 0 : t.delivered === lifecycleReceipt(lifecycle))
+      ) {
         continue;
       }
       report.attempted += 1;
@@ -7967,7 +7996,12 @@ export class CloudflareScopeHost implements ScopeHost {
           }
         }
         // The receipt is what the scope HOLDS: a newer delivery it kept instead is the truth.
-        await this.cp.recordLifecycleReceipt(scopeId, lifecycleReceipt(answer.lifecycle), new Date().toISOString());
+        await this.cp.recordLifecycleReceipt(
+          scopeId,
+          lifecycleReceipt(answer.lifecycle),
+          new Date().toISOString(),
+          answer.tenantRecorded === true,
+        );
         report.delivered += 1;
       } catch (err) {
         report.failed += 1;
