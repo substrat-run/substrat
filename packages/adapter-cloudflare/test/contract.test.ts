@@ -3136,6 +3136,9 @@ function countingScopes(ns: DurableObjectNamespace) {
     afterMove: null as (() => Promise<void>) | null,
     /** Delay the NEXT hold read by this long, once: a slow read still in flight. */
     slowNextReadMs: 0,
+    /** #1823: make the switch's claim read throw. `switchInScope` reads it, moves the scope, and
+     *  only then throws, so this is a failure AFTER the scope's switch committed. */
+    failClaimReads: false,
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -3178,6 +3181,7 @@ function countingScopes(ns: DurableObjectNamespace) {
                   return real.switchHoldsAll!();
                 }
               : async (...args: unknown[]) => {
+                  if (prop === 'switchHoldClaims' && counts.failClaimReads) throw new Error('hold claims down');
                   if (prop === 'switchHoldYoungestMs') {
                     if (counts.beforeAgeRead) await counts.beforeAgeRead();
                     counts.ageReads += 1;
@@ -3196,6 +3200,53 @@ function countingScopes(ns: DurableObjectNamespace) {
   } as unknown as DurableObjectNamespace;
   return Object.assign(counts, { ns: counting });
 }
+
+/**
+ * #1823: an OFF whose move throws AFTER the scope's switch committed keeps the directory's
+ * record. The record is written before the move, and a throw does not say the scope did not
+ * move, so it is undone only when the scope reads back not off. Otherwise a first OFF could
+ * leave the scope off with no record, and a wipe or restore would have nothing to re-assert.
+ */
+describe('#1823 — an OFF that throws after the scope moved keeps its record', () => {
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+
+  it('a hold read that fails after the move leaves the scope off AND recorded off; a tenant grant is still refused', async () => {
+    const counting = countingScopes(env.SCOPE);
+    const host = new CloudflareScopeHost({
+      scope: counting.ns,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `kept-${t.slice(-10).toLowerCase()}`, name: 'Kept' });
+    await host.admin.grantEntitlement(staff, t, 'sched');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    await host.admin.activateScope(staff, t, s);
+    const node = { tenantId: t, scopeId: s };
+
+    counting.failClaimReads = true;
+    await expect(host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'incident' })).rejects.toThrow(
+      /hold claims down/,
+    );
+    counting.failClaimReads = false;
+
+    // The scope did switch, and the record says so.
+    expect((await host.admin.systemGrantsStatus(staff, node)).map((e) => [e.schedules, e.recorded])).toEqual([['off', 'off']]);
+    const failed = (await host.admin.auditLog(staff, { scopeId: s, action: ['revokeFromSystem'] }))
+      .map((e) => e.after as { phase: string; recordKept?: boolean })
+      .filter((a) => a.phase === 'failed');
+    expect(failed).toEqual([expect.objectContaining({ phase: 'failed', recordKept: true })]);
+    // So #1743's refusal still has the record to read.
+    const e = await host.admin
+      .grantToSystem(staff, { moduleId: SCHED, permission: permissionKey.parse('sched:tick'), node: { tenantId: t, scopeId: null }, grantedBy: staff })
+      .then(() => null, (x: unknown) => x);
+    expect(errorCodeOf(e)).toBe('conflict');
+    await host.close();
+  });
+});
 
 /**
  * #355 regression: `provisionScopeLocal` must apply the bundled modules' migrations

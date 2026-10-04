@@ -4980,7 +4980,19 @@ export class CloudflareScopeHost implements ScopeHost {
           ? delegation.switch({ tenantId, scopeId, moduleId, to, tenantHeld: held })
           : this.switchInScope(scopeId, moduleId, to, at, held);
       };
-      return { vertical, move };
+      /**
+       * Is the module switched off on the scope right now? Read from wherever `move` writes — the
+       * deployment's status read or this scope's own — for an OFF whose move threw (#1823): the
+       * marker may already have landed before the throw (`switchInScope` writes it, then reads
+       * and releases the rewind hold), and then the directory's record must stay.
+       */
+      const isOff = async (moduleId: ModuleId): Promise<boolean> => {
+        const rows = delegation
+          ? await delegation.status({ tenantId, scopeId })
+          : systemScheduleEntry.array().parse(await this.scopeStub(scopeId).systemGrantsStatus());
+        return rows.some((r) => r.moduleId === moduleId && r.schedules === 'off');
+      };
+      return { vertical, move, isOff };
     };
 
     const switchSystem = async (
@@ -4990,7 +5002,7 @@ export class CloudflareScopeHost implements ScopeHost {
     ): Promise<SystemSwitchResult> => {
       const input = systemSwitch.parse(raw);
       const { tenantId, scopeId } = input.node;
-      const { vertical, move } = await systemSwitchTarget(tenantId, scopeId);
+      const { vertical, move, isOff } = await systemSwitchTarget(tenantId, scopeId);
       // AUDIT FIRST (#1666 review): the intent row lands before anything moves, and the
       // outcome row after — every attempt, a repeat included. The scope's store and the
       // admin log are separate, so no order makes the pair atomic; this one fails toward
@@ -5042,13 +5054,22 @@ export class CloudflareScopeHost implements ScopeHost {
       try {
         outcome = await move(input.moduleId, to, at);
       } catch (err) {
-        const recordError = await undoRecord();
+        // A throw does not say the scope did not move: the move crosses the scope's DO and, for
+        // an OFF, the rewind hold after it, and a throw from the second leaves the marker live.
+        // So an OFF's record is undone only when the scope reads back NOT off; a read that fails
+        // too keeps it. Never a scope switched off with no record — a wipe or restore would have
+        // nothing to re-assert, and #1743's refusal nothing to read. Kept beside a scope that did
+        // not move, the record fails toward off, which the next re-assert completes. (An ON's
+        // undo puts the record back to `off`, the same direction.)
+        const keptOff = to === 'off' && (await isOff(input.moduleId).catch(() => true));
+        const recordError = keptOff ? null : await undoRecord();
         // Best effort: the original error is what the caller must see, and the intent row
         // already says an attempt was made.
         await this.recordAdmin(actor, action, target, null, {
           ...base,
           phase: 'failed',
           error: errorOf(err),
+          ...(keptOff ? { recordKept: true } : {}),
           ...(recordError ? { recordError } : {}),
         }).catch(() => undefined);
         throw err;
