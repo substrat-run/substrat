@@ -146,6 +146,9 @@ export const LEVEL_COLORS: Record<'info' | 'warn' | 'error' | 'unrecorded', stri
  * A request's result, as its row says it: the status and the problem code when there is
  * one (`409 conflict`), `threw` for an escaped crash. `tone` picks the colour.
  */
+/** #1901: the async outcomes that mean the work was done. Anything else is never green. */
+const ASYNC_SUCCESS = new Set(['delivered', 'ok', 'routed']);
+
 export function resultLabel(r: {
   status: number | null;
   threw: boolean;
@@ -164,7 +167,11 @@ export function resultLabel(r: {
     const outcome = r.outcome ?? '—';
     const retried = r.attempt && r.attempt > 1 ? ` #${r.attempt}` : '';
     const text = `${outcome}${retried}${r.problemCode ? ` ${r.problemCode}` : ''}`;
-    return { text, tone: r.level === 'error' ? 'error' : r.level === 'warn' ? 'warn' : 'ok' };
+    if (r.threw || r.level === 'error') return { text, tone: 'error' };
+    // Never green unless the work was done: an outcome that is not success is a warning
+    // even on a line whose level went missing.
+    if (r.level === 'warn' || !ASYNC_SUCCESS.has(outcome)) return { text, tone: 'warn' };
+    return { text, tone: 'ok' };
   }
   if (r.threw || r.status === null) return { text: 'threw', tone: 'error' };
   const text = r.problemCode ? `${r.status} ${r.problemCode}` : r.status < 400 ? `${r.status} ok` : String(r.status);
