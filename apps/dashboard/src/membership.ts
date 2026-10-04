@@ -1,5 +1,13 @@
 import { platformActorId, type PrincipalId } from '@substrat-run/contracts';
-import { MEMBER_ADD_REQUESTED, MEMBERSHIP_EXECUTOR_ID, registerMembershipExecutor, type ExecutorOutcome, type ScopeHost } from '@substrat-run/kernel';
+import {
+  MEMBER_ADD_REQUESTED,
+  MEMBER_REMOVE_REQUESTED,
+  MEMBERSHIP_EXECUTOR_ID,
+  membershipRemoveExecutorId,
+  registerMembershipExecutor,
+  type ExecutorOutcome,
+  type ScopeHost,
+} from '@substrat-run/kernel';
 
 /**
  * The dashboard's half of a team invite after the accept commits (#1184).
@@ -20,23 +28,31 @@ export function registerDashboardMembership(host: ScopeHost): void {
   registerMembershipExecutor(host, { actor: DASHBOARD_CP_ACTOR, level: 'tenant' });
 }
 
-/** What the accepting person is told, read off the accept's inline executor outcomes. */
-export type AcceptVerdict =
-  | { kind: 'joined' }
+/** What the caller is told, read off the call's inline executor outcomes. */
+export type EffectVerdict =
+  | { kind: 'done' }
   /** Not effected yet — the retry backstop owns it now. */
   | { kind: 'pending' }
   /** Effected never: refused by the bound or a forgery check, or out of attempts. */
   | { kind: 'refused'; reason: string };
 
 /**
- * The verdict for `principal`'s membership request among a call's outcomes. No outcome at all
- * reads as pending, never as joined: a host that did not report has not said it happened.
+ * The verdict for `principal`'s add or remove request among a call's outcomes. No outcome at
+ * all reads as pending, never as done: a host that did not report has not said it happened.
  */
-export function acceptVerdict(outcomes: readonly ExecutorOutcome[], principal: PrincipalId): AcceptVerdict {
+export function effectVerdict(
+  outcomes: readonly ExecutorOutcome[],
+  request: 'add' | 'remove',
+  principal: PrincipalId,
+): EffectVerdict {
+  const [executorId, eventType] =
+    request === 'add'
+      ? [MEMBERSHIP_EXECUTOR_ID, MEMBER_ADD_REQUESTED]
+      : [membershipRemoveExecutorId(), MEMBER_REMOVE_REQUESTED];
   const mine = outcomes.find(
-    (o) => o.executorId === MEMBERSHIP_EXECUTOR_ID && o.eventType === MEMBER_ADD_REQUESTED && o.entity === `membership:${principal}`,
+    (o) => o.executorId === executorId && o.eventType === eventType && o.entity === `membership:${principal}`,
   );
-  if (mine?.outcome === 'delivered') return { kind: 'joined' };
+  if (mine?.outcome === 'delivered') return { kind: 'done' };
   if (mine?.outcome === 'refused' || mine?.outcome === 'dead-lettered') {
     return { kind: 'refused', reason: mine.error ?? mine.outcome };
   }

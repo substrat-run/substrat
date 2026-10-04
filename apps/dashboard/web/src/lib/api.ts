@@ -106,7 +106,12 @@ export interface Member {
   principal: string | null;
   email: string;
   role_key: string;
-  status: 'active' | 'invited' | 'revoked';
+  /**
+   * 'joining' is an accepted invite whose access is still being set up; 'refused' one that
+   * never will be, with the reason in `refusal` (#1184).
+   */
+  status: 'active' | 'invited' | 'revoked' | 'joining' | 'refused';
+  refusal?: string;
   invitation_id: string | null;
   invited_by: string;
   invited_at: string;

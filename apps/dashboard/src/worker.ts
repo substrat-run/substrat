@@ -25,7 +25,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
-import { acceptVerdict, DASHBOARD_CP_ACTOR, registerDashboardMembership } from './membership.js';
+import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
@@ -1319,39 +1319,33 @@ app.post('/api/members/revoke-invite', async (c) => {
 });
 
 /**
- * Remove an active member: mark the roster row revoked AND revoke their kernel role
- * (`unassignRole`) so access is actually cut — the projection alone would not. The
- * op authorizes (manage-members) and returns the principal + role to unassign; the
- * owner cannot be removed. Their identity link is left, so the team still appears in
- * their own switcher but resolves to no permissions (fully hiding it needs a kernel
- * `unlinkIdentity` — a follow-up).
+ * Remove a member. The op revokes the roster row and asks the membership executor (#1184) to
+ * take the role and the org membership away; it runs inline, so the answer says what
+ * happened: 204 done, 202 `{ pending: true }` when the backstop owns it, 409 refused. The
+ * login is severed either way, since the removal itself is committed.
  */
 app.post('/api/members/remove', async (c) => {
-  const host = hostFor(c.env);
+  const host = hostFor(c.env, { membership: true });
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const { memberId } = z.object({ memberId: z.string().min(1) }).parse(await c.req.json());
   const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const removed = (await scope.invoke('dashboard/remove-member', { memberId })) as { principal: string; roleKey: string; orgId: string } | null;
-  if (removed) {
-    const principal = principalId.parse(removed.principal);
-    // Cut access (revoke the role) AND sever their login from the team, so it also
-    // disappears from their own switcher rather than lingering as a dead entry.
-    await host.admin.unassignRole(DASHBOARD_CP_ACTOR, {
-      principalId: principal,
-      roleKey: removed.roleKey,
-      node: { tenantId: node.tenantId, scopeId: null },
-    });
-    // The org membership the accept's executor added goes too (#1184). A no-op for a member
-    // who joined before the executor did, whose membership was never written.
-    await host.admin.removeMember(DASHBOARD_CP_ACTOR, node.tenantId, principal, orgId.parse(removed.orgId));
-    await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
-    // And the shared plane's mirrored link, so their CLI push loses the
-    // workspace too (best-effort — see mirrorBuilderIdentity).
-    await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(principal).catch(() => {});
-    forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
-  }
-  return c.body(null, 204);
+  await enrollTeamScope(c.env, node.tenantId, node.scopeId);
+  const outcomes: ExecutorOutcome[] = [];
+  const removed = (await scope.invoke('dashboard/remove-member', { memberId }, {
+    onExecutorOutcomes: (o) => outcomes.push(...o),
+  })) as { principal: string; roleKey: string } | null;
+  if (!removed) return c.body(null, 204);
+  const principal = principalId.parse(removed.principal);
+  // Sever their login from the team, so it also disappears from their own switcher.
+  await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
+  // And the shared plane's mirrored link, so their CLI push loses the
+  // workspace too (best-effort — see mirrorBuilderIdentity).
+  await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(principal).catch(() => {});
+  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
+  const verdict = effectVerdict(outcomes, 'remove', principal);
+  if (verdict.kind === 'refused') throw new HTTPException(409, { message: `the removal was refused: ${verdict.reason}` });
+  return verdict.kind === 'done' ? c.body(null, 204) : c.json({ pending: true }, 202);
 });
 
 /**
@@ -1431,12 +1425,11 @@ app.post('/api/invites/accept', async (c) => {
     { invitationId: claim.invitationId, identifier: email },
     { onExecutorOutcomes: (o) => outcomes.push(...o) },
   );
-  const verdict = acceptVerdict(outcomes, principal);
+  const verdict = effectVerdict(outcomes, 'add', principal);
   if (verdict.kind === 'refused') {
-    // Never applied, and never will be: take the roster row back so nobody reads it as a
-    // member, and link no identity. The reason, with the missing permissions, is in the
-    // executor journal (`executorDeadLetters`) for an admin; the invitee is told what to do.
-    await scope.invoke('dashboard/withdraw-refused-accept', { invitationId: claim.invitationId });
+    // Never applied, and never will be: link no identity. The roster shows the row as refused
+    // with the reason, read off the executor's journal (`list-members`), for an admin; the
+    // invitee is told what to do.
     throw new HTTPException(409, {
       message:
         'this invite can no longer be applied, most often because whoever sent it no longer has the access it grants. ' +
@@ -1458,7 +1451,7 @@ app.post('/api/invites/accept', async (c) => {
   forgetLogin(resolveMemoFor(c.env.CONTROL_PLANE), user.id);
   setCookie(c, TEAM_COOKIE, t, teamCookieOpts(new URL(c.req.url).protocol));
   // 202: accepted, and access follows once the backstop effects it — not a success yet.
-  return verdict.kind === 'joined' ? c.json({ teamId: t }) : c.json({ teamId: t, pending: true }, 202);
+  return verdict.kind === 'done' ? c.json({ teamId: t }) : c.json({ teamId: t, pending: true }, 202);
 });
 
 /** My apps — one page, newest first (`{ entries, nextCursor }`, keyset on the row id). */

@@ -8,6 +8,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, reconcileRoles, ensureRosterSeeded, type DashboardNode } from '../src/index.js';
 import type { DashboardMemberRow } from '../src/module.js';
 import { b64url } from '../src/b64.js';
+import { registerDashboardMembership } from '../src/membership.js';
 import { GITHUB_STATE_PURPOSE, INVITE_TOKEN_PURPOSE, signClaim, verifyClaim } from '../src/signed-token.js';
 
 /**
@@ -25,6 +26,8 @@ describe('Dashboard teams — invite + accept', () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-members-'));
     host = new SqliteScopeHost({ dir });
     for (const m of MODULES) host.registerModule(m);
+    // As the worker's accept host does (#1184): the join is effected by the membership executor.
+    registerDashboardMembership(host);
     staff = platformActorId.parse(ulid());
   });
 
@@ -145,7 +148,7 @@ describe('Dashboard teams — invite + accept', () => {
     });
     expect(res.roleKey).toBe('member');
 
-    // The roster row is now active and bound to Jane's principal.
+    // The roster row is now active and bound to Jane's principal: the executor joined her inline.
     roster = await members(acme);
     expect(roster.find((m) => m.email === 'jane@acme.com')).toMatchObject({ status: 'active', principal: jane });
   });
