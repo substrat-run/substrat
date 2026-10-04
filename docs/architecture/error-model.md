@@ -255,18 +255,27 @@ mechanical, lower traffic.
    the generic 500 and a new one is visible in its first test. Typing a refusal raised INSIDE
    a Durable Object needed the §3 envelope as well as the code: `ControlPlaneDO.reply` and
    the ScopeDO's `…Reply` methods answer a failure as data, and the coordinator throws it.
-   Three families also reached a vertical's own surface untyped, where the vertical answered
-   the caller's 400; typed, a vertical now answers what the control plane answers (a
-   non-active tenant or scope `409`, a scope with no tenant record or an unknown table
-   `404`). Still open: the `error` duplicate, and `SlotUnavailable`'s dual-emit.
+   Refusals that no pattern ever matched, and so answered the generic 500 for a request the
+   caller could fix (reaping a tenant that is not deleting, a hostname bound elsewhere, an
+   unknown org, …), are typed the same way. A genuine internal failure stays untyped: a
+   store write that did not land, attachment bytes missing from the blob store, and a failed
+   migration, whose message carries the migration's own error text.
+   The scope gate's refusals reached a vertical's own surface untyped, where the vertical
+   answered the caller's 400. They now carry a `reason` (`SCOPE_GATE_REASONS`). The control
+   plane answers them as themselves: `409` naming the status for a non-active tenant or
+   scope, `404` for a scope with no tenant record. A vertical answers them exactly as the
+   router answers a hostname with no serving scope: `404 not_found` with
+   `NO_APPLICATION_DETAIL`, whatever a mapper decided, so a request that raced a suspension
+   reads as one the router refused. An unknown table is `404` on both surfaces. Still open:
+   the `error` duplicate, and `SlotUnavailable`'s dual-emit.
 
-**The constraint phase 4 had to respect, and did:** the contract suite asserts on roughly
+**The constraint phase 4 had to respect, and did:** the contract suite asserted on roughly
 thirty message patterns (`/already taken/`, `/illegal scope transition/`, `/not active/`, …)
-against both adapters. That is a feature — it is why `errors.ts`'s regex table is less
-brittle than it looks — and this document must not turn it red on wording. Keeping `detail`
-verbatim is what buys that, and typing a throw site preserves its message by construction,
-so the whole sweep landed with those assertions untouched. Phase 5 migrates them to the
-stronger check deliberately, as its own reviewable diff.
+against both adapters, and this document must not turn them red on wording. Keeping `detail`
+verbatim is what bought that, and typing a throw site preserves its message by construction,
+so phase 4 landed with those assertions untouched. Phase 5 then moved them onto the code
+(`expectRefusal(…, code)`), keeping a message match only where it tells two branches of one
+code apart, and with that the regex table had nothing left to protect.
 
 ## 6. Open questions
 
