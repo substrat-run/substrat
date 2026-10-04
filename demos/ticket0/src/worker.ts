@@ -454,8 +454,9 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
   const node = nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
-  // CP-less: lifecycle is the router's gate — it forwards only an active scope and
-  // asserts the node. Permissions evaluate locally, from this desk's own storage.
+  // CP-less: the router forwards only an active scope and asserts the node, and getScope
+  // re-checks the lifecycle the platform delivered to the scope (#1713). Permissions
+  // evaluate locally, from this desk's own storage.
   return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
     // #458/#1526: an invoke that enqueued platform intents flags the response, so the
     // router kicks an immediate drain of this scope instead of leaving it to the sweep.

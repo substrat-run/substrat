@@ -10,7 +10,7 @@
  * never a Node builtin — so a bundler can follow it into a page. `test/entry.test.ts`
  * holds that line.
  */
-export { ControlPlaneTransport, ControlPlaneError, ControlPlaneUsageError } from './transport.js';
+export { ControlPlaneTransport, ControlPlaneError, ControlPlaneUsageError, provesNothingChanged } from './transport.js';
 export type { ControlPlaneTransportOptions, ControlPlaneErrorDetail } from './transport.js';
 export { ControlPlaneClient } from './client.js';
 export type { ControlPlaneClientOptions, ClientProvisionScopeInput } from './client.js';

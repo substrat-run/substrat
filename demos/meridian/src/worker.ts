@@ -301,8 +301,9 @@ async function caller(c: { env: Env; req: { raw: Request }; header?: (name: stri
   const node = nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
-  // CP-less: lifecycle is the router's gate — it forwards only an active scope and asserts
-  // the node. The vertical trusts that node and opens the scope; permissions evaluate locally.
+  // CP-less: the router forwards only an active scope and asserts the node, and getScope
+  // re-checks the lifecycle the platform delivered to the scope (#1713). Permissions
+  // evaluate locally.
   const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
     // #458/#574: an invoke that enqueued platform intents — including a connector
     // delivery the inline drain just routed — flags the response so the router kicks

@@ -968,6 +968,13 @@ export interface ExecutorDrainReport {
    * Terminal and counted apart from `deadLettered`: nothing failed, the platform declined.
    */
   inert?: number;
+  /**
+   * The scope's lifecycle holds its work (#1713): a suspended or archived scope, or one under a
+   * suspended or deleting tenant, as a CP-less host reads it from the scope's own storage.
+   * Nothing was attempted and every due delivery is still due, so the first pass after the scope
+   * is live again delivers it. Absent otherwise.
+   */
+  lifecycleHeld?: true;
 }
 
 /**
@@ -1029,6 +1036,12 @@ export interface ScheduleRunReport {
    * scope (#1819, Cloudflare only) reports the same.
    */
   switchedOff?: true;
+  /**
+   * The scope's lifecycle holds its work (#1713, a CP-less host reading the scope's own
+   * storage): every schedule is `skipped` and no cadence row moved, so a schedule that came
+   * due meanwhile fires once on the first pass after the scope is live again. Absent otherwise.
+   */
+  lifecycleHeld?: true;
   /**
    * Per-schedule failures on this scope: the operation name and the error. One entry is
    * not a schedule's: `operation: 'switch-hold'` says the rewind hold (#1819) could not be

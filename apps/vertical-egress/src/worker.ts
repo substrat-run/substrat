@@ -46,6 +46,9 @@
  * client, no code change — a plain `fetch('https://api.example.com/…')` just works once
  * declared.
  *
+ * The declared surface bounds where a request LANDS, not only where it starts (#2011): this
+ * worker never follows a redirect itself, so every hop comes back through here (`passThrough`).
+ *
  * Honest limits (self-serve-deploy.md §4.2): Cloudflare outbound workers do not
  * intercept subrequests made from inside Durable Objects, so a DO-originated fetch
  * bypasses this policy today — worker-context egress is what is actually policed. The
@@ -177,15 +180,45 @@ function isOwnHost(hostname: string, policy: OutboundPolicy): boolean {
 }
 
 /**
- * The request as it leaves for a destination this worker allowed (#2005). A fork's or a
- * preview's goes with `redirect: 'manual'`: a redirect this worker followed would be ITS OWN
- * subrequest, which nothing polices, so an allowed host answering 3xx to a third party would
- * carry an inert scope out. Unfollowed, the 3xx goes back to the copy's code, and its request to
- * the new location comes through here again and meets the same rule. An install's requests go
- * as they came.
+ * Send a request this worker allowed, WITHOUT following a redirect (#2011, #2005).
+ *
+ * A redirect this worker followed would be its own subrequest, which nothing polices: an allowed
+ * host answering 3xx would carry the request past the declared surface, and a copy's request past
+ * the inert rule. So every allowed request leaves with `redirect: 'manual'`, installs and copies
+ * alike, and the 3xx goes back to the vertical. Its own `fetch` follows it when it asked to —
+ * the runtime does that on the caller's side, and the request to the new location is a new
+ * subrequest that comes through this worker again and meets the same rules. A vertical that
+ * follows redirects sees the same response, `url` and `redirected` it always did; only a hop
+ * the policy refuses ends differently, in the same 403 a direct call there would meet.
+ *
+ * workerd already hands this worker an incoming request whose mode is `manual`, whatever the
+ * vertical asked for, so forwarding it as it came did not follow either — but that was a property
+ * of the runtime, not a decision made here, and any request rebuilt from parts defaults to
+ * `follow`. Setting it is what makes it one; `redirect.workerd.test.ts` holds it end to end.
+ *
+ * The 3xx is metered as a `redirect` beside the verdict that let the request out, carrying
+ * where it pointed, so a refusal of a host the vertical never named can be traced to the
+ * allowed host that sent it there.
  */
-function passThrough(request: Request, env: Env): Request {
-  return env.OUTBOUND_POLICY?.primary === false ? new Request(request, { redirect: 'manual' }) : request;
+async function passThrough(
+  send: (request: Request) => Promise<Response>,
+  request: Request,
+  hostname: string,
+  env: Env,
+): Promise<Response> {
+  const response = await send(new Request(request, { redirect: 'manual' }));
+  const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null;
+  if (location !== null) meter(env, hostname, 'redirect', locationHost(location, request.url));
+  return response;
+}
+
+/** The host a `Location` points at, resolved against the request it answers; `''` when unparseable. */
+function locationHost(location: string, base: string): string {
+  try {
+    return new URL(location, base).hostname;
+  } catch {
+    return '';
+  }
 }
 
 /** The platform base domains this deployment mints under, from the shared reader (#973). */
@@ -222,12 +255,15 @@ type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: numb
 type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer' | 'inert';
 
 /** One datapoint per decision — append-only shape, like the router's request meter:
- *  index [slug]; blobs [hostname, verdict, tenant]. */
-function meter(env: Env, hostname: string, verdict: Verdict): void {
+ *  index [slug]; blobs [hostname, verdict, tenant]. A `redirect` is not a verdict but is written
+ *  BESIDE the one that let a request out, when the destination answered 3xx (#2011), with a
+ *  fourth blob: the host it pointed at. */
+function meter(env: Env, hostname: string, verdict: Verdict | 'redirect', to?: string): void {
   try {
+    const blobs = [hostname, verdict, env.OUTBOUND_POLICY?.tenant ?? ''];
     env.ANALYTICS?.writeDataPoint({
       indexes: [env.OUTBOUND_POLICY?.slug ?? ''],
-      blobs: [hostname, verdict, env.OUTBOUND_POLICY?.tenant ?? ''],
+      blobs: to === undefined ? blobs : [...blobs, to],
     });
   } catch {
     // Metering must never fail a request.
@@ -318,7 +354,7 @@ export default {
       // caller cannot forge the tenant it lands as. Policy never applies here — the
       // router's own resolution + the destination vertical's auth are the gate.
       meter(env, hostname, 'platform');
-      return env.ROUTER.fetch(passThrough(request, env));
+      return passThrough((r) => env.ROUTER.fetch(r), request, hostname, env);
     }
     if (hostname.toLowerCase() === relayHost(env)) {
       // The platform's own relay (#981), on a different zone from the tenant apps. The
@@ -327,7 +363,7 @@ export default {
       // declares, and the policy below never gets to see it. The relay authenticates
       // its own callers; being allowed here is reachability, not authorization.
       meter(env, hostname, 'relay');
-      return fetch(passThrough(request, env));
+      return passThrough((r) => fetch(r), request, hostname, env);
     }
     const policy = env.OUTBOUND_POLICY;
     if (policy?.primary === false && !isOwnHost(hostname, policy)) {
@@ -349,12 +385,12 @@ export default {
       // dispatcher that passed no policy). Unenforced by design — least privilege
       // arrives version by version, not as a fleet outage — but never invisible.
       meter(env, hostname, 'unenforced');
-      return fetch(passThrough(request, env));
+      return passThrough((r) => fetch(r), request, hostname, env);
     }
     if (matchesOutboundHost(hostname, policy.hosts)) {
       // The one place a vertical's subrequest actually leaves for the public internet.
       meter(env, hostname, 'allowed');
-      return fetch(passThrough(request, env));
+      return passThrough((r) => fetch(r), request, hostname, env);
     }
     meter(env, hostname, 'refused');
     return outboundRefused(

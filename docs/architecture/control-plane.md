@@ -237,6 +237,39 @@ Hostname provisioning (custom-hostnames API, DNS validation, cert lifecycle) is 
 this lifecycle, per §5.5 — it is control-plane work, and the `hostname → (tenant, scope,
 vertical)` map is directory data the router reads.
 
+#### A suspension reaches a CP-less deployment ([#1713](https://github.com/substrat-run/substrat/issues/1713))
+
+A suspended or archived scope, or any scope under a suspended or deleting tenant, runs none
+of its work. On a host with a directory, `getScope`, `drainDue` and the sweep read that
+directory. A hosted vertical has none, and the router's gate (#1730) only ever meets a
+request. The deployment's own timer, its retries and its background work never pass through it.
+
+So the platform **delivers** the lifecycle. After every scope transition, and after a
+tenant transition (fanned out to every hosted scope under the tenant), the control plane
+posts the scope's state, `{ scope, tenant, at }`, to the deployment's `/internal/lifecycle`.
+The deployment stores it in the scope's own storage. It is a state, not a toggle: `at` is
+when the platform read the directory, and the scope keeps the newest it has seen, so a
+late delivery cannot undo a later transition.
+
+- **One gate.** The CP-less host's `assertLive` reads it at every door that runs the scope's
+  work: a request's stub, attachments, a capability or impersonation session, a peer call,
+  a subscription, the system door a schedule and a job take, the retry driver, and the job
+  runner. It refuses in the directory's own words. An operator's reads (dead letters, job
+  runs, platform requests) stay open.
+- **Deferred, never dropped.** The sweeper skips a held scope whole. `runDueSchedules`
+  reports every schedule `skipped` with `lifecycleHeld` and moves no cadence row. The
+  executor drain attempts nothing, so every due delivery stays due. The first pass after
+  the scope is live again does what it deferred, and does it once.
+- **A missed delivery heals.** A failed delivery never refuses the transition: the directory
+  moves and the router refuses at once. Instead, the failure lands as an ops-failure row and
+  no receipt is written. The cron's heal pass re-delivers to every hosted scope whose
+  receipt (`scope_lifecycle_receipts`) differs from the directory, and again to every scope
+  held now. That second rule puts a hold back on a store that a carry or a restore landed
+  without one.
+- **Loads.** The stored lifecycle travels with a dump onto the same scope. A load keeps the
+  newer of the store's and the dump's, so restoring a backup taken before a suspension does
+  not lift it. A copy never inherits its source's lifecycle.
+
 #### A reap leaves a recoverable copy ([#493](https://github.com/substrat-run/substrat/issues/493))
 
 `reapScope` is the one lifecycle step with no undo: it frees the scope's Durable Object

@@ -8,6 +8,7 @@ import {
   schedulesCardState,
   scheduleBadgeStatus,
   submitSwitch,
+  unknownSwitchToast,
   validReason,
 } from '../lib/schedules';
 import { ActorCell } from './ActorCell';
@@ -92,6 +93,18 @@ export function SchedulesCard({
       if (attempt === null) return; // a submit was already in flight — this click was skipped
       if (attempt.kind === 'refused') {
         onToast('Refused', errorMessage(attempt.error), 'danger');
+        return;
+      }
+      if (attempt.kind === 'unknown') {
+        // #2010: the call failed without proving nothing moved — its answer was lost on the
+        // way back — so the switch may or may not have moved. Never "Refused", which would
+        // send the operator to retry: show the position read just now instead, or no
+        // position at all when that read failed too.
+        setEntries(attempt.entries);
+        setError(attempt.entries === null ? attempt.readError : null);
+        onToast(...unknownSwitchToast(moduleId, scope.slug, attempt), 'danger');
+        setDialog(null);
+        setReason('');
         return;
       }
       if (attempt.kind === 'unconfirmed') {

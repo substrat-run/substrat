@@ -1,4 +1,5 @@
 import type { SystemGrantsStatusEntry } from '@substrat-run/contracts';
+import { provesNothingChanged } from '@substrat-run/control-plane-api/browser';
 import { ApiError } from './api';
 import { runExclusive } from './exclusive';
 
@@ -83,11 +84,15 @@ export function errorMessage(error: unknown): string {
  * re-read that confirms it — kept SEPARATE, because the two can fail independently and
  * an operator must never read one failure as the other.
  *
- * - `refused`: the switch itself failed. Nothing moved. This is the only branch that
- *   should ever read as "Refused" — the naive single `try/catch` this replaces caught
- *   BOTH steps together, so a switch that succeeded but whose follow-up read failed
- *   also said "Refused", with the card left showing the stale (now wrong) position.
- *   An operator reading that would retry a switch that had already happened.
+ * - `refused`: the switch itself failed in a way that proves nothing moved
+ *   (`provesNothingChanged`: a 4xx, or a 501 from a deployment that predates the route). This is the only branch that should ever read as "Refused" — the
+ *   naive single `try/catch` this replaces caught BOTH steps together, so a switch that
+ *   succeeded but whose follow-up read failed also said "Refused", with the card left
+ *   showing the stale (now wrong) position. An operator reading that would retry a switch
+ *   that had already happened.
+ * - `unknown` (#2010): the switch call failed in a way that does NOT prove that — its answer
+ *   was lost — so the position is read again, which is the confirmation the failure itself
+ *   asks for. `entries` is that read, or null with `readError` when it failed too.
  * - `unconfirmed`: the switch applied (`result` is real), but the read that would
  *   prove it — and show the fresh position — failed. The card must show neither the
  *   stale entries nor a false "Refused"; it shows `error`, same as any other read
@@ -98,6 +103,8 @@ export function errorMessage(error: unknown): string {
 export type SwitchAttempt<T, E> =
   | { kind: 'applied'; result: T; entries: E }
   | { kind: 'refused'; error: unknown }
+  | { kind: 'unknown'; error: unknown; entries: E; readError?: never }
+  | { kind: 'unknown'; error: unknown; entries: null; readError: unknown }
   | { kind: 'unconfirmed'; result: T; error: unknown };
 
 export async function performSwitch<T, E>(
@@ -108,7 +115,12 @@ export async function performSwitch<T, E>(
   try {
     result = await runSwitch();
   } catch (error) {
-    return { kind: 'refused', error };
+    if (provesNothingChanged(error)) return { kind: 'refused', error };
+    try {
+      return { kind: 'unknown', error, entries: await refresh() };
+    } catch (readError) {
+      return { kind: 'unknown', error, entries: null, readError };
+    }
   }
   try {
     const entries = await refresh();
@@ -116,4 +128,22 @@ export async function performSwitch<T, E>(
   } catch (error) {
     return { kind: 'unconfirmed', result, error };
   }
+}
+
+/**
+ * The toast for an `unknown` switch (#2010), one wording for every switch card: never
+ * "Refused", which would send an operator to retry a switch that may have moved.
+ */
+export function unknownSwitchToast<E>(
+  subject: string,
+  slug: string,
+  attempt: Extract<SwitchAttempt<unknown, E>, { kind: 'unknown' }>,
+): [title: string, body: string] {
+  return [
+    'Not confirmed — the switch may or may not have moved',
+    `${subject} on ${slug} · ${errorMessage(attempt.error)} · ` +
+      (attempt.entries === null
+        ? 'Its position could not be re-read either; read it before trying again.'
+        : 'The card now shows its position, read just now; check it before trying again.'),
+  ];
 }

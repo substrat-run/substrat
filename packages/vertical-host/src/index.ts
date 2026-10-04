@@ -122,6 +122,9 @@ import {
   type PlatformRequestFailure,
   type ModuleId,
   type SystemSwitchOutcome,
+  scopeLifecycle,
+  type LifecycleDelivery,
+  type ScopeLifecycle,
   type PeerGrantsEntry,
   type SystemScheduleEntry,
   verticalCaller,
@@ -353,6 +356,16 @@ export interface VerticalScopeHost {
    * control plane reports as "redeploy", never as a switch that moved.
    */
   systemSwitchLocal?(scopeId: ScopeId, moduleId: ModuleId, to: 'on' | 'off'): Promise<SystemSwitchOutcome>;
+  /**
+   * The far end of the lifecycle delivery (#1713): store the scope's lifecycle as the directory
+   * holds it, unless the scope already holds a newer one. Optional for the reason
+   * `systemSwitchLocal` is, and the route answers 501, which the platform records as a delivery
+   * that did not land, so its heal sweep keeps asking.
+   */
+  setLifecycleLocal?(
+    scopeId: ScopeId,
+    lifecycle: ScopeLifecycle,
+  ): Promise<LifecycleDelivery>;
   /**
    * The far end of the schedule kill switch's status read (#1674): every module this
    * scope holds or has held system authority for, and where each stands. Optional for the
@@ -625,6 +638,12 @@ const systemSwitchBody = z.object({
   scopeId: scopeIdOf,
   moduleId: moduleIdOf,
   to: z.enum(['on', 'off']),
+});
+
+/** `/internal/lifecycle` body (#1713) — the scope's lifecycle as the platform read it. */
+const lifecycleBody = z.object({
+  scopeId: scopeIdOf,
+  lifecycle: scopeLifecycle,
 });
 
 /**
@@ -1357,6 +1376,19 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot switch schedules (#1666) — redeploy it' }, 501);
     }
     return c.json(await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to));
+  });
+
+  // The lifecycle delivery (#1713): the platform's directory holds a scope's lifecycle, and a
+  // deployment serving it has no directory, so the platform pushes it here on every transition
+  // and its heal sweep re-pushes until this answers. A newer stored lifecycle wins over a late
+  // push (`applied: false`, still a 200). 501 is a deployment built before the route.
+  app.post('/internal/lifecycle', async (c) => {
+    const body = lifecycleBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.setLifecycleLocal) {
+      return c.json({ error: 'this deployment cannot hold a scope by its lifecycle (#1713) — redeploy it' }, 501);
+    }
+    return c.json(await host.setLifecycleLocal(body.scopeId, body.lifecycle));
   });
 
   // The status read (#1674): the far end of `HostAdmin.systemGrantsStatus` for a scope
