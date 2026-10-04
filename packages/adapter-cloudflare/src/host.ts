@@ -371,6 +371,9 @@ import {
   switchActionOf,
   switchAuditSubject,
   switchNotFoundMessage,
+  recordWriteSuperseded,
+  switchSubjectOf,
+  switchSupersededMessage,
   withRecorded,
   type SystemScheduleState,
   type PeerGrantsRow,
@@ -816,10 +819,14 @@ interface ControlPlaneStub {
   restoreSwitchRecord(
     key: { kind: SwitchKind; tenantId: string; scopeId: string; key: string; operationId: string },
     prior: SwitchRecordPrior,
+    /** #2045: keep this call's id as the row's fence — its move threw and may have landed. */
+    opts?: { keepFence?: boolean },
   ): Promise<void>;
   listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
   switchRecordsOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, 'on' | 'off'][]>;
   switchedOffOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<string[]>;
+  /** #2045: each record row's operation id, by subject — the fence a re-assert or carry moves with. */
+  switchFencesOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, string][]>;
   tenantHeldOf(kind: SwitchKind, tenantId: string, keys: readonly string[], now: string): Promise<string[]>;
   recordConnectionUse(
     id: string,
@@ -1167,6 +1174,8 @@ interface ScopeStubRpc {
     at: string,
     /** #1823: the directory holds a live tenant-level grant for the module. */
     tenantHeld?: boolean,
+    /** #2045: the switch call's fence — a move older than the one the scope applied is refused. */
+    fence?: string,
   ): Promise<SwitchOutcome & { instance: string }>;
   /** Move one peer's kill switch on this scope (#1706) — the kernel's `switchPeer`. The
    *  instance that applied it rides along (#2029), for the rewind hold's release, as for
@@ -1178,6 +1187,8 @@ interface ScopeStubRpc {
     at: string,
     /** #2030: the directory holds a live tenant-level grant for the peer. */
     tenantHeld?: boolean,
+    /** #2045: as on `switchSystemSchedules`. */
+    fence?: string,
   ): Promise<SwitchOutcome & { instance: string }>;
   /** Does a peer hold each key here now (#1706) — the checker's own `covers`. #2029: pinned to
    *  the instance the peer door's gate read; on any other the answer is `SystemDoorMoved`. */
@@ -1678,6 +1689,8 @@ export interface SystemSwitchDelegation {
      * grant must still be switchable there.
      */
     tenantHeld?: boolean;
+    /** #2045: the switch call's fence. A deployment built before it strips it and applies the move. */
+    fence?: string;
   }): Promise<SwitchOutcome>;
   /**
    * The read half (#1674): every module the deployment serving this scope holds or has
@@ -1751,6 +1764,8 @@ export interface PeerSwitchDelegation {
      * answers `held: false` for a peer with nothing on the scope, as it always did.
      */
     tenantHeld?: boolean;
+    /** #2045: as on `SystemSwitchDelegation.switch`. */
+    fence?: string;
   }): Promise<SwitchOutcome>;
   /**
    * The read half: where every peer this scope holds or has held grants for stands. Same
@@ -2054,6 +2069,7 @@ function nullControlPlane(): ControlPlaneStub {
     listSystemSwitches: async () => [],
     switchRecordsOf: async () => [],
     switchedOffOf: async () => [],
+    switchFencesOf: async () => [],
     // #1823: no tenant tuples here either — the platform reads them and sends `tenantHeld`.
     tenantHeldOf: async () => [],
   };
@@ -2184,6 +2200,23 @@ const CLEAR_SCOPE_INSTANCES_MAX = 10_000;
 const rememberClearInstance = (key: string): void => {
   if (CLEAR_SCOPE_INSTANCES.size >= CLEAR_SCOPE_INSTANCES_MAX) CLEAR_SCOPE_INSTANCES.clear();
   CLEAR_SCOPE_INSTANCES.add(key);
+};
+
+/**
+ * #2045: a carry's fences, by tuple subject (`RecordedOffCarry.fences`): for each recorded-off
+ * subject, the operation id of the call the record holds.
+ */
+const switchFencesCarried = (
+  kinds: [SwitchKind, { keys: readonly string[]; fences: ReadonlyMap<string, string> }][],
+): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [kind, { keys, fences }] of kinds) {
+    for (const key of keys) {
+      const fence = fences.get(key);
+      if (fence !== undefined) out[switchSubjectOf(kind, key)] = fence;
+    }
+  }
+  return out;
 };
 
 /** #2029: how a door's refusals and a re-assert's name each kind of subject. */
@@ -4033,6 +4066,10 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantHeld: modules.tenantHeld,
       verticals: peers.keys,
       tenantHeldVerticals: peers.tenantHeld,
+      fences: switchFencesCarried([
+        ['system', modules],
+        ['peer', peers],
+      ]),
     };
   }
 
@@ -4042,9 +4079,14 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     at: string,
-  ): Promise<{ keys: string[]; tenantHeld: string[] }> {
+  ): Promise<{ keys: string[]; tenantHeld: string[]; fences: Map<string, string> }> {
     const keys = await this.cp.switchedOffOf(kind, tenantId, scopeId);
-    return { keys, tenantHeld: keys.length ? await this.cp.tenantHeldOf(kind, tenantId, keys, at) : [] };
+    if (!keys.length) return { keys, tenantHeld: [], fences: new Map() };
+    const [tenantHeld, fences] = await Promise.all([
+      this.cp.tenantHeldOf(kind, tenantId, keys, at),
+      this.cp.switchFencesOf(kind, tenantId, scopeId),
+    ]);
+    return { keys, tenantHeld, fences: new Map(fences) };
   }
 
   async snapshotScope(
@@ -5375,13 +5417,21 @@ export class CloudflareScopeHost implements ScopeHost {
       // all (`admitPeer` and `switchPeer` arrived together, #1714). Every OFF the platform drives
       // moves through here: an operator's (`switchSubjectAt`, which then puts the switch back) and
       // a re-assert's, which every carry ends with.
-      const move = async (key: string, to: 'on' | 'off', at: string, tenantHeld?: boolean): Promise<SwitchOutcome> => {
+      const move = async (
+        key: string,
+        to: 'on' | 'off',
+        at: string,
+        tenantHeld: boolean | undefined,
+        /** #2045: the switch call's fence — its operation id, or for a re-assert the record's. */
+        fence: string | undefined,
+      ): Promise<SwitchOutcome> => {
         const held = tenantHeld ?? (await this.cp.tenantHeldOf(kind, tenantId, [key], at)).length > 0;
         const outcome = await (systemDelegation
-          ? systemDelegation.switch({ tenantId, scopeId, moduleId: key as ModuleId, to, tenantHeld: held })
+          ? systemDelegation.switch({ tenantId, scopeId, moduleId: key as ModuleId, to, tenantHeld: held, fence })
           : peerDelegation
-            ? peerDelegation.switch({ tenantId, scopeId, vertical: key, to, tenantHeld: held })
-            : this.switchInScope(kind, scopeId, key, to, at, held));
+            ? peerDelegation.switch({ tenantId, scopeId, vertical: key, to, tenantHeld: held, fence })
+            : this.switchInScope(kind, scopeId, key, to, at, held, fence));
+        if (outcome.superseded) return outcome;
         if (kind === 'system' && to === 'off' && held && outcome.held && outcome.deniesTenantGrants !== true) {
           throw new UnattestedSwitchOff(scopeId, key as ModuleId, outcome);
         }
@@ -5456,13 +5506,19 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         throw err;
       }
+      // #2045: a newer call on this subject has recorded its position already: this one writes
+      // nothing, here or in the scope, and says so.
+      if (recordWriteSuperseded(prior, record)) {
+        await this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
+      }
       /**
        * The record's undo, after the scope's move threw or held nothing: retried once, and a
        * failure of both is answered rather than swallowed — it lands on the outcome row as
        * `recordError`, and the call says so.
        */
-      const undoRecord = async (): Promise<string | null> => {
-        const undo = () => this.cp.restoreSwitchRecord(record, prior);
+      const undoRecord = async (opts?: { keepFence?: boolean }): Promise<string | null> => {
+        const undo = () => this.cp.restoreSwitchRecord(record, prior, opts);
         try {
           await undo();
           return null;
@@ -5477,7 +5533,7 @@ export class CloudflareScopeHost implements ScopeHost {
       };
       let outcome: SwitchOutcome;
       try {
-        outcome = await move(key, to, at);
+        outcome = await move(key, to, at, undefined, operationId);
       } catch (err) {
         if (err instanceof UnattestedSwitchOff) {
           // The far end switched, and cannot hold it against the tenant-level grant. Refused:
@@ -5485,13 +5541,14 @@ export class CloudflareScopeHost implements ScopeHost {
           // then the record goes back too — neither the scope nor the directory says off. An ON
           // that fails here leaves the scope off, and the readback rule below keeps its record.
           const putBack = err.outcome.changed
-            ? await move(key, 'on', new Date().toISOString(), true).then(
+            ? await move(key, 'on', new Date().toISOString(), true, operationId).then(
                 () => true,
                 () => false,
               )
             : true;
           if (putBack) {
-            const recordError = await undoRecord();
+            // #2045: both moves landed under this call's fence, so the undone record keeps it.
+            const recordError = await undoRecord({ keepFence: true });
             await this.recordAdmin(actor, action, target, null, {
               ...base,
               phase: 'refused',
@@ -5517,7 +5574,9 @@ export class CloudflareScopeHost implements ScopeHost {
         // to `off`, which the next re-assert completes if the scope did move.
         const off = await isOff(key).catch(() => true);
         const recordKept = off === (to === 'off');
-        const recordError = recordKept ? null : await undoRecord();
+        // #2045: the move threw, so it may have landed under this call's fence; the undone record
+        // keeps that fence, so the re-assert that completes it is not refused by this call's move.
+        const recordError = recordKept ? null : await undoRecord({ keepFence: true });
         // Best effort: the original error is what the caller must see, and the intent row
         // already says an attempt was made.
         await this.recordAdmin(actor, action, target, null, {
@@ -5528,6 +5587,12 @@ export class CloudflareScopeHost implements ScopeHost {
           ...(recordError ? { recordError } : {}),
         }).catch(() => undefined);
         throw err;
+      }
+      // #2045: the scope has applied a newer call on this subject, so this move wrote nothing. The
+      // record is that newer call's too (its write overwrote this one's), so nothing is undone.
+      if (outcome.superseded) {
+        await this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
       }
       // A call that held nothing moved nothing, so its record write is undone: left `off`, it
       // would switch the subject off the day it is installed; left `on`, the next reconcile of
@@ -5738,7 +5803,9 @@ export class CloudflareScopeHost implements ScopeHost {
         // (record `off`) must not get a transient ON a due schedule, or a peer call, could use.
         const current = new Map(await this.cp.switchRecordsOf(kind, tenantId, scopeId));
         if (current.get(key) !== 'on') continue;
-        const outcome = await move(key, 'on', at);
+        // #2045: under the fence of the ON the record holds, which is the operator's own call.
+        const fence = new Map(await this.cp.switchFencesOf(kind, tenantId, scopeId)).get(key);
+        const outcome = await move(key, 'on', at, undefined, fence);
         reverted.add(key);
         if (outcome.changed) {
           await this.recordAdmin(actor, action, { tenantId, scopeId, vertical }, null, {
@@ -5748,7 +5815,7 @@ export class CloudflareScopeHost implements ScopeHost {
         }
       }
       // Read AFTER the reverts: an OFF that landed meanwhile is switched off below.
-      const { keys, tenantHeld } = await this.recordedOff(kind, tenantId, scopeId, at);
+      const { keys, tenantHeld, fences } = await this.recordedOff(kind, tenantId, scopeId, at);
       // #1742: what the deployment already switched off inside its own unit, audited here —
       // the move below answers `changed: false` for it and would write no row. A move the
       // revert above undid is not credited as an in-unit OFF.
@@ -5758,7 +5825,9 @@ export class CloudflareScopeHost implements ScopeHost {
       const results: SystemSwitchReassert[] = [];
       const held = new Set(tenantHeld);
       for (const key of keys) {
-        const outcome = await move(key, 'off', at, held.has(key));
+        // #2045: under the fence of the OFF the record holds, so a scope moved since by a newer call
+        // stays as that call put it.
+        const outcome = await move(key, 'off', at, held.has(key), fences.get(key));
         if (outcome.changed) {
           await this.recordAdmin(actor, action, { tenantId, scopeId, vertical }, null, {
             operationId: ulid(),
@@ -6068,14 +6137,14 @@ export class CloudflareScopeHost implements ScopeHost {
         return held as ModuleId[];
       },
       peerSwitchCarry: async (actor: PlatformActorId, node: { tenantId: TenantId; scopeId: ScopeId }) => {
-        const { keys: switchedOffPeers, tenantHeld: tenantHeldPeers } = await this.recordedOff(
-          'peer',
-          node.tenantId,
-          node.scopeId,
-          new Date().toISOString(),
-        );
+        const {
+          keys: switchedOffPeers,
+          tenantHeld: tenantHeldPeers,
+          fences: all,
+        } = await this.recordedOff('peer', node.tenantId, node.scopeId, new Date().toISOString());
+        const fences = Object.fromEntries(switchedOffPeers.map((v) => [v, all.get(v)!]));
         await this.recordAccess(actor, 'peerSwitchCarry', node, null, switchedOffPeers.length);
-        return { switchedOffPeers, tenantHeldPeers };
+        return { switchedOffPeers, tenantHeldPeers, fences };
       },
       reassertSystemSwitches: reassertSystemSwitchesOf,
       // #1672 — the platform's two capability verbs. Audited AFTER the write, on both, and
@@ -8897,6 +8966,8 @@ export class CloudflareScopeHost implements ScopeHost {
     to: 'on' | 'off',
     at: string,
     tenantHeld = false,
+    /** #2045: the switch call's fence; see `SWITCH_FENCES_DDL`. */
+    fence?: string,
   ): Promise<SwitchOutcome> {
     // #2029: a peer's claims live beside the modules', under its own hold key.
     const holdKey = holdKeyOf(kind, key);
@@ -8909,9 +8980,12 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     const stub = this.scopeStub(scopeId);
     const { instance, ...outcome } = await (kind === 'system'
-      ? stub.switchSystemSchedules(key, scopeId, to, at, tenantHeld)
-      : stub.switchPeer(key, scopeId, to, at, tenantHeld));
+      ? stub.switchSystemSchedules(key, scopeId, to, at, tenantHeld, fence)
+      : stub.switchPeer(key, scopeId, to, at, tenantHeld, fence));
     if (!scopeClaims) throw readError;
+    // #2045: a move the fence refused wrote nothing, so it is known to survive nothing and to
+    // release nothing; the newer call that superseded it did whatever the hold needed.
+    if (outcome.superseded) return outcome;
     const now = Date.now();
     const pendingLive = (c: SwitchHoldClaim) => c.state === 'pending' && now - Date.parse(c.heldAt) <= SWITCH_HOLD_PENDING_MAX_MS;
     const before = scopeClaims.filter((c) => c.moduleId === holdKey);
@@ -9387,6 +9461,8 @@ export class CloudflareScopeHost implements ScopeHost {
     /** #2029: the peers the directory records OFF here, and those held only by a tenant grant. */
     switchedOffPeers?: readonly string[];
     tenantHeldPeers?: readonly string[];
+    /** #2045: each recorded-off subject's fence, by tuple subject. */
+    switchFences?: Readonly<Record<string, string>>;
   }): Promise<{ switchedOff?: SwitchedOff[] }> {
     const carry = recordedOffFromWire(input);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
@@ -9701,13 +9777,13 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     moduleId: ModuleId,
     to: 'on' | 'off',
-    opts?: { tenantHeld?: boolean },
+    opts?: { tenantHeld?: boolean; fence?: string },
   ): Promise<SystemSwitchOutcome> {
     // Parsed on the way out: this is the wire answer the platform reads, and the DO's
     // plain strings become the published shape here rather than on trust.
     // #1819: `switchInScope` releases a rewind's hold on the module once the switch lands.
     return systemSwitchOutcome.parse(
-      await this.switchInScope('system', scopeId, moduleId, to, new Date().toISOString(), opts?.tenantHeld ?? false),
+      await this.switchInScope('system', scopeId, moduleId, to, new Date().toISOString(), opts?.tenantHeld ?? false, opts?.fence),
     );
   }
 
@@ -9763,7 +9839,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     vertical: string,
     to: 'on' | 'off',
-    opts?: { tenantHeld?: boolean },
+    opts?: { tenantHeld?: boolean; fence?: string },
   ): Promise<PeerSwitchOutcome> {
     return peerSwitchOutcome.parse(
       await this.switchInScope(
@@ -9773,6 +9849,7 @@ export class CloudflareScopeHost implements ScopeHost {
         to,
         new Date().toISOString(),
         opts?.tenantHeld ?? false,
+        opts?.fence,
       ),
     );
   }

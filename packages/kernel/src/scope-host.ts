@@ -1811,7 +1811,12 @@ export interface HostAdmin {
   peerSwitchCarry(
     actor: PlatformActorId,
     node: { tenantId: TenantId; scopeId: ScopeId },
-  ): Promise<{ switchedOffPeers: string[]; tenantHeldPeers: string[] }>;
+  ): Promise<{
+    switchedOffPeers: string[];
+    tenantHeldPeers: string[];
+    /** #2045: each recorded-off peer's fence (the record's operation id), by slug. */
+    fences: Record<string, string>;
+  }>;
   /**
    * Put the directory's OFF positions back into one scope (#1674), for a scope whose storage
    * lost them: a wipe then re-provision, or a restore of a dump taken before the switch was

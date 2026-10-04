@@ -4,6 +4,8 @@ import {
   PEER_SWITCHES_DDL,
   SYSTEM_SWITCHES_DDL,
   forgetSwitchesOf,
+  recordWriteSuperseded,
+  switchFencesOf,
   switchesBackfillSqlOf,
   listSystemSwitchRecords,
   recordSwitchedOff,
@@ -422,6 +424,25 @@ describe('the peer switch record (#2029)', () => {
     expect(switchedOffOf(sql, 'peer', T, S)).toEqual(['callout']);
     restoreSwitchRecord(sql, { kind: 'peer', tenantId: T, scopeId: S, key: 'callout', operationId: '01A' }, null);
     expect(switchedOffOf(sql, 'peer', T, S)).toEqual([]);
+  });
+
+  it('#2045: a record write from a call older than the row writes nothing, and the caller can tell', () => {
+    const { db, sql } = fresh();
+    db.exec(PEER_SWITCHES_DDL);
+    const row = { kind: 'peer' as const, tenantId: T, scopeId: S, key: V, actor: 'staff', at: 'x' };
+    recordSwitchedOn(sql, { ...row, reason: 'never off', operationId: '01A' }); // no row: nothing
+    recordSwitchedOff(sql, { ...row, reason: 'newer', operationId: '01C' });
+    const olderOn = { ...row, reason: 'older on', operationId: '01B' };
+    const prior = recordSwitchedOn(sql, olderOn);
+    expect(recordWriteSuperseded(prior, olderOn)).toBe(true);
+    const olderOff = { ...row, reason: 'older off', operationId: '01B' };
+    expect(recordWriteSuperseded(recordSwitchedOff(sql, olderOff), olderOff)).toBe(true);
+    expect([...switchRecordsOf(sql, 'peer', T, S)]).toEqual([[V, 'off']]);
+    expect([...switchFencesOf(sql, 'peer', T, S)]).toEqual([[V, '01C']]);
+    // Twin: a newer call writes, and is not superseded.
+    const newer = { ...row, reason: 'newest on', operationId: '01D' };
+    expect(recordWriteSuperseded(recordSwitchedOn(sql, newer), newer)).toBe(false);
+    expect([...switchRecordsOf(sql, 'peer', T, S)]).toEqual([[V, 'on']]);
   });
 
   it('a reaped scope forgets both kinds', () => {

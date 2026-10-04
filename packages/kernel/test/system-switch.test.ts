@@ -1,6 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
+  SWITCH_FENCES_DDL,
+  moveSwitch,
   switchSystemSchedules,
   systemGrantsStatus,
   systemScheduleState,
@@ -308,5 +310,65 @@ describe('the grant refusal wording (#1743)', () => {
     const seven = tenantSystemSwitchedOffMessage('@m/x', ['s1', 's2', 's3', 's4', 's5', 's6', 's7']);
     expect(seven).toMatch(/scopes s1, s2, s3, s4, s5 and 2 more \(#1666\)/);
     expect(seven).not.toContain('s6');
+  });
+});
+
+/**
+ * #2045: the scope's half of the switch fence, on a real SQLite. A move carries the call it belongs
+ * to; one older than the newest the scope applied writes nothing and says `superseded`.
+ */
+describe('the switch fence (#2045)', () => {
+  const S = 's1';
+  const V = 'acme/a';
+  const fresh = () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`CREATE TABLE _substrat_tuples (
+      subject TEXT NOT NULL, relation TEXT NOT NULL, object TEXT NOT NULL,
+      expires_at TEXT, revoked_at TEXT, PRIMARY KEY (subject, relation, object)
+    )`);
+    db.exec(SWITCH_FENCES_DDL);
+    db.prepare(`INSERT INTO _substrat_tuples VALUES (?, ?, ?, NULL, NULL)`).run(`vertical:${V}`, 'granted:p:read', `scope:${S}`);
+    const sql: SwitchSql = {
+      all: (q, ...p) => db.prepare(q).all(...p) as Record<string, unknown>[],
+      run: (q, ...p) => {
+        db.prepare(q).run(...p);
+      },
+    };
+    return { db, sql };
+  };
+  const move = (sql: SwitchSql, to: 'on' | 'off', fence?: string) =>
+    moveSwitch(sql, 'peer', { key: V, scopeId: S, to, at: 'x', fence });
+
+  it('a move older than the one applied is refused and writes nothing', () => {
+    const { sql } = fresh();
+    expect(move(sql, 'on', '01B')).toMatchObject({ held: true });
+    expect(move(sql, 'off', '01A')).toEqual({ held: true, changed: false, permissions: [], superseded: true });
+    expect(peerSwitchedOff(sql, V)).toBe(false);
+  });
+
+  it('twin: a newer one applies, and moves the fence to it', () => {
+    const { db, sql } = fresh();
+    move(sql, 'on', '01A');
+    expect(move(sql, 'off', '01B')).toMatchObject({ held: true, changed: true });
+    expect(peerSwitchedOff(sql, V)).toBe(true);
+    expect(db.prepare('SELECT fence FROM _substrat_switch_fences').get()).toEqual({ fence: '01B' });
+    // The same call again (a re-assert under the record's fence) applies, idempotently.
+    expect(move(sql, 'off', '01B')).toMatchObject({ held: true, changed: false });
+    expect(move(sql, 'off', '01B').superseded).toBeUndefined();
+  });
+
+  it('a move with no fence (a caller from before it) applies and leaves the fence alone', () => {
+    const { db, sql } = fresh();
+    move(sql, 'off', '01B');
+    expect(move(sql, 'on')).toMatchObject({ held: true, changed: true });
+    expect(db.prepare('SELECT fence FROM _substrat_switch_fences').get()).toEqual({ fence: '01B' });
+  });
+
+  it('a move that held nothing writes no fence', () => {
+    const { db, sql } = fresh();
+    expect(moveSwitch(sql, 'peer', { key: 'acme/none', scopeId: S, to: 'off', at: 'x', fence: '01Z' })).toMatchObject({
+      held: false,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM _substrat_switch_fences').get()).toEqual({ n: 0 });
   });
 });

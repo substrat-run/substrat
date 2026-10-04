@@ -896,7 +896,7 @@ function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined
             `cannot switch its schedules ${a.to}`,
         );
       }
-      return client.systemSwitch({ scopeId: a.scopeId, moduleId: a.moduleId, to: a.to, tenantHeld: a.tenantHeld });
+      return client.systemSwitch({ scopeId: a.scopeId, moduleId: a.moduleId, to: a.to, tenantHeld: a.tenantHeld, fence: a.fence });
     },
     status: async (a) => {
       const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
@@ -977,7 +977,7 @@ function peerSwitchDelegationFor(env: Env): PeerSwitchDelegation | undefined {
             `cannot switch peer '${a.vertical}' ${a.to}`,
         );
       }
-      return client.peerSwitch({ scopeId: a.scopeId, vertical: a.vertical, to: a.to, tenantHeld: a.tenantHeld });
+      return client.peerSwitch({ scopeId: a.scopeId, vertical: a.vertical, to: a.to, tenantHeld: a.tenantHeld, fence: a.fence });
     },
     status: async (a) => {
       const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });

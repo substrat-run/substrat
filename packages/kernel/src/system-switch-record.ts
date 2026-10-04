@@ -24,6 +24,13 @@
  *
  * The admin log is still the history. This is only the current position.
  *
+ * **The record and the scope follow the same call** (#2045). A switch call writes this record, then
+ * moves the scope, and nothing makes the pair one unit, so two calls on one subject could interleave
+ * and leave the two on different positions. Each row holds the operation id of the call that wrote
+ * it, and a write from an older call writes nothing (`recordWriteSuperseded`). The scope refuses an
+ * older move the same way (`SWITCH_FENCES_DDL`), and re-asserts move under the row's id
+ * (`switchFencesOf`). Both sides therefore settle on the newest call's position.
+ *
  * **Two kinds of switch, one record path** (#2029). The peer kill switch (#1706,
  * `revokeFromPeer`) moves the same marker for a `vertical:<slug>` subject, and loses it the
  * same ways: a wipe, a restore, a PITR rewind. So it is recorded the same way, in its own
@@ -140,6 +147,14 @@ export const switchActionOf = (kind: SwitchKind, to: 'on' | 'off'): (typeof RECO
 /** The `not_found` a switch call that held nothing answers — one wording per kind, both adapters. */
 export const switchNotFoundMessage = (kind: SwitchKind, scopeId: string, key: string, to: 'on' | 'off'): string =>
   RECORDS[kind].notFound(scopeId, key, to);
+
+/**
+ * #2045: the `conflict` a switch call answers when a newer call on the same subject got there first —
+ * its record write or its move was refused by the fence, and nothing of it was written.
+ */
+export const switchSupersededMessage = (kind: SwitchKind, scopeId: string, key: string, to: 'on' | 'off'): string =>
+  `a newer switch call on ${kind === 'system' ? `module '${key}'` : `peer '${key}'`} on scope ${scopeId} landed first, ` +
+  `so this one (${to}) switched nothing. Read the scope's switch status before retrying.`;
 
 /** The record table of one kind. */
 export const switchesTableOf = (kind: SwitchKind): string => RECORDS[kind].table;
@@ -584,6 +599,32 @@ function priorOf(db: SwitchSql, at: RecordKey): SwitchRecordPrior {
 }
 
 /**
+ * #2045: the record's half of the switch fence (`SWITCH_FENCES_DDL`). A write from a call OLDER than
+ * the one the row holds writes nothing: a newer call has already recorded its position, and the
+ * scope will refuse this call's move for the same reason. Both writes answer the prior row, and the
+ * caller reads this off it, with the same test (`recordWriteSuperseded`).
+ */
+const supersededBy = (prior: SwitchRecordPrior, row: Pick<SwitchRecordWrite, 'operationId'>): boolean =>
+  prior !== null && prior.operationId > row.operationId;
+
+/** #2045: did this record write find a newer call's row, and so write nothing? */
+export const recordWriteSuperseded = supersededBy;
+
+/**
+ * #2045: the operation id each of one scope's record rows of one kind holds, by subject — the fence a
+ * re-assert or a carry moves the scope with, so a scope moved since by a newer call stays as that
+ * call put it.
+ */
+export function switchFencesOf(db: SwitchSql, kind: SwitchKind, tenantId: string, scopeId: string): Map<string, string> {
+  const { table, key } = RECORDS[kind];
+  const rows = db.all(`SELECT ${key} AS k, operation_id FROM ${table} WHERE tenant_id = ? AND scope_id = ?`, tenantId, scopeId);
+  return new Map(rows.map((r) => [String(r.k), String(r.operation_id)]));
+}
+
+/** #2045: the tuple subject a record key names (`system:<m>`, `vertical:<v>`) — how a carry keys its fences. */
+export const switchSubjectOf = (kind: SwitchKind, key: string): string => `${RECORDS[kind].subjectPrefix}${key}`;
+
+/**
  * OFF's write, made BEFORE the scope's switch moves (#1823), and undone by
  * `restoreSwitchRecord` when the move throws or holds nothing. An upsert: a repeat OFF
  * refreshes the actor, reason and time, as the status read reports the latest reason.
@@ -601,6 +642,7 @@ function priorOf(db: SwitchSql, at: RecordKey): SwitchRecordPrior {
 export function recordSwitchedOff(db: SwitchSql, row: SwitchRecordWrite): SwitchRecordPrior {
   const { table, key } = RECORDS[row.kind];
   const prior = priorOf(db, row);
+  if (supersededBy(prior, row)) return prior;
   db.run(
     `INSERT INTO ${table}
        (tenant_id, scope_id, ${key}, position, actor, reason, operation_id, switched_at)
@@ -628,7 +670,7 @@ export function recordSwitchedOff(db: SwitchSql, row: SwitchRecordWrite): Switch
  */
 export function recordSwitchedOn(db: SwitchSql, row: SwitchRecordWrite): SwitchRecordPrior {
   const prior = priorOf(db, row);
-  if (prior) {
+  if (prior && !supersededBy(prior, row)) {
     setRecordRow(db, row, { position: 'on', actor: row.actor, reason: row.reason, operationId: row.operationId, at: row.at });
   }
   return prior;
@@ -644,9 +686,17 @@ export function restoreSwitchRecord(
   db: SwitchSql,
   call: RecordKey & { operationId: string },
   prior: SwitchRecordPrior,
+  /**
+   * #2045: the call's move threw, so it may have landed, and then the scope's fence is THIS call's
+   * id. The prior position goes back under this call's id rather than the prior's, so a re-assert
+   * moves the scope under a fence at least as new as anything this call wrote there. Without it, an
+   * ON undone to OFF after an unreadable move would re-assert under the older OFF's id and be
+   * refused by the ON it may have applied.
+   */
+  opts?: { keepFence?: boolean },
 ): void {
   if (prior) {
-    setRecordRow(db, call, prior, call.operationId);
+    setRecordRow(db, call, opts?.keepFence ? { ...prior, operationId: call.operationId } : prior, call.operationId);
     return;
   }
   const { table, key } = RECORDS[call.kind];

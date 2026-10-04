@@ -320,6 +320,10 @@ import {
   systemSwitchedOffMessage,
   tenantSystemSwitchedOffMessage,
   PEER_SWITCHES_DDL,
+  SWITCH_FENCES_DDL,
+  recordWriteSuperseded,
+  switchFencesOf,
+  switchSupersededMessage,
   SWITCH_KINDS,
   SYSTEM_SWITCHES_DDL,
   forgetSwitchesOf,
@@ -951,6 +955,7 @@ const KERNEL_DDL = `
     rows_changed INTEGER,
     PRIMARY KEY (module_id, version)
   );
+  ${SWITCH_FENCES_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -2803,8 +2808,13 @@ export class SqliteScopeHost implements ScopeHost {
     const results: SystemSwitchReassert[] = [];
     for (const kind of SWITCH_KINDS) {
       const action = reassertActionOf(kind);
+      // #2045: every move carries the fence of the call the record holds, so a scope moved since by
+      // a newer call stays as that call put it.
+      const fences = switchFencesOf(directorySql, kind, tenantId, scopeId);
       const move = (key: string, to: 'on' | 'off', tenantHeld?: boolean) =>
-        rt.db.transaction(() => moveSwitch(switchSqlOf(rt.db), kind, { key, scopeId, to, at, tenantHeld }))();
+        rt.db.transaction(() =>
+          moveSwitch(switchSqlOf(rt.db), kind, { key, scopeId, to, at, tenantHeld, fence: fences.get(key) }),
+        )();
       // #1742 review: a move the deployment made from a stale list — the subject was restored
       // ON after the list was read — is undone first, so the operator's ON stands.
       const recorded = switchRecordsOf(directorySql, kind, tenantId, scopeId);
@@ -6562,6 +6572,12 @@ export class SqliteScopeHost implements ScopeHost {
         }
         throw err;
       }
+      // #2045: a newer call on this subject has recorded its position already: this one writes
+      // nothing, here or in the scope, and says so.
+      if (recordWriteSuperseded(prior, record)) {
+        this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
+      }
       /** The record's undo, after the scope's move threw or held nothing: retried once, never swallowed. */
       const undoRecord = (): string | null => {
         const undo = () => restoreSwitchRecord(directorySql, record, prior);
@@ -6591,7 +6607,9 @@ export class SqliteScopeHost implements ScopeHost {
         const rt = this.runtime(tenantId, scopeId);
         outcome = await rt.actor.turn(() => {
           const tenantHeld = tenantHoldsGrant(directorySql, kind, tenantId, key, this.clock());
-          return rt.db.transaction(() => moveSwitch(switchSqlOf(rt.db), kind, { key, scopeId, to, at, tenantHeld }))();
+          return rt.db.transaction(() =>
+            moveSwitch(switchSqlOf(rt.db), kind, { key, scopeId, to, at, tenantHeld, fence: operationId }),
+          )();
         });
       } catch (err) {
         const recordError = undoRecord();
@@ -6606,6 +6624,12 @@ export class SqliteScopeHost implements ScopeHost {
           // Best effort: the original error is what the caller must see.
         }
         throw err;
+      }
+      // #2045: the scope has applied a newer call on this subject, so this move wrote nothing. The
+      // record is that newer call's too (its write overwrote this one's), so nothing is undone.
+      if (outcome.superseded) {
+        this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
       }
       // A call that held nothing moved nothing (the subject has no authority reaching the
       // scope, its own or the tenant's), so its record write is undone: left `off`, it would
@@ -7102,8 +7126,10 @@ export class SqliteScopeHost implements ScopeHost {
         const directorySql = switchSqlOf(this.directory);
         const switchedOffPeers = switchedOffOf(directorySql, 'peer', node.tenantId, node.scopeId);
         const tenantHeldPeers = tenantHeldOf(directorySql, 'peer', node.tenantId, switchedOffPeers, this.clock());
+        const all = switchFencesOf(directorySql, 'peer', node.tenantId, node.scopeId);
+        const fences = Object.fromEntries(switchedOffPeers.map((v) => [v, all.get(v)!]));
         this.recordAccess(actor, 'peerSwitchCarry', node, null, switchedOffPeers.length);
-        return { switchedOffPeers, tenantHeldPeers };
+        return { switchedOffPeers, tenantHeldPeers, fences };
       },
       reassertSystemSwitches: async (
         actor: PlatformActorId,

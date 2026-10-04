@@ -241,6 +241,11 @@ export const systemSwitchOutcome = z.object({
    * alone says the marker landed, not that anything reads it for a tenant-level grant.
    */
   deniesTenantGrants: z.literal(true).optional(),
+  /**
+   * #2045: the scope had already applied a NEWER switch call on this subject, so this move wrote
+   * nothing (the switch fence). A deployment built before the fence omits it and applies every move.
+   */
+  superseded: z.literal(true).optional(),
 });
 export type SystemSwitchOutcome = z.infer<typeof systemSwitchOutcome>;
 

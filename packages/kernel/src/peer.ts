@@ -164,7 +164,7 @@ export function admitPeer(
  */
 export function switchPeer(
   db: SwitchSql,
-  input: { vertical: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
+  input: { vertical: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean; fence?: string },
 ): SwitchOutcome {
   const { vertical, ...rest } = input;
   return moveSwitch(db, 'peer', { key: vertical, ...rest });

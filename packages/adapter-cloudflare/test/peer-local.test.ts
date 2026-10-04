@@ -1,8 +1,12 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   errorCodeOf,
   importBatch,
+  moduleId,
+  type ModuleId,
+  type ScopeId,
+  type TenantId,
   peerGrantsEntry,
   permissionKey,
   platformActorId,
@@ -11,10 +15,11 @@ import {
   tenantId,
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { PEER_CALLER, PEER_LISTENER, peerMod } from '@substrat-run/contract-tests';
+import { PEER_CALLER, PEER_LISTENER, peerMod, scheduleMod } from '@substrat-run/contract-tests';
+import { switchCarryFor } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
-import { armRewind, holdsStub, landRewind } from './pitr-emulation.js';
+import { armRewind, holdsStub, landRewind, restartNow } from './pitr-emulation.js';
 
 /**
  * The peer door's FAR END on the hosted shape (#1706): a CP-less host — what a pushed vertical
@@ -288,7 +293,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
       changed: true,
       permissions: [READ, WRITE],
     });
-    expect(calls).toEqual([{ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'off', tenantHeld: false }]);
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'off', tenantHeld: false, fence: result.operationId }]);
     // The placeholder DO still holds the peer's live grants: nothing was written here.
     expect(await placeholder().peerCovers(t, s, PEER_CALLER, [READ, WRITE])).toEqual([
       { permission: READ, held: true },
@@ -307,7 +312,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     ]);
 
     await host.admin.restoreToPeer(staff, { vertical: PEER_CALLER, node: { tenantId: t, scopeId: s }, reason: 'ok' });
-    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'on', tenantHeld: false });
+    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'on', tenantHeld: false, fence: expect.any(String) });
     expect((await rows(audit)).map((r) => [r.action, r.phase])).toEqual([
       ['revokeFromPeer', 'intent'],
       ['revokeFromPeer', 'applied'],
@@ -368,7 +373,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     await expect(
       host.admin.revokeFromPeer(staff, { vertical: PEER_CALLER, node: { tenantId: t, scopeId: s }, reason: 'r' }),
     ).rejects.toThrow(/no deployment serving scope/);
-    expect(calls).toEqual([{ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'off', tenantHeld: false }]);
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'off', tenantHeld: false, fence: expect.any(String) }]);
     expect((await rows(audit)).map((r) => r.phase)).toEqual(['intent', 'failed']);
   });
 
@@ -447,18 +452,22 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
   it('#2029: OFF is recorded, carried, and re-asserted through the delegation; ON clears the record', async () => {
     const { host, t, s, calls } = await setup(() => ({ held: true, changed: true, permissions: [] }));
     const node = { tenantId: t, scopeId: s };
-    await host.admin.revokeFromPeer(staff, { vertical: PEER_CALLER, node, reason: 'r' });
-    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [PEER_CALLER], tenantHeldPeers: [] });
+    const off = await host.admin.revokeFromPeer(staff, { vertical: PEER_CALLER, node, reason: 'r' });
+    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({
+      switchedOffPeers: [PEER_CALLER],
+      tenantHeldPeers: [],
+      fences: { [PEER_CALLER]: off.operationId },
+    });
     expect(await host.admin.reassertSystemSwitches(staff, node)).toEqual([
       { vertical: PEER_CALLER, held: true, changed: true },
     ]);
-    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'off', tenantHeld: false });
+    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'off', tenantHeld: false, fence: off.operationId });
     const reasserted = await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: ['reassertPeerSwitch'] });
     expect(reasserted.map((e) => e.after)).toEqual([
       expect.objectContaining({ vertical: PEER_CALLER, calls: 'off', phase: 'applied', changed: true }),
     ]);
     await host.admin.restoreToPeer(staff, { vertical: PEER_CALLER, node, reason: 'ok' });
-    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [] });
+    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
     const before = calls.length;
     expect(await host.admin.reassertSystemSwitches(staff, node)).toEqual([]);
     expect(calls.length).toBe(before);
@@ -481,8 +490,8 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     );
     expect(errorCodeOf(refused)).toBe('not_found');
     // The platform did ask with the directory's answer; the far end could not use it.
-    expect(calls).toEqual([{ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'off', tenantHeld: true }]);
-    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [] });
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, vertical: PEER_CALLER, to: 'off', tenantHeld: true, fence: expect.any(String) }]);
+    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
   });
 
   it('#2030 twin: a current deployment holds it — recorded, and carried as tenant-held', async () => {
@@ -496,6 +505,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({
       switchedOffPeers: [PEER_CALLER],
       tenantHeldPeers: [PEER_CALLER],
+      fences: { [PEER_CALLER]: expect.any(String) },
     });
   });
 
@@ -509,7 +519,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     );
     const node = { tenantId: t, scopeId: s };
     await expect(host.admin.revokeFromPeer(staff, { vertical: PEER_CALLER, node, reason: 'r' })).rejects.toThrow(/lost/);
-    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [PEER_CALLER], tenantHeldPeers: [] });
+    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [PEER_CALLER], tenantHeldPeers: [], fences: { [PEER_CALLER]: expect.any(String) } });
     expect((await rows(audit)).at(-1)).toMatchObject({ phase: 'failed', recordKept: true });
   });
 
@@ -523,7 +533,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     );
     const node = { tenantId: t, scopeId: s };
     await expect(host.admin.revokeFromPeer(staff, { vertical: PEER_CALLER, node, reason: 'r' })).rejects.toThrow(/unreachable/);
-    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [] });
+    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
     expect((await rows(audit)).at(-1)).not.toHaveProperty('recordKept');
   });
 
@@ -543,7 +553,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     await expect(host.admin.restoreToPeer(staff, { vertical: PEER_CALLER, node, reason: 'ok' })).rejects.toThrow(
       /unreachable/,
     );
-    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [PEER_CALLER], tenantHeldPeers: [] });
+    expect(await host.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [PEER_CALLER], tenantHeldPeers: [], fences: { [PEER_CALLER]: expect.any(String) } });
   });
 
   it('refuses a scope the directory does not have before reaching anything', async () => {
@@ -714,4 +724,249 @@ describe('#2029 — a PITR rewind to before a peer switch admits nothing until t
     expect(await heldOn(s)).toEqual([]);
     expect(errorCodeOf(await refusal(invoke(s)))).toBe('permission_denied');
   });
+});
+
+/**
+ * #2045 on workerd: two switch calls on one subject that overlap, through the real hosted path —
+ * the shared control plane's host records each call in its directory and moves the scope in the
+ * deployment serving it, over the delegations, where a real ScopeDO applies (or refuses) the move.
+ * Each delegation can be held, which places the interleavings; the control plane's namespace can be
+ * held at the record write, which places the one where the OLDER call writes its record last.
+ */
+describe('#2045 — overlapping switch calls end with the record and the scope agreeing', { timeout: 20_000 }, () => {
+  beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+  const staff = platformActorId.parse(ulid());
+  const SCHED = moduleId.parse('@test/sched');
+  const READ = permissionKey.parse('peer:read');
+
+  /** What the platform carries into a deployment's unit: the record's off subjects and their fences. */
+  type Carry = { modules: ModuleId[]; peers: string[]; fences: Record<string, string> };
+  const switchCarryOf = async (platform: CloudflareScopeHost, node: { tenantId: TenantId; scopeId: ScopeId }) => {
+    const carry = await switchCarryFor(platform.admin, staff, node);
+    return { modules: carry.switchedOff ?? [], peers: carry.switchedOffPeers ?? [], fences: carry.switchFences ?? {} };
+  };
+
+  /** Hold the next call matching `match` until `release`; `reached` resolves when it arrives. */
+  type Gate = { match: (method: string, to?: string) => boolean; reached: () => void; wait: Promise<void> };
+  const gate = (match: Gate['match']) => {
+    let reached!: () => void;
+    let release!: () => void;
+    const arrived = new Promise<void>((r) => (reached = r));
+    const wait = new Promise<void>((r) => (release = r));
+    return { gate: { match, reached, wait } as Gate, arrived, release };
+  };
+
+  const setup = async () => {
+    const gates: Gate[] = [];
+    const pass = async (method: string, to?: string) => {
+      const i = gates.findIndex((g) => g.match(method, to));
+      if (i < 0) return;
+      const [g] = gates.splice(i, 1);
+      g!.reached();
+      await g!.wait;
+    };
+    const deployment = new CloudflareScopeHost({ scope: env.SCOPE });
+    deployment.registerModule(peerMod);
+    deployment.registerModule(scheduleMod);
+    // The control plane's namespace, with its record writes passable through the gates.
+    const cpNs = {
+      idFromName: (name: string) => env.CONTROL_PLANE.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const real = env.CONTROL_PLANE.get(id) as unknown as Record<string, (...a: unknown[]) => unknown>;
+        return new Proxy(real, {
+          get: (target, prop) => {
+            const value = target[prop as string];
+            if (typeof value !== 'function') return value;
+            return async (...a: unknown[]) => {
+              await pass(String(prop));
+              return target[prop as string]!(...a);
+            };
+          },
+        });
+      },
+    } as unknown as DurableObjectNamespace;
+    const platform = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: cpNs,
+      peerSwitchDelegation: {
+        switch: async (a) => {
+          await pass('peer-move', a.to);
+          return deployment.peerSwitchLocal(a.scopeId, a.vertical, a.to, { tenantHeld: a.tenantHeld, fence: a.fence });
+        },
+        status: async (a) => deployment.peerGrantsStatusLocal(a.scopeId),
+      },
+      systemSwitchDelegation: {
+        switch: async (a) => {
+          await pass('system-move', a.to);
+          return deployment.systemSwitchLocal(a.scopeId, a.moduleId, a.to, { tenantHeld: a.tenantHeld, fence: a.fence });
+        },
+        status: async (a) => deployment.systemGrantsStatusLocal(a.scopeId),
+      },
+    });
+    platform.registerModule(peerMod);
+    platform.registerModule(scheduleMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await platform.admin.createTenant(staff, { id: t, slug: `fence-${t.slice(-10).toLowerCase()}`, name: 'Fence' });
+    await platform.admin.grantEntitlement(staff, t, 'peer');
+    await platform.admin.grantEntitlement(staff, t, 'sched');
+    await platform.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'fence-vertical' });
+    await platform.admin.activateScope(staff, t, s);
+    const provisionInput = {
+      tenantId: t,
+      scopeId: s,
+      owner: principalId.parse(ulid()),
+      roles: [{ key: 'office-admin', permissions: [READ], source: 'vertical' as const }],
+      ownerRoleKey: 'office-admin',
+    };
+    await deployment.provisionScopeLocal(provisionInput);
+    const node = { tenantId: t, scopeId: s };
+    const kinds = {
+      peer: {
+        move: 'peer-move',
+        switch: (to: 'on' | 'off', reason: string = to) =>
+          to === 'off'
+            ? platform.admin.revokeFromPeer(staff, { vertical: PEER_CALLER, node, reason })
+            : platform.admin.restoreToPeer(staff, { vertical: PEER_CALLER, node, reason }),
+        recorded: async () =>
+          (await platform.admin.peerSwitchCarry(staff, node)).switchedOffPeers.includes(PEER_CALLER) ? 'off' : 'on',
+        scope: async () => (await deployment.peerGrantsStatusLocal(s)).find((p) => p.vertical === PEER_CALLER)?.calls,
+        lose: () => deployment.peerSwitchLocal(s, PEER_CALLER, 'on'),
+        /** The deployment's in-unit OFF, from a carry the platform read (`switchCarryFor`'s shape). */
+        carry: async (c: Carry) =>
+          ((await deployment.provisionScopeLocal({ ...provisionInput, switchedOffPeers: c.peers, switchFences: c.fences }))
+            ?.switchedOff ?? []).filter((e) => e.vertical === PEER_CALLER),
+        stale: (to: 'on' | 'off') => deployment.peerSwitchLocal(s, PEER_CALLER, to, { fence: '00000000000000000000000000' }),
+      },
+      system: {
+        move: 'system-move',
+        switch: (to: 'on' | 'off', reason: string = to) =>
+          to === 'off'
+            ? platform.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason })
+            : platform.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason }),
+        recorded: async () =>
+          (await platform.admin.listSystemSwitches(staff, { scopeId: s, moduleId: SCHED }))[0]?.position ?? 'on',
+        scope: async () => (await deployment.systemGrantsStatusLocal(s)).find((m) => m.moduleId === SCHED)?.schedules,
+        lose: () => deployment.systemSwitchLocal(s, SCHED, 'on'),
+        carry: async (c: Carry) =>
+          ((await deployment.provisionScopeLocal({ ...provisionInput, switchedOff: c.modules, switchFences: c.fences }))
+            ?.switchedOff ?? []).filter((e) => e.moduleId === SCHED),
+        stale: (to: 'on' | 'off') => deployment.systemSwitchLocal(s, SCHED, to, { fence: '00000000000000000000000000' }),
+      },
+    };
+    const settle = (p: Promise<unknown>) =>
+      p.then(
+        () => ({ ok: true as const, error: undefined as unknown }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    return { platform, node, kinds, gates, settle };
+  };
+
+  it('upgrade: a scope created before the fence gains its table on the next wake, and fences from then on', async () => {
+    const { node, kinds } = await setup();
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(node.scopeId));
+    await runInDurableObject(stub, (_i, state) => {
+      state.storage.sql.exec('DROP TABLE _substrat_switch_fences'); // the storage an older build left
+    });
+    await restartNow(env.SCOPE, node.scopeId);
+    await kinds.peer.switch('off');
+    const fresh = env.SCOPE.get(env.SCOPE.idFromName(node.scopeId)); // the old stub went with the abort
+    const fences = await runInDurableObject(fresh, (_i, state) =>
+      state.storage.sql.exec('SELECT subject FROM _substrat_switch_fences').toArray(),
+    );
+    expect(fences).toEqual([{ subject: `vertical:${PEER_CALLER}` }]);
+    expect(await kinds.peer.stale('on')).toMatchObject({ superseded: true });
+  });
+
+  for (const kind of ['peer', 'system'] as const) {
+    describe(kind, () => {
+      it('A records OFF, B records ON and moves ON, THEN A moves: A is superseded, and both read ON', async () => {
+        const { kinds, gates, settle } = await setup();
+        const k = kinds[kind];
+        const holdA = gate((m, to) => m === k.move && to === 'off');
+        gates.push(holdA.gate);
+        const a = settle(k.switch('off', 'A'));
+        await holdA.arrived; // A's record is written; its move waits here
+        expect((await settle(k.switch('on', 'B'))).ok).toBe(true);
+        holdA.release();
+        const outcomeA = await a;
+        expect(errorCodeOf(outcomeA.error)).toBe('conflict');
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+      });
+
+      it('twin, in order: A moves OFF before B moves ON — both succeed, both read ON', async () => {
+        const { kinds, gates, settle } = await setup();
+        const k = kinds[kind];
+        const holdA = gate((m, to) => m === k.move && to === 'off');
+        const holdB = gate((m, to) => m === k.move && to === 'on');
+        gates.push(holdA.gate, holdB.gate);
+        const a = settle(k.switch('off', 'A'));
+        await holdA.arrived;
+        const b = settle(k.switch('on', 'B'));
+        await holdB.arrived;
+        holdA.release();
+        expect((await a).ok).toBe(true);
+        holdB.release();
+        expect((await b).ok).toBe(true);
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+      });
+
+      it('the OLDER call writes its record last: refused there, before it moves anything', async () => {
+        const { kinds, gates, settle } = await setup();
+        const k = kinds[kind];
+        await k.switch('off');
+        await k.switch('on');
+        const holdRecord = gate((m) => m === 'recordSwitchedOff');
+        gates.push(holdRecord.gate);
+        const a = settle(k.switch('off', 'A')); // its operation id is minted; its record write waits
+        await holdRecord.arrived;
+        expect((await settle(k.switch('on', 'B'))).ok).toBe(true);
+        holdRecord.release();
+        expect(errorCodeOf((await a).error)).toBe('conflict');
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+      });
+
+      it('an in-unit carry from a stale list leaves the newer call’s position; under the current fence it applies', async () => {
+        const { platform, node, kinds } = await setup();
+        const k = kinds[kind];
+        await k.switch('off');
+        const carry = await switchCarryOf(platform, node); // the list, as the platform read it
+        await k.switch('on'); // a newer call lands before the carry does
+        expect(await k.carry(carry)).toMatchObject([{ superseded: true, changed: false }]);
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+        // Twin: the same carry, read now, names nothing off; and an OFF read now applies.
+        await k.switch('off');
+        await k.lose();
+        expect(await k.carry(await switchCarryOf(platform, node))).toMatchObject([{ held: true, changed: true }]);
+        expect(await k.scope()).toBe('off');
+      });
+
+      it('a stale move is refused at the scope, and moves nothing', async () => {
+        const { kinds } = await setup();
+        const k = kinds[kind];
+        await k.switch('off');
+        expect(await k.stale('on')).toMatchObject({ superseded: true, changed: false });
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+      });
+
+      it('after the race, a scope that lost its marker is re-asserted under the record’s fence', async () => {
+        const { platform, node, kinds, gates, settle } = await setup();
+        const k = kinds[kind];
+        await k.switch('off');
+        await k.switch('on');
+        const holdA = gate((m, to) => m === k.move && to === 'on');
+        gates.push(holdA.gate);
+        const a = settle(k.switch('on', 'A'));
+        await holdA.arrived;
+        expect((await settle(k.switch('off', 'B'))).ok).toBe(true);
+        holdA.release();
+        expect((await a).ok).toBe(false);
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        await k.lose(); // a move with no fence, as a restore of older storage would leave it
+        expect(await k.scope()).toBe('on');
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+      });
+    });
+  }
 });

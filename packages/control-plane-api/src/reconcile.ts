@@ -19,7 +19,7 @@ import type {
   SwitchedOffInUnit,
   TenantId,
 } from '@substrat-run/contracts';
-import type { HostAdmin } from '@substrat-run/kernel';
+import { switchSubjectOf, type HostAdmin } from '@substrat-run/kernel';
 import { connectionGrantsForScope } from './vertical-client.js';
 
 /** The slice of `HostAdmin` a gather needs. Narrow on purpose: this reads, never writes. */
@@ -97,6 +97,12 @@ export interface SwitchCarry {
   switchedOffPeers?: string[];
   /** Of `switchedOffPeers`, those held on this scope only by a tenant-level grant (#2030). */
   tenantHeldPeers?: string[];
+  /**
+   * #2045: each recorded-off subject's fence, by tuple subject (`system:<m>`, `vertical:<v>`): the
+   * operation id of the call the record holds, so the deployment's in-unit OFF leaves a subject a
+   * newer call has moved as that call put it. A deployment built before it strips it.
+   */
+  switchFences?: Record<string, string>;
 }
 
 /** The slice of `HostAdmin` that `switchCarryFor` reads. */
@@ -118,11 +124,16 @@ export async function switchCarryFor(
   ]);
   const switchedOff = rows.map((r) => r.moduleId);
   const tenantHeld = switchedOff.length ? await admin.tenantHeldSystemModules(actor, node.tenantId, switchedOff) : [];
+  const switchFences: Record<string, string> = Object.fromEntries([
+    ...rows.map((r) => [switchSubjectOf('system', r.moduleId), r.operationId]),
+    ...Object.entries(peers.fences).map(([v, fence]) => [switchSubjectOf('peer', v), fence]),
+  ]);
   return {
     ...(switchedOff.length ? { switchedOff } : {}),
     ...(tenantHeld.length ? { tenantHeld } : {}),
     ...(peers.switchedOffPeers.length ? { switchedOffPeers: peers.switchedOffPeers } : {}),
     ...(peers.tenantHeldPeers.length ? { tenantHeldPeers: peers.tenantHeldPeers } : {}),
+    ...(Object.keys(switchFences).length ? { switchFences } : {}),
   };
 }
 

@@ -336,10 +336,7 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
 
       it('twin: a switch for a peer the scope never held records nothing, so nothing is re-asserted', async () => {
         expect(errorCodeOf(await refusal(off('acme/stranger')))).toBe('not_found');
-        expect(await host.admin.peerSwitchCarry(staff, { tenantId: t, scopeId: s })).toEqual({
-          switchedOffPeers: [],
-          tenantHeldPeers: [],
-        });
+        expect(await host.admin.peerSwitchCarry(staff, { tenantId: t, scopeId: s })).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
       });
     });
 
@@ -437,7 +434,7 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
       expect(errorCodeOf(await offCaller())).toBe('not_found');
       await fixture.seatTenantGrant(t, `vertical:${PEER_LISTENER}`, READ);
       expect(errorCodeOf(await offCaller())).toBe('not_found');
-      expect(await host.admin.peerSwitchCarry(staff, node())).toEqual({ switchedOffPeers: [], tenantHeldPeers: [] });
+      expect(await host.admin.peerSwitchCarry(staff, node())).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
       expect(errorCodeOf(await refusal((await asPeer()).invoke('peer/list')))).toBe('permission_denied');
     });
 
@@ -455,6 +452,7 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
       expect(await host.admin.peerSwitchCarry(staff, node())).toEqual({
         switchedOffPeers: [PEER_CALLER],
         tenantHeldPeers: [PEER_CALLER],
+        fences: { [PEER_CALLER]: expect.any(String) },
       });
     });
 

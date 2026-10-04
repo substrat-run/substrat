@@ -258,6 +258,7 @@ import {
   assertNoSecret,
   CAPABILITY_DDL,
   COPY_ORIGIN_DDL,
+  SWITCH_FENCES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
@@ -579,6 +580,7 @@ const KERNEL_DDL = `
     taken_at TEXT NOT NULL,
     pending TEXT NOT NULL
   );
+  ${SWITCH_FENCES_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -3750,10 +3752,12 @@ export function defineScopeDO(
       to: 'on' | 'off',
       at: string,
       tenantHeld = false,
+      /** #2045: the switch call's fence — the scope refuses a move older than the one it applied. */
+      fence?: string,
     ): Promise<SwitchOutcome & { instance: string }> {
       const outcome = await this.queue.enqueue(() =>
         this.revision.transactionSync(() =>
-          switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at, tenantHeld }),
+          switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at, tenantHeld, fence }),
         ),
       );
       // #1819: the instance that applied it, which the rewind hold's release rule reads.
@@ -3787,9 +3791,13 @@ export function defineScopeDO(
       at: string,
       /** #2030: the directory holds a live tenant-level `vertical:` grant for the peer. */
       tenantHeld = false,
+      /** #2045: the switch call's fence — the scope refuses a move older than the one it applied. */
+      fence?: string,
     ): Promise<SwitchOutcome & { instance: string }> {
       const outcome = await this.queue.enqueue(() =>
-        this.revision.transactionSync(() => switchPeer(this.switchSql(), { vertical, scopeId, to, at, tenantHeld })),
+        this.revision.transactionSync(() =>
+          switchPeer(this.switchSql(), { vertical, scopeId, to, at, tenantHeld, fence }),
+        ),
       );
       // #2029: the instance that applied it, which the rewind hold's release rule reads.
       return { ...outcome, instance: this.instanceId };

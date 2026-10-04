@@ -361,7 +361,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
       changed: true,
       permissions: ['sched:tick'],
     });
-    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off', tenantHeld: false }]);
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off', tenantHeld: false, fence: result.operationId }]);
     // The placeholder DO still holds its live grant and no marker: nothing was written here.
     expect((await host.runDueSchedules(SCHED, t, s)).fired).toBe(2);
     const common = { action: 'revokeFromSystem', vertical: 'sched-vertical', operationId: result.operationId, moduleId: SCHED, schedules: 'off' };
@@ -371,7 +371,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     ]);
 
     await host.admin.restoreToSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'ok' });
-    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, moduleId: SCHED, to: 'on', tenantHeld: false });
+    expect(calls.at(-1)).toEqual({ tenantId: t, scopeId: s, moduleId: SCHED, to: 'on', tenantHeld: false, fence: expect.any(String) });
     expect((await rows(audit)).map((r) => [r.action, r.phase])).toEqual([
       ['revokeFromSystem', 'intent'],
       ['revokeFromSystem', 'applied'],
@@ -605,7 +605,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     await expect(
       host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' }),
     ).rejects.toThrow(/no deployment serving scope/);
-    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off', tenantHeld: false }]);
+    expect(calls).toEqual([{ tenantId: t, scopeId: s, moduleId: SCHED, to: 'off', tenantHeld: false, fence: expect.any(String) }]);
     expect((await rows(audit)).map((r) => r.phase)).toEqual(['intent', 'failed']);
   });
 

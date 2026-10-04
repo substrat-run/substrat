@@ -76,7 +76,7 @@ export {
   type ProvisionSiblingInput,
   type ProvisionSiblingResult,
 } from './platform-drain.js';
-export { reconcilePayloadFor, reconcileThenReassert } from './reconcile.js';
+export { reconcilePayloadFor, reconcileThenReassert, switchCarryFor, type SwitchCarry } from './reconcile.js';
 export type { ReconcilePayload, ReconcileGatherAdmin } from './reconcile.js';
 export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 // #1978: moving here from the kernel — the drain is its only reader.

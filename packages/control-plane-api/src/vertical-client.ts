@@ -263,6 +263,8 @@ export interface ProvisionInstanceInput {
    *  predates the field ignores it. And of those, the ones held only by a tenant grant (#2030). */
   switchedOffPeers?: string[];
   tenantHeldPeers?: string[];
+  /** #2045: each recorded-off subject's fence, by tuple subject. A vertical that predates it ignores it. */
+  switchFences?: Record<string, string>;
 }
 
 export interface ConfigureInstanceInput {
@@ -370,6 +372,8 @@ export interface ReconcileInstanceInput {
   /** #2029: the recorded-off peers, and those held only by a tenant grant — as at provision. */
   switchedOffPeers?: string[];
   tenantHeldPeers?: string[];
+  /** #2045: each recorded-off subject's fence, by tuple subject. A vertical that predates it ignores it. */
+  switchFences?: Record<string, string>;
 }
 
 /**
@@ -785,6 +789,8 @@ export class VerticalClient {
     to: 'on' | 'off';
     /** #1823: the platform holds a live tenant-level grant for the module — see the route's body. */
     tenantHeld?: boolean;
+    /** #2045: the switch call's fence — see the route's body. */
+    fence?: string;
   }): Promise<SystemSwitchOutcome> {
     const verb = 'system-switch';
     const lost =
@@ -885,6 +891,8 @@ export class VerticalClient {
     to: 'on' | 'off';
     /** #2030: the platform holds a live tenant-level grant for the peer — see the route's body. */
     tenantHeld?: boolean;
+    /** #2045: the switch call's fence — see the route's body. */
+    fence?: string;
   }): Promise<PeerSwitchOutcome> {
     const verb = 'peer-switch';
     const lost =
@@ -1066,6 +1074,7 @@ export class VerticalClient {
       /** #2029: the recorded-off peers, and those held only by a tenant grant (#2030). */
       switchedOffPeers?: string[];
       tenantHeldPeers?: string[];
+      switchFences?: Record<string, string>;
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -1087,6 +1096,7 @@ export class VerticalClient {
         ...(opts?.tenantHeld ? { tenantHeld: opts.tenantHeld } : {}),
         ...(opts?.switchedOffPeers ? { switchedOffPeers: opts.switchedOffPeers } : {}),
         ...(opts?.tenantHeldPeers ? { tenantHeldPeers: opts.tenantHeldPeers } : {}),
+        ...(opts?.switchFences ? { switchFences: opts.switchFences } : {}),
         ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
         ...(opts?.exact ? { exact: true } : {}),
         ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),

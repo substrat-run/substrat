@@ -218,7 +218,34 @@ export interface SwitchOutcome {
    * that OFF", and refuses it rather than record a scope off that is not.
    */
   deniesTenantGrants?: true;
+  /**
+   * #2045: the move was refused, and nothing written, because the scope has already applied a
+   * NEWER switch call on this subject (`SWITCH_FENCES_DDL`). The scope stays where the newer call
+   * put it, which is also where the directory's record is. Absent from a deployment built before
+   * the fence, which applies every move it is sent.
+   */
+  superseded?: true;
 }
+
+/**
+ * #2045: the fence a scope keeps per switched subject — the operation id (a ULID) of the newest
+ * switch call it has applied. The directory's record (`system-switch-record.ts`) refuses a write
+ * older than the one it holds, and the scope refuses a move older than the one it applied, so the
+ * two always end on the SAME call's position, whatever order two concurrent calls' writes and moves
+ * arrive in. Without it, operator A recording OFF, then B recording ON and moving ON, then A's OFF
+ * landing, left the record ON beside a scope that is OFF, and a later restore re-admitted the
+ * subject. Keyed by (subject, object) as the marker is, so a copy of another scope's rows fences
+ * nothing here. Part of the scope's own storage: a restore or rewind takes it back with the marker.
+ */
+export const SWITCH_FENCES_DDL = `
+  CREATE TABLE IF NOT EXISTS _substrat_switch_fences (
+    subject TEXT NOT NULL,
+    object  TEXT NOT NULL,
+    -- The operation id of the newest switch call applied here. A ULID, so it orders by text.
+    fence   TEXT NOT NULL,
+    PRIMARY KEY (subject, object)
+  );
+`;
 
 /**
  * Move one module's switch on one scope. Idempotent: a repeat changes nothing and says so.
@@ -241,15 +268,10 @@ export interface SwitchOutcome {
  */
 export function switchSystemSchedules(
   db: SwitchSql,
-  input: { moduleId: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
+  input: { moduleId: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean; fence?: string },
 ): SwitchOutcome {
-  const outcome = switchSubjectGrants(db, {
-    subject: subjectOf(input.moduleId),
-    scopeId: input.scopeId,
-    to: input.to,
-    at: input.at,
-    tenantHeld: input.tenantHeld,
-  });
+  const { moduleId, ...rest } = input;
+  const outcome = switchSubjectGrants(db, { subject: subjectOf(moduleId), ...rest });
   return { ...outcome, deniesTenantGrants: true };
 }
 
@@ -270,6 +292,12 @@ export interface RecordedOffCarry {
   /** #2029: the recorded-off peers. Absent from a platform that predates the peer record. */
   verticals?: readonly string[];
   tenantHeldVerticals?: readonly string[];
+  /**
+   * #2045: the fence of each recorded-off subject, by tuple subject (`system:<m>`, `vertical:<v>`):
+   * the operation id of the call the record holds. A subject the scope has since moved under a newer
+   * call is left as that call put it. Absent from a platform built before the fence.
+   */
+  fences?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -283,6 +311,8 @@ export interface SwitchCarryWire {
   tenantHeld?: readonly string[];
   switchedOffPeers?: readonly string[];
   tenantHeldPeers?: readonly string[];
+  /** #2045: `RecordedOffCarry.fences`, as it crosses the wire. A deployment built before it strips it. */
+  switchFences?: Readonly<Record<string, string>>;
 }
 
 /** A wire carry as the unit runs it, or undefined when it names nothing to switch off. */
@@ -293,6 +323,7 @@ export function recordedOffFromWire(wire: SwitchCarryWire): RecordedOffCarry | u
     tenantHeld: wire.tenantHeld,
     verticals: wire.switchedOffPeers,
     tenantHeldVerticals: wire.tenantHeldPeers,
+    fences: wire.switchFences,
   };
 }
 
@@ -314,6 +345,7 @@ export function recordedOffFromWire(wire: SwitchCarryWire): RecordedOffCarry | u
  */
 export function switchRecordedOff(db: SwitchSql, input: RecordedOffCarry & { scopeId: string; at: string }): SwitchedOff[] {
   const tenantHeld = new Set(input.tenantHeld ?? []);
+  const fenceOf = (subject: string): string | undefined => input.fences?.[subject];
   const modules: SwitchedOff[] = [...new Set(input.moduleIds)].map((moduleId) => ({
     moduleId,
     ...switchSystemSchedules(db, {
@@ -322,6 +354,7 @@ export function switchRecordedOff(db: SwitchSql, input: RecordedOffCarry & { sco
       to: 'off',
       at: input.at,
       tenantHeld: tenantHeld.has(moduleId),
+      fence: fenceOf(subjectOf(moduleId)),
     }),
   }));
   const peersHeld = new Set(input.tenantHeldVerticals ?? []);
@@ -333,6 +366,7 @@ export function switchRecordedOff(db: SwitchSql, input: RecordedOffCarry & { sco
       to: 'off',
       at: input.at,
       tenantHeld: peersHeld.has(vertical),
+      fence: fenceOf(peerSubjectRef(vertical)),
     }),
   }));
   return [...modules, ...peers];
@@ -346,7 +380,7 @@ export function switchRecordedOff(db: SwitchSql, input: RecordedOffCarry & { sco
 export function moveSwitch(
   db: SwitchSql,
   kind: SwitchKind,
-  input: { key: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
+  input: { key: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean; fence?: string },
 ): SwitchOutcome {
   const { key, ...rest } = input;
   return kind === 'system'
@@ -365,10 +399,51 @@ export function moveSwitch(
  */
 export function switchSubjectGrants(
   db: SwitchSql,
-  input: { subject: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
+  input: {
+    subject: string;
+    scopeId: string;
+    to: 'on' | 'off';
+    at: string;
+    tenantHeld?: boolean;
+    /**
+     * #2045: the switch call this move belongs to — its operation id, or for a re-assert the one the
+     * directory's record holds. A move older than the fence the scope keeps is refused (`superseded`);
+     * one at or past it applies and moves the fence to it. Absent, the move applies and leaves the
+     * fence alone: a caller from before the fence.
+     */
+    fence?: string;
+  },
+): SwitchOutcome {
+  const object = `scope:${input.scopeId}`;
+  const stored =
+    input.fence === undefined
+      ? undefined
+      : (db.all(`SELECT fence FROM _substrat_switch_fences WHERE subject = ? AND object = ?`, input.subject, object)[0] as
+          | { fence: string }
+          | undefined);
+  if (input.fence !== undefined && stored !== undefined && stored.fence > input.fence) {
+    return { held: true, changed: false, permissions: [], superseded: true };
+  }
+  const outcome = applySwitch(db, input, object);
+  if (input.fence !== undefined && outcome.held) {
+    db.run(
+      `INSERT INTO _substrat_switch_fences (subject, object, fence) VALUES (?, ?, ?)
+       ON CONFLICT (subject, object) DO UPDATE SET fence = excluded.fence`,
+      input.subject,
+      object,
+      input.fence,
+    );
+  }
+  return outcome;
+}
+
+/** `switchSubjectGrants`' move itself, once the fence has let it through. */
+function applySwitch(
+  db: SwitchSql,
+  input: { subject: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
+  object: string,
 ): SwitchOutcome {
   const subject = input.subject;
-  const object = `scope:${input.scopeId}`;
   const grants = db.all(
     `SELECT relation, revoked_at FROM _substrat_tuples
       WHERE subject = ? AND object = ? AND substr(relation, 1, 8) = 'granted:'
