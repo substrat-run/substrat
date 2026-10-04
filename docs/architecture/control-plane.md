@@ -247,9 +247,12 @@ request. The deployment's own timer, its retries and its background work never p
 So the platform **delivers** the lifecycle. After every scope transition, and after a
 tenant transition (fanned out to every hosted scope under the tenant), the control plane
 posts the scope's state, `{ scope, tenant, at }`, to the deployment's `/internal/lifecycle`.
-The deployment stores it in the scope's own storage. It is a state, not a toggle: `at` is
-when the platform read the directory, and the scope keeps the newest it has seen, so a
-late delivery cannot undo a later transition.
+The deployment stores it in the scope's own storage. It is a state, not a toggle, ordered by
+the directory's own revisions and never by a clock: each scope transition bumps the
+scope's revision, and each tenant status change the tenant's, in the same transaction as
+the change. The scope keeps a delivery only when it is strictly newer on one revision and
+older on neither, so two transitions' overlapping deliveries settle on the later one
+whichever lands last.
 
 - **One gate.** The CP-less host's `assertLive` reads it at every door that runs the scope's
   work: a request's stub, attachments, a capability or impersonation session, a peer call,

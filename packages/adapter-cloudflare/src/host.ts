@@ -225,6 +225,7 @@ import {
   scopeLifecycle,
   type LifecycleDelivery,
   type ScopeLifecycle,
+  type StoredScopeLifecycle,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -930,7 +931,7 @@ interface ScopeStubRpc {
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
   /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
-  lifecycle(): Promise<ScopeLifecycle | null>;
+  lifecycle(): Promise<StoredScopeLifecycle | null>;
   /** Store a delivered lifecycle unless a newer one is held (#1713, `writeLifecycle`). */
   setLifecycle(next: ScopeLifecycle): Promise<LifecycleDelivery>;
   /** Remove a mistaken copy marker (#2005); a real load's mark is kept. */
@@ -7715,8 +7716,9 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Deliver the directory's lifecycle to the deployments serving the matching scopes (#1713):
    * one scope after its transition, a tenant's scopes after the tenant's, or the heal sweep's
-   * drift. Each delivery is the state as read now, so a late one cannot undo a later transition:
-   * the deployment keeps the newest `at` it has seen.
+   * drift. Each delivery carries the directory's revisions, read in the same query as the
+   * statuses, so a late one cannot undo a later transition: the deployment keeps only a delivery
+   * strictly newer than the one it holds.
    *
    * Never throws. A transition is the operator's lever in an incident, and the router refuses
    * the scope's requests as soon as the directory moves (#1730), so a deployment that cannot be
@@ -7740,7 +7742,12 @@ export class CloudflareScopeHost implements ScopeHost {
     for (const t of targets) {
       const tenantId = t.tenant_id as TenantId;
       const scopeId = t.scope_id as ScopeId;
-      const parsed = scopeLifecycle.safeParse({ scope: t.scope_status, tenant: t.tenant_status, at: new Date().toISOString() });
+      const parsed = scopeLifecycle.safeParse({
+        scope: t.scope_status,
+        tenant: t.tenant_status,
+        at: new Date().toISOString(),
+        revision: { scope: t.scope_rev, tenant: t.tenant_rev },
+      });
       if (!parsed.success) {
         // A status this code does not know (a newer directory): delivering a guess could lift a hold.
         report.failed += 1;

@@ -632,6 +632,9 @@ export interface LifecycleTargetRow {
   tenant_status: string;
   /** `lifecycleReceipt` of the acknowledged state, or null when none was. */
   delivered: string | null;
+  /** The directory's revisions of the scope's status and the tenant's (0 when never changed). */
+  scope_rev: number;
+  tenant_rev: number;
 }
 
 const DIRECTORY_DDL = `
@@ -1140,6 +1143,14 @@ const DIRECTORY_DDL = `
     scope_id TEXT PRIMARY KEY,
     delivered TEXT NOT NULL,
     at TEXT NOT NULL
+  );
+  -- #1713: the lifecycle's revisions, one counter per subject ("scope:<id>" counts a
+  -- scope's status transitions, "tenant:<id>" a tenant's status changes), each bumped in
+  -- the same transaction as the change it counts. A deployment orders deliveries by them,
+  -- never by a clock. No row reads as 0.
+  CREATE TABLE IF NOT EXISTS lifecycle_revisions (
+    subject TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL
   );
 `;
 
@@ -1753,20 +1764,23 @@ export class ControlPlaneDO extends DurableObject {
     // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
     // entering `deleting` stamps, leaving it (an un-delete) clears — the same shape
     // transitionScope uses for archived_at.
-    if (status === 'deleting') {
-      this.sql.exec(
-        'UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?',
-        status,
-        new Date().toISOString(),
-        tenantId,
-      );
-    } else {
-      this.sql.exec(
-        'UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?',
-        status,
-        tenantId,
-      );
-    }
+    this.ctx.storage.transactionSync(() => {
+      if (status === 'deleting') {
+        this.sql.exec(
+          'UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?',
+          status,
+          new Date().toISOString(),
+          tenantId,
+        );
+      } else {
+        this.sql.exec(
+          'UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?',
+          status,
+          tenantId,
+        );
+      }
+      this.bumpLifecycleRevision(`tenant:${tenantId}`); // #1713, with the change it counts
+    });
     return before.status;
   }
 
@@ -1799,10 +1813,13 @@ export class ControlPlaneDO extends DurableObject {
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
-    this.sql.exec(
-      "UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?",
-      tenantId,
-    );
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        "UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?",
+        tenantId,
+      );
+      this.bumpLifecycleRevision(`tenant:${tenantId}`); // #1713
+    });
     return before.status;
   }
 
@@ -2324,6 +2341,7 @@ export class ControlPlaneDO extends DurableObject {
         this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
       }
       if (to === 'reaped') forgetSystemSwitchesOf(this.kernelSql, scopeId);
+      this.bumpLifecycleRevision(`scope:${scopeId}`); // #1713, with the status it counts
     });
     return { ok: true, status: row.status, vertical: row.vertical };
   }
@@ -4173,16 +4191,27 @@ export class ControlPlaneDO extends DurableObject {
     params.push(filter.limit ?? 1000);
     return this.sql
       .exec(
-        `SELECT s.tenant_id, s.scope_id, s.status AS scope_status, t.status AS tenant_status, r.delivered
+        `SELECT s.tenant_id, s.scope_id, s.status AS scope_status, t.status AS tenant_status, r.delivered,
+                COALESCE(rs.revision, 0) AS scope_rev, COALESCE(rt.revision, 0) AS tenant_rev
            FROM scopes s
            JOIN tenants t ON t.tenant_id = s.tenant_id
            LEFT JOIN scope_lifecycle_receipts r ON r.scope_id = s.scope_id
+           LEFT JOIN lifecycle_revisions rs ON rs.subject = 'scope:' || s.scope_id
+           LEFT JOIN lifecycle_revisions rt ON rt.subject = 'tenant:' || s.tenant_id
           WHERE ${where.join(' AND ')}
           ORDER BY CASE WHEN ${drifted} THEN 0 ELSE 1 END, s.scope_id
           LIMIT ?`,
         ...params,
       )
       .toArray() as unknown as LifecycleTargetRow[];
+  }
+
+  /** #1713: count one lifecycle change of a scope or a tenant. Call inside the change's transaction. */
+  private bumpLifecycleRevision(subject: string): void {
+    this.sql.exec(
+      'INSERT INTO lifecycle_revisions (subject, revision) VALUES (?, 1) ON CONFLICT (subject) DO UPDATE SET revision = revision + 1',
+      subject,
+    );
   }
 
   /** #1713: record what a scope's deployment acknowledged holding (`lifecycleReceipt`). */
