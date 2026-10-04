@@ -46,25 +46,35 @@ interface Invitation {
 
 const invitation = (id: string) => ({ entityType: 'invitation', entityId: id });
 
-const accept = (ctx: OperationContext, input: Invitation): void => {
+/** The acceptance and the request it carries, in either order (`requestFirst` is the forgery). */
+const accept = (ctx: OperationContext, input: Invitation, requestFirst = false): void => {
   ctx.sql.exec('INSERT INTO invitefix_accepts (invitation_id, principal) VALUES (?, ?)', [
     input.invitationId,
     ctx.principal,
   ]);
-  ctx.emit({
-    type: 'invites.accepted',
-    schemaVersion: 1,
-    entity: invitation(input.invitationId),
-    piiClass: 'none',
-    payload: { ...input, principal: ctx.principal },
-  });
-  ctx.emit({
-    type: 'member.add-requested',
-    schemaVersion: 1,
-    entity: { entityType: 'membership', entityId: ctx.principal },
-    piiClass: 'none',
-    payload: { principal: ctx.principal, orgId: input.orgId, tenantId: ctx.tenantId, roleKey: input.roleKey, invitationId: input.invitationId },
-  });
+  const accepted = () =>
+    ctx.emit({
+      type: 'invites.accepted',
+      schemaVersion: 1,
+      entity: invitation(input.invitationId),
+      piiClass: 'none',
+      payload: { ...input, principal: ctx.principal },
+    });
+  const request = () =>
+    ctx.emit({
+      type: 'member.add-requested',
+      schemaVersion: 1,
+      entity: { entityType: 'membership', entityId: ctx.principal },
+      piiClass: 'none',
+      payload: { principal: ctx.principal, orgId: input.orgId, tenantId: ctx.tenantId, roleKey: input.roleKey, invitationId: input.invitationId },
+    });
+  if (requestFirst) {
+    request();
+    accepted();
+  } else {
+    accepted();
+    request();
+  }
 };
 
 export const membershipFixtureMod: ModuleRegistration = {
@@ -86,6 +96,8 @@ export const membershipFixtureMod: ModuleRegistration = {
       });
     }) as unknown as OperationHandler<never, unknown>,
     'invitefix/accept': ((ctx: OperationContext, input: Invitation) => accept(ctx, input)) as unknown as OperationHandler<never, unknown>,
+    /** The request emitted BEFORE the acceptance it claims — a request no acceptance preceded. */
+    'invitefix/accept-request-first': ((ctx: OperationContext, input: Invitation) => accept(ctx, input, true)) as unknown as OperationHandler<never, unknown>,
     /** The accept, then a failure: the property the seam is chosen for is that nothing survives. */
     'invitefix/accept-and-throw': ((ctx: OperationContext, input: Invitation) => {
       accept(ctx, input);

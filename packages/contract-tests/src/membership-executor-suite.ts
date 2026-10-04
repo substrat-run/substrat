@@ -309,6 +309,12 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         await expectRefused(w, outcomes, joe, /invitation .* was already used/);
       });
 
+      it('a request emitted before the acceptance it claims', async () => {
+        const joe = principalId.parse(ulid());
+        const outcomes = await asJoiner(w, joe, 'invitefix/accept-request-first', await send(w, w.alice, 'member'));
+        await expectRefused(w, outcomes, joe, /precedes invitation .*'s acceptance/);
+      });
+
       it('with no request shape at all', async () => {
         const joe = principalId.parse(ulid());
         const outcomes = await asJoiner(w, joe, 'invitefix/request', { entityId: joe, payload: { principal: joe } });
