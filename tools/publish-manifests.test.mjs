@@ -5,8 +5,10 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import npa from 'npm-package-arg';
 import {
@@ -138,18 +140,66 @@ test('every public package declares the guard, and one that does not is refused'
   }
 });
 
-test('against the producers: `npm publish` is refused by the guard, `pnpm publish` gets past it', () => {
-  // --dry-run on both: the lifecycle runs, nothing reaches the registry. npm runs with
-  // pnpm's environment inherited — as under `pnpm test` — which must not let it through.
-  const dir = join(root, 'packages/control-plane-client');
-  const env = { ...process.env, npm_config_user_agent: 'pnpm/10.10.0 npm/? node/v24.0.0' };
-  const npm = spawnSync('npm', ['publish', '--dry-run'], { cwd: dir, encoding: 'utf8', env });
-  assert.notEqual(npm.status, 0);
-  assert.match(npm.stderr, /refusing to publish with npm-cli\.js/);
-  const pnpm = spawnSync('pnpm', ['publish', '--dry-run', '--no-git-checks'], { cwd: dir, encoding: 'utf8' });
-  assert.doesNotMatch(`${pnpm.stdout}${pnpm.stderr}`, /refusing to publish/);
-  assert.equal(pnpm.status, 0, pnpm.stderr);
+test('against the producers: `npm publish` is refused by the guard, `pnpm publish` gets past it', async () => {
+  // A real public package cannot be the subject: its version is on npm right after every
+  // release, and npm 11's --dry-run refuses to publish over a published version — so the
+  // verdict would depend on the registry and on this machine's npm. Instead, a fixture laid
+  // out the way every public package is (`<root>/packages/<name>`, declaring PUBLISH_GUARD,
+  // which the test above holds every one of them to) runs the real lifecycle against a
+  // registry this test serves: it has never heard of anything, and no auth reaches it.
+  const fixture = mkdtempSync(join(tmpdir(), 'publish-guard-'));
+  const registry = createServer((_, res) => res.writeHead(404, { 'content-type': 'application/json' }).end('{}'));
+  try {
+    // A copy, not a symlink: node runs a symlinked main module from its real path, and the
+    // guard only acts when it is the main module — through a link it would refuse nothing.
+    mkdirSync(join(fixture, 'tools'));
+    copyFileSync(join(root, 'tools/publish-guard.mjs'), join(fixture, 'tools/publish-guard.mjs'));
+    const dir = join(fixture, 'packages/fixture');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'index.js'), '');
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: '@substrat-run/publish-guard-fixture',
+        version: '1.0.0',
+        // Outside the repo pnpm would switch to whatever version this machine defaults to;
+        // the pin keeps the publisher the one `pnpm release` runs.
+        packageManager: JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).packageManager,
+        scripts: { prepublishOnly: PUBLISH_GUARD },
+        publishConfig: { access: 'public' },
+      }),
+    );
+    writeFileSync(join(fixture, 'npmrc'), '');
+    await new Promise((ready) => registry.listen(0, '127.0.0.1', ready));
+    const env = {
+      ...process.env,
+      npm_config_registry: `http://127.0.0.1:${registry.address().port}/`,
+      npm_config_userconfig: join(fixture, 'npmrc'),
+    };
+    // --dry-run on both: the lifecycle runs, nothing is uploaded. npm runs with pnpm's
+    // environment inherited — as under `pnpm test` — which must not let it through.
+    const npm = await run('npm', ['publish', '--dry-run'], dir, { ...env, npm_config_user_agent: 'pnpm/10.10.0 npm/? node/v24.0.0' });
+    assert.notEqual(npm.status, 0, npm.output);
+    assert.match(npm.output, /refusing to publish with npm-cli\.js/);
+    const pnpm = await run('pnpm', ['publish', '--dry-run', '--no-git-checks'], dir, env);
+    assert.doesNotMatch(pnpm.output, /refusing to publish/);
+    assert.equal(pnpm.status, 0, pnpm.output);
+  } finally {
+    registry.close();
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
+
+/** `spawn`, not `spawnSync`: the stub registry answers from this process's event loop. */
+function run(cmd, args, cwd, env) {
+  return new Promise((done, fail) => {
+    const child = spawn(cmd, args, { cwd, env });
+    let output = '';
+    for (const stream of [child.stdout, child.stderr]) stream.on('data', (chunk) => (output += chunk));
+    child.on('error', fail);
+    child.on('close', (status) => done({ status, output }));
+  });
+}
 
 test('an npm: alias installs its target: scoped, unscoped, with and without a range', () => {
   assert.deepEqual(installTarget('kit', 'npm:@substrat-run/engine-test-kit@0.1.0'), { name: '@substrat-run/engine-test-kit', range: '0.1.0' });
