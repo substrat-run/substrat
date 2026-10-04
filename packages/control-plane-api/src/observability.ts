@@ -248,7 +248,20 @@ export interface ConnectorCallsBucket {
  *
  * `status` is the one numeric facet; the rest are strings.
  */
-export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status'] as const;
+export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind'] as const;
+
+/**
+ * #1901: the values of the `kind` facet. A line with no `kind` is a request's — every line
+ * written before the field existed, and every request line since — so `request` is a value a
+ * reader filters on even though no line spells it.
+ */
+export const INVOCATION_KINDS = ['request', 'consumer', 'schedule'] as const;
+export type InvocationKind = (typeof INVOCATION_KINDS)[number];
+
+/** A line's kind, absent read as `request` (#1901). */
+export function invocationKindOf(v: unknown): InvocationKind {
+  return v === 'consumer' || v === 'schedule' ? v : 'request';
+}
 export type RequestFacetKey = (typeof REQUEST_FACET_KEYS)[number];
 
 /**
@@ -371,6 +384,16 @@ export interface RequestRecord {
   eventTypes: string[];
   entities: string[];
   versionId: string | null;
+  /** #1901: `request`, or the kind of async work the scope host logged. Never null. */
+  kind: InvocationKind;
+  /** #1901: how async work ended (`delivered`, `retrying`, `dead-lettered`, `inert`, …). */
+  outcome: string | null;
+  /** #1901: a consumer's event type, event id and attempt. */
+  eventType: string | null;
+  eventId: string | null;
+  attempt: number | null;
+  /** #1901: a schedule run's lateness against its due time, in milliseconds. */
+  latenessMs: number | null;
 }
 
 /** The levels a `ctx.log` line is written at. */

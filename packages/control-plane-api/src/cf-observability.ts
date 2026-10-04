@@ -14,7 +14,10 @@ import type {
   RequestRecord,
   TenantRequestScope,
 } from './observability.js';
-import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS } from './observability.js';
+import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, invocationKindOf } from './observability.js';
+
+/** #1901: the kinds of async work a scope host logs — everything but a request. */
+const ASYNC_KINDS = ['consumer', 'schedule'] as const;
 
 /** A telemetry filter: a leaf comparison, or a group of them (the API nests up to 4 deep). */
 type TelemetryFilter =
@@ -42,6 +45,10 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
     if (key === omit) continue;
     const values = scope.where?.[key] ?? [];
     if (values.length === 0) continue;
+    // #1901: `request` is a kind no line spells — a request's line has no `kind` — so it is
+    // not a filter this API can express. A selection naming it is applied to the answer
+    // instead (`kindMatches`); one naming only async kinds narrows here, as any facet does.
+    if (key === 'kind' && values.includes('request')) continue;
     const leaves: TelemetryFilter[] = values.map((v) =>
       key === 'status'
         ? { key, operation: 'eq', type: 'number', value: Number(v) }
@@ -147,6 +154,13 @@ function sampled(p: CalculationPoint): boolean {
   return typeof p.sampleInterval === 'number' && p.sampleInterval > 1;
 }
 
+/** #1901: does a raw line pass the scope's `kind` selection, a missing `kind` read as `request`? */
+function kindMatches(e: Record<string, unknown>, scope: TenantRequestScope): boolean {
+  const values = scope.where?.kind ?? [];
+  if (values.length === 0) return true;
+  return values.includes(invocationKindOf(((e['source'] ?? {}) as Record<string, unknown>)['kind']));
+}
+
 /** The stamped line of a raw event, as the Requests view lists it. */
 function requestRecordOf(e: Record<string, unknown>): RequestRecord {
   const source = (e['source'] ?? {}) as Record<string, unknown>;
@@ -172,6 +186,12 @@ function requestRecordOf(e: Record<string, unknown>): RequestRecord {
     eventTypes: strings(source['eventTypes']),
     entities: strings(source['entities']),
     versionId: str(source['versionId']),
+    kind: invocationKindOf(source['kind']),
+    outcome: str(source['outcome']),
+    eventType: str(source['eventType']),
+    eventId: str(source['eventId']),
+    attempt: num(source['attempt']),
+    latenessMs: num(source['latenessMs']),
   };
 }
 
@@ -256,6 +276,16 @@ function ownsInvocation(
 function describeInvocation(e: RecentLogEvent): RecentLogEvent {
   const source = ((e.raw as Record<string, unknown>)?.['source'] ?? {}) as Record<string, unknown>;
   if (source['substrat'] !== 'invocation') return e;
+  // #1901: async work has no method, path or status — it says what ran and how it ended.
+  const kind = invocationKindOf(source['kind']);
+  if (kind !== 'request') {
+    return {
+      ...e,
+      invocationId: typeof source['invocationId'] === 'string' ? source['invocationId'] : null,
+      message: describeAsync(kind, source),
+      level: e.level ?? (typeof source['level'] === 'string' ? source['level'] : null),
+    };
+  }
   const method = typeof source['method'] === 'string' ? source['method'] : '?';
   const path = typeof source['path'] === 'string' ? source['path'] : '?';
   const status = typeof source['status'] === 'number' ? source['status'] : null;
@@ -276,6 +306,34 @@ function describeInvocation(e: RecentLogEvent): RecentLogEvent {
     // which rows are failures without the caller having to filter for them.
     level: e.level ?? (isFailedInvocation(e) ? 'error' : 'info'),
   };
+}
+
+/**
+ * #1901: an async line's message, from its own fields — names and counts only, as the line
+ * carries nothing else:
+ *
+ * - `consumer notify ← ticket.created (attempt 2) → retrying (12 ms)`
+ * - `schedule digest/send → ok (40 ms, 1200 ms late)`
+ * - `consumer: 5 more lines withheld (consumer:dead-lettered 5)`
+ */
+function describeAsync(kind: string, source: Record<string, unknown>): string {
+  const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
+  const n = (v: unknown) => (typeof v === 'number' ? v : null);
+  const outcome = text(source['outcome']) ?? '—';
+  if (outcome === 'suppressed') {
+    const by = (source['suppressedBy'] ?? {}) as Record<string, unknown>;
+    const parts = Object.entries(by).map(([k, v]) => `${k} ${String(v)}`);
+    return `${kind}: ${n(source['suppressed']) ?? '?'} more lines withheld${parts.length ? ` (${parts.join(', ')})` : ''}`;
+  }
+  const operation = text(source['operation']) ?? '?';
+  const ms = n(source['durationMs']);
+  const late = n(source['latenessMs']);
+  const timing = [ms === null ? null : `${ms} ms`, late === null ? null : `${late} ms late`].filter(Boolean).join(', ');
+  const subject =
+    kind === 'consumer'
+      ? `${operation} ← ${text(source['eventType']) ?? '?'}${n(source['attempt']) === null ? '' : ` (attempt ${n(source['attempt'])})`}`
+      : operation;
+  return `${kind} ${subject} → ${outcome}${timing ? ` (${timing})` : ''}`;
 }
 
 /**
@@ -584,37 +642,17 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    */
   const telemetry: AggregateSource = {
     async requests(q) {
-      const { rows, estimated, complete } = await countGrouped(q, 'invocation', [
-        { type: 'string', value: 'tenantId' },
-        { type: 'string', value: 'scopeId' },
-        { type: 'string', value: 'level' },
-        { type: 'string', value: 'operation' },
-        { type: 'string', value: 'problemCode' },
-        { type: 'string', value: 'principalKind' },
-        { type: 'string', value: 'surface' },
-        { type: 'number', value: 'status' },
+      return requestCube(q);
+    },
+    // #1901: the async lines alone, for the part of a window the router's datapoints serve.
+    async asyncRequests(q) {
+      return requestCube(q, [
+        {
+          kind: 'group',
+          filterCombination: 'or',
+          filters: ASYNC_KINDS.map((value) => ({ key: 'kind', operation: 'eq', type: 'string', value })),
+        },
       ]);
-      return {
-        estimated,
-        complete,
-        rows: rows.flatMap(({ bucket, groups, count }) => {
-          const tenantId = str(groups.get('tenantId'));
-          if (tenantId === null) return [];
-          const status = groups.get('status');
-          return [{
-            bucket,
-            tenantId,
-            scopeId: str(groups.get('scopeId')),
-            level: str(groups.get('level')),
-            operation: str(groups.get('operation')),
-            problemCode: str(groups.get('problemCode')),
-            principalKind: str(groups.get('principalKind')),
-            surface: str(groups.get('surface')),
-            status: typeof status === 'number' ? status : typeof status === 'string' && status !== '' ? Number(status) : null,
-            count,
-          }];
-        }),
-      };
     },
     async patterns(q) {
       const { rows, estimated, complete } = await countGrouped(q, 'log', [
@@ -636,6 +674,47 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       };
     },
   };
+  /** The request cube over stamped lines, grouped by every facet (#1746) and `kind` (#1901). */
+  async function requestCube(q: CubeQuery, extra: TelemetryFilter[] = []) {
+    const { rows, estimated, complete } = await countGrouped(
+      q,
+      'invocation',
+      [
+        { type: 'string', value: 'tenantId' },
+        { type: 'string', value: 'scopeId' },
+        { type: 'string', value: 'level' },
+        { type: 'string', value: 'operation' },
+        { type: 'string', value: 'problemCode' },
+        { type: 'string', value: 'principalKind' },
+        { type: 'string', value: 'surface' },
+        { type: 'number', value: 'status' },
+        { type: 'string', value: 'kind' },
+      ],
+      extra,
+    );
+    return {
+      estimated,
+      complete,
+      rows: rows.flatMap(({ bucket, groups, count }): RequestCubeRow[] => {
+        const tenantId = str(groups.get('tenantId'));
+        if (tenantId === null) return [];
+        const status = groups.get('status');
+        return [{
+          bucket,
+          tenantId,
+          scopeId: str(groups.get('scopeId')),
+          level: str(groups.get('level')),
+          operation: str(groups.get('operation')),
+          problemCode: str(groups.get('problemCode')),
+          principalKind: str(groups.get('principalKind')),
+          surface: str(groups.get('surface')),
+          status: typeof status === 'number' ? status : typeof status === 'string' && status !== '' ? Number(status) : null,
+          kind: str(groups.get('kind')),
+          count,
+        }];
+      }),
+    };
+  }
   const logs: AggregateSource = opts.cubeStore ? cachedSource(telemetry, opts.cubeStore) : telemetry;
   const routerSince = opts.requestsFromRouterSince ? Date.parse(opts.requestsFromRouterSince) : undefined;
   const routerDataset = opts.routerDataset;
@@ -767,10 +846,13 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     q: CubeQuery,
     kind: 'invocation' | 'log',
     groupBys: Array<{ type: string; value: string }>,
+    /** #1901: more filters ANDed on — the async cube's `kind`. */
+    extra: TelemetryFilter[] = [],
   ): Promise<{ rows: Array<{ bucket: number; groups: Map<string, unknown>; count: number }>; estimated: boolean; complete: boolean }> {
     const filters: TelemetryFilter[] = [
       ...serviceFilter([q.service]),
       { key: 'substrat', operation: 'eq', type: 'string', value: kind },
+      ...extra,
     ];
     const once = async (from: number, to: number, offsetBy?: number) => {
       const calc = await queryCalculation(filters, { from, to }, {
@@ -1009,6 +1091,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     async tenantRequests(input) {
       const events = await queryRaw(requestFilters(input), { from: input.from, to: input.to }, input.limit);
       return events
+        // #1901: a `request` selection is applied here, the one facet the query cannot carry.
+        .filter((e) => kindMatches(e, input))
         .sort((a, b) => rawTime(b) - rawTime(a))
         .slice(0, input.limit)
         .map(requestRecordOf);
