@@ -37,8 +37,15 @@ export interface ScopeSweepReport {
   schedules: ScheduleSweepReport;
   /** Present when this deployment opted into driving resumable jobs. */
   jobs?: Pick<JobDriveReport, 'attempted' | 'advanced' | 'completed' | 'retrying' | 'failed'>;
+  /**
+   * #1713: roster scopes the pass skipped whole because their lifecycle holds them — suspended
+   * or archived, or under a suspended or deleting tenant. Nothing ran and nothing moved: their
+   * deliveries stay due, their schedules' cadence untouched, their jobs where they were, so the
+   * first pass after the scope is live again picks all of it up. Absent on a host that cannot say.
+   */
+  held?: number;
   /** Per-unit failures; the pass records and steps over each, never aborts. */
-  errors: { kind: 'drain' | 'schedule' | 'freshness' | 'job'; id: string; error: string }[];
+  errors: { kind: 'drain' | 'schedule' | 'freshness' | 'job' | 'lifecycle'; id: string; error: string }[];
 }
 
 /** One settled pass: the report, or the error that sank the whole pass. */
@@ -46,13 +53,20 @@ export type ScopeSweepOutcome = ScopeSweepReport | { error: string };
 
 /**
  * The slice of `CloudflareScopeHost` a scope-local pass drives — structural, so
- * tests can hand in a fake and the DO depends on no host internals. All three
- * are CP-less-safe: `drainDue` gates through `validateScopeAccess` (a null-CP
- * passthrough) and `runDueSchedules` skips the directory read on a CP-less host
- * (#461); neither needs a platform actor.
+ * tests can hand in a fake and the DO depends on no host internals. All of it
+ * is CP-less-safe: the lifecycle a CP-less host reads is the one the platform
+ * delivered to the scope's own storage (#1713), and `runDueSchedules` skips the
+ * directory read on a CP-less host (#461); none of it needs a platform actor.
  */
 export interface ScopeSweepHost {
   drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport>;
+  /**
+   * #1713: whether the scope's lifecycle holds its work — the ONE gate a pass asks before any
+   * phase, so a held scope is skipped whole rather than refused phase by phase. Optional so a
+   * fake host (and a pre-widening deployment) keeps compiling; the host's own entry points hold
+   * a scope either way.
+   */
+  lifecycleHeld?(scopeId: ScopeId): Promise<boolean>;
   runDueJobs(tenantId: TenantId, scopeId: ScopeId): Promise<JobDriveReport>;
   registeredSchedules(): ScheduleRegistration[];
   runDueSchedules(
@@ -276,6 +290,18 @@ export function defineScopeSweeperDO<Env>(
       const worker = async (): Promise<void> => {
         while (next < entries.length) {
           const { tenantId, scopeId } = entries[next++]!;
+          if (host.lifecycleHeld) {
+            try {
+              if (await host.lifecycleHeld(scopeId)) {
+                report.held = (report.held ?? 0) + 1;
+                continue;
+              }
+            } catch (err) {
+              // Unread is not live: a scope whose hold cannot be read runs nothing this pass.
+              report.errors.push({ kind: 'lifecycle', id: scopeId, error: message(err) });
+              continue;
+            }
+          }
           if (config.drainRetries !== false) {
             try {
               const r = await host.drainDue(tenantId, scopeId);

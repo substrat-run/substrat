@@ -1,6 +1,7 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { permissionKey, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { moduleId, permissionKey, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle } from '@substrat-run/contracts';
+import { scheduleMod } from '@substrat-run/contract-tests';
 import { INERT_SCOPE_REASON, ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 
@@ -288,5 +289,163 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
       expect((await hostFor().drainDue(t, dest)).attempted).toBe(0);
       expect(ranIds).not.toContain(src.id);
     });
+  });
+});
+
+/**
+ * #1713 on a CP-LESS host: suspension reaches a hosted vertical only as the lifecycle the platform
+ * delivers to the scope's own storage (`setLifecycleLocal`, behind `/internal/lifecycle`). Every
+ * door that runs the scope's work reads it — a request's stub, the system door a schedule and a job
+ * take, the retry driver, the job runner — and the entry points that defer rather than refuse (the
+ * schedule run, freshness, the executor drain) leave everything due. An operator's reads still work.
+ */
+describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)', () => {
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const USE = permissionKey.parse('perm:use');
+  const SCHED = moduleId.parse('@test/sched');
+  const ran: string[] = [];
+  let clock = Date.parse('2026-10-01T00:00:00.000Z');
+  /** A lifecycle read now, later than every one before it, as the platform stamps each read. */
+  const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'] = 'active'): ScopeLifecycle => ({
+    scope,
+    tenant,
+    at: new Date((clock += 1000)).toISOString() as ScopeLifecycle['at'],
+  });
+
+  const hostFor = () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+    host.registerModule(scheduleMod);
+    host.registerExecutor('lifecycle-effector', 'perm.acted', async (_admin, event) => {
+      ran.push(event.scopeId);
+    });
+    return host;
+  };
+  const seat = async () => {
+    const s = scopeId.parse(ulid());
+    await hostFor().provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    return s;
+  };
+  const act = async (s: ScopeId) =>
+    (await hostFor().getScope(owner, t, s)).invoke('perm/authorized-emit', { permission: USE });
+  const revisionOf = (s: ScopeId) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_i, state) =>
+      (state.storage.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'write_revision'`).toArray()[0] as
+        | { value: string }
+        | undefined)?.value ?? null,
+    );
+
+  it('twin: a scope with no lifecycle, and one delivered active, run everything', async () => {
+    const bare = await seat();
+    expect(await hostFor().lifecycleHeld(bare)).toBe(false);
+    await act(bare);
+    expect(ran).toContain(bare);
+    const live = await seat();
+    await hostFor().setLifecycleLocal(live, life('active'));
+    expect(await hostFor().lifecycleHeld(live)).toBe(false);
+    await act(live);
+    expect(ran).toContain(live);
+    expect((await hostFor().runDueSchedules(SCHED, t, live)).fired).toBe(2);
+  });
+
+  it('a suspended scope refuses every door, defers its schedules, its deliveries and its freshness, and resumes', async () => {
+    const s = await seat();
+    // A stub minted while the scope was live: the request already past the gate when the
+    // suspension landed. Its write commits; the effect it raises is deferred, not run.
+    const early = await hostFor().getScope(owner, t, s);
+    expect(await hostFor().setLifecycleLocal(s, life('suspended'))).toMatchObject({ applied: true, changed: true });
+    expect(await hostFor().lifecycleHeld(s)).toBe(true);
+
+    const refused = /scope not active \(status: suspended\)/;
+    await expect(act(s)).rejects.toThrow(refused);
+    await expect(hostFor().getSystemScope(SCHED, t, s)).rejects.toThrow(refused);
+    await expect(hostFor().drainDue(t, s)).rejects.toThrow(refused);
+    await expect(hostFor().runDueJobs(t, s)).rejects.toThrow(refused);
+    await expect(hostFor().attachments(owner, t, s)).rejects.toThrow(refused);
+
+    const schedules = await hostFor().runDueSchedules(SCHED, t, s);
+    expect(schedules).toMatchObject({ fired: 0, failed: 0, skipped: 2, lifecycleHeld: true });
+    expect((await hostFor().checkFreshness(SCHED, t, s)).checks).toEqual([]);
+
+    await early.invoke('perm/authorized-emit', { permission: USE });
+    expect(ran).not.toContain(s);
+    // An operator still reads it, and nothing was journaled against the delivery.
+    expect(await hostFor().executorDeadLetters(t, s)).toEqual([]);
+    await expect(hostFor().jobRuns(t, s)).resolves.toEqual([]);
+
+    expect(await hostFor().setLifecycleLocal(s, life('active'))).toMatchObject({ applied: true, changed: true });
+    // The delivery that waited, delivered once; the schedule that came due, fired once.
+    const drained = await hostFor().drainDue(t, s);
+    expect(drained).toMatchObject({ attempted: 1, delivered: 1 });
+    expect(drained.lifecycleHeld).toBeUndefined();
+    expect(ran.filter((x) => x === s)).toEqual([s]);
+    expect((await hostFor().runDueSchedules(SCHED, t, s)).fired).toBe(2);
+    await act(s);
+    expect(ran.filter((x) => x === s)).toEqual([s, s]);
+  });
+
+  it('a held tenant holds its scope in the directory\'s words — suspended and deleting alike', async () => {
+    const s = await seat();
+    await hostFor().setLifecycleLocal(s, life('active', 'suspended'));
+    await expect(act(s)).rejects.toThrow(`tenant not active (status: suspended): ${t}`);
+    await hostFor().setLifecycleLocal(s, life('active', 'deleting'));
+    await expect(hostFor().getSystemScope(SCHED, t, s)).rejects.toThrow(/tenant not active \(status: deleting\)/);
+    expect((await hostFor().runDueSchedules(SCHED, t, s)).lifecycleHeld).toBe(true);
+    await hostFor().setLifecycleLocal(s, life('active', 'active'));
+    await act(s);
+    expect(ran).toContain(s);
+  });
+
+  it('an archived scope is held too', async () => {
+    const s = await seat();
+    await hostFor().setLifecycleLocal(s, life('archived'));
+    await expect(act(s)).rejects.toThrow(/scope not active \(status: archived\)/);
+  });
+
+  it('a late delivery cannot undo a later one: the newest read wins', async () => {
+    const s = await seat();
+    const older = life('active');
+    const newer = life('suspended');
+    await hostFor().setLifecycleLocal(s, newer);
+    expect(await hostFor().setLifecycleLocal(s, older)).toEqual({ applied: false, changed: false, lifecycle: newer });
+    expect(await hostFor().lifecycleHeld(s)).toBe(true);
+    // A repeat of the same read is applied (idempotent) and moves nothing.
+    expect(await hostFor().setLifecycleLocal(s, newer)).toMatchObject({ applied: true, changed: false });
+  });
+
+  it('a delivery is bookkeeping: it does not advance the write revision a carry fences on', async () => {
+    const s = await seat();
+    await act(s);
+    const before = await revisionOf(s);
+    await hostFor().setLifecycleLocal(s, life('suspended'));
+    expect(await revisionOf(s)).toBe(before);
+  });
+
+  it("a backup from before the suspension, returned to the scope, does not lift it; a copy never inherits it", async () => {
+    const s = await seat();
+    const backup = await hostFor().exportScopeLocal(s);
+    await hostFor().setLifecycleLocal(s, life('suspended'));
+    await hostFor().restoreScopeLocal(s, backup, { sourceScopeId: s });
+    expect(await hostFor().lifecycleHeld(s)).toBe(true);
+    // The held scope's own dump carries its lifecycle; a copy of it is a scope of its own.
+    const copy = scopeId.parse(ulid());
+    await hostFor().restoreScopeLocal(copy, await hostFor().exportScopeLocal(s), { sourceScopeId: s });
+    expect(await hostFor().lifecycleHeld(copy)).toBe(false);
+  });
+
+  it('twin: a dump that carries a NEWER lifecycle, returned to its scope, lands it', async () => {
+    const s = await seat();
+    await hostFor().setLifecycleLocal(s, life('suspended'));
+    const held = await hostFor().exportScopeLocal(s);
+    await hostFor().setLifecycleLocal(s, life('active'));
+    // Captured before the unsuspend: the store's newer `active` wins over it.
+    await hostFor().restoreScopeLocal(s, held, { sourceScopeId: s });
+    expect(await hostFor().lifecycleHeld(s)).toBe(false);
   });
 });

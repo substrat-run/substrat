@@ -17,7 +17,7 @@ import type { SwitchSql } from './system-switch.js';
  * say where the dump came from cannot show it is a return. Only a control plane that predates the
  * field sends a restore with no source.
  */
-const isCopy = (destScopeId: string | undefined, sourceScopeId: string | undefined): boolean =>
+export const isCopyLoad = (destScopeId: string | undefined, sourceScopeId: string | undefined): boolean =>
   destScopeId === undefined || sourceScopeId !== destScopeId;
 
 /** The capability tables, as `capabilitiesForLoad` matches a dump's (lowercased) names. */
@@ -37,7 +37,7 @@ export function capabilitiesForLoad<T extends { name: string; rows: readonly unk
   destScopeId: string | undefined,
   sourceScopeId: string | undefined,
 ): T[] {
-  if (!isCopy(destScopeId, sourceScopeId)) return tables;
+  if (!isCopyLoad(destScopeId, sourceScopeId)) return tables;
   return tables.map((t) => (CAPABILITY_TABLES.has(t.name.toLowerCase()) ? { ...t, rows: [] } : t));
 }
 
@@ -129,7 +129,7 @@ export function settleCopiedWork(
   sourceScopeId: string | undefined,
   now: string,
 ): void {
-  if (!isCopy(destScopeId, sourceScopeId)) return;
+  if (!isCopyLoad(destScopeId, sourceScopeId)) return;
   const reason = notCarried(sourceScopeId);
   sql.run(
     `UPDATE _substrat_platform_requests

@@ -561,6 +561,38 @@ describe('VerticalClient — database size (#1524)', () => {
  * never as a success nor as a bug in the request. A refusal the far end means (the
  * platform secret, 403) stays the vertical's own answer.
  */
+describe('VerticalClient.setLifecycle (#1713)', () => {
+  const lifecycle = { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z' } as const;
+  const input = { scopeId: s, lifecycle: lifecycle as never };
+  const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string, init?: RequestInit) => {
+        seen.push({ path: new URL(u).pathname, body: JSON.parse(String(init?.body)) });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('posts the lifecycle and reads the delivery', async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const answer = { applied: true, changed: true, lifecycle };
+    const client = answering(() => new Response(JSON.stringify(answer), { status: 200 }), seen);
+    await expect(client.setLifecycle(input)).resolves.toEqual(answer);
+    expect(seen).toEqual([{ path: '/internal/lifecycle', body: { scopeId: s, lifecycle } }]);
+  });
+
+  it.each([
+    ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 }), 501],
+    ['an SPA shell (200, not JSON)', () => new Response('<!doctype html>', { status: 200 }), 502],
+    ['a 200 of another shape', () => new Response(JSON.stringify({ ok: true }), { status: 200 }), 502],
+    ["the deployment's own refusal", () => new Response(JSON.stringify({ error: 'no' }), { status: 501 }), 501],
+  ])('%s throws, so no receipt is written', async (_name, res, status) => {
+    const err = await answering(res).setLifecycle(input).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect((err as ControlPlaneError).status).toBe(status);
+  });
+});
+
 describe('VerticalClient.systemSwitch (#1666)', () => {
   const input = { scopeId: s, moduleId: '@test/sched' as never, to: 'off' as const };
   const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>
