@@ -17,6 +17,16 @@ import { scheduleMod } from '@substrat-run/contract-tests';
 import { INERT_SCOPE_REASON, ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 
+let revision = 0;
+/**
+ * A lifecycle delivery newer than every one before it, as each directory change makes it: both
+ * revisions move. `at` stays fixed, because nothing compares it.
+ */
+const life = (scope: ScopeLifecycle['scope'] = 'active', tenant: ScopeLifecycle['tenant'] = 'active'): ScopeLifecycle => {
+  revision += 1;
+  return { scope, tenant, at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'], revision: { epoch: 0, scope: revision, tenant: revision } };
+};
+
 /**
  * #2005 on a CP-LESS host — the hosted-vertical shape, with no control-plane directory to ask
  * what kind of scope it serves. A preview or a snapshot reaches such a vertical as a restore the
@@ -317,15 +327,6 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
   const USE = permissionKey.parse('perm:use');
   const SCHED = moduleId.parse('@test/sched');
   const ran: string[] = [];
-  let revision = 0;
-  /**
-   * A delivery newer than every one before it, as each directory change makes it: both revisions
-   * move. `at` stays fixed, because nothing compares it.
-   */
-  const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'] = 'active'): ScopeLifecycle => {
-    revision += 1;
-    return { scope, tenant, at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'], revision: { epoch: 0, scope: revision, tenant: revision } };
-  };
   /** A delivery at exact directory revisions (scope `sr`, tenant `tr`). */
   const at = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'], sr: number, tr: number): ScopeLifecycle => ({
     scope,
@@ -567,11 +568,6 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
   const conn = connectionIdOf.parse(ulid());
   const TOKEN = `${CAPABILITY_SESSION_PREFIX}${'a'.repeat(43)}`;
   const resolved: string[] = [];
-  let revision = 0;
-  const life = (scope: ScopeLifecycle['scope'] = 'active'): ScopeLifecycle => {
-    revision += 1;
-    return { scope, tenant: 'active', at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'], revision: { epoch: 0, scope: revision, tenant: revision } };
-  };
 
   const hostFor = () => {
     const host = new CloudflareScopeHost({
@@ -771,6 +767,8 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
       const before = await outbox();
       const e = await outcome(hostFor().restoreScopeLocal(mine, theirs, { sourceScopeId: other, tenantId: u }));
       expect(errorCodeOf(e)).toBe('conflict');
+      // The tenant refusal itself, not the kept-copy one every other load conflict reads as.
+      expect(String((e as Error).message)).toContain(`provisioned for tenant ${t}, not ${u}`);
       expect(await receiptOf(mine)).toBe(t);
       expect(await outbox()).toEqual(before);
       // The twin: the same restore for its own tenant lands.

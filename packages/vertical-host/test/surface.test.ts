@@ -1431,7 +1431,8 @@ describe('mountPlatformSurface — the lifecycle delivery (#1713)', () => {
     const res = await post(host, body);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ applied: true, changed: true, lifecycle });
-    expect(got).toEqual([SCOPE, lifecycle]);
+    // An older platform names no tenant: the host is handed none.
+    expect(got).toEqual([SCOPE, lifecycle, undefined]);
   });
 
   it('#2016: hands the host the tenant the platform names, and answers its tenant refusal 409', async () => {
@@ -2398,7 +2399,7 @@ describe('mountPlatformSurface — the copy verbs carry the tenant (#2016)', () 
     });
     expect((await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW, tenantId: TENANT })).status).toBe(201);
     expect((await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW })).status).toBe(201);
-    expect(seen).toEqual([[SCOPE, NEW, TENANT], [SCOPE, NEW]]);
+    expect(seen).toEqual([[SCOPE, NEW, TENANT], [SCOPE, NEW, undefined]]);
   });
 
   it('a restore hands the host the tenant it then repairs for, and an older platform\'s none', async () => {

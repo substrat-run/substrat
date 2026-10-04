@@ -864,7 +864,7 @@ export function mountPlatformSurface<Env extends object>(
       loadStamp: body.loadStamp,
       expect: body.expect,
       markCopy: body.markCopy,
-      ...(body.tenantId ? { tenantId: body.tenantId } : {}),
+      tenantId: body.tenantId,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
@@ -1184,11 +1184,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = z
       .object({ sourceScopeId: scopeIdOf, newScopeId: scopeIdOf, tenantId: tenantIdOf.optional() })
       .parse(await c.req.json());
-    const host = deps.hostFor(c.env);
-    return c.json(
-      await host.snapshotScopeLocal(body.sourceScopeId, body.newScopeId, ...(body.tenantId ? [body.tenantId] : [])),
-      201,
-    );
+    return c.json(await deps.hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId, body.tenantId), 201);
   });
 
   app.post('/internal/delete-scope', async (c) => {
@@ -1405,9 +1401,7 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.setLifecycleLocal) {
       return c.json({ error: 'this deployment cannot hold a scope by its lifecycle (#1713) — redeploy it' }, 501);
     }
-    return c.json(
-      await host.setLifecycleLocal(body.scopeId, body.lifecycle, ...(body.tenantId ? [body.tenantId] : [])),
-    );
+    return c.json(await host.setLifecycleLocal(body.scopeId, body.lifecycle, body.tenantId));
   });
 
   // The status read (#1674): the far end of `HostAdmin.systemGrantsStatus` for a scope

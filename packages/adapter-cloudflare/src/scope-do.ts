@@ -390,14 +390,12 @@ const REAPED_MARKER = '_substrat_reaped';
  */
 const PROVISIONED_FOR_KEY = 'provisioned_for';
 
-const TENANT_RECEIPT_REFUSAL = 'refused: this scope was provisioned for tenant';
-
 /** #2016: the refusal of a write that would re-point a scope's tenant, in one wording. */
 const tenantReceiptRefusal = (held: string, asked: string): string =>
-  `${TENANT_RECEIPT_REFUSAL} ${held}, not ${asked}`;
+  `refused: this scope was provisioned for tenant ${held}, not ${asked}`;
 
-const isTenantReceiptRefusal = (e: unknown): boolean =>
-  e instanceof Error && e.message.includes(TENANT_RECEIPT_REFUSAL);
+/** #2016: the load refusals `tenantReceiptRefusal` raised, told apart by identity, not by text. */
+const tenantRefusals = new WeakSet<Error>();
 
 /**
  * The scope spine, as this adapter builds it — one of two hand-written copies (#969).
@@ -1569,7 +1567,7 @@ export function defineScopeDO(
      * Read without migrating, so asking about a foreign scope leaves its DO as empty as it found it.
      */
     async servesTenant(tenantId: TenantId): Promise<boolean> {
-      const verdict = this.tenantVerdict(tenantId);
+      const { verdict } = this.tenantVerdict(tenantId);
       return verdict === 'recorded' || verdict === 'inferred';
     }
 
@@ -1580,7 +1578,7 @@ export function defineScopeDO(
      * lookup runs. Read without migrating, like `servesTenant`.
      */
     admission(tenantId: TenantId): { foreign: boolean; lifecycle: StoredScopeLifecycle | null } {
-      return { foreign: this.tenantVerdict(tenantId) === 'foreign', lifecycle: readLifecycle(this.switchSql()) };
+      return { foreign: this.tenantVerdict(tenantId).verdict === 'foreign', lifecycle: readLifecycle(this.switchSql()) };
     }
 
     /**
@@ -1595,33 +1593,23 @@ export function defineScopeDO(
      *  - `unknown`: no receipt and no role rows — never provisioned here, or loaded from a world
      *    that keeps its roles elsewhere and not yet repaired. Nothing to hold the pair against.
      *
-     * Read without migrating, so asking about a foreign scope leaves its DO as empty as it found it.
+     * `held` is the receipt read, so a refusal can name it. Read without migrating, so asking about
+     * a foreign scope leaves its DO as empty as it found it.
      */
-    private tenantVerdict(tenantId: TenantId): 'recorded' | 'inferred' | 'foreign' | 'unknown' {
-      const receipt = this.provisionedFor();
-      if (receipt !== null) return receipt === tenantId ? 'recorded' : 'foreign';
-      if (!this.hasTable('_substrat_roles')) return 'unknown';
+    private tenantVerdict(tenantId: TenantId): { verdict: 'recorded' | 'inferred' | 'foreign' | 'unknown'; held: string | null } {
+      const held = this.provisionedFor();
+      if (held !== null) return { verdict: held === tenantId ? 'recorded' : 'foreign', held };
+      if (!this.hasTable('_substrat_roles')) return { verdict: 'unknown', held };
       if (this.sql.exec('SELECT 1 FROM _substrat_roles WHERE tenant_id = ? LIMIT 1', tenantId).toArray().length > 0) {
-        return 'inferred';
+        return { verdict: 'inferred', held };
       }
-      return this.sql.exec('SELECT 1 FROM _substrat_roles LIMIT 1').toArray().length > 0 ? 'foreign' : 'unknown';
+      const anyRole = this.sql.exec('SELECT 1 FROM _substrat_roles LIMIT 1').toArray().length > 0;
+      return { verdict: anyRole ? 'foreign' : 'unknown', held };
     }
 
     /** #1738: the tenant this scope's `provisioned_for` receipt names, or null; read without migrating. */
     private provisionedFor(): string | null {
-      if (!this.hasTable('_substrat_meta')) return null;
-      const row = this.sql.exec(`SELECT value FROM _substrat_meta WHERE key = ?`, PROVISIONED_FOR_KEY).toArray()[0] as
-        | { value: string }
-        | undefined;
-      return row?.value ?? null;
-    }
-
-    /** #2016: why `tenantId` is foreign here, in the receipt's wording when there is one. */
-    private foreignTenantRefusal(tenantId: TenantId): string {
-      const held = this.provisionedFor();
-      return held !== null
-        ? tenantReceiptRefusal(held, tenantId)
-        : `refused: this scope holds role rows for another tenant and none for ${tenantId}`;
+      return this.hasTable('_substrat_meta') ? this.metaValue(PROVISIONED_FOR_KEY) : null;
     }
 
     private hasTable(name: string): boolean {
@@ -4565,8 +4553,13 @@ export function defineScopeDO(
        *  existed, whose role rows name this tenant, records it — the back-fill. */
       tenantId?: TenantId,
     ): LifecycleDelivery | { refused: 'tenant'; message: string } {
-      const verdict = tenantId === undefined ? null : this.tenantVerdict(tenantId);
-      if (verdict === 'foreign') return { refused: 'tenant', message: `lifecycle delivery ${this.foreignTenantRefusal(tenantId!)}` };
+      const { verdict, held } = tenantId === undefined ? { verdict: null, held: null } : this.tenantVerdict(tenantId);
+      if (verdict === 'foreign') {
+        const why = held !== null
+          ? tenantReceiptRefusal(held, tenantId!)
+          : `refused: this scope holds role rows for another tenant and none for ${tenantId}`;
+        return { refused: 'tenant', message: `lifecycle delivery ${why}` };
+      }
       let out!: LifecycleDelivery;
       this.revision.transactionSync(() => {
         // A write the carry fences on, not bookkeeping: it happens once per legacy scope, and
@@ -5322,7 +5315,9 @@ export function defineScopeDO(
         // must agree with the receipt held, and is refused before the first drop if it does not.
         const receiptBefore = this.provisionedFor();
         if (provisionedFor !== undefined && receiptBefore !== null && receiptBefore !== provisionedFor) {
-          throw substratError('conflict', tenantReceiptRefusal(receiptBefore, provisionedFor));
+          const refused = substratError('conflict', tenantReceiptRefusal(receiptBefore, provisionedFor));
+          tenantRefusals.add(refused);
+          throw refused;
         }
         // #1722 (Codex #2008 r7): a kept copy holds writes nothing else has. No load replaces it
         // except its own resolution, and that only at the revision the operator acted on.
@@ -5513,7 +5508,7 @@ export function defineScopeDO(
       } catch (e) {
         const code = errorCodeOf(e);
         if (code === 'precondition_failed') return { refused: 'changed' };
-        if (code === 'conflict' && isTenantReceiptRefusal(e)) return { refused: 'tenant', message: (e as Error).message };
+        if (e instanceof Error && tenantRefusals.has(e)) return { refused: 'tenant', message: e.message };
         if (code === 'conflict') return { refused: 'kept' };
         throw toRpcError(e);
       }
