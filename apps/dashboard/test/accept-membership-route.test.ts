@@ -252,6 +252,7 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     const t = await team();
     const { token } = await invite('sub-owner', 'rae@team.test', 'member');
     failNextAdds = 1;
+    noteScope.mockClear(); // the invite enrolled it too; this asks whether the ACCEPT does
     const res = await accept('sub-rae', 'rae@team.test', token);
     expect(res.status, await res.clone().text()).toBe(202);
     expect(await res.json()).toEqual({ teamId: t.tenant, pending: true });
