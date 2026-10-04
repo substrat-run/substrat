@@ -164,7 +164,7 @@ export {
 } from './permission-checker.js';
 export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
-export { createTupleEvaluator, reachesWithin } from './permission-eval.js';
+export { ancestorsWithin, createTupleEvaluator, reachesWithin } from './permission-eval.js';
 export type {
   PermissionTupleReader,
   PermissionTupleRow,

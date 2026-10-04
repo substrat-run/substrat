@@ -19,6 +19,7 @@
  *   follow-up, neither thread's messages reach the other's conversation.
  */
 import { afterAll, describe, expect, it } from 'vitest';
+import type { EntityRef } from '@substrat-run/contracts';
 import { reachesWithin, type ScopeStub } from '@substrat-run/kernel';
 import { createKit, type Desk } from './desk-kit.js';
 
@@ -30,7 +31,7 @@ const session = (id: string) => ({ entityType: 'widgetSession', entityId: id });
 const conversation = (id: string) => ({ entityType: 'conversation', entityId: id });
 
 /** The walk, over the desk's own parent edges — exactly the rows the evaluator reads. */
-function reaches(desk: Desk, from: { entityType: string; entityId: string }, root: { entityType: string; entityId: string }) {
+function reaches(desk: Desk, from: EntityRef, root: EntityRef) {
   const edges = kit.sql(desk, (db) =>
     db
       .prepare(`SELECT subject, relation, object, expires_at, revoked_at FROM _substrat_tuples WHERE relation = 'parent'`)
@@ -173,12 +174,10 @@ describe('a widget session holds its conversation’s public messages, and nothi
     const merged = await thread(admin, second.conversation_id);
     const publics = merged.filter((m) => m.visibility === 'public');
     expect(publics.length).toBeGreaterThanOrEqual(3);
-    for (const s of [loser.sessionId, started.sessionId]) {
-      for (const m of publics) expect(await reaches(desk, message(m.id), session(s))).toBe(true);
-    }
-    // The moved internal note went nowhere near either session.
+    // …and the moved internal note went nowhere near either session.
     const note = moved.find((m) => m.body_text === 'moved note')!;
     for (const s of [loser.sessionId, started.sessionId]) {
+      for (const m of publics) expect(await reaches(desk, message(m.id), session(s))).toBe(true);
       expect(await reaches(desk, message(note.id), session(s))).toBe(false);
     }
   });

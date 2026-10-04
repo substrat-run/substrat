@@ -8971,8 +8971,8 @@ export class CloudflareScopeHost implements ScopeHost {
       headers.set(LIVE_PRINCIPAL_HEADER, principal);
       headers.set(LIVE_TENANT_HEADER, tenantId);
       headers.set(LIVE_SCOPE_HEADER, scopeId);
-      headers.delete(LIVE_WITHIN_HEADER);
       if (narrowed) headers.set(LIVE_WITHIN_HEADER, encodeLiveWithin(narrowed));
+      else headers.delete(LIVE_WITHIN_HEADER);
       const forwarded = new Request(
         new URL(LIVE_SUBSCRIBE_PATH, 'https://scope.substrat.internal'),
         // `new Request(url, { …, headers })` rather than `new Request(request, …)`:

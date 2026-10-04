@@ -25,15 +25,15 @@ import {
   clientContextOf,
   substratError,
   toProblem,
-  LIVE_MODE_HEADER,
   PROBLEM_CONTENT_TYPE,
   type ClientContext,
-  type LiveRefusal,
 } from '@substrat-run/contracts';
 import { vouchedWithin, type LiveReadSurface } from '@substrat-run/kernel';
 import {
   isUpgradeRequest,
   mountPublicSurface,
+  refuseLivePoll,
+  refuseNotAnUpgrade,
   type LiveSubscriber,
   type PublicServiceActor,
   type ResolvePublicActor,
@@ -418,26 +418,15 @@ export function mountWidgetSurface(
       });
 
       /**
-       * The visitor's live feed (#1853): a WebSocket that says "your thread changed", so
-       * the widget re-reads `messages` above instead of polling it.
+       * The visitor's live feed (#1853): nudges that send the widget back to `messages`.
        *
-       * The visitor has no principal, and the widget service they act through holds no
-       * read on any conversation — so this subscribes with `vouchedWithin`, which replaces
-       * the principal's check with the scope's walk. What earns the vouch is
-       * `widget-watch` proving the token, as every other route here proves it, and what
-       * keeps it narrow is the root: the visitor's SESSION, under which hang exactly the
-       * public messages `widget-thread` would show them (`seatSession` in the module). A
-       * vouched feed is told only that something changed, never which row or how.
-       *
-       * The Origin gate is `mountPublicSurface`'s: a browser sends `Origin` on a WebSocket
-       * handshake as it does on a fetch, so the allowlist decides here exactly as there.
+       * Vouched, because the visitor has no principal: `widget-watch` proves the token, and
+       * the root is their SESSION, under which hang exactly the public messages
+       * `widget-thread` shows them (`sessionsOn` in the module). The Origin gate is
+       * `mountPublicSurface`'s — a browser sends `Origin` on a handshake as on a fetch.
        */
       route.get('/sessions/:sessionId/live', async (c, { actor, origin }) => {
-        if (!isUpgradeRequest(c.req.raw)) {
-          return c.json({ error: 'the live feed is a WebSocket' }, 426, {
-            [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal,
-          });
-        }
+        if (!isUpgradeRequest(c.req.raw)) return refuseNotAnUpgrade(c);
         const token = c.req.query('token');
         // Out of the same budget as a thread read: opening the feed is one read, and a
         // reconnect loop must not be cheaper than the poll it replaces.
@@ -445,11 +434,7 @@ export function mountWidgetSurface(
         const wait = spend(bucket, callerKey(bucket, token, origin), WIDGET_RATE_LIMITS.read);
         if (wait) return tooManyRequests(c, wait);
         const desk = deskOf(actor);
-        if (!desk.live) {
-          return c.json({ error: 'live updates are not available here; poll instead' }, 501, {
-            [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal,
-          });
-        }
+        if (!desk.live) return refuseLivePoll(c);
         // The route's own pattern names it; the type cannot know that.
         const sessionId = c.req.param('sessionId') as string;
         // Throws on a wrong token or an origin no longer embedded — before any socket exists.

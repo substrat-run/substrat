@@ -1050,9 +1050,10 @@ describe("ticket0 on workerd — the widget's feed nudges a visitor about their 
   const scopeStub = () => env.SCOPE.get(env.SCOPE.idFromName(desk));
   const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 100));
   const admin = () => host().getScope(deskOwner, tenant, desk);
-  async function widgetPrincipal(): Promise<PrincipalId> {
-    const config = await directory().getScopeConfig(desk);
-    return principalId.parse((JSON.parse(config['ticket0:services']!) as { widget: string }).widget);
+  /** One of the desk's service accounts, acting, as the worker's provision hook recorded it. */
+  async function service(role: 'widget' | 'relay') {
+    const recorded = JSON.parse((await directory().getScopeConfig(desk))['ticket0:services']!) as Record<string, string>;
+    return host().getScope(principalId.parse(recorded[role]), tenant, desk);
   }
 
   const open: WebSocket[] = [];
@@ -1101,17 +1102,11 @@ describe("ticket0 on workerd — the widget's feed nudges a visitor about their 
 
   /** Says something — the operation behind the widget's POST, without the assistant it wakes. */
   const say = async (session: { sessionId: string; token: string }, body: string) =>
-    (await host().getScope(await widgetPrincipal(), tenant, desk)).invoke<{ id: string; conversation_id: string }>(
-      'ticket0/widget-post',
-      { ...session, body },
-    );
+    (await service('widget')).invoke<{ id: string; conversation_id: string }>('ticket0/widget-post', { ...session, body });
   const thread = async (session: { sessionId: string; token: string }) =>
-    (
-      await (await host().getScope(await widgetPrincipal(), tenant, desk)).invoke<Page<{ body_text: string }>>(
-        'ticket0/widget-thread',
-        session,
-      )
-    ).entries.map((m) => m.body_text);
+    (await (await service('widget')).invoke<Page<{ body_text: string }>>('ticket0/widget-thread', session)).entries.map(
+      (m) => m.body_text,
+    );
 
   beforeAll(async () => {
     expect(
@@ -1190,11 +1185,7 @@ describe("ticket0 on workerd — the widget's feed nudges a visitor about their 
     const asked = await say(session, 'Asked in the chat.');
     // The same person also wrote in by mail. Merging needs one contact on both threads, which
     // an anonymous visitor only gets by being recognised — stood in for here in SQL.
-    const relay = await host().getScope(
-      principalId.parse((JSON.parse((await directory().getScopeConfig(desk))['ticket0:services']!) as { relay: string }).relay),
-      tenant,
-      desk,
-    );
+    const relay = await service('relay');
     const mailed = await relay.invoke<{ conversation_id: string }>('ticket0/ingest-message', {
       conversationId: null,
       contactEmail: 'merged@widget-live.test',
@@ -1239,11 +1230,7 @@ describe("ticket0 on workerd — the widget's feed nudges a visitor about their 
     const heard = feed.frames.length;
 
     // The closed thread is no longer the visitor's: a delivery recorded on its message sends nothing.
-    const relay = await host().getScope(
-      principalId.parse((JSON.parse((await directory().getScopeConfig(desk))['ticket0:services']!) as { relay: string }).relay),
-      tenant,
-      desk,
-    );
+    const relay = await service('relay');
     await relay.invoke('ticket0/record-delivery', { messageId: first.id, emailMessageId: `<closed-${ulid()}@mail.example>` });
     await settle();
     expect(feed.frames).toHaveLength(heard);

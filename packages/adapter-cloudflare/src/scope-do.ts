@@ -206,7 +206,7 @@ import {
   type JobStepRow,
   type LiveChange,
   type LiveNudge,
-  reachesWithin,
+  ancestorsWithin,
   type ScheduleStateKind,
 } from '@substrat-run/kernel';
 import type {
@@ -3037,9 +3037,9 @@ export function defineScopeDO(
      * that row, so the empty payload is not what makes this safe; this is.
      *
      * *Narrowed, when the subscription asked to be* (#1853). A socket opened `within` an
-     * entity hears only rows that reach it through live parent edges — the walk is
-     * memoised per (entity, root) for the pass, so many sockets on one root cost one walk
-     * per row. A vouched root replaces the check above, and its frames are `LiveNudge`s.
+     * entity hears only rows that reach it through live parent edges — each row's
+     * ancestors are walked once per pass, however many sockets ask. A vouched root
+     * replaces the check above, and its frames are `LiveNudge`s.
      *
      * *Never able to fail the operation.* The write has committed and the caller has
      * its answer. A socket that has gone away mid-fan-out, or a check that cannot be
@@ -3074,25 +3074,25 @@ export function defineScopeDO(
       if (announceable.length === 0) return;
 
       /**
-       * Is a row's entity beneath a `within` root (#1853)? Memoised per (entity, root)
-       * for this one pass, so a hundred widget sockets on one session cost one walk per
-       * row rather than a hundred. Post-commit state, read once: a `ctx.relink` in the
-       * same operation has already moved the edge the walk follows.
+       * Is a row's entity beneath a `within` root (#1853)? Each row's ancestors are walked
+       * once per pass, on first need, so a check per socket is a set lookup — every widget
+       * visitor's root is a different session, and a walk per (row, socket) would read the
+       * same parent edges once per visitor. Post-commit state: a `ctx.relink` in the same
+       * operation has already moved the edge the walk follows.
        */
       const parents = scopeTupleReader(this.sql);
       const now = new Date().toISOString();
-      const reached = new Map<string, Promise<boolean>>();
-      const reaches = (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
-        const key = JSON.stringify([row.entity_type, row.entity_id, root.entityType, root.entityId]);
-        let hit = reached.get(key);
-        if (!hit) {
+      const ancestors = new Map<string, Promise<Set<string>>>();
+      const reaches = async (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
+        let up = ancestors.get(row.id);
+        if (!up) {
           // A walk that cannot answer is a frame not sent — the same fail-closed rule as the check.
-          hit = reachesWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, root, now).catch(
-            () => false,
+          up = ancestorsWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, now).catch(
+            () => new Set<string>(),
           );
-          reached.set(key, hit);
+          ancestors.set(row.id, up);
         }
-        return hit;
+        return (await up).has(`${root.entityType}:${root.entityId}`);
       };
 
       for (const ws of sockets) {
@@ -3126,7 +3126,8 @@ export function defineScopeDO(
         // The operation name is carried anyway, for the events a fan-out cannot emit
         // but a future reader of this context might.
         let ctx: OperationContext | undefined;
-        const contextFor = (principal: PrincipalId) =>
+        const { principal } = subscription;
+        const context = () =>
           (ctx ??= this.operationContext(
             principal,
             tenantId,
@@ -3153,7 +3154,7 @@ export function defineScopeDO(
             const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
             let allowed = false;
             try {
-              const decision = await contextFor(subscription.principal).check(permission, {
+              const decision = await context().check(permission, {
                 entityType: row.entity_type,
                 entityId: row.entity_id,
               });

@@ -324,7 +324,6 @@
   function resetSession() {
     // The feed was narrowed to the old session; the new one opens its own.
     closeLive();
-    liveFails = 0;
     session = null;
     try {
       localStorage.removeItem(STORE);
@@ -391,6 +390,8 @@
   var liveTrying = null;
   var liveRetry = null;
   var livePing = null;
+  /** A refresh a nudge asked for, not yet run: a burst of nudges is one re-read. */
+  var liveNudge = null;
   /** Handshakes that failed in a row: what the backoff counts. */
   var liveFails = 0;
 
@@ -423,7 +424,13 @@
       schedule();
     };
     ws.onmessage = function (e) {
-      if (e.data !== 'pong') void refresh();
+      // Still read in a hidden tab: a closed panel's unread badge counts on it, and coming
+      // back to a closed panel refreshes nothing on its own (`onVisibility`).
+      if (e.data === 'pong' || liveNudge) return;
+      liveNudge = setTimeout(function () {
+        liveNudge = null;
+        void refresh();
+      }, 200);
     };
     ws.onclose = function () {
       var wasOpen = live === ws;
@@ -448,6 +455,9 @@
     livePing = null;
     clearTimeout(liveRetry);
     liveRetry = null;
+    clearTimeout(liveNudge);
+    liveNudge = null;
+    liveFails = 0;
     if (!ws) return;
     ws.onclose = null;
     try {

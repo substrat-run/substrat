@@ -359,6 +359,7 @@ describe('live reads: narrowed within an entity (#1853)', () => {
   const IN_BOTH = '01JLIVEN300000000000000003';
   const MOVED = '01JLIVEN400000000000000004';
   const folder = (entityId: string) => ({ entityType: 'folder', entityId });
+  const vouched = (entityId: string) => vouchedWithin(folder(entityId), { because: 'test vouches' });
   const open: { close(): void }[] = [];
 
   async function watchWithin(
@@ -452,7 +453,7 @@ describe('live reads: narrowed within an entity (#1853)', () => {
   // -- vouched: the walk is the whole filter, and the frame names nothing ------
 
   it('nudges a vouched subscriber about a change beneath its root, naming no entity', async () => {
-    const seen = await watchWithin(stranger, vouchedWithin(folder(F1), { because: 'test vouches' }));
+    const seen = await watchWithin(stranger, vouched(F1));
     await as('live/touch', { noteId: IN_F1 });
     await settle();
     expect(seen.frames).toHaveLength(1);
@@ -461,33 +462,34 @@ describe('live reads: narrowed within an entity (#1853)', () => {
   });
 
   it('sends a vouched subscriber nothing from outside its root — the negative twin', async () => {
-    const seen = await watchWithin(stranger, vouchedWithin(folder(F1), { because: 'test vouches' }));
+    const seen = await watchWithin(stranger, vouched(F1));
     await as('live/touch', { noteId: IN_F2 });
     await as('live/touch-ledger', { ledgerId: LEDGER });
     await settle();
     expect(seen.frames).toEqual([]);
   });
 
-  it('refuses a value that only looks vouched — the replacing mode is reachable by vouchedWithin alone', async () => {
-    const forged = { entity: folder(F1), because: 'trust me' } as unknown as VouchedWithin;
+  it.each([
+    ['a look-alike object', { entity: { entityType: 'folder', entityId: F1 }, because: 'trust me' }],
+    ['a spread copy of a vouched value', { ...vouchedWithin({ entityType: 'folder', entityId: F1 }, { because: 'copied' }) }],
+    ['a plain ref carrying a vouched flag', { entityType: 'folder', entityId: F1, vouched: 'trust me' }],
+  ])('refuses %s — the replacing mode is reachable by vouchedWithin alone', async (_label, within) => {
     await expect(
-      host.liveReads.subscribe({ tenantId: t, scopeId: sw, principal: stranger, request: upgrade(), within: forged }),
-    ).rejects.toThrow(/vouchedWithin/);
-    const spread = { ...vouchedWithin(folder(F1), { because: 'copied' }) } as unknown as VouchedWithin;
-    await expect(
-      host.liveReads.subscribe({ tenantId: t, scopeId: sw, principal: stranger, request: upgrade(), within: spread }),
-    ).rejects.toThrow(/vouchedWithin/);
-    const flagged = { ...folder(F1), vouched: 'trust me' } as unknown as VouchedWithin;
-    await expect(
-      host.liveReads.subscribe({ tenantId: t, scopeId: sw, principal: stranger, request: upgrade(), within: flagged }),
+      host.liveReads.subscribe({
+        tenantId: t,
+        scopeId: sw,
+        principal: stranger,
+        request: upgrade(),
+        within: within as unknown as VouchedWithin,
+      }),
     ).rejects.toThrow(/vouchedWithin/);
   });
 
   // -- more than one parent, and a move ---------------------------------------
 
   it('reaches every root a multi-parent entity sits under', async () => {
-    const one = await watchWithin(stranger, vouchedWithin(folder(F1), { because: 'test vouches' }));
-    const two = await watchWithin(stranger, vouchedWithin(folder(F2), { because: 'test vouches' }));
+    const one = await watchWithin(stranger, vouched(F1));
+    const two = await watchWithin(stranger, vouched(F2));
     await as('live/touch', { noteId: IN_BOTH });
     await settle();
     expect(one.frames).toHaveLength(1);
@@ -495,8 +497,8 @@ describe('live reads: narrowed within an entity (#1853)', () => {
   });
 
   it('follows a move: the old root stops hearing the moved row, the new one starts', async () => {
-    const left = await watchWithin(stranger, vouchedWithin(folder(F1), { because: 'test vouches' }));
-    const joined = await watchWithin(stranger, vouchedWithin(folder(F2), { because: 'test vouches' }));
+    const left = await watchWithin(stranger, vouched(F1));
+    const joined = await watchWithin(stranger, vouched(F2));
     await as('live/touch', { noteId: MOVED });
     await settle();
     expect(left.frames).toHaveLength(1);

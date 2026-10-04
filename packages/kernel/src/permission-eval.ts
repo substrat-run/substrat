@@ -233,6 +233,24 @@ export async function reachesWithin(
 }
 
 /**
+ * Every root `reachesWithin` would answer `true` for, as `entityType:entityId` refs — the
+ * entity itself included. The same walk, run to its full depth once, for a caller asking
+ * about many roots: a live fan-out with one socket per widget session (#1853).
+ */
+export async function ancestorsWithin(
+  scope: Pick<ScopeTupleReader, 'parents'>,
+  entity: EntityRef,
+  now: string,
+): Promise<Set<string>> {
+  const seen = new Set<string>();
+  await walkParents(scope, `${entity.entityType}:${entity.entityId}`, now, async (ref) => {
+    seen.add(ref);
+    return undefined;
+  });
+  return seen;
+}
+
+/**
  * Build the evaluator over one adapter's reader. Stateless per call: everything it knows it
  * reads at check time, which is what makes check-after-write consistent (the "no zookies"
  * property) and what lets `reader.now()` decide expiry rather than the wall clock.
