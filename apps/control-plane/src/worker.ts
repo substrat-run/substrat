@@ -63,6 +63,7 @@ import {
   type PeerSwitchDelegation,
   type ImportCursorDelegation,
   type SystemSwitchDelegation,
+  type LifecycleDelegation,
   analyticsEngineConnectorCallRecorder,
   type AnalyticsEngineDatasetLike,
 } from '@substrat-run/adapter-cloudflare';
@@ -913,6 +914,32 @@ function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined
 }
 
 /**
+ * The lifecycle's platform half (#1713): a scope or tenant transition moves THIS directory, and
+ * the deployment serving a hosted scope has none to read, so the host delivers the scope's
+ * lifecycle to it after every transition and on the heal sweep. This is the reach, over the same
+ * `/internal/*` seam and serving-ref → bound-version → prod ladder the schedule switch uses.
+ * Undefined without DISPATCH/PLATFORM_SECRET, and then nothing is delivered: the router still
+ * refuses a held scope's requests from the directory (#1730).
+ */
+function lifecycleDelegationFor(env: Env): LifecycleDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  return {
+    deliver: async (a) => {
+      const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+      const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `cannot deliver its lifecycle`,
+        );
+      }
+      return client.setLifecycle({ scopeId: a.scopeId, lifecycle: a.lifecycle });
+    },
+  };
+}
+
+/**
  * The peer kill switch's platform half (#1706): `revokeFromPeer` / `restoreToPeer` land on
  * the host below, whose own `SCOPE` namespace is the module-less placeholder — a hosted
  * scope's `vertical:<slug>` grants, which decide what another of the tenant's apps may do
@@ -1104,6 +1131,9 @@ function hostFor(env: Env): CloudflareScopeHost {
     // The peer kill switch (#1706): the same seam once more, for the grants that decide
     // what another of the tenant's apps may do in this scope.
     peerSwitchDelegation: peerSwitchDelegationFor(env),
+    // The lifecycle (#1713): a suspension reaches the deployment serving the scope, which holds
+    // the scope's own timers, retries and background work by it.
+    lifecycleDelegation: lifecycleDelegationFor(env),
     // The replay lever (#1705 PR 3): a hosted consumer's watermark moves where it lives.
     importCursorDelegation: importCursorDelegationFor(env),
     // #1691: one data point per connector call, beside the health line. Absent binding ⇒
@@ -1673,6 +1703,11 @@ export default {
       // producer's edges sooner (`/internal/drain-scope`); this is the backstop.
       ...(crossVertical ? { crossVertical } : {}),
     });
+    // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
+    // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
+    // already an ops-failure row (so it reaches the digest below); the tail says a pass had any.
+    const lifecycle = await host.healLifecycles(SWEEP_ACTOR);
+    if (lifecycle.failed > 0) console.log('lifecycle-heal', lifecycle);
     // Log whenever the pass DID something — reaps, errors, or any platform-intent
     // activity (drained/failed/still-pending). The last one matters most (#444): a
     // scope with intents stuck `pending` should leave a trace on every pass, so a
