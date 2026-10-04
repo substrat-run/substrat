@@ -39,6 +39,7 @@
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/attachment-extractors": "workspace:^",
+    "@substrat-run/cli": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
