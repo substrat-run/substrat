@@ -718,4 +718,50 @@ describe('the tenant-record walk rotates past deployments that never answer (#20
     // deliveries each, against the real directory. Under a loaded full suite that outruns the
     // default 5 s, though it takes under a second alone.
   }, 60_000);
+
+  /** The directory's delivery bookkeeping for `s`: its tenant-record asks and its delivery receipts. */
+  const bookkeepingOf = (s: ScopeId) =>
+    runInDurableObject(env.CONTROL_PLANE.get(directory.idFromName('')), (_i, state) => ({
+      asks: state.storage.sql.exec('SELECT 1 FROM scope_tenant_asks WHERE scope_id = ?', s).toArray().length,
+      receipts: state.storage.sql.exec('SELECT 1 FROM scope_lifecycle_receipts WHERE scope_id = ?', s).toArray().length,
+    }));
+  const tenantOf = async () => {
+    const t = tenantId.parse(ulid());
+    await platform().admin.createTenant(actor, { id: t, slug: `walk-${t.toLowerCase()}`, name: 'Walk' });
+    return t;
+  };
+  const served = async (t: TenantId, extra: { kind?: string; forkedFrom?: ScopeId } = {}) => {
+    const s = scopeId.parse(ulid());
+    await platform().provisionScope(actor, { tenantId: t, scopeId: s, vertical: 'todo', ...extra });
+    await platform().admin.activateScope(actor, t, s);
+    return s;
+  };
+
+  it('deleting an asked preview takes its ask and its delivery receipt with it', async () => {
+    const t = await tenantOf();
+    const install = await served(t);
+    const preview = await served(t, { kind: 'preview', forkedFrom: install });
+    await platform().healLifecycles(actor);
+    expect(await bookkeepingOf(preview)).toEqual({ asks: 1, receipts: 1 });
+    await platform().deleteSnapshot(actor, t, preview);
+    expect(await bookkeepingOf(preview)).toEqual({ asks: 0, receipts: 0 });
+    // The twin: its install keeps its own.
+    expect(await bookkeepingOf(install)).toEqual({ asks: 1, receipts: 1 });
+  });
+
+  it('a reaped scope, and a reaped tenant\'s scopes, keep no delivery bookkeeping', async () => {
+    const t = await tenantOf();
+    const reaped = await served(t);
+    const leftOver = await served(t);
+    await platform().healLifecycles(actor);
+    expect(await bookkeepingOf(reaped)).toEqual({ asks: 1, receipts: 1 });
+    expect(await bookkeepingOf(leftOver)).toEqual({ asks: 1, receipts: 1 });
+    await platform().admin.archiveScope(actor, t, reaped);
+    await platform().admin.reapScope(actor, t, reaped, { force: true });
+    expect(await bookkeepingOf(reaped)).toEqual({ asks: 0, receipts: 0 });
+    // A scope the tenant reap finds not yet reaped on its own goes with the tenant.
+    await platform().admin.setTenantStatus(actor, t, 'deleting');
+    await platform().admin.reapTenant(actor, t);
+    expect(await bookkeepingOf(leftOver)).toEqual({ asks: 0, receipts: 0 });
+  });
 });

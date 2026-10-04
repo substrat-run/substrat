@@ -1849,6 +1849,8 @@ export class ControlPlaneDO extends DurableObject {
         "UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?",
         tenantId,
       );
+      // Its scopes were reaped one by one, each forgetting its own; any left over go here.
+      this.forgetLifecycleDeliveries('scope_id IN (SELECT scope_id FROM scopes WHERE tenant_id = ?)', tenantId);
       this.bumpLifecycleRevision(`tenant:${tenantId}`); // #1713
     });
     return before.status;
@@ -2371,7 +2373,10 @@ export class ControlPlaneDO extends DurableObject {
       } else {
         this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
       }
-      if (to === 'reaped') forgetSystemSwitchesOf(this.kernelSql, scopeId);
+      if (to === 'reaped') {
+        forgetSystemSwitchesOf(this.kernelSql, scopeId);
+        this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
+      }
       this.bumpLifecycleRevision(`scope:${scopeId}`); // #1713, with the status it counts
     });
     return { ok: true, status: row.status, vertical: row.vertical };
@@ -2946,9 +2951,25 @@ export class ControlPlaneDO extends DurableObject {
    * wiping the scope DO's storage — the fork-only refusal lives there, not here.
    */
   deleteScopeDirectory(scopeId: string): void {
-    this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
-    forgetSystemSwitchesOf(this.kernelSql, scopeId);
-    this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
+      forgetSystemSwitchesOf(this.kernelSql, scopeId);
+      this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
+      this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
+    });
+  }
+
+  /**
+   * #1713 / #2016: drop the delivery bookkeeping of scopes that will never be delivered to again —
+   * what each deployment acknowledged (`scope_lifecycle_receipts`) and when the heal last asked it
+   * for its tenant record (`scope_tenant_asks`). A hard-deleted fork's rows would otherwise outlive
+   * it, and every preview created and deleted would grow both tables, and every directory dump, for
+   * good. A reaped scope keeps its tombstone row but leaves every delivery walk, so its go too.
+   */
+  private forgetLifecycleDeliveries(where: string, ...params: string[]): void {
+    for (const table of ['scope_lifecycle_receipts', 'scope_tenant_asks']) {
+      this.sql.exec(`DELETE FROM ${table} WHERE ${where}`, ...params);
+    }
   }
 
   readChannel(verticalSlug: string, channel: string): ChannelRow | undefined {
