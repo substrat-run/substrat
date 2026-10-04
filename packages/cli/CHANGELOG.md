@@ -1,5 +1,43 @@
 # @substrat-run/cli
 
+## 0.40.0
+
+### Minor Changes
+
+- fb1f624: Attachments work on a hosted vertical with nothing to wire. When any module declares `attachmentTargets`, `substrat push` now declares the attachment blob store itself (`ATTACHMENT_BLOB_BINDING`, `ATTACHMENTS`), so the platform mints and binds a bucket for every installed tenant; and `CloudflareScopeHost` resolves the bucket for the tenant it is serving on its own, with `attachmentBuckets` left only as an override. Before this, no deployed vertical could upload an attachment. Re-push a vertical that declares attachment targets to get its buckets.
+
+  The push refuses `ATTACHMENTS` declared as a per-tenant relational store, or taken by one of the vertical's own bindings. `blobStoreBindingName` and `tenantStoreBindingName` now refuse a tenant id that is not a ULID, so no id can spell another tenant's binding.
+
+- 7a28aea: The platform supplies the scope sweeper that runs a vertical's declared schedules (#1902).
+
+  A vertical that declares `schedules` no longer has to export `defineScopeSweeperDO`, bind a `SWEEPER` store, or call `noteScope`/`forgetScope` from its platform hooks. When a version declares schedules and its worker entry exports no sweeper, the uploader adds one: the class `SweeperDO`, bound as `SWEEPER`, its migration, and the platform entry's re-export of it. The class is generated from `defineScopeSweeperDO` into `platform-entry.generated.ts` (`pnpm lint:platform-entry --check`).
+
+  - `mountPlatformSurface` registers the `hostFor` it is given, which is the host the supplied sweeper runs. It adds a scope to the supplied sweeper's roster after provision and reconcile, and removes it after delete-scope, when the upload sets `SUBSTRAT_SCOPE_SWEEPER`. New exports: `registerScopeSweepHost`, `registeredScopeSweepHost`, `platformSweeperOf`, `PLATFORM_SWEEPER_VAR`.
+  - `substrat push` reads the entry's own sweeper classes from source and sends them as the manifest's new `sweeperClasses` (`[]` for none). The push route decides from that declaration, never from the bundle's bytes, and decides once: the answer is recorded with the version (the stored manifest's `platformSweeper`), and promote, re-serve and backout reuse it without re-deciding, so they can never refuse over it. A version pushed before this keeps exactly what it had. An own sweeper is kept, and the push is refused (422) if no binding names it. The platform's names, bound to something else, are refused rather than overwritten. A push from an older CLI falls back to the conventional names (`SWEEPER` bound to `SweeperDO` is the vertical's own, neither means none), and refuses a half-match.
+  - Every control-plane response carries `x-substrat-platform-features: scope-sweeper` (`PLATFORM_FEATURES_HEADER`, `PLATFORM_FEATURE_SCOPE_SWEEPER` in contracts). Before uploading a version that leaves the sweeper to the platform, `substrat push` checks for it, and refuses when the control plane does not list it, since an older control plane would accept the version and never run its schedules.
+  - A vertical that drops its own `SweeperDO` keeps the same Durable Object namespace on its serving script, so its roster and its armed alarm carry over and the in-place migration is empty.
+  - The push gate (and `lint:schedule-sweeper`) no longer refuses "no sweeper". It refuses an own sweeper nothing binds, the platform's names taken, or an installed `@substrat-run/vertical-host` too old to register the host.
+  - `defineScopeSweeperDO` checks ids with a pattern instead of the contracts schemas, so the supplied module carries no zod.
+  - The `npm create substrat` template still wires its own sweeper, which keeps working unchanged. It drops it once a control plane carrying this is live, since `substrat push` refuses to leave the sweeper to a control plane that does not supply one.
+
+### Patch Changes
+
+- 4eb961d: `npx @substrat-run/cli` installs again. `@substrat-run/control-plane-client@0.1.0` was published with a `workspace:` dependency that npm cannot resolve, so installing the CLI failed with `EUNSUPPORTEDPROTOCOL`. This release republishes the client with a resolvable manifest, and the CLI now requires that version.
+- Updated dependencies [fb1f624]
+- Updated dependencies [4964eb8]
+- Updated dependencies [33b2d44]
+- Updated dependencies [4eb961d]
+- Updated dependencies [b9b3b82]
+- Updated dependencies [3ed9e9d]
+- Updated dependencies [cdf32ab]
+- Updated dependencies [7a28aea]
+- Updated dependencies [7418e7e]
+- Updated dependencies [18069f9]
+- Updated dependencies [01bf5d4]
+  - @substrat-run/contracts@0.136.0
+  - @substrat-run/control-plane-client@0.1.1
+  - @substrat-run/model-view@0.2.40
+
 ## 0.39.0
 
 ### Minor Changes

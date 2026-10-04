@@ -1,5 +1,51 @@
 # @substrat-run/dashboard
 
+## 0.40.0
+
+### Minor Changes
+
+- 1af2d47: Async work writes an invocation line (#1901). A consumer delivery, each retry, a dead-letter and a schedule run used to write nothing, so a consumer that failed every attempt showed only as a dead-letter count.
+
+  - The scope host writes one line per unit of work, in the request line's shape plus `kind: 'consumer' | 'schedule'`. A request's line still has no `kind`; read a missing one as `request`. Both lines are built by the new `invocationLine`, so they share one grammar.
+  - A consumer's line (a module consumer, an executor, or an imported event's handler) names the consumer as `operation` and carries `eventType`, `eventId`, `attempt` and `outcome`: `delivered`, `retrying`, `dead-lettered`, `inert` (a copy's held delivery, at `warn`) or `routed`. A schedule's line carries `dueAt` and `latenessMs`, with `outcome` `ok` or `failed`.
+  - Ids, names and the thrown error's `errorCode` only. No payload, and no error text.
+  - A unit in a call's tail logs under the call's id. A unit outside any call logs under an id minted for it, and its `ctx.log` lines carry the same id.
+  - A pass writes at most `ASYNC_LINES_PER_PASS` (100) lines, then one `suppressed` line that counts the rest per `<kind>:<outcome>`.
+  - `SqliteScopeHostOptions.invocationLineSink` redirects the lines; the default, and the Durable Object host, write them to the console. Both adapters pass the new `asyncLogContractSuite`.
+  - `InvocationLogLine.method` and `.path` are now `string | null`; they are `null` on an async line.
+  - The control plane's request reads gain a `kind` facet (`REQUEST_FACET_KEYS`), and each `RequestRecord` carries `kind`, `outcome`, `eventType`, `eventId`, `attempt` and `latenessMs`. The telemetry cube groups by `kind`. Past the router cut-over, the request cube adds the async lines the router never meters (`AggregateSource.asyncRequests`).
+
+  These lines ship inside the vertical's adapter, so a vertical writes them after it upgrades and pushes again, not on a platform deploy.
+
+### Patch Changes
+
+- Updated dependencies [1af2d47]
+- Updated dependencies [fb1f624]
+- Updated dependencies [4fdad69]
+- Updated dependencies [4964eb8]
+- Updated dependencies [33b2d44]
+- Updated dependencies [4eb961d]
+- Updated dependencies [30c2cda]
+- Updated dependencies [b9b3b82]
+- Updated dependencies [3ed9e9d]
+- Updated dependencies [cdf32ab]
+- Updated dependencies [7a28aea]
+- Updated dependencies [0c7699d]
+- Updated dependencies [7418e7e]
+- Updated dependencies [18069f9]
+- Updated dependencies [01bf5d4]
+  - @substrat-run/kernel@0.136.0
+  - @substrat-run/adapter-cloudflare@0.136.0
+  - @substrat-run/control-plane-api@0.136.0
+  - @substrat-run/contracts@0.136.0
+  - @substrat-run/control-plane-client@0.1.1
+  - @substrat-run/demo-callout@0.3.54
+  - @substrat-run/connector-fortnox@0.4.38
+  - @substrat-run/engine-invites@0.9.13
+  - @substrat-run/engine-invoicing@0.11.20
+  - @substrat-run/engine-protocol@0.13.21
+  - @substrat-run/engine-workorder@0.12.20
+
 ## 0.39.12
 
 ### Patch Changes
