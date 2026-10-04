@@ -276,6 +276,24 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
     expect(ran).toContain(s);
   });
 
+  it('a held scope is refused before its tenant\'s attachment bucket is resolved (#1995)', async () => {
+    const s = await seat();
+    const resolved: string[] = [];
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      attachmentBuckets: (tenant) => {
+        resolved.push(tenant);
+        return {};
+      },
+    });
+    await host.setLifecycleLocal(s, life('suspended'));
+    await expect(host.attachments(owner, t, s)).rejects.toThrow(/scope not active \(status: suspended\)/);
+    expect(resolved).toEqual([]);
+    await host.setLifecycleLocal(s, life('active'));
+    await host.attachments(owner, t, s);
+    expect(resolved).toEqual([t]);
+  });
+
   it('an archived scope is held too', async () => {
     const s = await seat();
     await hostFor().setLifecycleLocal(s, life('archived'));
