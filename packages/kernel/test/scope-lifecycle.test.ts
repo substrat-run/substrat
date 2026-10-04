@@ -29,11 +29,12 @@ describe('scope lifecycle (#1713)', () => {
       },
     };
   };
-  const at = (minute: number) => `2026-10-01T00:${String(minute).padStart(2, '0')}:00.000Z` as ScopeLifecycle['at'];
-  const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'], minute: number): ScopeLifecycle => ({
+  /** A delivery at directory revisions (scope `s`, tenant `t`). `at` is fixed: it is never compared. */
+  const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'], s: number, t = 0): ScopeLifecycle => ({
     scope,
     tenant,
-    at: at(minute),
+    at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'],
+    revision: { scope: s, tenant: t },
   });
 
   describe('lifecycleRefusal — the directory\'s gate, in its words', () => {
@@ -54,7 +55,7 @@ describe('scope lifecycle (#1713)', () => {
     });
   });
 
-  describe('writeLifecycle — the newest read wins', () => {
+  describe('writeLifecycle — ordered by the directory\'s revisions', () => {
     it('stores the first delivery and reports the gate moving', () => {
       const sql = fresh();
       expect(writeLifecycle(sql, life('suspended', 'active', 1))).toEqual({
@@ -73,10 +74,47 @@ describe('scope lifecycle (#1713)', () => {
         lifecycle: life('suspended', 'active', 2),
       });
     });
-    it('an equal read is a repeat: applied, nothing moved', () => {
+    it('Codex\'s repro: active, then suspended, then a LATE older active — the late one is refused', () => {
       const sql = fresh();
-      writeLifecycle(sql, life('suspended', 'active', 1));
-      expect(writeLifecycle(sql, life('suspended', 'active', 1))).toMatchObject({ applied: true, changed: false });
+      writeLifecycle(sql, life('active', 'active', 1));
+      writeLifecycle(sql, life('suspended', 'active', 2));
+      // Same `at` on every delivery here: the clock decides nothing.
+      expect(writeLifecycle(sql, life('active', 'active', 1))).toEqual({
+        applied: false,
+        changed: false,
+        lifecycle: life('suspended', 'active', 2),
+      });
+      expect(lifecycleRefusal(readLifecycle(sql))).not.toBeNull();
+    });
+    it('an equal revision is refused, even carrying a different state', () => {
+      const sql = fresh();
+      writeLifecycle(sql, life('suspended', 'active', 3, 1));
+      expect(writeLifecycle(sql, life('suspended', 'active', 3, 1))).toMatchObject({ applied: false, changed: false });
+      expect(writeLifecycle(sql, life('active', 'active', 3, 1))).toMatchObject({ applied: false });
+      expect(readLifecycle(sql)).toEqual(life('suspended', 'active', 3, 1));
+    });
+    it('interleaved scope and tenant changes: each component only moves forward', () => {
+      const sql = fresh();
+      // tenant suspended (t1), then scope suspended (s1), then tenant lifted (t2)
+      expect(writeLifecycle(sql, life('active', 'suspended', 0, 1)).applied).toBe(true);
+      expect(writeLifecycle(sql, life('suspended', 'suspended', 1, 1)).applied).toBe(true);
+      expect(writeLifecycle(sql, life('suspended', 'active', 1, 2)).applied).toBe(true);
+      // the tenant-suspend and scope-suspend deliveries arrive late: both older, both refused
+      expect(writeLifecycle(sql, life('active', 'suspended', 0, 1)).applied).toBe(false);
+      expect(writeLifecycle(sql, life('suspended', 'suspended', 1, 1)).applied).toBe(false);
+      expect(readLifecycle(sql)).toEqual(life('suspended', 'active', 1, 2));
+      // newer on one and older on the other cannot come from one directory read: refused
+      expect(writeLifecycle(sql, life('active', 'active', 2, 1)).applied).toBe(false);
+      // the scope lifted next (s2): newer on scope, equal on tenant — kept
+      expect(writeLifecycle(sql, life('active', 'active', 2, 2))).toMatchObject({ applied: true, changed: true });
+    });
+    it('a row stored before revisions is older than any revisioned delivery, and still holds by its status', () => {
+      const sql = fresh();
+      const legacy = { scope: 'suspended', tenant: 'active', at: '2026-09-30T00:00:00.000Z' };
+      sql.run("INSERT INTO _substrat_meta (key, value) VALUES ('scope_lifecycle', ?)", JSON.stringify(legacy));
+      expect(readLifecycle(sql)).toEqual(legacy);
+      expect(lifecycleRefusal(readLifecycle(sql))).not.toBeNull();
+      expect(writeLifecycle(sql, life('active', 'active', 0, 0))).toMatchObject({ applied: true, changed: true });
     });
     it('suspended → archived is a newer state with the same answer: changed is false', () => {
       const sql = fresh();
@@ -102,7 +140,8 @@ describe('scope lifecycle (#1713)', () => {
   describe('lifecycleAfterLoad — what a load leaves', () => {
     const older = life('active', 'active', 1);
     const newer = life('suspended', 'active', 2);
-    it('a return keeps the newer of the store and the dump', () => {
+    it('a return keeps the newer of the store and the dump, by revision', () => {
+      expect(lifecycleAfterLoad(newer, { ...older, revision: newer.revision }, false)).toEqual(newer); // a tie keeps the store's
       expect(lifecycleAfterLoad(newer, older, false)).toEqual(newer); // a backup from before the suspension
       expect(lifecycleAfterLoad(older, newer, false)).toEqual(newer);
       expect(lifecycleAfterLoad(null, newer, false)).toEqual(newer); // a carry into a fresh store

@@ -562,7 +562,7 @@ describe('VerticalClient — database size (#1524)', () => {
  * platform secret, 403) stays the vertical's own answer.
  */
 describe('VerticalClient.setLifecycle (#1713)', () => {
-  const lifecycle = { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z' } as const;
+  const lifecycle = { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z', revision: { scope: 1, tenant: 0 } } as const;
   const input = { scopeId: s, lifecycle: lifecycle as never };
   const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>
     new VerticalClient({

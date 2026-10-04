@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost, type LifecycleDelegation } from '../src/host.js';
 import { createRouteResolver } from '../src/route-resolver.js';
@@ -76,13 +76,13 @@ it('gates real directory resolution and router dispatch on lifecycle, restoring 
 describe('the platform delivers a scope lifecycle to the deployment serving it (#1713)', () => {
   const actor = platformActorId.parse(ulid());
   const owner = principalId.parse(ulid());
-  const deliveries: { scopeId: string; scope: string; tenant: string }[] = [];
+  const deliveries: { scopeId: string; scope: string; tenant: string; lifecycle: ScopeLifecycle }[] = [];
   let failing = false;
   const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
   const lifecycleDelegation: LifecycleDelegation = {
     deliver: async ({ scopeId: s, lifecycle }) => {
       if (failing) throw new Error('deployment unreachable');
-      deliveries.push({ scopeId: s, scope: lifecycle.scope, tenant: lifecycle.tenant });
+      deliveries.push({ scopeId: s, scope: lifecycle.scope, tenant: lifecycle.tenant, lifecycle });
       return deployment().setLifecycleLocal(s, lifecycle);
     },
   };
@@ -180,6 +180,54 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
     // a restore landed without it.
     await platform().healLifecycles(actor, { limit: 1000 });
     expect(deliveredTo(s)).toEqual(['suspended/active', 'suspended/active']);
+  });
+
+  it('every transition delivers a strictly newer revision, counted in the directory', async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.suspendScope(actor, t, s);
+    await platform().admin.setTenantStatus(actor, t, 'suspended');
+    await platform().admin.unsuspendScope(actor, t, s);
+    await platform().admin.setTenantStatus(actor, t, 'active');
+    const revs = deliveries.filter((d) => d.scopeId === s).map((d) => d.lifecycle.revision);
+    // activate made the scope revision 1; each change after it moves exactly its own counter
+    expect(revs).toEqual([
+      { scope: 2, tenant: 0 },
+      { scope: 2, tenant: 1 },
+      { scope: 3, tenant: 1 },
+      { scope: 3, tenant: 2 },
+    ]);
+  });
+
+  it("Codex's repro end to end: the suspend's delivery replayed after the unsuspend's is refused", async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.suspendScope(actor, t, s);
+    const suspendDelivery = deliveries.filter((d) => d.scopeId === s).at(-1)!.lifecycle;
+    await platform().admin.unsuspendScope(actor, t, s);
+    // The overlapping push the review reproduced: the older one lands last.
+    expect((await deployment().setLifecycleLocal(s, suspendDelivery)).applied).toBe(false);
+    await expect(servedHere(t, s)).resolves.toBeDefined();
+    // Converged: nothing for the heal sweep to redo.
+    const before = deliveredTo(s).length;
+    await platform().healLifecycles(actor, { limit: 1000 });
+    expect(deliveredTo(s)).toHaveLength(before);
+  });
+
+  it('interleaved tenant and scope changes replayed in reverse settle on the latest', async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.setTenantStatus(actor, t, 'suspended');
+    await platform().admin.suspendScope(actor, t, s);
+    await platform().admin.setTenantStatus(actor, t, 'active');
+    const sent = deliveries.filter((d) => d.scopeId === s).map((d) => d.lifecycle);
+    for (const late of [...sent].reverse().slice(1)) {
+      expect((await deployment().setLifecycleLocal(s, late)).applied).toBe(false);
+    }
+    // held by the scope's own suspension, not the lifted tenant's
+    await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+    await platform().admin.unsuspendScope(actor, t, s);
+    await expect(servedHere(t, s)).resolves.toBeDefined();
   });
 
   it('the next case along: a failed UNsuspend is healed too, so a scope never stays held after the directory lifts it', async () => {
