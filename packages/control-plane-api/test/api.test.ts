@@ -1580,8 +1580,9 @@ describe('control-plane API', () => {
     const snap = (await res.json()) as {
       id: string; forkedFrom: string; kind: string; status: string; expiresAt: string;
     };
-    // The DATA hop went to the vertical, naming source and destination…
-    expect(snaps).toEqual([{ sourceScopeId: sV2, newScopeId: snap.id }]);
+    // The DATA hop went to the vertical, naming source and destination, and the tenant the
+    // fork records as its own (#2016)…
+    expect(snaps).toEqual([{ sourceScopeId: sV2, newScopeId: snap.id, tenantId: t1 }]);
     // …and the DIRECTORY row landed here: active, with provenance + expiry.
     expect(snap.forkedFrom).toBe(sV2);
     expect(snap.kind).toBe('archive');

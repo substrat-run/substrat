@@ -141,6 +141,12 @@ export const lifecycleDelivery = z.object({
   applied: z.boolean(),
   changed: z.boolean(),
   lifecycle: storedScopeLifecycle,
+  /**
+   * #2016: whether the scope holds a record of its tenant (`provisioned_for`) after the call. The
+   * platform keeps delivering to a scope that answers false until it answers true. Absent from a
+   * deployment built before it, which reads as not recorded.
+   */
+  tenantRecorded: z.boolean().optional(),
 });
 export type LifecycleDelivery = z.infer<typeof lifecycleDelivery>;
 

@@ -393,6 +393,31 @@ interface OutboxRow {
 const REAPED_MARKER = '_substrat_reaped';
 
 /**
+ * The `_substrat_meta` key of the tenant a scope was provisioned for (#1738): written by the first
+ * projection, never re-pointed, and what every door's pair check holds a request to (#2016).
+ */
+const PROVISIONED_FOR_KEY = 'provisioned_for';
+
+/** #2016: the refusal of a write that would re-point a scope's tenant, in one wording. */
+const tenantReceiptRefusal = (held: string, asked: string): string =>
+  `refused: this scope was provisioned for tenant ${held}, not ${asked}`;
+
+/** #2016: the spine tables whose rows say a scope holds state (`ScopeDO.holdsData`). */
+const HOLDS_DATA_TABLES = ['_substrat_migrations', '_substrat_tuples', '_substrat_outbox', '_substrat_schedule_state'] as const;
+
+/** #2016: how a tenant reads against a scope's record (`ScopeDO.tenantVerdict`). */
+export type TenantVerdict = 'recorded' | 'inferred' | 'foreign' | 'unknown';
+
+/** #2016: why `tenantId` is foreign to a scope (`held`, the receipt `tenantVerdict` read), in one wording. */
+const foreignTenant = (held: string | null, tenantId: string): string =>
+  held !== null
+    ? tenantReceiptRefusal(held, tenantId)
+    : `refused: this scope holds role rows for another tenant and none for ${tenantId}`;
+
+/** #2016: the load refusals `tenantReceiptRefusal` raised, told apart by identity, not by text. */
+const tenantRefusals = new WeakSet<Error>();
+
+/**
  * The scope spine, as this adapter builds it — one of two hand-written copies (#969).
  *
  * The other is `KERNEL_DDL` in `adapter-sqlite/src/index.ts`, and the two must describe
@@ -1569,26 +1594,81 @@ export function defineScopeDO(
      * pair check), and a stray role row can no longer make a scope serve a tenant it was never
      * provisioned for.
      *
-     * A scope with NO receipt was provisioned before it existed, or has just been restored (a
-     * dump's receipt is dropped on import: it describes the scope the dump came from). Only
-     * then is the old inference used: `provisionScopeLocal` projected role definitions under
-     * the tenant, so a `_substrat_roles` row for it says the same thing. The next projection
-     * (reconcile, or the restore's repair) writes the receipt, after which the inference is
-     * never consulted again.
+     * A scope with NO receipt was provisioned before it existed (a load never brings the dump's:
+     * it describes the scope the dump came from, and the store keeps its own, #2016). Only then
+     * is the old inference used: `provisionScopeLocal` projected role definitions under the
+     * tenant, so a `_substrat_roles` row for it says the same thing. The next projection
+     * (reconcile, or the restore's repair) or lifecycle delivery writes the receipt, after which
+     * the inference is never consulted again.
      *
      * Read without migrating, so asking about a foreign scope leaves its DO as empty as it found it.
      */
     async servesTenant(tenantId: TenantId): Promise<boolean> {
-      const has = (table: string) =>
-        this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, table).toArray().length > 0;
-      if (has('_substrat_meta')) {
-        const receipt = this.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray()[0] as
-          | { value: string }
-          | undefined;
-        if (receipt) return receipt.value === tenantId;
+      const { verdict } = this.tenantVerdict(tenantId);
+      return verdict === 'recorded' || verdict === 'inferred';
+    }
+
+    /**
+     * #2016: what one door into this scope needs from its storage on a CP-less host, in ONE call —
+     * how `tenantId` reads against the scope (`tenantVerdict`), and the lifecycle the platform
+     * delivered (#1713). The coordinator refuses a foreign pair before any guard, handler or store
+     * lookup runs, and reports an `unknown` one it lets through. Read without migrating, like
+     * `servesTenant`.
+     */
+    admission(tenantId: TenantId): { verdict: TenantVerdict; lifecycle: StoredScopeLifecycle | null } {
+      return { verdict: this.tenantVerdict(tenantId).verdict, lifecycle: readLifecycle(this.switchSql()) };
+    }
+
+    /**
+     * #1738 / #2016: this scope's tenant against `tenantId` — the one reading behind the served-here
+     * gate, every door's pair check and the lifecycle delivery's back-fill.
+     *
+     *  - `recorded`: the `provisioned_for` receipt names `tenantId`.
+     *  - `foreign`: the receipt names another tenant, or — on a scope provisioned before receipts
+     *    existed — the scope holds role rows and none of them is `tenantId`'s.
+     *  - `inferred`: no receipt, and a role row for `tenantId` (what `provisionScopeLocal` projected
+     *    before the receipt existed).
+     *  - `unknown`: no receipt and no role rows — never provisioned here, or loaded from a world
+     *    that keeps its roles elsewhere and not yet repaired. Nothing to hold the pair against.
+     *
+     * `held` is the receipt read, so a refusal can name it. Read without migrating, so asking about
+     * a foreign scope leaves its DO as empty as it found it.
+     */
+    private tenantVerdict(tenantId: string): { verdict: TenantVerdict; held: string | null } {
+      const held = this.provisionedFor();
+      if (held !== null) return { verdict: held === tenantId ? 'recorded' : 'foreign', held };
+      if (!this.hasTable('_substrat_roles')) return { verdict: 'unknown', held };
+      if (this.sql.exec('SELECT 1 FROM _substrat_roles WHERE tenant_id = ? LIMIT 1', tenantId).toArray().length > 0) {
+        return { verdict: 'inferred', held };
       }
-      if (!has('_substrat_roles')) return false;
-      return this.sql.exec('SELECT 1 FROM _substrat_roles WHERE tenant_id = ? LIMIT 1', tenantId).toArray().length > 0;
+      const anyRole = this.sql.exec('SELECT 1 FROM _substrat_roles LIMIT 1').toArray().length > 0;
+      return { verdict: anyRole ? 'foreign' : 'unknown', held };
+    }
+
+    /**
+     * #2016: whether a scope with no receipt and no role rows holds state — rather than being a DO
+     * nothing ever provisioned or loaded here. Only such a scope takes its tenant from a lifecycle
+     * delivery: recording one in an empty DO would make `servesTenant` answer for a scope this
+     * deployment does not hold.
+     *
+     * Every provision since #1738 writes the receipt itself (that IS the durable provision marker),
+     * so this only ever judges a scope from before it, or a load from an older platform. A module
+     * with no SQL migrations still leaves spine state, so any of it counts, not migrations alone:
+     * applied migrations, scope tuples (its grants, `system:` ones included), events, schedule state.
+     */
+    private holdsData(): boolean {
+      return HOLDS_DATA_TABLES.some(
+        (table) => this.hasTable(table) && this.sql.exec(`SELECT 1 FROM ${table} LIMIT 1`).toArray().length > 0,
+      );
+    }
+
+    /** #1738: the tenant this scope's `provisioned_for` receipt names, or null; read without migrating. */
+    private provisionedFor(): string | null {
+      return this.hasTable('_substrat_meta') ? this.metaValue(PROVISIONED_FOR_KEY) : null;
+    }
+
+    private hasTable(name: string): boolean {
+      return this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, name).toArray().length > 0;
     }
 
     /** #1705 PR 2: the outbox's insertion mark (`OUTBOX_MARK_SQL`). */
@@ -4620,10 +4700,30 @@ export function defineScopeDO(
      * older than the one held. Bookkeeping, like the copy marker: it changes what runs here, not
      * the scope's data, so it does not advance the write revision a carry fences on.
      */
-    setLifecycle(next: ScopeLifecycle): LifecycleDelivery {
+    setLifecycle(
+      next: ScopeLifecycle,
+      /** #2016: the tenant the directory delivered this lifecycle for. A scope it is foreign to
+       *  (`tenantVerdict`) refuses the delivery untouched; one provisioned before the receipt
+       *  existed, whose role rows name this tenant, records it — the back-fill. */
+      tenantId?: TenantId,
+    ): LifecycleDelivery | { refused: 'tenant'; message: string } {
+      const { verdict, held } = tenantId === undefined ? { verdict: null, held: null } : this.tenantVerdict(tenantId);
+      if (verdict === 'foreign') {
+        return { refused: 'tenant', message: `lifecycle delivery ${foreignTenant(held, tenantId!)}` };
+      }
+      // The back-fill: a scope provisioned before the receipt (its role rows agree), or one whose
+      // tenant nothing recorded although it holds data (a load from a world that keeps its roles
+      // elsewhere). The directory's word records it; a DO never provisioned here records nothing.
+      const backfill = verdict === 'inferred' || (verdict === 'unknown' && this.holdsData());
       let out!: LifecycleDelivery;
       this.revision.transactionSync(() => {
-        out = this.revision.bookkeeping(() => writeLifecycle(this.switchSql(), next));
+        // A write the carry fences on, not bookkeeping: it happens once per legacy scope, and
+        // over-counting only refuses a restore that could have landed. A carried-away copy takes
+        // no write at all, so it is left to the next projection.
+        if (backfill && !this.carriedAwayCopy) {
+          this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId!);
+        }
+        out = { ...this.revision.bookkeeping(() => writeLifecycle(this.switchSql(), next)), tenantRecorded: this.provisionedFor() !== null };
       });
       return out;
     }
@@ -5312,6 +5412,7 @@ export function defineScopeDO(
         expect,
         resolveKept,
         markCopy,
+        provisionedFor,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
@@ -5335,6 +5436,9 @@ export function defineScopeDO(
         /** #2005: the directory says this scope is not primary, so mark it a copy in its own
          *  storage (`markCopyOrigin`) — a carry of a copy that predates the marker brings none. */
         markCopy?: boolean;
+        /** #2016: the tenant the platform says this scope belongs to. Recorded as its receipt; a
+         *  store whose receipt names another tenant refuses the load (`conflict`) untouched. */
+        provisionedFor?: TenantId;
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -5379,6 +5483,15 @@ export function defineScopeDO(
         const before = this.loadMarker();
         // #1713: the lifecycle the platform delivered here, read before the drops take it.
         const lifecycleBefore = readLifecycle(this.switchSql());
+        // #2016: this store's own tenant receipt, read before the drops take it. A load never
+        // changes which tenant the scope belongs to: the platform's word for it (`provisionedFor`)
+        // must agree with the receipt held, and is refused before the first drop if it does not.
+        const receiptBefore = this.provisionedFor();
+        if (provisionedFor !== undefined && receiptBefore !== null && receiptBefore !== provisionedFor) {
+          const refused = substratError('conflict', tenantReceiptRefusal(receiptBefore, provisionedFor));
+          tenantRefusals.add(refused);
+          throw refused;
+        }
         // #1722 (Codex #2008 r7): a kept copy holds writes nothing else has. No load replaces it
         // except its own resolution, and that only at the revision the operator acted on.
         const kept = this.metaValue(KEPT_DIVERGENT_KEY);
@@ -5442,9 +5555,15 @@ export function defineScopeDO(
             for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
           }
           // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
-          // not this one. Dropped, so a restore never carries a receipt over; the repair
-          // projection that follows writes this scope's own.
-          this.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+          // not this one, so it is never carried over. #2016: what stays is THIS store's own —
+          // the platform's word when the load carries it (a copy into a fresh scope records its
+          // own tenant here), else the receipt held before the drops. A store that held none
+          // keeps none, and the repair projection that follows writes it.
+          this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, PROVISIONED_FOR_KEY);
+          const receipt = provisionedFor ?? receiptBefore;
+          if (receipt !== null) {
+            this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, receipt);
+          }
           // #1722: whatever stamp an export read here no longer describes this store, so every load
           // replaces it: with the carry's own, or with none. And the write revision moves on from
           // where it stood before the drops, so it never goes back.
@@ -5556,12 +5675,13 @@ export function defineScopeDO(
       tables: ScopeDumpTable[],
       destScopeId: ScopeId,
       opts: Parameters<this['importDump']>[2],
-    ): Promise<{ refused: 'changed' | 'kept' } | { refused: false; switchedOff: SwitchedOff[] }> {
+    ): Promise<{ refused: 'changed' | 'kept' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }> {
       try {
         return { refused: false, switchedOff: await this.importDump(tables, destScopeId, opts) };
       } catch (e) {
         const code = errorCodeOf(e);
         if (code === 'precondition_failed') return { refused: 'changed' };
+        if (e instanceof Error && tenantRefusals.has(e)) return { refused: 'tenant', message: e.message };
         if (code === 'conflict') return { refused: 'kept' };
         throw toRpcError(e);
       }
@@ -6755,19 +6875,22 @@ export function defineScopeDO(
           // #1738: the receipt `servesTenant` reads. First writer wins: absent or equal is written,
           // a receipt for ANOTHER tenant refuses the whole projection (K-3), before a single row
           // moves, so a misdirected projection can never re-point a scope or leave its roles behind.
-          // A restore does not trip this: `importDump` drops the dump's receipt, so the repair
-          // projection that follows finds none and writes the destination's own.
-          const held = this.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray()[0] as
-            | { value: string }
-            | undefined;
-          if (held && held.value !== tenantId) {
+          // A restore does not trip this: `importDump` keeps the destination's own receipt and
+          // never the dump's (#2016), so the repair projection that follows finds its own tenant.
+          // #2016: a scope with no receipt yet takes its first one only where its role rows agree
+          // (`tenantVerdict`, the same reading the lifecycle back-fill uses), so a projection for
+          // another tenant cannot pin a legacy scope to it.
+          const { verdict, held } = this.tenantVerdict(tenantId);
+          if (verdict === 'foreign') {
             throw substratError(
               'conflict',
-              `applyProjection refused: this scope was provisioned for tenant ${held.value}, and a projection for tenant ${tenantId} would re-point it`,
+              held !== null
+                ? `applyProjection refused: this scope was provisioned for tenant ${held}, and a projection for tenant ${tenantId} would re-point it`
+                : `applyProjection ${foreignTenant(held, tenantId)}`,
             );
           }
           // Written before any guard below can return early, so every projection leaves it.
-          this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('provisioned_for', ?)`, tenantId);
+          this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
           this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
           for (const r of roles) {
             this.sql.exec(

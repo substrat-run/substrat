@@ -444,9 +444,9 @@ app.post('/internal/snapshot', async (c) => {
     throw e;
   }
   const body = z
-    .object({ sourceScopeId: scopeId, newScopeId: scopeId })
+    .object({ sourceScopeId: scopeId, newScopeId: scopeId, tenantId: tenantId.optional() })
     .parse(await c.req.json());
-  return c.json(await hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId), 201);
+  return c.json(await hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId, body.tenantId), 201);
 });
 
 app.post('/internal/delete-scope', async (c) => {

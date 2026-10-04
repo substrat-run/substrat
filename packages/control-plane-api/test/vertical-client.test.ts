@@ -643,6 +643,22 @@ describe('VerticalClient.setLifecycle (#1713)', () => {
     expect(seen).toEqual([{ path: '/internal/lifecycle', body: { scopeId: s, lifecycle } }]);
   });
 
+  it('#2016: carries the tenant the directory holds the scope under', async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const answer = { applied: true, changed: true, lifecycle };
+    const client = answering(() => new Response(JSON.stringify(answer), { status: 200 }), seen);
+    await client.setLifecycle({ ...input, tenantId: t });
+    expect(seen).toEqual([{ path: '/internal/lifecycle', body: { scopeId: s, lifecycle, tenantId: t } }]);
+  });
+
+  it('#2016: reads whether the scope holds a record of its tenant, and an older deployment\'s silence as absent', async () => {
+    const recorded = { applied: true, changed: false, lifecycle, tenantRecorded: true };
+    await expect(answering(() => new Response(JSON.stringify(recorded), { status: 200 })).setLifecycle(input)).resolves.toEqual(recorded);
+    const older = { applied: true, changed: false, lifecycle };
+    const answer = await answering(() => new Response(JSON.stringify(older), { status: 200 })).setLifecycle(input);
+    expect(answer.tenantRecorded).toBeUndefined();
+  });
+
   it.each([
     ['a route the deployment does not have (404)', () => new Response('404 Not Found', { status: 404 }), 501],
     ['an SPA shell (200, not JSON)', () => new Response('<!doctype html>', { status: 200 }), 502],
