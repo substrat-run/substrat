@@ -479,6 +479,7 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
       applied: false,
       changed: false,
       lifecycle: at('suspended', 'active', 2, 0),
+      tenantRecorded: true,
     });
     expect(await hostFor().lifecycleHeld(s)).toBe(true);
     await expect(act(s)).rejects.toThrow(/scope not active \(status: suspended\)/);
@@ -794,6 +795,16 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
         warn.mockClear();
         await doors.system!(t, s);
         expect(unrecorded()).toEqual([]);
+      });
+
+      it('a migration-free scope counts by its spine state: a lifecycle delivery records its tenant', async () => {
+        // A module with no SQL migrations still leaves grants, events and schedule state behind.
+        const s = await unrecordedScope();
+        await sql(s, 'DELETE FROM _substrat_migrations');
+        expect(await sql(s, 'SELECT 1 FROM _substrat_migrations')).toEqual([]);
+        await hostFor().setLifecycleLocal(s, life(), t);
+        expect(await receiptOf(s)).toBe(t);
+        expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(true);
       });
 
       it('by a reconcile (every push runs one against the scopes behind it), after which a mismatched tenant is refused', async () => {

@@ -1,6 +1,6 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle, type TenantId } from '@substrat-run/contracts';
+import { errorCodeOf, permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, type LifecycleDelegation } from '../src/host.js';
 import { createRouteResolver } from '../src/route-resolver.js';
@@ -539,5 +539,106 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
     await platform().healLifecycles(actor, { limit: 1000 });
     expect(deliveredTo(s)).toEqual(['suspended/active', 'active/active']);
     await expect(servedHere(t, s)).resolves.toBeDefined();
+  });
+});
+
+/**
+ * #2016's convergence, against the real directory DO: the heal asks every served scope whether it
+ * holds a record of its tenant, a copy (a preview, a fork) as much as a primary — no push reconciles
+ * a copy, and an active copy in a never-restored directory takes no lifecycle delivery otherwise —
+ * and keeps asking until it answers that it does. The delivery carries the directory's tenant, as
+ * the shared control plane's does (`lifecycleDelegationOver`).
+ */
+describe('the heal asks every served scope for its tenant record until it holds one (#2016)', () => {
+  const actor = platformActorId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const USE = permissionKey.parse('perm:use');
+  const asked: string[] = [];
+  const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
+  const lifecycleDelegation: LifecycleDelegation = {
+    deliver: async ({ tenantId: t, scopeId: s, lifecycle }) => {
+      asked.push(s);
+      return deployment().setLifecycleLocal(s, lifecycle, t);
+    },
+  };
+  const directoryName = `tenant-record-${ulid()}`;
+  const directory = {
+    idFromName: () => env.CONTROL_PLANE.idFromName(directoryName),
+    get: (id: DurableObjectId) => env.CONTROL_PLANE.get(id),
+  } as unknown as DurableObjectNamespace;
+  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: directory, lifecycleDelegation });
+  beforeAll(() => warmControlPlane(directory));
+
+  const sql = (s: ScopeId, q: string) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_i, state) => state.storage.sql.exec(q).toArray());
+  const receiptOf = async (s: ScopeId) =>
+    ((await sql(s, `SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`))[0] as { value: string } | undefined)?.value ?? null;
+  const recordedInDirectory = (s: ScopeId) =>
+    runInDurableObject(env.CONTROL_PLANE.get(directory.idFromName('')), (_i, state) =>
+      (state.storage.sql.exec('SELECT tenant_recorded FROM scope_lifecycle_receipts WHERE scope_id = ?', s).toArray()[0] as
+        | { tenant_recorded: number | null }
+        | undefined)?.tenant_recorded ?? null,
+    );
+  const askedFor = (s: ScopeId) => asked.filter((x) => x === s).length;
+
+  /** A served preview fork of a live install, whose deployment storage holds data and grants but
+   *  no tenant record and no role rows — what a copy loaded from a world that keeps roles elsewhere
+   *  leaves, and what no push reconcile and no lifecycle transition would ever reach. */
+  const unrecordedCopy = async () => {
+    const t = tenantId.parse(ulid());
+    await platform().admin.createTenant(actor, { id: t, slug: `rec-${t.toLowerCase()}`, name: 'Record' });
+    const install = scopeId.parse(ulid());
+    await platform().provisionScope(actor, { tenantId: t, scopeId: install, vertical: 'todo' });
+    await platform().admin.activateScope(actor, t, install);
+    const copy = scopeId.parse(ulid());
+    await platform().provisionScope(actor, { tenantId: t, scopeId: copy, vertical: 'todo', kind: 'preview', forkedFrom: install });
+    await platform().admin.activateScope(actor, t, copy);
+    await deployment().provisionScopeLocal({
+      tenantId: t,
+      scopeId: copy,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    await sql(copy, `DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+    await sql(copy, 'DELETE FROM _substrat_roles');
+    expect(await receiptOf(copy)).toBeNull();
+    // Activation of a live scope in a never-restored directory posted nothing: nothing has asked.
+    expect(askedFor(copy)).toBe(0);
+    return { t, copy };
+  };
+
+  it('a role-free active copy is asked by the heal, records the directory\'s tenant, and is not asked again', async () => {
+    const { t, copy } = await unrecordedCopy();
+    const foreign = tenantId.parse(ulid());
+    const door = () => deployment().attachments(owner, foreign, copy).then(() => undefined, (e: unknown) => e);
+    // Before: nothing to hold the pair against, so a foreign tenant gets past the door.
+    expect(errorCodeOf(await door())).not.toBe('not_found');
+    await platform().healLifecycles(actor);
+    expect(askedFor(copy)).toBe(1);
+    expect(await receiptOf(copy)).toBe(t);
+    expect(await recordedInDirectory(copy)).toBe(1);
+    // After: the foreign tenant is refused at the door.
+    expect(errorCodeOf(await door())).toBe('not_found');
+    // Converged: the next pass leaves it alone.
+    await platform().healLifecycles(actor);
+    expect(askedFor(copy)).toBe(1);
+  });
+
+  it('a scope that cannot record yet (its deployment holds nothing) is asked again on the next pass', async () => {
+    const t = tenantId.parse(ulid());
+    await platform().admin.createTenant(actor, { id: t, slug: `rec-${t.toLowerCase()}`, name: 'Record' });
+    const empty = scopeId.parse(ulid());
+    await platform().provisionScope(actor, { tenantId: t, scopeId: empty, vertical: 'todo' });
+    await platform().admin.activateScope(actor, t, empty);
+    // This suite's directory and deployment share one scope namespace, so the directory's own
+    // provision seated grants into the store; a load of nothing leaves the deployment's store empty.
+    await deployment().restoreScopeLocal(empty, []);
+    await platform().healLifecycles(actor);
+    expect(askedFor(empty)).toBe(1);
+    expect(await receiptOf(empty)).toBeNull();
+    expect(await recordedInDirectory(empty)).toBe(0);
+    await platform().healLifecycles(actor);
+    expect(askedFor(empty)).toBe(2);
   });
 });
