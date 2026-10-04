@@ -4,6 +4,7 @@
 '@substrat-run/adapter-cloudflare': minor
 '@substrat-run/control-plane-api': minor
 '@substrat-run/contract-tests': minor
+'@substrat-run/dashboard': minor
 ---
 
 Async work writes an invocation line (#1901). A consumer delivery, each retry, a dead-letter and a schedule run used to write nothing, so a consumer that failed every attempt showed only as a dead-letter count.
