@@ -93,6 +93,14 @@ versionId             // the pushed version that served it
 That makes the line a record of the request as well as its proof of tenancy, and the
 dashboard's Requests view counts and filters it over the whole window.
 
+Work that never arrives as a request writes the same line from the scope host, with one more
+field, `kind`. A consumer's delivery is `consumer`, with the event type, the attempt and how it
+ended: delivered, retrying, dead-lettered, or held inert on a copy of the scope. A schedule run
+is `schedule`, with how late it started. A request's line has no `kind` at all, so every older
+line still reads as what it was. The line keeps a failure's error code and none of its text,
+since an error message can quote the event it failed on. This part ships inside the vertical's
+own adapter, so a vertical writes it once it upgrades and pushes again.
+
 Workers Logs indexes JSON fields, so `tenantId` becomes a filter. Reading a tenant's logs takes
 two phases. The first finds that tenant's invocation lines. The second uses Cloudflare's own
 per-request `$metadata.requestId` to fetch every other line the same request printed, including

@@ -378,6 +378,51 @@ dataset, behind the same seam:
 - Log patterns stay on the telemetry cube (a request writes many `ctx.log` lines), and so does
   the Lines list: sampling cannot find one request.
 
+**4.6a Async work's lines (#1901).** A request's line is written around the worker's `fetch`,
+which trusts a tenant only from the router's assertion. Work that never arrives as a request
+used to write nothing: a consumer delivery, its retries and its dead-letter, and a schedule run
+the sweeper's alarm drives. So a consumer that failed every attempt showed only as a
+dead-letter count. The **scope host** writes these lines instead, since it runs the dispatch
+for a scope it was asked about by tenant (`async-invocation-log.ts`):
+
+- One line per unit of work, built by the request line's own builder (`invocationLine`), so
+  the two share one grammar. The line adds `kind: 'consumer' | 'schedule'`. A request's line
+  carries **no** `kind`, and a reader treats absent as `request`, so every older line keeps
+  its meaning. `method`, `path` and `status` are `null`: no caller received anything.
+- A consumer's line (a module consumer, an executor, or an imported event's handler) names the
+  consumer as `operation` and carries `eventType`, `eventId`, `attempt` and an `outcome`:
+  `delivered`, `retrying`, `dead-lettered`, `inert` or `routed`. `inert` is a copy's delivery
+  (#2005): journaled terminal with no handler run, at `warn`, so it never reads as success. A
+  throw is `error`. A dead-letter without one (an undecodable event, a version the consumer
+  does not take, an event the producer withheld) is `warn`.
+- A schedule's line names the schedule's operation and carries `dueAt` and `latenessMs`
+  against the host's clock (both `null` on a first run), with `outcome` `ok` or `failed`.
+  Not-due and switched-off schedules write nothing.
+- **Ids, names and codes only.** No payload and no error text: a handler's message can quote
+  the event it failed on. The kernel `errorCode` of a thrown error is kept as `problemCode`;
+  the message stays on the delivery journal row the `eventId` names.
+- **`ctx.log` lines join it.** A unit run in a call's tail logs under that call's id, so the
+  call's drill-down shows its consumers. A unit run outside any call (a sweep's retry, an
+  import, a seed) logs under an id minted for it, which its handler's `ctx.log` lines carry
+  too. The spine's own `invocation_id` columns are untouched: an event emitted outside a call
+  still records none (#1525).
+- **Bounded.** A pass writes at most 100 unit lines (`ASYNC_LINES_PER_PASS`), then one
+  `outcome: 'suppressed'` line counting what it withheld per `<kind>:<outcome>`
+  (`suppressedBy`), at the worst level among them. A dead-letter storm is named in the line
+  that stands in for it.
+- **Both adapters** write the same line. The SQLite host takes an `invocationLineSink` (the
+  console by default), so a scenario can assert it.
+- **Reads.** The Requests view gains a `kind` facet. The telemetry cube groups by `kind`, so
+  the histogram, facets and patterns count async work with no other change. The router's
+  datapoints meter requests only, so past `REQUESTS_FROM_ROUTER_SINCE` the cube is the
+  router's requests **plus** a telemetry cube of the async lines alone (`asyncRequests`,
+  filtered on `kind`). `request` is a value no line spells, so the Requests list applies that
+  one selection to the answer rather than the query.
+- **Ships with the vertical, not the platform.** This is scope-host code, which a vertical
+  bundles. A vertical writes these lines from the release of its adapter that has them, on
+  its next push after upgrading — unlike the request line, which the platform's entry adds
+  at upload (#1893).
+
 **4.7 Module log lines and patterns (#1746, #1747).** Module code logs through `ctx.log`
 (`module-log.ts`): one JSON line with `substrat: 'log'`, stamped by the host with the tenant,
 scope, operation, invocation id and subject kind, and carrying the template it was written
