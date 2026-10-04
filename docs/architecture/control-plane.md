@@ -255,7 +255,11 @@ older on neither, so two transitions' overlapping deliveries settle on the later
 whichever lands last. A directory restore rolls those counters back with everything else,
 so every restore also mints a newer **epoch**, compared before the counters: the restored
 directory's deliveries outrank whatever the history it replaced delivered. The epoch
-describes the directory's store, not its data, so no dump carries it.
+describes the directory's store, not its data, so no dump carries it. A restore onto a
+fresh directory object has only the clock to mint from, which may be behind an epoch a
+scope already holds; such a scope refuses the delivery and answers what it holds, and the
+directory then raises its epoch past that (monotonically) and delivers again. Scopes only
+hold epochs a directory minted, so the directory always ends above them.
 
 - **One gate.** The CP-less host's `assertLive` reads it at every door that runs the scope's
   work: a request's stub, attachments, a capability or impersonation session, a peer call,
