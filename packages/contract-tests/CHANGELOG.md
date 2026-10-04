@@ -1,5 +1,79 @@
 # @substrat-run/contract-tests
 
+## 0.136.0
+
+### Minor Changes
+
+- 1af2d47: Async work writes an invocation line (#1901). A consumer delivery, each retry, a dead-letter and a schedule run used to write nothing, so a consumer that failed every attempt showed only as a dead-letter count.
+
+  - The scope host writes one line per unit of work, in the request line's shape plus `kind: 'consumer' | 'schedule'`. A request's line still has no `kind`; read a missing one as `request`. Both lines are built by the new `invocationLine`, so they share one grammar.
+  - A consumer's line (a module consumer, an executor, or an imported event's handler) names the consumer as `operation` and carries `eventType`, `eventId`, `attempt` and `outcome`: `delivered`, `retrying`, `dead-lettered`, `inert` (a copy's held delivery, at `warn`) or `routed`. A schedule's line carries `dueAt` and `latenessMs`, with `outcome` `ok` or `failed`.
+  - Ids, names and the thrown error's `errorCode` only. No payload, and no error text.
+  - A unit in a call's tail logs under the call's id. A unit outside any call logs under an id minted for it, and its `ctx.log` lines carry the same id.
+  - A pass writes at most `ASYNC_LINES_PER_PASS` (100) lines, then one `suppressed` line that counts the rest per `<kind>:<outcome>`.
+  - `SqliteScopeHostOptions.invocationLineSink` redirects the lines; the default, and the Durable Object host, write them to the console. Both adapters pass the new `asyncLogContractSuite`.
+  - `InvocationLogLine.method` and `.path` are now `string | null`; they are `null` on an async line.
+  - The control plane's request reads gain a `kind` facet (`REQUEST_FACET_KEYS`), and each `RequestRecord` carries `kind`, `outcome`, `eventType`, `eventId`, `attempt` and `latenessMs`. The telemetry cube groups by `kind`. Past the router cut-over, the request cube adds the async lines the router never meters (`AggregateSource.asyncRequests`).
+
+  These lines ship inside the vertical's adapter, so a vertical writes them after it upgrades and pushes again, not on a platform deploy.
+
+- 7418e7e: Previews and forks are inert: a scope that is not primary causes no outbound effects (#2005).
+
+  A fork, a snapshot and a preview of either kind still run their code and commit their writes, but nothing they ask for leaves them. One predicate decides it, `isPrimaryScope`, and every outbound door applies it:
+
+  - The platform-intent drain settles a non-primary scope's own intents `failed`, attributed to the platform, with the new `INERT_SCOPE_REASON`, and runs no handler. The settle lands no ops-failure row. `model-usage` and `sweep-runs` still land, because they record something that already happened. `drainScopePlatformRequests` now takes a `PlatformDrainContext`, which requires the scope's `kind` and `forkedFrom`, and decides from them.
+  - Executor and connector dispatch, on both adapters (the emitting call's tail and `drainDue`), journals a non-primary scope's deliveries terminal with the same reason and never runs the handler. `ExecutorDrainReport` gains an optional `inert` count. A CP-less hosted vertical, which has no directory, reads the scope's own copy-origin row instead. Every copy now holds that row, an empty copy included. Every carry onto a non-primary scope marks it (`restoreScope`'s `markCopy`). The new staff route `POST /scopes/mark-copies` (`pnpm scopes:mark-copies`; paged, resumable, dry run, admin-logged as `markScopeCopy`) marks copies made before the row existed, suspended and archived ones included, through the vertical's new `/internal/mark-copy`. Reactivating a copy marks it first. Each marker request carries the directory's classification (`scopeLineage`), and the vertical refuses to mark a primary. `POST /tenants/:t/scopes/:s/clear-copy-mark` (staff, logged as `clearScopeCopyMark`) clears a mistaken mark on an install, through `/internal/clear-copy-mark`.
+  - `RouteTarget` gains `primary` (defaulted to `true` for a resolver that predates it). `RouteTarget` also gains `hostnames`, the scope's active hostnames, defaulted to `[]`. The router hands all of it, with the hostname the dispatch serves, to the egress worker. The worker refuses every third-party subrequest from a non-primary scope, and every write to another platform app, metering both as `inert`. Reads of other apps, any request to a hostname of the copy's own scope, and the relay still pass, and each of them leaves with `redirect: 'manual'`, so a redirect cannot carry a copy past the rule.
+  - The sweep's schedule and freshness phases filter on `isPrimaryScope`, so a clean-room preview no longer fires its schedules.
+  - Previews and forks cannot send email or change a tenant's connections: the email relay, the connection relay (including the route a consent round's callback stores through) and connect-url refuse a non-primary scope with a 403.
+  - `isPrimaryScopeRow` answers the same predicate over a raw directory row.
+
+### Patch Changes
+
+- 4fdad69: A copy of a scope keeps the source's history and none of its power. A fork, a snapshot or a preview, or a backup of one scope restored onto a different scope, now starts with no link shares, so a live link no longer also opens the copy. Nothing the source had queued runs from the copy either: platform requests and job runs that were still in flight arrive settled as failed with a "not carried" reason, executor retries arrive finished, and events the source emitted are never delivered to the copy's consumers or executors, nor shipped to the event lake a second time. Events the copy emits itself flow as before. A backup restored into the scope it came from, or a scope moved onto a new version, keeps everything. A restore that does not say which scope its backup came from is treated as a copy, and one presented as the target's own backup is treated as a return. The kernel records a copy's origin in a new spine table, `_substrat_copy_origin`; `capabilitiesForLoad`, `settleCopiedWork` and `emittedHere` are the rules both adapters apply.
+- 4964eb8: A preview push or `scope bind` that moves a scope's data into another version's deployment now wipes the copy it leaves behind (#1722). Once the bind lands, the old copy is emptied to a `carried_away` marker rather than reaped, so a later bind back to that version can carry the data in again. The three bind tails (preview push, `scope bind`, serving-pin repair) are now one.
+
+  **Only one of two racing carries binds.** The bind expects the version the data was copied from, so of two pushes that read the same binding only one lands. The other is refused with a 412, and its copy is discarded, unless the preview is now served from that same deployment (a CI retry of the same version). A carry also refuses, before restoring anything, an export from a scope that was re-pointed meanwhile, or from a store that was already wiped. Right before it binds, a carry reads its source again. If anything changed there since the export (a write, a load, or a clear of its copy marker), it carries again from a fresh export. After three tries it is refused with a typed 409 (`carrySourceChanged`), with nothing bound.
+
+  **Every act on a store is fenced on that store.** A scope DO keeps a load stamp and a write revision in `_substrat_meta`, and neither ever leaves in a dump. Every load replaces the stamp. Every write advances the revision inside the transaction that commits it, an in-place update such as a drain receipt included.
+
+  - A carry's export (`/internal/export?stamp=1`) hands both over, in the `x-substrat-load-stamp` and `x-substrat-write-revision` headers, read in the same call as the dump.
+  - A carry reads the destination's marker (`/internal/load-marker`) and sends it back as `expect` on `/internal/restore`, so a retried push never overwrites a store another run bound and wrote to.
+  - The source wipe (`/internal/wipe-carried`) runs only if the source still holds what the carry exported, so a rollback that restored there meanwhile keeps its data.
+  - Every comparison happens inside the act's own transaction, and a refusal answers 412.
+
+  **A copy that took a write the carry did not copy is kept, not wiped.** It is recorded as `source-copy-kept` and protected in its own store: every load into it, a bind back included, is refused (409) until staff resolve it through the staff-only `GET /tenants/:t/scopes/:s/kept-copy` and `POST …/kept-copy/resolve`. The resolutions are:
+
+  - `discard`;
+  - `restore-forward` over the live store, acknowledging the live writes it replaces. It is fenced on the binding throughout, and discards the kept copy only once its data is where the scope still routes;
+  - `release`, for a kept copy that turned out to be the live store.
+
+  `GET …/kept-copy/export` pulls the kept copy under the governed export's rules (residency, masking unless `full=true`, access-logged) for reconciling by hand. Each resolution is fenced on the kept copy's load stamp and revision, and logged through the new `HostAdmin.recordKeptCopyResolution` (admin action `resolveKeptCopy`). A copy the carry wiped refuses writes, so a stale request still routed to it lands nothing.
+
+  **Copy marking (#2005).** A copy the carry wipes or keeps stays marked a copy whenever the directory says the scope is not primary, including a copy made before the marker existed. Marking a store a copy never counts as a write the carry missed. Clearing a mistaken marker does count. If a staff clear lands after the carry's last check of its source, the source records it, and the platform brings the clear to the store the scope now runs on: it clears that store's marker, fenced on this carry's own load of it and its revision (`/internal/clear-copy-mark` takes `expect`), and only then discards the source. A store another load has replaced meanwhile keeps its marker.
+
+  **Older deployments.** A deployment built before this release answers 404 on the new routes. Only a 404, a 501, or an HTML shell served as `text/html` reads as an older deployment. A lost, truncated or malformed answer is a failure, never a fallback. There, the wipe falls back to an unconditional load of the tombstone through `/internal/restore`, guarded by a route re-read and by the rollback checking its own store. The restore is guarded only by the binding read right before it. **Re-push every vertical after this release** so its scripts carry the fenced paths. The two remaining old-script windows close as each vertical is re-pushed.
+
+  The cleanup is best effort: a carry that fails between its restore and its wipe can still leave a copy, and reconciling those is not done yet.
+
+- cdf32ab: A paged read is now served in the order it declares. An operation declaring `paged: { …, order: 'desc' }` used to be served oldest-first whenever the caller named no order, while its OpenAPI document said newest-first. The declared order is now the default over HTTP, over MCP and in process alike, on both adapters, and an explicit `order` still wins. `operationInputsOf` applies it, so a module wired with `operationInputs` needs no change. The MCP tool schema now states a declared order as its default.
+
+  A kernel-composed page's `nextCursor` is now an opaque, versioned token that names the walk that minted it. Hand it back, or follow the `Link` header; never build or parse one. A cursor replayed under a different sort or order is refused with `validation_failed` and `reason: 'cursor_restart'` (`PAGE_CURSOR_RESTART`, exported from `@substrat-run/contracts`), which means read the first page again, rather than answered with rows the caller has already read. A cursor minted before this release continues in the ascending default walk it came from and is refused anywhere else, so a descending walk in flight across the upgrade restarts once. An old cursor whose id is not a ULID is also refused, and that walk restarts once too. `CursorMismatch` is exported from `@substrat-run/kernel`, and `validation_failed` problems may now carry a `reason`.
+
+- Updated dependencies [1af2d47]
+- Updated dependencies [fb1f624]
+- Updated dependencies [4fdad69]
+- Updated dependencies [4964eb8]
+- Updated dependencies [30c2cda]
+- Updated dependencies [b9b3b82]
+- Updated dependencies [3ed9e9d]
+- Updated dependencies [cdf32ab]
+- Updated dependencies [7a28aea]
+- Updated dependencies [7418e7e]
+- Updated dependencies [18069f9]
+  - @substrat-run/kernel@0.136.0
+  - @substrat-run/contracts@0.136.0
+
 ## 0.135.0
 
 ### Minor Changes
@@ -5117,7 +5191,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
