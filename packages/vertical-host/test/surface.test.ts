@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER, substratError } from '@substrat-run/contracts';
 import { mountPlatformSurface, registeredScopeSweepHost, type VerticalScopeHost } from '../src/index.js';
 
 const SECRET = 'sekret';
@@ -1434,6 +1434,20 @@ describe('mountPlatformSurface — the lifecycle delivery (#1713)', () => {
     expect(got).toEqual([SCOPE, lifecycle]);
   });
 
+  it('#2016: hands the host the tenant the platform names, and answers its tenant refusal 409', async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({
+      setLifecycleLocal: async (...args: unknown[]) => {
+        got = args;
+        throw substratError('conflict', 'lifecycle delivery refused: this scope was provisioned for tenant X, not Y');
+      },
+    });
+    const res = await post(host, { ...body, tenantId: TENANT });
+    expect(got).toEqual([SCOPE, lifecycle, TENANT]);
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).toContain('provisioned for tenant');
+  });
+
   it('a host without the method answers 501', async () => {
     const res = await post(fakeHost(), body);
     expect(res.status).toBe(501);
@@ -2362,5 +2376,41 @@ describe('mountPlatformSurface — the platform-supplied sweeper (#1902)', () =>
     expect(registered).toBe(hostFor);
     expect(registeredScopeSweepHost()).toBe(hostFor);
     expect(registered!(ENV)).toBe(host);
+  });
+});
+
+/**
+ * #2016: the copy verbs carry the tenant the platform copies for, so the scope that receives the
+ * bytes records its own tenant. Absent from an older platform, and then the host is called as before.
+ */
+describe('mountPlatformSurface — the copy verbs carry the tenant (#2016)', () => {
+  const NEW = '01JZ0000000000000000SCP002';
+  const post = (host: VerticalScopeHost, path: string, body: unknown) =>
+    appWith(host).request(path, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) }, ENV);
+
+  it('a snapshot hands the host the tenant, and an older platform\'s none', async () => {
+    const seen: unknown[][] = [];
+    const host = fakeHost({
+      snapshotScopeLocal: async (...args: unknown[]) => {
+        seen.push(args);
+        return { tables: 3 };
+      },
+    });
+    expect((await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW, tenantId: TENANT })).status).toBe(201);
+    expect((await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW })).status).toBe(201);
+    expect(seen).toEqual([[SCOPE, NEW, TENANT], [SCOPE, NEW]]);
+  });
+
+  it('a restore hands the host the tenant it then repairs for, and an older platform\'s none', async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      restoreScopeLocal: async (_s: unknown, _t: unknown, opts?: unknown) => {
+        seen.push((opts as { tenantId?: string }).tenantId);
+        return { tables: 0 };
+      },
+    });
+    expect((await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [] })).status).toBe(200);
+    expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [] })).status).toBe(200);
+    expect(seen).toEqual([TENANT, undefined]);
   });
 });
