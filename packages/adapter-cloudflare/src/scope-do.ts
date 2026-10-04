@@ -286,6 +286,7 @@ import type {
   Page,
   LifecycleDelivery,
   ScopeLifecycle,
+  StoredScopeLifecycle,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
@@ -4458,7 +4459,7 @@ export function defineScopeDO(
     }
 
     /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
-    lifecycle(): ScopeLifecycle | null {
+    lifecycle(): StoredScopeLifecycle | null {
       return readLifecycle(this.switchSql());
     }
 

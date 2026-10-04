@@ -33,7 +33,7 @@ import {
   SWEEP_RUNS_KIND,
   connectorDispatchKind,
 } from '@substrat-run/contracts';
-import type { ManifestImports, PlatformActorId, Scope, TenantId, ScopeId } from '@substrat-run/contracts';
+import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
 import {
   runPlatformSweep,
   runCrossVerticalFrom,
@@ -1447,13 +1447,15 @@ export async function drainTarget<R extends { vertical: string | null }, C>(
 }
 
 /**
- * The drain's context for one scope, from its directory record and nothing else: who it is,
- * the version it is bound to, and its kind and lineage — from which the drain decides whether
- * the scope is the real install, and settles a preview's or a fork's own intents inert (#2005).
+ * The drain's context for one scope, from its directory records and nothing else: who it is,
+ * the version it is bound to, its kind and lineage — from which the drain decides whether the
+ * scope is the real install, and settles a preview's or a fork's own intents inert (#2005) —
+ * and its and its tenant's status, by which a held scope's intents wait (#1713).
  */
 export function drainContextOf(
-  rec: Pick<Scope, 'tenantId' | 'id' | 'verticalVersionId' | 'kind' | 'forkedFrom'>,
+  rec: Pick<Scope, 'tenantId' | 'id' | 'verticalVersionId' | 'kind' | 'forkedFrom' | 'status'>,
   vertical: string,
+  tenant: Pick<Tenant, 'status'> | undefined,
 ): PlatformDrainContext {
   return {
     tenantId: rec.tenantId,
@@ -1461,6 +1463,8 @@ export function drainContextOf(
     vertical,
     versionId: rec.verticalVersionId ?? null,
     scope: { kind: rec.kind, forkedFrom: rec.forkedFrom },
+    // #1713: a scope whose tenant has no record is held, never drained as if it were live.
+    lifecycle: { scope: rec.status, tenant: tenant?.status ?? 'reaped' },
   };
 }
 
@@ -1482,7 +1486,7 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
   };
   return drainScopePlatformRequests(
     client,
-    drainContextOf(rec, vertical),
+    drainContextOf(rec, vertical, await host.admin.getTenant(SWEEP_ACTOR, t)),
     {
       [PROVISION_SIBLING_KIND]: provisionSiblingHandler({
         host,

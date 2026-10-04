@@ -632,6 +632,10 @@ export interface LifecycleTargetRow {
   tenant_status: string;
   /** `lifecycleReceipt` of the acknowledged state, or null when none was. */
   delivered: string | null;
+  /** The directory's epoch, and its revisions of the scope's status and the tenant's (0 when never changed). */
+  epoch: number;
+  scope_rev: number;
+  tenant_rev: number;
 }
 
 const DIRECTORY_DDL = `
@@ -1141,6 +1145,15 @@ const DIRECTORY_DDL = `
     delivered TEXT NOT NULL,
     at TEXT NOT NULL
   );
+  -- #1713: the lifecycle's revisions, one counter per subject ("scope:<id>" counts a
+  -- scope's status transitions, "tenant:<id>" a tenant's status changes), each bumped in
+  -- the same transaction as the change it counts, and "directory:epoch", the history the
+  -- directory is in, minted afresh by every restore (importDump). A deployment orders
+  -- deliveries by them, never by a clock. No row reads as 0.
+  CREATE TABLE IF NOT EXISTS lifecycle_revisions (
+    subject TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL
+  );
 `;
 
 /**
@@ -1615,7 +1628,12 @@ export class ControlPlaneDO extends DurableObject {
       )
       .toArray() as unknown as { name: string; sql: string }[];
     return defs.map(({ name, sql }) => {
-      const cursor = this.sql.exec(`SELECT * FROM "${name}"`);
+      // #1713: the directory's epoch describes THIS store's history, not its data, so it never
+      // leaves in a dump. A restore mints its own from the store it lands in (`importDump`).
+      const cursor =
+        name === 'lifecycle_revisions'
+          ? this.sql.exec(`SELECT * FROM "${name}" WHERE subject <> 'directory:epoch'`)
+          : this.sql.exec(`SELECT * FROM "${name}"`);
       const columns = cursor.columnNames;
       const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
       return { name, ddl: sql, columns, rows };
@@ -1648,6 +1666,8 @@ export class ControlPlaneDO extends DurableObject {
     // nothing.
     assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
     await this.ctx.storage.transaction(async () => {
+      // #1713: the epoch this directory was in, read before the drops take it.
+      const epochBefore = this.lifecycleEpoch();
       this.sql.exec('PRAGMA defer_foreign_keys = ON');
       // `_cf_*` is workerd's, and dropping it is refused (SQLITE_AUTH), as `exportDump` says.
       const existing = this.sql
@@ -1671,6 +1691,15 @@ export class ControlPlaneDO extends DurableObject {
           for (const row of rows) this.sql.exec(sql, ...(row as unknown[]));
         },
       });
+      // #1713: a restore is a new history. Its lifecycle counters went back with it, so it
+      // mints an epoch newer than the one this store was in — and than any minted on a store it
+      // no longer remembers (a fresh directory restored from a copy), since an epoch is a time.
+      // A dump never carries one (`exportDump`); a hand-made dump that does is outranked too.
+      // Every deployment then takes this history's deliveries, whatever its counters say.
+      this.sql.exec(
+        "INSERT OR REPLACE INTO lifecycle_revisions (subject, revision) VALUES ('directory:epoch', ?)",
+        Math.max(epochBefore + 1, this.lifecycleEpoch() + 1, Date.now()),
+      );
     });
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next
@@ -1753,20 +1782,23 @@ export class ControlPlaneDO extends DurableObject {
     // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
     // entering `deleting` stamps, leaving it (an un-delete) clears — the same shape
     // transitionScope uses for archived_at.
-    if (status === 'deleting') {
-      this.sql.exec(
-        'UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?',
-        status,
-        new Date().toISOString(),
-        tenantId,
-      );
-    } else {
-      this.sql.exec(
-        'UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?',
-        status,
-        tenantId,
-      );
-    }
+    this.ctx.storage.transactionSync(() => {
+      if (status === 'deleting') {
+        this.sql.exec(
+          'UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?',
+          status,
+          new Date().toISOString(),
+          tenantId,
+        );
+      } else {
+        this.sql.exec(
+          'UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?',
+          status,
+          tenantId,
+        );
+      }
+      this.bumpLifecycleRevision(`tenant:${tenantId}`); // #1713, with the change it counts
+    });
     return before.status;
   }
 
@@ -1799,10 +1831,13 @@ export class ControlPlaneDO extends DurableObject {
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
-    this.sql.exec(
-      "UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?",
-      tenantId,
-    );
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        "UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?",
+        tenantId,
+      );
+      this.bumpLifecycleRevision(`tenant:${tenantId}`); // #1713
+    });
     return before.status;
   }
 
@@ -2324,6 +2359,7 @@ export class ControlPlaneDO extends DurableObject {
         this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
       }
       if (to === 'reaped') forgetSystemSwitchesOf(this.kernelSql, scopeId);
+      this.bumpLifecycleRevision(`scope:${scopeId}`); // #1713, with the status it counts
     });
     return { ok: true, status: row.status, vertical: row.vertical };
   }
@@ -4168,21 +4204,69 @@ export class ControlPlaneDO extends DurableObject {
       where.push('s.scope_id = ?');
       params.push(filter.scopeId);
     }
-    const drifted = "COALESCE(r.delivered, 'active/active') <> s.status || '/' || t.status";
-    if (filter.drift) where.push(`(${drifted} OR s.status NOT IN ('active', 'archived') OR t.status <> 'active')`);
-    params.push(filter.limit ?? 1000);
+    const epoch = this.lifecycleEpoch();
+    // What the deployment would acknowledge now (`lifecycleReceipt`): the statuses and the full
+    // revision. No receipt is drift only after a restore (epoch > 0), when what the deployment
+    // holds is unknown; before any, a live scope with no receipt runs as its deployment does.
+    const acked =
+      "s.status || '/' || t.status || '@' || CAST(? AS INTEGER) || '.' || COALESCE(rs.revision, 0) || '.' || COALESCE(rt.revision, 0)";
+    // CAST: a bound JS number reaches DO SQLite as a REAL, and would concatenate as '0.0'.
+    const drifted = `(r.delivered IS NULL AND CAST(? AS INTEGER) > 0) OR r.delivered <> ${acked}`;
+    const driftParams = [epoch, epoch];
+    if (filter.drift) {
+      where.push(`(${drifted} OR s.status NOT IN ('active', 'archived') OR t.status <> 'active')`);
+      params.push(...driftParams);
+    }
+    params.push(...driftParams, filter.limit ?? 1000);
     return this.sql
       .exec(
-        `SELECT s.tenant_id, s.scope_id, s.status AS scope_status, t.status AS tenant_status, r.delivered
+        `SELECT s.tenant_id, s.scope_id, s.status AS scope_status, t.status AS tenant_status, r.delivered,
+                ${epoch} AS epoch, COALESCE(rs.revision, 0) AS scope_rev, COALESCE(rt.revision, 0) AS tenant_rev
            FROM scopes s
            JOIN tenants t ON t.tenant_id = s.tenant_id
            LEFT JOIN scope_lifecycle_receipts r ON r.scope_id = s.scope_id
+           LEFT JOIN lifecycle_revisions rs ON rs.subject = 'scope:' || s.scope_id
+           LEFT JOIN lifecycle_revisions rt ON rt.subject = 'tenant:' || s.tenant_id
           WHERE ${where.join(' AND ')}
           ORDER BY CASE WHEN ${drifted} THEN 0 ELSE 1 END, s.scope_id
           LIMIT ?`,
         ...params,
       )
       .toArray() as unknown as LifecycleTargetRow[];
+  }
+
+  /** #1713: the directory's epoch (`lifecycleRevision.epoch`): 0 until a restore mints one. */
+  private lifecycleEpoch(): number {
+    const row = this.sql
+      .exec("SELECT revision FROM lifecycle_revisions WHERE subject = 'directory:epoch'")
+      .toArray()[0] as { revision: number } | undefined;
+    return row?.revision ?? 0;
+  }
+
+  /**
+   * #1713: raise the directory's epoch to at least `atLeast`, never lower it, and answer the epoch
+   * now. One statement, so concurrent heals that each learned a held epoch settle on the highest.
+   * Called when a scope refuses this directory's delivery while holding an epoch another history
+   * of the directory minted (a fresh-directory restore whose clock ran behind the old one's).
+   */
+  raiseLifecycleEpoch(atLeast: number): number {
+    if (!Number.isSafeInteger(atLeast) || atLeast < 0) throw new Error(`not an epoch: ${atLeast}`);
+    // An epoch is a mint time: one a day past the clock is forged or broken, and never raised to.
+    if (atLeast > Date.now() + 24 * 60 * 60 * 1000) throw new Error(`epoch ${atLeast} is ahead of the clock; not raised`);
+    this.sql.exec(
+      `INSERT INTO lifecycle_revisions (subject, revision) VALUES ('directory:epoch', ?)
+         ON CONFLICT (subject) DO UPDATE SET revision = MAX(revision, excluded.revision)`,
+      atLeast,
+    );
+    return this.lifecycleEpoch();
+  }
+
+  /** #1713: count one lifecycle change of a scope or a tenant. Call inside the change's transaction. */
+  private bumpLifecycleRevision(subject: string): void {
+    this.sql.exec(
+      'INSERT INTO lifecycle_revisions (subject, revision) VALUES (?, 1) ON CONFLICT (subject) DO UPDATE SET revision = revision + 1',
+      subject,
+    );
   }
 
   /** #1713: record what a scope's deployment acknowledged holding (`lifecycleReceipt`). */

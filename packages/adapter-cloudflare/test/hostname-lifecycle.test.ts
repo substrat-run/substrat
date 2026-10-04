@@ -1,8 +1,8 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost, type LifecycleDelegation } from '../src/host.js';
+import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, type LifecycleDelegation } from '../src/host.js';
 import { createRouteResolver } from '../src/route-resolver.js';
 import router, { type Env } from '../../../apps/router/src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -76,19 +76,29 @@ it('gates real directory resolution and router dispatch on lifecycle, restoring 
 describe('the platform delivers a scope lifecycle to the deployment serving it (#1713)', () => {
   const actor = platformActorId.parse(ulid());
   const owner = principalId.parse(ulid());
-  const deliveries: { scopeId: string; scope: string; tenant: string }[] = [];
+  const deliveries: { scopeId: string; scope: string; tenant: string; lifecycle: ScopeLifecycle }[] = [];
   let failing = false;
   const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
   const lifecycleDelegation: LifecycleDelegation = {
     deliver: async ({ scopeId: s, lifecycle }) => {
       if (failing) throw new Error('deployment unreachable');
-      deliveries.push({ scopeId: s, scope: lifecycle.scope, tenant: lifecycle.tenant });
+      deliveries.push({ scopeId: s, scope: lifecycle.scope, tenant: lifecycle.tenant, lifecycle });
       return deployment().setLifecycleLocal(s, lifecycle);
     },
   };
-  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, lifecycleDelegation });
+  // A directory of this suite's own (#1899's pattern): the host addresses 'control-plane', and
+  // this resolves it to a fresh directory object, so the restore cases below replace nothing
+  // another suite reads, and the epoch starts at 0 whatever ran before.
+  let directoryName = `lifecycle-delivery-${ulid()}`;
+  const directory = {
+    idFromName: () => env.CONTROL_PLANE.idFromName(directoryName),
+    get: (id: DurableObjectId) => env.CONTROL_PLANE.get(id),
+  } as unknown as DurableObjectNamespace;
+  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: directory, lifecycleDelegation });
+  beforeAll(() => warmControlPlane(directory));
   const USE = permissionKey.parse('perm:use');
 
+  const activations = new Map<ScopeId, string[]>();
   const deliveredTo = (s: ScopeId) => deliveries.filter((d) => d.scopeId === s).map((d) => `${d.scope}/${d.tenant}`);
   const tenantOf = async () => {
     const t = tenantId.parse(ulid());
@@ -106,9 +116,10 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
       ownerRoleKey: 'office-admin',
     });
-    // Activation is a transition too, but a live scope its deployment already runs live has
-    // nothing to receive, so nothing is posted (a deployment without the route logs nothing).
-    expect(deliveredTo(s)).toEqual([]);
+    // Activation is a transition too. Counted from here, whatever it delivered: before any
+    // restore it delivers nothing (the first test pins that), after one it delivers once.
+    activations.set(s, deliveredTo(s));
+    deliveries.splice(0, deliveries.length, ...deliveries.filter((d) => d.scopeId !== s));
     return s;
   };
   const servedHere = (t: TenantId, s: ScopeId) => deployment().getScope(owner, t, s);
@@ -116,6 +127,9 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
   it('a suspend reaches the deployment, which then refuses in the directory\'s words; unsuspend lifts it', async () => {
     const t = await tenantOf();
     const s = await hosted(t);
+    // A directory never restored: the activation of a live scope posts nothing, so a deployment
+    // built before the route logs nothing for it.
+    expect(activations.get(s)).toEqual([]);
     await platform().admin.suspendScope(actor, t, s);
     expect(deliveredTo(s)).toEqual(['suspended/active']);
     await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
@@ -180,6 +194,335 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
     // a restore landed without it.
     await platform().healLifecycles(actor, { limit: 1000 });
     expect(deliveredTo(s)).toEqual(['suspended/active', 'suspended/active']);
+  });
+
+  it('every transition delivers a strictly newer revision, counted in the directory', async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.suspendScope(actor, t, s);
+    await platform().admin.setTenantStatus(actor, t, 'suspended');
+    await platform().admin.unsuspendScope(actor, t, s);
+    await platform().admin.setTenantStatus(actor, t, 'active');
+    const revs = deliveries.filter((d) => d.scopeId === s).map((d) => d.lifecycle.revision);
+    // activate made the scope revision 1; each change after it moves exactly its own counter
+    expect(revs).toEqual([
+      { epoch: 0, scope: 2, tenant: 0 },
+      { epoch: 0, scope: 2, tenant: 1 },
+      { epoch: 0, scope: 3, tenant: 1 },
+      { epoch: 0, scope: 3, tenant: 2 },
+    ]);
+  });
+
+  it("Codex's repro end to end: the suspend's delivery replayed after the unsuspend's is refused", async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.suspendScope(actor, t, s);
+    const suspendDelivery = deliveries.filter((d) => d.scopeId === s).at(-1)!.lifecycle;
+    await platform().admin.unsuspendScope(actor, t, s);
+    // The overlapping push the review reproduced: the older one lands last.
+    expect((await deployment().setLifecycleLocal(s, suspendDelivery)).applied).toBe(false);
+    await expect(servedHere(t, s)).resolves.toBeDefined();
+    // Converged: nothing for the heal sweep to redo.
+    const before = deliveredTo(s).length;
+    await platform().healLifecycles(actor, { limit: 1000 });
+    expect(deliveredTo(s)).toHaveLength(before);
+  });
+
+  it('interleaved tenant and scope changes replayed in reverse settle on the latest', async () => {
+    const t = await tenantOf();
+    const s = await hosted(t);
+    await platform().admin.setTenantStatus(actor, t, 'suspended');
+    await platform().admin.suspendScope(actor, t, s);
+    await platform().admin.setTenantStatus(actor, t, 'active');
+    const sent = deliveries.filter((d) => d.scopeId === s).map((d) => d.lifecycle);
+    for (const late of [...sent].reverse().slice(1)) {
+      expect((await deployment().setLifecycleLocal(s, late)).applied).toBe(false);
+    }
+    // held by the scope's own suspension, not the lifted tenant's
+    await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+    await platform().admin.unsuspendScope(actor, t, s);
+    await expect(servedHere(t, s)).resolves.toBeDefined();
+  });
+
+  /**
+   * A directory restore (`restoreDirectory` → `importDump`) rolls the directory's lifecycle
+   * counters back with everything else. Each restore mints a newer epoch, so the restored
+   * directory's deliveries outrank whatever the replaced history delivered, and the heal pass
+   * re-converges every hosted scope on what the directory now says — in BOTH directions.
+   */
+  describe('after a directory restore, the heal converges on the restored directory', () => {
+    const restoreTo = async (dump: Awaited<ReturnType<ReturnType<typeof platform>['admin']['exportDirectory']>>) => {
+      await platform().admin.restoreDirectory(actor, dump);
+      await platform().healLifecycles(actor, { limit: 1000 });
+    };
+
+    it('a scope live in its deployment, restored to a directory that says suspended, is held', async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      await platform().admin.suspendScope(actor, t, s);
+      const suspendedCopy = await platform().admin.exportDirectory(actor);
+      await platform().admin.unsuspendScope(actor, t, s); // the deployment now holds active, at a HIGHER counter
+      await expect(servedHere(t, s)).resolves.toBeDefined();
+      await restoreTo(suspendedCopy);
+      await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+      expect(deliveredTo(s).at(-1)).toBe('suspended/active');
+    });
+
+    it('a scope held in its deployment, restored to a directory that says active, runs again', async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      const liveCopy = await platform().admin.exportDirectory(actor);
+      await platform().admin.suspendScope(actor, t, s);
+      await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+      await restoreTo(liveCopy);
+      await expect(servedHere(t, s)).resolves.toBeDefined();
+    });
+
+    it('a scope with NO receipt in the restored copy (activated silently, before any restore) still converges', async () => {
+      // A directory never restored, so the activation posts nothing and leaves no receipt.
+      const kept = directoryName;
+      directoryName = `lifecycle-fresh-${ulid()}`;
+      try {
+        await warmControlPlane(directory);
+        const t = await tenantOf();
+        const s = await hosted(t);
+        expect(activations.get(s)).toEqual([]);
+        const copy = await platform().admin.exportDirectory(actor); // no receipt row for s
+        await platform().admin.suspendScope(actor, t, s);
+        await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+        await restoreTo(copy);
+        // the copy says active and holds no receipt: after a restore, that is drift
+        await expect(servedHere(t, s)).resolves.toBeDefined();
+      } finally {
+        directoryName = kept;
+      }
+    });
+
+    it('a restore that leaves the statuses as they were still re-converges, so later transitions land', async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      const copy = await platform().admin.exportDirectory(actor); // active, low counters
+      await platform().admin.suspendScope(actor, t, s);
+      await platform().admin.unsuspendScope(actor, t, s); // active again, higher counters
+      await restoreTo(copy);
+      const healed = deliveries.filter((d) => d.scopeId === s).at(-1)!.lifecycle;
+      expect(healed.scope).toBe('active');
+      expect(healed.revision.epoch).toBeGreaterThan(0);
+      // The suspend after the restore carries a LOWER scope counter than the deployment saw
+      // before it; the newer epoch is what lets it land.
+      await platform().admin.suspendScope(actor, t, s);
+      await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+    });
+
+    /**
+     * Codex round 2: a restore onto a FRESH directory object has only the clock as its floor, and
+     * the epoch a scope already holds may be ahead of it (the old directory ran on a fast clock, or
+     * restored in the same millisecond). The scope refuses the new directory as older; the
+     * directory then learns past the held epoch and delivers again, so it converges anyway.
+     */
+    describe('a fresh-directory restore behind an epoch the scope already holds', () => {
+      /** Restore `copy` onto a brand-new directory object, run `between`, then heal; restores the suite's directory after. */
+      const ontoFresh = async (copy: Parameters<typeof restoreTo>[0], between: () => Promise<void> = async () => {}) => {
+        const kept = directoryName;
+        directoryName = `lifecycle-fresh-${ulid()}`;
+        await warmControlPlane(directory);
+        await platform().admin.restoreDirectory(actor, copy);
+        await between();
+        await platform().healLifecycles(actor, { limit: 1000 });
+        return () => {
+          directoryName = kept;
+        };
+      };
+      const farAhead = (state: { scope: 'active' | 'suspended' }, epoch: number) => ({
+        scope: state.scope,
+        tenant: 'active' as const,
+        at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'],
+        revision: { epoch, scope: 50, tenant: 50 },
+      });
+
+      it('the directory says suspended: the hold reaches a scope holding a higher epoch as active', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        await platform().admin.suspendScope(actor, t, s);
+        const copy = await platform().admin.exportDirectory(actor);
+        // The old history delivered active at an epoch a backward clock will not reach.
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, Date.now() + 60 * 60 * 1000));
+        await expect(servedHere(t, s)).resolves.toBeDefined();
+        const back = await ontoFresh(copy);
+        try {
+          await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+        } finally {
+          back();
+        }
+      });
+
+      it('the directory says active: the lift reaches a scope holding a higher epoch as suspended', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        const copy = await platform().admin.exportDirectory(actor);
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'suspended' }, Date.now() + 60 * 60 * 1000));
+        await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+        const back = await ontoFresh(copy);
+        try {
+          await expect(servedHere(t, s)).resolves.toBeDefined();
+        } finally {
+          back();
+        }
+      });
+
+      it('two restores in the same millisecond: an EQUAL epoch with other counters converges too', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        await platform().admin.suspendScope(actor, t, s);
+        const copy = await platform().admin.exportDirectory(actor);
+        const back = await ontoFresh(copy, async () => {
+          // the other history minted the very same epoch and delivered active at higher counters
+          const [row] = (await (env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+            lifecycleTargets(f: object): Promise<{ epoch: number }[]>;
+          }).lifecycleTargets({ scopeId: s })) as { epoch: number }[];
+          await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, row!.epoch));
+        });
+        try {
+          await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+        } finally {
+          back();
+        }
+      });
+
+      it('a forged epoch far past the clock is never raised to: an ops failure, the directory unmoved', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        await platform().admin.suspendScope(actor, t, s);
+        const copy = await platform().admin.exportDirectory(actor);
+        const forged = Number.MAX_SAFE_INTEGER - 1;
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, forged));
+        const back = await ontoFresh(copy);
+        try {
+          const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+            lifecycleTargets(f: object): Promise<{ epoch: number }[]>;
+          };
+          const [row] = await dir.lifecycleTargets({ scopeId: s });
+          // No raise toward the forged value: whatever the restored copy's other scopes legitimately
+          // taught this directory, its epoch stays within the skew of the clock.
+          expect(row!.epoch).toBeLessThanOrEqual(Date.now() + LIFECYCLE_EPOCH_SKEW_MS);
+          const failures = await platform().admin.listOpsFailures(actor, { scopeId: s });
+          expect(failures.map((f) => f.stage)).toContain('foreign-epoch');
+        } finally {
+          back();
+        }
+      });
+
+      it('a held epoch within the skew (a clock somewhat ahead) is raised past, and the scope converges', async () => {
+        const t = await tenantOf();
+        const s = await hosted(t);
+        await platform().admin.suspendScope(actor, t, s);
+        const copy = await platform().admin.exportDirectory(actor);
+        const ahead = Date.now() + LIFECYCLE_EPOCH_SKEW_MS / 2;
+        await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, ahead));
+        const back = await ontoFresh(copy);
+        try {
+          const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+            lifecycleTargets(f: object): Promise<{ epoch: number }[]>;
+          };
+          expect((await dir.lifecycleTargets({ scopeId: s }))[0]!.epoch).toBeGreaterThan(ahead);
+          await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+        } finally {
+          back();
+        }
+      });
+
+      it('a directory never restored does not raise over a foreign epoch at all', async () => {
+        const kept = directoryName;
+        directoryName = `lifecycle-never-${ulid()}`;
+        try {
+          await warmControlPlane(directory);
+          const t = await tenantOf();
+          const s = await hosted(t);
+          await deployment().setLifecycleLocal(s, farAhead({ scope: 'active' }, 5));
+          await platform().admin.suspendScope(actor, t, s); // epoch 0 delivery, refused as older
+          const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+            lifecycleTargets(f: object): Promise<{ epoch: number }[]>;
+          };
+          expect((await dir.lifecycleTargets({ scopeId: s }))[0]!.epoch).toBe(0);
+          expect((await platform().admin.listOpsFailures(actor, { scopeId: s })).map((f) => f.stage)).toContain('foreign-epoch');
+        } finally {
+          directoryName = kept;
+        }
+      });
+
+      it('the raise only ever moves the epoch up, whatever order concurrent heals learn in', async () => {
+        const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`lifecycle-raise-${ulid()}`)) as unknown as {
+          raiseLifecycleEpoch(atLeast: number): Promise<number>;
+        };
+        expect(await dir.raiseLifecycleEpoch(10)).toBe(10);
+        expect(await dir.raiseLifecycleEpoch(7)).toBe(10);
+        const raced = await Promise.all([dir.raiseLifecycleEpoch(12), dir.raiseLifecycleEpoch(11), dir.raiseLifecycleEpoch(13)]);
+        expect(Math.max(...raced)).toBe(13);
+        expect(await dir.raiseLifecycleEpoch(0)).toBe(13);
+      });
+    });
+
+    it("Codex's late pass, within one environment: a heal that read BEFORE a restore delivers after it, and the restored state wins", async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      await platform().admin.suspendScope(actor, t, s);
+      const copy = await platform().admin.exportDirectory(actor); // says suspended
+      await platform().admin.unsuspendScope(actor, t, s);
+      // The rows an in-flight heal read before the restore: they say active, at the old epoch.
+      const real = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(directoryName)) as unknown as {
+        lifecycleTargets(f: object): Promise<unknown[]>;
+      };
+      // Read while the unsuspend's delivery was still in flight, before its receipt landed, so the
+      // late pass has something to deliver.
+      const stale = ((await real.lifecycleTargets({ scopeId: s })) as Record<string, unknown>[]).map((r) => ({
+        ...r,
+        delivered: null,
+      }));
+      await restoreTo(copy); // the directory (the same object) is the restored history now: suspended
+      await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+      // The late pass: its FIRST read is the stale one, everything after is the live store.
+      let first = true;
+      const lateDirectory = {
+        idFromName: directory.idFromName,
+        get: (id: DurableObjectId) =>
+          new Proxy(env.CONTROL_PLANE.get(id) as object, {
+            get: (target, prop) =>
+              prop === 'lifecycleTargets' && first
+                ? async () => ((first = false), stale)
+                : (Reflect.get(target, prop) as unknown),
+          }),
+      } as unknown as DurableObjectNamespace;
+      await new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: lateDirectory, lifecycleDelegation }).healLifecycles(actor, {
+        limit: 1000,
+      });
+      // It delivered active at the old epoch, was refused, raised past what the scope holds, re-read
+      // the CURRENT store and delivered that: the restored suspension stands.
+      expect(first).toBe(false);
+      const last = deliveries.filter((d) => d.scopeId === s).slice(-2);
+      expect(last.map((d) => d.scope)).toEqual(['active', 'suspended']); // the stale try, then the live re-read
+      await expect(servedHere(t, s)).rejects.toThrow(`scope not active (status: suspended): ${s}`);
+      // and the restored directory's own heal finds nothing to undo
+      await platform().healLifecycles(actor, { limit: 1000 });
+      await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+    });
+
+    it('each restore mints an epoch newer than the last, and a second heal has nothing to redo', async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      await platform().admin.suspendScope(actor, t, s);
+      const copy = await platform().admin.exportDirectory(actor);
+      await restoreTo(copy);
+      const first = deliveries.filter((d) => d.scopeId === s).at(-1)!.lifecycle.revision.epoch;
+      await restoreTo(copy);
+      const second = deliveries.filter((d) => d.scopeId === s).at(-1)!.lifecycle.revision.epoch;
+      expect(second).toBeGreaterThan(first);
+      const settled = deliveredTo(s).length;
+      await platform().healLifecycles(actor, { limit: 1000 });
+      // held scopes are re-delivered every pass by design; the receipt now matches, and the
+      // delivery is refused as equal rather than moving anything
+      expect(deliveredTo(s).length).toBe(settled + 1);
+      await expect(servedHere(t, s)).rejects.toThrow(/not active/);
+    });
   });
 
   it('the next case along: a failed UNsuspend is healed too, so a scope never stays held after the directory lifts it', async () => {

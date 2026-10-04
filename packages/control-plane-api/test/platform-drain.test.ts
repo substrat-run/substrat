@@ -40,6 +40,8 @@ import {
 /** A primary install's kind and lineage, and a clean-room preview's (#2005). */
 const INSTALL = { kind: 'app', forkedFrom: null };
 const PREVIEW = { kind: 'preview', forkedFrom: null };
+/** A live scope under a live tenant (#1713); the drain defers anything else. */
+const LIVE = { scope: 'active', tenant: 'active' } as const;
 
 /** A minimal well-formed intent row for the dispatcher tests. */
 function intent(kind: string, over: Partial<PlatformRequest> = {}): PlatformRequest {
@@ -76,7 +78,7 @@ function fakeTransport(pending: PlatformRequest[]) {
 }
 
 describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
-  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL };
+  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE };
 
   it('dispatches to the handler for each kind and settles its outcome', async () => {
     const done = intent('provision-sibling');
@@ -176,7 +178,7 @@ describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
  * work happens: a row carrying `decodeError` must never reach a handler.
  */
 describe('drainScopePlatformRequests — an undecodable row is refused, never executed (#1588)', () => {
-  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL };
+  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE };
 
   /** A handler that records every request it was handed — the thing that must stay clean. */
   const recording = () => {
@@ -317,7 +319,7 @@ describe('drainScopePlatformRequests — an undecodable row is refused, never ex
       // The host IS the drain's transport here: the same two calls `VerticalClient` makes.
       const report = await drainScopePlatformRequests(
         host as unknown as Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>,
-        { tenantId: t, scopeId: s, vertical: 'demo-vert', scope: INSTALL },
+        { tenantId: t, scopeId: s, vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE },
         { 'provision-sibling': handler },
       );
 
@@ -336,10 +338,106 @@ describe('drainScopePlatformRequests — an undecodable row is refused, never ex
   });
 });
 
+/**
+ * #1713: a held scope's intents WAIT. A scope that is not active, or whose tenant is not, has its
+ * intents listed (the backlog still counts them) and never dispatched or settled, so no attempt is
+ * burned toward the ceiling and the first drain after the scope is live again runs each one once.
+ * Against a real host, so "untouched" is read back from the journal rather than from a fake.
+ */
+describe('drainScopePlatformRequests — a held scope\'s intents wait (#1713)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  let dir: string;
+  let host: SqliteScopeHost;
+  const transport = () => host as unknown as Pick<VerticalClient, 'listPlatformRequests' | 'settlePlatformRequest'>;
+
+  /** A live scope holding one pending intent, planted by a restore as the #1588 suite does. */
+  const withIntent = async (): Promise<{ s: ReturnType<typeof scopeId.parse>; id: string }> => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t, s);
+    const id = ulid();
+    const backup = await host.admin.exportScope(staff, t, s);
+    const journal = backup.tables.find((x) => x.name === '_substrat_platform_requests')!;
+    const row: Record<string, unknown> = {
+      id,
+      kind: 'provision-sibling',
+      payload: JSON.stringify({ slug: 'padel' }),
+      requested_by: JSON.stringify({ system: 'scope-sweeper' }),
+      status: 'pending',
+      attempts: 0,
+      requested_at: '2026-10-01T00:00:00.000Z',
+    };
+    await host.restoreScope(staff, t, s, {
+      ...backup,
+      tables: backup.tables.map((x) => (x === journal ? { ...x, rows: [x.columns.map((c) => row[c] ?? null)] } : x)),
+    });
+    return { s, id };
+  };
+  const drain = (s: ReturnType<typeof scopeId.parse>, lifecycle: { scope: string; tenant: string }, ran: string[]) =>
+    drainScopePlatformRequests(
+      transport(),
+      { tenantId: t, scopeId: s, vertical: 'demo-vert', scope: INSTALL, lifecycle: lifecycle as never },
+      { 'provision-sibling': async (_ctx, r) => (ran.push(r.id), { status: 'done' }) },
+    );
+  const journalOf = async (s: ReturnType<typeof scopeId.parse>, id: string) =>
+    (await host.listPlatformRequestHistory(t, s)).find((r) => r.id === id)!;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-drain-1713-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-held', name: 'Acme' });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['a suspended scope', { scope: 'suspended', tenant: 'active' }],
+    ['an archived scope', { scope: 'archived', tenant: 'active' }],
+    ['a scope under a suspended tenant', { scope: 'active', tenant: 'suspended' }],
+    ['a scope under a deleting tenant', { scope: 'active', tenant: 'deleting' }],
+  ])('%s: its intent is listed as pending, never run, never settled — attempts unchanged', async (_name, lifecycle) => {
+    const { s, id } = await withIntent();
+    const ran: string[] = [];
+    expect(await drain(s, lifecycle, ran)).toEqual({ drained: 0, done: 0, failed: 0, pending: 1, held: true });
+    expect(await drain(s, lifecycle, ran)).toEqual({ drained: 0, done: 0, failed: 0, pending: 1, held: true });
+    expect(ran).toEqual([]);
+    expect(await journalOf(s, id)).toMatchObject({ status: 'pending', attempts: 0, lastError: null });
+  });
+
+  it('the attempt ceiling never meets a held intent: a hundred held passes burn nothing', async () => {
+    const { s, id } = await withIntent();
+    for (let i = 0; i < MAX_PLATFORM_REQUEST_ATTEMPTS; i++) await drain(s, { scope: 'suspended', tenant: 'active' }, []);
+    expect(await journalOf(s, id)).toMatchObject({ status: 'pending', attempts: 0 });
+  });
+
+  it('resumes: once the scope is live again, the next drain runs the intent once and settles it', async () => {
+    const { s, id } = await withIntent();
+    const ran: string[] = [];
+    await drain(s, { scope: 'suspended', tenant: 'active' }, ran);
+    await drain(s, { scope: 'active', tenant: 'suspended' }, ran);
+    expect(ran).toEqual([]);
+    expect(await drain(s, { scope: 'active', tenant: 'active' }, ran)).toEqual({ drained: 1, done: 1, failed: 0, pending: 0 });
+    expect(ran).toEqual([id]);
+    expect(await journalOf(s, id)).toMatchObject({ status: 'done' });
+    expect(await drain(s, { scope: 'active', tenant: 'active' }, ran)).toEqual({ drained: 0, done: 0, failed: 0, pending: 0 });
+    expect(ran).toEqual([id]);
+  });
+
+  it('twin: a live scope drains its intent on the first pass', async () => {
+    const { s, id } = await withIntent();
+    const ran: string[] = [];
+    expect(await drain(s, { scope: 'active', tenant: 'active' }, ran)).toMatchObject({ done: 1 });
+    expect(ran).toEqual([id]);
+  });
+});
+
 describe('connectorDispatchHandler — executes a routed connector delivery (#574 phase 3)', () => {
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
-  const ctx = { tenantId: t, scopeId: s, vertical: 'meridian', scope: INSTALL };
+  const ctx = { tenantId: t, scopeId: s, vertical: 'meridian', scope: INSTALL, lifecycle: LIVE };
 
   /** A kernel-stamped event as the routing host embeds it — JSON-shaped, parsed at drain. */
   const routedEvent = (over: Record<string, unknown> = {}) => ({
@@ -1285,7 +1383,7 @@ describe('drainScopePlatformRequests — a non-primary scope is inert (#2005)', 
     const { client, settled } = fakeTransport(pending);
     const { ran, handlers } = recording(EFFECT_KINDS);
     const failures: unknown[] = [];
-    const report = await drainScopePlatformRequests(client, { ...at, scope: PREVIEW }, handlers, {
+    const report = await drainScopePlatformRequests(client, { ...at, scope: PREVIEW, lifecycle: LIVE }, handlers, {
       recordFailure: (f) => void failures.push(f),
     });
     expect(ran).toEqual([]);
@@ -1306,7 +1404,7 @@ describe('drainScopePlatformRequests — a non-primary scope is inert (#2005)', 
   it('twin: the same intents on a primary scope run their handlers', async () => {
     const { client, settled } = fakeTransport(EFFECT_KINDS.map((k) => intent(k)));
     const { ran, handlers } = recording(EFFECT_KINDS);
-    await drainScopePlatformRequests(client, { ...at, scope: INSTALL }, handlers);
+    await drainScopePlatformRequests(client, { ...at, scope: INSTALL, lifecycle: LIVE }, handlers);
     expect(ran).toEqual(EFFECT_KINDS);
     expect(settled.every((s) => s.status === 'done')).toBe(true);
   });
@@ -1317,20 +1415,20 @@ describe('drainScopePlatformRequests — a non-primary scope is inert (#2005)', 
     const kinds = [MODEL_USAGE_KIND, SWEEP_RUNS_KIND];
     const { client, settled } = fakeTransport(kinds.map((k) => intent(k)));
     const { ran, handlers } = recording(kinds);
-    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW }, handlers);
+    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW, lifecycle: LIVE }, handlers);
     expect(ran).toEqual(kinds);
     expect(settled.map((s) => s.status)).toEqual(['done', 'done']);
   });
 
   it('a kind with no handler is still inert, not "no handler" — the scope is decided first', async () => {
     const { client, settled } = fakeTransport([intent('mystery')]);
-    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW }, {});
+    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW, lifecycle: LIVE }, {});
     expect(settled[0]!.lastError).toBe(INERT_SCOPE_REASON);
   });
 
   it('an undecodable row on a non-primary scope keeps its own, more specific reason', async () => {
     const { client, settled } = fakeTransport([intent(MODEL_USAGE_KIND, { decodeError: 'payload: bad' })]);
-    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW }, recording([MODEL_USAGE_KIND]).handlers);
+    await drainScopePlatformRequests(client, { ...at, scope: PREVIEW, lifecycle: LIVE }, recording([MODEL_USAGE_KIND]).handlers);
     expect(settled[0]!.lastError).toMatch(/could not be decoded/);
   });
 });

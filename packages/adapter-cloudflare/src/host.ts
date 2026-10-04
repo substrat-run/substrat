@@ -228,6 +228,7 @@ import {
   scopeLifecycle,
   type LifecycleDelivery,
   type ScopeLifecycle,
+  type StoredScopeLifecycle,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -493,6 +494,8 @@ interface ControlPlaneStub {
   lifecycleTargets(filter: { tenantId?: string; scopeId?: string; drift?: boolean; limit?: number }): Promise<LifecycleTargetRow[]>;
   /** #1713: what a scope's deployment acknowledged holding. */
   recordLifecycleReceipt(scopeId: string, delivered: string, at: string): Promise<void>;
+  /** #1713: raise the directory's epoch to at least this; answers the epoch now. */
+  raiseLifecycleEpoch(atLeast: number): Promise<number>;
   createTenant(
     id: string,
     slug: string,
@@ -933,7 +936,7 @@ interface ScopeStubRpc {
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
   /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
-  lifecycle(): Promise<ScopeLifecycle | null>;
+  lifecycle(): Promise<StoredScopeLifecycle | null>;
   /** Store a delivered lifecycle unless a newer one is held (#1713, `writeLifecycle`). */
   setLifecycle(next: ScopeLifecycle): Promise<LifecycleDelivery>;
   /** Clear a mistaken copy classification (#2005); a load's copied-events mark is kept (#2009). */
@@ -1606,8 +1609,12 @@ export interface LifecycleDelegation {
   deliver(args: { tenantId: TenantId; scopeId: ScopeId; lifecycle: ScopeLifecycle }): Promise<LifecycleDelivery>;
 }
 
-/** The receipt of a live scope, and what no receipt reads as (#1713). */
-const LIVE_RECEIPT = lifecycleReceipt({ scope: 'active', tenant: 'active' });
+/**
+ * How far ahead of the clock a held lifecycle epoch may be and still be learned past (#1713). An
+ * epoch is the time a directory restore minted it, so a legitimate one is behind its minter's
+ * clock; the skew allows for clocks that disagree, and bounds what a forged answer can move.
+ */
+export const LIFECYCLE_EPOCH_SKEW_MS = 24 * 60 * 60 * 1000;
 
 /** What one delivery pass did (#1713): a transition's push, or one heal sweep. */
 export interface LifecycleDeliveryReport {
@@ -7721,8 +7728,9 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Deliver the directory's lifecycle to the deployments serving the matching scopes (#1713):
    * one scope after its transition, a tenant's scopes after the tenant's, or the heal sweep's
-   * drift. Each delivery is the state as read now, so a late one cannot undo a later transition:
-   * the deployment keeps the newest `at` it has seen.
+   * drift. Each delivery carries the directory's revisions, read in the same query as the
+   * statuses, so a late one cannot undo a later transition: the deployment keeps only a delivery
+   * strictly newer than the one it holds.
    *
    * Never throws. A transition is the operator's lever in an incident, and the router refuses
    * the scope's requests as soon as the directory moves (#1730), so a deployment that cannot be
@@ -7743,25 +7751,82 @@ export class CloudflareScopeHost implements ScopeHost {
       console.error('substrat: could not read the scopes to deliver a lifecycle to (#1713)', err);
       return report;
     }
-    for (const t of targets) {
-      const tenantId = t.tenant_id as TenantId;
-      const scopeId = t.scope_id as ScopeId;
-      const parsed = scopeLifecycle.safeParse({ scope: t.scope_status, tenant: t.tenant_status, at: new Date().toISOString() });
-      if (!parsed.success) {
+    for (const first of targets) {
+      const tenantId = first.tenant_id as TenantId;
+      const scopeId = first.scope_id as ScopeId;
+      let t = first;
+      let lifecycle = this.lifecycleOfTarget(t);
+      if (!lifecycle) {
         // A status this code does not know (a newer directory): delivering a guess could lift a hold.
         report.failed += 1;
-        console.error(`substrat: scope ${scopeId} has a lifecycle this code cannot read (#1713)`, parsed.error);
+        console.error(`substrat: scope ${scopeId} has a lifecycle this code cannot read (#1713)`);
         continue;
       }
-      const lifecycle = parsed.data;
-      // A live scope whose deployment already runs it live has nothing to receive: no receipt
-      // reads as active/active, which is what a deployment holding no lifecycle runs as. This
-      // is what keeps an activation, and every transition before a deployment carries the
-      // route, from posting a delivery that changes nothing. A HOLD is always delivered.
-      if (lifecycleRefusal(lifecycle) === null && (t.delivered ?? LIVE_RECEIPT) === LIVE_RECEIPT) continue;
+      // A live scope whose deployment already acknowledged exactly this has nothing to receive,
+      // and neither does one with no receipt in a directory never restored: a deployment holding
+      // no lifecycle runs live. That keeps an activation, and every transition before a
+      // deployment carries the route, from posting a delivery that changes nothing. After a
+      // restore (epoch > 0) no receipt says nothing about what the deployment holds, so it is
+      // delivered. A HOLD is always delivered.
+      if (lifecycleRefusal(lifecycle) === null && (t.delivered === null ? t.epoch === 0 : t.delivered === lifecycleReceipt(lifecycle))) {
+        continue;
+      }
       report.attempted += 1;
       try {
-        const answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+        let answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+        // SINGLE AUTHORITY (the invariant this rests on): an environment has exactly one directory,
+        // the singleton `CONTROL_PLANE.idFromName('control-plane')`. A "fresh directory" restore is
+        // that same object restored after its storage was lost, never a second live writer, and
+        // the raise below always re-reads the CURRENT store and delivers what it says. Two control
+        // planes healing one dispatch namespace at once is a split brain that corrupts far more
+        // than lifecycle, and is out of scope here; fencing it in lifecycle alone would guarantee
+        // nothing.
+        //
+        // The scope refused us as OLDER while holding a revision this directory's history did not
+        // write: an epoch ahead of ours, or ours with other counters. Only another history of the
+        // directory delivers those — the one a fresh-directory restore replaced, whose epoch a
+        // clock running behind (or a restore in the same millisecond) cannot outrank. A scope only
+        // ever holds epochs a directory minted, so this directory learns past it: its epoch is
+        // raised above the one held (monotonic, one statement), and the scope is delivered again.
+        const held = answer.lifecycle.revision;
+        const foreign =
+          !answer.applied &&
+          held !== undefined &&
+          (held.epoch > lifecycle.revision.epoch ||
+            (held.epoch === lifecycle.revision.epoch && lifecycleReceipt(answer.lifecycle) !== lifecycleReceipt(lifecycle)));
+        // Bounded, because the deployment answering is the vertical's own code: only a directory
+        // that has been restored can meet another history (epoch > 0), and a legitimate epoch is
+        // a mint time, so one further ahead than the skew is forged or broken. Either way nothing
+        // is raised; the refusal is an ops failure for an operator to look at.
+        if (foreign && (lifecycle.revision.epoch === 0 || held!.epoch > Date.now() + LIFECYCLE_EPOCH_SKEW_MS)) {
+          report.failed += 1;
+          await this.admin
+            .recordOpsFailure({
+              actor,
+              operation: 'scope.lifecycle',
+              stage: 'foreign-epoch',
+              tenantId,
+              scopeId,
+              message:
+                `the deployment refused this directory's lifecycle while holding epoch ${held!.epoch} ` +
+                `(this directory is at ${lifecycle.revision.epoch}); not raised past it — ` +
+                (lifecycle.revision.epoch === 0
+                  ? 'this directory has never been restored, so no other history should have written it'
+                  : 'it is further ahead of the clock than any directory mints'),
+            })
+            .catch((e: unknown) => console.error('substrat: could not record a foreign lifecycle epoch (#1713)', e));
+          continue;
+        }
+        if (foreign) {
+          await this.cp.raiseLifecycleEpoch(held!.epoch + 1);
+          const [again] = await this.cp.lifecycleTargets({ scopeId });
+          const next = again ? this.lifecycleOfTarget(again) : null;
+          if (again && next) {
+            t = again;
+            lifecycle = next;
+            answer = await delegation.deliver({ tenantId, scopeId, lifecycle });
+          }
+        }
         // The receipt is what the scope HOLDS: a newer delivery it kept instead is the truth.
         await this.cp.recordLifecycleReceipt(scopeId, lifecycleReceipt(answer.lifecycle), new Date().toISOString());
         report.delivered += 1;
@@ -7784,6 +7849,17 @@ export class CloudflareScopeHost implements ScopeHost {
       }
     }
     return report;
+  }
+
+  /** One directory row as the lifecycle a delivery carries (#1713), or null for a status this code does not know. */
+  private lifecycleOfTarget(t: LifecycleTargetRow): ScopeLifecycle | null {
+    const parsed = scopeLifecycle.safeParse({
+      scope: t.scope_status,
+      tenant: t.tenant_status,
+      at: new Date().toISOString(),
+      revision: { epoch: t.epoch, scope: t.scope_rev, tenant: t.tenant_rev },
+    });
+    return parsed.success ? parsed.data : null;
   }
 
   /**
@@ -8843,7 +8919,8 @@ export class CloudflareScopeHost implements ScopeHost {
   // side before the call; what runs HERE is the half only this deployment can
   // enforce: the scope's own permission check against its delivered
   // `connection:<id>` tuple, in the scope's own DO. Fail closed — no grant, no
-  // effect — exactly as for any other caller.
+  // effect — exactly as for any other caller. And the lifecycle delivered to the
+  // scope (#1713): a held scope's invoke and bytes doors refuse, as every other door does.
 
   /** Invoke ONE operation in this deployment as a CONNECTION (#574). */
   async connectorInvokeLocal(
@@ -8853,6 +8930,7 @@ export class CloudflareScopeHost implements ScopeHost {
     operation: string,
     input?: unknown,
   ): Promise<unknown> {
+    await this.assertLive(tenantId, scopeId); // #1713: a held scope runs no connector work either
     await this.migrateAndRecord(scopeId);
     return this.buildStub(tenantId, scopeId, undefined, connectionId).invoke(operation, input);
   }

@@ -314,12 +314,21 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
   const USE = permissionKey.parse('perm:use');
   const SCHED = moduleId.parse('@test/sched');
   const ran: string[] = [];
-  let clock = Date.parse('2026-10-01T00:00:00.000Z');
-  /** A lifecycle read now, later than every one before it, as the platform stamps each read. */
-  const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'] = 'active'): ScopeLifecycle => ({
+  let revision = 0;
+  /**
+   * A delivery newer than every one before it, as each directory change makes it: both revisions
+   * move. `at` stays fixed, because nothing compares it.
+   */
+  const life = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'] = 'active'): ScopeLifecycle => {
+    revision += 1;
+    return { scope, tenant, at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'], revision: { epoch: 0, scope: revision, tenant: revision } };
+  };
+  /** A delivery at exact directory revisions (scope `sr`, tenant `tr`). */
+  const at = (scope: ScopeLifecycle['scope'], tenant: ScopeLifecycle['tenant'], sr: number, tr: number): ScopeLifecycle => ({
     scope,
     tenant,
-    at: new Date((clock += 1000)).toISOString() as ScopeLifecycle['at'],
+    at: '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'],
+    revision: { epoch: 0, scope: sr, tenant: tr },
   });
 
   const hostFor = () => {
@@ -457,15 +466,55 @@ describe('a CP-less host holds a scope by the lifecycle delivered to it (#1713)'
     await expect(act(s)).rejects.toThrow(/scope not active \(status: archived\)/);
   });
 
-  it('a late delivery cannot undo a later one: the newest read wins', async () => {
+  it("Codex's repro (#2019 review): active, suspended, then a LATE older active — refused, the scope stays held", async () => {
     const s = await seat();
-    const older = life('active');
-    const newer = life('suspended');
-    await hostFor().setLifecycleLocal(s, newer);
-    expect(await hostFor().setLifecycleLocal(s, older)).toEqual({ applied: false, changed: false, lifecycle: newer });
+    await hostFor().setLifecycleLocal(s, at('active', 'active', 1, 0));
+    await hostFor().setLifecycleLocal(s, at('suspended', 'active', 2, 0));
+    // The same `at` on all three: only the revision decides.
+    expect(await hostFor().setLifecycleLocal(s, at('active', 'active', 1, 0))).toEqual({
+      applied: false,
+      changed: false,
+      lifecycle: at('suspended', 'active', 2, 0),
+    });
     expect(await hostFor().lifecycleHeld(s)).toBe(true);
-    // A repeat of the same read is applied (idempotent) and moves nothing.
-    expect(await hostFor().setLifecycleLocal(s, newer)).toMatchObject({ applied: true, changed: false });
+    await expect(act(s)).rejects.toThrow(/scope not active \(status: suspended\)/);
+  });
+
+  it('an equal revision is refused, whatever state it carries', async () => {
+    const s = await seat();
+    await hostFor().setLifecycleLocal(s, at('suspended', 'active', 4, 2));
+    expect(await hostFor().setLifecycleLocal(s, at('suspended', 'active', 4, 2))).toMatchObject({ applied: false, changed: false });
+    expect(await hostFor().setLifecycleLocal(s, at('active', 'active', 4, 2))).toMatchObject({ applied: false });
+    expect(await hostFor().lifecycleHeld(s)).toBe(true);
+  });
+
+  it('interleaved tenant and scope changes, delivered out of order, settle on the latest', async () => {
+    const s = await seat();
+    const tenantSuspend = at('active', 'suspended', 0, 1);
+    const scopeSuspend = at('suspended', 'suspended', 1, 1);
+    const tenantLift = at('suspended', 'active', 1, 2);
+    const scopeLift = at('active', 'active', 2, 2);
+    // The tenant lift lands first, then the two older deliveries straggle in.
+    expect((await hostFor().setLifecycleLocal(s, tenantLift)).applied).toBe(true);
+    expect((await hostFor().setLifecycleLocal(s, tenantSuspend)).applied).toBe(false);
+    expect((await hostFor().setLifecycleLocal(s, scopeSuspend)).applied).toBe(false);
+    await expect(act(s)).rejects.toThrow(/scope not active \(status: suspended\)/); // held by the scope, not the tenant
+    expect(await hostFor().setLifecycleLocal(s, scopeLift)).toMatchObject({ applied: true, changed: true });
+    await act(s);
+    expect(ran).toContain(s);
+  });
+
+  it('a row stored before revisions still holds, and any revisioned delivery replaces it', async () => {
+    const s = await seat();
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_i, state) => {
+      state.storage.sql.exec(
+        `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('scope_lifecycle', ?)`,
+        JSON.stringify({ scope: 'suspended', tenant: 'active', at: '2026-09-30T00:00:00.000Z' }),
+      );
+    });
+    expect(await hostFor().lifecycleHeld(s)).toBe(true);
+    expect(await hostFor().setLifecycleLocal(s, at('active', 'active', 0, 0))).toMatchObject({ applied: true, changed: true });
+    expect(await hostFor().lifecycleHeld(s)).toBe(false);
   });
 
   it('a delivery is bookkeeping: it does not advance the write revision a carry fences on', async () => {

@@ -1,4 +1,10 @@
-import { scopeLifecycle, type LifecycleDelivery, type ScopeLifecycle } from '@substrat-run/contracts';
+import {
+  storedScopeLifecycle,
+  type LifecycleDelivery,
+  type LifecycleRevision,
+  type ScopeLifecycle,
+  type StoredScopeLifecycle,
+} from '@substrat-run/contracts';
 import type { SwitchSql } from './system-switch.js';
 
 /**
@@ -12,6 +18,9 @@ import type { SwitchSql } from './system-switch.js';
  *
  * One `_substrat_meta` row, as JSON. No row means `active`: a scope this has never reached, and
  * every scope from before it, runs as it always did.
+ *
+ * Deliveries are ordered by the directory's revisions, never by a clock (`supersedes`): two
+ * transitions' deliveries can overlap, and the later transition's must win whichever lands last.
  *
  * The row travels with a dump onto the same scope (a carry onto a new version lands in a fresh
  * store). A load keeps the NEWER of the store's row and the dump's (`lifecycleAfterLoad`), so a
@@ -32,28 +41,43 @@ export const WRITE_LIFECYCLE_SQL = `INSERT OR REPLACE INTO _substrat_meta (key, 
 export const isLifecycleWrite = (sql: string): boolean => sql.trim().replace(/\s+/g, ' ') === WRITE_LIFECYCLE_SQL;
 
 /** The stored lifecycle, or null when none was delivered. A row that does not parse reads as none. */
-export function readLifecycle(sql: SwitchSql): ScopeLifecycle | null {
+export function readLifecycle(sql: SwitchSql): StoredScopeLifecycle | null {
   const row = sql.all('SELECT value FROM _substrat_meta WHERE key = ?', SCOPE_LIFECYCLE_KEY)[0];
   return row ? parseLifecycle(row.value) : null;
 }
 
 /** A stored or dumped value as a lifecycle, or null when it is absent or does not parse. */
-export function parseLifecycle(value: unknown): ScopeLifecycle | null {
+export function parseLifecycle(value: unknown): StoredScopeLifecycle | null {
   if (typeof value !== 'string') return null;
   try {
-    const parsed = scopeLifecycle.safeParse(JSON.parse(value));
+    const parsed = storedScopeLifecycle.safeParse(JSON.parse(value));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
 }
 
-/** Whether `next` replaces `current`: the newer read wins, and an equal one is a repeat. */
-const supersedes = (next: ScopeLifecycle, current: ScopeLifecycle | null): boolean =>
-  current === null || Date.parse(next.at) >= Date.parse(current.at);
+/** What a lifecycle held before revisions existed counts as: older than every revisioned one. */
+const UNREVISED: LifecycleRevision = { epoch: -1, scope: -1, tenant: -1 };
 
 /**
- * Store a delivered lifecycle, unless the store already holds a newer one. `applied` says whether
+ * Whether `next` replaces `current`. A newer epoch always does: it is a later history of the
+ * directory (a restore), whose counters may be lower than the ones the replaced history reached.
+ * Within one epoch, `next` must be strictly newer on at least one counter and older on neither.
+ * An equal revision is the same directory state delivered again, and refused, so that no two
+ * deliveries can tie. Counters that disagree (newer on one, older on the other) cannot come from
+ * one directory read and are refused too.
+ */
+function supersedes(next: StoredScopeLifecycle, current: StoredScopeLifecycle | null): boolean {
+  if (current === null) return true;
+  const n = next.revision ?? UNREVISED;
+  const c = current.revision ?? UNREVISED;
+  if (n.epoch !== c.epoch) return n.epoch > c.epoch;
+  return n.scope >= c.scope && n.tenant >= c.tenant && (n.scope > c.scope || n.tenant > c.tenant);
+}
+
+/**
+ * Store a delivered lifecycle, unless the store already holds one as new or newer. `applied` says whether
  * this delivery is now the stored state, and `changed` whether the gate's answer moved with it.
  */
 export function writeLifecycle(sql: SwitchSql, next: ScopeLifecycle): LifecycleDelivery {
@@ -69,10 +93,10 @@ export function writeLifecycle(sql: SwitchSql, next: ScopeLifecycle): LifecycleD
  * the store's and the dump's. Null means no row.
  */
 export function lifecycleAfterLoad(
-  before: ScopeLifecycle | null,
-  dumped: ScopeLifecycle | null,
+  before: StoredScopeLifecycle | null,
+  dumped: StoredScopeLifecycle | null,
   copy: boolean,
-): ScopeLifecycle | null {
+): StoredScopeLifecycle | null {
   if (copy || dumped === null) return before;
   return supersedes(dumped, before) ? dumped : before;
 }
@@ -81,7 +105,7 @@ export function lifecycleAfterLoad(
  * Settle the row after a load replaced `_substrat_meta` wholesale (#1713): `lifecycleAfterLoad` of
  * the row read before the load (`before`) and the one the dump brought, put in place or removed.
  */
-export function settleLifecycleAfterLoad(sql: SwitchSql, before: ScopeLifecycle | null, copy: boolean): void {
+export function settleLifecycleAfterLoad(sql: SwitchSql, before: StoredScopeLifecycle | null, copy: boolean): void {
   const keep = lifecycleAfterLoad(before, readLifecycle(sql), copy);
   if (keep) sql.run(WRITE_LIFECYCLE_SQL, JSON.stringify(keep));
   else sql.run('DELETE FROM _substrat_meta WHERE key = ?', SCOPE_LIFECYCLE_KEY);
@@ -94,7 +118,7 @@ export function settleLifecycleAfterLoad(sql: SwitchSql, before: ScopeLifecycle 
  * lifecycle passes.
  */
 export function lifecycleRefusal(
-  state: ScopeLifecycle | null,
+  state: Pick<ScopeLifecycle, 'scope' | 'tenant'> | null,
   ids?: { tenantId: string; scopeId: string },
 ): string | null {
   if (!state) return null;
@@ -105,8 +129,11 @@ export function lifecycleRefusal(
 
 /**
  * The directory's record of what a deployment last acknowledged, compared with the directory's
- * own lifecycle by the heal sweep. The statuses only, never `at`: a re-read of an unchanged
- * directory is not drift.
+ * own lifecycle by the heal sweep: the statuses AND the full revision, so a restore that left the
+ * statuses as they were still reads as drift, and the scope is brought onto the new epoch. Never
+ * `at`, so a re-read of an unchanged directory is not drift. A lifecycle stored before revisions
+ * has none, and reads as drift against any directory.
  */
-export const lifecycleReceipt = (state: Pick<ScopeLifecycle, 'scope' | 'tenant'>): string =>
-  `${state.scope}/${state.tenant}`;
+export const lifecycleReceipt = (state: Pick<StoredScopeLifecycle, 'scope' | 'tenant' | 'revision'>): string =>
+  `${state.scope}/${state.tenant}` +
+  (state.revision ? `@${state.revision.epoch}.${state.revision.scope}.${state.revision.tenant}` : '');

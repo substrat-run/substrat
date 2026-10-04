@@ -331,13 +331,13 @@ describe('#1713 — the deployment sweep skips a scope its lifecycle holds, then
   it('held: skipped whole and counted; live twin fires; unsuspended: fires once', async () => {
     const held = await seat();
     const live = await seat();
-    await host().setLifecycleLocal(held, { scope: 'suspended', tenant: 'active', at: instant.parse('2026-10-01T00:00:00.000Z') });
+    await host().setLifecycleLocal(held, { scope: 'suspended', tenant: 'active', at: instant.parse('2026-10-01T00:00:00.000Z'), revision: { epoch: 0, scope: 1, tenant: 1 } });
     const report = asReport(await sweeperStub().sweepNow());
     expect(report.errors).toEqual([]);
     expect(report.held).toBe(1);
     expect(await ticksOn(live)).toBe(1);
 
-    await host().setLifecycleLocal(held, { scope: 'active', tenant: 'active', at: instant.parse('2026-10-01T00:01:00.000Z') });
+    await host().setLifecycleLocal(held, { scope: 'active', tenant: 'active', at: instant.parse('2026-10-01T00:01:00.000Z'), revision: { epoch: 0, scope: 2, tenant: 2 } });
     // Nothing fired while held: the schedule's first run is this pass, and only this one.
     expect(await ticksOn(held)).toBe(0);
     const resumed = asReport(await sweeperStub().sweepNow());
@@ -349,9 +349,9 @@ describe('#1713 — the deployment sweep skips a scope its lifecycle holds, then
 
   it('a held tenant is skipped the same way', async () => {
     const s = await seat();
-    await host().setLifecycleLocal(s, { scope: 'active', tenant: 'suspended', at: instant.parse('2026-10-01T00:00:00.000Z') });
+    await host().setLifecycleLocal(s, { scope: 'active', tenant: 'suspended', at: instant.parse('2026-10-01T00:00:00.000Z'), revision: { epoch: 0, scope: 1, tenant: 1 } });
     expect(asReport(await sweeperStub().sweepNow()).held).toBe(1);
-    await host().setLifecycleLocal(s, { scope: 'active', tenant: 'active', at: instant.parse('2026-10-01T00:01:00.000Z') });
+    await host().setLifecycleLocal(s, { scope: 'active', tenant: 'active', at: instant.parse('2026-10-01T00:01:00.000Z'), revision: { epoch: 0, scope: 2, tenant: 2 } });
     asReport(await sweeperStub().sweepNow());
     expect(await ticksOn(s)).toBe(1);
     await sweeperStub().forgetScope(s);
