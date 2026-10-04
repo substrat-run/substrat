@@ -27,11 +27,20 @@ it('upgrades legacy job runs on wake and tolerates a second wake (#1632)', async
     const input = { moduleId: moduleId.parse('@test/perm'), job: 'walk', payload: { contact: subject } };
     const old = await host.startJobRun(t, s, input);
     const fresh = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+    const columns = () =>
+      runInDurableObject(fresh(), (_instance, state) =>
+        state.storage.sql.exec("SELECT name FROM pragma_table_info('_substrat_job_runs')").toArray().map((r) => r.name));
+    // The drop commits in a call of its own: an abort in the same call breaks the output gate, and
+    // the write it would have flushed is lost with it — the upgrade below then had nothing to do.
     await runInDurableObject(fresh(), (_instance, state) => {
       state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN subject_id');
+    });
+    expect(await columns()).not.toContain('subject_id');
+    await runInDurableObject(fresh(), (_instance, state) => {
       state.abort('evicted for subject column upgrade');
     }).catch(() => undefined);
     expect(await host.startJobRun(t, s, input)).toMatchObject({ id: old.id, subject: null, payload: input.payload });
+    expect(await columns()).toContain('subject_id');
     const declared = await host.startJobRun(t, s, { ...input, instance: 'declared', subject });
     expect(declared.subject).toBe(subject);
     await runInDurableObject(fresh(), (_instance, state) => {
