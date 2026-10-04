@@ -64,7 +64,7 @@ describe('the break-glass: OIDC_ALLOW_UNVERIFIED_EMAIL', () => {
     ['false', false],
     ['absent', undefined],
   ] as const)('admits a %s claim, and says it did', (_label, emailVerified) => {
-    expect(mod.identifyEmail(ON, user(emailVerified))).toEqual({ email: EMAIL, admittedBy: 'opt-out' });
+    expect(mod.identifyEmail(ON, user(emailVerified))).toEqual({ email: EMAIL });
     const lines = warn.mock.calls.map((c) => String(c[0]));
     expect(lines.some((l) => l.includes('OIDC_ALLOW_UNVERIFIED_EMAIL=true'))).toBe(true);
     expect(lines.some((l) => l.includes('admitted') && l.includes('sub-1'))).toBe(true);
@@ -103,5 +103,15 @@ describe('emailRefusalMessage', () => {
 
   it('asks an unverified address to be verified', () => {
     expect(mod.emailRefusalMessage('unverified')).toMatch(/not verified/);
+  });
+});
+
+describe('emailRefusalOf — the rule alone', () => {
+  it('classifies without the break-glass and without logging', () => {
+    expect(mod.emailRefusalOf({ email: EMAIL, emailVerified: true })).toBeNull();
+    expect(mod.emailRefusalOf({ email: EMAIL, emailVerified: false })).toBe('unverified');
+    expect(mod.emailRefusalOf({ email: EMAIL })).toBe('unasserted');
+    expect(mod.emailRefusalOf({ emailVerified: true })).toBe('no-email');
+    expect(warn).not.toHaveBeenCalled();
   });
 });

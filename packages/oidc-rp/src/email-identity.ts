@@ -24,7 +24,7 @@ import type { SessionUser } from './index.js';
  * a valid sign-in, it just may not be someone BY ADDRESS.
  */
 export type EmailIdentity =
-  | { email: string; refused?: undefined; admittedBy?: 'opt-out' }
+  | { email: string; refused?: undefined }
   | { email: null; refused: EmailRefusal };
 
 export type EmailRefusal = 'no-email' | 'unverified' | 'unasserted';
@@ -42,18 +42,28 @@ export interface EmailIdentityEnv {
 }
 
 /** The variable's name, for the messages that tell an operator what is switched on. */
-export const ALLOW_UNVERIFIED_EMAIL = 'OIDC_ALLOW_UNVERIFIED_EMAIL';
+const ALLOW_UNVERIFIED_EMAIL = 'OIDC_ALLOW_UNVERIFIED_EMAIL';
 
 /** One warning per isolate that the opt-out is on — the closest a worker has to startup. */
 let announced = false;
+
+/**
+ * Why a session's address does not identify anyone, or null when it does — the rule alone,
+ * with no break-glass and no logging, for a caller that only needs to explain a refusal.
+ */
+export function emailRefusalOf(user: Pick<SessionUser, 'email' | 'emailVerified'>): EmailRefusal | null {
+  if (!user.email) return 'no-email';
+  if (user.emailVerified === true) return null;
+  return user.emailVerified === false ? 'unverified' : 'unasserted';
+}
 
 export function identifyEmail(
   env: EmailIdentityEnv,
   user: Pick<SessionUser, 'id' | 'email' | 'emailVerified'>,
 ): EmailIdentity {
+  const refused = emailRefusalOf(user);
   if (!user.email) return { email: null, refused: 'no-email' };
-  if (user.emailVerified === true) return { email: user.email };
-  const refused: EmailRefusal = user.emailVerified === false ? 'unverified' : 'unasserted';
+  if (refused === null) return { email: user.email };
   if (env.OIDC_ALLOW_UNVERIFIED_EMAIL !== 'true') return { email: null, refused };
   if (!announced) {
     announced = true;
@@ -64,7 +74,7 @@ export function identifyEmail(
   // The subject, never the address: this line is about the decision, and logs are not
   // where an unverified address should be collected.
   console.warn(`[email-verified] admitted an ${refused} address by ${ALLOW_UNVERIFIED_EMAIL} (sub ${user.id})`);
-  return { email: user.email, admittedBy: 'opt-out' };
+  return { email: user.email };
 }
 
 /** The sentence a person is shown for each refusal — what to do, not what went wrong. */

@@ -30,8 +30,8 @@ import { discoverIssuer as discover, isAllowedEndpoint, type Discovery } from '.
 export { discoverIssuer, type Discovery as OidcDiscovery } from './discovery.js';
 export {
   identifyEmail,
+  emailRefusalOf,
   emailRefusalMessage,
-  ALLOW_UNVERIFIED_EMAIL,
   type EmailIdentity,
   type EmailIdentityEnv,
   type EmailRefusal,
@@ -339,7 +339,7 @@ export async function mintSession(
   // one function (`userFromClaims` decodes an ID token and a session alike). It is simply
   // absent when the issuer asserted nothing, which is also how every session minted
   // before this field existed reads — indistinguishable, and correctly so.
-  return new SignJWT({ email: user.email, name: user.name, email_verified: user.emailVerified })
+  return new SignJWT(sessionClaims(user))
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(user.id)
     .setIssuedAt()
@@ -348,13 +348,22 @@ export async function mintSession(
 }
 
 /**
- * The claims a token carries, as a `SessionUser` — and the one decoder for BOTH tokens
+ * A `SessionUser`'s claims, under their OIDC spellings — everything but `sub`, which a
+ * signer sets on its own. The one encoder, so anything that carries a session in a token
+ * of its own (the CLI login broker's code) carries every field `userFromClaims` reads.
+ */
+export function sessionClaims(user: SessionUser): { email?: string; name?: string; email_verified?: boolean } {
+  return { email: user.email, name: user.name, email_verified: user.emailVerified };
+}
+
+/**
+ * The claims a token carries, as a `SessionUser` — and the one decoder for EVERY token
  * this package holds: the issuer's ID token on the way in, and our own session JWT on
  * every request after. That is why `mintSession` signs `email_verified` under its OIDC
  * spelling rather than a local one; the mint and the read stay a single shape, and a
  * claim added here is carried across the session without a second place to update.
  */
-function userFromClaims(payload: {
+export function userFromClaims(payload: {
   sub?: unknown;
   email?: unknown;
   name?: unknown;

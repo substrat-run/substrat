@@ -1,6 +1,7 @@
 import type { StaffSessionReader } from '@substrat-run/control-plane-api';
 import {
   emailRefusalMessage,
+  emailRefusalOf,
   identifyEmail,
   sessionFromHeaders,
   verifySession,
@@ -30,13 +31,15 @@ function staffIdentityOf(env: StaffAuthEnv, user: SessionUser | null): { email: 
   return email ? { email } : null;
 }
 
-/** The session a request presents — the `sb_session` cookie, else a CLI bearer. */
-async function presentedSession(env: StaffAuthEnv, headers: Headers): Promise<SessionUser | null> {
-  const cookie = await sessionFromHeaders(env, headers);
-  if (cookie) return cookie;
+/** The CLI's `Authorization: Bearer <token>`, or undefined. */
+function bearerToken(headers: Headers): string | undefined {
   const header = headers.get('authorization') ?? '';
-  const token = /^bearer /i.test(header) ? header.slice(7).trim() : undefined;
-  return await verifySession(env, token);
+  return /^bearer /i.test(header) ? header.slice(7).trim() : undefined;
+}
+
+/** The session a request presents, in the readers' order — the cookie, else a CLI bearer. */
+async function presentedSession(env: StaffAuthEnv, headers: Headers): Promise<SessionUser | null> {
+  return (await sessionFromHeaders(env, headers)) ?? (await verifySession(env, bearerToken(headers)));
 }
 
 /**
@@ -48,12 +51,10 @@ async function presentedSession(env: StaffAuthEnv, headers: Headers): Promise<Se
  * an address the roster would never key on anyway (`no-email`) stays a plain 401.
  */
 export async function staffRefusalOf(env: StaffAuthEnv, headers: Headers): Promise<string | null> {
-  // With the break-glass on, the reader already admitted the address: the 401 is about
-  // something else (the roster), and asking again would log a second admission.
+  // With the break-glass on, the reader admitted the address: the 401 is about the roster.
   if (env.OIDC_ALLOW_UNVERIFIED_EMAIL === 'true') return null;
   const user = await presentedSession(env, headers);
-  if (!user) return null;
-  const { refused } = identifyEmail(env, user);
+  const refused = user ? emailRefusalOf(user) : null;
   return refused === 'unverified' || refused === 'unasserted' ? emailRefusalMessage(refused) : null;
 }
 
@@ -83,9 +84,5 @@ export function oidcStaffSessionReader(env: StaffAuthEnv): StaffSessionReader {
  * from. The roster (`d1StaffRoster`) remains the single gate, exactly as for the cookie.
  */
 export function oidcStaffBearerReader(env: StaffAuthEnv): StaffSessionReader {
-  return async (headers) => {
-    const header = headers.get('authorization') ?? '';
-    const token = /^bearer /i.test(header) ? header.slice(7).trim() : undefined;
-    return staffIdentityOf(env, await verifySession(env, token));
-  };
+  return async (headers) => staffIdentityOf(env, await verifySession(env, bearerToken(headers)));
 }

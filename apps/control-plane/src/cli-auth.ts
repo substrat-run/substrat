@@ -5,8 +5,9 @@ import {
   signEphemeral,
   verifyEphemeral,
   pkceS256,
+  sessionClaims,
+  userFromClaims,
   type OidcEnv,
-  type SessionUser,
 } from '@substrat-run/oidc-rp';
 
 /**
@@ -58,10 +59,9 @@ export function mountCliAuthRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>
 
     const code = await signEphemeral(
       c.env,
-      // `email_verified` rides along with the address it qualifies (#1359): the session the
-      // CLI is handed must say what the browser session said, or every CLI staff login
-      // would arrive without the claim the roster requires.
-      { sub: user.id, email: user.email, email_verified: user.emailVerified, name: user.name, ch: challenge, purpose: 'cli' },
+      // The session's own encoding, so the session the CLI is handed says everything the
+      // browser session said — `email_verified` included, which the roster requires (#1359).
+      { sub: user.id, ...sessionClaims(user), ch: challenge, purpose: 'cli' },
       CODE_MAXAGE,
     );
     const target = new URL(`http://127.0.0.1:${port}/callback`);
@@ -80,13 +80,7 @@ export function mountCliAuthRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>
       return c.json({ error: 'pkce verification failed' }, 400);
     }
 
-    const user: SessionUser = {
-      id: String(payload.sub),
-      email: typeof payload.email === 'string' ? payload.email : undefined,
-      emailVerified: typeof payload.email_verified === 'boolean' ? payload.email_verified : undefined,
-      name: typeof payload.name === 'string' ? payload.name : undefined,
-    };
-    const token = await mintSession(c.env, user);
+    const token = await mintSession(c.env, userFromClaims(payload));
     return c.json({ token });
   });
 }

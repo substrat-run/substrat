@@ -23,6 +23,11 @@ function sessionFor(emailVerified: boolean | undefined): Promise<string> {
 const cookie = (t: string) => new Headers({ cookie: `${SESSION_COOKIE}=${t}` });
 const bearer = (t: string) => new Headers({ authorization: `Bearer ${t}` });
 
+const TRANSPORTS = [
+  ['cookie', cookie],
+  ['bearer', bearer],
+] as const;
+
 const READERS = [
   ['cookie', oidcStaffSessionReader, cookie],
   ['bearer', oidcStaffBearerReader, bearer],
@@ -35,16 +40,12 @@ beforeEach(() => {
 afterEach(() => warn.mockRestore());
 
 describe.each(READERS)('staff %s reader', (_, reader, headersFor) => {
-  it('by default: a verified address resolves', async () => {
-    expect(await reader(oidcEnv)(headersFor(await sessionFor(true)))).toEqual({ email: EMAIL });
-  });
-
-  it('by default: an address the issuer called unverified resolves to no staff identity', async () => {
-    expect(await reader(oidcEnv)(headersFor(await sessionFor(false)))).toBeNull();
-  });
-
-  it('by default: an absent claim is refused, not trusted', async () => {
-    expect(await reader(oidcEnv)(headersFor(await sessionFor(undefined)))).toBeNull();
+  it.each([
+    ['true', true, { email: EMAIL }],
+    ['false', false, null],
+    ['absent', undefined, null],
+  ] as const)('by default: a claim that is %s resolves to %o', async (_label, verified, expected) => {
+    expect(await reader(oidcEnv)(headersFor(await sessionFor(verified)))).toEqual(expected);
   });
 
   it.each([
@@ -62,10 +63,7 @@ describe.each(READERS)('staff %s reader', (_, reader, headersFor) => {
 });
 
 describe('staffRefusalOf — the sentence a refused session is shown', () => {
-  it.each([
-    ['cookie', cookie],
-    ['bearer', bearer],
-  ] as const)('names "sign in again" for a %s session that predates the claim', async (_, headersFor) => {
+  it.each(TRANSPORTS)('names "sign in again" for a %s session that predates the claim', async (_, headersFor) => {
     expect(await staffRefusalOf(oidcEnv, headersFor(await sessionFor(undefined)))).toMatch(/sign in again/);
   });
 
@@ -98,29 +96,19 @@ describe('a rostered address, through the deployed API', () => {
 
   const tenants = (headers: Headers) => SELF.fetch('https://cp.test/api/tenants', { headers });
 
-  it.each([
-    ['cookie', cookie],
-    ['bearer', bearer],
-  ] as const)('a verified %s session acts as staff', async (_, headersFor) => {
+  it.each(TRANSPORTS)('a verified %s session acts as staff', async (_, headersFor) => {
     expect((await tenants(headersFor(await sessionFor(true)))).status).toBe(200);
   });
 
-  it.each([
-    ['cookie', cookie],
-    ['bearer', bearer],
-  ] as const)('an unverified %s session is refused, and told to verify', async (_, headersFor) => {
-    const res = await tenants(headersFor(await sessionFor(false)));
-    expect(res.status).toBe(401);
-    expect(((await res.json()) as { error: string }).error).toMatch(/not verified/);
-  });
-
-  it.each([
-    ['cookie', cookie],
-    ['bearer', bearer],
-  ] as const)('a %s session with no claim is refused, and told to sign in again', async (_, headersFor) => {
-    const res = await tenants(headersFor(await sessionFor(undefined)));
-    expect(res.status).toBe(401);
-    expect(((await res.json()) as { error: string }).error).toMatch(/sign in again/);
+  describe.each(TRANSPORTS)('a %s session', (_, headersFor) => {
+    it.each([
+      ['unverified', false, /not verified/],
+      ['with no claim', undefined, /sign in again/],
+    ] as const)('%s is refused, and told what to do', async (_label, verified, says) => {
+      const res = await tenants(headersFor(await sessionFor(verified)));
+      expect(res.status).toBe(401);
+      expect(((await res.json()) as { error: string }).error).toMatch(says);
+    });
   });
 
   it('a request with no session keeps the plain 401', async () => {
