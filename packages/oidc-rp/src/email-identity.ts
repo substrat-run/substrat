@@ -61,16 +61,19 @@ export function identifyEmail(
   env: EmailIdentityEnv,
   user: Pick<SessionUser, 'id' | 'email' | 'emailVerified'>,
 ): EmailIdentity {
-  const refused = emailRefusalOf(user);
-  if (!user.email) return { email: null, refused: 'no-email' };
-  if (refused === null) return { email: user.email };
-  if (env.OIDC_ALLOW_UNVERIFIED_EMAIL !== 'true') return { email: null, refused };
-  if (!announced) {
+  const optedOut = env.OIDC_ALLOW_UNVERIFIED_EMAIL === 'true';
+  // Announced on the first read, whatever the session — an enabled bypass must not stay
+  // silent in an isolate that has only met verified addresses so far.
+  if (optedOut && !announced) {
     announced = true;
     console.warn(
       `[email-verified] ${ALLOW_UNVERIFIED_EMAIL}=true: an address the issuer did not verify is accepted as an identifier on this deployment (#1359)`,
     );
   }
+  const refused = emailRefusalOf(user);
+  if (!user.email) return { email: null, refused: 'no-email' };
+  if (refused === null) return { email: user.email };
+  if (!optedOut) return { email: null, refused };
   // The subject, never the address: this line is about the decision, and logs are not
   // where an unverified address should be collected.
   console.warn(`[email-verified] admitted an ${refused} address by ${ALLOW_UNVERIFIED_EMAIL} (sub ${user.id})`);

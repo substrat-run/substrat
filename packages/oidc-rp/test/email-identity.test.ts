@@ -48,7 +48,6 @@ describe('by default — nothing configured', () => {
     for (const email of [undefined, '']) {
       const noAddress = { id: 'sub-1', email, emailVerified: true };
       expect(mod.identifyEmail({}, noAddress)).toEqual({ email: null, refused: 'no-email' });
-      expect(mod.identifyEmail(ON, noAddress)).toEqual({ email: null, refused: 'no-email' });
     }
   });
 
@@ -83,9 +82,14 @@ describe('the break-glass: OIDC_ALLOW_UNVERIFIED_EMAIL', () => {
     for (const call of warn.mock.calls) expect(String(call[0])).not.toContain(EMAIL);
   });
 
-  it('a verified address does not need it, and is not logged', () => {
-    expect(mod.identifyEmail(ON, user(true))).toEqual({ email: EMAIL });
-    expect(warn).not.toHaveBeenCalled();
+  it.each([
+    ['a verified address', { id: 'sub-1', email: EMAIL, emailVerified: true }, { email: EMAIL }],
+    ['no address', { id: 'sub-1', emailVerified: true }, { email: null, refused: 'no-email' }],
+  ] as const)('announces itself on the first read even for %s, which needs no admission', (_l, session, expected) => {
+    expect(mod.identifyEmail(ON, session)).toEqual(expected);
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.includes('is accepted as an identifier'))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes('admitted'))).toHaveLength(0);
   });
 
   it('only the exact spelling turns it on', () => {
