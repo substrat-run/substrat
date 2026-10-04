@@ -258,8 +258,18 @@ directory's deliveries outrank whatever the history it replaced delivered. The e
 describes the directory's store, not its data, so no dump carries it. A restore onto a
 fresh directory object has only the clock to mint from, which may be behind an epoch a
 scope already holds; such a scope refuses the delivery and answers what it holds, and the
-directory then raises its epoch past that (monotonically) and delivers again. Scopes only
-hold epochs a directory minted, so the directory always ends above them.
+directory then raises its epoch past that (monotonically), re-reads its own store and
+delivers what it says. The raise is bounded: only a directory that has been restored raises
+at all, and never past an epoch more than a day ahead of the clock, because the deployment
+answering is the vertical's own code and an epoch is a mint time. Anything else is an
+ops-failure row (`scope.lifecycle` / `foreign-epoch`) and no raise.
+
+This rests on **one authority per environment**: the directory is the singleton
+`CONTROL_PLANE.idFromName('control-plane')`, so a restore, even onto an emptied object,
+replaces that one writer rather than adding a second, and every raise delivers what the
+current store says. Two control planes healing one dispatch namespace at once is a split
+brain that would corrupt far more than lifecycle. It is out of scope here, because fencing it
+in lifecycle alone would guarantee nothing.
 
 - **One gate.** The CP-less host's `assertLive` reads it at every door that runs the scope's
   work: a request's stub, attachments, a capability or impersonation session, a peer call,
