@@ -49,15 +49,33 @@ export function InviteBlocked({
   teamName,
   invitedEmail,
   signedInAs,
+  refusal,
   onSignOut,
   onContinue,
 }: {
   teamName?: string;
   invitedEmail?: string;
   signedInAs?: string;
+  /** The server's sentence when the invite was accepted but could not be applied (#1184). */
+  refusal?: string;
   onSignOut: () => void;
   onContinue: () => void;
 }) {
+  if (refusal) {
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--surface-page)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 }}>
+        <div style={{ width: 380, maxWidth: '100%', background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, boxShadow: 'var(--shadow-sm)', padding: 24, display: 'flex', flexDirection: 'column', gap: 14, boxSizing: 'border-box' }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>
+            {teamName ? <>This invite to <strong>{teamName}</strong> can’t be applied</> : 'This invite can’t be applied'}
+          </div>
+          <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--text-secondary)' }}>{refusal}</div>
+          <Button style={{ width: '100%', justifyContent: 'center' }} onClick={onContinue}>
+            Continue
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div style={{ minHeight: '100vh', background: 'var(--surface-page)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
