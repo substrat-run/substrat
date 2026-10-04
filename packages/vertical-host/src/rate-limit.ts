@@ -76,28 +76,56 @@ export function rateLimit(options: RateLimitOptions): MiddlewareHandler {
   };
 }
 
+/** The keys a {@link memoryRateLimiter} holds at most, by default. */
+export const MEMORY_RATE_LIMITER_MAX_KEYS = 50_000;
+
 /**
  * A fixed-window counter in this process's memory — the `RateLimiter` {@link rateLimit}
  * counts with by default.
  *
  * Exact for ONE process. Several replicas behind a balancer each count their own share, so
  * the effective budget is the limit times the replica count; a deployment like that wants a
- * shared counter behind the same interface. Expired windows are swept at most once a period,
- * as keys are touched, so memory holds the keys seen in the last two periods at most.
+ * shared counter behind the same interface.
+ *
+ * Bounded at `maxKeys` windows. Expired windows are swept at most once a period as keys are
+ * touched; a NEW key arriving at capacity first sweeps whatever has expired, and if the map is
+ * still full it evicts the oldest window. Eviction, not refusal, deliberately: refusing a
+ * newcomer because a crowd of other addresses filled the map would let that crowd deny
+ * service to everyone else, while forgetting the oldest count only hands that key a fresh
+ * budget — the limiter degrading toward open, the same direction it fails in everywhere else.
+ * A caller rotating credentials from one address cannot fill it: `evaluateRateLimits` counts
+ * the address first and never mints a credential key for a request the address refused.
  */
-export function memoryRateLimiter(policy: RateLimitPolicy, now: () => number = Date.now): RateLimiter {
+export function memoryRateLimiter(
+  policy: RateLimitPolicy,
+  { now = Date.now, maxKeys = MEMORY_RATE_LIMITER_MAX_KEYS }: { now?: () => number; maxKeys?: number } = {},
+): RateLimiter & { readonly size: number } {
+  // Insertion order is window-start order: a key whose window resets is deleted and
+  // re-inserted, so the first entry is always the oldest window.
   const windows = new Map<string, { start: number; count: number }>();
   const periodMs = policy.period * 1000;
   let lastSweep = now();
+  const sweep = (t: number): void => {
+    for (const [k, w] of windows) {
+      if (t - w.start < periodMs) break;
+      windows.delete(k);
+    }
+    lastSweep = t;
+  };
   return {
+    get size() {
+      return windows.size;
+    },
     async limit({ key }) {
       const t = now();
-      if (t - lastSweep >= periodMs) {
-        for (const [k, w] of windows) if (t - w.start >= periodMs) windows.delete(k);
-        lastSweep = t;
-      }
+      if (t - lastSweep >= periodMs) sweep(t);
       let w = windows.get(key);
       if (!w || t - w.start >= periodMs) {
+        windows.delete(key);
+        if (windows.size >= maxKeys) {
+          sweep(t);
+          if (windows.size >= maxKeys) windows.delete(windows.keys().next().value!);
+        }
         w = { start: t, count: 0 };
         windows.set(key, w);
       }

@@ -176,6 +176,9 @@ export interface RateLimitedRefusal {
   readonly body: Problem;
 }
 
+/** The order buckets are counted in: the address first (see {@link evaluateRateLimits}). */
+const COUNTING_ORDER: readonly RateLimitBucket[] = ['ip', 'credential'];
+
 /** What one request's count decided, for the host to answer and log. */
 export interface RateLimitEvaluation {
   /** The 429 to answer instead of serving the request, when a bucket refused it. */
@@ -191,11 +194,14 @@ export interface RateLimitEvaluation {
 }
 
 /**
- * Count one request in every bucket that has a counter — the whole decision both hosts make.
+ * Count one request in the buckets that have a counter — the whole decision both hosts make.
  *
- * Every bucket is counted, even once one refuses, so a caller over one budget still spends
- * the others: the counts stay true to the traffic rather than to the order the buckets were
- * asked in. The refusal names the first bucket (in `RATE_LIMIT_BUCKETS` order) that refused.
+ * The ADDRESS is counted first, and a request it refuses is never counted against a
+ * credential. A credential key is minted from whatever the request sends, so a caller
+ * rotating made-up tokens from one address would otherwise create a fresh credential counter
+ * with every request it was already refused for — unbounded state in a counter that keeps
+ * its keys (the node host's), and spent budget on keys nobody holds. Once the address is
+ * over, the credential bucket is not asked.
  */
 export async function evaluateRateLimits(input: {
   readonly subject: RateLimitSubject;
@@ -210,16 +216,18 @@ export async function evaluateRateLimits(input: {
   if (input.subject.method === 'OPTIONS') return { policyHeader: null };
   const buckets = RATE_LIMIT_BUCKETS.filter((bucket) => input.limiters[bucket]);
   if (buckets.length === 0) return { policyHeader: null };
-  const results = await Promise.all(
-    buckets.map(async (bucket) => {
-      try {
-        const key = await rateLimitKey(bucket, input.subject);
-        return { bucket, success: (await input.limiters[bucket]!.limit({ key })).success };
-      } catch (error) {
-        return { bucket, success: true, error: error instanceof Error ? error.message : String(error) };
-      }
-    }),
-  );
+  const results: { bucket: RateLimitBucket; success: boolean; error?: string }[] = [];
+  for (const bucket of COUNTING_ORDER) {
+    const limiter = input.limiters[bucket];
+    if (!limiter) continue;
+    try {
+      const key = await rateLimitKey(bucket, input.subject);
+      results.push({ bucket, success: (await limiter.limit({ key })).success });
+    } catch (error) {
+      results.push({ bucket, success: true, error: error instanceof Error ? error.message : String(error) });
+    }
+    if (!results.at(-1)!.success) break;
+  }
   const policyHeader = buckets
     .map((bucket) => `"${bucket}";q=${input.policies[bucket].limit};w=${input.policies[bucket].period}`)
     .join(', ');

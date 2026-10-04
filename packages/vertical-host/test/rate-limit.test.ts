@@ -89,6 +89,17 @@ describe('vertical-host rateLimit (#130)', () => {
     expect((await a.request('/api/things', { method: 'OPTIONS', headers: { origin: 'https://app.example.org' } })).status).toBe(204);
   });
 
+  it('never mints a credential window for a request the address already refused', async () => {
+    // One address rotating made-up bearers: once the address budget is spent, the credential
+    // counter is not asked, so it stops growing however many tokens are invented.
+    const credential = memoryRateLimiter({ limit: 1000, period: 60 });
+    const ip = memoryRateLimiter({ limit: 5, period: 60 });
+    const { request } = app({ limiters: { credential, ip } });
+    for (let i = 0; i < 200; i++) await request({ authorization: `Bearer fake-${i}` });
+    expect(ip.size).toBe(1);
+    expect(credential.size).toBe(5);
+  });
+
   it('fails OPEN when a counter throws, with a line naming the bucket', async () => {
     const errors: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((line: string) => void errors.push(line));
@@ -101,9 +112,45 @@ describe('vertical-host rateLimit (#130)', () => {
 });
 
 describe('memoryRateLimiter', () => {
+  it('holds at most maxKeys windows, evicting the oldest: a crowd of addresses cannot grow it', async () => {
+    let t = 0;
+    const limiter = memoryRateLimiter({ limit: 1, period: 60 }, { now: () => t, maxKeys: 3 });
+    for (const key of ['a', 'b', 'c']) {
+      t += 1;
+      await limiter.limit({ key });
+    }
+    expect(limiter.size).toBe(3);
+    for (let i = 0; i < 100; i++) {
+      t += 1;
+      await limiter.limit({ key: `crowd-${i}` });
+    }
+    expect(limiter.size).toBe(3);
+    // The newest windows survived; the oldest were forgotten — `a` is a fresh budget again.
+    expect((await limiter.limit({ key: 'crowd-99' })).success).toBe(false);
+    expect((await limiter.limit({ key: 'a' })).success).toBe(true);
+  });
+
+  it('sweeps every expired window before it evicts a live one', async () => {
+    let t = 0;
+    const limiter = memoryRateLimiter({ limit: 1, period: 10 }, { now: () => t, maxKeys: 3 });
+    await limiter.limit({ key: 'seed' });
+    t = 4_000;
+    await limiter.limit({ key: 'old-1' });
+    t = 5_000;
+    await limiter.limit({ key: 'old-2' });
+    t = 10_000; // the periodic sweep runs here and takes `seed`; both `old-*` are still live
+    await limiter.limit({ key: 'live' });
+    expect(limiter.size).toBe(3);
+    t = 15_000; // both `old-*` have expired since, with no periodic sweep due
+    await limiter.limit({ key: 'new' });
+    // Both expired windows went, not just the one eviction would take — and `live` kept its count.
+    expect(limiter.size).toBe(2);
+    expect((await limiter.limit({ key: 'live' })).success).toBe(false);
+  });
+
   it('opens a fresh window once the period has passed', async () => {
     let t = 0;
-    const limiter = memoryRateLimiter({ limit: 1, period: 10 }, () => t);
+    const limiter = memoryRateLimiter({ limit: 1, period: 10 }, { now: () => t });
     expect((await limiter.limit({ key: 'k' })).success).toBe(true);
     expect((await limiter.limit({ key: 'k' })).success).toBe(false);
     t = 9_999;

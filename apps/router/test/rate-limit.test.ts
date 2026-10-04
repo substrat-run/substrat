@@ -144,11 +144,16 @@ describe('router rate limiting (#130)', () => {
   });
 
   it('bounds a caller minting a fresh token per request by the address budget', async () => {
-    const { env } = envWith({ RATE_LIMIT_CREDENTIAL: counter(2).limiter, RATE_LIMIT_IP: counter(3).limiter });
+    const credential = counter(2);
+    const { env } = envWith({ RATE_LIMIT_CREDENTIAL: credential.limiter, RATE_LIMIT_IP: counter(3).limiter });
     for (let i = 0; i < 3; i++) expect((await call(env, 'acme.example.com', { authorization: `Bearer fake-${i}` })).status).toBe(200);
     const res = await call(env, 'acme.example.com', { authorization: 'Bearer fake-3' });
     expect(res.status).toBe(429);
     expect(res.headers.get('RateLimit')).toBe('"ip";r=0;t=10');
+    // The address is counted first, and a request it refused never counts against (or mints)
+    // a credential key: the fourth invented token reached no credential counter.
+    for (let i = 4; i < 20; i++) await call(env, 'acme.example.com', { authorization: `Bearer fake-${i}` });
+    expect(credential.keys()).toHaveLength(3);
   });
 
   it('never puts a raw token or cookie into a key or a log line', async () => {
