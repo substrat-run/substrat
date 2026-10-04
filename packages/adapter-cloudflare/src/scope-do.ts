@@ -191,6 +191,7 @@ import {
   type ExportRow,
   JOB_RUN_DDL,
   jobRunListLimit,
+  SYSTEM_DOOR_WAIT,
   type EntityVersion,
   type EntityVersionRow,
   type JobRunFilter,
@@ -3530,10 +3531,17 @@ export function defineScopeDO(
      */
     private assertSystemDoor(moduleId: string | undefined, expected: string | undefined): SystemDoorPass | undefined {
       if (moduleId === undefined) return undefined;
+      // Strict, and deliberately so: no pin means no door gated this call, so it is refused rather
+      // than run unchecked. The one innocent caller is a worker a deploy behind, still running host
+      // code from before the pin, during a rolling deploy. Its refusal is transient: the host and this
+      // object ship in the same bundle, so the window lasts as long as the rollout. Nothing ran, and
+      // the reason is the door's "not now" (`SYSTEM_DOOR_WAIT`): a schedule fires on the next pass,
+      // and a job driver that knows the reason defers the pass without spending the run's retries.
       if (expected === undefined) {
         throw substratError(
           'forbidden',
           `a call acting as module '${moduleId}' reached this scope without passing the system door`,
+          { reason: SYSTEM_DOOR_WAIT },
         );
       }
       if (expected !== this.instanceId) {

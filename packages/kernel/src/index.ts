@@ -541,6 +541,8 @@ export {
   JOB_RUN_LIST_MAX,
   jobRunListLimit,
   JOB_STEP_REUSED,
+  SYSTEM_DOOR_WAIT,
+  isSystemDoorWait,
   assertQueueSafe,
   jobRunOf,
   runDueJobRuns,

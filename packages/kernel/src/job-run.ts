@@ -390,6 +390,12 @@ export interface JobDriveReport {
   retrying: number;
   /** Runs whose step exhausted its retries this call. Terminal: `failed`, with the error on the record. */
   failed: number;
+  /**
+   * Runs whose pass the system door told to wait (`SYSTEM_DOOR_WAIT`, #1834): the run was left
+   * exactly as it was, with no attempt counted, and is due again on the next call — as a switched-off
+   * schedule is `skipped` without its cadence moving.
+   */
+  deferred: number;
   /** Per-run failures, the same shape `ScheduleRunReport.errors` has: what failed and why. */
   errors: { runId: string; error: string }[];
 }
@@ -506,6 +512,20 @@ export interface JobRunStore {
 
 /** `conflict` reason: two `step()` calls under one name in one pass. */
 export const JOB_STEP_REUSED = 'job_step_reused';
+
+/**
+ * #1834: the reason a host's system door gives a refusal that means "not now", never "no": the
+ * module is held off on this scope until its switch is applied again, or the scope kept restarting
+ * under the door. Either way nothing ran through the door. The job driver DEFERS a pass refused
+ * this way: no step attempt is recorded and the run is not patched, so waiting out a hold or a
+ * deploy never spends a run's retry budget, and the run is due again on the next drive.
+ */
+export const SYSTEM_DOOR_WAIT = 'system_door_wait';
+
+/** Is this the system door's "not now" (`SYSTEM_DOOR_WAIT`), read by shape so it survives a copy of the package? */
+export function isSystemDoorWait(err: unknown): boolean {
+  return (err as { extensions?: { reason?: unknown } } | null)?.extensions?.reason === SYSTEM_DOOR_WAIT;
+}
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -709,8 +729,11 @@ class JobStepFailure extends Error {
 
 /** What one pass did, as the drive loop reads it. */
 export interface JobPassOutcome {
-  status: 'advanced' | 'completed' | 'retrying' | 'failed';
-  /** The error left on the record. Present exactly on `retrying` and `failed`. */
+  status: 'advanced' | 'completed' | 'retrying' | 'failed' | 'deferred';
+  /**
+   * The error left on the record. Present exactly on `retrying` and `failed`, and on `deferred`,
+   * where it is the door's refusal and NOT on the record: a deferred pass writes nothing.
+   */
   error?: string;
 }
 
@@ -812,6 +835,8 @@ export async function runJobPass(options: {
         try {
           value = await fn();
         } catch (err) {
+          // #1834: the door's "not now" is not this step's failure, so it is not one of its attempts.
+          if (isSystemDoorWait(err)) throw err;
           const cause = message(err);
           await store.recordStep(run.id, name, null, attempts, cause, now());
           throw new JobStepFailure(name, attempts, policy, cause);
@@ -867,6 +892,9 @@ export async function runJobPass(options: {
     });
     return { status: done ? 'completed' : 'advanced' };
   } catch (err) {
+    // #1834: the system door said wait. Nothing ran through it, so the run is left exactly as the
+    // last commit wrote it: no attempt counted, no backoff, due again on the next drive.
+    if (isSystemDoorWait(err)) return { status: 'deferred', error: message(err) };
     const stepFailure = err instanceof JobStepFailure ? err : null;
     const policy = stepFailure?.policy ?? jobPolicy;
     // The RUN's attempts counts consecutive failed passes — what an operator reads as
@@ -930,6 +958,7 @@ export async function runDueJobRuns(options: {
     completed: 0,
     retrying: 0,
     failed: 0,
+    deferred: 0,
     errors: [],
   };
   const maxPasses = Math.max(1, options.maxPasses ?? 1);
@@ -976,6 +1005,10 @@ export async function runDueJobRuns(options: {
       if (outcome.status === 'failed') {
         report.failed += 1;
         report.errors.push({ runId: run.id, error: outcome.error! });
+        break;
+      }
+      if (outcome.status === 'deferred') {
+        report.deferred += 1;
         break;
       }
       if (outcome.status === 'retrying') {

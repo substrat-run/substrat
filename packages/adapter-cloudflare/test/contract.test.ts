@@ -22,7 +22,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -2345,13 +2345,15 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     let runId = '';
     const s = await rewoundPastTheSwitch(true, async (sc) => (runId = (await startTick(sc)).id));
     expect(await heldOn(s)).toEqual([SCHED]);
-    // Before any reconcile: the pass reaches the door, the door refuses, and nothing ticks.
-    const denied = await jobDeployment().runDueJobs(t, s);
-    expect(denied).toMatchObject({ attempted: 1, completed: 0, advanced: 0, failed: 0, retrying: 1 });
-    expect(denied.errors[0]?.error).toMatch(/held off on this scope/);
-    // Recorded on the run the way an OFF denial is (the driver's own failed-attempt record): still
-    // running, the refusal as its last error, retries left.
-    expect(await runOf(s, runId)).toMatchObject({ status: 'running', lastError: expect.stringMatching(/held off/) });
+    // Before any reconcile: the pass reaches the door, the door says wait, and nothing ticks. The
+    // pass is DEFERRED, as a held schedule is skipped: the run is left as it was, with no attempt
+    // spent — so drives past the job's whole budget (3) still leave it running and unmarked.
+    for (let i = 0; i < 4; i += 1) {
+      expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({
+        attempted: 1, deferred: 1, completed: 0, advanced: 0, failed: 0, retrying: 0, errors: [],
+      });
+    }
+    expect(await runOf(s, runId)).toMatchObject({ status: 'running', attempts: 0, lastError: null });
     expect(await ticksIn(s)).toBe(0);
     // The schedules, unchanged: skipped on the same hold.
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
@@ -2385,7 +2387,11 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await armRewind(env.SCOPE, s);
     await host.rewindScopeLocal(s, 'bm-before-switch', { force: true });
     await landRewind(env.SCOPE, s, atBookmark);
-    await expect(door.invoke('sched/tick')).rejects.toThrow(/held off on this scope/);
+    await expect(door.invoke('sched/tick')).rejects.toMatchObject({
+      code: 'forbidden',
+      extensions: { reason: SYSTEM_DOOR_WAIT },
+      message: expect.stringMatching(/held off on this scope/),
+    });
     expect(await ticksIn(s)).toBe(0);
   });
 
@@ -2424,7 +2430,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const door = await h.getSystemScope(SCHED, t, s);
     const refused = await door.invoke('sched/tick').then(() => null, (err: unknown) => err);
     expect(String(refused)).toMatch(/kept restarting under the system door/);
-    expect(errorCodeOf(refused)).toBe('unavailable');
+    expect(refused).toMatchObject({ code: 'unavailable', extensions: { reason: SYSTEM_DOOR_WAIT } });
     // The door's own gate, then one more per refusal, up to the bound — and no further.
     expect(moving.doorGates).toBe(1 + SYSTEM_DOOR_REGATES);
     expect(await ticksIn(s)).toBe(0);
@@ -2453,7 +2459,11 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     };
     const asModule = (pin?: string) =>
       raw.invoke('sched/tick', undefined, SCHED, t, s, undefined, undefined, SCHED, true, undefined, undefined, undefined, undefined, pin);
-    expect((await asModule()).failure).toMatchObject({ code: 'forbidden', message: expect.stringMatching(/without passing the system door/) });
+    expect((await asModule()).failure).toMatchObject({
+      code: 'forbidden',
+      extensions: { reason: SYSTEM_DOOR_WAIT },
+      message: expect.stringMatching(/without passing the system door/),
+    });
     await expect(raw.systemAttachmentAuthorize('no-such-attachment', SCHED, t, s)).rejects.toThrow(/without passing the system door/);
     expect(await ticksIn(s)).toBe(0);
     // Twin: pinned to the serving instance, the same call runs.

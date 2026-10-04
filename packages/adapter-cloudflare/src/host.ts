@@ -315,6 +315,7 @@ import {
   type FreshnessReport,
   jobRunOf,
   runDueJobRuns,
+  SYSTEM_DOOR_WAIT,
   startJobRun,
   attachmentTextJob,
   assertAttachmentExtractors,
@@ -4038,10 +4039,13 @@ export class CloudflareScopeHost implements ScopeHost {
       through: async <T>(call: (instance: string) => Promise<T>): Promise<T> => {
         for (let regates = 0; ; regates += 1) {
           if (gate.held) {
+            // `SYSTEM_DOOR_WAIT`: the hold ends when the switch is applied again, so a job run
+            // waits it out without spending its retries (the kernel driver defers the pass).
             throw substratError(
               'forbidden',
               `module '${moduleId}' is held off on this scope: it was rewound to before its schedule ` +
                 'switch was turned off, and it stays off until the switch is applied again',
+              { reason: SYSTEM_DOOR_WAIT },
             );
           }
           try {
@@ -4053,6 +4057,7 @@ export class CloudflareScopeHost implements ScopeHost {
                 'unavailable',
                 `the scope kept restarting under the system door of module '${moduleId}' ` +
                   `(${regates + 1} attempts); nothing ran. Retry later`,
+                { reason: SYSTEM_DOOR_WAIT },
               );
             }
             gate = await regate();
