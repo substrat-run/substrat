@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, type LifecycleDelegation } from '../src/host.js';
+import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, TENANT_UNRECORDED_PER_PASS, type LifecycleDelegation } from '../src/host.js';
 import { createRouteResolver } from '../src/route-resolver.js';
 import router, { type Env } from '../../../apps/router/src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -640,5 +640,197 @@ describe('the heal asks every served scope for its tenant record until it holds 
     expect(await recordedInDirectory(empty)).toBe(0);
     await platform().healLifecycles(actor);
     expect(askedFor(empty)).toBe(2);
+  });
+});
+
+/**
+ * #2016, Codex #2033 r3: the heal's tenant-record walk rotates on the ASK, not on the answer. A
+ * deployment that cannot be reached writes no receipt, so a walk ordered by the receipt put the same
+ * unreachable scopes first on every pass, and a healthy copy past the per-pass slice was never asked.
+ */
+describe('the tenant-record walk rotates past deployments that never answer (#2016)', () => {
+  const actor = platformActorId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const USE = permissionKey.parse('perm:use');
+  const unreachable = new Set<string>();
+  const asked: string[] = [];
+  /** Run after the deployment answered and before the heal writes its receipt — the window in which
+   *  a delete or a reap commits between the heal's select and its bookkeeping write. */
+  let duringDelivery: ((s: ScopeId) => Promise<void>) | undefined;
+  const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
+  const lifecycleDelegation: LifecycleDelegation = {
+    deliver: async ({ tenantId: t, scopeId: s, lifecycle }) => {
+      asked.push(s);
+      if (unreachable.has(s)) throw new Error('deployment unreachable');
+      const answer = await deployment().setLifecycleLocal(s, lifecycle, t);
+      await duringDelivery?.(s);
+      return answer;
+    },
+  };
+  const directoryName = `tenant-walk-${ulid()}`;
+  const directory = {
+    idFromName: () => env.CONTROL_PLANE.idFromName(directoryName),
+    get: (id: DurableObjectId) => env.CONTROL_PLANE.get(id),
+  } as unknown as DurableObjectNamespace;
+  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: directory, lifecycleDelegation });
+  beforeAll(() => warmControlPlane(directory));
+  const receiptOf = (s: ScopeId) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_i, state) =>
+      (state.storage.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray()[0] as { value: string } | undefined)?.value ?? null,
+    );
+
+  it('a full slice of unreachable scopes does not keep a healthy copy from being asked', async () => {
+    const t = tenantId.parse(ulid());
+    await platform().admin.createTenant(actor, { id: t, slug: `walk-${t.toLowerCase()}`, name: 'Walk' });
+    // A whole pass's worth of scopes whose deployment never answers, all created (and so ordered by
+    // id) ahead of the healthy one.
+    for (let i = 0; i < TENANT_UNRECORDED_PER_PASS; i++) {
+      const s = scopeId.parse(ulid());
+      unreachable.add(s);
+      await platform().provisionScope(actor, { tenantId: t, scopeId: s, vertical: 'todo' });
+      await platform().admin.activateScope(actor, t, s);
+    }
+    const install = [...unreachable][0] as ScopeId;
+    const copy = scopeId.parse(ulid());
+    await platform().provisionScope(actor, { tenantId: t, scopeId: copy, vertical: 'todo', kind: 'preview', forkedFrom: install });
+    await platform().admin.activateScope(actor, t, copy);
+    await deployment().provisionScopeLocal({
+      tenantId: t,
+      scopeId: copy,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(copy)), (_i, state) => {
+      state.storage.sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
+      state.storage.sql.exec('DELETE FROM _substrat_roles');
+    });
+
+    // The first pass fills its slice with the unreachable scopes, all failing.
+    const first = await platform().healLifecycles(actor);
+    expect(first.failed).toBeGreaterThanOrEqual(TENANT_UNRECORDED_PER_PASS);
+    expect(asked).not.toContain(copy);
+    // They rotate behind the scope not asked yet: the next pass reaches the copy.
+    await platform().healLifecycles(actor);
+    expect(asked.filter((s) => s === copy)).toHaveLength(1);
+    expect(await receiptOf(copy)).toBe(t);
+    // And the unreachable ones keep being asked on later passes, without the copy again.
+    const before = asked.length;
+    await platform().healLifecycles(actor);
+    expect(asked.length - before).toBe(TENANT_UNRECORDED_PER_PASS);
+    expect(asked.filter((s) => s === copy)).toHaveLength(1);
+    // A full slice is the point of the case: fifty provisions and three passes of about fifty
+    // deliveries each, against the real directory. Under a loaded full suite that outruns the
+    // default 5 s, though it takes under a second alone.
+  }, 60_000);
+
+  /** The directory's delivery bookkeeping for `s`: its tenant-record asks and its delivery receipts. */
+  const bookkeepingOf = (s: ScopeId) =>
+    runInDurableObject(env.CONTROL_PLANE.get(directory.idFromName('')), (_i, state) => ({
+      asks: state.storage.sql.exec('SELECT 1 FROM scope_tenant_asks WHERE scope_id = ?', s).toArray().length,
+      receipts: state.storage.sql.exec('SELECT 1 FROM scope_lifecycle_receipts WHERE scope_id = ?', s).toArray().length,
+    }));
+  const tenantOf = async () => {
+    const t = tenantId.parse(ulid());
+    await platform().admin.createTenant(actor, { id: t, slug: `walk-${t.toLowerCase()}`, name: 'Walk' });
+    return t;
+  };
+  const served = async (t: TenantId, extra: { kind?: string; forkedFrom?: ScopeId } = {}) => {
+    const s = scopeId.parse(ulid());
+    await platform().provisionScope(actor, { tenantId: t, scopeId: s, vertical: 'todo', ...extra });
+    await platform().admin.activateScope(actor, t, s);
+    return s;
+  };
+
+  it('deleting an asked preview takes its ask and its delivery receipt with it', async () => {
+    const t = await tenantOf();
+    const install = await served(t);
+    const preview = await served(t, { kind: 'preview', forkedFrom: install });
+    await platform().healLifecycles(actor);
+    expect(await bookkeepingOf(preview)).toEqual({ asks: 1, receipts: 1 });
+    await platform().deleteSnapshot(actor, t, preview);
+    expect(await bookkeepingOf(preview)).toEqual({ asks: 0, receipts: 0 });
+    // The twin: its install keeps its own.
+    expect(await bookkeepingOf(install)).toEqual({ asks: 1, receipts: 1 });
+  });
+
+  /** The two bookkeeping writes a heal makes after its select, made late, straight to the directory. */
+  const lateWrites = async (s: ScopeId) => {
+    const dir = env.CONTROL_PLANE.get(directory.idFromName('')) as unknown as {
+      recordTenantAsks(ids: string[], at: string): Promise<void>;
+      recordLifecycleReceipt(id: string, delivered: string, at: string, tenantRecorded?: boolean): Promise<void>;
+    };
+    const at = new Date().toISOString();
+    await dir.recordTenantAsks([s], at);
+    await dir.recordLifecycleReceipt(s, 'active/active@0.0.0', at, true);
+  };
+
+  describe('a write that lands after the scope is gone recreates nothing (Codex #2037 r2)', () => {
+    it('twin: a scope still served records both', async () => {
+      const t = await tenantOf();
+      const s = await served(t);
+      await lateWrites(s);
+      expect(await bookkeepingOf(s)).toEqual({ asks: 1, receipts: 1 });
+    });
+
+    it('after a delete', async () => {
+      const t = await tenantOf();
+      const install = await served(t);
+      const preview = await served(t, { kind: 'preview', forkedFrom: install });
+      await platform().deleteSnapshot(actor, t, preview);
+      await lateWrites(preview);
+      expect(await bookkeepingOf(preview)).toEqual({ asks: 0, receipts: 0 });
+    });
+
+    it('after a scope reap', async () => {
+      const t = await tenantOf();
+      const s = await served(t);
+      await platform().admin.archiveScope(actor, t, s);
+      await platform().admin.reapScope(actor, t, s, { force: true });
+      await lateWrites(s);
+      expect(await bookkeepingOf(s)).toEqual({ asks: 0, receipts: 0 });
+    });
+
+    it('after a tenant reap', async () => {
+      const t = await tenantOf();
+      const s = await served(t);
+      await platform().admin.setTenantStatus(actor, t, 'deleting');
+      await platform().admin.reapTenant(actor, t);
+      await lateWrites(s);
+      expect(await bookkeepingOf(s)).toEqual({ asks: 0, receipts: 0 });
+    });
+
+    it('a preview deleted while its delivery is in flight keeps neither its ask nor a receipt', async () => {
+      const t = await tenantOf();
+      const install = await served(t);
+      const preview = await served(t, { kind: 'preview', forkedFrom: install });
+      duringDelivery = async (s) => {
+        if (s === preview) await platform().deleteSnapshot(actor, t, preview);
+      };
+      try {
+        await platform().healLifecycles(actor);
+      } finally {
+        duringDelivery = undefined;
+      }
+      expect(asked).toContain(preview);
+      // The deployment answered, so the heal went on to write the receipt; the delete had won.
+      expect(await bookkeepingOf(preview)).toEqual({ asks: 0, receipts: 0 });
+    });
+  });
+
+  it('a reaped scope, and a reaped tenant\'s scopes, keep no delivery bookkeeping', async () => {
+    const t = await tenantOf();
+    const reaped = await served(t);
+    const leftOver = await served(t);
+    await platform().healLifecycles(actor);
+    expect(await bookkeepingOf(reaped)).toEqual({ asks: 1, receipts: 1 });
+    expect(await bookkeepingOf(leftOver)).toEqual({ asks: 1, receipts: 1 });
+    await platform().admin.archiveScope(actor, t, reaped);
+    await platform().admin.reapScope(actor, t, reaped, { force: true });
+    expect(await bookkeepingOf(reaped)).toEqual({ asks: 0, receipts: 0 });
+    // A scope the tenant reap finds not yet reaped on its own goes with the tenant.
+    await platform().admin.setTenantStatus(actor, t, 'deleting');
+    await platform().admin.reapTenant(actor, t);
+    expect(await bookkeepingOf(leftOver)).toEqual({ asks: 0, receipts: 0 });
   });
 });

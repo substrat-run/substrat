@@ -626,6 +626,18 @@ export interface AdminEntryInput {
  * recorded answer to #969; `docs/architecture/kernel-design.md` §8 says why.
  */
 /** #1713: one hosted scope, its directory lifecycle, and what its deployment last acknowledged. */
+/**
+ * #2016, Codex #2037 r2: the condition every delivery-bookkeeping write carries, in its own statement —
+ * the scope (bound as the last parameter) still exists, is not reaped, and its tenant is not reaped.
+ * A heal selects its targets, then writes its asks and its receipts after a network round trip; a
+ * delete or a reap that commits in between has already forgotten the scope's rows
+ * (`forgetLifecycleDeliveries`), and an unconditional write would bring them back as orphans.
+ */
+const STILL_DELIVERED = `EXISTS (
+  SELECT 1 FROM scopes s JOIN tenants t ON t.tenant_id = s.tenant_id
+   WHERE s.scope_id = ? AND s.status <> 'reaped' AND t.status <> 'reaped'
+)`;
+
 export interface LifecycleTargetRow {
   tenant_id: string;
   scope_id: string;
@@ -1149,6 +1161,13 @@ const DIRECTORY_DDL = `
     delivered TEXT NOT NULL,
     at TEXT NOT NULL,
     tenant_recorded INTEGER
+  );
+  -- #2016: when the heal last asked a scope for its tenant record, whatever came of it. Kept apart
+  -- from the receipt, which only an answer writes, so a scope whose deployment never answers still
+  -- rotates behind the rest of the walk instead of heading it every pass.
+  CREATE TABLE IF NOT EXISTS scope_tenant_asks (
+    scope_id TEXT PRIMARY KEY,
+    asked_at TEXT NOT NULL
   );
   -- #1713: the lifecycle's revisions, one counter per subject ("scope:<id>" counts a
   -- scope's status transitions, "tenant:<id>" a tenant's status changes), each bumped in
@@ -1843,6 +1862,8 @@ export class ControlPlaneDO extends DurableObject {
         "UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?",
         tenantId,
       );
+      // Its scopes were reaped one by one, each forgetting its own; any left over go here.
+      this.forgetLifecycleDeliveries('scope_id IN (SELECT scope_id FROM scopes WHERE tenant_id = ?)', tenantId);
       this.bumpLifecycleRevision(`tenant:${tenantId}`); // #1713
     });
     return before.status;
@@ -2365,7 +2386,10 @@ export class ControlPlaneDO extends DurableObject {
       } else {
         this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
       }
-      if (to === 'reaped') forgetSystemSwitchesOf(this.kernelSql, scopeId);
+      if (to === 'reaped') {
+        forgetSystemSwitchesOf(this.kernelSql, scopeId);
+        this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
+      }
       this.bumpLifecycleRevision(`scope:${scopeId}`); // #1713, with the status it counts
     });
     return { ok: true, status: row.status, vertical: row.vertical };
@@ -2940,9 +2964,25 @@ export class ControlPlaneDO extends DurableObject {
    * wiping the scope DO's storage — the fork-only refusal lives there, not here.
    */
   deleteScopeDirectory(scopeId: string): void {
-    this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
-    forgetSystemSwitchesOf(this.kernelSql, scopeId);
-    this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
+      forgetSystemSwitchesOf(this.kernelSql, scopeId);
+      this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
+      this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
+    });
+  }
+
+  /**
+   * #1713 / #2016: drop the delivery bookkeeping of scopes that will never be delivered to again —
+   * what each deployment acknowledged (`scope_lifecycle_receipts`) and when the heal last asked it
+   * for its tenant record (`scope_tenant_asks`). A hard-deleted fork's rows would otherwise outlive
+   * it, and every preview created and deleted would grow both tables, and every directory dump, for
+   * good. A reaped scope keeps its tombstone row but leaves every delivery walk, so its go too.
+   */
+  private forgetLifecycleDeliveries(where: string, ...params: string[]): void {
+    for (const table of ['scope_lifecycle_receipts', 'scope_tenant_asks']) {
+      this.sql.exec(`DELETE FROM ${table} WHERE ${where}`, ...params);
+    }
   }
 
   readChannel(verticalSlug: string, channel: string): ChannelRow | undefined {
@@ -4242,10 +4282,11 @@ export class ControlPlaneDO extends DurableObject {
       params.push(...driftParams);
     }
     if (filter.unrecorded) where.push('COALESCE(r.tenant_recorded, 0) <> 1');
-    // The unrecorded walk rotates: the scope asked longest ago (or never) comes first, so a scope
-    // that keeps answering 0 cannot starve the rest of a bounded pass.
+    // The unrecorded walk rotates on the ask, not the answer: never asked first, then the one asked
+    // longest ago, so a scope that answers 0, or never answers at all, cannot starve the rest of a
+    // bounded pass.
     const order = filter.unrecorded
-      ? 'r.at IS NOT NULL, r.at, s.scope_id'
+      ? 'a.asked_at IS NOT NULL, a.asked_at, s.scope_id'
       : `CASE WHEN ${drifted} THEN 0 ELSE 1 END, s.scope_id`;
     if (!filter.unrecorded) params.push(...driftParams);
     params.push(filter.limit ?? 1000);
@@ -4256,6 +4297,7 @@ export class ControlPlaneDO extends DurableObject {
            FROM scopes s
            JOIN tenants t ON t.tenant_id = s.tenant_id
            LEFT JOIN scope_lifecycle_receipts r ON r.scope_id = s.scope_id
+           LEFT JOIN scope_tenant_asks a ON a.scope_id = s.scope_id
            LEFT JOIN lifecycle_revisions rs ON rs.subject = 'scope:' || s.scope_id
            LEFT JOIN lifecycle_revisions rt ON rt.subject = 'tenant:' || s.tenant_id
           WHERE ${where.join(' AND ')}
@@ -4300,15 +4342,29 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
+  /** #2016: note that the heal asked these scopes for their tenant record at `at`, before it asks. */
+  recordTenantAsks(scopeIds: string[], at: string): void {
+    for (const scopeId of scopeIds) {
+      this.sql.exec(
+        `INSERT OR REPLACE INTO scope_tenant_asks (scope_id, asked_at) SELECT ?, ? WHERE ${STILL_DELIVERED}`,
+        scopeId,
+        at,
+        scopeId,
+      );
+    }
+  }
+
   /** #1713: record what a scope's deployment acknowledged holding (`lifecycleReceipt`), and #2016:
    *  whether it answered that the scope holds a record of its tenant. */
   recordLifecycleReceipt(scopeId: string, delivered: string, at: string, tenantRecorded = false): void {
     this.sql.exec(
-      'INSERT OR REPLACE INTO scope_lifecycle_receipts (scope_id, delivered, at, tenant_recorded) VALUES (?, ?, ?, ?)',
+      `INSERT OR REPLACE INTO scope_lifecycle_receipts (scope_id, delivered, at, tenant_recorded)
+       SELECT ?, ?, ?, ? WHERE ${STILL_DELIVERED}`,
       scopeId,
       delivered,
       at,
       tenantRecorded ? 1 : 0,
+      scopeId,
     );
   }
 
