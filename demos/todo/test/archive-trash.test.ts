@@ -105,6 +105,38 @@ describe('putting lists away', () => {
   });
 });
 
+describe('a binned list is gone to every operation but restore, the bin and the permanent delete', () => {
+  it('refuses each operation that reaches the list, its items or its shares — and the restore brings all of it back', async () => {
+    const ada = await host.getScope(world.ada.principal, world.tenant, world.scope);
+    const garage = (await ada.invoke<List>('todo/create-list', { name: 'Garage' })).id;
+    const bolt = (await ada.invoke<{ id: string }>('todo/add-item', { listId: garage, text: 'bolts' })).id;
+    const share = (await ada.invoke<{ id: string }>('todo/share-list', { listId: garage, email: world.bjorn.email })).id;
+    await ada.invoke('todo/trash-list', { listId: garage });
+
+    const calls: [string, Record<string, unknown>][] = [
+      ['todo/list-items', { listId: garage }],
+      ['todo/search-list-items', { listId: garage, q: 'bolt' }],
+      ['todo/add-item', { listId: garage, text: 'nuts' }],
+      ['todo/rename-list', { listId: garage, name: 'Shed' }],
+      ['todo/set-item-done', { itemId: bolt, done: true }],
+      ['todo/delete-item', { itemId: bolt }],
+      ['todo/share-list', { listId: garage, email: 'dana@example.com' }],
+      ['todo/list-shares', { listId: garage }],
+      ['todo/revoke-share', { shareId: share }],
+    ];
+    for (const [op, input] of calls) expect(await codeOf(ada.invoke(op, input)), op).toBe('not_found');
+    const found = await ada.invoke<{ results: unknown[] }>('todo/search-items', { q: 'bolt' });
+    expect(found.results).toEqual([]);
+
+    // Nothing above changed it: the restore brings back the item, undone, and the share.
+    await ada.invoke('todo/restore-list', { listId: garage });
+    const items = await ada.invoke<Page<{ text: string; done: number }>>('todo/list-items', { listId: garage });
+    expect(items.entries.map((i) => [i.text, i.done])).toEqual([['bolts', 0]]);
+    const shares = await ada.invoke<Page<{ id: string }>>('todo/list-shares', { listId: garage });
+    expect(shares.entries.map((s) => s.id)).toEqual([share]);
+  });
+});
+
 describe('the denials that prove it', () => {
   it("nobody else's trash shows Dana's lists", async () => {
     await dana.invoke('todo/trash-list', { listId: holiday });

@@ -426,6 +426,7 @@ const operations = {
 
   'todo/list-shares': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
+    listOrThrow(ctx, input.listId);
     // The kernel composes it: `ORDER BY created_at, id` is the declared sort plus
     // its tie-break, which is the ordering this shipped with, written once.
     return ctx.page<ShareRow>('share', { ...input, filters: { list_id: input.listId } });
@@ -437,6 +438,9 @@ const operations = {
     ])[0];
     if (!share) throw substratError('not_found', `share not found: ${input.shareId}`);
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(share.list_id)));
+    // A share on a binned list is as gone as the list: revoking it would change a list nobody
+    // can see until it is restored.
+    listOrThrow(ctx, share.list_id);
 
     ctx.sql.exec('DELETE FROM todo_shares WHERE id = ?', [input.shareId]);
     await ctx.revoke(share.principal as PrincipalId, TODO_PERM.listContribute, listRef(share.list_id));
