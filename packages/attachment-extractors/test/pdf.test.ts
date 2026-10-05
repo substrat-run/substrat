@@ -360,6 +360,20 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(textOf(await run(bytes.subarray(0, xrefAt)))).toBe('scanned header');
   });
 
+  it('a CMap with twenty thousand code-space ranges places each code by a bounded search — the timer is never held', async () => {
+    // 20 001 ranges and 5 000 codes ran `spaces.some` per code: about a second, timer starved
+    // (Codex #2062 r2). The twin: the one range that matters still maps.
+    const ranges = Array.from({ length: 20_001 }, (_, i) =>
+      `1 begincodespacerange <${(i * 3 + 16).toString(16).padStart(4, '0')}> <${(i * 3 + 17).toString(16).padStart(4, '0')}> endcodespacerange`);
+    const cmap = `begincmap\n1 begincodespacerange <0000> <0001> endcodespacerange\n${ranges.join('\n')}\n1 beginbfchar <0001> <0041> endbfchar endcmap`;
+    const file = onePage(`BT /F1 9 Tf <${'0001'.repeat(5_000)}> Tj ET`, {
+      font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
+      extra: [stream('', cmap)],
+    }).bytes;
+    expect(await longestHold(file)).toBeLessThan(150);
+    expect(textOf(await settles(file))).toBe('A'.repeat(5_000));
+  });
+
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
     // A fixed-width placeholder, so pointing it somewhere moves no byte offset in the file.
     const PLACEHOLDER = '/Prev 0000000000';

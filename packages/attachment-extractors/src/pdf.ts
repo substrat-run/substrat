@@ -75,8 +75,13 @@ const TOKEN_MAX = EXTRACTION_STRIDE;
 const OPERANDS_MAX = 256;
 /** Codes a CMap may map, across every range in it. */
 const CMAP_CODES_MAX = 1 << 17;
+/** Code-space ranges one CMap may declare; a real one declares a handful. */
+const CMAP_SPACES_MAX = 256;
+/** The longest destination string a CMap maps a code to: the format's own limit, 512 bytes. */
+const CMAP_DST_MAX = 512;
 /** How far back from `obj` the scan looks for `N G `: two numbers and the space around them. */
 const OBJ_HEADER_SPAN = 48;
+
 
 // -- values ---------------------------------------------------------------------------
 
@@ -1159,14 +1164,57 @@ const BASE_ENCODINGS: Record<string, (string | null)[]> = {
   StandardEncoding: STANDARD,
 };
 
+/**
+ * A code space: per code length (1–4 bytes), its ranges sorted and merged, so a code is placed
+ * by a binary search — never a scan over every range a file declared (Codex #2062 r2).
+ */
+class CodeSpace {
+  /** `byLength[n]` holds the merged `[low, high]` ranges of n-byte codes, ascending. */
+  private readonly byLength: [number, number][][];
+
+  constructor(ranges: readonly [number, number, number][]) {
+    this.byLength = [[], [], [], [], []];
+    for (const [len, lo, hi] of ranges) if (lo <= hi) this.byLength[len]!.push([lo, hi]);
+    for (const list of this.byLength) {
+      list.sort((a, b) => a[0] - b[0]);
+      let w = 0;
+      for (const r of list) {
+        if (w > 0 && r[0] <= list[w - 1]![1] + 1) list[w - 1]![1] = Math.max(list[w - 1]![1], r[1]);
+        else list[w++] = r;
+      }
+      list.length = w;
+    }
+  }
+
+  get empty(): boolean {
+    return this.byLength.every((l) => l.length === 0);
+  }
+
+  /** Whether an n-byte code falls in the space. */
+  has(length: number, code: number): boolean {
+    const list = this.byLength[length]!;
+    let lo = 0;
+    let hi = list.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const [a, b] = list[mid]!;
+      if (code < a) hi = mid - 1;
+      else if (code > b) lo = mid + 1;
+      else return true;
+    }
+    return false;
+  }
+}
+
 /** A CMap's code space and its code → text map (a ToUnicode CMap, or an encoding CMap's spaces). */
 interface CMap {
-  /** Each range as `[bytes, low, high]`. */
-  readonly spaces: [number, number, number][];
+  readonly spaces: CodeSpace;
   readonly map: Map<number, string>;
 }
 
 const codeKey = (length: number, code: number): number => length * 0x1_0000_0000 + code;
+/** Identity-H and -V: every two-byte code. */
+const IDENTITY_SPACE = new CodeSpace([[2, 0, 0xffff]]);
 const utf16be = (b: Uint8Array): string => {
   let s = '';
   for (let i = 0; i + 1 < b.length; i += 2) s += String.fromCharCode((b[i]! << 8) | b[i + 1]!);
@@ -1178,7 +1226,7 @@ const bytesToInt = (b: Uint8Array): number => b.reduce((v, x) => v * 256 + x, 0)
 /** A CMap stream's `codespacerange`, `bfchar` and `bfrange` sections, bounded by `CMAP_CODES_MAX`. */
 async function parseCMap(data: Uint8Array, pace: Pace): Promise<CMap> {
   const lex = new Lexer(data, 0, data.length, pace);
-  const spaces: [number, number, number][] = [];
+  const ranges: [number, number, number][] = [];
   const map = new Map<number, string>();
   const operands: PdfValue[] = [];
   const put = (length: number, code: number, text: string): void => {
@@ -1199,8 +1247,9 @@ async function parseCMap(data: Uint8Array, pace: Pace): Promise<CMap> {
       for (let i = 0; i + 1 < operands.length; i += 2) {
         const lo = operands[i];
         const hi = operands[i + 1];
-        if (isString(lo) && isString(hi) && lo.bytes.length >= 1 && lo.bytes.length <= 4) {
-          spaces.push([lo.bytes.length, bytesToInt(lo.bytes), bytesToInt(hi.bytes)]);
+        // At most `CMAP_SPACES_MAX` ranges, however many sections declare more.
+        if (isString(lo) && isString(hi) && lo.bytes.length >= 1 && lo.bytes.length <= 4 && ranges.length < CMAP_SPACES_MAX) {
+          ranges.push([lo.bytes.length, bytesToInt(lo.bytes), bytesToInt(hi.bytes.subarray(0, 4))]);
         }
       }
       operands.length = 0;
@@ -1208,7 +1257,9 @@ async function parseCMap(data: Uint8Array, pace: Pace): Promise<CMap> {
       for (let i = 0; i + 1 < operands.length; i += 2) {
         const src = operands[i];
         const dst = operands[i + 1];
-        if (isString(src) && isString(dst)) put(src.bytes.length, bytesToInt(src.bytes), utf16be(dst.bytes));
+        if (isString(src) && isString(dst) && src.bytes.length <= 4 && dst.bytes.length <= CMAP_DST_MAX) {
+          put(src.bytes.length, bytesToInt(src.bytes), utf16be(dst.bytes));
+        }
       }
       operands.length = 0;
     } else if (tok.v === 'endbfrange') {
@@ -1216,17 +1267,20 @@ async function parseCMap(data: Uint8Array, pace: Pace): Promise<CMap> {
         const lo = operands[i];
         const hi = operands[i + 1];
         const dst = operands[i + 2];
-        if (!isString(lo) || !isString(hi)) continue;
+        if (!isString(lo) || !isString(hi) || lo.bytes.length > 4) continue;
+        // A destination past the format's 512 bytes is not one; each code below copies it.
+        if (isString(dst) && dst.bytes.length > CMAP_DST_MAX) continue;
         const from = bytesToInt(lo.bytes);
-        const to = Math.min(bytesToInt(hi.bytes), from + 0xffff);
+        const to = Math.min(bytesToInt(hi.bytes.subarray(0, 4)), from + 0xffff);
         for (let code = from; code <= to && map.size < CMAP_CODES_MAX; code += 1) {
           if (pace.room <= 0) await pace.turn();
           pace.charge(1);
           if (Array.isArray(dst)) {
             const d = dst[code - from];
-            if (isString(d)) put(lo.bytes.length, code, utf16be(d.bytes));
+            if (isString(d) && d.bytes.length <= CMAP_DST_MAX) put(lo.bytes.length, code, utf16be(d.bytes));
           } else if (isString(dst) && dst.bytes.length >= 1) {
             // The last byte counts up across the range, as the format specifies.
+            pace.charge(dst.bytes.length);
             const b = Uint8Array.from(dst.bytes);
             const last = b[b.length - 1]! + (code - from);
             b[b.length - 1] = last & 0xff;
@@ -1238,21 +1292,35 @@ async function parseCMap(data: Uint8Array, pace: Pace): Promise<CMap> {
       operands.length = 0;
     }
   }
-  return { spaces, map };
+  return { spaces: new CodeSpace(ranges), map };
 }
 
-/** Split string bytes into codes by a code space: the shortest range a code's bytes fall in. */
-function* codes(bytes: Uint8Array, spaces: readonly [number, number, number][], fallback: number): Generator<[number, number]> {
+/**
+ * A string's text through a code space and a code → text map: each code the shortest length
+ * whose bytes fall in the space (or `fallback` bytes), placed by at most four binary searches.
+ * The work is a constant per byte of the string — which the lexer has already charged.
+ */
+function codesToText(bytes: Uint8Array, spaces: CodeSpace, fallback: number, map: Map<number, string>): string {
+  let s = '';
   for (let i = 0; i < bytes.length; ) {
     let length = 0;
-    for (let n = 1; n <= 4 && i + n <= bytes.length && length === 0; n += 1) {
-      const code = bytesToInt(bytes.subarray(i, i + n));
-      if (spaces.some(([len, lo, hi]) => len === n && code >= lo && code <= hi)) length = n;
+    let code = 0;
+    for (let n = 1; n <= 4 && i + n <= bytes.length; n += 1) {
+      code = code * 256 + bytes[i + n - 1]!;
+      if (spaces.has(n, code)) {
+        length = n;
+        break;
+      }
     }
-    if (length === 0) length = Math.min(fallback, bytes.length - i);
-    yield [length, bytesToInt(bytes.subarray(i, i + length))];
+    if (length === 0) {
+      length = Math.min(fallback, bytes.length - i);
+      code = 0;
+      for (let n = 0; n < length; n += 1) code = code * 256 + bytes[i + n]!;
+    }
+    s += map.get(codeKey(length, code)) ?? '';
     i += length;
   }
+  return s;
 }
 
 /** A font's decoder: `/ToUnicode` first, then its encoding; unreadable composite fonts give nothing. */
@@ -1266,20 +1334,13 @@ async function fontDecoder(doc: PdfDocument, font: PdfDict): Promise<FontDecoder
   }
   if (subtype === 'Type0') {
     const enc = await doc.resolve(font.get('Encoding'));
-    let spaces: [number, number, number][] = [[2, 0, 0xffff]];
+    let spaces = IDENTITY_SPACE;
     if (isStream(enc)) {
       const decoded = await doc.decode(enc);
       const cmap = decoded ? await parseCMap(decoded.data, doc.pace) : null;
-      if (cmap && cmap.spaces.length > 0) spaces = cmap.spaces;
-    } else if (toUnicode && toUnicode.spaces.length > 0) spaces = toUnicode.spaces;
-    return {
-      decode: (bytes) => {
-        if (!toUnicode) return '';
-        let s = '';
-        for (const [length, code] of codes(bytes, spaces, 2)) s += toUnicode.map.get(codeKey(length, code)) ?? '';
-        return s;
-      },
-    };
+      if (cmap && !cmap.spaces.empty) spaces = cmap.spaces;
+    } else if (toUnicode && !toUnicode.spaces.empty) spaces = toUnicode.spaces;
+    return { decode: (bytes) => (toUnicode ? codesToText(bytes, spaces, 2, toUnicode.map) : '') };
   }
   // A simple font: one byte per code.
   const enc = await doc.resolve(font.get('Encoding'));
