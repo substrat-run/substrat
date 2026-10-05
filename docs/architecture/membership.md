@@ -232,6 +232,11 @@ is refused when the joiner was removed after it was requested.
   accepting a NEW invite is refused, and the invite can be resent.
 - The fence is carried by a directory backup and restore like every directory table, and
   cleared with the tenant's other rows on a reap.
+- **The backlog.** Every accept since the invites engine shipped emitted a request nothing
+  consumed, so a first drain finds a backlog. The fence is backfilled once from the admin log
+  (`MEMBERSHIP_FENCES_BACKFILL_SQL`: the latest tenant-level `unassignRole` or `removeMember`
+  per person) on the construction that creates the table, and on a restore whose dump predates
+  it. So a member removed by hand before this shipped stays refused when the backlog drains.
 
 The dashboard mounts it with its own scope sweeper as the backstop, and shows an accepted
 member as `joining` until the journal says otherwise (`readExecutorDelivery`).
