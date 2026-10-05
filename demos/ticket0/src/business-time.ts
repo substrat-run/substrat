@@ -274,7 +274,9 @@ export function describeSchedule(schedule: BusinessSchedule): string {
   for (const d of READING_ORDER) {
     const h = hours(d);
     const last = groups[groups.length - 1];
-    if (last && last.hours === h && READING_ORDER.indexOf(last.to) === READING_ORDER.indexOf(d) - 1) {
+    // `last` always ends on the day before `d`, closed days included, so equal hours on
+    // either side of a different day never run together.
+    if (last && last.hours === h) {
       last.to = d;
     } else {
       groups.push({ from: d, to: d, hours: h });
