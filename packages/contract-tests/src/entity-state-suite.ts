@@ -534,6 +534,13 @@ export function entityStateContractSuite(
       await expect(raw(t1, fork, `UPDATE state_docs SET _substrat_archived_at = NULL WHERE id = '${filed}'`)).rejects.toThrow(
         /moves only through ctx\.archive/,
       );
+      // The derived list indexes came back with the load too: the walk still plans on them, and
+      // a module's runtime DDL in the copy passes the kernel's integrity check.
+      const rt = `rt_${ulid().toLowerCase()}`;
+      await there.invoke('state/sql', { sql: `CREATE TABLE ${rt} (id TEXT)` });
+      expect((await there.invoke<string[]>('state/explain', { view: 'archived' })).join(' | ')).toMatch(
+        /INDEX _substrat_list_test_state_stdoc_title_archived\b/,
+      );
     });
 
     it("refuses runtime DDL that would move a stateful table's rows out from under its triggers", async () => {
