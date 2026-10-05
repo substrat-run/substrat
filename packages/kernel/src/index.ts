@@ -223,6 +223,7 @@ export {
   entityStateMigrations,
   entityStatePlans,
   entityStateTriggerDdl,
+  assertEntityStateIntact,
   ENTITY_STATE_MOVES_DDL,
   ENTITY_STATE_MOVES_TABLE,
   statefulTablesOf,
@@ -315,6 +316,7 @@ export {
   listIndexDdl,
   listIndexMigrations,
   listIndexPlans,
+  stateListIndexNames,
   listPlansByEntityType,
   listQuery,
   splitCursor,
@@ -330,7 +332,7 @@ export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
-export { assertNoReservedColumnWrite, assertNoSpineReference, assertNoSpineWrite, guardSpine } from './spine-guard.js';
+export { assertNoReservedColumnWrite, assertNoSpineReference, assertNoSpineWrite, assertNoStatefulDdl, changesSchema, guardSpine } from './spine-guard.js';
 export {
   DO_SQL_LIMITS,
   tooManyResultColumns,

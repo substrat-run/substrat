@@ -137,6 +137,7 @@ import {
   searchIndexDdl,
   searchIndexPlans,
   NotListable,
+  listIndexDdl,
   listIndexPlans,
   moduleMigrations,
   listQuery,
@@ -285,6 +286,8 @@ import {
   addStatePlans,
   entityStateTriggerDdl,
   statefulTablesOf,
+  assertEntityStateIntact,
+  stateListIndexNames,
   type EntityStatePlan,
   exchangeCapability,
   guardSecrets,
@@ -5920,6 +5923,13 @@ export function defineScopeDO(
         if (!present.has(plan.table)) continue;
         for (const stmt of splitSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
       }
+      // #811 / #119: the derived list indexes went with the dropped table too, and a load never
+      // put them back — an archivable entity's partial indexes are part of what the kernel
+      // checks after DDL.
+      for (const plan of this.listPlans.values()) {
+        if (!present.has(plan.table)) continue;
+        for (const stmt of splitSqlStatements(listIndexDdl(plan))) this.sql.exec(stmt);
+      }
       // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
       // as on a wake. A copy's own events then sort above every copied one, which is what
       // `emittedHere()` relies on. A dump whose top id is no ULID leaves the floor where it was.
@@ -6752,7 +6762,17 @@ export function defineScopeDO(
         // #1672: a capability's own id stands in so the type holds — it is not a person, and
         // the event actor says what it is instead. Every other door passes its own value.
         principal: capabilityId ? (capabilityId as unknown as PrincipalId) : principal,
-        sql: guardSecrets(doScopedSql(sql, statefulTablesOf(statePlans)), minted),
+        sql: guardSecrets(
+          doScopedSql(
+            sql,
+            statefulTablesOf(statePlans),
+            // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
+            statePlans.size
+              ? () => assertEntityStateIntact(doSpineSql(sql), statePlans, stateListIndexNames(listPlans.values()))
+              : undefined,
+          ),
+          minted,
+        ),
         now: () => at,
         // #1746/#1747: the host stamps who and where; module code supplies only the template
         // and its fields. A consumer runs under the system override, so it logs as `system`.

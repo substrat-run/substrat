@@ -231,6 +231,8 @@ import {
   entityStateMigrations,
   entityStateTriggerDdl,
   statefulTablesOf,
+  assertEntityStateIntact,
+  stateListIndexNames,
   type EntityStatePlan,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
@@ -462,6 +464,7 @@ import {
   type RunSub,
   NotSearchable,
   NotListable,
+  listIndexDdl,
   listIndexMigrations,
   listIndexPlans,
   listQuery,
@@ -3551,10 +3554,15 @@ export class SqliteScopeHost implements ScopeHost {
       for (const plan of this.searchPlans.values()) {
         if (present.has(plan.table)) db.exec(searchIndexDdl(plan));
       }
-      // #119: the never-born-archived trigger went with the dropped table. Put back AFTER the
-      // rows, which may legitimately arrive archived or trashed.
+      // #119: the guard triggers went with the dropped table. Put back AFTER the rows, which
+      // may legitimately arrive archived or trashed.
       for (const plan of this.statePlans.values()) {
         if (present.has(plan.table)) db.exec(entityStateTriggerDdl(plan));
+      }
+      // #811 / #119: the derived list indexes went with it too, and a load never put them back —
+      // an archivable entity's partial indexes are part of what the kernel checks after DDL.
+      for (const plan of this.listPlans.values()) {
+        if (present.has(plan.table)) db.exec(listIndexDdl(plan));
       }
       // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
       // text of attachments the dump did not bring back, and queue extraction for those
@@ -11295,7 +11303,20 @@ export class SqliteScopeHost implements ScopeHost {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       principal,
-      sql: guardSecrets(guardSqlLimits(scopedSql(rt.db, true, statefulTablesOf(statePlans))), minted),
+      sql: guardSecrets(
+        guardSqlLimits(
+          scopedSql(
+            rt.db,
+            true,
+            statefulTablesOf(statePlans),
+            // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
+            statePlans.size
+              ? () => assertEntityStateIntact(spineSql(rt.db), statePlans, stateListIndexNames(listPlans.values()))
+              : undefined,
+          ),
+        ),
+        minted,
+      ),
       now: () => at,
       // #1746/#1747: the host stamps who and where; module code supplies only the template
       // and its fields. The invocation id is read per call — it is set for the duration of
@@ -12067,6 +12088,8 @@ function scopedSql(
   judgeWidth = false,
   /** #119: the module tables carrying archive/trash columns — `guardSpine` refuses positional writes to them. */
   statefulTables?: ReadonlySet<string>,
+  /** #119: the kernel's integrity check, run after any runtime DDL — see `guardSpine`. */
+  afterDdl?: () => void,
 ): ScopedSql {
   // #1811: a Durable Object refuses a result set over its column cap, `exec` of a SELECT included.
   // The driver knows the width, so it is read off the prepared statement rather than parsed out
@@ -12093,7 +12116,7 @@ function scopedSql(
       if (judgeWidth && !stmt.reader && schemaVersion(db) !== before) assertTablesWithinColumnLimit(db);
       return { changes: info.changes };
     },
-  }, statefulTables);
+  }, statefulTables, afterDdl);
 }
 
 const schemaVersion = (db: Database.Database): number => db.pragma('schema_version', { simple: true }) as number;

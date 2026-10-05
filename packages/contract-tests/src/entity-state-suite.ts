@@ -536,6 +536,71 @@ export function entityStateContractSuite(
       );
     });
 
+    it("refuses runtime DDL that would move a stateful table's rows out from under its triggers", async () => {
+      const id = await doc('ddl victim');
+      await as.alice.invoke('state/trash', { id });
+      const before = await as.alice.invoke<HistoryEntry[]>('state/history', { id });
+      const copy = `SELECT id, title, owner, NULL AS _substrat_archived_at, NULL AS _substrat_trashed_at FROM main.state_docs`;
+      for (const sql of [
+        // Codex r3's sequence, statement by statement.
+        'ALTER TABLE state_docs RENAME TO state_docs_old',
+        `CREATE TABLE state_docs AS ${copy}`,
+        'DROP TABLE state_docs',
+        'DROP TABLE IF EXISTS main.state_docs',
+        // Every spelling of the name.
+        'ALTER TABLE "State_Docs" RENAME TO x',
+        'ALTER TABLE main.state_docs RENAME TO x',
+        'ALTER TABLE state_plain RENAME TO state_docs',
+        'ALTER TABLE state_docs RENAME COLUMN title TO heading',
+        'ALTER TABLE state_docs DROP COLUMN title',
+        // A temp object of the same name shadows the table in every unqualified reference.
+        `CREATE TEMP TABLE state_docs AS ${copy}`,
+        `CREATE TEMPORARY TABLE IF NOT EXISTS "STATE_DOCS" (id TEXT)`,
+        `CREATE TEMP VIEW state_docs AS ${copy}`,
+        `CREATE TABLE temp.state_docs AS ${copy}`,
+        'CREATE TEMP TRIGGER t_shadow AFTER INSERT ON state_docs BEGIN SELECT 1; END',
+        'CREATE TRIGGER t_on AFTER UPDATE ON main.state_docs BEGIN SELECT 1; END',
+        // The kernel's derived objects, by their reserved prefix.
+        'DROP TRIGGER _substrat_state_state_docs_moved',
+        'DROP TRIGGER IF EXISTS _substrat_state_state_docs_born',
+        'DROP INDEX _substrat_list_test_state_stdoc_title',
+        "ATTACH DATABASE ':memory:' AS other",
+      ]) {
+        await expectGuarded(sql);
+      }
+      expect(await as.alice.invoke('state/state', { id })).toBe('trashed');
+      expect(await as.alice.invoke<HistoryEntry[]>('state/history', { id })).toEqual(before);
+      expect(ids(await as.alice.invoke<Page<Row>>('state/page-trashed', {}))).toContain(id);
+    });
+
+    it("still runs a module's ordinary runtime DDL (#1811), and checks the stateful tables after it", async () => {
+      const t = `rt_${ulid().toLowerCase()}`;
+      await as.alice.invoke('state/sql', { sql: `CREATE TABLE IF NOT EXISTS ${t} (id TEXT PRIMARY KEY)` });
+      await as.alice.invoke('state/sql', { sql: `INSERT INTO ${t} VALUES ('a')` });
+      await as.alice.invoke('state/sql', { sql: `ALTER TABLE ${t} ADD COLUMN note TEXT` });
+      await as.alice.invoke('state/sql', { sql: `CREATE INDEX ${t}_note ON ${t} (note)` });
+      await as.alice.invoke('state/sql', { sql: `CREATE INDEX IF NOT EXISTS state_docs_owner_rt ON state_docs (owner)` });
+      expect(await as.alice.invoke<Row[]>('state/sql', { sql: `SELECT id FROM ${t}` })).toEqual([{ id: 'a' }]);
+      await as.alice.invoke('state/sql', { sql: `DROP TABLE ${t}` });
+    });
+
+    it('fails closed: runtime DDL that leaves a stateful table without its triggers is rolled back', async () => {
+      // Past the guard, take one derived trigger away — what a form nobody foresaw would do.
+      await raw(t1, scope, 'DROP TRIGGER _substrat_state_state_docs_born');
+      const t = `rt_${ulid().toLowerCase()}`;
+      const err = await errOf(as.alice.invoke('state/sql', { sql: `CREATE TABLE ${t} (id TEXT)` }));
+      expect(String((err as Error).message)).toMatch(/without its born trigger/);
+      expect(await as.alice.invoke<Row[]>('state/sql', { sql: `SELECT name FROM sqlite_master WHERE name = '${t}'` })).toEqual([]);
+      // Put it back exactly as the kernel derives it, and the same DDL runs.
+      await raw(
+        t1,
+        scope,
+        `CREATE TRIGGER _substrat_state_state_docs_born BEFORE INSERT ON state_docs WHEN NEW._substrat_archived_at IS NOT NULL OR NEW._substrat_trashed_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'a row is never inserted archived or trashed - ctx.archive and ctx.trash move it (#119)'); END`,
+      );
+      await as.alice.invoke('state/sql', { sql: `CREATE TABLE ${t} (id TEXT)` });
+      await as.alice.invoke('state/sql', { sql: `DROP TABLE ${t}` });
+    });
+
     // -- the indexes -------------------------------------------------------------------------
 
     const planOf = (view?: string, extra: Record<string, unknown> = {}) =>

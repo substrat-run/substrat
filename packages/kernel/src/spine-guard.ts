@@ -119,6 +119,124 @@ export function assertNoSpineWrite(sql: string, statefulTables?: ReadonlySet<str
   }
   refuseSpineReference(referencedTablesIn(tokens), 'ctx.sql');
   assertNoReservedColumnWrite(sql, statefulTables);
+  if (statefulTables?.size) assertNoStatefulDdl(sql, statefulTables);
+}
+
+/** Statement verbs whose execution changes the schema — what `guardSpine`'s `afterDdl` follows. */
+const DDL_VERBS = new Set(['create', 'alter', 'drop']);
+
+/**
+ * Refuse runtime DDL that would take a stateful table's guarantees away (#119, Codex r3).
+ *
+ * #1811 made a module's own DDL through `ctx.sql` a supported path, and it stays one. But a table
+ * that carries archive/trash state is guarded by derived triggers ON THAT TABLE, and DDL can move
+ * the rows out from under them: `ALTER TABLE docs RENAME TO x; CREATE TABLE docs AS SELECT …,
+ * NULL AS _substrat_trashed_at FROM x` un-trashes everything with no move and no event. So, for a
+ * stateful table, in any spelling — quoted, any case, `main.`/`temp.`-qualified:
+ *
+ * - `ALTER TABLE <it>` that renames the table or a column, or drops a column; and `RENAME TO <it>`
+ *   from another table;
+ * - `DROP TABLE <it>`;
+ * - `CREATE [TEMP] TABLE|VIEW <it>` — a temp object of the same name SHADOWS the real table in
+ *   every unqualified reference, the kernel's own included;
+ * - `CREATE [TEMP] TRIGGER … ON <it>`.
+ *
+ * Plus, for any table, a trigger, index or view carrying the reserved prefix (the kernel's derived
+ * objects), and `ATTACH`/`DETACH` outright: nothing in module code needs a second database, and an
+ * attached one is a second place a stateful name can resolve. Ordinary runtime DDL — a module's own
+ * unrelated tables, an index on a stateful table, an added column — is untouched.
+ */
+export function assertNoStatefulDdl(sql: string, statefulTables: ReadonlySet<string>): void {
+  const tokens = tokenizeSql(sql, { punctuation: true });
+  const refuse = (what: string): never => {
+    throw substratError(
+      'forbidden',
+      `ctx.sql cannot ${what}: its archive/trash state is guarded by the kernel's own triggers on it. ` +
+        'Change its schema in a declared migration.',
+      { reason: 'spine_write' },
+    );
+  };
+  const bare = (t: SqlToken | undefined) => (t && !t.punct ? (t.text.split('.').pop() ?? '').toLowerCase() : '');
+  const stateful = (t: SqlToken | undefined) => statefulTables.has(bare(t));
+  const reserved = (t: SqlToken | undefined) => bare(t).startsWith('_substrat');
+  // One statement at a time: a `;` at the top ends it (trigger bodies hold their own `;`s, but
+  // a trigger is judged whole from its CREATE, and its body's statements are DML).
+  let start = 0;
+  while (start < tokens.length) {
+    let end = start;
+    let depth = 0;
+    let inBody = false;
+    for (; end < tokens.length; end += 1) {
+      const t = tokens[end]!;
+      const kw = t.quoted || t.punct ? undefined : t.text.toLowerCase();
+      if (kw === 'begin') inBody = true;
+      else if (kw === 'end' && inBody && depth === 0) inBody = false;
+      else if (t.punct && t.text === '(') depth += 1;
+      else if (t.punct && t.text === ')') depth -= 1;
+      else if (t.punct && t.text === ';' && depth === 0 && !inBody) break;
+    }
+    const st = tokens.slice(start, end);
+    start = end + 1;
+    const words = st.map((t) => (t.quoted || t.punct ? '' : t.text.toLowerCase()));
+    const verb = words[0];
+    if (verb === 'attach' || verb === 'detach') refuse(`${verb.toUpperCase()} a database`);
+    if (verb === 'alter' && words[1] === 'table') {
+      const target = st[2];
+      const rest = words.slice(3);
+      if (stateful(target) && (rest.includes('rename') || rest[0] === 'drop')) {
+        refuse(`rename '${target!.text}' or drop or rename its columns`);
+      }
+      const to = rest.indexOf('to');
+      if (rest[0] === 'rename' && to !== -1 && stateful(st[3 + to + 1])) {
+        refuse(`rename a table to '${st[3 + to + 1]!.text}'`);
+      }
+      continue;
+    }
+    if (verb === 'drop') {
+      let k = 1;
+      const kind = words[k];
+      k += 1;
+      if (words[k] === 'if' && words[k + 1] === 'exists') k += 2;
+      if (kind === 'table' && stateful(st[k])) refuse(`drop '${st[k]!.text}'`);
+      if ((kind === 'trigger' || kind === 'index' || kind === 'view') && reserved(st[k])) {
+        refuse(`drop the kernel's ${kind} '${st[k]!.text}'`);
+      }
+      continue;
+    }
+    if (verb === 'create') {
+      let k = 1;
+      while (['temp', 'temporary', 'unique', 'virtual'].includes(words[k] ?? '')) k += 1;
+      const kind = words[k];
+      k += 1;
+      if (words[k] === 'if' && words[k + 1] === 'not' && words[k + 2] === 'exists') k += 3;
+      const name = st[k];
+      if ((kind === 'table' || kind === 'view') && stateful(name)) refuse(`create a ${kind} named '${name!.text}'`);
+      if ((kind === 'trigger' || kind === 'index' || kind === 'view') && reserved(name)) {
+        refuse(`create a ${kind} with the kernel's prefix ('${name!.text}')`);
+      }
+      if (kind === 'trigger') {
+        const on = words.indexOf('on', k + 1);
+        if (on !== -1 && stateful(st[on + 1])) refuse(`create a trigger on '${st[on + 1]!.text}'`);
+      }
+    }
+  }
+}
+
+/** Does this SQL change the schema — any statement in it a CREATE, ALTER or DROP? */
+export function changesSchema(sql: string): boolean {
+  const tokens = tokenizeSql(sql, { punctuation: true });
+  let first = true;
+  for (const t of tokens) {
+    if (t.punct && t.text === ';') {
+      first = true;
+      continue;
+    }
+    if (first && !t.punct) {
+      if (!t.quoted && DDL_VERBS.has(t.text.toLowerCase())) return true;
+      first = false;
+    }
+  }
+  return false;
 }
 
 /**
@@ -323,15 +441,22 @@ export function guardSpine(
   inner: ScopedSql,
   /** The module tables that carry archive/trash columns (#119), lowercased — see `assertNoReservedColumnWrite`. */
   statefulTables?: ReadonlySet<string>,
+  /**
+   * Run after any statement that changed the schema passed (#119, Codex r3): the kernel's own
+   * check that every stateful table still carries what it derived. It throws to fail closed —
+   * the operation, and the DDL with it, roll back.
+   */
+  afterDdl?: () => void,
 ): ScopedSql {
+  const follow = <R>(sql: string, run: () => R): R => {
+    assertNoSpineWrite(sql, statefulTables);
+    const result = run();
+    if (afterDdl && changesSchema(sql)) afterDdl();
+    return result;
+  };
   return {
-    query: <T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[] => {
-      assertNoSpineWrite(sql, statefulTables);
-      return inner.query<T>(sql, params);
-    },
-    exec: (sql: string, params?: readonly SqlValue[]) => {
-      assertNoSpineWrite(sql, statefulTables);
-      return inner.exec(sql, params);
-    },
+    query: <T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[] =>
+      follow(sql, () => inner.query<T>(sql, params)),
+    exec: (sql: string, params?: readonly SqlValue[]) => follow(sql, () => inner.exec(sql, params)),
   };
 }

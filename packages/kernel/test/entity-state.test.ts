@@ -11,6 +11,10 @@ import {
   moduleMigrations,
   addStatePlans,
   createTrashedReads,
+  assertEntityStateIntact,
+  assertNoStatefulDdl,
+  changesSchema,
+  stateListIndexNames,
   cursorOf,
   listQuery,
 } from '../src/index.js';
@@ -265,4 +269,84 @@ describe('a cursor names its view (#119)', () => {
     expect(cursorOf(row, 'title', 'id', 'asc')).toBe(cursorOf(row, 'title', 'id', 'asc', 'active'));
     expect(cursorOf(row, 'title', 'id', 'asc', 'archived')).not.toBe(cursorOf(row, 'title', 'id', 'asc'));
   });
+});
+
+describe('runtime DDL on a stateful table (#119, Codex r3)', () => {
+  const stateful = new Set(['docs']);
+  const refused = [
+    'ALTER TABLE docs RENAME TO x',
+    'ALTER TABLE "DOCS" RENAME TO x',
+    'ALTER TABLE main.docs RENAME COLUMN a TO b',
+    'ALTER TABLE docs DROP COLUMN a',
+    'ALTER TABLE other RENAME TO docs',
+    'DROP TABLE docs',
+    'DROP TABLE IF EXISTS temp.docs',
+    'CREATE TABLE docs AS SELECT 1',
+    'CREATE TEMP TABLE docs (id TEXT)',
+    'CREATE TEMPORARY VIEW IF NOT EXISTS docs AS SELECT 1',
+    'CREATE TABLE temp.docs (id TEXT)',
+    'CREATE TRIGGER t AFTER INSERT ON docs BEGIN SELECT 1; END',
+    'CREATE TEMP TRIGGER t BEFORE DELETE ON main.docs BEGIN SELECT 1; END',
+    'DROP TRIGGER _substrat_state_docs_born',
+    'DROP INDEX IF EXISTS _substrat_list_m_doc_title',
+    "ATTACH DATABASE 'x.db' AS x",
+    'DETACH DATABASE x',
+    'CREATE TABLE ok (id TEXT); ALTER TABLE docs RENAME TO x',
+  ];
+  for (const sql of refused) {
+    it(`refuses: ${sql}`, () => expect(() => assertNoStatefulDdl(sql, stateful)).toThrow(/cannot/));
+  }
+  const allowed = [
+    'CREATE TABLE IF NOT EXISTS mine (id TEXT)',
+    'ALTER TABLE mine RENAME TO yours',
+    'ALTER TABLE docs ADD COLUMN extra TEXT',
+    'CREATE INDEX docs_owner ON docs (owner)',
+    'DROP TABLE mine',
+    'CREATE TRIGGER t AFTER INSERT ON mine BEGIN UPDATE mine SET a = 1; END',
+    'CREATE VIEW v AS SELECT * FROM docs',
+  ];
+  for (const sql of allowed) {
+    it(`allows: ${sql}`, () => expect(() => assertNoStatefulDdl(sql, stateful)).not.toThrow());
+  }
+  it('knows a schema change from DML, statement by statement', () => {
+    expect(changesSchema('CREATE TABLE x (id TEXT)')).toBe(true);
+    expect(changesSchema("UPDATE t SET a = 'CREATE'; DROP TABLE y")).toBe(true);
+    expect(changesSchema("INSERT INTO t VALUES ('ALTER TABLE x')")).toBe(false);
+    expect(changesSchema('SELECT 1')).toBe(false);
+  });
+});
+
+describe('assertEntityStateIntact', () => {
+  const build = () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
+    for (const m of moduleMigrations({
+      manifest: { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [both] },
+    }))
+      db.exec(m.sql);
+    const sql = { query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[], exec: () => ({ changes: 0 }) };
+    const plans = new Map();
+    addStatePlans(plans, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+    const indexes = stateListIndexNames(listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]));
+    return { db, check: () => assertEntityStateIntact(sql as never, plans, indexes) };
+  };
+  it('passes a table carrying everything the kernel derived', () => expect(() => build().check()).not.toThrow());
+  for (const [what, ddl] of [
+    ['born trigger', 'DROP TRIGGER _substrat_state_docs_born'],
+    ['moved trigger', 'DROP TRIGGER _substrat_state_docs_moved'],
+    ['list index', 'DROP INDEX _substrat_list_m_doc_title_archived'],
+    ['column', 'ALTER TABLE docs DROP COLUMN _substrat_trashed_at'],
+  ] as const) {
+    it(`fails closed without its ${what}`, () => {
+      const { db, check } = build();
+      if (what === 'column') {
+        // SQLite will not drop a column a trigger or partial index names, so those go first.
+        for (const { name, type } of db.prepare(`SELECT name, type FROM sqlite_master WHERE name LIKE '\\_substrat\\_%' ESCAPE '\\'`).all() as { name: string; type: string }[]) {
+          db.exec(`DROP ${type.toUpperCase()} ${name}`);
+        }
+      }
+      db.exec(ddl);
+      expect(check).toThrow(/without/);
+    });
+  }
 });

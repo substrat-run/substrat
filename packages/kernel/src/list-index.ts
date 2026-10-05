@@ -621,3 +621,13 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
     view: params.view ?? 'active',
   };
 }
+
+/** The derived list indexes on each stateful table (#119), by table — what `assertEntityStateIntact` checks. */
+export function stateListIndexNames(plans: Iterable<ListIndexPlan>): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const plan of plans) {
+    if (!plan.states) continue;
+    out.set(plan.table, [...(out.get(plan.table) ?? []), ...listIndexColumns(plan).map((i) => i.name)]);
+  }
+  return out;
+}
