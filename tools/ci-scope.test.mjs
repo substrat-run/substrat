@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { assertPartition, assignShards, buildNames, classify, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, unitsOf } from './ci-scope.mjs';
+import { assertPartition, assignShards, buildNames, enclosingNames, classify, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, unitsOf } from './ci-scope.mjs';
 
 // A lockfile in pnpm v9's shape: two workspace packages sharing one third-party
 // dependency, plus the root importer.
@@ -322,4 +322,28 @@ test('each split package\'s parts exist and together run its whole `test`', () =
       assert.ok(parts.some((s) => s.includes(`-c ${config}`)), `${dir}: no part runs ${config}`);
     }
   }
+});
+
+test('enclosingNames: a nested app selects the demo around it, never the reverse', () => {
+  const all = [
+    { name: 'demo', dir: 'demos/todo' },
+    { name: 'app', dir: 'demos/todo/app' },
+    { name: 'kernel', dir: 'packages/kernel' },
+  ];
+  assert.deepEqual(enclosingNames(['app'], all), ['app', 'demo']);
+  assert.deepEqual(enclosingNames(['demo'], all), ['demo']);
+  assert.deepEqual(enclosingNames(['kernel'], all), ['kernel']);
+});
+
+test('decide: the changesets release PR runs everything, however small its diff', () => {
+  const args = {
+    event: 'pull_request',
+    base: 'b',
+    files: ['packages/kernel/package.json', 'packages/kernel/CHANGELOG.md'],
+    lockfile: () => assert.fail('not read'),
+    all: [{ name: 'kernel', dir: 'packages/kernel' }],
+    selectChanged: () => [{ name: 'kernel', dir: 'packages/kernel' }],
+  };
+  assert.ok('everything' in decide({ ...args, head: 'changeset-release/main' }));
+  assert.deepEqual(decide({ ...args, head: 'feature/x' }).selected, [{ name: 'kernel', dir: 'packages/kernel' }]);
 });
