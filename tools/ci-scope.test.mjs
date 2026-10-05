@@ -334,3 +334,16 @@ test('enclosingNames: a nested app selects the demo around it, never the reverse
   assert.deepEqual(enclosingNames(['demo'], all), ['demo']);
   assert.deepEqual(enclosingNames(['kernel'], all), ['kernel']);
 });
+
+test('decide: the changesets release PR runs everything, however small its diff', () => {
+  const args = {
+    event: 'pull_request',
+    base: 'b',
+    files: ['packages/kernel/package.json', 'packages/kernel/CHANGELOG.md'],
+    lockfile: () => assert.fail('not read'),
+    all: [{ name: 'kernel', dir: 'packages/kernel' }],
+    selectChanged: () => [{ name: 'kernel', dir: 'packages/kernel' }],
+  };
+  assert.ok('everything' in decide({ ...args, head: 'changeset-release/main' }));
+  assert.deepEqual(decide({ ...args, head: 'feature/x' }).selected, [{ name: 'kernel', dir: 'packages/kernel' }]);
+});

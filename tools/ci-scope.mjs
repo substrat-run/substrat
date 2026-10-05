@@ -390,8 +390,14 @@ function workspace(filters) {
     .sort((a, b) => a.dir.localeCompare(b.dir));
 }
 
-export function decide({ event, base, files, lockfile, all, selectChanged }) {
+// The changesets "Version packages" PR is the last gate before `pnpm publish -r`, and its
+// diff (package.json versions, CHANGELOGs) says nothing about what the release carries —
+// so it runs everything, like a push to main, however small it looks.
+export const RELEASE_BRANCH = /^changeset-release\//;
+
+export function decide({ event, base, head, files, lockfile, all, selectChanged }) {
   if (event !== 'pull_request') return { everything: `a ${event} runs everything` };
+  if (head !== undefined && RELEASE_BRANCH.test(head)) return { everything: `the release PR (${head}) runs everything` };
   const { widening, inMembers, lockfile: lockfileChanged } = classify(files);
   if (widening.length > 0) {
     return { everything: 'changed outside every package:', detail: widening };
@@ -439,6 +445,7 @@ function main(argv) {
     result = decide({
       event,
       base,
+      head: process.env.GITHUB_HEAD_REF || undefined,
       files: event === 'pull_request' ? git('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean) : [],
       lockfile: () => lockfileScope(git('show', `${base}:${LOCKFILE}`), git('show', `HEAD:${LOCKFILE}`)),
       all,

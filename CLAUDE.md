@@ -192,7 +192,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `--filter="...[<base>]"`, decided by `tools/ci-scope.mjs` in `.github/workflows/ci.yml`;
   a change outside every package (`tools/`, the catalog) widens it back to everything,
   a lockfile change adds the importers it can be pinned to (or widens when it cannot),
-  and a push to `main` always runs everything. The graph has to name every
+  and a push to `main` — or the changesets `Version packages` PR, the last gate before a publish — always runs everything. The graph has to name every
   edge for that to hold, which is why `template-check` declares `create-substrat` as a
   devDependency: the edge is a file copy, not an import, and pnpm cannot see it otherwise.
   This is the gate that makes a **non-additive engine
