@@ -240,8 +240,9 @@ describe('the open time guaranteed from every start (Codex round 2 on #2060)', (
   const tuesdays: BusinessSchedule = { timezone: 'UTC', weekly: { tue: [{ open: '12:00', close: '12:01' }] } };
 
   it('is 522 weeks of the week, less what exceptions can take and 22 forward jumps', () => {
+    // Each jump costs min(twice the jump, the longest day): 1 minute here, 4 h below.
     expect(guaranteedBusinessMs(tuesdays)).toBe((522 - 22) * MINUTE);
-    expect(guaranteedBusinessMs(UTC)).toBe(522 * 40 * HOUR - 22 * 2 * HOUR);
+    expect(guaranteedBusinessMs(UTC)).toBe(522 * 40 * HOUR - 22 * 4 * HOUR);
     const withExceptions = weekdays('UTC', {
       exceptions: [
         { date: '2027-01-06', windows: [] }, // a Wednesday closed: −8 h
@@ -249,7 +250,13 @@ describe('the open time guaranteed from every start (Codex round 2 on #2060)', (
         { date: '2027-01-09', windows: [{ open: '10:00', close: '14:00' }] }, // a Saturday opened: nothing
       ],
     });
-    expect(guaranteedBusinessMs(withExceptions)).toBe(522 * 40 * HOUR - 13 * HOUR - 22 * 2 * HOUR);
+    expect(guaranteedBusinessMs(withExceptions)).toBe(522 * 40 * HOUR - 13 * HOUR - 22 * 4 * HOUR);
+    // Four short windows a day: a jump can fold up to its double, more than any one window.
+    const quarters: BusinessSchedule = {
+      timezone: 'UTC',
+      weekly: { sun: ['01:00', '02:00', '03:00', '04:00'].map((o) => ({ open: o, close: `${o.slice(0, 2)}:30` })) },
+    };
+    expect(guaranteedBusinessMs(quarters)).toBe(522 * 2 * HOUR - 22 * 2 * HOUR);
     expect(guaranteedBusinessMs({ timezone: 'UTC', weekly: {} })).toBeNull();
   });
 
@@ -356,6 +363,56 @@ describe('agrees with an independent wall-clock walk, across DST in both hemisph
         const valid = { ...s, weekly: { thu: [{ open: '12:00', close: '12:15' }] } };
         expect(businessMsBetween(valid, a, b)).toBe(minutes * MINUTE);
         expect(oracleBetween(valid, a, b)).toBe(minutes * MINUTE);
+      });
+    }
+  });
+
+  describe('windows the spring night folds onto each other are a union (Codex round 3)', () => {
+    // 02:00–02:30 lies in the skipped hour and moves to 03:00–03:30 real, over 03:00–03:15.
+    const fold = (date: string) => [{ date, windows: [{ open: '02:00', close: '02:30' }, { open: '03:00', close: '03:15' }] }];
+    const SPRING: [string, string, string][] = [
+      // zone, its spring night, 00:00 local that night as UTC
+      ['Europe/Stockholm', '2029-03-25', '2029-03-24T23:00:00.000Z'],
+      ['America/New_York', '2028-03-12', '2028-03-12T05:00:00.000Z'],
+      ['Australia/Sydney', '2027-10-03', '2027-10-02T14:00:00.000Z'],
+    ];
+    const scheduleFor = (timezone: string, date: string): BusinessSchedule => ({
+      timezone,
+      weekly: { thu: [{ open: '12:00', close: '12:15' }] },
+      exceptions: fold(date),
+    });
+
+    it('Stockholm 2027-03-28: thirty minutes, by hand, by the module and by the oracle', () => {
+      const s = scheduleFor('Europe/Stockholm', '2027-03-28');
+      const [a, b] = ['2027-03-27T23:00:00.000Z', '2027-03-28T12:00:00.000Z'];
+      // Both windows are 01:00Z–01:30Z and 01:00Z–01:15Z in real time: the union is 30 min.
+      expect(businessMsBetween(s, a, b)).toBe(30 * MINUTE);
+      expect(oracleBetween(s, a, b)).toBe(30 * MINUTE);
+      expect(addBusinessMs(s, a, 20 * MINUTE)).toBe('2027-03-28T01:20:00.000Z');
+      expect(addBusinessMs(s, a, 30 * MINUTE)).toBe('2027-03-28T01:30:00.000Z');
+      // Past the union, the next opening is the following Thursday's.
+      expect(addBusinessMs(s, a, 40 * MINUTE)).toBe('2027-04-01T10:10:00.000Z'); // 12:10 CEST
+    });
+
+    for (const [timezone, night, midnight] of SPRING) {
+      it(`${timezone} on ${night}: due instants never go back as the target grows, and match the oracle`, () => {
+        const s = scheduleFor(timezone, night);
+        let previous = '';
+        for (let minutes = 15; minutes <= 60; minutes += 15) {
+          const due = addBusinessMs(s, midnight, minutes * MINUTE)!;
+          expect(due >= previous).toBe(true);
+          expect(due).toBe(oracleAdd(s, midnight, minutes * MINUTE, '2030-01-01T00:00:00.000Z'));
+          previous = due;
+        }
+      }, ORACLE_MS);
+
+      it(`${timezone} on ${night}: add then between round-trips over the folded windows`, () => {
+        const s = scheduleFor(timezone, night);
+        for (const minutes of [5, 15, 29, 30, 31, 45]) {
+          const due = addBusinessMs(s, midnight, minutes * MINUTE)!;
+          expect(businessMsBetween(s, midnight, due)).toBe(minutes * MINUTE);
+        }
+        expect(businessMsBetween(s, midnight, new Date(Date.parse(midnight) + 12 * HOUR).toISOString())).toBe(30 * MINUTE);
       });
     }
   });

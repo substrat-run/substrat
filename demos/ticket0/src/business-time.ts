@@ -190,11 +190,21 @@ function openings(c: Compiled, day: number): (readonly [number, number])[] {
     steady === offsetAt(c.timezone, (day + 2) * DAY)
       ? (minute: number) => day * DAY + minute * MINUTE - steady
       : (minute: number) => instantOf(c.timezone, day * DAY + minute * MINUTE);
-  // 'compatible' moves an open inside the skipped hour forward past the gap, which can carry
-  // it beyond a close just after the gap (02:30–03:15 on the spring night): that opening is
-  // empty, never negative. Empty, it loses exactly its wall-clock length, which step 4 of
-  // `guaranteedBusinessMs`' proof allows for.
-  return windows.map(([o, cl]) => [at(o), at(cl)] as const).filter(([a, b]) => b > a);
+  // Resolved one endpoint at a time, windows that are disjoint on the wall clock need not be
+  // disjoint in real time on the spring night: 'compatible' carries an open inside the
+  // skipped hour forward past the gap, which can take it beyond its own close just after
+  // the gap (02:30–03:15: empty), or onto the next window (02:00–02:30 becomes 03:00–03:30,
+  // over 03:00–03:15). So the day's openings are the UNION of the resolved intervals —
+  // chronological, disjoint, none empty — and open time is never counted twice or below
+  // zero. What that union can take away is step 4 of `guaranteedBusinessMs`' proof.
+  const merged: [number, number][] = [];
+  for (const [a, b] of windows.map(([o, cl]) => [at(o), at(cl)] as const).sort((x, y) => x[0] - y[0])) {
+    if (b <= a) continue;
+    const last = merged[merged.length - 1];
+    if (last && a <= last[1]) last[1] = Math.max(last[1], b);
+    else merged.push([a, b]);
+  }
+  return merged;
 }
 
 /**
@@ -267,17 +277,24 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
  *   3. An exception replaces one dated day. Wherever it falls, it can take away at most
  *      `max(0, that weekday's open time − the exception's)` — its weekday is fixed by its
  *      date — so all of them together take at most the sum of that over the list.
- *   4. A clock change inside a window shortens it by at most the jump, and never by more
- *      than the window itself. Only a FORWARD jump shortens anything; one backward makes a
- *      window longer. Here the code cannot measure, since no sampling of `Intl` proves a
- *      stretch free of transitions, so the bound rests on a stated assumption about the
- *      zone: it moves its clocks forward at most `FORWARD_JUMPS_PER_YEAR` times a year, by
- *      at most `FORWARD_JUMP_MAX` each time. True of every zone in the tz database's rules
- *      today (Morocco's Ramadan suspension is the busiest, at two forward and two back).
- *      522 weeks lie inside eleven calendar years, so at most `11 × 2` forward jumps, each
- *      costing at most `min(FORWARD_JUMP_MAX, the longest window)`.
+ *   4. A clock change takes open time only where it moves the clock FORWARD by a jump `G`
+ *      at wall time `J`. A backward jump takes none: with the earlier instant for a repeated
+ *      time, wall clock maps to real time in order, so openings stay disjoint and a window
+ *      across the fold only grows. Forward: wall time before `J` keeps its instants, and
+ *      wall time from `J + 2G` on keeps its lengths and lands at or after `J + G` in real
+ *      time, clear of everything earlier — so every opening outside wall `[J, J + 2G)`
+ *      keeps its length and its place in the union, and all the open time the jump can
+ *      take, whether by shortening a window, emptying one, or folding one onto the next,
+ *      is wall time inside that range: at most `2G`, and never more than that day's open
+ *      time. Here the code cannot measure, since no sampling of `Intl` proves a stretch free
+ *      of transitions, so the bound rests on a stated assumption about the zone: it moves
+ *      its clocks forward at most `FORWARD_JUMPS_PER_YEAR` times a year, by at most
+ *      `FORWARD_JUMP_MAX` each time. True of every zone in the tz database's rules today
+ *      (Morocco's Ramadan suspension is the busiest, at two forward and two back). 522 weeks
+ *      lie inside eleven calendar years, so at most `11 × 2` forward jumps, each costing at
+ *      most `min(2 × FORWARD_JUMP_MAX, the longest day's open time)`.
  *
- * So `522 × week − exceptions − 22 × min(2 h, longest window)` of open time is counted
+ * So `522 × week − exceptions − 22 × min(4 h, the longest day's open time)` of open time is counted
  * from every start, whatever weekday it falls on and whichever exceptions its ten years
  * contain. Wall-clock arithmetic only: no walk, no clock, the same answer on any day.
  */
@@ -290,10 +307,8 @@ export function guaranteedBusinessMs(schedule: BusinessSchedule): number | null 
   for (const [day, ws] of c.exceptions) {
     exceptions += Math.max(0, wall(c.weekly[(((day + 4) % 7) + 7) % 7]!) - wall(ws));
   }
-  const longest = Math.max(
-    ...[...c.weekly, ...c.exceptions.values()].flat().map(([o, cl]) => (cl - o) * MINUTE),
-  );
-  const jumps = FORWARD_JUMP_YEARS * FORWARD_JUMPS_PER_YEAR * Math.min(FORWARD_JUMP_MAX, longest);
+  const longestDay = Math.max(...[...c.weekly, ...c.exceptions.values()].map(wall));
+  const jumps = FORWARD_JUMP_YEARS * FORWARD_JUMPS_PER_YEAR * Math.min(2 * FORWARD_JUMP_MAX, longestDay);
   return Math.max(0, FULL_WEEKS * week - exceptions - jumps);
 }
 

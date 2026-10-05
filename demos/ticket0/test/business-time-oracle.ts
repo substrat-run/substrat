@@ -93,10 +93,20 @@ function place(day: LocalDay, endpoint: number): number {
   return day.slots.findIndex((s) => s.minute > endpoint);
 }
 
+/**
+ * The day's open slots: each window's slots, as placed above, and a slot open under two
+ * windows counted ONCE — the union is taken over the slots themselves, which are instants,
+ * so two windows the spring night folds onto each other cannot count the same quarter-hour
+ * twice. Returned in time order.
+ */
 function openSlots(schedule: BusinessSchedule, day: LocalDay): Slot[] {
   const windows: readonly BusinessWindow[] =
     schedule.exceptions?.find((e) => e.date === day.date)?.windows ?? schedule.weekly[DAYS[day.weekday]!] ?? [];
-  return windows.flatMap((w) => day.slots.slice(place(day, minutes(w.open)), place(day, minutes(w.close))));
+  const open = new Map<number, Slot>();
+  for (const w of windows) {
+    for (const s of day.slots.slice(place(day, minutes(w.open)), place(day, minutes(w.close)))) open.set(s.t, s);
+  }
+  return [...open.values()].sort((a, b) => a.t - b.t);
 }
 
 /** Open time in [from, to), slot by slot. Both on slot boundaries. */
