@@ -5,6 +5,7 @@ import {
   accessLogEntry,
   adminLogEntry,
   delegatedReadParams,
+  operationSeriesCount,
   opsFailureEntry,
   opsFailureFingerprint,
   issueEntry,
@@ -523,6 +524,7 @@ import {
   readInvocation,
   readDeadLetters,
   readLifecycleFlow,
+  readOperationSeries,
   domainEventOf,
   readUndrainedOutbox,
   undrainedEventsOf,
@@ -8430,6 +8432,13 @@ export class SqliteScopeHost implements ScopeHost {
         const flow = readLifecycleFlow({ sql: scopedSql(db) }, input);
         this.recordAccess(actor, 'lifecycleFlow', { tenantId, scopeId }, delegatedReadParams.lifecycleFlow(input), flow.observation.events);
         return flow;
+      },
+      operationSeries: async (actor, tenantId, scopeId, input) => {
+        // #1750: business volumes per bucket, for Pulse.
+        const db = this.scopeReadDbFor(tenantId, scopeId);
+        const series = readOperationSeries({ sql: scopedSql(db) }, input);
+        this.recordAccess(actor, 'operationSeries', { tenantId, scopeId }, delegatedReadParams.operationSeries(input), operationSeriesCount(series));
+        return series;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeReadDbFor(tenantId, scopeId);

@@ -47,9 +47,11 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   grouping neither walk can reach; `dead-letters`, every delivery in the scope that gave up,
   newest event first; `lifecycle-flow`, a POST carrying one entity's declared lifecycle,
   which the scope's outbox is replayed against for the process map — edge counts, instances
-  per state, time in state, the longest stuck, the funnel), and `/fleet/migrations`. The table, query, health,
+  per state, time in state, the longest stuck, the funnel; `operation-series`, a POST carrying
+  `(entityType, operation)` pairs and a window of at most seven days, answered with the calls
+  that made each move per time bucket — Pulse's business volumes), and `/fleet/migrations`. The table, query, health,
   denial and event reads (`tables`, `tables/:table`, `query`, `health`, `denials`,
-  `denials/summary`, `capabilities`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`, `lifecycle-flow`) run one ladder: resolve the
+  `denials/summary`, `capabilities`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`, `lifecycle-flow`, `operation-series`) run one ladder: resolve the
   scope record, then ask the vertical's own `/internal/*` route when one is bound and the
   co-located host otherwise. The vertical's answer is relayed as it came, with one
   exception: a `facets` answer is normalized, and a payload grouping from a vertical whose

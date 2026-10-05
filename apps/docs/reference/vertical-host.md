@@ -53,11 +53,11 @@ omit the tenant ID; handle `undefined` if the hook must support them.
 
 - **Generic routes** — `export`, `restore`, `bookmarks`, `migrations`, `rewind`, `snapshot`,
   `delete-scope`, `tables`, `tables/:table`, `query`, `history`, `facets`, `cause`,
-  `effects`, `invocation`, `dead-letters`, `lifecycle-flow`, `denials`, `denials/summary`, `capabilities`, `platform-requests`,
+  `effects`, `invocation`, `dead-letters`, `lifecycle-flow`, `operation-series`, `denials`, `denials/summary`, `capabilities`, `platform-requests`,
   `platform-requests/history`,
   `platform-requests/settle` — pure delegations to your scope host, owned entirely by the
   package. The table, query, denial and event reads (`tables`, `tables/:table`, `query`,
-  `denials`, `denials/summary`, `capabilities`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`, `lifecycle-flow`) are how the
+  `denials`, `denials/summary`, `capabilities`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`, `lifecycle-flow`, `operation-series`) are how the
   control plane answers those questions for a *hosted* vertical, whose scope it cannot
   open itself: the transport delegates the read here, then records the K-24 access row
   for it as if it had served the read (see

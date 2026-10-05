@@ -44,6 +44,8 @@ import type {
   DeadLetter,
   LifecycleFlowInput,
   LifecycleFlowResult,
+  OperationSeriesInput,
+  OperationSeriesResult,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -1355,6 +1357,11 @@ export class VerticalClient {
   /** One entity's lifecycle replayed (#1744) — through the vertical that holds the outbox. */
   async lifecycleFlow(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
     return this.postInternal<LifecycleFlowResult>('/internal/lifecycle-flow', { scopeId, ...input }, 'lifecycle-flow');
+  }
+
+  /** Business volumes per bucket (#1750) — through the vertical that holds the outbox. */
+  async operationSeries(scopeId: ScopeId, input: OperationSeriesInput): Promise<OperationSeriesResult> {
+    return this.postInternal<OperationSeriesResult>('/internal/operation-series', { scopeId, ...input }, 'operation-series');
   }
 
   /** One record's event history (#1235) — `readHistory`'s answer, through the vertical that holds the data. */

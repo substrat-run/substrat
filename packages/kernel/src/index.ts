@@ -302,7 +302,7 @@ export type {
 export { moduleMigrations } from './module-migrations.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
-export { createUlid, ulid, ulidCeiling, ulidTime, type UlidMint } from './ulid.js';
+export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { assertNoSpineReference, assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export {
@@ -499,6 +499,7 @@ export {
   type ImpersonationRow,
 } from './impersonation.js';
 export { readLifecycleFlow } from './lifecycle-flow.js';
+export { OPERATION_SERIES_ID_SLACK_MS, operationSeriesQuery, readOperationSeries } from './operation-series.js';
 export {
   REFUSALS_DDL,
   REFUSALS_INDEX,

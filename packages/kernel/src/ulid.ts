@@ -176,6 +176,15 @@ export function ulidCeiling(now: number): string {
 }
 
 /**
+ * The least ULID a millisecond can carry (#1750): every id minted at or after `now` sorts at
+ * or above it. The other half of `ulidCeiling`, for a read that seeks a time-ordered key.
+ */
+export function ulidFloor(now: number): string {
+  if (!Number.isSafeInteger(now) || now < 0 || now > MAX_ULID_TIME) throw new RangeError(unencodable(now));
+  return encodeTime(now) + '0'.repeat(16);
+}
+
+/**
  * The epoch-millisecond timestamp a ULID carries in its first ten characters.
  *
  * Refuses anything that is not a ULID rather than decoding a prefix: a truncated id

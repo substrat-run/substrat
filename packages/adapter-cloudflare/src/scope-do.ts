@@ -277,6 +277,7 @@ import {
   facetEvents,
   readDeadLetters,
   readLifecycleFlow,
+  readOperationSeries,
   readHistory,
   readInvocation,
   readUndrainedOutbox,
@@ -296,6 +297,8 @@ import type {
   DeadLetter,
   LifecycleFlowInput,
   LifecycleFlowResult,
+  OperationSeriesInput,
+  OperationSeriesResult,
   Page,
   LifecycleDelivery,
   ScopeLifecycle,
@@ -1991,6 +1994,11 @@ export function defineScopeDO(
     /** #1744: one entity's lifecycle replayed over this scope's outbox, where it lives. */
     lifecycleFlow(input: LifecycleFlowInput): LifecycleFlowResult {
       return readLifecycleFlow({ sql: doScopedSql(this.sql) }, input);
+    }
+
+    /** #1750: business volumes per bucket, counted over this scope's outbox. */
+    operationSeries(input: OperationSeriesInput): OperationSeriesResult {
+      return readOperationSeries({ sql: doScopedSql(this.sql) }, input);
     }
 
     migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {

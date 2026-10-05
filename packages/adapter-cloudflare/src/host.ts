@@ -4,6 +4,7 @@ import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
 import { isSystemDoorMoved, SYSTEM_DOOR_MOVED, SYSTEM_DOOR_REGATES, type SystemDoorMoved } from './system-door.js';
 import {
   delegatedReadParams,
+  operationSeriesCount,
   fromWireFailure,
   type ErrorCode,
   type WireFailure,
@@ -125,6 +126,8 @@ import {
   type DeadLetter,
   type LifecycleFlowInput,
   type LifecycleFlowResult,
+  type OperationSeriesInput,
+  type OperationSeriesResult,
   type CauseChain,
   type EventFacetInput,
   type EventFacetResult,
@@ -1552,6 +1555,7 @@ interface ScopeStubRpc {
   invocationEvents(input: InvocationEventsInput): Promise<InvocationEvents>;
   deadLetters(input: DeadLettersInput): Promise<Page<DeadLetter>>;
   lifecycleFlow(input: LifecycleFlowInput): Promise<LifecycleFlowResult>;
+  operationSeries(input: OperationSeriesInput): Promise<OperationSeriesResult>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string; instance?: string }>;
 }
@@ -3204,6 +3208,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /** One entity's lifecycle replayed (#1744) on this host's own scope — the vertical-host read. */
   async lifecycleFlowLocal(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
     return this.scopeStub(scopeId).lifecycleFlow(input);
+  }
+
+  /** Business volumes per bucket (#1750) on this host's own scope — the vertical-host read. */
+  async operationSeriesLocal(scopeId: ScopeId, input: OperationSeriesInput): Promise<OperationSeriesResult> {
+    return this.scopeStub(scopeId).operationSeries(input);
   }
 
   /** One event's causal chain (#1237) on this host's own scope — the vertical-host read. */
@@ -7098,6 +7107,18 @@ export class CloudflareScopeHost implements ScopeHost {
           flow.observation.events,
         );
         return flow;
+      },
+      operationSeries: async (actor, tenantId, scopeId, input: OperationSeriesInput): Promise<OperationSeriesResult> => {
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const series = await this.scopeStub(scopeId).operationSeries(input);
+        await this.recordAccess(
+          actor,
+          'operationSeries',
+          { tenantId, scopeId },
+          delegatedReadParams.operationSeries(input),
+          operationSeriesCount(series),
+        );
+        return series;
       },
       readScopeTable: async (
         actor,

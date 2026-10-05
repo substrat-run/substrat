@@ -26,6 +26,8 @@ import type {
   DeadLetter,
   LifecycleFlowInput,
   LifecycleFlowResult,
+  OperationSeriesInput,
+  OperationSeriesResult,
   PermissionDenial,
   MigrationDiff,
   PermissionRegistry,
@@ -2166,6 +2168,14 @@ export class TenantNarrowedControlPlane {
   /** One entity's declared lifecycle replayed over the scope's outbox (#1744) — the process map. */
   lifecycleFlow(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/lifecycle-flow`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Calls per declared move per bucket over the scope's outbox (#1750) — Pulse's business rows. */
+  operationSeries(scopeId: ScopeId, input: OperationSeriesInput): Promise<OperationSeriesResult> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/operation-series`, {
       method: 'POST',
       body: JSON.stringify(input),
     });
