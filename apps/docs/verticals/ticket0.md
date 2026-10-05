@@ -42,7 +42,10 @@ begins with a stranger in a chat bubble on somebody else's page. It proves:
   accepts only replies that agent may use, each at most once per message. It does not check
   the text, because placeholders and edits would make that check undercount without telling
   anyone. Curating the shared library takes `saved-reply:manage`, which the assistant roles
-  do not hold.
+  do not hold. A reply's title and body never ride an event. Like every vertical-owned table,
+  though, the stored reply is outside subject erasure until the module hook that would reach
+  it exists ([#2068](https://github.com/substrat-run/substrat/issues/2068)). So a canned
+  answer uses placeholders, not a customer's details.
 - **Failure is never silent.** A turn that could not answer carries its reason, the
   conversation draws it as a card, and *Settings → Assistant* says which model this install
   answers with and lists the newest failures.
