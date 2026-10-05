@@ -104,6 +104,32 @@ export function findingsContractSuite(adapterName: string, makeFixture: () => Pr
         expect(reopened).toMatchObject({ status: 'open', acknowledgedAt: null });
       });
 
+      it('works the likely cause out afresh each cycle, never carrying an old one', async () => {
+        const op = 'deploy.two-cycles';
+        const V3 = '01JVERSIONFINDINGAAAAAAAA3';
+        await fail(ta, op, { version: V1 });
+        const id = (await findingOf(ta, op))!.id;
+        // Cycle 1: resolved under V1, back under V2.
+        expect(await host.admin.setFindingStatus(staff, ta, id, 'resolved')).toMatchObject({ likelyCause: null });
+        await fail(ta, op, { version: V2 });
+        expect((await findingOf(ta, op))!.likelyCause).toMatchObject({ version: V2, reason: expect.stringContaining(V1) });
+        // A resolve closes the cycle its cause explained.
+        expect(await host.admin.setFindingStatus(staff, ta, id, 'resolved')).toMatchObject({
+          resolvedVersion: V2,
+          likelyCause: null,
+        });
+        // Cycle 2a: back under the version it was just resolved under — no cause, not V1's.
+        await fail(ta, op, { version: V2 });
+        expect(await findingOf(ta, op)).toMatchObject({ status: 'open', regressed: true, likelyCause: null });
+        // Cycle 2b: resolved under V2, back under V3 — V3, explained by V2, not V1.
+        await host.admin.setFindingStatus(staff, ta, id, 'resolved');
+        await fail(ta, op, { version: V3 });
+        const third = (await findingOf(ta, op))!;
+        expect(third.likelyCause).toMatchObject({ version: V3 });
+        expect(third.likelyCause!.reason).toContain(V2);
+        expect(third.likelyCause!.reason).not.toContain(V1);
+      });
+
       it('names no likely cause when the finding came back under the version it was resolved under', async () => {
         const op = 'deploy.same-version';
         await fail(ta, op, { version: V1 });

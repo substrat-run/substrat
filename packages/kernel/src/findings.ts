@@ -291,8 +291,9 @@ const MAX_CODES = 5;
  * Record one occurrence on its finding, opening it if new. The transitions, in order:
  * - an unexpired rule covers it → `suppressed` (counted all the same: suppressing hides the
  *   finding, never the evidence);
- * - it was `resolved` → `open`, `regressed`, and when it came back under a version other than
- *   the one it was resolved under, that version is the likely cause;
+ * - it was `resolved` → `open`, `regressed`, and its likely cause is worked out afresh from
+ *   THIS regression: the version it came back under, when that is not the one it was resolved
+ *   under, and none otherwise — never a cause left over from an earlier cycle;
  * - it was `suppressed` and no rule covers it any longer → `open`;
  * - otherwise the status stands (`acked` stays acked: somebody is already on it).
  */
@@ -336,6 +337,7 @@ export function observeFinding(sql: RedactionSql, o: FindingObservation, at: str
   } else if (status === 'resolved') {
     status = 'open';
     regressed = 1;
+    likelyCause = null;
     if (o.version !== null && o.version !== existing.resolved_version) {
       const cause: FindingLikelyCause = {
         kind: 'deploy',
@@ -427,7 +429,7 @@ export function setFindingStatus(
   const resolved = status === 'resolved';
   const [after] = sql(
     `UPDATE _substrat_findings SET status = ?, rule_id = NULL, regressed = ?, resolved_at = ?,
-       resolved_version = ?, resolution = ?, acknowledged_at = ?
+       resolved_version = ?, resolution = ?, acknowledged_at = ?, likely_cause = ?
      WHERE id = ? RETURNING ${FINDING_COLUMNS}`,
     [
       status,
@@ -436,6 +438,8 @@ export function setFindingStatus(
       resolved ? existing.last_version : existing.resolved_version,
       resolved ? 'verdict' : existing.resolution,
       status === 'acked' ? at : status === 'open' ? null : existing.acknowledged_at,
+      // A resolve closes the cycle its cause explained; the next regression names its own.
+      resolved ? null : existing.likely_cause,
       id,
     ],
   ) as FindingRow[];
@@ -604,7 +608,7 @@ export function pruneFindings(
   if (quiet.length > 0) {
     sql(
       `UPDATE _substrat_findings SET status = 'resolved', resolution = 'stale', resolved_at = ?,
-         resolved_version = last_version, regressed = 0
+         resolved_version = last_version, regressed = 0, likely_cause = NULL
        WHERE id IN (SELECT value FROM json_each(?))`,
       [now, JSON.stringify(quiet.map((q) => q.id))],
     );
