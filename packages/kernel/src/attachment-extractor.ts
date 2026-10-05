@@ -3,7 +3,7 @@
  *
  * **The kernel indexes attachment text; it does not parse file formats** (K-43). Every
  * parser — text and HTML decoding, the zip reader and its inflate budget, DOCX/XLSX/PPTX,
- * and later PDF and OCR — lives behind this seam in a host-side package
+ * PDF, and later OCR — lives behind this seam in a host-side package
  * (`@substrat-run/attachment-extractors`), which neither the kernel nor an adapter imports.
  * Whoever constructs the host passes the extractors in; a host given none records every
  * type `unsupported`, with that reason, which is a valid configuration rather than a broken
