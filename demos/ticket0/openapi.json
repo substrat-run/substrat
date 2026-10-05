@@ -991,6 +991,13 @@
                       "public",
                       "internal"
                     ]
+                  },
+                  "alsoUsed": {
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 },
                 "required": [
@@ -1019,6 +1026,12 @@
                       "type": "string"
                     },
                     "actions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "also_used": {
                       "type": "array",
                       "items": {
                         "type": "string"
@@ -1323,6 +1336,7 @@
                     "conversation_id",
                     "message_id",
                     "actions",
+                    "also_used",
                     "conversation"
                   ],
                   "additionalProperties": false
@@ -3301,6 +3315,12 @@
                         }
                       ]
                     }
+                  },
+                  "personal": {
+                    "type": "boolean"
+                  },
+                  "folderId": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -3333,6 +3353,29 @@
                     },
                     "created_at": {
                       "type": "string"
+                    },
+                    "folder_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "use_count": {
+                      "type": "number"
+                    },
+                    "last_used_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "actions": {
                       "maxItems": 10,
@@ -3418,6 +3461,16 @@
                           }
                         ]
                       }
+                    },
+                    "owner": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -3426,7 +3479,11 @@
                     "body",
                     "created_by",
                     "created_at",
-                    "actions"
+                    "folder_id",
+                    "use_count",
+                    "last_used_at",
+                    "actions",
+                    "owner"
                   ],
                   "additionalProperties": false
                 }
@@ -3461,7 +3518,7 @@
       },
       "get": {
         "operationId": "ticket0-list-saved-replies",
-        "summary": "The desk’s canned answers",
+        "summary": "The canned answers you may use: the desk’s shared ones and your own",
         "parameters": [
           {
             "name": "limit",
@@ -3479,7 +3536,7 @@
             "name": "cursor",
             "in": "query",
             "required": false,
-            "description": "The previous page's `nextCursor`. Keyset over `title` — exclusive, so no row is repeated. Follow the `Link` header rather than assembling this yourself: a cursor is only valid for the sort that issued it.",
+            "description": "The previous page's `nextCursor`. Keyset over `id` — exclusive, so no row is repeated. Follow the `Link` header rather than assembling this yourself: a cursor is only valid for the sort that issued it.",
             "schema": {
               "type": "string"
             }
@@ -3499,17 +3556,11 @@
             }
           },
           {
-            "name": "sort",
+            "name": "folderId",
             "in": "query",
             "required": false,
-            "description": "Which declared column to walk.",
             "schema": {
-              "type": "string",
-              "enum": [
-                "title",
-                "created_at"
-              ],
-              "default": "title"
+              "type": "string"
             }
           }
         ],
@@ -3548,6 +3599,29 @@
                       },
                       "created_at": {
                         "type": "string"
+                      },
+                      "folder_id": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "use_count": {
+                        "type": "number"
+                      },
+                      "last_used_at": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "actions": {
                         "maxItems": 10,
@@ -3633,6 +3707,16 @@
                             }
                           ]
                         }
+                      },
+                      "owner": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -3641,7 +3725,214 @@
                       "body",
                       "created_by",
                       "created_at",
-                      "actions"
+                      "folder_id",
+                      "use_count",
+                      "last_used_at",
+                      "actions",
+                      "owner"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/saved-reply-folders": {
+      "post": {
+        "operationId": "ticket0-create-saved-reply-folder",
+        "summary": "Add a folder for canned answers",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "created_by": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "created_by",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "get": {
+        "operationId": "ticket0-list-saved-reply-folders",
+        "summary": "The folders the desk files its canned answers in",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Page size. Defaults to 20, capped at 200.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "The previous page's `nextCursor`. Keyset over `name` — exclusive, so no row is repeated. Follow the `Link` header rather than assembling this yourself: a cursor is only valid for the sort that issued it.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Walk direction.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "asc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of results. The walk is in the response headers.",
+            "headers": {
+              "Link": {
+                "description": "RFC 8288 link to the next page, e.g. `<https://…/customers?limit=20&cursor=01J8Z…>; rel=\"next\"`. Follow it verbatim — it carries this request's filters and page size. Absent when the walk is over, so a client stops rather than fetching an empty page.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "created_by": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "created_by",
+                      "created_at"
                     ],
                     "additionalProperties": false
                   }
@@ -3828,6 +4119,29 @@
                     "created_at": {
                       "type": "string"
                     },
+                    "folder_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "use_count": {
+                      "type": "number"
+                    },
+                    "last_used_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "actions": {
                       "maxItems": 10,
                       "type": "array",
@@ -3912,6 +4226,16 @@
                           }
                         ]
                       }
+                    },
+                    "owner": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -3920,7 +4244,11 @@
                     "body",
                     "created_by",
                     "created_at",
-                    "actions"
+                    "folder_id",
+                    "use_count",
+                    "last_used_at",
+                    "actions",
+                    "owner"
                   ],
                   "additionalProperties": false
                 }
@@ -4091,6 +4419,16 @@
                         }
                       ]
                     }
+                  },
+                  "folderId": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -4130,6 +4468,29 @@
                     },
                     "created_at": {
                       "type": "string"
+                    },
+                    "folder_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "use_count": {
+                      "type": "number"
+                    },
+                    "last_used_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "actions": {
                       "maxItems": 10,
@@ -4215,6 +4576,16 @@
                           }
                         ]
                       }
+                    },
+                    "owner": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -4223,7 +4594,251 @@
                     "body",
                     "created_by",
                     "created_at",
-                    "actions"
+                    "folder_id",
+                    "use_count",
+                    "last_used_at",
+                    "actions",
+                    "owner"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "description": "The entity changed since the `ETag` you sent as `If-Match`. Carries `code`: `precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/saved-reply-folders/{folderId}": {
+      "delete": {
+        "operationId": "ticket0-delete-saved-reply-folder",
+        "summary": "Remove a folder; its canned answers become unfiled",
+        "parameters": [
+          {
+            "name": "folderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "description": "The `ETag` you received when you read this entity. The write is refused with 412 if the entity changed since — re-read and re-apply rather than retrying with the new tag, which would overwrite whatever caused the refusal. `*` means \"it must already exist\".",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "headers": {
+              "ETag": {
+                "description": "The entity's current version. Send it back as `If-Match` on the next write to that entity and the write is refused with 412 if anything changed in between. Opaque — compare it, never parse it.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "unfiled": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "unfiled"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "description": "The entity changed since the `ETag` you sent as `If-Match`. Carries `code`: `precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "ticket0-rename-saved-reply-folder",
+        "summary": "Rename a folder of canned answers",
+        "parameters": [
+          {
+            "name": "folderId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "description": "The `ETag` you received when you read this entity. The write is refused with 412 if the entity changed since — re-read and re-apply rather than retrying with the new tag, which would overwrite whatever caused the refusal. `*` means \"it must already exist\".",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "folderId": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "folderId",
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "headers": {
+              "ETag": {
+                "description": "The entity's current version. Send it back as `If-Match` on the next write to that entity and the write is refused with 412 if anything changed in between. Opaque — compare it, never parse it.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "created_by": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "created_by",
+                    "created_at"
                   ],
                   "additionalProperties": false
                 }
@@ -15371,6 +15986,261 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/saved-replies/{savedReplyId}/share": {
+      "post": {
+        "operationId": "ticket0-share-saved-reply",
+        "summary": "Share a personal canned answer with the desk",
+        "parameters": [
+          {
+            "name": "savedReplyId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "description": "The `ETag` you received when you read this entity. The write is refused with 412 if the entity changed since — re-read and re-apply rather than retrying with the new tag, which would overwrite whatever caused the refusal. `*` means \"it must already exist\".",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "savedReplyId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "savedReplyId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "headers": {
+              "ETag": {
+                "description": "The entity's current version. Send it back as `If-Match` on the next write to that entity and the write is refused with 412 if anything changed in between. Opaque — compare it, never parse it.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "created_by": {
+                      "type": "string"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "folder_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "use_count": {
+                      "type": "number"
+                    },
+                    "last_used_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "actions": {
+                      "maxItems": 10,
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "tag"
+                              },
+                              "tag": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "tag"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "set-priority"
+                              },
+                              "priority": {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "normal",
+                                  "urgent"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "priority"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "assign"
+                              },
+                              "assignee": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "assignee"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "resolve"
+                              }
+                            },
+                            "required": [
+                              "type"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "owner": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "body",
+                    "created_by",
+                    "created_at",
+                    "folder_id",
+                    "use_count",
+                    "last_used_at",
+                    "actions",
+                    "owner"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "description": "The entity changed since the `ETag` you sent as `If-Match`. Carries `code`: `precondition_failed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"

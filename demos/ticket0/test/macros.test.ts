@@ -397,6 +397,7 @@ describe('applied: with every key held, the whole macro goes through', () => {
       conversation_id: conversation,
       message_id: applied.message_id,
       actions: ['assign', 'set-priority'],
+      also_used: [],
     });
 
     // The same payloads a person assigning by hand produces: the macro ran that code.

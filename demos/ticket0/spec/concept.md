@@ -375,7 +375,13 @@ to argue about shape.
 - **`conversation_participant`** (#1086) — a CC or a third party on a conversation, by
   contact. The customer is the conversation's own contact; followers are staff grants.
 - **`conversation_tag`** — free tags, the way every desk grows them.
-- **`saved_reply`** — canned answers. Title, body, who wrote it.
+- **`saved_reply`** — canned answers. Title, body, who wrote it, and what it also does when
+  sent (a macro's actions). The desk's own and shared, or one person's alone (#1087): a
+  personal reply does not exist to anybody else. Titles are unique per owner. It counts how
+  many sent messages used it, and when it was last sent, counted on the send, never on the
+  insert.
+- **`saved_reply_folder`** (#1087) — flat folders the desk files its replies in. Removing
+  one unfiles its replies and deletes none of them.
 - **`csat`** — one score and comment per conversation, once resolved.
 
 **The widget**

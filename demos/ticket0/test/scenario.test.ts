@@ -2292,6 +2292,9 @@ describe('the audit spine', () => {
       created_at: reply.created_at,
       // The action bag joined the payload in #1087; a reply with none says so.
       actions: [],
+      // So did whose it is and where it is filed: the desk's own, unfiled.
+      owner: null,
+      folder_id: null,
     });
   });
 
@@ -2395,6 +2398,9 @@ describe('the audit spine', () => {
       created_at: reply.created_at,
       // The action bag joined the payload in #1087; a reply with none says so.
       actions: [],
+      // So did whose it is and where it is filed: the desk's own, unfiled.
+      owner: null,
+      folder_id: null,
     });
 
     // Saving the same values again is not an edit, so the outbox still shows the

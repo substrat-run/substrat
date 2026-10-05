@@ -1323,6 +1323,32 @@
           "created_at": {
             "type": "string"
           },
+          "owner": {
+            "type": "string"
+          },
+          "folder_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "use_count": {
+            "type": "number"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "actions": {
             "anyOf": [
               {
@@ -1340,12 +1366,47 @@
           "body",
           "created_by",
           "created_at",
+          "owner",
+          "folder_id",
+          "use_count",
+          "last_used_at",
           "actions"
         ],
         "additionalProperties": false
       },
       "key": [
+        "owner",
         "title"
+      ]
+    },
+    "savedReplyFolder": {
+      "table": "ticket0_saved_reply_folders",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "name"
       ]
     },
     "signup": {

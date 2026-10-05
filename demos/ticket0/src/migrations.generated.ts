@@ -760,4 +760,54 @@ export const ticket0Migrations: SqlMigration[] = [
          WHERE m.visibility = 'public';
     `,
   },
+  {
+    // saved-reply-owner-folders-and-usage
+    version: '0025',
+    sql: `
+      CREATE TABLE ticket0_saved_reply_folders (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (name)
+      );
+
+      -- HAND-WRITTEN below this line (#1087). A saved reply gains an owner (personal or the
+      -- desk's), a folder, and a usage count, and its title becomes unique per OWNER rather than
+      -- across the desk. SQLite cannot change a UNIQUE constraint in place, so the table is
+      -- rebuilt the long way round: create it under a new name, copy, drop, rename onto the name.
+      -- No foreign key REFERENCES ticket0_saved_replies and no trigger is defined on it, and its
+      -- only indexes were the old UNIQUE (title) and the kernel's derived list indexes for the
+      -- old list-saved-replies declaration, which no longer exists: the list is composed by its
+      -- handler now, so there is nothing to re-create.
+      --
+      -- owner is '' for the desk's own, shared reply, and every reply that exists today is one:
+      -- before this, there was no other kind. '' rather than NULL so UNIQUE (owner, title) holds
+      -- for shared replies too: SQLite treats every NULL as distinct. Every row starts unfiled and
+      -- at a count of 0, because nothing before this recorded a use. The old UNIQUE (title) means
+      -- the copy cannot collide under the new key.
+      CREATE TABLE ticket0_saved_replies_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        owner TEXT NOT NULL DEFAULT '',
+        folder_id TEXT,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        last_used_at TEXT,
+        actions TEXT,
+        UNIQUE (owner, title)
+      );
+
+      INSERT INTO ticket0_saved_replies_new
+        (id, title, body, created_by, created_at, owner, folder_id, use_count, last_used_at, actions)
+        SELECT id, title, body, created_by, created_at, '', NULL, 0, NULL, actions
+          FROM ticket0_saved_replies;
+
+      DROP TABLE ticket0_saved_replies;
+
+      ALTER TABLE ticket0_saved_replies_new RENAME TO ticket0_saved_replies;
+    `,
+  },
 ];

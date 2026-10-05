@@ -60,6 +60,7 @@ import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
 import { ticket0Migrations } from '../../src/migrations.generated.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
+import { listsBefore0025 } from '../before-0025.js';
 import { DESK_TABLES, populateDesk } from '../desk-fixture.js';
 import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex, sorts, type Shape } from '../desk-read-shapes.js';
 
@@ -1702,8 +1703,9 @@ describe('ticket0 on workerd — the suspended queue and the spam filter (#1088)
   it('0021 on a large desk: every row stays in the inbox, and the time it takes is measured', async () => {
     const CONVERSATIONS = 30_000;
     const lists = MODULES.find((m) => m.manifest.id === ticket0Manifest.id)!.manifest.lists ?? [];
-    const before = listIndexMigrations(ticket0Manifest.id, listsBefore0021(lists));
-    const now = listIndexMigrations(ticket0Manifest.id, lists);
+    // Both sides before 0025 (#1087), which moved the saved-reply lists: this is 0021's step.
+    const before = listIndexMigrations(ticket0Manifest.id, listsBefore0021(listsBefore0025(lists)));
+    const now = listIndexMigrations(ticket0Manifest.id, listsBefore0025(lists));
     const changed = now.filter((m) => !before.some((b) => b.version === m.version));
     // Exactly the conversation list re-applies: the one declaration 0021 changed.
     expect(changed.map((m) => m.version)).toEqual([expect.stringMatching(/^list\/conversation:/)]);
@@ -1836,7 +1838,7 @@ describe('ticket0 on workerd — participants, forwards and migration 0022 (#108
       // The schema a desk held before this change. 0020 is a spine repair this bare probe
       // has no spine for, and changes no ticket0 table.
       for (const m of ticket0Migrations.filter((x) => x.version < '0022' && x.version !== '0020')) sql.exec(m.sql);
-      for (const m of listIndexMigrations(ticket0Manifest.id, lists)) sql.exec(m.sql);
+      for (const m of listIndexMigrations(ticket0Manifest.id, listsBefore0025(lists))) sql.exec(m.sql);
       const indexesOf = () =>
         [...sql.exec("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ticket0_messages' ORDER BY name")].map(
           (r) => `${String(r.name)}: ${String(r.sql)}`,
@@ -1904,7 +1906,7 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
       // The schema a desk held before this change. 0020 is a spine repair this bare probe has
       // no spine for, and changes no ticket0 table.
       for (const m of ticket0Migrations.filter((x) => x.version < '0023' && x.version !== '0020')) sql.exec(m.sql);
-      for (const m of listIndexMigrations(ticket0Manifest.id, lists)) sql.exec(m.sql);
+      for (const m of listIndexMigrations(ticket0Manifest.id, listsBefore0025(lists))) sql.exec(m.sql);
       state.storage.transactionSync(() => populateDesk((statement, ...args) => void sql.exec(statement, ...args), CONVERSATIONS));
 
       const plan = (shape: Shape) => [...sql.exec(`EXPLAIN QUERY PLAN ${shape.sql}`, ...shape.args)].map((r) => String(r.detail));
@@ -1973,4 +1975,68 @@ describe('ticket0 on workerd — migration 0023 and the desk reads it indexes (#
     );
     expect(result.ms).toBeLessThan(30_000);
   }, 240_000);
+});
+
+/**
+ * #1087's rebuild of `ticket0_saved_replies` (0025) on the runtime a hosted desk runs: a table
+ * dropped and renamed onto, inside a Durable Object, with the kernel's list indexes of the old
+ * declaration on it. The node suite (`saved-replies.test.ts`) holds the upgrade to a fresh
+ * desk's schema; this holds the same SQL to the DO's SQLite.
+ */
+describe('ticket0 on workerd — migration 0025, saved replies keyed per owner (#1087)', () => {
+  it('keeps every reply as the desk’s own, drops the old list indexes with the table, and keys titles per owner', async () => {
+    const lists = MODULES.find((m) => m.manifest.id === ticket0Manifest.id)!.manifest.lists ?? [];
+    const probe = env.SCOPE.get(env.SCOPE.idFromName(`migration-0025-${ulid()}`));
+    const result = await runInDurableObject(probe, async (_i, state) => {
+      const sql = state.storage.sql;
+      // The schema a desk held before this change. 0020 is a spine repair this bare probe has
+      // no spine for, and changes no ticket0 table.
+      for (const m of ticket0Migrations.filter((x) => x.version < '0025' && x.version !== '0020')) sql.exec(m.sql);
+      for (const m of listIndexMigrations(ticket0Manifest.id, listsBefore0025(lists))) sql.exec(m.sql);
+      const insert = (id: string, title: string, actions: string | null) =>
+        sql.exec(
+          `INSERT INTO ticket0_saved_replies (id, title, body, created_by, created_at, actions)
+           VALUES (?, ?, 'Body', 'agent-1', '2026-01-01T00:00:00.000Z', ?)`,
+          id, title, actions,
+        );
+      insert('r1', 'Refund', null);
+      insert('r2', 'Escalate', '[{"type":"resolve"}]');
+      const savedReplyIndexes = () =>
+        [...sql.exec("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ticket0_saved_replies' ORDER BY name")].map(
+          (r) => String(r.name),
+        );
+      const before = savedReplyIndexes();
+      state.storage.transactionSync(() => {
+        sql.exec(ticket0Migrations.find((m) => m.version === '0025')!.sql);
+      });
+      const rows = [
+        ...sql.exec('SELECT id, title, owner, folder_id, use_count, last_used_at, actions FROM ticket0_saved_replies ORDER BY id'),
+      ];
+      const attempt = (id: string, owner: string) => {
+        try {
+          sql.exec(
+            `INSERT INTO ticket0_saved_replies (id, title, body, created_by, created_at, owner)
+             VALUES (?, 'Refund', 'x', 'p', '2026-01-02T00:00:00.000Z', ?)`,
+            id, owner,
+          );
+          return 'inserted';
+        } catch (e) {
+          return /UNIQUE/.test(String(e)) ? 'unique' : String(e);
+        }
+      };
+      const keyed = [attempt('r3', ''), attempt('r4', 'agent-1'), attempt('r5', 'agent-1')];
+      const folders = [...sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ticket0_saved_reply_folders'")];
+      return { before, after: savedReplyIndexes(), rows, keyed, folders: folders.length };
+    });
+    expect(result.rows).toEqual([
+      { id: 'r1', title: 'Refund', owner: '', folder_id: null, use_count: 0, last_used_at: null, actions: null },
+      { id: 'r2', title: 'Escalate', owner: '', folder_id: null, use_count: 0, last_used_at: null, actions: '[{"type":"resolve"}]' },
+    ]);
+    // The old declaration's list indexes were on the table, and went with it.
+    expect(result.before).toContainEqual(expect.stringMatching(/^_substrat_list_.*_savedreply_/));
+    expect(result.after.filter((n) => n.startsWith('_substrat_list_'))).toEqual([]);
+    // The desk keeps one "Refund"; an agent may have their own, once.
+    expect(result.keyed).toEqual(['unique', 'inserted', 'unique']);
+    expect(result.folders).toBe(1);
+  });
 });

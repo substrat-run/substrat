@@ -169,6 +169,14 @@ export interface MailDelivery {
   recorded_at: string;
 }
 
+/** `ticket0_saved_reply_folders` — declared in spec/model.ts. */
+export interface SavedReplyFolder {
+  id: string;
+  name: string;
+  created_by: string;
+  created_at: string;
+}
+
 /** `ticket0_saved_replies` — declared in spec/model.ts. */
 export interface SavedReply {
   id: string;
@@ -176,6 +184,10 @@ export interface SavedReply {
   body: string;
   created_by: string;
   created_at: string;
+  owner: string;
+  folder_id: string | null;
+  use_count: number;
+  last_used_at: string | null;
   actions: string | null;
 }
 
@@ -369,7 +381,7 @@ export interface Ticket0Client {
    *
    * `POST /conversations/{conversationId}/saved-replies/{savedReplyId}/apply` — `ticket0/apply-saved-reply`
    */
-  applySavedReply(input: { conversationId: string; savedReplyId: string; body?: string; visibility?: "public" | "internal" }): Promise<{ saved_reply_id: string; conversation_id: string; message_id: string; actions: string[]; conversation: Conversation }>;
+  applySavedReply(input: { conversationId: string; savedReplyId: string; body?: string; visibility?: "public" | "internal"; alsoUsed?: string[] }): Promise<{ saved_reply_id: string; conversation_id: string; message_id: string; actions: string[]; also_used: string[]; conversation: Conversation }>;
 
   /**
    * Assign a conversation to someone (or nobody)
@@ -432,7 +444,14 @@ export interface Ticket0Client {
    *
    * `POST /saved-replies` — `ticket0/create-saved-reply`
    */
-  createSavedReply(input: { title: string; body: string; actions?: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }>;
+  createSavedReply(input: { title: string; body: string; actions?: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; personal?: boolean; folderId?: string }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null }>;
+
+  /**
+   * Add a folder for canned answers
+   *
+   * `POST /saved-reply-folders` — `ticket0/create-saved-reply-folder`
+   */
+  createSavedReplyFolder(input: { name: string }): Promise<SavedReplyFolder>;
 
   /**
    * Delete a canned answer
@@ -444,6 +463,17 @@ export interface Ticket0Client {
    * write that would overwrite someone else's change fails with 412 instead.
    */
   deleteSavedReply(input: { savedReplyId: string }): Promise<{ id: string; title: string }>;
+
+  /**
+   * Remove a folder; its canned answers become unfiled
+   *
+   * `DELETE /saved-reply-folders/{folderId}` — `ticket0/delete-saved-reply-folder`
+   *
+   * Concurrency-checked over `savedReplyFolder`. The tag this answers with is
+   * remembered and sent as `If-Match` on the next write to the same entity, so a
+   * write that would overwrite someone else's change fails with 412 instead.
+   */
+  deleteSavedReplyFolder(input: { folderId: string }): Promise<{ id: string; name: string; unfiled: string[] }>;
 
   /**
    * Volume, speed, backlog, satisfaction and what the assistant settled
@@ -517,7 +547,7 @@ export interface Ticket0Client {
    * remembered and sent as `If-Match` on the next write to the same entity, so a
    * write that would overwrite someone else's change fails with 412 instead.
    */
-  getSavedReply(input: { savedReplyId: string }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }>;
+  getSavedReply(input: { savedReplyId: string }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null }>;
 
   /**
    * Re-read a documentation source
@@ -627,13 +657,22 @@ export interface Ticket0Client {
   listPendingOutbound(): Promise<Paged<{ messageId: string; conversationId: string; createdAt: string }>>;
 
   /**
-   * The desk’s canned answers
+   * The canned answers you may use: the desk’s shared ones and your own
    *
    * `GET /saved-replies` — `ticket0/list-saved-replies`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listSavedReplies(): Promise<Paged<({ id: string; title: string; body: string; created_by: string; created_at: string; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] })>>;
+  listSavedReplies(input: { folderId?: string }): Promise<Paged<({ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null })>>;
+
+  /**
+   * The folders the desk files its canned answers in
+   *
+   * `GET /saved-reply-folders` — `ticket0/list-saved-reply-folders`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listSavedReplyFolders(): Promise<Paged<SavedReplyFolder>>;
 
   /**
    * Who is waiting, and who is subscribed
@@ -795,6 +834,17 @@ export interface Ticket0Client {
   removeParticipant(input: { conversationId: string; contactId: string }): Promise<{ conversation_id: string; contact_id: string; removed: boolean }>;
 
   /**
+   * Rename a folder of canned answers
+   *
+   * `PATCH /saved-reply-folders/{folderId}` — `ticket0/rename-saved-reply-folder`
+   *
+   * Concurrency-checked over `savedReplyFolder`. The tag this answers with is
+   * remembered and sent as `If-Match` on the next write to the same entity, so a
+   * write that would overwrite someone else's change fails with 412 instead.
+   */
+  renameSavedReplyFolder(input: { folderId: string; name: string }): Promise<SavedReplyFolder>;
+
+  /**
    * A canned answer with this conversation’s facts filled in
    *
    * `GET /conversations/{conversationId}/saved-replies/{savedReplyId}/render` — `ticket0/render-saved-reply`
@@ -890,6 +940,17 @@ export interface Ticket0Client {
   setUsageRate(input: { meterKey: string; unitPrice: string; currency: string; effectiveFrom: string }): Promise<UsageRate>;
 
   /**
+   * Share a personal canned answer with the desk
+   *
+   * `POST /saved-replies/{savedReplyId}/share` — `ticket0/share-saved-reply`
+   *
+   * Concurrency-checked over `savedReply`. The tag this answers with is
+   * remembered and sent as `If-Match` on the next write to the same entity, so a
+   * write that would overwrite someone else's change fails with 412 instead.
+   */
+  shareSavedReply(input: { savedReplyId: string }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null }>;
+
+  /**
    * How many are waiting, confirmed and gone, per list
    *
    * `GET /signups/counts` — `ticket0/signup-counts`
@@ -968,7 +1029,7 @@ export interface Ticket0Client {
    * remembered and sent as `If-Match` on the next write to the same entity, so a
    * write that would overwrite someone else's change fails with 412 instead.
    */
-  updateSavedReply(input: { savedReplyId: string; title?: string; body?: string; actions?: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[] }>;
+  updateSavedReply(input: { savedReplyId: string; title?: string; body?: string; actions?: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; folderId?: string | null }): Promise<{ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null }>;
 
   /**
    * Token usage and what it cost
@@ -1213,8 +1274,12 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/signup/confirm", "POST", input, undefined),
     createSavedReply: (input: Args) =>
       send("/saved-replies", "POST", input, undefined),
+    createSavedReplyFolder: (input: Args) =>
+      send("/saved-reply-folders", "POST", input, undefined),
     deleteSavedReply: (input: Args) =>
       guarded("savedReply", input.savedReplyId, `/saved-replies/${encodeURIComponent(String(input.savedReplyId))}`, "DELETE", undefined, omit(input, ["savedReplyId"])),
+    deleteSavedReplyFolder: (input: Args) =>
+      guarded("savedReplyFolder", input.folderId, `/saved-reply-folders/${encodeURIComponent(String(input.folderId))}`, "DELETE", undefined, omit(input, ["folderId"])),
     deskMetrics: (input: Args) =>
       send("/desk-metrics", "GET", undefined, input),
     discard: (input: Args) =>
@@ -1261,8 +1326,10 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/participants`, "GET", undefined, omit(input, ["conversationId"])),
     listPendingOutbound: () =>
       page("/relay/outbound", "GET", undefined, undefined),
-    listSavedReplies: () =>
-      page("/saved-replies", "GET", undefined, undefined),
+    listSavedReplies: (input: Args) =>
+      page("/saved-replies", "GET", undefined, input),
+    listSavedReplyFolders: () =>
+      page("/saved-reply-folders", "GET", undefined, undefined),
     listSignups: (input: Args) =>
       page("/signups", "GET", undefined, input),
     listSuspended: () =>
@@ -1305,6 +1372,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/desk/block-rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     removeParticipant: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/participants/${encodeURIComponent(String(input.contactId))}`, "DELETE", undefined, omit(input, ["conversationId","contactId"])),
+    renameSavedReplyFolder: (input: Args) =>
+      guarded("savedReplyFolder", input.folderId, `/saved-reply-folders/${encodeURIComponent(String(input.folderId))}`, "PATCH", omit(input, ["folderId"]), undefined),
     renderSavedReply: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/render`, "GET", undefined, omit(input, ["conversationId","savedReplyId"])),
     requestHuman: (input: Args) =>
@@ -1331,6 +1400,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/priority`, "POST", omit(input, ["conversationId"]), undefined),
     setUsageRate: (input: Args) =>
       send("/usage/rates", "POST", input, undefined),
+    shareSavedReply: (input: Args) =>
+      guarded("savedReply", input.savedReplyId, `/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/share`, "POST", omit(input, ["savedReplyId"]), undefined),
     signupCounts: () =>
       send("/signups/counts", "GET", undefined, undefined),
     signupOrigins: () =>

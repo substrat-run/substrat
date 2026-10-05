@@ -33,6 +33,7 @@ import { DELIVERY_DISCARDED } from '../src/module.js';
 import { buildHost, seed, signIdentity } from '../src/seed.js';
 import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX, ticket0Entities, ticket0Operations } from '../spec/model.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from './before-0021.js';
+import { listsBefore0025 } from './before-0025.js';
 import { createKit, ORIGIN, type ConversationRead, type Desk } from './desk-kit.js';
 
 const kit = createKit('ticket0-suspended-');
@@ -353,7 +354,8 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
       'set-agent-offboarded', 'add-kb-source', 'list-kb-sources', 'ingest-kb-source', 'record-kb-articles',
       'record-kb-ingest-failure', 'mint-kb-refresh-token', 'revoke-kb-refresh-token', 'redeem-kb-refresh-token',
       'search-kb', 'search-contacts', 'list-contacts', 'get-contact', 'list-tags', 'list-saved-replies', 'create-saved-reply',
-      'get-saved-reply', 'update-saved-reply', 'delete-saved-reply', 'set-usage-rate', 'close-usage-period',
+      'get-saved-reply', 'update-saved-reply', 'delete-saved-reply', 'share-saved-reply', 'list-saved-reply-folders',
+      'create-saved-reply-folder', 'rename-saved-reply-folder', 'delete-saved-reply-folder', 'set-usage-rate', 'close-usage-period',
       'widget-origins', 'assistant-mode', 'widget-start', 'signup-origins', 'submit-signup', 'confirm-signup',
       'unsubscribe-signup', 'list-signups', 'signup-counts'];
     const d = await filtered({ agents: 1 });
@@ -1049,7 +1051,7 @@ describe('migration 0021 on an existing desk', () => {
         m.manifest.id === ticket0Manifest.id
           ? {
               ...m,
-              manifest: { ...m.manifest, lists: listsBefore0021(m.manifest.lists ?? []) },
+              manifest: { ...m.manifest, lists: listsBefore0021(listsBefore0025(m.manifest.lists ?? [])) },
               migrations: (m.migrations ?? []).filter((x) => x.version <= '0020'),
             }
           : m,

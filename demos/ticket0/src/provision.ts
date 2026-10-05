@@ -40,6 +40,10 @@ const AGENT_PERMISSIONS = [
   T0_PERM.contactRead,
   T0_PERM.kbRead,
   T0_PERM.notificationReadOwn,
+  // The desk's shared saved replies and their folders (#1087). A person's curation:
+  // neither assistant role holds it, so an assistant drafting answers cannot rewrite the
+  // canned answers every colleague pastes. A personal reply needs only `conversation:draft`.
+  T0_PERM.savedReplyManage,
 ];
 
 export const ROLES: RoleDefinition[] = [
