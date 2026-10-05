@@ -1,5 +1,54 @@
 # @substrat-run/contracts
 
+## 0.137.0
+
+### Minor Changes
+
+- 7559e1a: The field-coverage walk is now switched on by the router, per request, instead of by a setting on each vertical (#1923).
+
+  - The router gains an optional `FIELD_COVERAGE_SAMPLE_RATE`, a decimal in `(0, 1]` (`0.01` is one request in a hundred). It is off when absent or set to anything else, including a value above one. On a request inside the sample, the router mints a dispatch id, sends it as `x-substrat-field-coverage` beside its signed assertion, and writes it on its own request line. Changing the rate, or turning it off, never needs a vertical to be pushed again.
+  - The stamp honours that header only when its value is a dispatch id and the request's router assertion verifies. A request that did not come through the router, or whose signature is wrong, is never walked. The invocation line carries the id as `fieldCoverageId` beside `outputFields`. `fieldCoverageArmed(request)` answers whether a request is armed, and the operation routes and the MCP door both read it.
+  - `FIELD_COVERAGE_BINDING` is removed from `@substrat-run/contracts`. Nothing set it. `FIELD_COVERAGE_HEADER` and `FIELD_COVERAGE_ID_FIELD` replace it.
+  - `tallyFieldCoverage` in `@substrat-run/control-plane-api` is the one way to read the reports. It counts per operation and field for one tenant and one app, and only reports whose dispatch id the router's own line names for that tenant and app, once each. It refuses malformed or oversized reports and keeps nothing per request.
+  - Log reads (tenant logs, service logs and request records) no longer return a line's `outputFields` or `fieldCoverageId`.
+  - The platform's own worker script names are reserved (`PLATFORM_SCRIPT_NAMES`). A vertical slug that would deploy under one, such as `substrat/router`, is refused when it is registered and when it is deployed. `verticalScriptStem` is the one place a slug becomes a script name.
+
+  A vertical's operations are walked only after it upgrades and pushes again, since the walk runs in its bundled `vertical-host`. The platform's entry carries the new stamp on the next platform deploy.
+
+- 21055d5: A manifest-declared guard that refuses an operation is now recorded, beside refused lifecycle moves (#1745).
+
+  When a guard predicate the kernel runs before an operation throws a `conflict`, both adapters write a row of kind `guard` to the scope's refusal log after the rollback, the way a refused transition is recorded. The row holds the predicate's name, the operation, the problem's `reason`, the record when the predicate named it, the actor and the call. It holds no state, and never the error's message, the operation's input or the guard's config. Any other throw from a predicate, and a guard whose predicate no module contributes, still blocks the operation and records nothing. A guard a vertical composes into its own operation is not recorded.
+
+  A refusal row now keeps only the model's own vocabulary. A transition's from-state is recorded only when the lifecycle declares it, and as `undeclared` otherwise, never as whatever the record's status column held. A reason is recorded only when it is a code, and as `unrecognized` otherwise. A record's type is recorded only when it is spelled as an entity type, and as `undeclared` otherwise; its id is kept.
+
+  - **contracts**: `problemReason`, the snake_case grammar every problem code is written in (at most `PROBLEM_REASON_MAX`, 64), `UNRECOGNIZED_REFUSAL_REASON`, `UNDECLARED_STATE`, and `refusalEntityType` / `UNDECLARED_ENTITY_TYPE` / `REFUSAL_ENTITY_TYPE_MAX`. `assertTransition` carries a declared `from` or `UNDECLARED_STATE`. `refusalRecord.fromState` is now nullable (null on a guard row), and the record gains `guard`. `refusalFilter` takes an optional `kind`. New `nameRefusedRecord(err, { entityType, entityId })` and `refusedRecordOf(err)`, which let a predicate name the record its refusal is about.
+  - **kernel**: `markGuardRefusal`, `refusalOf`, the `RefusedGuard` type, and `REFUSALS_REBUILD` / `refusalsAdmitGuards`. `refusalInsert` accepts a guard refusal and now writes the `reason` column for both kinds. `readLifecycleFlow`'s `refused` counts transition rows only.
+  - **adapters**: `_substrat_refusals` gains `guard` and `reason`, and `from_state` drops its NOT NULL. A scope that holds the old table rebuilds it on its next wake, in one transaction, keeping every row and the index. `listRefusals` reads both kinds.
+  - **engine-protocol**: `requireSigned` and `requireCountersigned` name the record on their `protocol_required` refusal, so a `protocol/all-signed` guard refusal counts against it.
+
+- fcb587d: A control-plane-less scope host now checks the (tenant, scope) pair against the scope's own record (#2016). Until now the router's pair was trusted as asserted, and a mismatched pair was refused only because grants are keyed by tenant.
+
+  - Every door into a scope holds the pair to the tenant the scope was provisioned for (its `provisioned_for` receipt, #1738): invoke, attachments, the system, capability, peer and connector doors, jobs, the retry driver and the operator reads. A scope of another tenant is refused with K-3's `not_found` ("unknown scope for tenant"), before any guard, handler or store lookup runs. The check rides the one Durable Object call the CP-less lifecycle gate already made (`ScopeDO.admission`), so a door costs no extra round-trip.
+  - The sweeper's schedule and freshness entry points (`runDueSchedules`, `checkFreshness`) hold the pair too, before any grant, cadence row or run is read or written: a roster entry carries a stored tenant, which can be stale.
+  - A scope provisioned before the receipt existed is judged by its role rows, as the served-here gate already did. A scope that holds neither (a load from a world that keeps its roles elsewhere, before its repair) has nothing to hold the pair against: it is admitted, and each admission writes a `tenant-unrecorded` warn line (ids only), so a scope that has not converged is visible.
+  - The receipt is back-filled only from the platform's word: a provision, a reconcile (every push runs one against the scopes behind it), a restore's repair, or a lifecycle delivery that now names the tenant (`/internal/lifecycle` takes an optional `tenantId`; `VerticalClient.setLifecycle` sends it). A scope's first receipt is written only where its role rows agree: a projection or delivery for a tenant the role rows contradict is refused (409) and pins nothing. A delivery records the tenant of a scope with no role rows only when it holds state (applied migrations, scope tuples, events or schedule state), never in a DO nothing provisioned. A request's tenant is never recorded.
+  - The heal converges every served scope, primaries and copies alike: a lifecycle delivery's answer now says whether the scope holds a tenant record (`LifecycleDelivery.tenantRecorded`, absent from an older deployment), the control plane keeps it beside the delivery receipt, and each heal pass asks up to `TENANT_UNRECORDED_PER_PASS` (50) served scopes that have not answered yes, least recently asked first (the ask is noted whatever comes of it, so a deployment that never answers rotates behind the rest), until each does.
+  - A load keeps the store's own receipt and never the dump's, so a restore no longer leaves a window with none. `/internal/restore` and `/internal/snapshot` pass the tenant through (`restoreScopeLocal`'s `tenantId`, `snapshotScopeLocal`'s third argument): the copy records it as its own, a store provisioned for another tenant refuses the load, and a snapshot of another tenant's scope is refused before anything is copied. A platform that sends no tenant gets the old behaviour.
+
+### Patch Changes
+
+- 1c411fc: A point-in-time rewind to before a schedule kill switch was pulled now keeps the module off for its job runs too, not only its schedules.
+
+  The hosted adapter's system door (`getSystemScope`) is where a module's own authority enters a scope: a schedule's fire, a resumable job run's `pass.scope()`, and a module's attachment open all go through it. The door now does the check a schedule pass already did. It reads the module's state from the scope, and for a module that is on, it then reads the rewind hold. A module the hold keeps off is refused with `forbidden`.
+
+  A job pass can run for a long time after it opens the door, so each call through the door is pinned to the scope instance the door checked. A rewind always restarts the scope. A call that lands on a different instance is refused before anything opens, then checked again and retried. If the scope keeps restarting, the call fails closed with `unavailable` after a bounded number of checks. The scope also refuses any call that acts as a module without passing the door. Under a rolling deploy, that can briefly refuse a worker still running the previous version.
+
+  A held module and a scope that keeps restarting both mean "not now": nothing ran. The host's door marks each of these refusals with the job pass whose call produced it, and the job driver defers a pass only on a refusal marked for that same pass. The mark is consumed as it is taken. The driver never defers on an error's shape, since any step or operation can throw the same public reason (`system_door_wait`, the kernel's `SYSTEM_DOOR_WAIT`, which `unavailable` can now carry as well as `forbidden`). A refusal kept by a handler and thrown again on a later pass counts as an ordinary failure. A deferred run keeps its attempts and its last error, and is due again after `JOB_DEFER_MS` (one minute). That wait is not an attempt and has no backoff. `JobDriveReport` gains a `deferred` count.
+
+  The job driver now takes due runs in the order they became due (`JOB_RUN_DUE_AT`, which is `next_attempt_at`, or the start time when there is none, then id), on both adapters, backed by a new `_substrat_job_runs_due_at` index. Before, it took them by age, so an older run that kept waiting (a deferral or a retry backoff) headed every drive and could take the turn of a run that had been due longer. Each drive now picks its runs from one snapshot: the keys of the due runs, read in a single query (the store port's `due` becomes `dueKeys`). It then reads each run again just before running it, and skips one that is no longer running or no longer due. Within one drive a run is never taken twice and never skipped by paging. A run that moves, or becomes due, after the snapshot is left for the next drive. The re-read reserves nothing, so two drives overlapping on one scope can still run the same run; one driver per scope at a time remains the stated bound.
+
+  The scope answers a call pinned to the wrong instance with a dedicated `systemDoorMoved` field, never with an error, so an operation's own error is never mistaken for one, whatever its text.
+
 ## 0.136.0
 
 ### Minor Changes
@@ -6060,7 +6109,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
