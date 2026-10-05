@@ -649,6 +649,18 @@ class PdfDocument {
     readonly pace: Pace,
   ) {}
 
+  /**
+   * Forget the cross-reference and everything read through it, for the scan to start over: an
+   * object a wrong offset resolved to null would otherwise stay null. The budget spent stays
+   * spent.
+   */
+  forgetXref(): void {
+    this.xref.clear();
+    this.objects.clear();
+    this.objectStreams.clear();
+    this.decodedByNum.clear();
+  }
+
   addEntry(num: number, entry: XrefEntry): void {
     if (this.xref.has(num)) return; // the newest section, read first, wins
     if (this.xref.size >= PDF_OBJECTS_MAX) {
@@ -909,7 +921,7 @@ async function xrefSection(doc: PdfDocument, offset: number): Promise<PdfDict> {
  * last `trailer` dictionary — or, with none, the catalog found among the objects.
  */
 async function scanObjects(doc: PdfDocument): Promise<void> {
-  doc.xref.clear();
+  doc.forgetXref();
   const buf = doc.buf;
   const OBJ = ascii('obj');
   const streams: number[] = [];

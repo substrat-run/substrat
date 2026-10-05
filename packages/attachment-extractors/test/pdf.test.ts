@@ -214,6 +214,13 @@ describe('pdf: what it reads', () => {
     const { bytes, xrefAt } = onePage('BT /F1 9 Tf (found by the scan) Tj ET');
     const broken = cat(bytes.subarray(0, xrefAt), 'trailer\n<< /Root 1 0 R >>\nstartxref\n999999\n%%EOF\n');
     expect(textOf(await run(broken))).toBe('found by the scan');
+    // A table that READS but points the catalog at another object: what the table made of it
+    // is forgotten before the scan, or the scan would be handed that miss again.
+    const wrong = onePage('BT /F1 9 Tf (found past a wrong offset) Tj ET');
+    const at1 = String(wrong.offsets.get(1)).padStart(10, '0');
+    const at2 = String(wrong.offsets.get(2)).padStart(10, '0');
+    const misdirected = bin(new TextDecoder('latin1').decode(wrong.bytes).replace(`${at1} 00000 n`, `${at2} 00000 n`));
+    expect(textOf(await run(misdirected))).toBe('found past a wrong offset');
     // And with no trailer at all: the catalog is found among the objects.
     expect(textOf(await run(bytes.subarray(0, xrefAt)))).toBe('found by the scan');
   });
