@@ -46,7 +46,12 @@ const textOf = (o: ExtractionOutcome): string => {
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 /** Bytes 0–255 as written, for content that is not UTF-8. */
-const bin = (s: string): Uint8Array => Uint8Array.from(s, (c) => c.charCodeAt(0));
+const bin = (s: string): Uint8Array => {
+  // A plain loop: the test inputs run to tens of MiB, where `Uint8Array.from` with a callback crawls.
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i += 1) out[i] = s.charCodeAt(i);
+  return out;
+};
 const cat = (...parts: (string | Uint8Array)[]): Uint8Array => {
   const bytes = parts.map((p) => (typeof p === 'string' ? bin(p) : p));
   const out = new Uint8Array(bytes.reduce((n, b) => n + b.length, 0));
@@ -381,7 +386,9 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
   it('the lexer reads at most a token\'s bound of any comment, however long its line', () => {
     // A comment ran to its line's end before the bound was checked: 32 MiB read for nothing.
     const pace = counting();
-    expect(() => pdfLexer(cat('%', 'c'.repeat(32 * 1024 * 1024)), pace).next()).toThrow(/longer than the extraction reads/);
+    const comment = new Uint8Array(32 * 1024 * 1024).fill(0x63);
+    comment[0] = 0x25; // `%`
+    expect(() => pdfLexer(comment, pace).next()).toThrow(/longer than the extraction reads/);
     expect(pace.charged).toBeLessThan(EXTRACTION_STRIDE + 16);
   });
 
