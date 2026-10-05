@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/adapter-cloudflare",
-  "version": "0.137.0",
+  "version": "0.138.0",
   "description": "Cloudflare Durable-Object scope host (D-14): DO-per-scope, real kernel semantics on Workers",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -29,6 +29,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run && vitest run -c vitest.supplied-sweeper.config.ts",
+    "test:contract": "vitest run test/contract.test.ts",
+    "test:rest": "vitest run --exclude test/contract.test.ts && vitest run -c vitest.supplied-sweeper.config.ts",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
