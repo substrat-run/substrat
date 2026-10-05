@@ -35,6 +35,7 @@ import {
   inertScopeContractSuite,
   membershipExecutorContractSuite,
   findingsContractSuite,
+  findingsAtomicContractSuite,
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
@@ -119,6 +120,25 @@ findingsContractSuite('adapter-cloudflare', async () => {
   });
   return { host, cleanup: async () => host.close() };
 });
+
+// #1748: the evidence, the finding and the audit row commit together — the DO's own unit is
+// what holds it here. The faults are triggers on the directory singleton the host talks to.
+findingsAtomicContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      checker: UNSAFE_allowAllChecker,
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  async (_host, sql) => {
+    await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      state.storage.sql.exec(sql);
+    });
+  },
+);
 
 // #1184: the membership executor, on the DEFAULT tuple checker — the bound is a set
 // comparison an allow-all checker would answer "covered" for everything. Its executors run

@@ -10374,75 +10374,80 @@ export class SqliteScopeHost implements ScopeHost {
       recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
         const at = new Date().toISOString();
         const fingerprint = opsFailureFingerprint(entry);
-        this.directory
-          .prepare(
-            `INSERT INTO _substrat_ops_failures
-               (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            ulid(),
-            entry.actor,
-            entry.operation,
-            entry.stage ?? null,
-            entry.tenantId ?? null,
-            entry.scopeId ?? null,
-            entry.vertical ?? null,
-            entry.version ?? null,
-            entry.status ?? null,
-            // Bounded here, not trusted from the catch site: one runaway upstream
-            // body must not become a runaway directory row (#559).
-            entry.message.slice(0, 2000),
-            entry.reference ?? null,
-            entry.origin ?? null,
-            entry.code ?? null,
-            fingerprint,
-            at,
-          );
-        // Prune-on-write (#559): retention lives here, not in a cron — every insert
-        // pays for its own housekeeping, so the table stays bounded even where no
-        // scheduled pass runs (this adapter has none).
-        const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
-        this.directory.prepare('DELETE FROM _substrat_ops_failures WHERE at < ?').run(horizon);
-        // The issues materialization (#1233): the group's counters live on their
-        // own row, bumped in the same call, because the evidence self-prunes above
-        // and a count must survive its own exemplars. A fresh arrival regresses a
-        // resolved issue; an ignored one stays ignored — that is what ignoring means.
-        this.directory
-          .prepare(
-            `INSERT INTO _substrat_issues
-               (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
-             VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-             ON CONFLICT (fingerprint) DO UPDATE SET
-               seen_count = seen_count + 1,
-               last_seen = excluded.last_seen,
-               last_message = excluded.last_message,
-               last_tenant_id = excluded.last_tenant_id,
-               last_owner_kind = excluded.last_owner_kind,
-               last_vertical = COALESCE(excluded.last_vertical, last_vertical),
-               last_version = COALESCE(excluded.last_version, last_version),
-               origin = COALESCE(excluded.origin, origin),
-               status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
-          )
-          .run(
-            fingerprint,
-            entry.operation,
-            entry.stage ?? null,
-            entry.origin ?? null,
-            entry.code ?? null,
-            at,
-            at,
-            entry.message.slice(0, 2000),
-            entry.tenantId ?? null,
-            issueExemplarOwner(entry.tenantId ?? null),
-            entry.vertical ?? null,
-            entry.version ?? null,
-          );
-        const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
-        this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
-        // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
-        const finding = findingOfOpsFailure(entry);
-        if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
+        // #1748: the evidence, its issue and its finding in ONE transaction — a detector that
+        // throws takes the evidence with it, so the caller's retry observes it rather than finding
+        // the row already there and the observation lost.
+        this.directory.transaction(() => {
+          this.directory
+            .prepare(
+              `INSERT INTO _substrat_ops_failures
+                 (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              ulid(),
+              entry.actor,
+              entry.operation,
+              entry.stage ?? null,
+              entry.tenantId ?? null,
+              entry.scopeId ?? null,
+              entry.vertical ?? null,
+              entry.version ?? null,
+              entry.status ?? null,
+              // Bounded here, not trusted from the catch site: one runaway upstream
+              // body must not become a runaway directory row (#559).
+              entry.message.slice(0, 2000),
+              entry.reference ?? null,
+              entry.origin ?? null,
+              entry.code ?? null,
+              fingerprint,
+              at,
+            );
+          // Prune-on-write (#559): retention lives here, not in a cron — every insert
+          // pays for its own housekeeping, so the table stays bounded even where no
+          // scheduled pass runs (this adapter has none).
+          const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
+          this.directory.prepare('DELETE FROM _substrat_ops_failures WHERE at < ?').run(horizon);
+          // The issues materialization (#1233): the group's counters live on their
+          // own row, bumped in the same call, because the evidence self-prunes above
+          // and a count must survive its own exemplars. A fresh arrival regresses a
+          // resolved issue; an ignored one stays ignored — that is what ignoring means.
+          this.directory
+            .prepare(
+              `INSERT INTO _substrat_issues
+                 (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
+               VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+               ON CONFLICT (fingerprint) DO UPDATE SET
+                 seen_count = seen_count + 1,
+                 last_seen = excluded.last_seen,
+                 last_message = excluded.last_message,
+                 last_tenant_id = excluded.last_tenant_id,
+                 last_owner_kind = excluded.last_owner_kind,
+                 last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+                 last_version = COALESCE(excluded.last_version, last_version),
+                 origin = COALESCE(excluded.origin, origin),
+                 status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
+            )
+            .run(
+              fingerprint,
+              entry.operation,
+              entry.stage ?? null,
+              entry.origin ?? null,
+              entry.code ?? null,
+              at,
+              at,
+              entry.message.slice(0, 2000),
+              entry.tenantId ?? null,
+              issueExemplarOwner(entry.tenantId ?? null),
+              entry.vertical ?? null,
+              entry.version ?? null,
+            );
+          const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
+          this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
+          // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
+          const finding = findingOfOpsFailure(entry);
+          if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
+        })();
       },
       listOpsFailures: async (actor, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]> => {
         const where: string[] = [];
@@ -10534,42 +10539,47 @@ export class SqliteScopeHost implements ScopeHost {
       },
       recordSweepRun: async (entry: SweepRunInput): Promise<void> => {
         const at = entry.at ?? new Date().toISOString();
-        const { changes } = this.directory
-          .prepare(
-            `INSERT OR IGNORE INTO _substrat_sweep_runs
-               (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
-                connection_id, error, elapsed_ms, request_id, event_type, observed_at, platform_requests, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            ulid(),
-            entry.kind,
-            entry.unit,
-            entry.outcome,
-            entry.tenantId ?? null,
-            entry.scopeId ?? null,
-            entry.vertical ?? null,
-            entry.version ?? null,
-            entry.operation ?? null,
-            entry.connectionId ?? null,
-            // Bounded here, not trusted from the sweep: one runaway provider body
-            // must not become a runaway directory row (the #559 rule).
-            entry.error == null ? null : entry.error.slice(0, 2000),
-            entry.elapsedMs ?? null,
-            entry.requestId ?? null,
-            entry.eventType ?? null,
-            entry.observedAt ?? null,
-            entry.platformRequests == null ? null : JSON.stringify(entry.platformRequests),
-            at,
-          );
-        // Prune-on-write, like ops failures and for the same reason: the table stays
-        // bounded even on a deployment whose scheduled pass is broken.
-        const horizon = new Date(Date.now() - SWEEP_RUN_RETENTION_DAYS * 86_400_000).toISOString();
-        this.directory.prepare('DELETE FROM _substrat_sweep_runs WHERE at < ?').run(horizon);
-        // #1748: a failed schedule (Invariant) or a stale freshness verdict (Drift). Only when the
-        // row was written: a replayed drain the unique index ignored is not a second occurrence.
-        const finding = changes > 0 ? findingOfSweepRun(entry) : null;
-        if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
+        // #1748: the row and its finding in ONE transaction. A replayed drain the unique index
+        // ignores observes nothing, which is right only because the first arrival's observation
+        // committed with it, or did not commit at all.
+        this.directory.transaction(() => {
+          const { changes } = this.directory
+            .prepare(
+              `INSERT OR IGNORE INTO _substrat_sweep_runs
+                 (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
+                  connection_id, error, elapsed_ms, request_id, event_type, observed_at, platform_requests, at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              ulid(),
+              entry.kind,
+              entry.unit,
+              entry.outcome,
+              entry.tenantId ?? null,
+              entry.scopeId ?? null,
+              entry.vertical ?? null,
+              entry.version ?? null,
+              entry.operation ?? null,
+              entry.connectionId ?? null,
+              // Bounded here, not trusted from the sweep: one runaway provider body
+              // must not become a runaway directory row (the #559 rule).
+              entry.error == null ? null : entry.error.slice(0, 2000),
+              entry.elapsedMs ?? null,
+              entry.requestId ?? null,
+              entry.eventType ?? null,
+              entry.observedAt ?? null,
+              entry.platformRequests == null ? null : JSON.stringify(entry.platformRequests),
+              at,
+            );
+          // Prune-on-write, like ops failures and for the same reason: the table stays
+          // bounded even on a deployment whose scheduled pass is broken.
+          const horizon = new Date(Date.now() - SWEEP_RUN_RETENTION_DAYS * 86_400_000).toISOString();
+          this.directory.prepare('DELETE FROM _substrat_sweep_runs WHERE at < ?').run(horizon);
+          // #1748: a failed schedule (Invariant) or a stale freshness verdict (Drift). Only when the
+          // row was written: a replayed drain the unique index ignored is not a second occurrence.
+          const finding = changes > 0 ? findingOfSweepRun(entry) : null;
+          if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
+        })();
       },
       listSweepRuns: async (actor, filter?: SweepRunFilter): Promise<SweepRunEntry[]> => {
         const where: string[] = [];

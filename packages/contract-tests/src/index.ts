@@ -25,6 +25,7 @@ export { inertScopeContractSuite } from './inert-scope-suite.js';
 // #1184: the membership executor — accept, redelivery, rollback, and the authority bound.
 export { membershipExecutorContractSuite } from './membership-executor-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
+export { findingsAtomicContractSuite, type DirectoryExec } from './findings-atomic-suite.js';
 export { INVITEFIX_A, membershipFixtureMod } from './membership-module.js';
 export { scheduleEntitlementContractSuite } from './schedule-entitlement-suite.js';
 export { jobRunContractSuite } from './job-run-suite.js';

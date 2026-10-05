@@ -11,6 +11,7 @@ import {
   inertScopeContractSuite,
   membershipExecutorContractSuite,
   findingsContractSuite,
+  findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -89,6 +90,26 @@ findingsContractSuite('adapter-sqlite', async () => {
     },
   };
 });
+
+// #1748: the evidence, the finding and the audit row commit together. The faults are triggers
+// on the directory database, reached past the seam because nothing on it injects a failure.
+findingsAtomicContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-findings-atomic-'));
+    const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (host, sql) => {
+    (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+  },
+);
 
 // #1184: the membership executor, on the DEFAULT checker — its bound is a permission-set
 // comparison, which an allow-all checker would answer "covered" for everything.
