@@ -23,7 +23,7 @@
     "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
-    "hono": "^4.13.9"
+    "hono": "^4.13.12"
   },
   "devDependencies": {
     "@substrat-run/console": "workspace:*",
