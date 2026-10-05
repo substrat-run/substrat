@@ -81,7 +81,8 @@ const CMAP_SPACES_MAX = 256;
 const CMAP_DST_MAX = 512;
 /** How far back from `obj` the scan looks for `N G `: two numbers and the space around them. */
 const OBJ_HEADER_SPAN = 48;
-
+/** Whitespace read between a stream's declared end and its `endstream`. */
+const STREAM_END_SPAN = 64;
 
 // -- values ---------------------------------------------------------------------------
 
@@ -227,7 +228,9 @@ class Lexer {
       if (isWhite(c)) {
         this.pos += 1;
       } else if (c === 37) {
-        while (this.pos < this.end && this.buf[this.pos] !== 10 && this.buf[this.pos] !== 13) this.pos += 1;
+        // To the end of the line — but never past the token bound, however long the line is.
+        const stop = Math.min(this.end, from + TOKEN_MAX + 1);
+        while (this.pos < stop && this.buf[this.pos] !== 10 && this.buf[this.pos] !== 13) this.pos += 1;
       } else {
         break;
       }
@@ -386,6 +389,8 @@ function valueFrom(tok: Token, lex: Lexer, refs: boolean, depth = 0, start = lex
       const dict: PdfDict = new Map();
       let key: string | null = null;
       for (;;) {
+        // Every token read counts against the object's size, a skipped key included.
+        if (lex.pos - start > TOKEN_MAX) throw new MalformedInput('a PDF object is larger than the extraction reads');
         const next = lex.next();
         if (next.t === close) break;
         if (next.t === 'eof') throw new MalformedInput('the PDF ends inside an object');
@@ -503,6 +508,8 @@ async function lzw(raw: Uint8Array, early: boolean, budget: InflateBudget, pace:
         entry.set(prev);
         entry[prev.length] = prev[0]!;
       } else return sink.done();
+      // An entry is at most the table's 4096 bytes; its copy is work, charged as such.
+      pace.charge(entry.length);
       if (!sink.add(entry)) return sink.done();
       if (prev && dict.length < 4096) {
         const grown = new Uint8Array(prev.length + 1);
@@ -807,7 +814,8 @@ class PdfDocument {
     const declared = intOf(await this.resolve(dict.get('Length')));
     if (declared !== null && declared >= 0 && start + declared <= this.buf.length) {
       let k = start + declared;
-      while (k < this.buf.length && isWhite(this.buf[k]!)) k += 1;
+      const stop = Math.min(this.buf.length, k + STREAM_END_SPAN);
+      while (k < stop && isWhite(this.buf[k]!)) k += 1;
       if (latin1(this.buf.subarray(k, k + 9)) === 'endstream') return declared;
     }
     const end = await findBytes(this.buf, ENDSTREAM, start, this.pace);
@@ -1421,7 +1429,10 @@ async function interpret(r: Reading, content: Uint8Array, resources: PdfDict | n
   const fontsDict = await doc.resolveDict(resources?.get('Font'));
   const xobjects = await doc.resolveDict(resources?.get('XObject'));
   const show = (v: PdfValue | undefined): void => {
-    if (isString(v) && font) emit(r, font.decode(v.bytes));
+    if (!isString(v) || !font) return;
+    // Decoding is a constant per byte (`codesToText`), charged as the work it is.
+    pace.charge(v.bytes.length);
+    emit(r, font.decode(v.bytes));
   };
   for (;;) {
     if (pace.room <= 0) await pace.turn();

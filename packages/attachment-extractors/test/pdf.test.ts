@@ -7,7 +7,7 @@ import {
   type ExtractionOutcome,
   type ExtractionSignal,
 } from '@substrat-run/kernel';
-import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfExtractor, pdfTables } from '../src/index.js';
+import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
 import { pdfDecoders } from '../src/pdf.js';
 import { Pace } from '../src/shared.js';
 
@@ -555,6 +555,118 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(await extracting).toEqual({ failed: 'the extraction was aborted' });
     expect(performance.now() - t0).toBeLessThan(250);
   });
+});
+
+// -- the abort-latency harness -------------------------------------------------------------
+//
+// The rule every parser here is held to: every loop over a file's bytes either runs through
+// `Pace` or is bounded by a named constant. A loop that breaks it shows up as one thing — the
+// thread held — so this table runs each adversarial shape under a short abort timer and asserts
+// the timer fires on time, the extractor answers promptly once aborted, and the shape settles
+// within a budget when left alone — never holding the thread longer than a stride's work for
+// the whole of it. A new shape is one line in the table.
+
+/** The longest the thread may be held at once, start to finish: a stride's work, with room for load. */
+const HOLD_MS = 150;
+/** How late a 5 ms abort timer may fire. */
+const TIMER_SLACK_MS = 150;
+/** How long an aborted extraction may take to answer. */
+const ABORTED_ANSWER_MS = 150;
+/** How long a shape may take to settle, unaborted. */
+const SETTLE_MS = 3_000;
+
+const MIB = 1024 * 1024;
+
+interface Shape {
+  readonly name: string;
+  readonly extractor: AttachmentExtractor;
+  readonly contentType: string;
+  readonly body: () => Promise<Uint8Array> | Uint8Array;
+}
+
+const P = pdf;
+const pdfShape = (name: string, body: () => Promise<Uint8Array> | Uint8Array): Shape => ({ name, extractor: P, contentType: 'application/pdf', body });
+const pageWith = (content: string) => onePage(content).bytes;
+/** A Type0 font whose ToUnicode CMap is `cmap`, drawing `codes` (hex) on the page. */
+const cmapFont = (cmap: string, codes: string) =>
+  onePage(`BT /F1 9 Tf <${codes}> Tj ET`, {
+    font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
+    extra: [stream('', cmap)],
+  }).bytes;
+
+const SHAPES: readonly Shape[] = [
+  // Round 2's blockers.
+  pdfShape('scan fallback: an 8 MiB digit run before `obj`, no xref', () => cat('%PDF-1.7\n', '9'.repeat(8 * MIB), ' 0 obj\n<< >>\nendobj\n')),
+  pdfShape('cmap: 20 001 code-space ranges, 5 000 codes drawn', () =>
+    cmapFont(
+      `begincmap\n${Array.from({ length: 20_001 }, (_, i) => `1 begincodespacerange <${(i * 3).toString(16).padStart(4, '0')}> <${(i * 3 + 1).toString(16).padStart(4, '0')}> endcodespacerange`).join('\n')}\n1 beginbfchar <0001> <0041> endbfchar endcmap`,
+      '0001'.repeat(5_000),
+    )),
+  // Round 1's blocker, and its class: a run near the token bound of every token class.
+  pdfShape('a digit run ending in a letter', () => pageWith(`${'1'.repeat(60_000)}x`)),
+  pdfShape('a keyword at the token bound', () => pageWith('k'.repeat(250 * 1024))),
+  pdfShape('a name with escapes at the token bound', () => pageWith(`/${'#41a'.repeat(60_000)}`)),
+  pdfShape('a literal string at the token bound', () => pageWith(`(${'\\(s'.repeat(80_000)})`)),
+  pdfShape('a hex string at the token bound', () => pageWith(`<${'4a'.repeat(125_000)}>`)),
+  // The loops round 2's audit bounded.
+  pdfShape('a 32 MiB comment', () => pageWith(`%${'c'.repeat(32 * MIB - 1024)}\n`)),
+  pdfShape('a dictionary of 4 M non-name keys', () =>
+    build([`<< /Type /Catalog /Pages 2 0 R /D << ${'1 '.repeat(4 * MIB)}>> >>`, PAGES, PAGE, HELVETICA, stream('', '')]).bytes),
+  pdfShape('8 MiB of whitespace after a declared stream end', () =>
+    build([CATALOG, PAGES, PAGE, HELVETICA, cat('<< /Length 2 >>\nstream\nET', ' '.repeat(8 * MIB), '\nendstream')]).bytes),
+  pdfShape('a bfrange of 65 536 codes onto a 256 KiB destination', () =>
+    cmapFont(`begincmap 1 beginbfrange <0000> <FFFF> <${'00'.repeat(128 * 1024)}> endbfrange endcmap`, '0001')),
+  pdfShape('an LZW stream expanding a byte into a dictionary entry', () =>
+    onePage(lzwEncode(new Uint8Array(MIB)), { contentDict: '/Filter /LZWDecode' }).bytes),
+  // Round 1's should-fixes, and the bounds before them.
+  pdfShape('an 8 MiB unfiltered stream', () => pageWith(' '.repeat(8 * MIB))),
+  pdfShape('a predictor declaring 64 MiB rows', async () =>
+    onePage(await deflate(new Uint8Array(10)), {
+      contentDict: '/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 1048576 /Colors 32 /BitsPerComponent 16 >>',
+    }).bytes),
+  pdfShape('a 16 MiB ASCIIHex stream', () => onePage(bin(`${'41'.repeat(8 * MIB)}>`), { contentDict: '/Filter /ASCIIHexDecode' }).bytes),
+  pdfShape('a deflate bomb', async () => onePage(await deflate(new Uint8Array(PDF_STREAM_MAX + 1024)), { contentDict: '/Filter /FlateDecode' }).bytes),
+  pdfShape('nesting 4 M deep in content', () => pageWith('['.repeat(4 * MIB))),
+  pdfShape('an inline image with no end, 8 MiB', () => pageWith(`BI /W 1 ID ${'E'.repeat(8 * MIB)}`)),
+  pdfShape('a billion declared objects', () => {
+    const { bytes, xrefAt } = onePage('BT ET');
+    return cat(bytes.subarray(0, xrefAt), `xref\n0 1000000000\ntrailer\n<< /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`);
+  }),
+  // The other parsers, for the same rule.
+  { name: 'html: a 16 MiB unclosed comment', extractor: htmlExtractor(), contentType: 'text/html', body: () => enc(`<p>x</p><!--${'-'.repeat(16 * MIB)}`) },
+  { name: 'html: 2 M unclosed tags', extractor: htmlExtractor(), contentType: 'text/html', body: () => enc('<a '.repeat(2 * MIB)) },
+  { name: 'text: 32 MiB of one line', extractor: textExtractor(), contentType: 'text/plain', body: () => new Uint8Array(32 * MIB).fill(0x61) },
+];
+
+describe('the abort-latency harness: no shape holds the thread, aborted or not', () => {
+  it.each(SHAPES.map((shape) => [shape.name, shape] as const))('%s', async (_name, shape) => {
+    const body = await shape.body();
+    const extract = (signal: { aborted: boolean }) =>
+      shape.extractor.extract({ body, contentType: shape.contentType, filename: 'f', maxTextBytes: 512 * 1024, signal: signal as ExtractionSignal });
+
+    // Aborted by a timer a few ms in: the timer must get its turn, and the answer come promptly.
+    const signal = { aborted: false };
+    const started = performance.now();
+    const extracting = extract(signal);
+    const firedAt = await new Promise<number>((resolve) =>
+      setTimeout(() => {
+        signal.aborted = true;
+        resolve(performance.now());
+      }, 5),
+    );
+    await extracting;
+    const answeredAt = performance.now();
+    expect(firedAt - started - 5, 'the abort timer was held').toBeLessThan(TIMER_SLACK_MS);
+    expect(answeredAt - firedAt, 'the aborted extraction answered late').toBeLessThan(ABORTED_ANSWER_MS);
+
+    // Left alone, it settles within budget with an answer, never a throw, and never holds the
+    // thread longer than a stride's work at any point along the way.
+    const t0 = performance.now();
+    const outcome = await extract({ aborted: false });
+    expect(performance.now() - t0, 'the shape did not settle in time').toBeLessThan(SETTLE_MS);
+    expect('text' in outcome || 'failed' in outcome).toBe(true);
+    expect(await longestHold(body, shape.extractor, shape.contentType), 'the thread was held').toBeLessThan(HOLD_MS);
+  }, 30_000);
 });
 
 /**
