@@ -56,6 +56,8 @@ jobs:
       # change it should widen on, a package no shard would test) is red, not quiet.
       # Then the scope itself — its log line says what this PR covers and why.
       - run: pnpm test:ci-scope
+      # test:affected is the local half of the same rule; its own file→package mapping.
+      - run: pnpm test:test-affected
       # The override advisory check's own tests (#1601); the check itself runs in audit.yml.
       - run: pnpm test:override-advisories
       - id: scope

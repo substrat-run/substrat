@@ -362,6 +362,18 @@ export function buildNames(names, all) {
   return [...new Set([...names, ...nested])].sort();
 }
 
+/**
+ * `names` plus the workspace members whose directory encloses one of them — the inverse
+ * of buildNames' nesting, and undeclared for the same reason. A demo's suites assert
+ * against its built `app/`, so a change that lands only inside the app has to test the
+ * demo too; pnpm's selector follows declared edges and would select the app alone.
+ */
+export function enclosingNames(names, all) {
+  const dirs = all.filter((p) => names.includes(p.name)).map((p) => p.dir);
+  const enclosing = all.filter((p) => dirs.some((d) => d.startsWith(`${p.dir}/`))).map((p) => p.name);
+  return [...new Set([...names, ...enclosing])].sort();
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
@@ -378,8 +390,14 @@ function workspace(filters) {
     .sort((a, b) => a.dir.localeCompare(b.dir));
 }
 
-export function decide({ event, base, files, lockfile, all, selectChanged }) {
+// The changesets "Version packages" PR is the last gate before `pnpm publish -r`, and its
+// diff (package.json versions, CHANGELOGs) says nothing about what the release carries —
+// so it runs everything, like a push to main, however small it looks.
+export const RELEASE_BRANCH = /^changeset-release\//;
+
+export function decide({ event, base, head, files, lockfile, all, selectChanged }) {
   if (event !== 'pull_request') return { everything: `a ${event} runs everything` };
+  if (head !== undefined && RELEASE_BRANCH.test(head)) return { everything: `the release PR (${head}) runs everything` };
   const { widening, inMembers, lockfile: lockfileChanged } = classify(files);
   if (widening.length > 0) {
     return { everything: 'changed outside every package:', detail: widening };
@@ -427,10 +445,16 @@ function main(argv) {
     result = decide({
       event,
       base,
+      head: process.env.GITHUB_HEAD_REF || undefined,
       files: event === 'pull_request' ? git('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean) : [],
       lockfile: () => lockfileScope(git('show', `${base}:${LOCKFILE}`), git('show', `HEAD:${LOCKFILE}`)),
       all,
-      selectChanged: (extra) => workspace([`...[${base}]`, ...extra.map((n) => `...${n}`)]),
+      selectChanged: (extra) => {
+        const changed = workspace([`...[${base}]`, ...extra.map((n) => `...${n}`)]);
+        const names = changed.map((p) => p.name);
+        const more = enclosingNames(names, all).filter((n) => !names.includes(n));
+        return more.length === 0 ? changed : workspace([`...[${base}]`, ...[...extra, ...more].map((n) => `...${n}`)]);
+      },
     });
   }
 
