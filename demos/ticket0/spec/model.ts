@@ -455,12 +455,9 @@ const slaTargetsByPriority = z
 /** How many openings one day may have: a morning, an afternoon, an evening, and one spare. */
 export const BUSINESS_WINDOWS_PER_DAY_MAX = 4;
 /**
- * How many dated exceptions a desk may hold: a year of them, every day named.
- *
- * Also what keeps the business-time walk bounded (`src/business-time.ts`): past its
- * ten-year exact horizon the walk counts whole weeks at once, except across an exception,
- * which it walks a day at a time. So the work is the horizon plus at most two weeks per
- * exception, whatever dates they name, and this cap is what makes that a number.
+ * How many dated exceptions a desk may hold: a year of them, every day named. A list an
+ * admin reads; the business-time walk's bound does not depend on it (`src/business-time.ts`
+ * walks at most ten years of days, exceptions or not).
  */
 export const BUSINESS_EXCEPTIONS_MAX = 366;
 

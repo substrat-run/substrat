@@ -2880,9 +2880,12 @@ function displayedBusinessHours(row: DeskRow): string | null {
 /**
  * `ms` of the desk's clock after `from`: business time on `hours`, calendar time without.
  *
- * Calendar time too when `addBusinessMs` refuses the schedule, which a parsed one only
- * meets on a runtime that does not know its timezone. A promise is still kept on some
- * clock rather than on none.
+ * Calendar time too when `addBusinessMs` has no answer: the open time is not reached
+ * within its ten-year cap, or (for a parsed schedule, only on a runtime that does not know
+ * its timezone) it refuses the schedule. `configure-desk` refuses any target the hours
+ * cannot reach inside the cap, so what lands here is the edge `slaDue` names: a re-aim
+ * counting a long `snoozed_ms` after the hours were made sparser. A promise is still kept
+ * on some clock rather than on none.
  */
 function slaClockAdd(hours: BusinessSchedule | null, from: string, ms: number): string {
   return (hours && addBusinessMs(hours, from, ms)) ?? shiftInstant(from, ms);
@@ -2891,6 +2894,35 @@ function slaClockAdd(hours: BusinessSchedule | null, from: string, ms: number): 
 /** How much of [from, to) the desk's clock counts. `slaClockAdd`'s twin, same fallback. */
 function slaClockBetween(hours: BusinessSchedule | null, from: string, to: string): number {
   return (hours && businessMsBetween(hours, from, to)) ?? Math.max(0, Date.parse(to) - Date.parse(from));
+}
+
+/**
+ * Refuse service levels on the business clock that the desk's hours cannot meet within
+ * the ten-year cap `addBusinessMs` walks (#1648), so every configured promise is counted
+ * exactly and the calendar fallback stays an edge. Judged on the settings as they WILL be
+ * — either half may be the one that changed: a long target on sparse hours, or sparse
+ * hours under a long target. Counted from now; the exceptions a desk lists are the only
+ * part of the schedule that moves with the date.
+ *
+ * Names the target, so the admin knows which box to change.
+ */
+function refuseUnreachableTargets(row: DeskRow, now: string): void {
+  const policy = slaPolicy(row);
+  if (!policy?.hours) return;
+  for (const [label, targets] of [
+    ['first-response', policy.firstResponseMinutes],
+    ['resolution', policy.resolutionMinutes],
+  ] as const) {
+    for (const priority of PRIORITIES) {
+      const minutes = targets[priority];
+      if (minutes === undefined || addBusinessMs(policy.hours, now, minutes * 60_000) !== null) continue;
+      throw substratError(
+        'validation_failed',
+        `The ${priority} ${label} target of ${minutes} minutes can't be met within ten years of these ` +
+          'opening hours. Shorten the target, add opening hours, or count calendar time instead.',
+      );
+    }
+  }
 }
 
 const PRIORITIES: readonly Priority[] = ['low', 'normal', 'urgent'];
@@ -3808,6 +3840,15 @@ const operations = {
   'ticket0/configure-desk': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.deskConfigure));
     const current = desk(ctx);
+    // Merged key by key over what is stored, never replaced wholesale: a call that names
+    // `roundRobin` changes `roundRobin`, and a key this version does not know — from a
+    // later one, before a rollback — rides through. Absent keeps the column exactly as it
+    // was, null included.
+    const settings =
+      input.settings === undefined
+        ? current.settings
+        : JSON.stringify({ ...storedSettings(current), ...input.settings });
+    refuseUnreachableTargets({ ...current, settings }, ctx.now());
     ctx.sql.exec(
       `UPDATE ticket0_desk_settings
           SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?,
@@ -3832,13 +3873,7 @@ const operations = {
         input.abandonedAfterDays === undefined
           ? current.abandoned_after_days
           : input.abandonedAfterDays,
-        // Merged key by key over what is stored, never replaced wholesale: a call that
-        // names `roundRobin` changes `roundRobin`, and a key this version does not know
-        // — from a later one, before a rollback — rides through. Absent keeps the column
-        // exactly as it was, null included.
-        input.settings === undefined
-          ? current.settings
-          : JSON.stringify({ ...storedSettings(current), ...input.settings }),
+        settings,
         ctx.now(),
         DESK,
       ],

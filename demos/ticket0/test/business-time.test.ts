@@ -11,9 +11,11 @@ import {
   businessMsBetween,
   dayNumberOf,
   describeSchedule,
+  EXACT_DAYS,
   instantOf,
   type BusinessSchedule,
 } from '../src/business-time.js';
+import { oracleAdd, oracleBetween } from './business-time-oracle.js';
 
 const HOUR = 3_600_000;
 const MINUTE = 60_000;
@@ -164,53 +166,48 @@ describe('round trip', () => {
   });
 });
 
-describe('bounds: the walk ends, whatever the schedule says', () => {
-  // One minute a week, and a target of a year (`SLA_TARGET_MAX_MINUTES`): 525 600 weeks.
-  const target = 525_600 * MINUTE;
-  const start = '2026-01-05T00:00:00.000Z'; // a Monday
+describe('bounds: an exact walk of at most ten years, and null beyond it', () => {
+  // One minute a week, Mondays at noon UTC, from a Monday: the walk covers local days
+  // 0 … EXACT_DAYS - 1, and the last Monday in that is day 3654, the 523rd.
+  const sparse: BusinessSchedule = { timezone: 'UTC', weekly: { mon: [{ open: '12:00', close: '12:01' }] } };
+  const start = '2026-01-05T00:00:00.000Z';
+  const lastMonday = Math.floor((EXACT_DAYS - 1) / 7) * 7;
 
-  it('a one-minute week reaches a year-long target, and at the right minute', () => {
-    const s: BusinessSchedule = { timezone: 'UTC', weekly: { mon: [{ open: '12:00', close: '12:01' }] } };
-    // The work is the zone lookups, so that is what is counted: the ten-year exact walk is
-    // about five hundred open Mondays, two lookups each, and the 10 000 years after it are
-    // counted a week-run at a time. Walked day by day, it would be over a million.
+  it('the last minute inside the cap is answered exactly; one minute more is null', () => {
+    expect(addBusinessMs(sparse, start, 523 * MINUTE)).toBe(
+      new Date(Date.UTC(2026, 0, 5, 12, 1) + lastMonday * DAY).toISOString(),
+    );
+    expect(addBusinessMs(sparse, start, 524 * MINUTE)).toBeNull();
+  });
+
+  it('between: a span ending on the last day inside the cap is counted; one ending a day later is null', () => {
+    const lastDay = new Date(Date.parse(start) + (EXACT_DAYS - 1) * DAY + 23 * 3_600_000).toISOString();
+    const pastIt = new Date(Date.parse(start) + EXACT_DAYS * DAY).toISOString();
+    expect(businessMsBetween(sparse, start, lastDay)).toBe(523 * MINUTE);
+    expect(businessMsBetween(sparse, start, pastIt)).toBeNull();
+  });
+
+  it('a year-long target on a one-minute week is null, after a bounded number of zone lookups', () => {
+    // Ten years of local days: 523 open Mondays at two lookups each, plus the start's.
     const lookups = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
-    const due = addBusinessMs(s, start, target)!;
-    expect(lookups.mock.calls.length).toBeLessThan(5_000);
+    expect(addBusinessMs(sparse, start, 525_600 * MINUTE)).toBeNull();
+    expect(lookups.mock.calls.length).toBeLessThan(1_200);
     lookups.mockRestore();
-    // The 525 600th one-minute window ends 525 599 weeks after the first.
-    expect(Date.parse(due)).toBe(Date.UTC(2026, 0, 5, 12, 1) + 525_599 * 7 * DAY);
-    expect(businessMsBetween(s, start, due)).toBe(target);
   });
 
-  it('an exception beyond the exact horizon still costs its week', () => {
-    // The first Monday of 2060 is closed. It is past the ten-year exact walk, so the weeks
-    // either side of it are counted at once and it must not be jumped over.
-    let mon = dayNumberOf('2060-01-01');
-    while ((((mon + 4) % 7) + 7) % 7 !== 1) mon++;
-    const date = new Date(mon * DAY).toISOString().slice(0, 10);
-    const s: BusinessSchedule = {
-      timezone: 'UTC',
-      weekly: { mon: [{ open: '12:00', close: '12:01' }] },
-      exceptions: [{ date, windows: [] }],
+  it('a desk open every hour of every day does no more than two lookups per day of the cap', () => {
+    const always: BusinessSchedule = {
+      timezone: 'Europe/Stockholm',
+      weekly: Object.fromEntries(
+        ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].map((d) => [d, [{ open: '00:00', close: '24:00' }]]),
+      ),
     };
-    const due = addBusinessMs(s, start, target)!;
-    expect(Date.parse(due)).toBe(Date.UTC(2026, 0, 5, 12, 1) + 525_600 * 7 * DAY);
-    expect(businessMsBetween(s, start, due)).toBe(target);
-  });
-
-  it('a zone with DST far out: a noon window is unaffected by the jump', () => {
-    const s: BusinessSchedule = { timezone: 'Europe/Stockholm', weekly: { mon: [{ open: '12:00', close: '12:01' }] } };
-    const due = addBusinessMs(s, start, target)!;
-    const lastMonday = Date.UTC(2026, 0, 5) / DAY + 525_599 * 7;
-    expect(Date.parse(due)).toBe(instantOf('Europe/Stockholm', lastMonday * DAY + (12 * 60 + 1) * MINUTE));
-  });
-
-  it('the first ten years are walked exactly: half a year of night windows loses the spring hour', () => {
-    // 26 Sundays of 01:00–04:00 in Stockholm, one of them the night the clocks go forward.
-    // Counted a week at a time by wall clock it would be 78 h; counted for real it is 77.
-    const night: BusinessSchedule = { timezone: 'Europe/Stockholm', weekly: { sun: [{ open: '01:00', close: '04:00' }] } };
-    expect(businessMsBetween(night, '2026-01-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z')).toBe(77 * HOUR);
+    const lookups = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
+    expect(addBusinessMs(always, start, 525_600 * MINUTE * 11)).toBeNull();
+    // Two per steady day. A transition puts three days on the slow path (each day's check
+    // spans the day before to the day after), a few more lookups each: twenty transitions.
+    expect(lookups.mock.calls.length).toBeLessThan(2 * EXACT_DAYS + 600);
+    lookups.mockRestore();
   });
 
   it('a schedule with no open time, or an unknown zone, is refused rather than walked', () => {
@@ -218,6 +215,63 @@ describe('bounds: the walk ends, whatever the schedule says', () => {
     expect(addBusinessMs({ timezone: 'UTC', weekly: { mon: [] } }, start, HOUR)).toBeNull();
     expect(addBusinessMs({ timezone: 'Mars/Olympus', weekly: { mon: nineToFive } }, start, HOUR)).toBeNull();
     expect(businessMsBetween({ timezone: 'UTC', weekly: {} }, start, '2026-02-01T00:00:00.000Z')).toBeNull();
+  });
+});
+
+/**
+ * The module against an oracle that shares none of its arithmetic (`business-time-oracle.ts`
+ * steps real time a quarter-hour at a time and reads the wall clock). Windows straddle the
+ * skipped hour and the repeated hour in both hemispheres, on the nights each zone changes:
+ * Stockholm and New York (spring forward in March, back in October/November) and Sydney
+ * (forward in October, back in April). Codex's round-1 case on #2060 is the last block.
+ */
+describe('agrees with an independent wall-clock walk, across DST in both hemispheres', () => {
+  const across = (timezone: string): BusinessSchedule => ({
+    timezone,
+    weekly: { sun: [{ open: '01:00', close: '04:00' }], wed: [{ open: '09:00', close: '17:30' }] },
+    exceptions: [{ date: '2027-03-28', windows: [{ open: '01:30', close: '03:45' }] }],
+  });
+  const from = '2026-01-01T00:00:00.000Z';
+  // The oracle reads the wall clock some 35 000 times per year it covers: slow on purpose.
+  const ORACLE_MS = 120_000;
+
+  for (const timezone of ['Europe/Stockholm', 'America/New_York', 'Australia/Sydney']) {
+    const s = across(timezone);
+    it(`${timezone}: due instants over three years`, () => {
+      for (const hours of [3, 50.25, 400, 1234.5]) {
+        const ms = hours * HOUR;
+        expect(addBusinessMs(s, from, ms)).toBe(oracleAdd(s, from, ms, '2030-01-01T00:00:00.000Z'));
+      }
+    }, ORACLE_MS);
+
+    it(`${timezone}: open time between instants, each year's transitions inside`, () => {
+      for (const [a, b] of [
+        ['2026-01-01T00:00:00.000Z', '2027-01-01T00:00:00.000Z'],
+        ['2026-03-27T06:15:00.000Z', '2026-11-05T13:45:00.000Z'],
+        ['2027-03-26T00:00:00.000Z', '2027-04-10T00:00:00.000Z'],
+        ['2026-09-30T00:00:00.000Z', '2028-04-15T00:00:00.000Z'],
+      ] as const) {
+        expect(businessMsBetween(s, a, b)).toBe(oracleBetween(s, a, b));
+      }
+    }, ORACLE_MS);
+  }
+
+  describe("Codex's case: Stockholm, Sundays 01:00–04:00, from 2026-01-01", () => {
+    const sundays: BusinessSchedule = { timezone: 'Europe/Stockholm', weekly: { sun: [{ open: '01:00', close: '04:00' }] } };
+    // The cap, as the oracle sees it: the end of the 3660th local day after the start's.
+    const cap = '2036-01-01T00:00:00.000Z';
+
+    it('inside the cap the due is the wall clock’s, to the minute', () => {
+      const ms = 1_500 * HOUR;
+      const due = addBusinessMs(sundays, from, ms);
+      expect(due).not.toBeNull();
+      expect(due).toBe(oracleAdd(sundays, from, ms, cap));
+    }, ORACLE_MS);
+
+    it('1606 h lies past the cap: null — never the hour-off instant the week jump gave', () => {
+      expect(oracleAdd(sundays, from, 1_606 * HOUR, cap)).toBeNull();
+      expect(addBusinessMs(sundays, from, 1_606 * HOUR)).toBeNull();
+    }, ORACLE_MS);
   });
 });
 

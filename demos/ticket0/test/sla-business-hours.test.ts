@@ -160,6 +160,46 @@ describe('the business clock decides when a target falls due', () => {
   });
 });
 
+describe('a business-clock target the hours cannot meet within ten years is refused, naming it', () => {
+  const sparse = { timezone: 'UTC', weekly: { mon: [{ open: '12:00', close: '12:01' }] } };
+  const message = /The urgent resolution target of 525600 minutes can't be met within ten years of these opening hours/;
+
+  it('refused when the target arrives on hours too sparse for it, and the desk keeps what it had', async () => {
+    const desk = await freshDesk({ businessHours: sparse, sla: { ...FR_4H, clock: 'business' } });
+    await expect(
+      (await admin(desk)).invoke('ticket0/configure-desk', {
+        settings: { sla: { ...FR_4H, resolutionMinutes: { urgent: 525_600 }, clock: 'business' } },
+      }),
+    ).rejects.toThrow(message);
+    const saved = (await (await admin(desk)).invoke('ticket0/get-desk', {})) as { settings: string };
+    expect(JSON.parse(saved.settings).sla).toEqual({ ...FR_4H, clock: 'business' });
+  });
+
+  it('refused just the same when the hours change under a target that was met', async () => {
+    const desk = await freshDesk({
+      businessHours: WEEKDAYS_UTC,
+      sla: { resolutionMinutes: { urgent: 525_600 }, clock: 'business' },
+    });
+    await expect(
+      (await admin(desk)).invoke('ticket0/configure-desk', { settings: { businessHours: sparse } }),
+    ).rejects.toThrow(message);
+    expect(await widgetHours(desk)).toBe('Mon–Fri 09:00–17:00 (UTC)');
+  });
+
+  it('the twins: the same target on calendar time, and a target the sparse hours can meet, are accepted', async () => {
+    const desk = await freshDesk({ businessHours: sparse });
+    await (await admin(desk)).invoke('ticket0/configure-desk', {
+      settings: { sla: { resolutionMinutes: { urgent: 525_600 } } },
+    });
+    // 523 one-minute Mondays fit in ten years from any Monday-or-earlier start; 500 does.
+    await (await admin(desk)).invoke('ticket0/configure-desk', {
+      settings: { sla: { resolutionMinutes: { urgent: 500 }, clock: 'business' } },
+    });
+    const saved = (await (await admin(desk)).invoke('ticket0/get-desk', {})) as { settings: string };
+    expect(JSON.parse(saved.settings).sla).toEqual({ resolutionMinutes: { urgent: 500 }, clock: 'business' });
+  });
+});
+
 describe('a snooze on the business clock gives back business time (#1648)', () => {
   it('a snooze over a weekend gives back the open hours it covered, and first response still runs', async () => {
     const desk = await freshDesk({

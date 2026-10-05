@@ -23,14 +23,15 @@
  * autumn night is four hours long and on the spring night two, because a customer
  * waiting through it waited that long. The usual 09:00–17:00 never meets a transition.
  *
- * The walk is bounded, whatever the schedule says. Days are walked one at a time, exactly,
- * for the first `EXACT_DAYS` (ten years) and across every exception. Beyond that, a stretch
- * of whole weeks with no exception in it holds exactly one of each weekday, so it is
- * counted by the weekly sum in one step instead of being walked — `test/business-time.test.ts`
- * drives a one-minute-a-week desk to a year-long target this way. Inside such a jump the
- * count is the windows' WALL-CLOCK length, so a window that straddles a DST transition more
- * than ten years out is off by that hour. A due ten years away is not one anybody escalates
- * on, and every due that matters is inside the exact walk.
+ * The walk is bounded, whatever the schedule says, and it never approximates: every day
+ * it counts is walked, exactly, and it walks at most `EXACT_DAYS` local days (ten years).
+ * Open time that is not reached inside that is not counted at all — `addBusinessMs` and
+ * `businessMsBetween` return null, and the caller falls back to calendar time. So the
+ * work is at most two zone lookups per open day of ten years, and every answer the module
+ * does give is exact. A promise more than ten years of opening hours out is not one a
+ * desk can make: `ticket0/configure-desk` refuses a business-clock target its hours cannot
+ * reach inside the cap, so only an edge (a re-aim after the hours were made sparser) ever
+ * meets the fallback.
  */
 
 const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
@@ -49,8 +50,8 @@ export interface BusinessSchedule {
   readonly exceptions?: readonly { readonly date: string; readonly windows: readonly BusinessWindow[] }[];
 }
 
-/** How many local days are walked one at a time before whole weeks may be counted at once. */
-const EXACT_DAYS = 3660;
+/** The most local days a walk covers: ten years. Beyond it there is no answer, only null. */
+export const EXACT_DAYS = 3660;
 
 const DAY = 86_400_000;
 const MINUTE = 60_000;
@@ -152,10 +153,6 @@ interface Compiled {
   /** Per weekday (0 = Sunday), windows as [openMinute, closeMinute). */
   readonly weekly: readonly (readonly (readonly [number, number])[])[];
   readonly exceptions: ReadonlyMap<number, readonly (readonly [number, number])[]>;
-  /** Exception day numbers, ascending. */
-  readonly exceptionDays: readonly number[];
-  /** The week's open time by wall clock, in ms. Positive, or the schedule is refused. */
-  readonly weekMs: number;
 }
 
 function compile(schedule: BusinessSchedule): Compiled | null {
@@ -163,8 +160,8 @@ function compile(schedule: BusinessSchedule): Compiled | null {
   const windowsOf = (ws: readonly BusinessWindow[] | undefined) =>
     (ws ?? []).map((w) => [minutesOf(w.open), minutesOf(w.close)] as const);
   const weekly = WEEKDAYS.map((d) => windowsOf(schedule.weekly[d]));
-  const weekMs = weekly.flat().reduce((sum, [o, c]) => sum + (c - o) * MINUTE, 0);
-  if (!(weekMs > 0)) return null;
+  // A week with no open time has no business time in it, and nothing would ever fall due.
+  if (!weekly.some((ws) => ws.length > 0)) return null;
   const exceptions = new Map<number, readonly (readonly [number, number])[]>();
   for (const e of schedule.exceptions ?? []) {
     const dn = dayNumberOf(e.date);
@@ -174,8 +171,6 @@ function compile(schedule: BusinessSchedule): Compiled | null {
     timezone: schedule.timezone,
     weekly,
     exceptions,
-    exceptionDays: [...exceptions.keys()].sort((a, b) => a - b),
-    weekMs,
   };
 }
 
@@ -198,43 +193,23 @@ function openings(c: Compiled, day: number): (readonly [number, number])[] {
   return windows.map(([o, cl]) => [at(o), at(cl)] as const);
 }
 
-/** The first exception on or after `day`, or Infinity. */
-function nextException(c: Compiled, day: number): number {
-  for (const d of c.exceptionDays) if (d >= day) return d;
-  return Infinity;
-}
-
 /**
- * The open time from `start` onwards, in order, without end: each opening as `[from, to)`
- * (clipped to begin no earlier than `start`), or `{ weeks }` — open time counted a whole
- * stretch at once rather than walked.
- *
- * Whole weeks are counted only past the exact horizon, never across an exception, never
- * up to `limitDay(day)` (exclusive), and always one fewer than fits, so the last stretch is
- * walked. The consumer stops it.
+ * The open time from `start` onwards, in order: each opening as `[from, to)`, clipped to
+ * begin no earlier than `start`, for the `EXACT_DAYS` local days starting with `start`'s.
+ * Then it ends, and whatever the consumer was counting towards is past the cap.
  */
-function* openTime(
-  c: Compiled,
-  start: number,
-  limitDay: (day: number) => number,
-): Generator<readonly [number, number] | { readonly weeks: number }> {
-  for (let day = localDay(c.timezone, start), walked = 0; ; walked++, day++) {
-    if (walked >= EXACT_DAYS) {
-      const room = Math.min(nextException(c, day), limitDay(day)) - day;
-      const skip = Math.floor(room / 7) - 1;
-      if (skip > 0) {
-        yield { weeks: skip * c.weekMs };
-        day += skip * 7;
-      }
-    }
+function* openTime(c: Compiled, start: number): Generator<readonly [number, number]> {
+  const first = localDay(c.timezone, start);
+  for (let day = first; day < first + EXACT_DAYS; day++) {
     for (const [open, close] of openings(c, day)) if (close > start) yield [Math.max(open, start), close];
   }
 }
 
 /**
  * The instant at which `ms` of open time, counted from `start`, has passed. `ms` of zero
- * is `start` itself, open or not. Null for a schedule this module refuses (an unknown
- * zone, or no open time in the week) — the caller's fallback, never a guess.
+ * is `start` itself, open or not. Null when that is not inside the cap, or for a schedule
+ * this module refuses (an unknown zone, or no open time in the week): the caller's
+ * fallback, never a guess.
  */
 export function addBusinessMs(schedule: BusinessSchedule, start: string, ms: number): string | null {
   const c = compile(schedule);
@@ -242,34 +217,26 @@ export function addBusinessMs(schedule: BusinessSchedule, start: string, ms: num
   const from = Date.parse(start);
   let remaining = Math.max(0, ms);
   if (remaining === 0) return new Date(from).toISOString();
-  // A jump never reaches past the week `remaining` runs out in, so it never overshoots.
-  for (const piece of openTime(c, from, (day) => day + Math.ceil(remaining / c.weekMs) * 7)) {
-    if ('weeks' in piece) {
-      remaining -= piece.weeks;
-      continue;
-    }
-    const [a, b] = piece;
+  for (const [a, b] of openTime(c, from)) {
     if (remaining <= b - a) return new Date(a + remaining).toISOString();
     remaining -= b - a;
   }
-  throw new Error('unreachable: open time never ends');
+  return null;
 }
 
-/** How much open time lies in [from, to). Zero when `to` is not after `from`; null as above. */
+/**
+ * How much open time lies in [from, to). Zero when `to` is not after `from`. Null when `to`
+ * is past the cap counted from `from`, or for a refused schedule, as above.
+ */
 export function businessMsBetween(schedule: BusinessSchedule, from: string, to: string): number | null {
   const c = compile(schedule);
   if (c === null) return null;
   const start = Date.parse(from);
   const end = Date.parse(to);
   if (!(end > start)) return 0;
-  const lastDay = localDay(c.timezone, end);
+  if (localDay(c.timezone, end) >= localDay(c.timezone, start) + EXACT_DAYS) return null;
   let total = 0;
-  for (const piece of openTime(c, start, () => lastDay)) {
-    if ('weeks' in piece) {
-      total += piece.weeks;
-      continue;
-    }
-    const [a, b] = piece;
+  for (const [a, b] of openTime(c, start)) {
     if (a >= end) break;
     total += Math.min(b, end) - a;
   }
