@@ -1776,6 +1776,10 @@ export interface HostAdmin {
    * role that was never assigned (or already revoked) is a silent no-op. Takes a
    * `PlatformActorId` like every admin mutation — the caller's own authority to do
    * this is decided above the kernel (e.g. the dashboard's manage-members check).
+   *
+   * At the TENANT node it also raises the principal's removal fence (#1184), in the same
+   * unit as the revoke and whether or not anything was held, so a membership-executor add
+   * still on its way for them is refused. The no-op stays unaudited.
    */
   unassignRole(actor: PlatformActorId, assignment: RoleAssignment): Promise<void>;
   grant(actor: PlatformActorId, grant: CapabilityGrant): Promise<void>;
@@ -2046,6 +2050,9 @@ export interface HostAdmin {
    * no-op, and a no-op is not audited. Re-adding via `addMember` clears the
    * tombstone (they are a member again); the add/revoke history lives in the admin
    * log, which is append-only.
+   *
+   * Raises the principal's removal fence (#1184) in the same unit as the revoke, a no-op
+   * included, so a membership-executor add still on its way for them is refused.
    */
   removeMember(
     actor: PlatformActorId,
