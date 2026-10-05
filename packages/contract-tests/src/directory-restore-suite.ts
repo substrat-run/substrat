@@ -289,6 +289,37 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
       });
     });
 
+    it('a dump from before the removal fence: the fence is backfilled from its admin log (#1184)', async () => {
+      await using(async (dir, fresh) => {
+        const P = '01JZ00000000000000000000F2';
+        const Q = '01JZ00000000000000000000F3';
+        const log = (id: string, action: string, scope: string | null, before: unknown, at: string) =>
+          ({ id, actor: 'staff', action, tenant_id: 'tenant-a', scope_id: scope, before: JSON.stringify(before), at });
+        const rows = [
+          // Two tenant-level removals of P: the later one is the fence.
+          log('01JZ0000000000000000000L01', 'unassignRole', null, { principalId: P, roleKey: 'member', node: { tenantId: 'tenant-a', scopeId: null } }, '2026-09-01T00:00:00.000Z'),
+          log('01JZ0000000000000000000L02', 'removeMember', null, { principal: P, orgId: 'o1' }, '2026-09-02T00:00:00.000Z'),
+          // A removal at one scope is not a tenant removal: Q gets no fence.
+          log('01JZ0000000000000000000L03', 'unassignRole', 's1', { principalId: Q, roleKey: 'member', node: { tenantId: 'tenant-a', scopeId: 's1' } }, '2026-09-03T00:00:00.000Z'),
+        ];
+        const dump = withTable(
+          fresh.filter((t) => t.name !== '_substrat_membership_fences'),
+          '_substrat_admin_log',
+          (t) => ({ ...t, rows: rows.map((r) => rowOf(t.columns, r)) }),
+        );
+        await dir.restore(dump);
+        await dir.settle();
+        expect(recordsOf(find(await dir.snapshot(), '_substrat_membership_fences'))).toEqual([
+          { tenant_id: 'tenant-a', principal: P, removed_at: '2026-09-02T00:00:00.000Z' },
+        ]);
+
+        // Twin: a dump that carries the table, empty, is taken as it is — never backfilled over.
+        await dir.restore(withTable(dump.concat(find(fresh, '_substrat_membership_fences')), '_substrat_admin_log', (t) => t));
+        await dir.settle();
+        expect(recordsOf(find(await dir.snapshot(), '_substrat_membership_fences'))).toEqual([]);
+      });
+    });
+
     describe('refused, and the directory is left exactly as it was', () => {
       const refusals: Refusal[] = [
         [

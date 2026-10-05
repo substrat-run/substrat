@@ -779,4 +779,11 @@ export {
   type MemberRemoveRequestedPayload,
   type MembershipExecutorOptions,
 } from './membership-executor.js';
-export { MEMBERSHIP_FENCES_DDL, MEMBERSHIP_FENCE_SINCE_SQL, RAISE_MEMBERSHIP_FENCE_SQL } from './membership-fence.js';
+export {
+  MEMBERSHIP_FENCES_BACKFILL_SQL,
+  MEMBERSHIP_FENCES_DDL,
+  MEMBERSHIP_FENCES_TABLE,
+  MEMBERSHIP_FENCE_SINCE_SQL,
+  RAISE_MEMBERSHIP_FENCE_SQL,
+  membershipFencesTableExists,
+} from './membership-fence.js';

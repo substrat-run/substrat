@@ -1,6 +1,9 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
+  MEMBERSHIP_FENCES_BACKFILL_SQL,
   MEMBERSHIP_FENCES_DDL,
+  MEMBERSHIP_FENCES_TABLE,
+  membershipFencesTableExists,
   MEMBERSHIP_FENCE_SINCE_SQL,
   RAISE_MEMBERSHIP_FENCE_SQL,
   tenantCoverage,
@@ -1366,11 +1369,19 @@ export class ControlPlaneDO extends DurableObject {
    */
   private applyDirectorySchema(): void {
     const switchRecordIsNew = !systemSwitchesTableExists(this.kernelSql);
-    this.buildDirectorySchema({ holdSwitchRecord: switchRecordIsNew });
+    const fencesAreNew = !membershipFencesTableExists(this.kernelSql);
+    this.buildDirectorySchema({ holdSwitchRecord: switchRecordIsNew, holdFences: fencesAreNew });
     if (switchRecordIsNew) {
       this.ctx.storage.transactionSync(() => {
         for (const stmt of splitSqlStatements(SYSTEM_SWITCHES_DDL)) this.sql.exec(stmt);
         this.sql.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      });
+    }
+    // #1184: the removal fence and its backfill from the admin log, together, the same way.
+    if (fencesAreNew) {
+      this.ctx.storage.transactionSync(() => {
+        for (const stmt of splitSqlStatements(MEMBERSHIP_FENCES_DDL)) this.sql.exec(stmt);
+        this.sql.exec(MEMBERSHIP_FENCES_BACKFILL_SQL);
       });
     }
   }
@@ -1380,11 +1391,12 @@ export class ControlPlaneDO extends DurableObject {
    * holds forward to that shape: the construction's pass, and a restore's (#1898, #1912), which
    * runs it inside its transaction onto an emptied directory, before loading any row.
    * `holdSwitchRecord` leaves the #1674 record's statements to the caller, which creates the
-   * table with its backfill.
+   * table with its backfill; `holdFences` does the same for #1184's removal fence.
    */
-  private buildDirectorySchema({ holdSwitchRecord }: { holdSwitchRecord: boolean }): void {
+  private buildDirectorySchema({ holdSwitchRecord, holdFences = false }: { holdSwitchRecord: boolean; holdFences?: boolean }): void {
     for (const stmt of DIRECTORY_DDL_PLAN.loop) {
       if (holdSwitchRecord && stmt.includes(SYSTEM_SWITCHES_TABLE)) continue;
+      if (holdFences && stmt.includes(MEMBERSHIP_FENCES_TABLE)) continue;
       this.sql.exec(stmt);
     }
     this.ensureDirectoryColumns();

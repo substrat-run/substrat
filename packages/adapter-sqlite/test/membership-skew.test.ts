@@ -103,4 +103,21 @@ describe('membership executor — a removal outside the seam against the skew wi
     clock.set(new Date(Date.parse(removedAt) + 6 * 60_000)); // six minutes later: outside it
     expect(await invitedAndAccepted(joe)).toEqual(['delivered']);
   });
+
+  it('a directory opened from before the fence backfills it from the admin log, so a hand removal made back then still wins', async () => {
+    const joe = principalId.parse(ulid());
+    const removedAt = await removedByHand(joe);
+    // The directory as it stood before this code: no fence table, the removal only in the log.
+    await host.close();
+    const raw = new Database(join(dir, '_directory.sqlite'));
+    raw.exec('DROP TABLE _substrat_membership_fences');
+    raw.close();
+    host = new SqliteScopeHost({ dir, clock: clock.read, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    host.registerModule(membershipFixtureMod);
+    registerMembershipExecutor(host, { actor: staff });
+    clock.set(new Date(Date.parse(removedAt) + 60_000));
+    expect(await invitedAndAccepted(joe)).toEqual(['refused']);
+    // Twin: someone the log never removed joins on the reopened directory.
+    expect(await invitedAndAccepted(principalId.parse(ulid()))).toEqual(['delivered']);
+  });
 });

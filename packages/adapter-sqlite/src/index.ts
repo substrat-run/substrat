@@ -381,7 +381,9 @@ import {
   executorOutcomeOf,
   isDeliveryRefusal,
   refusalJournalText,
+  MEMBERSHIP_FENCES_BACKFILL_SQL,
   MEMBERSHIP_FENCES_DDL,
+  membershipFencesTableExists,
   MEMBERSHIP_FENCE_SINCE_SQL,
   RAISE_MEMBERSHIP_FENCE_SQL,
   tenantCoverage,
@@ -2277,8 +2279,11 @@ export class SqliteScopeHost implements ScopeHost {
   private ensureDirectorySchema(): void {
     this.directory.transaction(() => {
       const switchRecordIsNew = !systemSwitchesTableExists(switchSqlOf(this.directory));
+      const fencesAreNew = !membershipFencesTableExists(switchSqlOf(this.directory));
       this.buildDirectorySchema();
       if (switchRecordIsNew) this.directory.exec(SYSTEM_SWITCHES_BACKFILL_SQL);
+      // #1184: the removal fence, from the removals made before it existed — the same once-only gate.
+      if (fencesAreNew) this.directory.exec(MEMBERSHIP_FENCES_BACKFILL_SQL);
     })();
     this.splitVersionMigrations();
   }
