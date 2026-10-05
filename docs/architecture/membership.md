@@ -178,19 +178,20 @@ pattern; joining it is cheap to design now and impossible to reconstruct after t
 uncorrelated rows — which is exactly when someone asks.
 
 **The executor is the kernel's, mounted once (#1184).** `registerMembershipExecutor(host,
-{ actor })` in `@substrat-run/kernel` consumes `member.add-requested` and effects the org
-membership and the role at the **tenant** node, and only there. A scope-level role lives in
+{ actor })` in `@substrat-run/kernel` consumes `member.add-requested` and assigns the role at
+the **tenant** node, and only there. It joins no org: an org's grants can live in each scope's
+own store, where no directory unit can bound them, so authorizing org membership needs a
+capability of its own, and the request's `orgId` stays the invites engine's vocabulary. A scope-level role lives in
 the scope's store and membership in the directory, and no single operation spans the two.
 A scope role already has an atomic check-and-grant, `assignScopeRoleBounded`, which is what
 `vertical-auth`'s invite routes use.
 
-The correlation id is the event's own kernel-minted id, carried back as `causedBy` on both
-admin rows. Nothing in the payload is authority, because module code wrote it:
+The correlation id is the event's own kernel-minted id, carried back as `causedBy` on the
+admin row. Nothing in the payload is authority, because module code wrote it:
 
 - The inviter is the kernel-stamped actor of the invitation's `invites.sent` event. §5.1's
-  set comparison asks, at execution time, whether that inviter still holds everything the
-  join confers: the role's permissions and the org's, read from the directory (joining an
-  org grants what it holds). A sender demoted or removed since the send is refused.
+  set comparison asks, at execution time, whether that inviter still holds every permission
+  the role carries. A sender demoted or removed since the send is refused.
 - The joiner is the request's own actor. It must have made the invitation's first
   acceptance, and the request must be the first one naming that invitation, so one
   invitation joins one person once.
@@ -198,8 +199,12 @@ admin rows. Nothing in the payload is authority, because module code wrote it:
   the principal who really invoked it look like the sender.
 
 The effect is ONE directory unit, `HostAdmin.applyMembership`: a SQLite transaction, or one
-synchronous ControlPlaneDO method. It holds the final "removed since" check, the membership,
-the role and both audit rows, so an add and a removal of the same person serialize.
+synchronous ControlPlaneDO method, with no await inside it. It reads the person's removal
+fence, asks the bound again against the directory as it stands (`tenantCoverage`, the
+synchronous twin of `covers` at the tenant node, pinned to it by test), and only then writes
+the role and its audit row. The executor's own earlier check is the cheap refusal; the one
+inside the unit is the one that decides, so a demotion, a lost grant or a widened role landing
+between the two is never written past.
 
 A refusal is terminal (`refuseDelivery`, a return value module code cannot produce),
 journaled with the missing permissions, and reported to the accepting call through
@@ -209,16 +214,22 @@ the `PlatformActorId` question: the actor is the hand, and the person whose auth
 the write is recorded beside it, not laundered away.
 
 Removal is the mirror: `member.remove-requested`, bounded by the remover (§5.1 consequence
-1), effected by the same executor, and always recorded even when nothing was held. **Removal
-wins**: an add is refused when the joiner was removed after it was requested.
+1), effected by the same executor as a tenant-level `unassignRole`. **Removal wins**: an add
+is refused when the joiner was removed after it was requested.
 
 - A removal through the seam is ordered by outbox id.
-- A removal outside it (an `unassignRole` / `removeMember` row) wins at or after the request
-  less `MEMBERSHIP_REMOVAL_SKEW_MS` (5 minutes). The directory and the scope share no clock,
-  so ties and near-ties go to the removal. The cost: someone removed by staff less than that
-  before accepting a NEW invite is refused, and the invite can be resent.
-- This is what keeps a backlog safe. Requests emitted before any executor was mounted, for
-  people removed by hand since, stay refused when a first drain finds them.
+- Every tenant-level `unassignRole` and every `removeMember`, staff's or the executor's,
+  raises the person's **removal fence** (`_substrat_membership_fences`) in the same unit as
+  its revoke: one transaction, or one ControlPlaneDO method, so no add can land between the
+  revoke and the fence. A no-op removal raises it too, because a removal of someone whose add
+  is still on its way takes nothing and must still win; K-21's audit contract is unchanged,
+  and a no-op still writes no audit row. The fence is its own table for that reason.
+- The add's unit refuses when the fence stands at or after the request less
+  `MEMBERSHIP_REMOVAL_SKEW_MS` (5 minutes). The directory and the scope share no clock, so
+  ties and near-ties go to the removal. The cost: someone removed less than that before
+  accepting a NEW invite is refused, and the invite can be resent.
+- The fence is carried by a directory backup and restore like every directory table, and
+  cleared with the tenant's other rows on a reap.
 
 The dashboard mounts it with its own scope sweeper as the backstop, and shows an accepted
 member as `joining` until the journal says otherwise (`readExecutorDelivery`).
