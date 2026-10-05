@@ -28,12 +28,15 @@ type Targets = Partial<Record<SlaPriority, number>>;
 export interface SlaSetting {
   firstResponseMinutes?: Targets;
   resolutionMinutes?: Targets;
+  clock?: 'business';
 }
 
 /** The six boxes, as typed. An empty string is "no target", never zero. */
 export interface SlaForm {
   firstResponse: Record<SlaPriority, string>;
   resolution: Record<SlaPriority, string>;
+  /** Count only the desk's opening hours (#1648): `clock: 'business'`. */
+  businessClock: boolean;
 }
 
 const blank = (): Record<SlaPriority, string> => ({ urgent: '', normal: '', low: '' });
@@ -46,7 +49,7 @@ const blank = (): Record<SlaPriority, string> => ({ urgent: '', normal: '', low:
  * display a target the desk is not applying.
  */
 export function slaFormOf(settings: string | null): SlaForm {
-  const form: SlaForm = { firstResponse: blank(), resolution: blank() };
+  const form: SlaForm = { firstResponse: blank(), resolution: blank(), businessClock: false };
   let sla: unknown;
   try {
     sla = settings ? (JSON.parse(settings) as Record<string, unknown>).sla : undefined;
@@ -63,6 +66,7 @@ export function slaFormOf(settings: string | null): SlaForm {
   };
   fill(form.firstResponse, (sla as Record<string, unknown>).firstResponseMinutes);
   fill(form.resolution, (sla as Record<string, unknown>).resolutionMinutes);
+  form.businessClock = (sla as Record<string, unknown>).clock === 'business';
   return form;
 }
 
@@ -111,6 +115,9 @@ export function slaPayloadOf(form: SlaForm): SlaSetting | null {
   return {
     ...(firstResponseMinutes ? { firstResponseMinutes } : {}),
     ...(resolutionMinutes ? { resolutionMinutes } : {}),
+    // Left out rather than sent as `'calendar'`, so a desk that never chose keeps the
+    // shape it always had.
+    ...(form.businessClock ? { clock: 'business' as const } : {}),
   };
 }
 

@@ -20,7 +20,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { moduleId, platformActorId, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
 import { manualClock, ulid, type ManualClock, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
-import { BUSINESS_EXCEPTIONS_MAX } from '../spec/model.js';
+import { BUSINESS_EXCEPTIONS_MAX, BUSINESS_WINDOWS_PER_DAY_MAX } from '../spec/model.js';
+import {
+  emptyHoursForm,
+  HOURS_EXCEPTIONS_MAX,
+  HOURS_WINDOWS_PER_DAY_MAX,
+  hoursFormOf,
+  hoursPayloadOf,
+} from '../app/src/business-hours.js';
+import { slaFormOf, slaPayloadOf } from '../app/src/sla.js';
 import { ticket0Manifest } from '../src/manifest.js';
 import { ROLES } from '../src/provision.js';
 import { buildHost } from '../src/seed.js';
@@ -384,5 +392,98 @@ describe('configure-desk refuses hours it cannot mean, and keeps what was saved'
       },
     });
     expect(await widgetHours(desk)).toBe('Mon 00:00–06:00, 06:00–12:00, 13:00–18:00, 19:00–24:00 (UTC)');
+  });
+});
+
+describe('the Settings form says what the desk will do', () => {
+  it('bounds the boxes by the same numbers the desk does', () => {
+    expect(HOURS_WINDOWS_PER_DAY_MAX).toBe(BUSINESS_WINDOWS_PER_DAY_MAX);
+    expect(HOURS_EXCEPTIONS_MAX).toBe(BUSINESS_EXCEPTIONS_MAX);
+  });
+
+  it('round-trips through the real desk: hours, exceptions and the business clock', async () => {
+    const desk = await freshDesk({});
+    const hours = emptyHoursForm();
+    hours.timezone = 'Europe/Stockholm';
+    for (const d of ['mon', 'tue', 'wed', 'thu'] as const) hours.days[d] = '09:00–17:00';
+    hours.days.fri = '09:00–12:00, 13:00–15:00';
+    hours.exceptions = '2027-12-24 closed\n2027-12-31 09:00–12:00';
+    const payload = hoursPayloadOf(hours);
+    expect(payload).toEqual({
+      setting: {
+        timezone: 'Europe/Stockholm',
+        weekly: {
+          mon: nineToFive, tue: nineToFive, wed: nineToFive, thu: nineToFive,
+          fri: [{ open: '09:00', close: '12:00' }, { open: '13:00', close: '15:00' }],
+        },
+        exceptions: [
+          { date: '2027-12-24', windows: [] },
+          { date: '2027-12-31', windows: [{ open: '09:00', close: '12:00' }] },
+        ],
+      },
+    });
+    const sla = slaFormOf(null);
+    sla.firstResponse.normal = '240';
+    sla.businessClock = true;
+    expect(slaPayloadOf(sla)).toEqual({ firstResponseMinutes: { normal: 240 }, clock: 'business' });
+
+    await (await admin(desk)).invoke('ticket0/configure-desk', {
+      settings: { businessHours: 'setting' in payload ? payload.setting : null, sla: slaPayloadOf(sla) },
+    });
+    const saved = (await (await admin(desk)).invoke('ticket0/get-desk', {})) as { settings: string };
+    expect(hoursFormOf(saved.settings)).toEqual(hours);
+    expect(slaFormOf(saved.settings)).toEqual(sla);
+    expect(await widgetHours(desk)).toBe('Mon–Thu 09:00–17:00; Fri 09:00–12:00, 13:00–15:00 (Europe/Stockholm)');
+  });
+
+  it('every box empty saves as no structured hours; the clock box unticked sends no clock', () => {
+    expect(hoursPayloadOf(emptyHoursForm())).toEqual({ setting: null });
+    const sla = slaFormOf(null);
+    sla.firstResponse.normal = '30';
+    expect(slaPayloadOf(sla)).toEqual({ firstResponseMinutes: { normal: 30 } });
+  });
+
+  it('accepts a hyphen for the dash, and reads it back with the dash', () => {
+    const hours = emptyHoursForm();
+    hours.timezone = 'UTC';
+    hours.days.mon = '09:00-17:00';
+    expect(hoursPayloadOf(hours)).toEqual({ setting: { timezone: 'UTC', weekly: { mon: nineToFive } } });
+  });
+
+  it('names the box it will not save', () => {
+    const withDay = (text: string, timezone = 'UTC') => {
+      const hours = emptyHoursForm();
+      hours.timezone = timezone;
+      hours.days.tue = text;
+      return hoursPayloadOf(hours);
+    };
+    expect(withDay('9 to 5')).toEqual({ error: expect.stringMatching(/^Tuesday: "9 to 5" is not a window/) });
+    expect(withDay('17:00–09:00')).toEqual({ error: expect.stringMatching(/^Tuesday: .*closes before it opens/) });
+    expect(withDay('09:00–13:00, 12:00–17:00')).toEqual({ error: expect.stringMatching(/^Tuesday: .*overlap/) });
+    expect(withDay('09:00–24:30')).toEqual({ error: expect.stringMatching(/^Tuesday: .*00:00–24:00/) });
+    expect(withDay('00:00–01:00, 02:00–03:00, 04:00–05:00, 06:00–07:00, 08:00–09:00')).toEqual({
+      error: expect.stringMatching(/^Tuesday: at most 4/),
+    });
+    expect(withDay('09:00–17:00', '')).toEqual({ error: expect.stringMatching(/^Timezone: required/) });
+    expect(withDay('09:00–17:00', 'Mars/Olympus')).toEqual({ error: expect.stringMatching(/^Timezone: "Mars\/Olympus"/) });
+    expect(withDay('', 'UTC')).toEqual({ error: 'Open on at least one day of the week.' });
+
+    const withException = (line: string) => {
+      const hours = emptyHoursForm();
+      hours.timezone = 'UTC';
+      hours.days.mon = '09:00–17:00';
+      hours.exceptions = line;
+      return hoursPayloadOf(hours);
+    };
+    expect(withException('Christmas closed')).toEqual({ error: expect.stringMatching(/start with a date/) });
+    expect(withException('2027-02-30 closed')).toEqual({ error: expect.stringMatching(/start with a date/) });
+    expect(withException('2027-12-24')).toEqual({ error: expect.stringMatching(/say "closed"/) });
+    expect(withException('2027-12-24 closed\n2027-12-24 closed')).toEqual({ error: expect.stringMatching(/listed twice/) });
+  });
+
+  it('shows empty boxes for a stored shape the desk would not apply', () => {
+    expect(hoursFormOf(JSON.stringify({ businessHours: { tz: 'UTC' } }))).toEqual(emptyHoursForm());
+    expect(hoursFormOf('not json')).toEqual(emptyHoursForm());
+    expect(hoursFormOf(JSON.stringify({ businessHours: null }))).toEqual(emptyHoursForm());
   });
 });
