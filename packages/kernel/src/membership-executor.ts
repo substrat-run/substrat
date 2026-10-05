@@ -6,6 +6,7 @@ import {
   type DomainEvent,
   type EntityRef,
   type HistoryEntry,
+  type OrgId,
   type PlatformActorId,
   type PrincipalId,
 } from '@substrat-run/contracts';
@@ -152,7 +153,8 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
     );
   }
   const id = options.id ?? MEMBERSHIP_EXECUTOR_ID;
-  const joinOrgs = options.orgs === 'join';
+  // The org a request names rides along only on a mount that joins orgs (#2047).
+  const orgOf = (request: { orgId: OrgId }): { orgId?: OrgId } => (options.orgs === 'join' ? { orgId: request.orgId } : {});
   // Attributed (#977): the person whose authority bounded the write, beside the platform
   // actor that executed it. `causedBy` is stamped by the host.
   const adminFor = (who: PrincipalId, event: DomainEvent): HostAdmin =>
@@ -173,7 +175,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
         principal: request.principal,
         roleKey: request.roleKey,
         boundedBy: inviter,
-        ...(joinOrgs ? { orgId: request.orgId } : {}),
+        ...orgOf(request),
         unlessRemovedSince: instant.parse(new Date(Date.parse(event.occurredAt) - MEMBERSHIP_REMOVAL_SKEW_MS).toISOString()),
       });
       return applied.applied ? undefined : refusalOf(applied, request, 'inviter', inviter);
@@ -196,7 +198,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
         principal: request.principal,
         roleKey: request.roleKey,
         boundedBy: remover,
-        ...(joinOrgs ? { orgId: request.orgId } : {}),
+        ...orgOf(request),
       });
       return applied.applied ? undefined : refusalOf(applied, request, 'remover', remover);
     },

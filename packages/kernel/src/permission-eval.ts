@@ -593,10 +593,37 @@ export function liveOrgMembership(
   orgId: string,
 ): PermissionTupleRow | undefined {
   const now = reader.now();
+  const org = `org:${orgId}`;
   return reader
     .tenantTuples(tenantId, `principal:${principal}`, 'member')
-    .find((row) => row.relation === 'member' && row.object === `org:${orgId}` && live(row, now));
+    .find((row) => row.relation === 'member' && row.object === org && live(row, now));
 }
+
+/**
+ * The org half of a membership change's unit (#2047), decided once for both adapters: whether
+ * `boundedBy` may join `principal` to the org or take them out of it, and — for a join — when
+ * the membership it writes expires. Reads only; the adapter writes.
+ */
+export function orgChangeBound(
+  reader: TenantDirectoryReader,
+  tenantId: string,
+  change: { op: 'add' | 'remove'; principal: string; boundedBy: string; orgId: string },
+): { bounded: false } | { bounded: true; expiresAt: string | null } {
+  const bound = liveOrgMembership(reader, tenantId, change.boundedBy, change.orgId);
+  if (!bound) return { bounded: false };
+  if (change.op === 'remove') return { bounded: true, expiresAt: null };
+  return {
+    bounded: true,
+    expiresAt: joinedMembershipExpiry(bound, liveOrgMembership(reader, tenantId, change.principal, change.orgId)),
+  };
+}
+
+/** The `after` of an `addMember` audit row: the expiry only when there is one, as before #2047. */
+export const memberAddedAudit = (principal: string, orgId: string, expiresAt: string | null) => ({
+  principal,
+  orgId,
+  ...(expiresAt ? { expiresAt } : {}),
+});
 
 /**
  * When a membership written by a join expires (#2047): never later than the membership of the

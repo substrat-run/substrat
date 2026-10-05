@@ -457,16 +457,17 @@ describe('a switched-off subject (#1823)', () => {
   });
 });
 
-describe('tenantCoverage (#1184) — `covers` at the tenant node, without yielding', () => {
-  /** The same rows as `readerFor`, with every answer in hand, as a directory unit reads them. */
-  const directoryFor = (world: World): TenantDirectoryReader => {
-    const reader = readerFor(world);
-    return {
-      now: reader.now,
-      tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
-      getRole: (tenantId, key) => reader.getRole(tenantId, key) as RoleDefinition | undefined,
-    };
+/** The same rows as `readerFor`, with every answer in hand, as a directory unit reads them. */
+const directoryFor = (world: World): TenantDirectoryReader => {
+  const reader = readerFor(world);
+  return {
+    now: reader.now,
+    tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
+    getRole: (tenantId, key) => reader.getRole(tenantId, key) as RoleDefinition | undefined,
   };
+};
+
+describe('tenantCoverage (#1184) — `covers` at the tenant node, without yielding', () => {
   const ROLES = { staff: staff([WO_READ, TODO_READ]), lead: { key: 'lead', permissions: [WO_WRITE], source: 'vertical' } as RoleDefinition };
   const me = `principal:${ALICE}`;
   const past = '2025-01-01T00:00:00.000Z';
@@ -520,14 +521,7 @@ describe('tenantCoverage (#1184) — `covers` at the tenant node, without yieldi
 });
 
 describe('the org bound (#2047) — a live membership, and the expiry a join inherits', () => {
-  const directory = (tenant: PermissionTupleRow[]): TenantDirectoryReader => {
-    const reader = readerFor({ tenant });
-    return {
-      now: reader.now,
-      tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
-      getRole: () => undefined,
-    };
-  };
+  const directory = (tenant: PermissionTupleRow[]) => directoryFor({ tenant });
   const me = `principal:${ALICE}`;
   const past = '2025-01-01T00:00:00.000Z';
   const later = '2027-01-01T00:00:00.000Z';

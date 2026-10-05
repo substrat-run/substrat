@@ -424,6 +424,7 @@ import {
   asyncLinePass,
   type AsyncLinePass,
   type EmittedReport,
+  memberAddedAudit,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -457,6 +458,7 @@ import type {
   ConnectionGrantDoRow,
   EntitlementRow,
   HostnameRow,
+  MemberTupleRow,
   OrgRow,
   RoleRow,
   RouteRow,
@@ -761,7 +763,7 @@ interface ControlPlaneStub {
     tenantId: string,
     object: string,
     includeRevoked: boolean,
-  ): Promise<{ subject: string; revoked_at: string | null; expires_at: string | null }[]>;
+  ): Promise<MemberTupleRow[]>;
   grantEntitlement(
     tenantId: string,
     key: string,
@@ -7091,7 +7093,7 @@ export class CloudflareScopeHost implements ScopeHost {
           `org:${orgId}`,
           expiresAt,
         );
-        await this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId, ...(expiresAt ? { expiresAt } : {}) });
+        await this.recordAdmin(actor, 'addMember', { tenantId }, null, memberAddedAudit(principal, orgId, expiresAt));
         await this.fanOut(tenantId); // membership is a tenant-level tuple
       },
       applyMembership: async (actor, change) => {
@@ -7100,19 +7102,14 @@ export class CloudflareScopeHost implements ScopeHost {
         // (#1184): one DO unit, so nothing lands between the check and the write.
         const { tenantId, principal, roleKey, op, orgId } = change;
         const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
-        const membership = orgId && { principal, orgId };
         const result = await this.cp.applyMembership(
           change,
           op === 'add'
             ? this.adminEntry(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment)
             : this.adminEntry(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
-          // #2047: the org's own row, when the change joins or leaves one. The unit writes it
-          // only for what it does — a join's carries the expiry the unit decides.
-          membership
-            ? op === 'add'
-              ? this.adminEntry(actor, 'addMember', { tenantId }, null, membership)
-              : this.adminEntry(actor, 'removeMember', { tenantId }, membership, null)
-            : undefined,
+          // #2047: the org's own row, when the change joins or leaves one. The unit fills in its
+          // `before`/`after` and writes it only for what it does — a join's carries the expiry.
+          orgId ? this.adminEntry(actor, op === 'add' ? 'addMember' : 'removeMember', { tenantId }, null, null) : undefined,
         );
         // The tenant-level tuple, or its tombstone, reaches the projections.
         if (result.applied && (op === 'add' || result.changed)) await this.fanOut(tenantId);

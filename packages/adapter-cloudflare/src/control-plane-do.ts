@@ -6,8 +6,8 @@ import {
   membershipFencesTableExists,
   MEMBERSHIP_FENCE_SINCE_SQL,
   RAISE_MEMBERSHIP_FENCE_SQL,
-  joinedMembershipExpiry,
-  liveOrgMembership,
+  memberAddedAudit,
+  orgChangeBound,
   tenantCoverage,
   type MembershipChange,
   type MembershipChangeResult,
@@ -614,6 +614,13 @@ function keysetTail(
 }
 
 /** The shape the coordinator hands `recordAdmin`; before/after are arbitrary JSON. */
+/** One org membership as `listMembers` reads it (#2047: with its expiry). */
+export interface MemberTupleRow {
+  subject: string;
+  revoked_at: string | null;
+  expires_at: string | null;
+}
+
 export interface AdminEntryInput {
   id: string;
   actor: string;
@@ -3178,6 +3185,7 @@ export class ControlPlaneDO extends DurableObject {
    * the rows (id, actor, attribution, `causedBy`): the role's, and the org's when the change
    * names one (#2047) — then the org is bounded here too (`boundedBy` a live member of it) and
    * joined or left in the same unit, a join expiring no later than `boundedBy`'s own membership.
+   * The org row's `before`/`after` are written here, since only the unit knows the expiry.
    */
   applyMembership(
     change: MembershipChange,
@@ -3197,27 +3205,24 @@ export class ControlPlaneDO extends DurableObject {
       const bound = tenantCoverage(this.directoryReader, tenantId, boundedBy, role.permissions);
       if (!bound.covered) return { applied: false, missing: bound.missing };
       // #2047: the org, bounded by `boundedBy`'s own live membership of it.
-      const boundingMembership = orgId ? liveOrgMembership(this.directoryReader, tenantId, boundedBy, orgId) : undefined;
-      if (orgId) {
-        if (!orgRow) throw new Error('applyMembership: an org change needs its audit row');
-        if (!this.readOrg(tenantId, orgId)) return { applied: false, unknownOrg: orgId };
-        if (!boundingMembership) return { applied: false, notMember: orgId };
+      const org = orgId ? { orgId, row: orgRow, ...orgChangeBound(this.directoryReader, tenantId, { ...change, orgId }) } : undefined;
+      if (org) {
+        if (!org.row) throw new Error('applyMembership: an org change needs its audit row');
+        if (!this.readOrg(tenantId, org.orgId)) return { applied: false, unknownOrg: org.orgId };
+        if (!org.bounded) return { applied: false, notMember: org.orgId };
       }
       if (change.op === 'remove') {
         const roleTaken = this.revokeAndFenceIn(tenantId, principal, `role:${roleKey}`, `tenant:${tenantId}`, row);
-        const orgLeft = !!orgId && this.revokeAndFenceIn(tenantId, principal, 'member', `org:${orgId}`, orgRow!);
+        const orgLeft =
+          !!org && this.revokeAndFenceIn(tenantId, principal, 'member', `org:${org.orgId}`, { ...org.row!, before: { principal, orgId: org.orgId } });
         return { applied: true, changed: roleTaken || orgLeft };
       }
       const at = new Date().toISOString();
       this.writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`, null);
       this.recordAdmin({ ...row, at });
-      if (orgId && boundingMembership) {
-        const expiresAt = joinedMembershipExpiry(
-          boundingMembership,
-          liveOrgMembership(this.directoryReader, tenantId, principal, orgId),
-        );
-        this.writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`, expiresAt);
-        this.recordAdmin({ ...orgRow!, after: { principal, orgId, ...(expiresAt ? { expiresAt } : {}) }, at });
+      if (org?.bounded) {
+        this.writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${org.orgId}`, org.expiresAt);
+        this.recordAdmin({ ...org.row!, after: memberAddedAudit(principal, org.orgId, org.expiresAt), at });
       }
       return { applied: true };
     });
@@ -3297,7 +3302,7 @@ export class ControlPlaneDO extends DurableObject {
     tenantId: string,
     object: string,
     includeRevoked: boolean,
-  ): { subject: string; revoked_at: string | null; expires_at: string | null }[] {
+  ): MemberTupleRow[] {
     return this.sql
       .exec(
         `SELECT subject, revoked_at, expires_at FROM _substrat_tenant_tuples
@@ -3307,7 +3312,7 @@ export class ControlPlaneDO extends DurableObject {
         tenantId,
         object,
       )
-      .toArray() as unknown as { subject: string; revoked_at: string | null; expires_at: string | null }[];
+      .toArray() as unknown as MemberTupleRow[];
   }
 
   tenantTuples(tenantId: string, subject: string, relationPrefix: string): TupleRow[] {

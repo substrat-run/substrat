@@ -174,6 +174,8 @@ export {
   createTupleEvaluator,
   joinedMembershipExpiry,
   liveOrgMembership,
+  memberAddedAudit,
+  orgChangeBound,
   reachesWithin,
   tenantCoverage,
 } from './permission-eval.js';

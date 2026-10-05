@@ -89,6 +89,24 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
   type World = ReturnType<typeof world>;
 
   /**
+   * A gate every directory unit waits at while shut — the gap a concurrent removal or change of
+   * authority races into. Open, a unit passes straight through.
+   */
+  const gated = () => {
+    const g = {
+      release: (): void => undefined,
+      gate: Promise.resolve(),
+      shut: () => {
+        g.gate = new Promise((r) => (g.release = r));
+      },
+      hold: () => g.gate,
+      /** Long enough for an invoke to reach the hold, and for a queued call to reach its own. */
+      settle: () => new Promise((r) => setTimeout(r, 50)),
+    };
+    return g;
+  };
+
+  /**
    * `host`, except that an add's `applyMembership` fails while `w.failNextAdds` counts down,
    * and every unit, an add's or a removal's, otherwise waits for `hold` before it runs.
    */
@@ -512,14 +530,10 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
 
   describe(`membership executor (#1184), an add held in front of its directory unit: ${adapterName}`, () => {
     // Every add waits here, after the executor's own checks and before its directory unit.
-    let release: () => void = () => undefined;
-    let gate: Promise<void> = Promise.resolve();
-    const w = world({ hold: () => gate });
-    const shut = () => {
-      gate = new Promise((r) => (release = r));
-    };
-    /** Long enough for an invoke to reach the hold, and for a queued call to reach its own. */
-    const settle = () => new Promise((r) => setTimeout(r, 50));
+    const g = gated();
+    const w = world({ hold: g.hold });
+    const { shut, settle } = g;
+    const release = () => g.release();
 
     it('a removal landing while an add is held cannot leave the access restored', async () => {
       const joe = principalId.parse(ulid());
@@ -714,14 +728,10 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
     });
   });
   describe(`membership executor (#2047), org joins opted into: ${adapterName}`, () => {
-    // Every unit waits here when shut; open, it passes straight through.
-    let release: () => void = () => undefined;
-    let gate: Promise<void> = Promise.resolve();
-    const w = world({ orgs: 'join', hold: () => gate });
-    const shut = () => {
-      gate = new Promise((r) => (release = r));
-    };
-    const settle = () => new Promise((r) => setTimeout(r, 50));
+    const g = gated();
+    const w = world({ orgs: 'join', hold: g.hold });
+    const { shut, settle } = g;
+    const release = () => g.release();
 
     /** An org of its own per test, granting `invitefix:b` ONLY in scope s2 — a grant no directory unit sees. */
     const scopeOnlyOrg = async () => {
