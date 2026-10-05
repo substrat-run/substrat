@@ -833,7 +833,7 @@ export {
   type ExportRow,
   type RegisteredImport,
 } from './vertical-events.js';
-export { attributedHost } from './attribution.js';
+export { attributedHost, attributedView, type ConsumerDelivery, type HostAttribution } from './attribution.js';
 export {
   isDeliveryRefusal,
   refuseDelivery,

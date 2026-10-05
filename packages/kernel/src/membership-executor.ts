@@ -156,20 +156,22 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   // The org a request names rides along only on a mount that joins orgs (#2047).
   const orgOf = (request: { orgId: OrgId }): { orgId?: OrgId } => (options.orgs === 'join' ? { orgId: request.orgId } : {});
   // Attributed (#977): the person whose authority bounded the write, beside the platform
-  // actor that executed it. `causedBy` is stamped by the host.
-  const adminFor = (who: PrincipalId, event: DomainEvent): HostAdmin =>
-    (host.attributed?.({ principal: who, tenantId: event.tenantId }) ?? host).admin;
+  // actor that executed it. `causedBy` is passed, never stamped by the host (#2055): a view of
+  // the host is not the `admin` the dispatch handed the handler, so the event goes with it.
+  // A host without `attributed` writes through that `admin`, which carries the event already.
+  const adminFor = (admin: HostAdmin, who: PrincipalId, event: DomainEvent): HostAdmin =>
+    host.attributed?.({ principal: who, tenantId: event.tenantId }, { causedBy: event.id }).admin ?? admin;
 
   host.registerExecutor(
     id,
     MEMBER_ADD_REQUESTED,
-    async (_admin, event, scope) => {
+    async (admin, event, scope) => {
       const decided = await authorizeAdd(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, inviter } = decided;
       // One directory unit: the fence, the bound asked again, the role and its audit row. A
       // removal or a change of authority lands wholly before it or wholly after it.
-      const applied = await adminFor(inviter, event).applyMembership(options.actor, {
+      const applied = await adminFor(admin, inviter, event).applyMembership(options.actor, {
         op: 'add',
         tenantId: event.tenantId,
         principal: request.principal,
@@ -186,13 +188,13 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   host.registerExecutor(
     membershipRemoveExecutorId(id),
     MEMBER_REMOVE_REQUESTED,
-    async (_admin, event, scope) => {
+    async (admin, event, scope) => {
       const decided = await authorizeRemove(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, remover } = decided;
       // One directory unit: the remover's bound asked again, the revoke, its audit row if it
       // took anything, and the fence — raised even with nothing held, so a pending add sees it.
-      const applied = await adminFor(remover, event).applyMembership(options.actor, {
+      const applied = await adminFor(admin, remover, event).applyMembership(options.actor, {
         op: 'remove',
         tenantId: event.tenantId,
         principal: request.principal,

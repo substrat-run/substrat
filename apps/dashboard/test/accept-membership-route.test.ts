@@ -86,7 +86,7 @@ function flakyHost(real: SqliteScopeHost): ScopeHost {
     });
   return new Proxy(real, {
     get(t, key) {
-      if (key === 'attributed') return (o: Parameters<NonNullable<ScopeHost['attributed']>>[0]) => ({ admin: flaky(t.attributed(o).admin) });
+      if (key === 'attributed') return (...a: Parameters<NonNullable<ScopeHost['attributed']>>) => ({ admin: flaky(t.attributed(...a).admin) });
       const v = Reflect.get(t, key) as unknown;
       return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
     },

@@ -434,7 +434,7 @@ import {
   type EmittedReport,
   memberAddedAudit,
 } from '@substrat-run/kernel';
-import { attributedHost } from '@substrat-run/kernel';
+import { attributedView } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -2394,12 +2394,12 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private readonly jobs = new Map<string, JobRegistration>();
   /**
-   * The event currently being effected, stamped onto admin rows the executor writes.
-   * Ambient rather than threaded through every HostAdmin signature: set and cleared
-   * around one await, with executors running sequentially, so there is no window
-   * where it belongs to a different event.
+   * The event an executor is effecting, stamped onto the admin rows it writes (K-22). Like
+   * `onBehalfOf`, only ever set on a VIEW (`causedByView`, or `attributed` with a
+   * `causedBy`), never on the host: a field set around the handler's `await` stamped every
+   * admin call the host served meanwhile — a staff call included — with that event (#2055).
    */
-  private causedBy: string | null = null;
+  private readonly causedBy: string | null = null;
   /**
    * The person the actor acted for (#977). Never set on the host itself: only an
    * `attributed(…)` view answers it, so it cannot leak between requests.
@@ -2723,7 +2723,8 @@ export class CloudflareScopeHost implements ScopeHost {
           lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'inert' });
           continue;
         }
-        this.causedBy = event.id;
+        // #2055: the handler writes through a view bound to its event, never through the host.
+        const caused = this.causedByView(event.id);
         try {
           if (executor.kind === 'connector' && this.cpLess) {
             // #574 phase 3: this host cannot run a connector — no connection
@@ -2748,7 +2749,7 @@ export class CloudflareScopeHost implements ScopeHost {
             lines.write({ ...unitOf(event.id, 1), startedAt, outcome: 'routed' });
           } else if (executor.kind === 'connector') {
             await executor.handler(
-              await this.connectorContext(tenantId, scopeId, executor.timeoutMs, event.id),
+              await caused.connectorContext(tenantId, scopeId, executor.timeoutMs, event.id),
               event,
             );
             const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
@@ -2756,7 +2757,7 @@ export class CloudflareScopeHost implements ScopeHost {
             outcomeOf(event, 'delivered');
             lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           } else {
-            const result = await executor.handler(this.admin, event, scope);
+            const result = await executor.handler(caused.admin, event, scope);
             // #1184: a refusal is the handler's own terminal decision — journaled with its
             // reason, no next attempt, listed by `executorDeadLetters` beside an exhausted one.
             const refused = isDeliveryRefusal(result) ? result : null;
@@ -2795,8 +2796,6 @@ export class CloudflareScopeHost implements ScopeHost {
             outcome: exhausted ? 'dead-lettered' : 'retrying',
             error: err,
           });
-        } finally {
-          this.causedBy = null;
         }
       }
     }
@@ -2943,15 +2942,12 @@ export class CloudflareScopeHost implements ScopeHost {
     // ran it. On a CP-less host `connectorContext` throws from the null control plane:
     // fail closed, exactly the hole routing exists to avoid.
     await this.assertLive(tenantId, scopeId);
-    this.causedBy = event.id;
-    try {
-      await handler(
-        await this.connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000, event.id),
-        event,
-      );
-    } finally {
-      this.causedBy = null;
-    }
+    // Built on a view bound to the event, so its admin rows carry it and nothing else the
+    // host serves does (#2055).
+    await handler(
+      await this.causedByView(event.id).connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000, event.id),
+      event,
+    );
   }
 
   async executorDeadLetters(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDeadLetter[]> {
@@ -5360,8 +5356,13 @@ export class CloudflareScopeHost implements ScopeHost {
   // -- admin surface --------------------------------------------------------
 
   /** #977: this host, with every admin row it writes naming who the actor acted for. */
-  attributed(onBehalfOf: OnBehalfOf): this {
-    return attributedHost(this, onBehalfOf, this.buildAdmin);
+  attributed(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): this {
+    return attributedView(this, { onBehalfOf, causedBy: options?.causedBy }, this.buildAdmin);
+  }
+
+  /** #2055: this host, with every admin row it writes naming `eventId` as its cause. */
+  private causedByView(eventId: string): this {
+    return attributedView(this, { causedBy: eventId }, this.buildAdmin);
   }
 
   private buildAdmin(): HostAdmin {
