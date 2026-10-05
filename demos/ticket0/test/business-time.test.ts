@@ -293,6 +293,8 @@ describe('agrees with an independent wall-clock walk, across DST in both hemisph
     'Europe/Stockholm': [
       { date: '2026-10-25', windows: [{ open: '01:00', close: '02:30' }] }, // close in the fold
       { date: '2027-03-28', windows: [{ open: '02:30', close: '03:45' }] }, // open in the gap
+      // Open in the gap, carried past a close just after it: empty, never negative (CodeRabbit).
+      { date: '2028-03-26', windows: [{ open: '02:30', close: '03:15' }, { open: '05:00', close: '05:30' }] },
     ],
     'America/New_York': [
       { date: '2026-11-01', windows: [{ open: '01:15', close: '01:45' }] }, // both in the fold
@@ -340,6 +342,7 @@ describe('agrees with an independent wall-clock walk, across DST in both hemisph
       // zone, the night's date, from, to (spanning the night), minutes
       ['Europe/Stockholm', '2026-10-25', '2026-10-24T12:00:00.000Z', '2026-10-25T12:00:00.000Z', 90],
       ['Europe/Stockholm', '2027-03-28', '2027-03-27T12:00:00.000Z', '2027-03-28T12:00:00.000Z', 15],
+      ['Europe/Stockholm', '2028-03-26', '2028-03-25T12:00:00.000Z', '2028-03-26T12:00:00.000Z', 30],
       ['America/New_York', '2026-11-01', '2026-11-01T00:00:00.000Z', '2026-11-01T12:00:00.000Z', 30],
       ['America/New_York', '2027-03-14', '2027-03-14T00:00:00.000Z', '2027-03-14T12:00:00.000Z', 15],
       ['Australia/Sydney', '2026-04-05', '2026-04-04T10:00:00.000Z', '2026-04-05T10:00:00.000Z', 210],

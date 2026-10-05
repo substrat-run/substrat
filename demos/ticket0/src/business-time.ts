@@ -190,7 +190,11 @@ function openings(c: Compiled, day: number): (readonly [number, number])[] {
     steady === offsetAt(c.timezone, (day + 2) * DAY)
       ? (minute: number) => day * DAY + minute * MINUTE - steady
       : (minute: number) => instantOf(c.timezone, day * DAY + minute * MINUTE);
-  return windows.map(([o, cl]) => [at(o), at(cl)] as const);
+  // 'compatible' moves an open inside the skipped hour forward past the gap, which can carry
+  // it beyond a close just after the gap (02:30–03:15 on the spring night): that opening is
+  // empty, never negative. Empty, it loses exactly its wall-clock length, which step 4 of
+  // `guaranteedBusinessMs`' proof allows for.
+  return windows.map(([o, cl]) => [at(o), at(cl)] as const).filter(([a, b]) => b > a);
 }
 
 /**
