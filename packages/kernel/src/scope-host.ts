@@ -1,5 +1,6 @@
 import type { ModuleLog } from './module-log.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
+import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type {
   OnBehalfOf,
   ExportReadInput,
@@ -31,6 +32,7 @@ import type {
   AccessLogEntry,
   DelegatedReadRecord,
   OwnerTransferAudit,
+  MemberChangeAudit,
   CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
@@ -514,6 +516,13 @@ export interface OperationContext {
    * - `from` must be a live parent edge of `child`; `conflict` otherwise. Every other
    *   parent a multi-parent entity has is left alone.
    * - `from` equal to `to` is a no-op: nothing written, nothing emitted.
+   * - A `to` that is ALREADY a live parent of `child` is the way to detach one parent of a
+   *   multi-parent child (#2044): the `from` edge is tombstoned, the live `to` edge stays
+   *   live — no second row, no revive, no `entity.linked` — and `entity.relinked` is still
+   *   emitted. Like every edge `link` or `relink` leaves live, `to` is left PERMANENT: a
+   *   future expiry on it (which only a restored dump can hold) is cleared, silently. The
+   *   child keeps every other parent untouched, expiry included. The contract suite holds
+   *   both adapters to it.
    * - The old edge is tombstoned (K-21), not deleted, and one `entity.relinked` spine event
    *   records the move on the child's timeline, stamped like any event the operation emits.
    * - Transactional with the operation: a relink whose operation throws never happened.
@@ -925,9 +934,7 @@ export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => voi
 
 /**
  * One membership change for `HostAdmin.applyMembership` (#1184): a TENANT-level role assigned
- * or taken away, and nothing else. No org is joined or left — what an org confers lives partly
- * in each scope's own store, where no directory unit can bound it, so authorizing an org
- * membership is its own capability.
+ * or taken away and, when `orgId` is given (#2047), the org joined or left in the same unit.
  */
 export type MembershipChange = {
   tenantId: TenantId;
@@ -940,6 +947,15 @@ export type MembershipChange = {
    * read inside the unit (`tenantCoverage`).
    */
   boundedBy: PrincipalId;
+  /**
+   * The org joined (an add) or left (a removal) beside the role (#2047). Bounded by membership:
+   * the unit applies nothing unless `boundedBy` is a live member of it, read inside the unit
+   * (`liveOrgMembership`). A member holds everything the org confers — its grants in each
+   * scope's own store included — so that is the whole bound, and no scope is read. A join's
+   * membership expires no later than `boundedBy`'s own (`joinedMembershipExpiry`). Absent, the
+   * change is the role alone.
+   */
+  orgId?: OrgId;
 } & (
   | {
       op: 'add';
@@ -950,15 +966,18 @@ export type MembershipChange = {
 );
 
 /**
- * What the unit did: applied, or why not — fenced by a removal (an add only), or out of the
- * bound. A removal that applied says whether it took anything (`changed`); one that took
- * nothing still raised the fence.
+ * What the unit did: applied, or why not — fenced by a removal (an add only), out of the role's
+ * bound, or out of the org's (#2047: `boundedBy` is no live member of it). A removal that
+ * applied says whether it took anything (`changed`); one that took nothing still raised the
+ * fence.
  */
 export type MembershipChangeResult =
   | { applied: true; changed?: boolean }
   | { applied: false; removedAt: string }
   | { applied: false; missing: PermissionKey[] }
-  | { applied: false; unknownRole: string };
+  | { applied: false; unknownRole: string }
+  | { applied: false; unknownOrg: OrgId }
+  | { applied: false; notMember: OrgId };
 
 /**
  * An **executor**: out-of-band host code that effects, outside a scope, what a module
@@ -977,8 +996,11 @@ export type MembershipChangeResult =
  * consumers must.
  *
  * It receives `HostAdmin`, not `ctx`: it acts with platform authority, which is
- * precisely what module code must never hold. Admin writes it makes are stamped with
- * the causing event's id (`causedBy`), so the split trail joins.
+ * precisely what module code must never hold. Admin writes it makes through the `admin`
+ * it is handed are stamped with the causing event's id (`causedBy`), so the split trail
+ * joins. That `admin` is bound to this one event, never the host's own: a handler that
+ * writes through the host instead — `host.attributed(…)` — passes `{ causedBy: event.id }`
+ * itself (#2055).
  *
  * A handler that decides an event must never be effected RETURNS `refuseDelivery(reason)`
  * (#1184). The delivery is journaled terminal with the reason, never retried. A return
@@ -2052,11 +2074,17 @@ export interface HostAdmin {
     node: Node,
     entity?: EntityRef,
   ): Promise<void>;
+  /**
+   * Make `principal` a member of the org. `opts.expiresAt` (#2047) makes the membership lapse
+   * then, as any expiring tuple does; absent, it never lapses. Re-adding replaces the row,
+   * clearing a tombstone and setting the expiry anew.
+   */
   addMember(
     actor: PlatformActorId,
     tenantId: TenantId,
     principal: PrincipalId,
     orgId: OrgId,
+    opts?: { expiresAt?: Instant },
   ): Promise<void>;
   /**
    * One membership change, applied as ONE directory unit (#1184): a single SQLite transaction or
@@ -2067,6 +2095,11 @@ export interface HostAdmin {
    * audit row. A REMOVE unassigns it and raises the fence, as a tenant-level `unassignRole`
    * does. A removal, a grant, a role redefinition or a demotion lands wholly before the unit
    * (and governs it) or wholly after it, never between its check and its write.
+   *
+   * With `orgId` (#2047) the org is joined or left in the same unit, and bounded there too:
+   * `boundedBy` must be a live member of it. An add writes the membership — expiring no later
+   * than `boundedBy`'s own — with an `addMember` audit row; a removal tombstones it, with a
+   * `removeMember` row if it took anything. The role and the org apply together or not at all.
    *
    * The fence is `_substrat_membership_fences`: every tenant-level `unassignRole` and every
    * `removeMember` raises it for the person, in the same unit as its revoke — a no-op included,
@@ -3859,6 +3892,15 @@ export interface HostAdmin {
   recordCopyMark(actor: PlatformActorId, entry: CopyMarkAudit): Promise<void>;
 
   /**
+   * Record one phase of a dashboard member change (#1150) — an invite, a role move or a removal
+   * on an installed vertical's scope — as `manageScopeMember`. The change runs in the vertical's
+   * deployment, so the control plane writes these around its call: `intent` first (and must not
+   * call if this throws), then the outcome. `recordOwnerTransfer`'s shape. Throws when the row
+   * cannot be written.
+   */
+  recordMemberChange(actor: PlatformActorId, entry: MemberChangeAudit): Promise<void>;
+
+  /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including
    * `upToId`, marking them shipped to Tier 2. Returns how many rows moved.
    *
@@ -4603,8 +4645,13 @@ export interface ScopeHost {
    *
    * Optional so a host that predates it still satisfies the interface; a transport
    * that finds it absent writes unattributed rows, which is what every row was before.
+   *
+   * `options.causedBy` (#2055) is the event whose effect the view's writes are (K-22): an
+   * executor handler passes its own event's id, because the host stamps nothing ambiently —
+   * a field set around the handler's `await` would also stamp every other admin call the
+   * host served meanwhile. The `admin` a handler is handed already carries it.
    */
-  attributed?(onBehalfOf: OnBehalfOf): ScopeHost;
+  attributed?(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): ScopeHost;
   /**
    * Mint a capability stub for a principal. Validates the (tenantId, scopeId)
    * pair against the directory — a mismatched pair fails closed (K-3), it never
@@ -5127,6 +5174,43 @@ export interface ScopeHost {
     assignee: PrincipalId,
     roleKey: string,
   ): Promise<Coverage>;
+
+  /**
+   * The scope's role roster (#1150): every live scope-level role assignment, one row per
+   * (principal, role) — or one principal's, with `principal`. One scope, addressed by the caller
+   * after its own (tenant, scope) check — K-3 is asserted here too — so it is a read of this
+   * scope, never a walk across scopes.
+   */
+  listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]>;
+
+  /**
+   * Move `principal` from scope role `from` to `to` in ONE scope task (#1150): the caller's
+   * bound is asked over both roles (taking `from` away is bounded like granting it, §5.1
+   * consequence 1), then `from` is tombstoned and `to` granted together. Nothing is written
+   * on a refusal, so nobody is left holding both roles or neither. Throws `not_found` for a
+   * `to` this tenant does not define, and `conflict` when `principal` does not hold `from`.
+   */
+  changeScopeRoleBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+    from: string,
+    to: string,
+  ): Promise<Coverage>;
+
+  /**
+   * Take every scope role `principal` holds, in ONE scope task (#1150), bounded by the
+   * caller's authority over each (§5.1 consequence 1: you cannot strip what you could not
+   * have granted). A role the tenant no longer defines confers nothing and is taken without a
+   * bound. A refusal writes nothing; `revoked` names what was taken.
+   */
+  revokeScopeRolesBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }>;
 
   /**
    * The recurring-work declarations of every module registered on this host (#383)

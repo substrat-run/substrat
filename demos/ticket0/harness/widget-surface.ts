@@ -421,8 +421,8 @@ export function mountWidgetSurface(
        * The visitor's live feed (#1853): nudges that send the widget back to `messages`.
        *
        * Vouched, because the visitor has no principal: `widget-watch` proves the token, and
-       * the root is their SESSION, under which hang exactly the public messages
-       * `widget-thread` shows them (`sessionsOn` in the module). The Origin gate is
+       * the root is their SESSION, under which hangs their conversation's public thread:
+       * exactly the public messages `widget-thread` shows them (`seatSession` in the module). The Origin gate is
        * `mountPublicSurface`'s — a browser sends `Origin` on a handshake as on a fetch.
        */
       route.get('/sessions/:sessionId/live', async (c, { actor, origin }) => {

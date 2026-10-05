@@ -11,7 +11,7 @@ import { platformActorId, scopeId, tenantId, type PrincipalId } from '@substrat-
 import { ulid } from '@substrat-run/kernel';
 import { MODULES } from '../src/provision.js';
 import { ticket0Manifest } from '../src/manifest.js';
-import { listsBefore0025 } from './before-0025.js';
+import { listsBefore0027 } from './before-0027.js';
 import { createKit, type Desk } from './desk-kit.js';
 import { DESK_TABLES, populateDesk } from './desk-fixture.js';
 import {
@@ -124,7 +124,7 @@ beforeAll(async () => {
   for (const module of MODULES) previous.registerModule(module.manifest.id === ticket0Manifest.id
     ? {
         ...module,
-        manifest: { ...module.manifest, lists: listsBefore0025(module.manifest.lists ?? []) },
+        manifest: { ...module.manifest, lists: listsBefore0027(module.manifest.lists ?? []) },
         migrations: (module.migrations ?? []).filter((m) => m.version <= '0022'),
       }
     : module);

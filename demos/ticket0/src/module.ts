@@ -60,6 +60,7 @@ import {
   AUTO_CLOSE_MIN_DAYS,
   AUTO_TAG_RULES_MAX,
   autoTagRule,
+  businessHoursSchedule,
   DESK_METRICS_AGENTS,
   DESK_METRICS_MAX_DAYS,
   DESK_METRICS_WINDOW_DAYS,
@@ -94,6 +95,13 @@ import {
   type MacroAction,
   type SuspicionSignal,
 } from '../spec/model.js';
+import {
+  addBusinessMs,
+  businessMsBetween,
+  describeSchedule,
+  guaranteedBusinessMs,
+  type BusinessSchedule,
+} from './business-time.js';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
 import { ticket0Migrations } from './migrations.generated.js';
 
@@ -121,6 +129,8 @@ type ParticipantRow = EntityRow<typeof ticket0Entities, 'conversationParticipant
 
 const conversationRef = (id: string) => ({ entityType: 'conversation', entityId: id });
 const sessionRef = (id: string) => ({ entityType: 'widgetSession', entityId: id });
+/** A conversation's public thread shares the conversation's id (#2044). */
+const threadRef = (conversationId: string) => ({ entityType: 'publicThread', entityId: conversationId });
 const messageRef = (id: string) => ({ entityType: 'message', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
 const sourceRef = (id: string) => ({ entityType: 'kbSource', entityId: id });
@@ -1236,37 +1246,36 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
     }
   }
   ctx.link(messageRef(id), conversationRef(m.conversationId));
-  if (m.visibility === 'public') {
-    for (const session of sessionsOn(ctx, m.conversationId)) ctx.link(messageRef(id), sessionRef(session.id));
-  }
+  if (m.visibility === 'public') ctx.link(messageRef(id), threadRef(m.conversationId));
   return messageOrThrow(ctx, id);
 }
 
 /**
- * What a widget session may see, written as edges (#1853).
+ * What a widget session may see, written as edges (#1853, #2044).
  *
  * The visitor's live feed is narrowed to their session, and the scope walks parent edges
  * to decide what reaches it. So the session's subtree must be exactly what `widget-thread`
  * shows them: every PUBLIC message on the session's current conversation, and nothing
- * else. Internal notes, forwards and the assistant's drafts never hang here, so their
- * writes produce no nudge at all.
+ * else. Each public message hangs once under its conversation's `publicThread`, and the
+ * thread hangs under the sessions on that conversation. Internal notes, forwards and the
+ * assistant's drafts never hang on a thread, so their writes produce no nudge at all.
  *
  * Two rules keep that true, and both are about not widening `ctx.check`:
  *
- * - **A session has one parent: its current conversation.** A message under a session
- *   reaches every parent the session has, so a session left under a conversation it moved
- *   away from would hand that conversation's followers the new thread's public messages.
+ * - **A session has one parent: its current conversation.** A message reaches every parent
+ *   the session above its thread has, so a session left under a conversation it moved away
+ *   from would hand that conversation's followers the new thread's public messages.
  *   `moveSession` relinks rather than links for that reason, and a merge relinks too.
- * - **A session holds only its current conversation's messages.** When it moves, the old
- *   thread's messages are taken off it (`unseatSession`) before the new ones go on.
+ * - **Thread X hangs under session s exactly while s is on X.** When a session moves, the
+ *   old thread comes off it (`unseatSession`) and the new one goes on (`seatSession`), in
+ *   the same transaction.
  *
- * **What it costs, and the bound.** Each public message holds one edge per session on its
- * conversation, so a write links that many times and a live fan-out walks that many
- * ancestors per row (each read once, #1853). The count is small by construction: every
- * widget opening opens its OWN conversation (`bindOpening`), a follow-up receives the one
- * session that moved onto it, and the only way a conversation gains more is a person
- * merging another of the same contact's conversations into it. So it is one, plus one per
- * merged-in chat. #2044 is the representation that would make it one edge regardless.
+ * **What it costs.** A public message holds two edges, its conversation and its thread,
+ * whatever the number of sessions. A session moving changes one thread edge off and one
+ * on, whatever the thread's length. A merge relinks each moved public message's thread
+ * edge, as it already relinks its conversation edge, plus one off and one on per moved
+ * session. A live fan-out still reads each ancestor once per row (#1853), and a thread has
+ * one session per widget chat merged into its conversation.
  */
 function sessionsOn(ctx: OperationContext, conversationId: string): { id: string }[] {
   return ctx.sql.query<{ id: string }>('SELECT id FROM ticket0_widget_sessions WHERE conversation_id = ?', [
@@ -1274,36 +1283,33 @@ function sessionsOn(ctx: OperationContext, conversationId: string): { id: string
   ]);
 }
 
-/**
- * Whether message `m` (aliased in the outer query) hangs under the session bound as the
- * next parameter. A primary-key lookup on the spine, which a module may read (never write).
- */
-const UNDER_SESSION = `EXISTS (SELECT 1 FROM _substrat_tuples t
-   WHERE t.subject = 'message:' || m.id AND t.relation = 'parent' AND t.object = ? AND t.revoked_at IS NULL)`;
-
-/** Hang every public message of `conversationId` under the session — those not under it already. */
 function seatSession(ctx: OperationContext, sessionId: string, conversationId: string): void {
-  for (const m of ctx.sql.query<{ id: string }>(
-    `SELECT m.id FROM ticket0_messages m
-      WHERE m.conversation_id = ? AND m.visibility = 'public' AND NOT ${UNDER_SESSION}`,
-    [conversationId, `widgetSession:${sessionId}`],
-  )) {
-    ctx.link(messageRef(m.id), sessionRef(sessionId));
-  }
+  ctx.link(threadRef(conversationId), sessionRef(sessionId));
 }
 
 /**
- * Take the session's messages off it, when it leaves `conversationId`. There is no unlink,
- * so each edge is MOVED onto that conversation — a parent the message already has, so the
- * move writes nothing new and only tombstones the session edge.
+ * Take `conversationId`'s thread off the session, when the session leaves it. The edge is
+ * MOVED onto the thread's own conversation — a parent it already has, which `ctx.relink`
+ * documents as tombstoning the old edge and writing nothing new. One `entity.relinked`, on
+ * the thread's timeline, per session move.
  */
 function unseatSession(ctx: OperationContext, sessionId: string, conversationId: string): void {
-  for (const m of ctx.sql.query<{ id: string }>(
-    `SELECT m.id FROM ticket0_messages m WHERE m.conversation_id = ? AND ${UNDER_SESSION}`,
-    [conversationId, `widgetSession:${sessionId}`],
-  )) {
-    ctx.relink(messageRef(m.id), sessionRef(sessionId), conversationRef(conversationId));
-  }
+  // A relink needs a live edge to move, and every session has had one since it was bound
+  // (migration 0026 for the ones before). Should one be missing there is nothing to take
+  // off, and throwing would take the visitor's message down with it.
+  if (!hasLiveParent(ctx, `publicThread:${conversationId}`, `widgetSession:${sessionId}`)) return;
+  ctx.relink(threadRef(conversationId), sessionRef(sessionId), conversationRef(conversationId));
+}
+
+/** Whether `child` has a live parent edge to `parent`. A primary-key read of the spine. */
+function hasLiveParent(ctx: OperationContext, child: string, parent: string): boolean {
+  return (
+    ctx.sql.query(
+      `SELECT 1 AS live FROM _substrat_tuples
+        WHERE subject = ? AND relation = 'parent' AND object = ? AND revoked_at IS NULL`,
+      [child, parent],
+    ).length > 0
+  );
 }
 
 /**
@@ -2081,6 +2087,8 @@ async function discardConversation(
   closeConversation(ctx, conversation, edge);
   // A follow is a read grant on this thread, and a tombstone is no thread to read.
   await dropFollowers(ctx, conversation.id);
+  // Its sessions go below, so their hold on its public thread goes first (#2044).
+  for (const session of sessionsOn(ctx, conversation.id)) unseatSession(ctx, session.id, conversation.id);
   for (const table of [
     'ticket0_messages',
     'ticket0_conversation_tags',
@@ -2653,6 +2661,9 @@ function openConversation(
   // The edge the permission walk follows: a contact's grant on their own entity
   // reaches their conversations through this, and reaches nobody else's.
   ctx.link(conversationRef(id), contactRef(contact.id));
+  // Its public thread, which its public messages and its widget sessions meet at (#2044).
+  ctx.sql.exec('INSERT INTO ticket0_public_threads (id) VALUES (?)', [id]);
+  ctx.link(threadRef(id), conversationRef(id));
   return conversationOrThrow(ctx, id);
 }
 
@@ -2898,6 +2909,87 @@ type SlaTargets = Partial<Record<Priority, number>>;
 interface SlaPolicy {
   readonly firstResponseMinutes: SlaTargets;
   readonly resolutionMinutes: SlaTargets;
+  /**
+   * The opening hours the targets count on, or null for calendar time (#1648). Set only
+   * when the desk chose the `business` clock AND holds a usable schedule; a `business`
+   * clock with no schedule to read counts calendar time, so it can still run out.
+   */
+  readonly hours: BusinessSchedule | null;
+}
+
+/**
+ * The desk's structured opening hours (#1648), or null when it has none — read with the
+ * same parse `configure-desk` wrote it through, so a value this version did not write (a
+ * later shape after a rollback, a hand edit) reads as none rather than as a guess.
+ */
+function businessHoursOf(row: DeskRow): BusinessSchedule | null {
+  const parsed = businessHoursSchedule.safeParse(storedSettings(row).businessHours);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The opening hours a visitor is shown (#1648): `describeSchedule` of the structured
+ * hours, or the free-text `business_hours` note when there are none. Structured wins
+ * outright rather than being joined to the note, because the note on most desks is the
+ * same week written by hand, and showing it twice is how the two drift apart in public.
+ */
+function displayedBusinessHours(row: DeskRow): string | null {
+  const hours = businessHoursOf(row);
+  return hours ? describeSchedule(hours) : row.business_hours;
+}
+
+/**
+ * `ms` of the desk's clock after `from`: business time on `hours`, calendar time without.
+ *
+ * Calendar time too when `addBusinessMs` has no answer: the open time is not reached
+ * within its ten-year cap, or (for a parsed schedule, only on a runtime that does not know
+ * its timezone) it refuses the schedule. `configure-desk` refuses any target the hours
+ * cannot reach inside the cap, so what lands here is the edge `slaDue` names: a re-aim
+ * counting a long `snoozed_ms` after the hours were made sparser. A promise is still kept
+ * on some clock rather than on none.
+ */
+function slaClockAdd(hours: BusinessSchedule | null, from: string, ms: number): string {
+  return (hours && addBusinessMs(hours, from, ms)) ?? shiftInstant(from, ms);
+}
+
+/** How much of [from, to) the desk's clock counts. `slaClockAdd`'s twin, same fallback. */
+function slaClockBetween(hours: BusinessSchedule | null, from: string, to: string): number {
+  return (hours && businessMsBetween(hours, from, to)) ?? Math.max(0, Date.parse(to) - Date.parse(from));
+}
+
+/**
+ * Refuse service levels on the business clock that the desk's hours cannot meet within
+ * the ten-year cap `addBusinessMs` walks (#1648), so every configured promise is counted
+ * exactly, from whatever moment a conversation arrives, and the calendar fallback stays
+ * the re-aim edge `slaDue` names. Judged on the settings as they WILL be — either half
+ * may be the one that changed: a long target on sparse hours, or sparse hours under a
+ * long target.
+ *
+ * Against `guaranteedBusinessMs`, not against a walk from now: how much open time a
+ * walk meets depends on the weekday it starts on and on which exceptions its ten years
+ * contain, so a target that fits from today can miss from Wednesday. The guaranteed
+ * figure holds from every start, and that function states why.
+ *
+ * Names the target, so the admin knows which box to change.
+ */
+function refuseUnreachableTargets(row: DeskRow): void {
+  const policy = slaPolicy(row);
+  if (!policy?.hours) return;
+  const guaranteed = guaranteedBusinessMs(policy.hours) ?? 0;
+  for (const [label, targets] of [
+    ['first-response', policy.firstResponseMinutes],
+    ['resolution', policy.resolutionMinutes],
+  ] as const) {
+    for (const priority of PRIORITIES) {
+      const minutes = targets[priority];
+      if (minutes === undefined || minutes * 60_000 <= guaranteed) continue;
+      throw substratError(
+        'validation_failed',
+        `The ${priority} ${label} target of ${minutes} minutes can't be met within ten years of these ` +
+          'opening hours. Shorten the target, add opening hours, or count calendar time instead.',
+      );
+    }
+  }
 }
 
 const PRIORITIES: readonly Priority[] = ['low', 'normal', 'urgent'];
@@ -2937,6 +3029,7 @@ function slaPolicy(row: DeskRow): SlaPolicy | null {
   const policy: SlaPolicy = {
     firstResponseMinutes: targetsOf((raw as Record<string, unknown>).firstResponseMinutes),
     resolutionMinutes: targetsOf((raw as Record<string, unknown>).resolutionMinutes),
+    hours: (raw as Record<string, unknown>).clock === 'business' ? businessHoursOf(row) : null,
   };
   const any =
     Object.keys(policy.firstResponseMinutes).length > 0 ||
@@ -2960,6 +3053,14 @@ function slaPolicy(row: DeskRow): SlaPolicy | null {
  * after a two-day snooze would re-aim its resolution from `created_at` alone and make it
  * late at once, for time it was parked on purpose. A snooze still in progress is not in
  * it yet; `endSnooze` adds it when the snooze ends, to whatever due this wrote.
+ *
+ * On the `business` clock (#1648) every one of those minutes is a business minute: the
+ * target and `snoozedMs` alike are counted inside the desk's opening hours, from
+ * `createdAt`. So a Friday-evening mail with a four-hour target falls due on Monday.
+ * `snoozedMs` is in whichever clock the desk was on when each snooze ended; a desk that
+ * switches clock between a snooze and a priority change re-aims that one conversation
+ * with the other unit. Telling them apart would need a second column, and the error is
+ * bounded by the length of the snoozes.
  */
 function slaDue(
   policy: SlaPolicy | null,
@@ -2970,7 +3071,7 @@ function slaDue(
   const at = (minutes: number | undefined, t: SlaTarget) =>
     minutes === undefined
       ? null
-      : shiftInstant(createdAt, minutes * 60_000 + (t.pausesOnSnooze ? snoozedMs : 0));
+      : slaClockAdd(policy?.hours ?? null, createdAt, minutes * 60_000 + (t.pausesOnSnooze ? snoozedMs : 0));
   return {
     firstResponse: at(policy?.firstResponseMinutes[priority], SLA_FIRST_RESPONSE),
     resolution: at(policy?.resolutionMinutes[priority], SLA_RESOLUTION),
@@ -3275,20 +3376,28 @@ function beginSnooze(ctx: OperationContext, id: string): void {
  * A row with no `snoozed_at` has nothing to give back and is left as it is: one that is
  * not snoozed, or one snoozed before the column existed, whose clock ran throughout.
  *
+ * On the `business` clock (#1648) "the time it slept" is the BUSINESS time it slept, and
+ * the due moves later by that much business time. That leaves the target exactly the
+ * business time it had left when it went to sleep, whether its due falls after the wake
+ * or inside the snooze, and leaves one re-aimed into the past exactly as late as it was.
+ * A snooze from Friday afternoon to Monday morning gives back the Friday hour and the
+ * Monday hour, not the weekend, which was never the desk's time to begin with.
+ *
  * Idempotent, and it reads the row itself, so `resolve` can call it before its own
  * writes and `moveTo` again after them without counting the snooze twice.
  */
 function endSnooze(ctx: OperationContext, id: string): void {
   const conversation = conversationOrThrow(ctx, id);
   if (conversation.snoozed_at === null) return;
-  const slept = Math.max(0, Date.parse(ctx.now()) - Date.parse(conversation.snoozed_at));
+  const hours = slaPolicy(desk(ctx))?.hours ?? null;
+  const slept = slaClockBetween(hours, conversation.snoozed_at, ctx.now());
   const paused = SLA_TARGETS.filter((t) => t.pausesOnSnooze);
   const shifts = paused.map(
     (t) => `${t.due} = CASE WHEN ${t.due} IS NOT NULL AND ${t.running} THEN ? ELSE ${t.due} END`,
   );
   const shifted = paused.map((t) => {
     const due = conversation[t.due];
-    return due === null ? null : shiftInstant(due, slept);
+    return due === null ? null : slaClockAdd(hours, due, slept);
   });
   ctx.sql.exec(
     `UPDATE ticket0_conversations
@@ -3405,6 +3514,7 @@ function bindOpening(ctx: OperationContext, opening: OpeningRow): ConversationRo
   );
   ctx.sql.exec('DELETE FROM ticket0_widget_openings WHERE id = ?', [opening.id]);
   ctx.link(sessionRef(opening.id), conversationRef(conversation.id));
+  seatSession(ctx, opening.id, conversation.id);
   return conversation;
 }
 
@@ -3414,9 +3524,10 @@ function bindOpening(ctx: OperationContext, opening: OpeningRow): ConversationRo
  * The visitor's token is unchanged and their browser learns nothing: what they have is
  * a chat bubble, and which row it writes into is the desk's business.
  *
- * The session's edge MOVES with it, and the old thread's messages come off it (#1853):
- * a session holds one parent, for the reason on `sessionsOn`. That it once belonged to
- * the old thread stays on its timeline, as the move's `entity.relinked`.
+ * The session's edge MOVES with it, and the old public thread comes off it (#1853,
+ * #2044): a session holds one parent and one thread, for the reasons on `seatSession`.
+ * That it once belonged to the old thread stays on its timeline, as the move's
+ * `entity.relinked`.
  */
 function moveSession(
   ctx: OperationContext,
@@ -3431,14 +3542,9 @@ function moveSession(
   unseatSession(ctx, sessionId, from.id);
   // Relink needs a live edge to move. Every session has had one since it was bound, but a
   // relink that throws here would take a visitor's message down with it, so link instead.
-  const edge =
-    ctx.sql.query(
-      `SELECT 1 AS live FROM _substrat_tuples
-        WHERE subject = ? AND relation = 'parent' AND object = ? AND revoked_at IS NULL`,
-      [`widgetSession:${sessionId}`, `conversation:${from.id}`],
-    ).length > 0;
-  if (edge) ctx.relink(sessionRef(sessionId), conversationRef(from.id), conversationRef(conversation.id));
-  else ctx.link(sessionRef(sessionId), conversationRef(conversation.id));
+  if (hasLiveParent(ctx, `widgetSession:${sessionId}`, `conversation:${from.id}`)) {
+    ctx.relink(sessionRef(sessionId), conversationRef(from.id), conversationRef(conversation.id));
+  } else ctx.link(sessionRef(sessionId), conversationRef(conversation.id));
   seatSession(ctx, sessionId, conversation.id);
   return conversation;
 }
@@ -3798,6 +3904,15 @@ const operations = {
   'ticket0/configure-desk': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.deskConfigure));
     const current = desk(ctx);
+    // Merged key by key over what is stored, never replaced wholesale: a call that names
+    // `roundRobin` changes `roundRobin`, and a key this version does not know — from a
+    // later one, before a rollback — rides through. Absent keeps the column exactly as it
+    // was, null included.
+    const settings =
+      input.settings === undefined
+        ? current.settings
+        : JSON.stringify({ ...storedSettings(current), ...input.settings });
+    refuseUnreachableTargets({ ...current, settings });
     ctx.sql.exec(
       `UPDATE ticket0_desk_settings
           SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?,
@@ -3822,13 +3937,7 @@ const operations = {
         input.abandonedAfterDays === undefined
           ? current.abandoned_after_days
           : input.abandonedAfterDays,
-        // Merged key by key over what is stored, never replaced wholesale: a call that
-        // names `roundRobin` changes `roundRobin`, and a key this version does not know
-        // — from a later one, before a rollback — rides through. Absent keeps the column
-        // exactly as it was, null included.
-        input.settings === undefined
-          ? current.settings
-          : JSON.stringify({ ...storedSettings(current), ...input.settings }),
+        settings,
         ctx.now(),
         DESK,
       ],
@@ -4486,11 +4595,15 @@ const operations = {
 
   'ticket0/breaching-soon': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead));
-    if (slaPolicy(desk(ctx)) === null) {
+    const policy = slaPolicy(desk(ctx));
+    if (policy === null) {
       return { withinMinutes: input.withinMinutes, rows: [], truncated: false };
     }
     const now = ctx.now();
-    const until = new Date(Date.parse(now) + input.withinMinutes * 60_000).toISOString();
+    // The window is on the targets' own clock (#1648). On business hours, "due within an
+    // hour" at 16:50 on a Friday includes Monday 09:10: twenty minutes of the desk's time
+    // are left on it, and today is the last chance anybody has to spend them.
+    const until = slaClockAdd(policy.hours, now, input.withinMinutes * 60_000);
     const rows = SLA_TARGETS.flatMap((target) =>
       ctx.sql.query<{
         id: string; subject: string; priority: ConversationRow['priority'];
@@ -5452,6 +5565,17 @@ const operations = {
      * is where the human is now looking.
      */
     const survivorRef = conversationRef(survivor.id);
+    // Read before the rows move: the loser's public messages and its sessions, whose
+    // thread edges follow below (#2044).
+    const movedPublic = ctx.sql.query<{ id: string }>(
+      `SELECT m.id FROM ticket0_messages m
+        WHERE m.conversation_id = ?
+          AND EXISTS (SELECT 1 FROM _substrat_tuples t
+                       WHERE t.subject = 'message:' || m.id AND t.relation = 'parent'
+                         AND t.object = ? AND t.revoked_at IS NULL)`,
+      [conversation.id, `publicThread:${conversation.id}`],
+    );
+    const movedSessions = sessionsOn(ctx, conversation.id);
     for (const [table, entityType] of [
       ['ticket0_messages', 'message'],
       ['ticket0_ai_turns', 'aiTurn'],
@@ -5469,11 +5593,15 @@ const operations = {
         ctx.relink({ entityType, entityId: row.id }, loserRef, survivorRef);
       }
     }
-    // Every session now on the survivor holds every public message now on it (#1853):
-    // the loser's sessions gain the survivor's thread, which `widget-thread` now shows
-    // them, and the survivor's sessions gain the moved messages. Nothing comes off — the
-    // moved messages' edges to the loser's sessions are still true, those sessions moved too.
-    for (const session of sessionsOn(ctx, survivor.id)) seatSession(ctx, session.id, survivor.id);
+    // The public thread follows (#2044): each moved public message onto the survivor's
+    // thread, which every session now on the survivor holds; and each of the loser's
+    // sessions off the loser's thread and onto the survivor's, which `widget-thread` now
+    // shows them. The survivor's own sessions already hold its thread.
+    for (const m of movedPublic) ctx.relink(messageRef(m.id), threadRef(conversation.id), threadRef(survivor.id));
+    for (const session of movedSessions) {
+      unseatSession(ctx, session.id, conversation.id);
+      seatSession(ctx, session.id, survivor.id);
+    }
     // A mail's delivery record names the conversation its message is in, so it moves
     // with the message (#1088).
     ctx.sql.exec('UPDATE ticket0_mail_deliveries SET conversation_id = ? WHERE conversation_id = ?', [
@@ -7190,11 +7318,13 @@ const operations = {
       sessionId: id,
       token,
       greeting: settings.greeting,
-      // Verbatim, and nothing here reads it. The desk stores whatever a person typed
-      // in Settings — "Mon–Fri · 09:00–18:00 · Europe/Stockholm", or a sentence — so
-      // parsing it would be inventing a grammar nobody was offered. It travels to the
-      // widget as text and is displayed as text; `null` means the desk has not said.
-      businessHours: settings.business_hours,
+      // The line derived from the desk's structured hours when it has them (#1648), and
+      // otherwise the free-text note, verbatim. Nothing reads the note: it is whatever a
+      // person typed in Settings — "Mon–Fri · 09:00–18:00 · Europe/Stockholm", or a
+      // sentence — and parsing it would be inventing a grammar nobody was offered. It
+      // stays on the row as the fallback, so a desk that never set structured hours
+      // shows exactly what it showed before. `null` means the desk has said neither.
+      businessHours: displayedBusinessHours(settings),
       verified,
       origin: input.origin,
       startedAt: now,

@@ -7,8 +7,8 @@
  * directory, and that the role is granted BEFORE the invite is recorded — and, since #1931,
  * that an admin confers (or takes back) only a role whose permissions they already hold.
  *
- * The bound here is a stand-in with the kernel's answer shape; that the HOST's `canAssign`
- * gives `ctx.canAssign`'s answer, narrowing included, is held by the permission contract
+ * The bound here is a stand-in with the kernel's answer shape; that the HOST's bounded verbs
+ * give `ctx.canAssign`'s answer, narrowing included, is held by the permission contract
  * suite on both adapters, and the routes over a real host by the adapters' own suites.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -84,6 +84,9 @@ const boundOf = (principal: PrincipalId, roleKey: string): Coverage => {
 
 let log: string[];
 let directory: MemoryDirectory;
+/** The scope's role tuples, as the stand-in host keeps them: principal → roles held. */
+let scopeRoles: Map<string, Set<string>>;
+const holds = (principal: string): string[] => [...(scopeRoles.get(principal) ?? [])].sort();
 let app: Hono<{ Bindings: Env }>;
 
 const env = (): Env => ({
@@ -103,6 +106,7 @@ const provider = (env: Env): AuthProvider => ({
 
 beforeEach(() => {
   log = [];
+  scopeRoles = new Map();
   directory = new MemoryDirectory(log);
   app = mount();
 });
@@ -135,14 +139,23 @@ function deps(overrides: Partial<InviteRouteDeps<Env, typeof NODE>> = {}): Invit
     directory: () => directory,
     assignScopeRoleBounded: async (_env, node, caller, principal, roleKey) => {
       log.push(`assignScopeRoleBounded ${node.scopeId} ${caller} ${principal} ${roleKey}`);
-      return boundOf(caller, roleKey);
+      const bound = boundOf(caller, roleKey);
+      if (bound.covered) scopeRoles.set(principal, new Set([...holds(principal), roleKey]));
+      return bound;
     },
     revokeScopeRole: async (_env, scopeId, principal, roleKey) => {
       log.push(`revokeScopeRole ${scopeId} ${principal} ${roleKey}`);
+      scopeRoles.get(principal)?.delete(roleKey);
     },
-    canAssign: async (_env, node, principal, roleKey) => {
-      log.push(`canAssign ${node.scopeId} ${principal} ${roleKey}`);
-      return boundOf(principal, roleKey);
+    // The host's bounded revoke: the bound over every role the principal HOLDS, a role the
+    // tenant does not define taken without one, then all of them or none.
+    revokeScopeRolesBounded: async (_env, node, caller, principal) => {
+      log.push(`revokeScopeRolesBounded ${node.scopeId} ${caller} ${principal}`);
+      const held = holds(principal);
+      const missing = [...new Set(held.flatMap((r) => (ROLE_PERMS[r] ? (boundOf(caller, r).missing as string[]) : [])))].sort();
+      if (missing.length > 0) return { coverage: { covered: false, missing: missing as [PermissionKey, ...PermissionKey[]] }, revoked: [] };
+      scopeRoles.delete(principal);
+      return { coverage: { covered: true, missing: [] }, revoked: held };
     },
     authProvider: async (env) => provider(env),
     ...overrides,
@@ -314,13 +327,13 @@ describe('mountInviteRoutes', () => {
  * answers "may you manage members at all"; the bound answers "may you confer this much", and
  * removal takes the same bound. Every refusal leaves the directory and the host untouched.
  */
-describe('mountInviteRoutes — the canAssign bound', () => {
+describe('mountInviteRoutes — the assignment bound', () => {
   const create = (roleKey: string, headers: Record<string, string> = admin) =>
     app.request('http://app.example/api/invites', json({ roleKey }, headers), env());
   const revoke = (principal: string, headers: Record<string, string> = admin) =>
     app.request(`http://app.example/api/invites/${principal}/revoke`, { method: 'POST', headers }, env());
   /** What reached the host or the directory's writers — the bound's own reads excluded. */
-  const writes = () => log.filter((l) => !l.startsWith('canAssign') && !l.startsWith('assignScopeRoleBounded'));
+  const writes = () => log.filter((l) => !l.startsWith('assignScopeRoleBounded'));
 
   it('refuses an admin who lacks what the role carries — 403 naming it, nothing granted or recorded', async () => {
     const res = await create('admin', junior);
@@ -343,23 +356,50 @@ describe('mountInviteRoutes — the canAssign bound', () => {
     expect(log[0]).toMatch(new RegExp(`^assignScopeRoleBounded scope-1 ${OWNER} [A-Z0-9]+ admin$`));
   });
 
-  it('bounds revoke by the role the STORED invite confers — refused, and the invite stays', async () => {
+  it('bounds a withdrawal by the roles the invite\'s principal holds — refused, and the invite and its role stay', async () => {
     const created = (await (await create('admin')).json()) as { principal: string };
     log.length = 0;
     const res = await revoke(created.principal, junior);
     expect(res.status).toBe(403);
-    expect(await res.text()).toMatch(/cannot revoke an invite at 'admin': you do not hold billing:manage/);
-    expect(log).toEqual([`canAssign scope-1 ${JUNIOR} admin`]);
+    expect(await res.text()).toMatch(new RegExp(`cannot withdraw the invite of '${created.principal}': you do not hold billing:manage`));
+    expect(log).toEqual([`revokeScopeRolesBounded scope-1 ${JUNIOR} ${created.principal}`]);
     expect(directory.invites.has(created.principal)).toBe(true);
+    expect(holds(created.principal)).toEqual(['admin']);
   });
 
-  it('...while the same admin revokes an invite at a role they hold, and the owner revokes the higher one', async () => {
+  it('...while the same admin withdraws one at a role they hold, and the owner the higher one — the grants going too', async () => {
     const editor = (await (await create('editor')).json()) as { principal: string };
     const higher = (await (await create('admin')).json()) as { principal: string };
     expect((await revoke(editor.principal, junior)).status).toBe(204);
     expect(directory.invites.has(editor.principal)).toBe(false);
+    expect(holds(editor.principal)).toEqual([]);
     expect((await revoke(higher.principal)).status).toBe(204);
     expect(directory.invites.has(higher.principal)).toBe(false);
+    expect(holds(higher.principal)).toEqual([]);
+  });
+
+  /**
+   * The row's `roleKey` is what was minted, and authorizes nothing (Codex #2057 r2). A role move
+   * can land between an invite's grant and its row — the row then says `editor` while its
+   * principal holds `admin` — and the withdrawal must still be bounded by `admin`.
+   */
+  it('refuses a withdrawal by the stale row\'s role when the principal now holds more', async () => {
+    const created = (await (await create('editor')).json()) as { principal: string };
+    scopeRoles.set(created.principal, new Set(['admin'])); // moved, after the row was written
+    expect(directory.invites.get(created.principal)?.roleKey).toBe('editor');
+    const res = await revoke(created.principal, junior);
+    expect(res.status).toBe(403);
+    expect(directory.invites.has(created.principal)).toBe(true);
+    expect(holds(created.principal)).toEqual(['admin']);
+    expect((await revoke(created.principal)).status).toBe(204);
+    expect(holds(created.principal)).toEqual([]);
+  });
+
+  it('...and lets it through when the principal now holds less than the row says', async () => {
+    const created = (await (await create('admin')).json()) as { principal: string };
+    scopeRoles.set(created.principal, new Set(['editor']));
+    expect((await revoke(created.principal, junior)).status).toBe(204);
+    expect(directory.invites.has(created.principal)).toBe(false);
   });
 
   it('a revoke of no open invite answers 204 as before, and asks the bound nothing', async () => {
@@ -425,36 +465,36 @@ describe('mountInviteRoutes — the canAssign bound', () => {
 
   /**
    * An invite at a role the tenant no longer defines (#1931 review). Such a role confers
-   * nothing, so removing the invite narrows nothing, and the host's `not_found` for THAT role
-   * lets the revoke through. Every other error, including a `not_found` about something else,
-   * still refuses. Create is unchanged: it never gets that far with an unknown role.
+   * nothing, so the bounded revoke takes it without a bound and the withdrawal goes through.
+   * Any error from the revoke still refuses. Create is unchanged: it never gets that far with
+   * an unknown role.
    */
   describe('a revoke at a role the tenant no longer defines', () => {
     const seeded = async (roleKey: string) => {
       const principal = ulid();
       await directory.createInvite('scope-1', principal, roleKey, null, 'hash');
+      scopeRoles.set(principal, new Set([roleKey]));
       log.length = 0;
       return principal;
     };
-    const boundThrows = (err: unknown) => {
+    const revokeThrows = (err: unknown) => {
       app = mount({
-        canAssign: async (_env, _node, _principal, roleKey) => {
-          log.push(`canAssign ${roleKey}`);
-          throw typeof err === 'function' ? (err as (r: string) => unknown)(roleKey) : err;
+        revokeScopeRolesBounded: async () => {
+          log.push('revokeScopeRolesBounded');
+          throw err;
         },
       });
     };
 
     it('goes through for an admin, and the invite is gone', async () => {
       const principal = await seeded('retired');
-      boundThrows((roleKey: string) => unknownRoleError(roleKey));
       expect((await revoke(principal, junior)).status).toBe(204);
       expect(directory.invites.has(principal)).toBe(false);
+      expect(holds(principal)).toEqual([]);
     });
 
     it('...but a non-admin is still refused by the gate, and the bound is never asked', async () => {
       const principal = await seeded('retired');
-      boundThrows((roleKey: string) => unknownRoleError(roleKey));
       const res = await revoke(principal, { authorization: 'Bearer tok-owner' });
       expect([res.status, await res.text()]).toEqual([403, 'only an admin can manage invites']);
       expect(log).toEqual([]);
@@ -462,12 +502,12 @@ describe('mountInviteRoutes — the canAssign bound', () => {
     });
 
     it.each([
-      ['a not_found about a different role', unknownRoleError('some-other-role')],
+      ['a not_found about a role', unknownRoleError('some-other-role')],
       ['a not_found about the scope', substratError('not_found', 'unknown scope for tenant: (t, s)')],
-      ['an untyped error carrying the same words', new Error('no such role in this tenant: retired')],
-    ])('still refuses on %s, and the invite stays', async (_case, err) => {
+      ['an untyped error', new Error('the scope is unreachable')],
+    ])('a revoke that throws %s refuses, and the invite stays', async (_case, err) => {
       const principal = await seeded('retired');
-      boundThrows(err);
+      revokeThrows(err);
       expect((await revoke(principal, junior)).status).toBe(500);
       expect(directory.invites.has(principal)).toBe(true);
     });
@@ -491,13 +531,13 @@ describe('mountInviteRoutes — the canAssign bound', () => {
       app = mount(overrides);
     };
 
-    it('no canAssign dep (a JS caller, or a cast) — create and revoke refuse, nothing written', async () => {
+    it('no bounded-revoke dep (a JS caller, or a cast) — create and revoke refuse, nothing written', async () => {
       const seeded = (await (await create('editor')).json()) as { principal: string };
       log.length = 0;
-      remount({ canAssign: undefined as never });
+      remount({ revokeScopeRolesBounded: undefined as never });
       const res = await create('editor');
       expect(res.status).toBe(500);
-      expect(await res.text()).toMatch(/without the canAssign bound/);
+      expect(await res.text()).toMatch(/without the bounded revoke/);
       const rev = await revoke(seeded.principal);
       expect(rev.status).toBe(500);
       expect(writes()).toEqual([]);

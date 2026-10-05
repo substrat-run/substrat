@@ -518,9 +518,10 @@ Each with a recommendation, so this is a choice and not a specification exercise
 
 Deliberately not in this build, so the review is about a bounded thing: service levels
 beyond per-priority first-response and resolution targets with a breach state and a
-one-time escalation, with the resolution target paused while a conversation is snoozed
-(#1082 and #1648 built those; business-hours clocks and a "breaching soon" view are still
-#1648); phone, SMS and social channels; multilingual answering;
+one-time escalation, the resolution target paused while a conversation is snoozed, an
+opt-in business-hours clock over the desk's structured opening hours, and a "breaching
+soon" view (#1082 and #1648 built those; an out-of-hours auto-reply and an "away" state in
+the widget, which would read the same opening hours, are not built); phone, SMS and social channels; multilingual answering;
 routing rules beyond assignment and round-robin; satisfaction analytics beyond storing the
 score; knowledge bases that live in Notion or Confluence; a public help centre; billing
 (section 5); and any marketplace listing.

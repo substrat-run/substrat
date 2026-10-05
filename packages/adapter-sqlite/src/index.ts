@@ -205,6 +205,7 @@ import {
   assertReplayableDump,
   delegatedReadRecord,
   ownerTransferAudit,
+  memberChangeAudit,
   copyMarkAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
@@ -320,6 +321,12 @@ import {
   DELIVERY_ERROR_REDACTION_SQL,
   REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
+  applyScopeRoleChange,
+  changeScopeRole,
+  revokeScopeRoles,
+  scopeRoleHolders,
+  type RoleBound,
+  type ScopeRoleHolder,
   admitPeer,
   collectPeers,
   peerSeats,
@@ -410,6 +417,8 @@ import {
   membershipFencesTableExists,
   MEMBERSHIP_FENCE_SINCE_SQL,
   RAISE_MEMBERSHIP_FENCE_SQL,
+  memberAddedAudit,
+  orgChangeBound,
   tenantCoverage,
   type MembershipChangeResult,
   isSecretBoxConfigured,
@@ -470,13 +479,20 @@ import {
   type SearchIndexPlan,
   type SearchOptions,
   type AttachmentExtractor,
+  type AttachmentTextBounds,
   ATTACHMENT_TEXT_DDL,
   assertAttachmentExtractors,
+  resolveAttachmentTextBounds,
   assertJobRegistrable,
   attachmentRecordOfRow,
   attachmentTextJob,
   enqueueAttachmentText,
-  isAttachmentTextRun,
+  ATTACHMENT_TEXT_BACKFILL_JOB,
+  ATTACHMENT_TEXT_JOB,
+  kernelJobFor,
+  queueAttachmentTextBackfill,
+  startAttachmentTextBackfill,
+  attachmentTextBackfillJob,
   reconcileAttachmentText,
   recordAttachmentText,
   searchAttachments,
@@ -572,8 +588,9 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
+  type ConsumerDelivery,
 } from '@substrat-run/kernel';
-import { attributedHost } from '@substrat-run/kernel';
+import { attributedView } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -681,35 +698,16 @@ interface ScopeRuntime {
    */
   mintEventId: UlidMint;
   /**
-   * #1237: the event this scope is currently delivering to a consumer, or null —
-   * stamped onto whatever that consumer emits.
-   *
-   * Per scope, not per host, for the same reason the mint is: `SqliteScopeHost`
-   * serves every scope in the process, and a consumer that awaits hands the loop to
-   * another scope's `ScopeActor`. A host-wide field would then be overwritten (or
-   * cleared) under the first consumer's feet, and the row it emits on resuming would
-   * carry another scope's cause — a wrong fact, which is worse than the honest NULL
-   * this column uses for "unrecorded". Within one scope nothing can interleave: the
-   * actor serializes invoke and dispatch alike.
-   */
-  causedBy: string | null;
-  /**
    * #1237: the invocation currently running in this scope, or null.
    *
-   * Per-runtime for the same reason `causedBy` is — the host serves every scope in the
-   * process, and a host-wide field would stamp one scope's events with another's
-   * invocation the moment an operation awaited. Set for the duration of one `invoke`
-   * and cleared after, so a consumer running later carries none rather than the last
-   * caller's.
+   * Per-runtime, not per host: the host serves every scope in the process, and a
+   * host-wide field would stamp one scope's events with another's invocation the moment
+   * an operation awaited. Within one scope nothing can interleave: the actor serializes
+   * invoke and dispatch alike. Set for the duration of one `invoke` and cleared after, so
+   * a consumer running later carries none rather than the last caller's. A consumer's own
+   * cause is not kept here: it is passed into the consumer's context (#2055).
    */
   invocationId: string | null;
-  /**
-   * #1901: the id a unit of async work with no call around it logs under — a consumer a
-   * seed or an import delivered — set for its handler's duration and cleared after. Read by
-   * `ctx.log` only, never the spine: an event a consumer emits outside a call still records
-   * no invocation (#1525), while its log lines join the consumer's own line.
-   */
-  unitInvocationId: string | null;
 }
 
 /** One `_substrat_attachments` row (#473), as SELECTed. */
@@ -753,6 +751,11 @@ export interface SqliteScopeHostOptions {
    * that reason, which is a valid configuration rather than a broken one.
    */
   attachmentExtractors?: readonly AttachmentExtractor[];
+  /**
+   * Tighter bounds for attachment text extraction (#1575): input ceiling, text cap, time
+   * budget. Each may only lower the kernel's default (`resolveAttachmentTextBounds`).
+   */
+  attachmentTextBounds?: Partial<AttachmentTextBounds>;
   /** Directory holding one SQLite file per scope plus the directory database. */
   dir: string;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
@@ -1621,12 +1624,12 @@ export class SqliteScopeHost implements ScopeHost {
    */
   private readonly jobs = new Map<string, JobRegistration>();
   /**
-   * The event currently being effected by an executor, stamped onto any admin rows
-   * it writes. Ambient rather than threaded through every HostAdmin signature: it is
-   * set and cleared immediately around one `await`, and executors run sequentially,
-   * so there is no window where it belongs to a different event.
+   * The event an executor is effecting, stamped onto the admin rows it writes (K-22). Like
+   * `onBehalfOf`, only ever set on a VIEW (`causedByView`, or `attributed` with a
+   * `causedBy`), never on the host: a field set around the handler's `await` stamped every
+   * admin call the host served meanwhile — a staff call included — with that event (#2055).
    */
-  private causedBy: string | null = null;
+  private readonly causedBy: string | null = null;
   /**
    * #977: the person an attributed admin view's actions are taken for. Only ever set on a
    * VIEW (`attributed`, a Proxy whose `onBehalfOf` answers from the view), so a host shared across
@@ -1637,6 +1640,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly secretBox: SecretBox;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
+  private readonly attachmentTextBounds: AttachmentTextBounds;
   private readonly fetchImpl: FetchLike;
   private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
@@ -1655,6 +1659,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
+    this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
@@ -4031,16 +4036,14 @@ export class SqliteScopeHost implements ScopeHost {
           const { hops: _hops, ...fact } = e;
           const event: ImportedEvent = structuredClone({ ...fact, source });
           const unit = unitOf(imp.moduleId, e.id, e.type);
-          // What the handler emits was emitted BECAUSE of the producer's event (#1237). The id
-          // resolves through `_substrat_imports`, which the row above has just written.
-          rt.causedBy = e.id;
-          rt.unitInvocationId = unit.invocationId;
           rt.db.exec('BEGIN IMMEDIATE');
           try {
             // As the producer's principal, admitted above: the handler's checks are real ones,
             // against the grants this vertical's `peers` gave it, and its emits carry the actor
-            // `{ vertical, scope }` and the authorization they passed (K-34).
-            await imp.handler(this.operationContext(rt, subject), event);
+            // `{ vertical, scope }` and the authorization they passed (K-34). What it emits was
+            // emitted BECAUSE of the producer's event (#1237); the id resolves through
+            // `_substrat_imports`, which the row above has just written.
+            await imp.handler(this.deliveryContext(rt, subject, undefined, { causedBy: e.id, invocationId: unit.invocationId }), event);
             rt.db
               .prepare(
                 `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
@@ -4057,9 +4060,6 @@ export class SqliteScopeHost implements ScopeHost {
             deadLetter.run(e.id, imp.moduleId, new Date().toISOString(), String(err));
             result.deadLettered += 1;
             lines.write({ ...unit, outcome: 'dead-lettered', error: err });
-          } finally {
-            rt.causedBy = null;
-            rt.unitInvocationId = null;
           }
         }
         if (!ran) result.duplicates += 1;
@@ -4342,14 +4342,55 @@ export class SqliteScopeHost implements ScopeHost {
     const target = principalId.parse(assignee);
     return rt.actor.turn(async () => {
       const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
-      if (bound.covered) {
-        rt.db.prepare(
-          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-           VALUES (?, ?, ?, NULL)`,
-        ).run(`principal:${target}`, `role:${roleKey}`, `scope:${scopeId}`);
-      }
+      if (bound.covered) applyScopeRoleChange(switchSqlOf(rt.db), scopeId, target, { revoke: [], grant: roleKey }, this.clock());
       return bound;
     });
+  }
+
+  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const who = principal === undefined ? undefined : principalId.parse(principal);
+    return rt.actor.enqueue(() => scopeRoleHolders(switchSqlOf(rt.db), scopeId, this.clock(), who));
+  }
+
+  async changeScopeRoleBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+    from: string,
+    to: string,
+  ): Promise<Coverage> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const target = principalId.parse(principal);
+    const answer = await rt.actor.turn(() =>
+      changeScopeRole(switchSqlOf(rt.db), scopeId, target, from, to, this.clock(), this.roleBound(caller, tenantId, scopeId), (run) => rt.db.transaction(run)()),
+    );
+    if (answer === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
+    if (answer === 'unknown-to') throw unknownRoleError(to);
+    return answer;
+  }
+
+  async revokeScopeRolesBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.turn(() =>
+      revokeScopeRoles(
+        switchSqlOf(rt.db), scopeId, principalId.parse(principal), this.clock(), this.roleBound(caller, tenantId, scopeId),
+        (run) => rt.db.transaction(run)(),
+      ),
+    );
+  }
+
+  /** The caller's bound per role at the scope, `null` for a role this tenant does not define (#1150). */
+  private roleBound(caller: PrincipalId, tenantId: TenantId, scopeId: ScopeId): RoleBound {
+    const subject = asPrincipal(principalId.parse(caller));
+    return async (roleKey) =>
+      this.roles.has(`${tenantId}/${roleKey}`) ? this.assignmentBound(subject, tenantId, scopeId, roleKey) : null;
   }
 
   /**
@@ -5183,15 +5224,16 @@ export class SqliteScopeHost implements ScopeHost {
           lines.write({ ...unit, attempt: attempts, outcome: 'inert' });
           continue;
         }
-        this.causedBy = event.id;
+        // #2055: the handler writes through a view bound to its event, never through the host.
+        const caused = this.causedByView(event.id);
         try {
           let result: unknown;
           if (executor.kind === 'connector') {
             // `true`: dispatchExecutors is only ever reached from inside
             // `rt.actor.enqueue` (invoke's post-commit tail, or drainDue).
-            await executor.handler(this.connectorContext(rt, executor.timeoutMs, true, event.id), event);
+            await executor.handler(caused.connectorContext(rt, executor.timeoutMs, true, event.id), event);
           } else {
-            result = await executor.handler(this.admin, event, scope);
+            result = await executor.handler(caused.admin, event, scope);
           }
           // #1184: a refusal is the handler's own terminal decision — journaled with its
           // reason, never retried, and listed by `executorDeadLetters` beside an exhausted one.
@@ -5222,8 +5264,6 @@ export class SqliteScopeHost implements ScopeHost {
           else report.retrying += 1;
           outcomeOf(dead ? 'dead-lettered' : 'retrying', err);
           lines.write({ ...unit, attempt: attempts, outcome: dead ? 'dead-lettered' : 'retrying', error: err });
-        } finally {
-          this.causedBy = null;
         }
       }
     }
@@ -5520,6 +5560,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // K-43: the host's parsers, handed in — this adapter imports none.
       this.attachmentExtractors,
+      this.attachmentTextBounds,
     );
   }
 
@@ -5540,13 +5581,22 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<JobDriveReport> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    // #1575: the kernel's extraction job is this host's own, bound to this scope — no
-    // deployment registers it, and none can shadow it.
-    const attachmentText = { handler: this.attachmentTextHandler(rt) };
+    // #1575: the kernel's extraction jobs are this host's own, bound to this scope — no
+    // deployment registers them, and none can shadow them. The backfill starts here, on
+    // the drive, so a scope's first request never pays for attachments that predate it.
+    await rt.actor.enqueue(() => startAttachmentTextBackfill(spineSql(rt.db), ulid(), this.clock()));
+    const kernelJobs = {
+      [ATTACHMENT_TEXT_JOB]: this.attachmentTextHandler(rt),
+      [ATTACHMENT_TEXT_BACKFILL_JOB]: attachmentTextBackfillJob({
+        queueBatch: (after) =>
+          rt.actor.enqueue(() =>
+            rt.db.transaction(() => queueAttachmentTextBackfill(spineSql(rt.db), after, ulid, this.clock()))(),
+          ),
+      }),
+    };
     return runDueJobRuns({
       store: this.jobStore(rt),
-      handlerFor: (run) =>
-        isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
+      handlerFor: (run) => kernelJobFor(run, kernelJobs) ?? this.jobs.get(`${run.module_id}/${run.job}`),
       now: this.clock,
       openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
       maxPasses: options?.maxPasses,
@@ -5578,14 +5628,10 @@ export class SqliteScopeHost implements ScopeHost {
     // Cloudflare one does; the context build is the same one `dispatchExecutors` hands
     // an in-process connector.
     const rt = this.runtime(tenantId, scopeId);
-    this.causedBy = event.id;
-    try {
-      // `false`: this path deliberately does NOT enqueue, so nothing is held and
-      // the connection's reads take an ordinary serialized turn.
-      await handler(this.connectorContext(rt, options?.timeoutMs ?? 30_000, false, event.id), event);
-    } finally {
-      this.causedBy = null;
-    }
+    // `false`: this path deliberately does NOT enqueue, so nothing is held and
+    // the connection's reads take an ordinary serialized turn. Built on a view bound to
+    // the event, so its admin rows carry it and nothing else the host serves does (#2055).
+    await handler(this.causedByView(event.id).connectorContext(rt, options?.timeoutMs ?? 30_000, false, event.id), event);
   }
 
   /**
@@ -5863,16 +5909,12 @@ export class SqliteScopeHost implements ScopeHost {
               lines.write({ ...unit, outcome: 'dead-lettered' });
               continue;
             }
-            const ctx = this.operationContext(rt, asPrincipal(this.systemPrincipal), {
-              system: mod.id,
+            // #1237: anything this consumer emits was emitted BECAUSE of this event — where a
+            // backwards walk used to stop. #1901: its `ctx.log` lines join this delivery's line.
+            const ctx = this.deliveryContext(rt, asPrincipal(this.systemPrincipal), { system: mod.id }, {
+              causedBy: event.id,
+              invocationId: unit.invocationId,
             });
-            // #1237: anything this consumer emits was emitted BECAUSE of this event.
-            // `dispatchExecutors` already did this for the admin log; the module
-            // consumers never did, which is exactly where a backwards walk stopped.
-            // On the runtime rather than the host — see `ScopeRuntime.causedBy`.
-            rt.causedBy = event.id;
-            // #1901: the handler's `ctx.log` lines join this delivery's line.
-            rt.unitInvocationId = unit.invocationId;
             rt.db.exec('BEGIN IMMEDIATE');
             try {
               await consumer.handler(ctx, event);
@@ -5898,13 +5940,6 @@ export class SqliteScopeHost implements ScopeHost {
                 )
                 .run(event.id, mod.id, new Date().toISOString(), String(err), invocationId);
               lines.write({ ...unit, outcome: 'dead-lettered', error: err });
-            } finally {
-              rt.unitInvocationId = null;
-              // Cleared on BOTH paths. Left set, the id would leak onto every later
-              // emit in this scope — an operation's own event stamped as caused by
-              // whatever happened to be delivered last, which is worse than no cause
-              // at all, because it reads as a recorded fact.
-              rt.causedBy = null;
             }
           }
         }
@@ -6279,6 +6314,7 @@ export class SqliteScopeHost implements ScopeHost {
         target.vertical ?? null,
         before == null ? null : JSON.stringify(before),
         after == null ? null : JSON.stringify(after),
+        // #2055: like `onBehalfOf`, set only on a view, never on the host itself.
         this.causedBy,
         // #977: set only on an attributed view (`attributed`), never on the host itself.
         this.onBehalfOf === null ? null : JSON.stringify(this.onBehalfOf),
@@ -6315,8 +6351,13 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /** #977: this host, with every admin row it writes naming who the actor acted for. */
-  attributed(onBehalfOf: OnBehalfOf): this {
-    return attributedHost(this, onBehalfOf, this.buildAdmin);
+  attributed(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): this {
+    return attributedView(this, { onBehalfOf, causedBy: options?.causedBy }, this.buildAdmin);
+  }
+
+  /** #2055: this host, with every admin row it writes naming `eventId` as its cause. */
+  private causedByView(eventId: string): this {
+    return attributedView(this, { causedBy: eventId }, this.buildAdmin);
   }
 
   private buildAdmin(): HostAdmin {
@@ -6574,7 +6615,7 @@ export class SqliteScopeHost implements ScopeHost {
       subject: string,
       relation: string,
       object: string,
-      expiresAt?: string,
+      expiresAt?: string | null,
     ) =>
       this.directory
         .prepare(
@@ -6611,6 +6652,16 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null, at),
       );
     };
+    // An org membership written or tombstoned with its audit row — `addMember` and `removeMember`,
+    // and the membership executor's unit (#2047), one spelling each. Leaving raises the fence too.
+    const joinOrg = (actor: PlatformActorId, tenantId: TenantId, principal: PrincipalId, orgId: OrgId, expiresAt: string | null): void => {
+      writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`, expiresAt);
+      this.recordAdmin(actor, 'addMember', { tenantId }, null, memberAddedAudit(principal, orgId, expiresAt));
+    };
+    const leaveOrgAndFence = (actor: PlatformActorId, tenantId: TenantId, principal: PrincipalId, orgId: OrgId): boolean =>
+      revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, (at) =>
+        this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null, at),
+      );
     // The tenant-level reads the checker makes, synchronous, for the bound inside a unit.
     const directoryReader = directoryTenantReader({
       directory: this.directory,
@@ -8668,14 +8719,13 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'getOrg', { tenantId }, { orgId }, o ? 1 : 0);
         return o;
       },
-      addMember: async (actor, tenantId, principal, orgId) => {
+      addMember: async (actor, tenantId, principal, orgId, opts) => {
         requireOrg(tenantId, orgId);
         // INSERT OR REPLACE, so re-adding a revoked member clears the tombstone —
         // they are a member again. The add/revoke history is not lost: it lives in
         // the append-only admin log, which is where "what happened" belongs. The
         // tuple carries "what is true now" plus enough to explain a live proof.
-        writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`);
-        this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
+        joinOrg(actor, tenantId, principal, orgId, opts?.expiresAt ?? null);
       },
       applyMembership: async (actor, change) => {
         // ONE directory transaction, synchronous throughout (#1184): the fence (an add's), the
@@ -8694,9 +8744,21 @@ export class SqliteScopeHost implements ScopeHost {
           if (!role) return { applied: false, unknownRole: roleKey };
           const bound = tenantCoverage(directoryReader, tenantId, boundedBy, role.permissions);
           if (!bound.covered) return { applied: false, missing: bound.missing };
-          if (change.op === 'remove') return { applied: true, changed: revokeTenantRoleAndFence(actor, assignment) };
+          // #2047: the org, bounded by `boundedBy`'s own live membership of it.
+          const { orgId } = change;
+          const org = orgId ? { orgId, ...orgChangeBound(directoryReader, tenantId, { ...change, orgId }) } : undefined;
+          if (org) {
+            if (!readOrg(tenantId, org.orgId)) return { applied: false, unknownOrg: org.orgId };
+            if (!org.bounded) return { applied: false, notMember: org.orgId };
+          }
+          if (change.op === 'remove') {
+            const roleTaken = revokeTenantRoleAndFence(actor, assignment);
+            const orgLeft = !!org && leaveOrgAndFence(actor, tenantId, principal, org.orgId);
+            return { applied: true, changed: roleTaken || orgLeft };
+          }
           writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`);
           this.recordAdmin(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment);
+          if (org?.bounded) joinOrg(actor, tenantId, principal, org.orgId, org.expiresAt);
           return { applied: true };
         })();
       },
@@ -8705,28 +8767,25 @@ export class SqliteScopeHost implements ScopeHost {
         // Tombstone (K-21), never DELETE: a repeat revoke neither moves the timestamp nor writes
         // a second audit row. One transaction with the removal fence (#1184), which a no-op
         // raises too.
-        this.directory.transaction(() =>
-          revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, (at) =>
-            this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null, at),
-          ),
-        )();
+        this.directory.transaction(() => leaveOrgAndFence(actor, tenantId, principal, orgId))();
       },
       listMembers: async (actor, tenantId, orgId, options) => {
         requireOrg(tenantId, orgId);
         const rows = this.directory
           .prepare(
-            `SELECT subject, revoked_at FROM _substrat_tenant_tuples
+            `SELECT subject, revoked_at, expires_at FROM _substrat_tenant_tuples
              WHERE tenant_id = ? AND relation = 'member' AND object = ?
              ${options?.includeRevoked ? '' : 'AND revoked_at IS NULL'}
              ORDER BY subject`,
           )
-          .all(tenantId, `org:${orgId}`) as { subject: string; revoked_at: string | null }[];
+          .all(tenantId, `org:${orgId}`) as { subject: string; revoked_at: string | null; expires_at: string | null }[];
         this.recordAccess(actor, 'listMembers', { tenantId }, { orgId, ...options }, rows.length);
         return rows.map((r) =>
           orgMembership.parse({
             principal: r.subject.slice('principal:'.length),
             orgId,
             revokedAt: r.revoked_at,
+            expiresAt: r.expires_at,
           }),
         );
       },
@@ -10204,6 +10263,11 @@ export class SqliteScopeHost implements ScopeHost {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
       },
+      /** #1150: one phase of a dashboard member change, written around the vertical's own. */
+      recordMemberChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
+        this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
+      },
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {
         const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
@@ -11069,6 +11133,16 @@ export class SqliteScopeHost implements ScopeHost {
    * can never disagree about who acted (#97). `overrideActor` remains for the
    * system-actor path, where the acting module is the honest answer.
    */
+  /** The context a consumer or an import runs in: no operation, and the delivery it is for (#2055). */
+  private deliveryContext(
+    rt: ScopeRuntime,
+    subject: CheckSubject,
+    overrideActor: { system: string } | undefined,
+    delivery: ConsumerDelivery,
+  ): OperationContext {
+    return this.operationContext(rt, subject, overrideActor, undefined, undefined, undefined, [], undefined, delivery);
+  }
+
   private operationContext(
     rt: ScopeRuntime,
     subject: CheckSubject,
@@ -11102,6 +11176,8 @@ export class SqliteScopeHost implements ScopeHost {
      * row's `last_used_at` are the same value — a second clock read could disagree.
      */
     at: Instant = this.clock(),
+    /** #2055: the delivery a consumer's or an import's context runs for; absent otherwise. */
+    delivery?: ConsumerDelivery,
   ): OperationContext {
     // For a connection, system, capability or peer-vertical subject this carries THAT id so
     // the type holds — it is not a person, and the event actor below says what it is instead.
@@ -11256,11 +11332,10 @@ export class SqliteScopeHost implements ScopeHost {
           // about the process, so it never rides `DomainEvent` for module code to
           // branch on; it exists for the observability joins the column serves.
           this.versionId,
-          // #1237: whatever delivery is in flight FOR THIS SCOPE, if any — read off
-          // the runtime, not the host, because the host serves every scope at once
-          // and this context outlives an `await`. A fact about the surrounding
-          // dispatch, never envelope data module code could set or branch on.
-          rt.causedBy,
+          // #1237: the delivery this context was built for, if any — passed in, never read
+          // off the runtime or the host (#2055). A fact about the surrounding dispatch,
+          // never envelope data module code could set or branch on.
+          delivery?.causedBy ?? null,
           // #1237: a fact about the surrounding CALL, like the version above — never
           // envelope data module code could set or branch on.
           rt.invocationId,
@@ -11281,7 +11356,7 @@ export class SqliteScopeHost implements ScopeHost {
           tenantId: rt.tenantId,
           scopeId: rt.scopeId,
           operation: operation ?? null,
-          invocationId: () => rt.invocationId ?? rt.unitInvocationId,
+          invocationId: () => rt.invocationId ?? delivery?.invocationId ?? null,
           // A consumer runs under the system override, so it logs as `system`.
           principalKind: overrideActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
@@ -11925,9 +12000,7 @@ export class SqliteScopeHost implements ScopeHost {
       actor: new ScopeActor(),
       appliedMigrations,
       mintEventId,
-      causedBy: null,
       invocationId: null,
-      unitInvocationId: null,
     };
     this.scopes.set(key, created);
     this.scopesById.set(scopeId, created);

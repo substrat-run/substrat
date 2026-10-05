@@ -73,6 +73,16 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   scope is bound to no vertical (with the diagnosis) or the bound vertical keeps no owner
   seat — both callbacks are optional in [`vertical-host`](/reference/vertical-host), and the
   vertical's own status is forwarded unchanged.
+  The member routes are forwarded the same way: `GET …/members` (the roster),
+  `POST …/members` with `{ roleKey, email? }` (an invite: `201` and a one-time accept link on
+  the scope's `app` hostname), `POST …/members/:principal/role` with `{ from, to }`, and
+  `POST …/members/:principal/remove`. A change is made **as the person** the tenant credential
+  was minted for, and the vertical bounds it by what that person holds in the instance. A
+  credential naming nobody (a builder, staff, or a tenant token minted without a person) is
+  refused `403` on the three writes; the roster still reads. Each write leaves two
+  `manageScopeMember` rows on the admin log, the intent and then `applied`, `refused` or
+  `failed`. The vertical's own status (`403` past the person's authority, `409` for the owner
+  of record, `501` for an app that declares no member roles) is forwarded unchanged.
   A third, `POST …/owner-transfer` with `{ from, to }`, hands the owner seat to another member
   of the instance. It is **staff-only**: a tenant credential or a builder is refused `403`.
   The vertical moves its owner of record, seats `to` in the owner role, revokes `from`'s,

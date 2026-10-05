@@ -95,6 +95,12 @@ import {
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   seatScopeTuple,
+  applyScopeRoleChange,
+  changeScopeRole,
+  revokeScopeRoles,
+  scopeRoleHolders,
+  type RoleBound,
+  type ScopeRoleHolder,
   effectiveRoleGrantQuery,
   switchRecordedOff,
   switchSystemSchedules,
@@ -153,6 +159,9 @@ import {
   attachmentRecordOfRow,
   enqueueAttachmentText,
   reconcileAttachmentText,
+  queueAttachmentTextBackfill,
+  startAttachmentTextBackfill,
+  type AttachmentTextBackfillBatch,
   recordAttachmentText,
   searchAttachments,
   type AttachmentRowShape,
@@ -300,6 +309,7 @@ import {
   walkEventCause,
   walkEventEffects,
   type UndrainedRead,
+  type ConsumerDelivery,
 } from '@substrat-run/kernel';
 import type {
   DrainedEvent,
@@ -1813,13 +1823,15 @@ export function defineScopeDO(
             const { hops: _hops, ...fact } = e;
             const event: ImportedEvent = structuredClone({ ...fact, source });
             const unit = unitOf(imp.moduleId, e.id, e.type);
-            this.causedBy = e.id;
-            this.unitInvocationId = unit.invocationId;
             try {
               await this.revision.transaction(async () => {
                 // As the producer's principal: real checks against the grants this vertical's
                 // `peers` gave it; its emits carry `{ vertical, scope }` and what they passed.
-                await imp.handler(this.importContext(tenantId, scopeId, peerSubject), event);
+                // What it emits was emitted BECAUSE of the producer's event (#1237).
+                await imp.handler(
+                  this.importContext(tenantId, scopeId, peerSubject, { causedBy: e.id, invocationId: unit.invocationId }),
+                  event,
+                );
                 this.sql.exec(
                   `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
                    VALUES (?, ?, ?, NULL)`,
@@ -1835,9 +1847,6 @@ export function defineScopeDO(
               deadLetter(e.id, imp.moduleId, new Date().toISOString(), String(err));
               result.deadLettered += 1;
               lines.write({ ...unit, outcome: 'dead-lettered', error: err });
-            } finally {
-              this.causedBy = null;
-              this.unitInvocationId = null;
             }
           }
           if (!ran) result.duplicates += 1;
@@ -1856,7 +1865,32 @@ export function defineScopeDO(
      * passes it (#1706). `principal` is a placeholder that the subject never reads, and there is
      * no operation, so the emitted rows' `operation` is NULL, as it is for any consumer.
      */
-    private importContext(tenantId: TenantId, scopeId: ScopeId, peerSubject: CheckSubject): OperationContext {
+    /** A module consumer's context: the system override, and the delivery it runs for (#2055). */
+    private consumerContext(tenantId: TenantId, scopeId: ScopeId, moduleId: string, delivery: ConsumerDelivery): OperationContext {
+      return this.operationContext(
+        this.systemPrincipal,
+        tenantId,
+        scopeId,
+        { system: moduleId },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [],
+        undefined,
+        undefined,
+        delivery,
+      );
+    }
+
+    private importContext(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      peerSubject: CheckSubject,
+      delivery: ConsumerDelivery,
+    ): OperationContext {
       return this.operationContext(
         principalId.parse(ulid()),
         tenantId,
@@ -1871,6 +1905,7 @@ export function defineScopeDO(
         [],
         undefined,
         peerSubject,
+        delivery,
       );
     }
 
@@ -3548,6 +3583,30 @@ export function defineScopeDO(
       );
     }
 
+    /**
+     * #1575: start the scope's one-shot backfill, unless it is marked or holds no
+     * attachments (`startAttachmentTextBackfill` reads before it writes, so a marked scope
+     * writes nothing — and moves no write revision — on every drive).
+     */
+    async attachmentTextBackfillStart(): Promise<void> {
+      await this.ensureMigrations();
+      await this.queue.enqueue(async () =>
+        this.revision.transactionSync(() =>
+          startAttachmentTextBackfill(doSpineSql(this.sql), ulid(), new Date().toISOString()),
+        ),
+      );
+    }
+
+    /** #1575: one backfill batch, in one transaction (`queueAttachmentTextBackfill`). */
+    async attachmentTextBackfillBatch(after: string | null): Promise<AttachmentTextBackfillBatch> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () =>
+        this.revision.transactionSync(() =>
+          queueAttachmentTextBackfill(doSpineSql(this.sql), after, ulid, new Date().toISOString()),
+        ),
+      );
+    }
+
     // -- attachments through a capability (#1686) -------------------------------
     // The coordinator hashed the session token; only the hash arrives. Each verb resolves it
     // INSIDE the queue, as `invoke` does, so nothing can revoke between the resolution and
@@ -3947,14 +4006,50 @@ export function defineScopeDO(
       return this.queue.enqueue(async () => {
         const bound = await this.assignmentBound({ kind: 'principal', id: caller }, tenantId, scopeId, roleKey);
         if (bound?.covered) {
-          this.sql.exec(
-            `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-             VALUES (?, ?, ?, NULL)`,
-            `principal:${assignee}`, `role:${roleKey}`, `scope:${scopeId}`,
-          );
+          applyScopeRoleChange(this.switchSql(), scopeId, assignee, { revoke: [], grant: roleKey }, new Date().toISOString());
         }
         return bound;
       });
+    }
+
+    /** The scope's live scope-level role assignments, or one principal's (#1150). */
+    async scopeRoleHoldersFor(scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() => scopeRoleHolders(this.switchSql(), scopeId, new Date().toISOString(), principal));
+    }
+
+    /**
+     * The kernel's `changeScopeRole` in one serialized scope task (#1150). Its two refusals come
+     * back as values: an error thrown here crosses the RPC flattened, so the coordinator types them.
+     */
+    async changeScopeRoleBoundedFor(
+      tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
+    ): Promise<Coverage | 'not-held' | 'unknown-to'> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() =>
+        changeScopeRole(
+          this.switchSql(), scopeId, principal, from, to, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId),
+          (run) => this.revision.transactionSync(run),
+        ),
+      );
+    }
+
+    /** The kernel's `revokeScopeRoles` in one serialized scope task (#1150). */
+    async revokeScopeRolesBoundedFor(
+      tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
+    ): Promise<{ coverage: Coverage; revoked: string[] }> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() =>
+        revokeScopeRoles(
+          this.switchSql(), scopeId, principal, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId),
+          (run) => this.revision.transactionSync(run),
+        ),
+      );
+    }
+
+    /** The caller's bound per role at the scope; `null` for a role the tenant does not define. */
+    private roleBound(caller: PrincipalId, tenantId: TenantId, scopeId: ScopeId): RoleBound {
+      return (roleKey) => this.assignmentBound({ kind: 'principal', id: caller }, tenantId, scopeId, roleKey);
     }
 
     /**
@@ -6267,35 +6362,16 @@ export function defineScopeDO(
     // -- event dispatch (port of dispatch) ------------------------------------
 
     /**
-     * #1237: the event currently being delivered, or null.
-     *
-     * The host carries a field of the same name for the admin log, and it is
-     * unreachable from here — it lives in the worker that holds the stub, while every
-     * emit runs inside this Durable Object. So the DO keeps its own, and the two are
-     * deliberately separate rather than one passed across the hop.
-     *
-     * One instance IS one scope, so this field is per-scope by construction. The
-     * SQLite twin has to say so explicitly (`ScopeRuntime.causedBy`): that host holds
-     * every scope in the process, so the same field on the host would be read by
-     * another scope's emit the moment a consumer awaits.
-     */
-    private causedBy: string | null = null;
-    /**
      * #1237: the invocation currently running in this DO, or null.
      *
-     * DO-local, like `causedBy` and for a simpler reason: a Durable Object IS one
-     * scope, so there is no other scope's call to confuse it with. It still has to be
-     * cleared, because the DO outlives the request and a value left set would stamp a
-     * later alarm-driven drain with a call it had nothing to do with.
+     * DO-local: a Durable Object IS one scope, so there is no other scope's call to
+     * confuse it with, and `invoke` sets and clears it inside its queued body, which no
+     * other emitting body interleaves with. It still has to be cleared, because the DO
+     * outlives the request and a value left set would stamp a later alarm-driven drain
+     * with a call it had nothing to do with. A consumer's own cause is not kept here: it is
+     * passed into the consumer's context (`ConsumerDelivery`, #2055).
      */
     private invocationId: string | null = null;
-    /**
-     * #1901: the id a unit of async work with no call around it logs under — a consumer a
-     * seed or an import delivered — set for its handler's duration and cleared after. Read
-     * by `ctx.log` only, never the spine: an event a consumer emits outside a call still
-     * records no invocation (#1525), while its log lines join the consumer's own line.
-     */
-    private unitInvocationId: string | null = null;
 
     private async dispatch(
       tenantId: TenantId,
@@ -6377,16 +6453,15 @@ export function defineScopeDO(
                 lines.write({ ...unit, outcome: 'dead-lettered' });
                 continue;
               }
-              // #1237: anything this consumer emits was emitted BECAUSE of this event
-              // — the step a backwards walk used to stop dead at, since a consumer
-              // emit records no operation either.
-              this.causedBy = event.id;
-              // #1901: the handler's `ctx.log` lines join this delivery's line.
-              this.unitInvocationId = unit.invocationId;
               try {
                 await this.revision.transaction(async () => {
-                  const ctx = this.operationContext(this.systemPrincipal, tenantId, scopeId, {
-                    system: mod.id,
+                  // #1237: anything this consumer emits was emitted BECAUSE of this event —
+                  // the step a backwards walk used to stop dead at, since a consumer emit
+                  // records no operation either. #1901: its `ctx.log` lines join this
+                  // delivery's line.
+                  const ctx = this.consumerContext(tenantId, scopeId, mod.id, {
+                    causedBy: event.id,
+                    invocationId: unit.invocationId,
                   });
                   await consumer.handler(ctx, event);
                   this.sql.exec(
@@ -6415,13 +6490,6 @@ export function defineScopeDO(
                   invocationId,
                 );
                 lines.write({ ...unit, outcome: 'dead-lettered', error: err });
-              } finally {
-                this.unitInvocationId = null;
-                // Cleared on BOTH paths. Left set, the id leaks onto every later emit
-                // this DO makes — an operation's own event stamped as caused by
-                // whatever was delivered last, which is worse than recording nothing
-                // because it reads as a fact.
-                this.causedBy = null;
               }
             }
           }
@@ -6568,6 +6636,8 @@ export function defineScopeDO(
        * then a placeholder that the subject below never reads.
        */
       peerSubject?: CheckSubject,
+      /** #2055: the delivery a consumer's or an import's context runs for; absent otherwise. */
+      delivery?: ConsumerDelivery,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -6714,10 +6784,10 @@ export function defineScopeDO(
           // about the deploy, so it never rides `DomainEvent` for module code to
           // branch on; it exists for the observability joins the column serves.
           this.env.SUBSTRAT_VERSION_ID ?? null,
-          // #1237: whatever delivery is in flight, if any — read off the DO the same
-          // way the version is read off its env. A fact about the surrounding
-          // dispatch, never envelope data module code could set or branch on.
-          this.causedBy,
+          // #1237: the delivery this context was built for, if any — passed in, never read
+          // off the DO (#2055). A fact about the surrounding dispatch, never envelope data
+          // module code could set or branch on.
+          delivery?.causedBy ?? null,
           // #1237: a fact about the surrounding CALL, like the version above.
           this.invocationId,
           full.payload === undefined ? null : JSON.stringify(full.payload),
@@ -6738,7 +6808,7 @@ export function defineScopeDO(
           tenantId,
           scopeId,
           operation: operation ?? null,
-          invocationId: () => this.invocationId ?? this.unitInvocationId,
+          invocationId: () => this.invocationId ?? delivery?.invocationId ?? null,
           principalKind: systemActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
           // log's text is not JSON.

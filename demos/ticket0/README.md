@@ -103,9 +103,11 @@ what changed and the screen re-reads it, with the poll kept as a slow floor.
 
 The widget has a feed of its own (`GET /widget/sessions/:id/live`, #1853). A visitor has no
 principal, so the desk proves the session token (`ticket0/widget-watch`) and subscribes with
-`vouchedWithin`, rooted at the visitor's **session**. Each public message on the session's
-conversation is linked under the session, and nothing else is, so an internal note, a draft
-or another visitor's chat sends nothing at all. What does arrive is a bare nudge, and the
+`vouchedWithin`, rooted at the visitor's **session**. Each public message hangs once under its
+conversation's public thread, and that thread hangs under the sessions currently on the
+conversation (#2044). Nothing else does, so an internal note, a draft or another visitor's
+chat sends nothing at all, and a session moving to a follow-up moves one edge, not one per
+message. What does arrive is a bare nudge, and the
 widget re-reads its thread. Polling stays underneath: 1.5s while an answer is outstanding and
 10s idle when there is no socket, a 60s floor when there is one, and nothing in a hidden tab.
 On the dev server both live routes answer 501, since the node host has no live reads, and

@@ -761,8 +761,57 @@ export const ticket0Migrations: SqlMigration[] = [
     `,
   },
   {
-    // saved-reply-owner-folders-and-usage
+    // add-ticket0_public_threads
     version: '0025',
+    sql: `
+      CREATE TABLE ticket0_public_threads (
+        id TEXT PRIMARY KEY NOT NULL
+      );
+    `,
+  },
+  {
+    // public-thread-edges
+    version: '0026',
+    sql: `
+      -- Hand-written (#2044) after 0025 adds the table: a conversation's public messages hang once
+      -- under its public thread, and the thread hangs under the conversation and under every
+      -- widget session currently on it. Before this, each public message hung under each session
+      -- (0024), which cost one edge per (message, session) and one relink per message on a move.
+
+      -- One thread per conversation, under the same id.
+      INSERT OR IGNORE INTO ticket0_public_threads (id) SELECT id FROM ticket0_conversations;
+
+      -- The thread under its own conversation. OR IGNORE throughout: none of these relations
+      -- exists before this migration, so a second run finds every row already there.
+      -- boundary-lint-allow R4 migration #2044
+      INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
+        SELECT 'publicThread:' || c.id, 'parent', 'conversation:' || c.id FROM ticket0_conversations c;
+
+      -- Every public message under its conversation's thread. Internal notes and forwards get none.
+      -- boundary-lint-allow R4 migration #2044
+      INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
+        SELECT 'message:' || m.id, 'parent', 'publicThread:' || m.conversation_id
+          FROM ticket0_messages m
+         WHERE m.visibility = 'public';
+
+      -- Each session's current conversation's thread, under the session.
+      -- boundary-lint-allow R4 migration #2044
+      INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
+        SELECT 'publicThread:' || w.conversation_id, 'parent', 'widgetSession:' || w.id
+          FROM ticket0_widget_sessions w;
+
+      -- Then 0024's per-session message edges come off: tombstoned (K-21) like a relink, never
+      -- deleted. Only live ones match, so a second run changes nothing.
+      -- boundary-lint-allow R4 migration #2044
+      UPDATE _substrat_tuples
+         SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE relation = 'parent' AND revoked_at IS NULL
+         AND subject LIKE 'message:%' AND object LIKE 'widgetSession:%';
+    `,
+  },
+  {
+    // saved-reply-owner-folders-and-usage
+    version: '0027',
     sql: `
       CREATE TABLE ticket0_saved_reply_folders (
         id TEXT PRIMARY KEY NOT NULL,

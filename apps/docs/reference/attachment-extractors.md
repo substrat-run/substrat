@@ -48,11 +48,37 @@ stay searchable by filename, and their content is not indexed.
 | `docxExtractor` | Word documents: the body, then footnotes, endnotes, headers and footers |
 | `xlsxExtractor` | Spreadsheets: shared and inline strings, never a cell's number |
 | `pptxExtractor` | Presentations: slides in order, then speaker notes |
+| `pdfExtractor` | PDF: the text each page draws, in page order, read through a font's `ToUnicode` map or its encoding |
 
 The declared content type decides which extractor runs. The file extension is consulted only
-when the type says nothing (`application/octet-stream`). There is no PDF extractor yet, and
-nothing is OCR'd. A host can add its own extractor to the list, provided it meets the
+when the type says nothing (`application/octet-stream`). Nothing is OCR'd: a scanned PDF has
+no text layer and records `empty`. A host can add its own extractor to the list, provided it meets the
 `AttachmentExtractor` interface from `@substrat-run/kernel`.
+
+### What the PDF extractor guarantees
+
+A PDF comes from a tenant, so the extractor is written for hostile input. Every structure a
+file can make large or circular has a bound, and every bound ends the extraction legibly,
+as `failed` with a reason or as the text read so far marked truncated, never as a crash or
+a hang:
+
+- **Decompression** is counted as it happens: one stream past 8 MiB is a bomb and fails the
+  file, and the file's streams together stop at `maxInflatedBytes`.
+- **The cross-reference chain** is followed through at most 64 sections, and one that comes
+  back to a section already read is refused. At most 200 000 objects are declared, however
+  large a count the file claims.
+- **Nesting** is bounded everywhere: arrays and dictionaries, the page tree (which may never
+  pass through its own ancestor), form XObjects (never drawn inside themselves), and object
+  streams, which may not nest at all.
+- **Work** is paced against the kernel's time budget, so an aborted extraction stops within
+  one stride.
+
+It reads the classic and the stream cross-reference forms, incremental updates and object
+streams, and scans for objects when the cross-reference data is unusable. It decodes Flate
+(with PNG predictors), LZW, ASCIIHex, ASCII85 and RunLength. An **encrypted** PDF is refused
+with that reason: its keys are derived with MD5 and RC4, which Web Crypto does not provide.
+A composite font with no `ToUnicode` map names glyphs rather than characters, so its text is
+not guessed at.
 
 ### What the HTML extractor guarantees
 

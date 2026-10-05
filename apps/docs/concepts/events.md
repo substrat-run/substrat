@@ -207,9 +207,21 @@ registerMembershipExecutor(host, { actor: SERVICE_ACTOR }); // tenant-level, the
 
 It consumes `member.add-requested`, which `@substrat-run/engine-invites` emits on accept,
 and assigns the invited role at the tenant node, as one directory unit
-(`HostAdmin.applyMembership`). That is all it does: it joins nobody to an org, although the
-request names one. What an org confers can include grants in each scope's own store, which no
-directory unit can bound, so org membership is not authority this seam carries.
+(`HostAdmin.applyMembership`). By default that is all it does: it joins nobody to the org the
+request names.
+
+A host that wants invitations to join the org mounts it with `orgs: 'join'`:
+
+```ts
+registerMembershipExecutor(host, { actor: SERVICE_ACTOR, orgs: 'join' });
+```
+
+Then an add also joins the org, and a removal takes the person out of it, in the same directory
+unit as the role. Both are bounded by **membership**: the inviter (or remover) must be a live
+member of that org. A member holds everything the org confers, at every node, including its
+grants in each scope's own store, so that is the whole bound. A tenant admin who is not a
+member of the org cannot invite anyone into it. The joiner's membership expires no later than
+the inviter's own, so a temporary member cannot confer a permanent one.
 
 Nothing in the payload is taken as authority. The inviter is the kernel-stamped actor of the
 invitation's own `invites.sent` event, and the role is assigned only if that inviter **still**

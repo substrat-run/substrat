@@ -169,7 +169,16 @@ export {
 } from './permission-checker.js';
 export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
-export { ancestorsWithin, createTupleEvaluator, reachesWithin, tenantCoverage } from './permission-eval.js';
+export {
+  ancestorsWithin,
+  createTupleEvaluator,
+  joinedMembershipExpiry,
+  liveOrgMembership,
+  memberAddedAudit,
+  orgChangeBound,
+  reachesWithin,
+  tenantCoverage,
+} from './permission-eval.js';
 export type {
   PermissionTupleReader,
   TenantDirectoryReader,
@@ -247,21 +256,29 @@ export {
   ATTACHMENT_SEARCH_OWNERS_SQL,
   ATTACHMENT_SEARCH_SQL,
   ATTACHMENT_SEARCH_TOO_MANY_OWNERS,
+  ATTACHMENT_TEXT_BACKFILL_BATCH,
+  ATTACHMENT_TEXT_BACKFILL_JOB,
   ATTACHMENT_TEXT_DDL,
   ATTACHMENT_TEXT_JOB,
   ATTACHMENT_TEXT_MODULE,
   assertJobRegistrable,
   attachmentRecordOfRow,
+  attachmentTextBackfillJob,
   attachmentTextJob,
   enqueueAttachmentText,
+  kernelJobFor,
   isAttachmentTextRun,
+  queueAttachmentTextBackfill,
   readAttachmentText,
   reconcileAttachmentText,
   recordAttachmentText,
   searchAttachments,
+  startAttachmentTextBackfill,
 } from './attachment-text.js';
 export type {
   AttachmentRowShape,
+  AttachmentTextBackfillBatch,
+  KernelJobHandlers,
   AttachmentSearchGate,
   AttachmentTextSource,
   AttachmentTextState,
@@ -277,6 +294,7 @@ export {
   isPositiveIntegerBound,
   mediaTypeOf,
   normalizeExtractedText,
+  resolveAttachmentTextBounds,
   runAttachmentExtractor,
   truncateUtf8,
 } from './attachment-extractor.js';
@@ -394,6 +412,7 @@ export type {
   IssueExemplarOwner,
 } from './subject-redaction.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
+export { applyScopeRoleChange, changeScopeRole, combineCoverage, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, MARK_COPY_ORIGIN_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 export { isLifecycleWrite, lifecycleAfterLoad, lifecycleReceipt, lifecycleRefusal, readLifecycle, settleLifecycleAfterLoad, SCOPE_LIFECYCLE_KEY, WRITE_LIFECYCLE_SQL, writeLifecycle } from './scope-lifecycle.js';
@@ -814,7 +833,7 @@ export {
   type ExportRow,
   type RegisteredImport,
 } from './vertical-events.js';
-export { attributedHost } from './attribution.js';
+export { attributedHost, attributedView, type ConsumerDelivery, type HostAttribution } from './attribution.js';
 export {
   isDeliveryRefusal,
   refuseDelivery,

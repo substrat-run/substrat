@@ -33,7 +33,7 @@ import { DELIVERY_DISCARDED } from '../src/module.js';
 import { buildHost, seed, signIdentity } from '../src/seed.js';
 import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX, ticket0Entities, ticket0Operations } from '../spec/model.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from './before-0021.js';
-import { listsBefore0025 } from './before-0025.js';
+import { listsBefore0027 } from './before-0027.js';
 import { createKit, ORIGIN, type ConversationRead, type Desk } from './desk-kit.js';
 
 const kit = createKit('ticket0-suspended-');
@@ -1051,7 +1051,7 @@ describe('migration 0021 on an existing desk', () => {
         m.manifest.id === ticket0Manifest.id
           ? {
               ...m,
-              manifest: { ...m.manifest, lists: listsBefore0021(listsBefore0025(m.manifest.lists ?? [])) },
+              manifest: { ...m.manifest, lists: listsBefore0021(listsBefore0027(m.manifest.lists ?? [])) },
               migrations: (m.migrations ?? []).filter((x) => x.version <= '0020'),
             }
           : m,

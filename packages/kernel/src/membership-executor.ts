@@ -6,6 +6,7 @@ import {
   type DomainEvent,
   type EntityRef,
   type HistoryEntry,
+  type OrgId,
   type PlatformActorId,
   type PrincipalId,
 } from '@substrat-run/contracts';
@@ -29,11 +30,16 @@ import {
  * Both are driven inline by the emitting call, with the outbox and `_substrat_deliveries` as
  * the retry backstop, so the common case completes inside the request.
  *
- * **What it effects: a tenant-level role, and nothing else.** An add assigns the invited role
- * at the tenant node; a removal unassigns it. Neither joins nor leaves an org, although both
- * payloads name one (the invites engine keys its invitations by org): what an org confers
- * includes grants in each scope's own store, which no directory unit can bound, so making
- * someone a member of an org is authority this seam does not carry.
+ * **What it effects: a tenant-level role, and — opted into — the org.** An add assigns the
+ * invited role at the tenant node; a removal unassigns it. By default neither joins nor leaves
+ * the org both payloads name (the invites engine keys its invitations by org). A mount with
+ * `orgs: 'join'` (#2047) also joins it on an add and takes the person out of it on a removal, in
+ * the same directory unit as the role, bounded by MEMBERSHIP: the inviter or remover must be a
+ * live member of that org. A member holds everything the org confers, at every node — its
+ * grants in each scope's own store included — so that is the exact bound, and no scope store
+ * is read. A tenant admin who is not a member of the org cannot invite anyone into it, by
+ * design. A join's membership expires no later than the inviter's own: a temporary member
+ * cannot confer a permanent one.
  *
  * **Authority.** Every payload field is module-written, so none of them is authority.
  *
@@ -119,6 +125,13 @@ export interface MembershipExecutorOptions {
    * A scope role has its own atomic check-and-grant: `assignScopeRoleBounded`.
    */
   level?: 'tenant';
+  /**
+   * What happens to the org a request names (#2047). `'ignore'`, the default: nothing — the org
+   * is the vertical's own vocabulary, and only the role is effected. `'join'`: an add joins it
+   * and a removal takes the person out of it, beside the role and in the same unit, bounded by
+   * the inviter's or remover's own live membership of it (`MembershipChange.orgId`).
+   */
+  orgs?: 'ignore' | 'join';
   retry?: ExecutorRetryPolicy;
 }
 
@@ -140,26 +153,31 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
     );
   }
   const id = options.id ?? MEMBERSHIP_EXECUTOR_ID;
+  // The org a request names rides along only on a mount that joins orgs (#2047).
+  const orgOf = (request: { orgId: OrgId }): { orgId?: OrgId } => (options.orgs === 'join' ? { orgId: request.orgId } : {});
   // Attributed (#977): the person whose authority bounded the write, beside the platform
-  // actor that executed it. `causedBy` is stamped by the host.
-  const adminFor = (who: PrincipalId, event: DomainEvent): HostAdmin =>
-    (host.attributed?.({ principal: who, tenantId: event.tenantId }) ?? host).admin;
+  // actor that executed it. `causedBy` is passed, never stamped by the host (#2055): a view of
+  // the host is not the `admin` the dispatch handed the handler, so the event goes with it.
+  // A host without `attributed` writes through that `admin`, which carries the event already.
+  const adminFor = (admin: HostAdmin, who: PrincipalId, event: DomainEvent): HostAdmin =>
+    host.attributed?.({ principal: who, tenantId: event.tenantId }, { causedBy: event.id }).admin ?? admin;
 
   host.registerExecutor(
     id,
     MEMBER_ADD_REQUESTED,
-    async (_admin, event, scope) => {
+    async (admin, event, scope) => {
       const decided = await authorizeAdd(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, inviter } = decided;
       // One directory unit: the fence, the bound asked again, the role and its audit row. A
       // removal or a change of authority lands wholly before it or wholly after it.
-      const applied = await adminFor(inviter, event).applyMembership(options.actor, {
+      const applied = await adminFor(admin, inviter, event).applyMembership(options.actor, {
         op: 'add',
         tenantId: event.tenantId,
         principal: request.principal,
         roleKey: request.roleKey,
         boundedBy: inviter,
+        ...orgOf(request),
         unlessRemovedSince: instant.parse(new Date(Date.parse(event.occurredAt) - MEMBERSHIP_REMOVAL_SKEW_MS).toISOString()),
       });
       return applied.applied ? undefined : refusalOf(applied, request, 'inviter', inviter);
@@ -170,18 +188,19 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   host.registerExecutor(
     membershipRemoveExecutorId(id),
     MEMBER_REMOVE_REQUESTED,
-    async (_admin, event, scope) => {
+    async (admin, event, scope) => {
       const decided = await authorizeRemove(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, remover } = decided;
       // One directory unit: the remover's bound asked again, the revoke, its audit row if it
       // took anything, and the fence — raised even with nothing held, so a pending add sees it.
-      const applied = await adminFor(remover, event).applyMembership(options.actor, {
+      const applied = await adminFor(admin, remover, event).applyMembership(options.actor, {
         op: 'remove',
         tenantId: event.tenantId,
         principal: request.principal,
         roleKey: request.roleKey,
         boundedBy: remover,
+        ...orgOf(request),
       });
       return applied.applied ? undefined : refusalOf(applied, request, 'remover', remover);
     },
@@ -198,6 +217,8 @@ function refusalOf(
 ): DeliveryRefusal {
   if ('removedAt' in result) return refuseDelivery(`${request.principal} was removed after this request was made`);
   if ('unknownRole' in result) return refuseDelivery(`no such role in this tenant: ${result.unknownRole}`);
+  if ('unknownOrg' in result) return refuseDelivery(`no such org in this tenant: ${result.unknownOrg}`);
+  if ('notMember' in result) return refuseDelivery(`the ${as} ${who} is not a member of org ${result.notMember}`);
   return refuseDelivery(`the ${as} ${who} no longer holds ${result.missing.join(', ')}, which '${request.roleKey}' confers`);
 }
 

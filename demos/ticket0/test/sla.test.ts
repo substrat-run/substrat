@@ -294,6 +294,27 @@ describe('breaching soon (#1648)', () => {
     expect((await soon(desk, 90)).rows.map((r) => r.target)).toEqual(['first_response']);
   });
 
+  it('orders by time left across conversations and targets, and holds the window inclusive at its edge', async () => {
+    const desk = await freshDesk({ agents: 1, sla: {
+      firstResponseMinutes: { normal: 30 }, resolutionMinutes: { normal: 35 },
+    } });
+    const a = await mail(desk); // due +30 and +35 from its arrival
+    advance(10);
+    const b = await mail(desk); // eleven minutes later: due +30 and +35 from that
+    // Interleaved: `a`'s resolution falls between the two first responses, so neither
+    // target's scan alone, nor the two scans one after the other, is the answer.
+    const rows = (await soon(desk, 120)).rows.map((r) => [r.conversationId, r.target]);
+    expect(rows).toEqual([
+      [a, 'first_response'], // 19 min left
+      [a, 'resolution'], // 24
+      [b, 'first_response'], // 30
+      [b, 'resolution'], // 35
+    ]);
+    // `a`'s first response is due in exactly 19 minutes: in a 19-minute window, not an 18.
+    expect((await soon(desk, 19)).rows.map((r) => [r.conversationId, r.target])).toEqual([[a, 'first_response']]);
+    expect((await soon(desk, 18)).rows).toEqual([]);
+  });
+
   it('requires the staff read key', async () => {
     const desk = await freshDesk({ agents: 1, sla: FR_30 });
     await mail(desk);

@@ -14,27 +14,28 @@
  * act the moment somebody binds to it), and records the invite in the tenant's identity
  * directory keyed by the token's SHA-256; the plaintext token rides only in the returned
  * accept link. Accepting binds the invitee's verified subject to that pre-minted principal,
- * and the directory then resolves them as that member. Revoking removes the invite row;
- * the scope-level grant on a principal nobody was ever bound to is inert.
+ * and the directory then resolves them as that member. Revoking takes the principal's scope
+ * roles back and then removes the invite row.
  *
  * Who may invite, and at which role, are two questions (#1931). The vertical's admin gate
  * answers the first — may this caller manage members at all. The second is the kernel's
  * assignment bound (`ctx.canAssign`): a caller may confer a role only if they already hold
- * every permission it carries at this scope, and removing one takes the same bound. The
+ * every permission it carries at this scope, and withdrawing an invite takes the same bound,
+ * over the roles its principal holds now — the scope's tuples, never the row's `roleKey`. The
  * gate runs before the body is read, so it cannot know the role; the bound is applied here,
  * after the role is parsed, by the platform rather than by each vertical remembering it —
  * otherwise a vertical offering two roles lets anyone its gate admits confer the higher one.
  *
- * Deliberately NOT here: the dashboard-side members view over an installed vertical's
- * directory — that widens the platform's reach into a vertical's identity and is a
- * separate decision — and the richer invite a support desk runs (contact-bound roles,
- * staff profiles), which is a different flow rather than this one with more fields.
+ * The dashboard manages the same members through vertical-host's `/internal/members*` (#1150),
+ * minting with the same `mintMemberInvite` below. Deliberately NOT here: the richer invite a
+ * support desk runs (contact-bound roles, staff profiles), which is a different flow rather
+ * than this one with more fields.
  */
 
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { coverage, principalId, z, type Coverage, type PrincipalId } from '@substrat-run/contracts';
-import { isUnknownRoleError, ulid } from '@substrat-run/kernel';
+import { coverage, coverageRefusal, principalId, z, type Coverage, type MemberInviteLink, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { ulid } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
 import { claimToken, invitePath, sha256Hex } from './owner-claim-link.js';
 import { bodyOf } from './request-body.js';
@@ -69,15 +70,18 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
   /**
    * Gate the three admin routes: throw 401 for nobody, 403 for a caller who may not manage
    * members. The vertical decides what "admin" means — a role, a permission, a whoami — and
-   * returns the principal it admitted, which is who `canAssign` is then asked about.
+   * returns the principal it admitted, which is who every bound is then asked about.
    */
   requireAdmin: (c: Context<{ Bindings: E }>) => Promise<InviteCaller>;
   /**
-   * The assignment bound (#1931): may `principal` confer `roleKey` at this node? The host's
-   * `canAssign` — `ctx.canAssign`'s answer for a principal the host names. Required: a mount
-   * without it, or an answer that is not a coverage, refuses create and revoke.
+   * Take every scope role `principal` holds, bounded by `caller` over each, in ONE scope task —
+   * the host's `revokeScopeRolesBounded`. What a withdrawal is bounded by (#1150): the roles the
+   * invite's principal ACTUALLY holds, read where they are written, never the role the invite row
+   * recorded when it was minted. Required: a mount without it refuses create and revoke.
    */
-  canAssign: (env: E, node: N, principal: PrincipalId, roleKey: string) => Promise<Coverage>;
+  revokeScopeRolesBounded: (
+    env: E, node: N, caller: PrincipalId, principal: PrincipalId,
+  ) => Promise<{ coverage: Coverage; revoked: string[] }>;
   /** Check the bound and grant in one scope task. A refusal returns coverage and writes nothing. */
   assignScopeRoleBounded: (
     env: E, node: N, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
@@ -103,6 +107,51 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
   origin?: (req: Request) => string;
 }
 
+/** The 403 a refused bound answers, in one wording for every door that confers a role. */
+export const uncovered = (missing: readonly string[], roleKey: string, act: string): HTTPException =>
+  new HTTPException(403, { message: coverageRefusal(missing, roleKey, act) });
+
+
+/**
+ * Mint one member invite (#1150) — the ONE copy of what an invite is, shared by the vertical's
+ * own `POST /api/invites` and the platform's `/internal/members/invite` (vertical-host), so the
+ * two doors cannot drift on the token, the hash, or the order.
+ *
+ * Pre-mint a principal; grant it the role through `grant`, which MUST be the bounded grant
+ * (check and write in one scope task) — a refusal returns its coverage and nothing else is
+ * written; then record the invite under the token's SHA-256. The grant comes first: a row whose
+ * principal holds nothing is a link to no access, while a grant with no row is inert — nobody
+ * can bind to it. The two writes are two Durable Objects with no transaction between them, so a
+ * failed record takes the grant back (`rollback`) before the failure is rethrown: inert is not
+ * harmless when every retry would mint another orphan. If the rollback fails too, the ORIGINAL
+ * failure is what the caller hears.
+ */
+export async function mintMemberInvite(
+  steps: {
+    grant: (assignee: PrincipalId) => Promise<Coverage>;
+    record: (principal: PrincipalId, tokenHash: string) => Promise<void>;
+    rollback: (principal: PrincipalId) => Promise<unknown>;
+  },
+  input: { roleKey: string; email: string | null; origin: string },
+): Promise<{ ok: true; invite: MemberInviteLink } | { ok: false; coverage: Coverage }> {
+  const principal = principalId.parse(ulid());
+  // A long, URL-safe token; only its hash is stored. Two UUIDs = 256 bits of entropy.
+  const token = claimToken();
+  const bound = coverage.safeParse(await steps.grant(principal));
+  if (!bound.success) {
+    throw new HTTPException(500, { message: 'the canAssign bound did not answer with a coverage — refusing' });
+  }
+  if (!bound.data.covered) return { ok: false, coverage: bound.data };
+  try {
+    await steps.record(principal, await sha256Hex(token));
+  } catch (err) {
+    await steps.rollback(principal).catch(() => undefined);
+    throw err;
+  }
+  const origin = input.origin.replace(/\/$/, '');
+  return { ok: true, invite: { principal, roleKey: input.roleKey, email: input.email, acceptUrl: `${origin}${invitePath(token)}` } };
+}
+
 /**
  * Mount the four invite routes on a vertical's Hono app:
  *
@@ -126,8 +175,8 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 
   /** Who the gate admitted — refusing a mount wired short or a gate naming no caller. */
   const admitted = (caller: unknown): InviteCaller => {
-    if (typeof deps.canAssign !== 'function') {
-      throw new HTTPException(500, { message: 'invites are mounted without the canAssign bound — refusing to confer an unbounded role' });
+    if (typeof deps.revokeScopeRolesBounded !== 'function') {
+      throw new HTTPException(500, { message: 'invites are mounted without the bounded revoke — refusing to withdraw an unbounded role' });
     }
     if (typeof deps.assignScopeRoleBounded !== 'function') {
       throw new HTTPException(500, { message: 'invites are mounted without the bounded grant — refusing to confer an unbounded role' });
@@ -145,13 +194,8 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     if (!bound.success) {
       throw new HTTPException(500, { message: 'the canAssign bound did not answer with a coverage — refusing' });
     }
-    if (!bound.data.covered) {
-      throw new HTTPException(403, { message: `you cannot ${act} '${roleKey}': you do not hold ${bound.data.missing.join(', ')}` });
-    }
+    if (!bound.data.covered) throw uncovered(bound.data.missing, roleKey, act);
   };
-
-  const assertCanAssign = async (env: E, node: N, caller: InviteCaller, roleKey: string, act: string): Promise<void> =>
-    assertCoverage(await deps.canAssign(env, node, caller.principal, roleKey), roleKey, act);
 
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
@@ -165,53 +209,48 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     const caller = admitted(await deps.requireAdmin(c));
     const { email, roleKey } = await bodyOf(c, inviteBody);
     if (!deps.roles.includes(roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
-    const principal = principalId.parse(ulid());
-    // A long, URL-safe token; only its hash is stored. Two UUIDs = 256 bits of entropy.
-    const token = claimToken();
-    // The grant first: an invite row whose principal holds nothing is a link that binds a
-    // teammate to no access, whereas a grant with no row is inert — nobody can bind to it.
-    assertCoverage(
-      await deps.assignScopeRoleBounded(c.env, node, caller.principal, principal, roleKey),
-      roleKey,
-      'invite at',
+    const minted = await mintMemberInvite(
+      {
+        grant: (assignee) => deps.assignScopeRoleBounded(c.env, node, caller.principal, assignee, roleKey),
+        record: (principal, tokenHash) =>
+          deps.directory(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, tokenHash),
+        rollback: (principal) => deps.revokeScopeRole(c.env, node.scopeId, principal, roleKey),
+      },
+      { roleKey, email: email ?? null, origin: originOf(c.req.raw) },
     );
-    try {
-      await deps.directory(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, await sha256Hex(token));
-    } catch (err) {
-      // Two Durable Objects, no transaction between them. Inert is not the same as
-      // harmless: every retry of a failing create would mint another principal with a
-      // role and no row, so the grant is taken back before the failure is reported. If
-      // the revoke fails too, the ORIGINAL failure is what the caller hears — it is the
-      // one that explains the request — and the orphan is the state this comment names.
-      await deps.revokeScopeRole(c.env, node.scopeId, principal, roleKey).catch(() => undefined);
-      throw err;
-    }
-    return c.json({ principal, roleKey, email: email ?? null, acceptUrl: `${originOf(c.req.raw)}${invitePath(token)}` }, 201);
+    if (!minted.ok) throw uncovered(minted.coverage.missing, roleKey, 'invite at');
+    return c.json(minted.invite, 201);
   });
 
   app.post('/api/invites/:principal/revoke', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     const caller = admitted(await deps.requireAdmin(c));
     const directory = deps.directory(c.env, node);
-    const principal = c.req.param('principal');
-    // Removal takes the same bound, on the role the STORED invite confers. No open invite:
-    // nothing to remove, answered as before.
-    const invite = await directory.getInvite(node.scopeId, principal);
-    if (invite) {
-      try {
-        await assertCanAssign(c.env, node, caller, invite.roleKey, 'revoke an invite at');
-      } catch (err) {
-        // A role the tenant no longer defines confers nothing (a role expands only through its
-        // definition), so removing an invite at it narrows nothing. Refusing would leave a
-        // claimable link nobody can withdraw, which revives if the role is ever defined again.
-        // Only that refusal, for THIS role, is let through: any other error still refuses.
-        if (!isUnknownRoleError(err, invite.roleKey)) throw err;
-      }
-      await directory.revokeInvite(node.scopeId, principal);
+    const principal = principalId.safeParse(c.req.param('principal'));
+    // No open invite: nothing to withdraw, answered as before.
+    const invite = principal.success ? await directory.getInvite(node.scopeId, principal.data) : null;
+    if (principal.success && invite) {
+      // Withdrawal takes the bound of every role the invite's principal HOLDS, asked and written in
+      // one scope task (#1150, Codex #2057 r2). Not the row's `roleKey`: that is what was minted,
+      // and the scope can have moved since — a role move landing between an invite's grant and its
+      // row would otherwise leave a lead's invite withdrawable by an agent. The grant goes with
+      // it, first: a refusal writes nothing, and the row can only go once the roles have. A role
+      // the tenant no longer defines confers nothing and is taken without a bound, so a link at
+      // one can still be withdrawn. An accept landing between the two binds a login to a
+      // principal holding nothing.
+      const taken = await deps.revokeScopeRolesBounded(c.env, node, caller.principal, principal.data);
+      assertCoverage(taken.coverage, principal.data, 'withdraw the invite of');
+      await directory.revokeInvite(node.scopeId, principal.data);
     }
     return c.body(null, 204);
   });
 
+  // INVARIANT (#1150): an accept never writes to the scope. The role was granted when the invite
+  // was minted; accepting only binds the subject in the identity directory, the same Durable
+  // Object the platform's member removal withdraws the invite and unbinds in — so a removal and
+  // an accept are serialized there, and an accept after a removal finds no invite. If a future
+  // accept path grants in the scope (ticket0's portal grant is one), a removal marker the grant
+  // checks becomes required, or a held accept could re-grant a removed person.
   app.post('/api/accept-invite', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     const subject = await (await deps.authProvider(c.env, c.req.raw)).resolve(c.req.raw.headers);
@@ -221,4 +260,18 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
     return c.json({ ok: true, principal });
   });
+}
+
+/**
+ * What a vertical hands `mountPlatformSurface` to let the platform manage its members from the
+ * dashboard (#1150) — vertical-host's `members` hook. `roles` is the same list the vertical gives
+ * `mountInviteRoutes`; `directory` is its tenant's IdentityDO; the minting is `mintMemberInvite`,
+ * so an invite the dashboard asks for is the same thing the vertical's own screen makes, and is
+ * accepted at the vertical's own `/api/accept-invite`.
+ */
+export function membersHook<E, D extends InviteDirectory & Pick<IdentityStub, 'listMemberBindings' | 'unbindPrincipal'>>(opts: {
+  roles: readonly string[];
+  directory: (env: E, ref: { tenantId: TenantId; scopeId: ScopeId }) => D;
+}) {
+  return { roles: opts.roles, directory: opts.directory, mint: mintMemberInvite };
 }

@@ -117,6 +117,7 @@ import {
   type EventCauseInput,
   delegatedReadRecord,
   ownerTransferAudit,
+  memberChangeAudit,
   copyMarkAudit,
   type EventEffectsInput,
   type EffectsTree,
@@ -334,11 +335,17 @@ import {
   startJobRun,
   attachmentTextJob,
   assertAttachmentExtractors,
+  resolveAttachmentTextBounds,
   assertJobRegistrable,
-  isAttachmentTextRun,
+  ATTACHMENT_TEXT_BACKFILL_JOB,
+  ATTACHMENT_TEXT_JOB,
+  kernelJobFor,
+  attachmentTextBackfillJob,
   searchLimit,
   searchMatchExpression,
   type AttachmentExtractor,
+  type AttachmentTextBackfillBatch,
+  type AttachmentTextBounds,
   type ExtractionOutcome,
   type JobDriveReport,
   type JobDueKey,
@@ -412,6 +419,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
+  type ScopeRoleHolder,
   assertRowLimit,
   assertRowOffset,
   emptyImportResult,
@@ -424,8 +432,9 @@ import {
   asyncLinePass,
   type AsyncLinePass,
   type EmittedReport,
+  memberAddedAudit,
 } from '@substrat-run/kernel';
-import { attributedHost } from '@substrat-run/kernel';
+import { attributedView } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -457,6 +466,7 @@ import type {
   ConnectionGrantDoRow,
   EntitlementRow,
   HostnameRow,
+  MemberTupleRow,
   OrgRow,
   RoleRow,
   RouteRow,
@@ -751,7 +761,7 @@ interface ControlPlaneStub {
   ): Promise<boolean>;
   listOrgs(tenantId: string): Promise<OrgRow[]>;
   /** #1184: a bounded, fenced tenant-role add, as one DO unit. */
-  applyMembership(change: MembershipChange, row: AdminEntry): Promise<MembershipChangeResult>;
+  applyMembership(change: MembershipChange, row: AdminEntry, orgRow?: AdminEntry): Promise<MembershipChangeResult>;
   /**
    * #1184: a tenant-level removal — the K-21 tombstone, the removal fence and (only if it
    * changed anything) the audit row — as one DO unit. Returns whether anything changed.
@@ -761,7 +771,7 @@ interface ControlPlaneStub {
     tenantId: string,
     object: string,
     includeRevoked: boolean,
-  ): Promise<{ subject: string; revoked_at: string | null }[]>;
+  ): Promise<MemberTupleRow[]>;
   grantEntitlement(
     tenantId: string,
     key: string,
@@ -1234,6 +1244,14 @@ interface ScopeStubRpc {
   assignScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage | null>;
+  /** #1150: the scope's role roster, and the two bounded writes over it — see `scope-do.ts`. */
+  scopeRoleHoldersFor(scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]>;
+  changeScopeRoleBoundedFor(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
+  ): Promise<Coverage | 'not-held' | 'unknown-to'>;
+  revokeScopeRolesBoundedFor(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }>;
   /** Every module this scope holds or has held system authority for, and where each
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
@@ -1448,6 +1466,10 @@ interface ScopeStubRpc {
   attachmentTextSource(attachmentId: string): Promise<AttachmentRecord | null>;
   /** #1575: write an extraction outcome; false when the attachment was removed meanwhile. */
   attachmentTextRecord(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean>;
+  /** #1575: start the one-shot backfill unless the scope is marked or holds no attachments. */
+  attachmentTextBackfillStart(): Promise<void>;
+  /** #1575: one backfill batch after `after`, in one transaction. */
+  attachmentTextBackfillBatch(after: string | null): Promise<AttachmentTextBackfillBatch>;
   /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
    *  `entitlements` (#304) rides the same snapshot — preserve-on-undefined, so a role-only re-projection
    *  leaves projected entitlements untouched. */
@@ -1900,6 +1922,11 @@ export interface CloudflareScopeHostOptions {
    * that reason, which is a valid configuration rather than a broken one.
    */
   attachmentExtractors?: readonly AttachmentExtractor[];
+  /**
+   * Tighter bounds for attachment text extraction (#1575): input ceiling, text cap, time
+   * budget. Each may only lower the kernel's default (`resolveAttachmentTextBounds`).
+   */
+  attachmentTextBounds?: Partial<AttachmentTextBounds>;
   /**
    * Service accounts minted by this vertical, read before CP-less provisioning/reconcile
    * (#1896). Their roles still authorize work but do not prevent human lockout repair.
@@ -2356,6 +2383,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly attachmentBuckets: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
+  private readonly attachmentTextBounds: AttachmentTextBounds;
   private readonly executors = new Map<string, RegisteredEffector>();
   /**
    * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
@@ -2366,12 +2394,12 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private readonly jobs = new Map<string, JobRegistration>();
   /**
-   * The event currently being effected, stamped onto admin rows the executor writes.
-   * Ambient rather than threaded through every HostAdmin signature: set and cleared
-   * around one await, with executors running sequentially, so there is no window
-   * where it belongs to a different event.
+   * The event an executor is effecting, stamped onto the admin rows it writes (K-22). Like
+   * `onBehalfOf`, only ever set on a VIEW (`causedByView`, or `attributed` with a
+   * `causedBy`), never on the host: a field set around the handler's `await` stamped every
+   * admin call the host served meanwhile — a staff call included — with that event (#2055).
    */
-  private causedBy: string | null = null;
+  private readonly causedBy: string | null = null;
   /**
    * The person the actor acted for (#977). Never set on the host itself: only an
    * `attributed(…)` view answers it, so it cannot leak between requests.
@@ -2424,6 +2452,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.attachmentBuckets = options.attachmentBuckets ?? ambientAttachmentBucket;
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
+    this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
@@ -2694,7 +2723,8 @@ export class CloudflareScopeHost implements ScopeHost {
           lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'inert' });
           continue;
         }
-        this.causedBy = event.id;
+        // #2055: the handler writes through a view bound to its event, never through the host.
+        const caused = this.causedByView(event.id);
         try {
           if (executor.kind === 'connector' && this.cpLess) {
             // #574 phase 3: this host cannot run a connector — no connection
@@ -2719,7 +2749,7 @@ export class CloudflareScopeHost implements ScopeHost {
             lines.write({ ...unitOf(event.id, 1), startedAt, outcome: 'routed' });
           } else if (executor.kind === 'connector') {
             await executor.handler(
-              await this.connectorContext(tenantId, scopeId, executor.timeoutMs, event.id),
+              await caused.connectorContext(tenantId, scopeId, executor.timeoutMs, event.id),
               event,
             );
             const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
@@ -2727,7 +2757,7 @@ export class CloudflareScopeHost implements ScopeHost {
             outcomeOf(event, 'delivered');
             lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           } else {
-            const result = await executor.handler(this.admin, event, scope);
+            const result = await executor.handler(caused.admin, event, scope);
             // #1184: a refusal is the handler's own terminal decision — journaled with its
             // reason, no next attempt, listed by `executorDeadLetters` beside an exhausted one.
             const refused = isDeliveryRefusal(result) ? result : null;
@@ -2766,8 +2796,6 @@ export class CloudflareScopeHost implements ScopeHost {
             outcome: exhausted ? 'dead-lettered' : 'retrying',
             error: err,
           });
-        } finally {
-          this.causedBy = null;
         }
       }
     }
@@ -2846,6 +2874,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       // K-43: the host's parsers, handed in — this adapter imports none.
       this.attachmentExtractors,
+      this.attachmentTextBounds,
     );
   }
 
@@ -2870,13 +2899,18 @@ export class CloudflareScopeHost implements ScopeHost {
     // advance, and an archived one's never move again.
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    // #1575: the kernel's extraction job is this host's own, bound to this scope — no
-    // deployment registers it, and none can shadow it.
-    const attachmentText = { handler: this.attachmentTextHandler(tenantId, scopeId) };
+    // #1575: the kernel's extraction jobs are this host's own, bound to this scope — no
+    // deployment registers them, and none can shadow them. The backfill starts here, on
+    // the drive, so a scope's first request never pays for attachments that predate it.
+    const stub = this.scopeStub(scopeId);
+    await stub.attachmentTextBackfillStart();
+    const kernelJobs = {
+      [ATTACHMENT_TEXT_JOB]: this.attachmentTextHandler(tenantId, scopeId),
+      [ATTACHMENT_TEXT_BACKFILL_JOB]: attachmentTextBackfillJob({ queueBatch: (after) => stub.attachmentTextBackfillBatch(after) }),
+    };
     return runDueJobRuns({
       store: this.jobStore(scopeId),
-      handlerFor: (run) =>
-        isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
+      handlerFor: (run) => kernelJobFor(run, kernelJobs) ?? this.jobs.get(`${run.module_id}/${run.job}`),
       now: () => new Date().toISOString(),
       // #1834: the door is opened FOR this pass, so its "not now" is tied to this pass alone.
       openScope: async (run, pass) =>
@@ -2908,15 +2942,12 @@ export class CloudflareScopeHost implements ScopeHost {
     // ran it. On a CP-less host `connectorContext` throws from the null control plane:
     // fail closed, exactly the hole routing exists to avoid.
     await this.assertLive(tenantId, scopeId);
-    this.causedBy = event.id;
-    try {
-      await handler(
-        await this.connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000, event.id),
-        event,
-      );
-    } finally {
-      this.causedBy = null;
-    }
+    // Built on a view bound to the event, so its admin rows carry it and nothing else the
+    // host serves does (#2055).
+    await handler(
+      await this.causedByView(event.id).connectorContext(tenantId, scopeId, options?.timeoutMs ?? 30_000, event.id),
+      event,
+    );
   }
 
   async executorDeadLetters(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDeadLetter[]> {
@@ -4725,6 +4756,42 @@ export class CloudflareScopeHost implements ScopeHost {
     return coverage.parse(bound);
   }
 
+  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]> {
+    await this.scopeRoleGate(tenantId, scopeId, 'listScopeRoleHolders');
+    return this.scopeStub(scopeId).scopeRoleHoldersFor(scopeId, principal === undefined ? undefined : principalId.parse(principal));
+  }
+
+  async changeScopeRoleBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
+  ): Promise<Coverage> {
+    await this.scopeRoleGate(tenantId, scopeId, 'changeScopeRoleBounded');
+    const target = principalId.parse(principal);
+    const bound = await this.scopeStub(scopeId).changeScopeRoleBoundedFor(
+      tenantId, scopeId, principalId.parse(caller), target, from, to,
+    );
+    if (bound === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
+    if (bound === 'unknown-to') throw unknownRoleError(to);
+    return coverage.parse(bound);
+  }
+
+  async revokeScopeRolesBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }> {
+    await this.scopeRoleGate(tenantId, scopeId, 'revokeScopeRolesBounded');
+    const result = await this.scopeStub(scopeId).revokeScopeRolesBoundedFor(
+      tenantId, scopeId, principalId.parse(caller), principalId.parse(principal),
+    );
+    return { coverage: coverage.parse(result.coverage), revoked: result.revoked };
+  }
+
+  /** The (tenant, scope) gate the scope-role verbs share — `assignScopeRoleBounded`'s two checks. */
+  private async scopeRoleGate(tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<void> {
+    if (this.cpLess && !(await this.scopeStub(scopeId).servesTenant(tenantId))) {
+      throw unknownScopeForTenant(tenantId, scopeId);
+    }
+    await this.peerScopeGate(tenantId, scopeId, verb);
+  }
+
   /**
    * Where a peer verb (#1706) may reach a scope: its own ScopeDO, after the ordinary pair and
    * lifecycle gate. Refused, loudly, on the SHARED control plane for a scope bound to a
@@ -5289,8 +5356,13 @@ export class CloudflareScopeHost implements ScopeHost {
   // -- admin surface --------------------------------------------------------
 
   /** #977: this host, with every admin row it writes naming who the actor acted for. */
-  attributed(onBehalfOf: OnBehalfOf): this {
-    return attributedHost(this, onBehalfOf, this.buildAdmin);
+  attributed(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): this {
+    return attributedView(this, { onBehalfOf, causedBy: options?.causedBy }, this.buildAdmin);
+  }
+
+  /** #2055: this host, with every admin row it writes naming `eventId` as its cause. */
+  private causedByView(eventId: string): this {
+    return attributedView(this, { causedBy: eventId }, this.buildAdmin);
   }
 
   private buildAdmin(): HostAdmin {
@@ -7081,29 +7153,33 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'getOrg', { tenantId }, { orgId }, r ? 1 : 0);
         return r ? mapOrg(r) : undefined;
       },
-      addMember: async (actor, tenantId, principal, orgId) => {
+      addMember: async (actor, tenantId, principal, orgId, opts) => {
         await requireOrg(tenantId, orgId);
+        const expiresAt = opts?.expiresAt ?? null;
         await this.cp.writeTenantTuple(
           tenantId,
           `principal:${principal}`,
           'member',
           `org:${orgId}`,
-          null,
+          expiresAt,
         );
-        await this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
+        await this.recordAdmin(actor, 'addMember', { tenantId }, null, memberAddedAudit(principal, orgId, expiresAt));
         await this.fanOut(tenantId); // membership is a tenant-level tuple
       },
       applyMembership: async (actor, change) => {
         // The row is minted here, where attribution and `causedBy` live, and written by the
         // ControlPlaneDO in the same synchronous method as the fence, the bound and the tuple
         // (#1184): one DO unit, so nothing lands between the check and the write.
-        const { tenantId, principal, roleKey, op } = change;
+        const { tenantId, principal, roleKey, op, orgId } = change;
         const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
         const result = await this.cp.applyMembership(
           change,
           op === 'add'
             ? this.adminEntry(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment)
             : this.adminEntry(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
+          // #2047: the org's own row, when the change joins or leaves one. The unit fills in its
+          // `before`/`after` and writes it only for what it does — a join's carries the expiry.
+          orgId ? this.adminEntry(actor, op === 'add' ? 'addMember' : 'removeMember', { tenantId }, null, null) : undefined,
         );
         // The tenant-level tuple, or its tombstone, reaches the projections.
         if (result.applied && (op === 'add' || result.changed)) await this.fanOut(tenantId);
@@ -7135,6 +7211,7 @@ export class CloudflareScopeHost implements ScopeHost {
             principal: r.subject.slice('principal:'.length),
             orgId,
             revokedAt: r.revoked_at,
+            expiresAt: r.expires_at,
           }),
         );
       },
@@ -8335,6 +8412,11 @@ export class CloudflareScopeHost implements ScopeHost {
       recordOwnerTransfer: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         await this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
+      },
+      /** #1150: one phase of a dashboard member change, written around the vertical's own. */
+      recordMemberChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
+        await this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {

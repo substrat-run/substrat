@@ -3,7 +3,7 @@
  *
  * **The kernel indexes attachment text; it does not parse file formats** (K-43). Every
  * parser — text and HTML decoding, the zip reader and its inflate budget, DOCX/XLSX/PPTX,
- * and later PDF and OCR — lives behind this seam in a host-side package
+ * PDF, and later OCR — lives behind this seam in a host-side package
  * (`@substrat-run/attachment-extractors`), which neither the kernel nor an adapter imports.
  * Whoever constructs the host passes the extractors in; a host given none records every
  * type `unsupported`, with that reason, which is a valid configuration rather than a broken
@@ -154,6 +154,29 @@ export function assertAttachmentTextBounds(bounds: AttachmentTextBounds): void {
       throw new Error(`attachment text bound ${key} must be a positive integer, not ${String(bounds[key])}`);
     }
   }
+}
+
+/**
+ * A host's `attachmentTextBounds` option, over the defaults: each given bound replaces the
+ * default, and each may only TIGHTEN it. The defaults are sized to the platform — the text
+ * cap to a Durable Object row, the input ceiling to a Worker's memory — so a looser bound is
+ * one no adapter can keep, and refusing it when the host is built is cheaper than learning it
+ * from a scope. A host under a CPU limit below the 30 s budget is the case for tightening.
+ */
+export function resolveAttachmentTextBounds(given: Partial<AttachmentTextBounds> = {}): AttachmentTextBounds {
+  // A key passed as `undefined` — an option forwarded from a caller that left it out — is
+  // absent, not a bound: spreading it would replace the default with nothing.
+  const set = Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined));
+  const bounds = { ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, ...set };
+  assertAttachmentTextBounds(bounds);
+  for (const key of ['maxInputBytes', 'maxTextBytes', 'timeoutMs'] as const) {
+    if (bounds[key] > DEFAULT_ATTACHMENT_TEXT_BOUNDS[key]) {
+      throw new Error(
+        `attachment text bound ${key} may only tighten the default ${DEFAULT_ATTACHMENT_TEXT_BOUNDS[key]}, not raise it to ${bounds[key]}`,
+      );
+    }
+  }
+  return bounds;
 }
 
 /**

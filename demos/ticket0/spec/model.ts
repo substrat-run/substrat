@@ -33,6 +33,7 @@
  * either way, and discovering them later would mean a migration rather than an edit.
  */
 import {
+  calendarDate,
   clientContext,
   defineEntities,
   defineLifecycles,
@@ -43,6 +44,7 @@ import {
   modelUsageLine,
 } from '@substrat-run/contracts';
 import { MAX_SEARCH_LIMIT } from '@substrat-run/kernel';
+import { isTimeZone, minutesOf, WALL_CLOCK_TIME } from '../src/business-time.js';
 
 /**
  * How much wider than the answer the knowledge-base search asks the index for.
@@ -450,6 +452,78 @@ const slaTargetsByPriority = z
   })
   .strict();
 
+/** How many openings one day may have: a morning, an afternoon, an evening, and one spare. */
+export const BUSINESS_WINDOWS_PER_DAY_MAX = 4;
+/**
+ * How many dated exceptions a desk may hold: a year of them, every day named. A list an
+ * admin reads; the business-time walk's bound does not depend on it (`src/business-time.ts`
+ * walks at most ten years of days, exceptions or not).
+ */
+export const BUSINESS_EXCEPTIONS_MAX = 366;
+
+/** A local wall-clock time, `HH:MM`, 24-hour; `24:00` is the end of the day. */
+const wallClockTime = z.string().regex(WALL_CLOCK_TIME, 'HH:MM, 00:00–24:00');
+
+/**
+ * A day's openings, earliest first and not overlapping: `[{ open: '09:00', close: '17:00' }]`.
+ * Empty is closed. Ordered and disjoint at save time so the widget's line and the clock
+ * read the same day, and so a typo that overlaps two windows is refused rather than
+ * counted twice.
+ */
+const businessWindows = z
+  .array(
+    z
+      .object({ open: wallClockTime, close: wallClockTime })
+      .strict()
+      .refine((w) => minutesOf(w.open) < minutesOf(w.close), 'a window closes after it opens'),
+  )
+  .max(BUSINESS_WINDOWS_PER_DAY_MAX)
+  .refine(
+    (ws) => ws.every((w, i) => i === 0 || minutesOf(ws[i - 1]!.close) <= minutesOf(w.open)),
+    'windows are in order and do not overlap',
+  );
+
+/**
+ * A desk's opening hours (#1648): a standing week in one timezone, and dated days that
+ * replace it. `src/business-time.ts` is what reads it, and says how DST is resolved.
+ */
+export const businessHoursSchedule = z
+  .object({
+    /** An IANA zone, `Europe/Stockholm`. The windows are wall-clock time in it. */
+    timezone: z.string().min(1).refine(isTimeZone, 'an IANA timezone, such as Europe/Stockholm'),
+    weekly: z
+      .object({
+        mon: businessWindows.optional(),
+        tue: businessWindows.optional(),
+        wed: businessWindows.optional(),
+        thu: businessWindows.optional(),
+        fri: businessWindows.optional(),
+        sat: businessWindows.optional(),
+        sun: businessWindows.optional(),
+      })
+      .strict()
+      // A week with no open time has no business time in it, and a business-time target
+      // on it would never fall due. Refused here rather than discovered by the clock.
+      .refine((week) => Object.values(week).some((ws) => (ws ?? []).length > 0), 'open at least once a week'),
+    /**
+     * Holidays and special days: the date's windows REPLACE its weekday's. `[]` is closed
+     * all day; windows are special hours. One entry per date.
+     */
+    exceptions: z
+      .array(
+        z
+          .object({
+            date: calendarDate,
+            windows: businessWindows,
+          })
+          .strict(),
+      )
+      .max(BUSINESS_EXCEPTIONS_MAX)
+      .refine((es) => new Set(es.map((e) => e.date)).size === es.length, 'one exception per date')
+      .optional(),
+  })
+  .strict();
+
 /**
  * Everything `desk_settings.settings` may say — the built-in behaviours a desk switches
  * on, one key each (#1083).
@@ -495,10 +569,25 @@ export const deskSettingsBlob = z
       .object({
         firstResponseMinutes: slaTargetsByPriority.optional(),
         resolutionMinutes: slaTargetsByPriority.optional(),
+        /**
+         * Which clock the targets count on (#1648). `calendar`, or absent, is every
+         * minute. `business` is only the minutes inside `businessHours`, so "4 hours" on
+         * a Friday-evening mail falls due on Monday. With `business` and no usable
+         * `businessHours` the targets count calendar time: a desk is never left with a
+         * clock that cannot run out.
+         */
+        clock: z.enum(['calendar', 'business']).optional(),
       })
       .strict()
       .nullable()
       .optional(),
+    /**
+     * The desk's opening hours, structured (#1648): `businessHoursSchedule`. Read by a
+     * `sla` on the `business` clock, and by the widget, which shows the line derived from
+     * it in place of the free-text `business_hours` note. Absent or `null` is none, and
+     * the widget falls back to the note. Set whole, like every key here.
+     */
+    businessHours: businessHoursSchedule.nullable().optional(),
     /**
      * Tag a conversation on arrival when its subject or first message says something a
      * rule looks for (#1083). Swept by `ticket0/auto-tag`.
@@ -890,12 +979,12 @@ export const ticket0Entities = defineEntities({
       cited_article_ids: z.string().nullable(),
       created_at: z.string(),
     }),
-    // A PUBLIC message also sits under each widget session on its conversation (#1853):
+    // A PUBLIC message also sits under its conversation's `publicThread` (#1853, #2044):
     // the edge is what a visitor's live feed walks, so it carries exactly what
-    // `widget-thread` would show them and never an internal note or a draft. A session's
-    // only parent is its current conversation, so this second edge reaches nothing the
-    // first does not.
-    parents: ['conversation', 'widgetSession'],
+    // `widget-thread` would show them and never an internal note or a draft. The thread
+    // hangs only under its own conversation and the sessions currently on it, so this
+    // second edge reaches nothing the first does not.
+    parents: ['conversation', 'publicThread'],
     erasable: ['body_text', 'body_html'],
     // Mail headers as they arrived: the sender's host writes both, freely (#1088).
     outsideText: ['email_message_id', 'email_in_reply_to'],
@@ -1121,6 +1210,28 @@ export const ticket0Entities = defineEntities({
     key: ['token_hash'],
     // What the browser and the edge said, as they said it (#1088).
     outsideText: CLIENT_OUTSIDE_TEXT,
+  },
+
+  /**
+   * A conversation's public thread: the node its PUBLIC messages hang under (#2044).
+   *
+   * A widget visitor's live feed is rooted at their session, and the session's subtree
+   * must be exactly what `widget-thread` shows them. Hanging each public message under
+   * each session made that O(sessions) edges per message and one `entity.relinked` per
+   * message when a session moved. Instead each public message hangs once under its
+   * conversation's thread, and the thread hangs under the conversation and under every
+   * session currently on it — so a session moving, or a merge seating one, changes one
+   * edge per session, whatever the thread's length.
+   *
+   * The id IS the conversation's id, so the ref needs no lookup. The row holds nothing
+   * else: it exists so the edge's endpoint is a model entity like every other.
+   */
+  publicThread: {
+    table: 'ticket0_public_threads',
+    fields: z.object({
+      id: z.string(),
+    }),
+    parents: ['conversation', 'widgetSession'],
   },
 
   /**
@@ -1778,6 +1889,12 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       fromAddress: z.string().email().optional(),
       greeting: z.string().min(1).optional(),
       allowedOrigins: z.array(z.string().url()).optional(),
+      /**
+       * The desk's opening hours as a free-text NOTE, shown to widget visitors verbatim
+       * when the desk has no structured hours (`settings.businessHours`, #1648), and read
+       * by nothing else. Never parsed: it is whatever a person typed. Absent keeps it,
+       * `null` clears it.
+       */
       businessHours: z.string().nullable().optional(),
       /**
        * Hand the assistant the autonomous role, or take it back. Optional with a

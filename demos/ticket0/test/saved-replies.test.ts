@@ -13,7 +13,7 @@
  *  - THE SHARED LIBRARY IS CURATED. Adding to it, changing it, and its folders need
  *    `saved-reply:manage`, which the assistant roles do not hold.
  *
- * Plus migration 0025, on a desk that has replies from before it.
+ * Plus migration 0027, on a desk that has replies from before it.
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
@@ -27,7 +27,7 @@ import { readScopeHistory, ulid, type ScopeStub, type TimelineReader } from '@su
 import { ticket0Manifest } from '../src/manifest.js';
 import { MODULES } from '../src/provision.js';
 import { mountApi } from '../src/routes.js';
-import { listsBefore0025 } from './before-0025.js';
+import { listsBefore0027 } from './before-0027.js';
 import { createKit, type Desk } from './desk-kit.js';
 
 const kit = createKit('ticket0-saved-replies-');
@@ -587,10 +587,10 @@ describe('over HTTP, as the composer and the picker call it', () => {
   });
 });
 
-describe('migration 0025 on an existing desk', () => {
+describe('migration 0027 on an existing desk', () => {
   it('keeps every reply as the desk’s own, unfiled and unused, then keys titles per owner', async () => {
     const actor = platformActorId.parse(ulid());
-    const migrationDir = mkdtempSync(join(tmpdir(), 'ticket0-0025-'));
+    const migrationDir = mkdtempSync(join(tmpdir(), 'ticket0-0027-'));
     try {
       const provision = async (h: SqliteScopeHost, slug: string) => {
         const d = { tenant: tenantId.parse(ulid()), scope: scopeId.parse(ulid()) };
@@ -621,12 +621,12 @@ describe('migration 0025 on an existing desk', () => {
           m.manifest.id === ticket0Manifest.id
             ? {
                 ...m,
-                manifest: { ...m.manifest, lists: listsBefore0025(m.manifest.lists ?? []) },
-                migrations: (m.migrations ?? []).filter((x) => x.version <= '0024'),
+                manifest: { ...m.manifest, lists: listsBefore0027(m.manifest.lists ?? []) },
+                migrations: (m.migrations ?? []).filter((x) => x.version <= '0026'),
               }
             : m,
           );
-      const old = await provision(previous, 'migration-0025-old');
+      const old = await provision(previous, 'migration-0027-old');
       await previous.close();
       const listIndex = expect.stringMatching(/^_substrat_list_.*_savedreply_/);
       expect((schemaOf(old) as { name: string }[]).map((r) => r.name)).toContainEqual(listIndex);
@@ -647,7 +647,7 @@ describe('migration 0025 on an existing desk', () => {
       await current.provisionScope(actor, { tenantId: old.tenant, scopeId: old.scope, vertical: 'ticket0' });
       // Provisioning again changes nothing: the migration is applied once.
       await current.provisionScope(actor, { tenantId: old.tenant, scopeId: old.scope, vertical: 'ticket0' });
-      const fresh = await provision(current, 'migration-0025-fresh');
+      const fresh = await provision(current, 'migration-0027-fresh');
       await current.close();
 
       // Exactly a fresh desk's tables and indexes: the old list indexes went with the table.

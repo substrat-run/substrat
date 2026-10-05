@@ -44,7 +44,7 @@ import { ticket0Manifest } from '../src/manifest.js';
 import { HANDED_TO_A_PERSON, ORPHAN_CONTACTS_DELETE } from '../src/module.js';
 import { MODULES } from '../src/provision.js';
 import { PARTICIPANTS_MAX } from '../spec/model.js';
-import { listsBefore0025 } from './before-0025.js';
+import { listsBefore0027 } from './before-0027.js';
 import { createKit, type Desk } from './desk-kit.js';
 
 const kit = createKit('ticket0-participants-');
@@ -806,14 +806,14 @@ describe('migration 0022 on an existing desk', () => {
     };
 
     // The version before: its journal, and its list declarations — 0022 changed none, and
-    // the saved-reply lists are the ones before 0025.
+    // the saved-reply lists are the ones before 0027.
     const previous = new SqliteScopeHost({ dir: kit.dir });
     for (const m of MODULES)
       previous.registerModule(
         m.manifest.id === ticket0Manifest.id
           ? {
               ...m,
-              manifest: { ...m.manifest, lists: listsBefore0025(m.manifest.lists ?? []) },
+              manifest: { ...m.manifest, lists: listsBefore0027(m.manifest.lists ?? []) },
               migrations: (m.migrations ?? []).filter((x) => x.version <= '0021'),
             }
           : m,

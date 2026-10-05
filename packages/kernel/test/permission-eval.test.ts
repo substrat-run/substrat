@@ -11,6 +11,8 @@ import {
 import {
   ancestorsWithin,
   createTupleEvaluator,
+  joinedMembershipExpiry,
+  liveOrgMembership,
   reachesWithin,
   tenantCoverage,
   type PermissionTupleReader,
@@ -455,16 +457,17 @@ describe('a switched-off subject (#1823)', () => {
   });
 });
 
-describe('tenantCoverage (#1184) — `covers` at the tenant node, without yielding', () => {
-  /** The same rows as `readerFor`, with every answer in hand, as a directory unit reads them. */
-  const directoryFor = (world: World): TenantDirectoryReader => {
-    const reader = readerFor(world);
-    return {
-      now: reader.now,
-      tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
-      getRole: (tenantId, key) => reader.getRole(tenantId, key) as RoleDefinition | undefined,
-    };
+/** The same rows as `readerFor`, with every answer in hand, as a directory unit reads them. */
+const directoryFor = (world: World): TenantDirectoryReader => {
+  const reader = readerFor(world);
+  return {
+    now: reader.now,
+    tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
+    getRole: (tenantId, key) => reader.getRole(tenantId, key) as RoleDefinition | undefined,
   };
+};
+
+describe('tenantCoverage (#1184) — `covers` at the tenant node, without yielding', () => {
   const ROLES = { staff: staff([WO_READ, TODO_READ]), lead: { key: 'lead', permissions: [WO_WRITE], source: 'vertical' } as RoleDefinition };
   const me = `principal:${ALICE}`;
   const past = '2025-01-01T00:00:00.000Z';
@@ -517,10 +520,38 @@ describe('tenantCoverage (#1184) — `covers` at the tenant node, without yieldi
   });
 });
 
+describe('the org bound (#2047) — a live membership, and the expiry a join inherits', () => {
+  const directory = (tenant: PermissionTupleRow[]) => directoryFor({ tenant });
+  const me = `principal:${ALICE}`;
+  const past = '2025-01-01T00:00:00.000Z';
+  const later = '2027-01-01T00:00:00.000Z';
+
+  it('is a member only through a live membership of that very org', () => {
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`)]), T, ALICE, ORG)).toBeDefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { expires_at: later })]), T, ALICE, ORG)).toBeDefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { revoked_at: past })]), T, ALICE, ORG)).toBeUndefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { expires_at: past })]), T, ALICE, ORG)).toBeUndefined();
+    expect(liveOrgMembership(directory([row(me, 'member', 'org:01JZ00000000000000000000B2')]), T, ALICE, ORG)).toBeUndefined();
+    // Holding what the org holds is not membership of it.
+    expect(liveOrgMembership(directory([row(me, 'granted:todo:write', `tenant:${T}`), row(`org:${ORG}`, 'granted:todo:write', `tenant:${T}`)]), T, ALICE, ORG)).toBeUndefined();
+  });
+
+  it('a join expires no later than the inviter, and never earlier than what the joiner already holds', () => {
+    const at = (expires_at: string | null) => ({ expires_at });
+    expect(joinedMembershipExpiry(at(null), undefined)).toBeNull();
+    expect(joinedMembershipExpiry(at(later), undefined)).toBe(later);
+    expect(joinedMembershipExpiry(at(later), at(null))).toBeNull();
+    expect(joinedMembershipExpiry(at(null), at(later))).toBeNull();
+    expect(joinedMembershipExpiry(at(later), at('2026-06-01T00:00:00.000Z'))).toBe(later);
+    expect(joinedMembershipExpiry(at('2026-06-01T00:00:00.000Z'), at(later))).toBe(later);
+  });
+});
+
 /**
  * #1853: the walk reads each distinct node once, however many paths lead to it. A ticket0
- * public message sits under its conversation AND under every widget session on it, and each
- * session sits under the same conversation — so without the dedupe, the conversation (and
+ * public message sat under its conversation AND under every widget session on it (since #2044
+ * it is the message's public thread that does), and each session sits under the same
+ * conversation — so without the dedupe, the conversation (and
  * everything above it) was expanded once per session: 2,001 reads for one message under
  * 1,000 sessions. A live fan-out pays this per committed row.
  */

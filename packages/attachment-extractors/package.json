@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/attachment-extractors",
   "version": "0.1.4",
-  "description": "The file-format parsers behind the kernel's attachment extractor seam (K-43): text, HTML, DOCX, XLSX and PPTX to plain text, with the input and zip-inflate bounds that protect the process doing the parsing. A host passes them in; the kernel and the adapters never import this package.",
+  "description": "The file-format parsers behind the kernel's attachment extractor seam (K-43): text, HTML, DOCX, XLSX, PPTX and PDF to plain text, with the input and decompression bounds that protect the process doing the parsing. A host passes them in; the kernel and the adapters never import this package.",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",

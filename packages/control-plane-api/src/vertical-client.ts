@@ -73,6 +73,12 @@ import {
   mintedPreviewClient,
   ownerSeat,
   ownerClaimLink,
+  memberInviteLink,
+  memberRemoval,
+  scopeMembers,
+  type MemberInviteLink,
+  type MemberRemoval,
+  type ScopeMembers,
   ownerTransferResult,
   previewClientClaim,
   retiredPreviewClients,
@@ -561,6 +567,40 @@ export class VerticalClient {
     actor?: PlatformActorId;
   }): Promise<OwnerClaimLink> {
     return ownerClaimLink.parse(await this.postInternal<unknown>('/internal/owner-claim', input, 'owner-claim'));
+  }
+
+  /**
+   * The scope's MEMBERS (#1150) — vertical-host's `/internal/members`: who holds which scope role,
+   * the logins bound to each, the open invites, and the roles the vertical lets a person hold.
+   * Parsed on arrival, like the owner seat.
+   */
+  async listMembers(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeMembers> {
+    const q = new URLSearchParams({ tenantId, scopeId });
+    return scopeMembers.parse(await this.getInternal<unknown>(`/internal/members?${q}`));
+  }
+
+  /**
+   * Invite a member (#1150), bounded in the vertical by `caller`'s own authority. The answer
+   * carries the accept link's token and is relayed once, never stored — `mintOwnerClaim`'s rule.
+   */
+  async inviteMember(input: {
+    tenantId: TenantId; scopeId: ScopeId; caller: PrincipalId; origin: string; roleKey: string; email: string | null;
+  }): Promise<MemberInviteLink> {
+    return memberInviteLink.parse(await this.postInternal<unknown>('/internal/members/invite', input, 'members-invite'));
+  }
+
+  /** Move a member from one role to another in one scope task, bounded by `caller` (#1150). */
+  async changeMemberRole(input: {
+    tenantId: TenantId; scopeId: ScopeId; caller: PrincipalId; principal: PrincipalId; from: string; to: string;
+  }): Promise<void> {
+    await this.postInternal<unknown>('/internal/members/role', input, 'members-role');
+  }
+
+  /** Remove a member — every scope role, every login, an open invite — bounded by `caller` (#1150). */
+  async removeMember(input: {
+    tenantId: TenantId; scopeId: ScopeId; caller: PrincipalId; principal: PrincipalId;
+  }): Promise<MemberRemoval> {
+    return memberRemoval.parse(await this.postInternal<unknown>('/internal/members/remove', input, 'members-remove'));
   }
 
   /**

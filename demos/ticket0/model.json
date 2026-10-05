@@ -1236,7 +1236,7 @@
       },
       "parents": [
         "conversation",
-        "widgetSession"
+        "publicThread"
       ],
       "erasable": [
         "body_html",
@@ -1302,6 +1302,25 @@
         ],
         "additionalProperties": false
       }
+    },
+    "publicThread": {
+      "table": "ticket0_public_threads",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "conversation",
+        "widgetSession"
+      ]
     },
     "savedReply": {
       "table": "ticket0_saved_replies",
