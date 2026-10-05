@@ -419,10 +419,14 @@ function folderFrom(ctx: OperationContext, input: string | null | undefined, cur
   return input === null ? null : savedReplyFolderOrThrow(ctx, input).id;
 }
 
-/** The whole row, as `saved-reply-created` and `-updated` announce it. */
+/**
+ * What `saved-reply-created` and `-updated` announce: which reply, whose, and where it is
+ * filed, never what it says or does. The title and body are `erasable`, and a personal
+ * reply's events reach the whole desk's trail.
+ */
 function savedReplyPayload(row: ReturnType<typeof savedReplyPublic>): Record<string, unknown> {
-  const { id, title, body, created_by, created_at, actions, owner, folder_id } = row;
-  return { id, title, body, created_by, created_at, actions, owner, folder_id };
+  const { id, owner, folder_id, created_by, created_at } = row;
+  return { id, owner, folder_id, created_by, created_at };
 }
 
 function savedReplyFolderOrThrow(ctx: OperationContext, id: string): SavedReplyFolderRow {
@@ -5922,7 +5926,7 @@ const operations = {
     const row = savedReplyPublic(savedReplyOrThrow(ctx, id));
     ctx.emit({
       type: 'ticket0.saved-reply-created',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: { entityType: 'savedReply', entityId: row.id },
       piiClass: 'none',
       payload: savedReplyPayload(row),
@@ -5979,7 +5983,7 @@ const operations = {
     const row = savedReplyPublic(savedReplyOrThrow(ctx, existing.id));
     ctx.emit({
       type: 'ticket0.saved-reply-updated',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: { entityType: 'savedReply', entityId: row.id },
       piiClass: 'none',
       payload: savedReplyPayload(row),
@@ -5993,7 +5997,7 @@ const operations = {
    * A ULID that names nothing is a stale client rather than a second deletion, so
    * this refuses instead of answering emptily - the reverse of `untag-conversation`,
    * whose identifier is a string a person typed. The title goes out with the answer
-   * and on the event because afterwards there is nowhere left to read it from.
+   * because afterwards there is nowhere left to read it from; the event keeps the id.
    */
   'ticket0/delete-saved-reply': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft));
@@ -6002,10 +6006,10 @@ const operations = {
     ctx.sql.exec('DELETE FROM ticket0_saved_replies WHERE id = ?', [existing.id]);
     ctx.emit({
       type: 'ticket0.saved-reply-deleted',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: { entityType: 'savedReply', entityId: existing.id },
       piiClass: 'none',
-      payload: { id: existing.id, title: existing.title },
+      payload: { id: existing.id },
     });
     return { id: existing.id, title: existing.title };
   },
@@ -6028,7 +6032,7 @@ const operations = {
       schemaVersion: 1,
       entity: { entityType: 'savedReply', entityId: existing.id },
       piiClass: 'none',
-      payload: { id: existing.id, title: existing.title, created_by: existing.created_by },
+      payload: { id: existing.id, created_by: existing.created_by },
     });
     return savedReplyPublic(savedReplyOrThrow(ctx, existing.id));
   },

@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, scopeId, tenantId, type Page, type PrincipalId } from '@substrat-run/contracts';
-import { ulid, type ScopeStub } from '@substrat-run/kernel';
+import { readScopeHistory, ulid, type ScopeStub, type TimelineReader } from '@substrat-run/kernel';
 import { ticket0Manifest } from '../src/manifest.js';
 import { MODULES } from '../src/provision.js';
 import { mountApi } from '../src/routes.js';
@@ -79,6 +79,35 @@ async function messageCount(desk: Desk, conversationId: string): Promise<number>
 /** Every event of this type on the desk's spine, payload parsed. */
 const events = (desk: Desk, type: string): Record<string, unknown>[] =>
   kit.events(desk, type).map((e) => JSON.parse(e.payload) as Record<string, unknown>);
+
+/** Every saved-reply event about one reply, envelope and payload, from the outbox. */
+const replyEvents = (desk: Desk, id: string) =>
+  kit.sql(desk, (db) =>
+    (
+      db
+        .prepare(
+          `SELECT type, actor, schema_version, pii_class, payload FROM _substrat_outbox
+            WHERE entity_type = 'savedReply' AND entity_id = ? ORDER BY id`,
+        )
+        .all(id) as { type: string; actor: string; schema_version: number; pii_class: string; payload: string }[]
+    ).map((e) => ({ ...e, payload: JSON.parse(e.payload) as Record<string, unknown> })),
+  );
+
+/** The whole scope's history, as `readScopeHistory` hands it to any reader of the trail. */
+const history = (desk: Desk): string =>
+  kit.sql(desk, (db) => {
+    const reader: TimelineReader = {
+      sql: { query: <T>(sql: string, params: readonly unknown[] = []) => db.prepare(sql).all(...params) as T[] },
+    };
+    const all: unknown[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = readScopeHistory(reader, { limit: 100, ...(cursor ? { cursor } : {}) });
+      all.push(...page.entries);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return JSON.stringify(all);
+  });
 
 const notFound = { code: 'not_found' };
 const denied = { code: 'permission_denied' };
@@ -268,7 +297,7 @@ describe('a personal reply is its owner’s alone', () => {
     const shared = (await (await as(desk, desk.anna)).invoke('ticket0/share-saved-reply', { savedReplyId: own.id })) as SavedReply;
     expect(shared).toMatchObject({ id: own.id, owner: null });
     expect((await listed(desk, desk.bo)).map((r) => r.id)).toEqual([own.id]);
-    expect(events(desk, 'ticket0.saved-reply-shared')).toEqual([{ id: own.id, title: 'Good one', created_by: desk.anna }]);
+    expect(events(desk, 'ticket0.saved-reply-shared')).toEqual([{ id: own.id, created_by: desk.anna }]);
 
     // Again changes nothing and announces nothing.
     await (await as(desk, desk.anna)).invoke('ticket0/share-saved-reply', { savedReplyId: own.id });
@@ -284,6 +313,67 @@ describe('a personal reply is its owner’s alone', () => {
     );
     expect((await get(desk, desk.bo, own.id)).owner).toBe(desk.bo);
     expect(events(desk, 'ticket0.saved-reply-shared')).toEqual([]);
+  });
+});
+
+describe('a personal reply leaves nothing of what it says on the desk’s trail', () => {
+  // Words nobody would type by accident, so finding one anywhere on the trail is a leak.
+  const secret = { title: 'Zebra-17 title', body: 'Zebra-17 body for Kim', tag: 'zebra-17-tag' };
+
+  /** Create, change, delete: every event a reply's life writes about it. */
+  async function live(desk: Named, personal: boolean): Promise<string> {
+    const anna = await as(desk, desk.anna);
+    const reply = await create(desk, desk.anna, {
+      title: secret.title,
+      body: secret.body,
+      actions: [{ type: 'tag', tag: secret.tag }],
+      personal,
+    });
+    await anna.invoke('ticket0/update-saved-reply', {
+      savedReplyId: reply.id,
+      title: `${secret.title} 2`,
+      body: `${secret.body} 2`,
+      actions: [{ type: 'tag', tag: `${secret.tag}-2` }],
+    });
+    await anna.invoke('ticket0/delete-saved-reply', { savedReplyId: reply.id });
+    return reply.id;
+  }
+
+  it('announces a personal reply by id, owner and folder, never its title, body or actions', async () => {
+    const desk = await freshDesk();
+    const id = await live(desk, true);
+    const trail = replyEvents(desk, id);
+    expect(trail.map((e) => e.type)).toEqual([
+      'ticket0.saved-reply-created',
+      'ticket0.saved-reply-updated',
+      'ticket0.saved-reply-deleted',
+    ]);
+    for (const e of trail) {
+      expect(e.payload, e.type).not.toHaveProperty('title');
+      expect(e.payload, e.type).not.toHaveProperty('body');
+      expect(e.payload, e.type).not.toHaveProperty('actions');
+      // Who did it is the envelope's, and the payload's classification is the truth.
+      expect(e.actor, e.type).toContain(desk.anna);
+      expect(e.pii_class).toBe('none');
+    }
+    expect(trail[0]!.payload).toMatchObject({ id, owner: desk.anna, folder_id: null });
+    expect(trail[2]!.payload).toEqual({ id });
+    // And nothing of it anywhere a reader of the scope's history can reach.
+    const read = history(desk);
+    expect(read).toContain(id);
+    for (const word of ['Zebra-17', 'zebra-17']) expect(read).not.toContain(word);
+  });
+
+  it('announces a shared reply in the same shape, so the trail is no different for the desk’s own', async () => {
+    const desk = await freshDesk();
+    const id = await live(desk, false);
+    const trail = replyEvents(desk, id);
+    expect(trail).toHaveLength(3);
+    expect(trail.map((e) => e.schema_version)).toEqual([2, 2, 2]);
+    expect(trail[0]!.payload).toMatchObject({ id, owner: null, folder_id: null });
+    expect(Object.keys(trail[1]!.payload).sort()).toEqual(['created_at', 'created_by', 'folder_id', 'id', 'owner']);
+    // The text was real and readable to the desk on the row; only the trail lacks it.
+    expect(history(desk)).not.toContain('Zebra-17');
   });
 });
 

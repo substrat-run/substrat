@@ -1057,6 +1057,13 @@ export const ticket0Entities = defineEntities({
     // Unique per owner: the desk has one "Refund", and so may each agent. Not per
     // folder, so filing, moving and unfiling can never collide; only sharing can.
     key: ['owner', 'title'],
+    /**
+     * Free text a person typed (#1087), and so `erasable` like a message's body, a CSAT
+     * comment or an agent's signature: it may name a customer, and it never rides an
+     * event, which the compiler now refuses. That is also what keeps a PERSONAL reply
+     * personal on the desk's trail: its events say which reply, never what it says.
+     */
+    erasable: ['title', 'body'],
   },
 
   /** One satisfaction score per conversation, once. Keyed by the conversation for
@@ -3603,12 +3610,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'savedReply',
       entityIdFrom: 'id',
       type: 'ticket0.saved-reply-created',
-      schemaVersion: 1,
       piiClass: 'none',
-      // `actions` joined in #1087, additively. What a macro DOES is the part of it a
-      // reviewer of the trail cares about, so it rides on the event. `owner` and
-      // `folder_id` joined later in #1087, also additively.
-      payload: ['id', 'title', 'body', 'created_by', 'created_at', 'actions', 'owner', 'folder_id'],
+      // v2 (#1087): identifiers only. `title` and `body` are free text and `erasable`, so no
+      // event carries them; and a PERSONAL reply's event must not say what it does either,
+      // so `actions` left with them. One declared shape per type, so the shared reply's
+      // event is the same shape. What a macro does still reaches the trail when it runs:
+      // `saved-reply-applied` names its action types, and each action emits its own event.
+      schemaVersion: 2,
+      payload: ['id', 'owner', 'folder_id', 'created_by', 'created_at'],
     },
   },
 
@@ -3679,9 +3688,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'savedReply',
       entityIdFrom: 'id',
       type: 'ticket0.saved-reply-updated',
-      schemaVersion: 1,
+      // v2 (#1087): identifiers only, for `saved-reply-created`'s reasons.
+      schemaVersion: 2,
       piiClass: 'none',
-      payload: ['id', 'title', 'body', 'created_by', 'created_at', 'actions', 'owner', 'folder_id'],
+      payload: ['id', 'owner', 'folder_id', 'created_by', 'created_at'],
     },
   },
 
@@ -3712,7 +3722,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.saved-reply-shared',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'title', 'created_by'],
+      payload: ['id', 'created_by'],
     },
   },
 
@@ -3730,8 +3740,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * A delete over a version the caller has not seen destroys someone else's edit
    * just as completely as an overwrite does, and more permanently.
    *
-   * The title rides on the way out, and on the event, because after this there is
-   * nowhere left to read it from.
+   * The title rides on the way out, because after this there is nowhere left to read it
+   * from. Not on the event: it is free text, `erasable`, and the trail keeps the id.
    *
    * Who may delete it is who may change it: the owner of a personal reply, and for a
    * shared one the holder of `saved-reply:manage` (see `update-saved-reply`).
@@ -3747,9 +3757,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'savedReply',
       entityIdFrom: 'id',
       type: 'ticket0.saved-reply-deleted',
-      schemaVersion: 1,
+      // v2 (#1087): the id only. The title is free text, `erasable`, and off every event.
+      schemaVersion: 2,
       piiClass: 'none',
-      payload: ['id', 'title'],
+      payload: ['id'],
     },
   },
 
