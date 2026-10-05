@@ -207,3 +207,48 @@ describe('ControlPlaneDO.importDump builds the spine from its own DDL (#1898)', 
     });
   });
 });
+
+/**
+ * #1184, Codex round 3: the removal fence takes its time from the ControlPlaneDO's own unit,
+ * never from the row the coordinator minted before its awaited call. A queue delay between the
+ * two would otherwise age the fence by however long the call waited, and an add whose request
+ * was stamped in that gap would read the removal as older than its window.
+ */
+describe('ControlPlaneDO: the removal fence is stamped inside the unit (#1184)', () => {
+  interface MembershipUnits {
+    defineRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<unknown>;
+    writeTenantTuple(tenantId: string, subject: string, relation: string, object: string, expiresAt: string | null): Promise<void>;
+    revokeAndFence(tenantId: string, principal: string, relation: string, object: string, row: unknown): Promise<boolean>;
+    applyMembership(change: unknown, row: unknown): Promise<{ applied: boolean; removedAt?: string }>;
+  }
+  const SKEW_MS = 5 * 60_000;
+  const row = (action: string, at: string) => ({
+    id: ulid(), actor: 'staff', action, tenantId: tenant, causedBy: null, onBehalfOf: null, scopeId: null, vertical: null, before: null, after: null, at,
+  });
+  /** An add for `principal` whose request was stamped at `requestedAt`, bounded by alice. */
+  const add = (dir: MembershipUnits, principal: string, requestedAt: number) =>
+    dir.applyMembership(
+      {
+        op: 'add', tenantId: tenant, principal, roleKey: 'member', boundedBy: 'alice',
+        unlessRemovedSince: new Date(requestedAt - SKEW_MS).toISOString(),
+      },
+      row('assignRole', new Date().toISOString()),
+    );
+
+  it('a removal whose row was minted long before the call still fences an add requested in between; twin: an unremoved add lands', async () => {
+    const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`fence-clock-${ulid()}`)) as unknown as MembershipUnits;
+    await dir.defineRole(tenant, { key: 'member', permissions: ['notes/read'], source: 'vertical' });
+    await dir.writeTenantTuple(tenant, 'principal:alice', 'role:member', T, null);
+
+    // The coordinator minted this row an hour ago and its call has only now reached the DO.
+    const minted = new Date(Date.now() - 60 * 60_000).toISOString();
+    const requestedAt = Date.now(); // the add's request, stamped while the removal was in flight
+    expect(await dir.revokeAndFence(tenant, 'joe', 'role:member', T, row('unassignRole', minted))).toBe(false);
+
+    const refused = await add(dir, 'joe', requestedAt);
+    expect(refused.applied).toBe(false);
+    expect(refused.removedAt! >= new Date(requestedAt).toISOString()).toBe(true);
+
+    expect((await add(dir, 'kim', requestedAt)).applied).toBe(true);
+  });
+});

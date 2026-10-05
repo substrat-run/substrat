@@ -3130,7 +3130,7 @@ export class ControlPlaneDO extends DurableObject {
         return { applied: true, changed: this.revokeAndFenceIn(tenantId, principal, `role:${roleKey}`, `tenant:${tenantId}`, row) };
       }
       this.writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`, null);
-      this.recordAdmin(row);
+      this.recordAdmin({ ...row, at: new Date().toISOString() });
       return { applied: true };
     });
   }
@@ -3152,11 +3152,21 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() => this.revokeAndFenceIn(tenantId, principal, relation, object, row));
   }
 
-  /** `revokeAndFence`'s writes, for inside a transaction a caller already holds. */
+  /**
+   * `revokeAndFence`'s writes, for inside a transaction a caller already holds.
+   *
+   * The time is minted HERE, in the unit, never taken from `row.at`: the coordinator mints its
+   * row before an awaited RPC, and a queue delay in between would age the fence by however
+   * long the call waited, which an add's cutoff would read as a removal from before its window
+   * (Codex round 3). The fence is compared with an add's `occurredAt`, stamped by the ScopeDO's
+   * clock. Both are this platform's own NTP-disciplined time, sub-second apart, which is far
+   * inside `MEMBERSHIP_REMOVAL_SKEW_MS`.
+   */
   private revokeAndFenceIn(tenantId: string, principal: string, relation: string, object: string, row: AdminEntryInput): boolean {
-    const changed = this.revokeTenantTuple(tenantId, `principal:${principal}`, relation, object, row.at);
-    this.sql.exec(RAISE_MEMBERSHIP_FENCE_SQL, tenantId, principal, row.at);
-    if (changed) this.recordAdmin(row);
+    const at = new Date().toISOString();
+    const changed = this.revokeTenantTuple(tenantId, `principal:${principal}`, relation, object, at);
+    this.sql.exec(RAISE_MEMBERSHIP_FENCE_SQL, tenantId, principal, at);
+    if (changed) this.recordAdmin({ ...row, at });
     return changed;
   }
 

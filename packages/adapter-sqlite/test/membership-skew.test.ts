@@ -11,19 +11,23 @@ import {
   ulid,
   webCryptoSecretBox,
   type ExecutorOutcome,
+  type HostAdmin,
+  type ScopeHost,
 } from '@substrat-run/kernel';
 import { INVITEFIX_A, membershipFixtureMod } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
- * #1184: a removal raises the person's fence in the directory, on the directory's clock; the
- * request it races is a scope event on the scope's. The two share no causal order, so a fence
+ * #1184: a removal raises the person's fence in the directory, stamped by the host's clock — the
+ * one that stamps the scope event it races (Codex round 3: a wall-clock fence let a host clock
+ * running ahead push a removal under the window). The skew window is for the adapter whose two
+ * stores keep two clocks (the Durable-Object one); here the comparison still holds that a fence
  * at or after `occurredAt - MEMBERSHIP_REMOVAL_SKEW_MS` wins — a tie included.
  *
- * SQLite only, and that is the reason this is not in the contract suite: the pure host takes a
- * clock, which is what moves a request's `occurredAt` away from the wall clock the admin rows
- * keep; the Durable-Object host takes none (`clock?: never`). The contract suite holds the
- * in-window case on both adapters.
+ * SQLite only, and that is the reason this is not in the contract suite: only the pure host
+ * takes a clock, so only here can a test place a request and a removal at chosen instants; the
+ * Durable-Object host takes none (`clock?: never`). The contract suite holds the in-window case
+ * on both adapters.
  */
 describe('membership executor — a removal outside the seam against the skew window (#1184)', () => {
   const staff = platformActorId.parse(ulid());
@@ -119,5 +123,86 @@ describe('membership executor — a removal outside the seam against the skew wi
     expect(await invitedAndAccepted(joe)).toEqual(['refused']);
     // Twin: someone the log never removed joins on the reopened directory.
     expect(await invitedAndAccepted(principalId.parse(ulid()))).toEqual(['delivered']);
+  });
+});
+
+describe('membership executor — the fence and the request share the host clock (#1184, Codex round 3)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const org = orgId.parse(ulid());
+  const alice = principalId.parse(ulid());
+  const node = { tenantId: t, scopeId: null };
+  const clock = manualClock(new Date());
+  let dir: string;
+  let host: SqliteScopeHost;
+  let release: () => void = () => undefined;
+  let gate: Promise<void> = Promise.resolve();
+
+  /** The host, except that every membership unit waits for `gate` — the add held in front of it. */
+  const holding = (real: SqliteScopeHost): ScopeHost => {
+    const held = (admin: HostAdmin): HostAdmin =>
+      new Proxy(admin, {
+        get: (target, key) =>
+          key === 'applyMembership'
+            ? async (...args: Parameters<HostAdmin['applyMembership']>) => {
+                await gate;
+                return target.applyMembership(...args);
+              }
+            : Reflect.get(target, key),
+      });
+    return new Proxy(real, {
+      get: (target, key) => {
+        if (key === 'attributed') return (o: Parameters<NonNullable<ScopeHost['attributed']>>[0]) => ({ admin: held(target.attributed(o).admin) });
+        const v = Reflect.get(target, key) as unknown;
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    }) as unknown as ScopeHost;
+  };
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-membership-clock-'));
+    // Ten minutes ahead of the wall: twice the window, so a wall-clock fence would fall under it.
+    clock.set(new Date(Date.now() + 10 * 60_000));
+    host = new SqliteScopeHost({ dir, clock: clock.read, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    host.registerModule(membershipFixtureMod);
+    registerMembershipExecutor(holding(host), { actor: staff });
+    await host.admin.createTenant(staff, { id: t, slug: `clock-${t.slice(-10).toLowerCase()}`, name: 'Clock' });
+    await host.admin.grantEntitlement(staff, t, 'invitefix');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'invitefix-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.defineRole(staff, t, { key: 'member', permissions: [INVITEFIX_A], source: 'vertical' });
+    await host.admin.createOrg(staff, { id: org, tenantId: t, slug: 'team', name: 'Team' });
+    await host.admin.assignRole(staff, { principalId: alice, roleKey: 'member', node });
+  });
+
+  afterEach(async () => {
+    release();
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** alice invites, `joe` accepts, and the add is held; `during` runs while it waits. */
+  const heldAccept = async (joe: PrincipalId, during: () => Promise<void>): Promise<ExecutorOutcome['outcome'][]> => {
+    const inv = { invitationId: ulid(), orgId: org, roleKey: 'member' };
+    await (await host.getScope(alice, t, s)).invoke('invitefix/send', inv);
+    gate = new Promise((r) => (release = r));
+    const outcomes: ExecutorOutcome[] = [];
+    const accepting = (await host.getScope(joe, t, s)).invoke('invitefix/accept', inv, { onExecutorOutcomes: (o) => outcomes.push(...o) });
+    await new Promise((r) => setTimeout(r, 50));
+    await during();
+    release();
+    await accepting;
+    return outcomes.filter((o) => o.entity === `membership:${joe}`).map((o) => o.outcome);
+  };
+
+  it('a no-op staff removal while the add is held refuses it, with the host clock ten minutes ahead of the wall', async () => {
+    const joe = principalId.parse(ulid());
+    expect(await heldAccept(joe, () => host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node }))).toEqual(['refused']);
+  });
+
+  it('twin: the same held add with nobody removed lands', async () => {
+    const joe = principalId.parse(ulid());
+    expect(await heldAccept(joe, async () => undefined)).toEqual(['delivered']);
   });
 });

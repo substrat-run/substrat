@@ -6181,6 +6181,8 @@ export class SqliteScopeHost implements ScopeHost {
     target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
     before: unknown,
     after: unknown,
+    /** When the row says it happened; the wall clock unless the write took its time elsewhere (#1184). */
+    at: string = new Date().toISOString(),
   ): void {
     this.directory
       .prepare(
@@ -6200,7 +6202,7 @@ export class SqliteScopeHost implements ScopeHost {
         this.causedBy,
         // #977: set only on an attributed view (`attributed`), never on the host itself.
         this.onBehalfOf === null ? null : JSON.stringify(this.onBehalfOf),
-        new Date().toISOString(),
+        at,
       );
   }
 
@@ -6506,23 +6508,27 @@ export class SqliteScopeHost implements ScopeHost {
     // (K-21), the removal fence, raised even when nothing was held so an add still on its way
     // cannot land after this, and the audit row (`audit`), which K-21 writes only when
     // something changed. The shape of the Durable-Object adapter's `revokeAndFence`.
+    //
+    // All three are stamped by the HOST clock, the one that stamps a scope event's `occurredAt`:
+    // the fence is compared with an add's `occurredAt`, and two clocks would let a host clock
+    // running ahead of the wall push a removal under the skew window (Codex round 3).
     let revokeStmt: Database.Statement | undefined;
     let fenceStmt: Database.Statement | undefined;
-    const revokeAndFence = (tenantId: string, principal: string, relation: string, object: string, audit: () => void): boolean => {
-      const now = new Date().toISOString();
+    const revokeAndFence = (tenantId: string, principal: string, relation: string, object: string, audit: (at: string) => void): boolean => {
+      const now = this.clock();
       const changed =
         (revokeStmt ??= this.directory.prepare(
           `UPDATE _substrat_tenant_tuples SET revoked_at = ?
            WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
         )).run(now, tenantId, `principal:${principal}`, relation, object).changes > 0;
       (fenceStmt ??= this.directory.prepare(RAISE_MEMBERSHIP_FENCE_SQL)).run(tenantId, principal, now);
-      if (changed) audit();
+      if (changed) audit(now);
       return changed;
     };
     const revokeTenantRoleAndFence = (actor: PlatformActorId, assignment: RoleAssignment): boolean => {
       const { tenantId } = assignment.node;
-      return revokeAndFence(tenantId, assignment.principalId, `role:${assignment.roleKey}`, `tenant:${tenantId}`, () =>
-        this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
+      return revokeAndFence(tenantId, assignment.principalId, `role:${assignment.roleKey}`, `tenant:${tenantId}`, (at) =>
+        this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null, at),
       );
     };
     // The tenant-level reads the checker makes, synchronous, for the bound inside a unit.
@@ -8627,8 +8633,8 @@ export class SqliteScopeHost implements ScopeHost {
         // a second audit row. One transaction with the removal fence (#1184), which a no-op
         // raises too.
         this.directory.transaction(() =>
-          revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, () =>
-            this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null),
+          revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, (at) =>
+            this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null, at),
           ),
         )();
       },
