@@ -367,6 +367,38 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(await settles(onePage(`BT /F1 9 Tf ${long} Tj ET`).bytes)).toEqual({ status: 'empty', extractor: 'pdf' });
   });
 
+  it('a long digit run that ends in a letter — the token shape that made a regular expression quadratic — stays linear, and abortable', async () => {
+    // 60 000 digits then `x` held the thread 3.3 s through the old number pattern, past any abort.
+    const shape = onePage(`BT /F1 9 Tf ${'1'.repeat(60_000)}x (after) Tj ET`).bytes;
+    const t0 = performance.now();
+    expect(textOf(await run(shape))).toBe('after');
+    expect(performance.now() - t0).toBeLessThan(500);
+    expect(await abortLatency(shape)).toBeLessThan(100);
+  });
+
+  it('a run near the token bound, of every token class, settles promptly and aborts within a stride', async () => {
+    const near = 250 * 1024;
+    const runs: [string, string][] = [
+      ['digits ending in a letter', `${'7'.repeat(near)}q`],
+      ['a signed decimal with a second dot', `-${'1'.repeat(near / 2)}.${'2'.repeat(near / 2 - 8)}.3`],
+      ['signs', '+-'.repeat(near / 2)],
+      ['a keyword', 'k'.repeat(near)],
+      ['a name with escapes', `/${'#41a'.repeat(near / 4)}`],
+      ['a literal string', `(${'\\(s'.repeat(near / 4)})`],
+      ['a hex string', `<${'4a'.repeat(near / 2)}>`],
+      ['a comment', `%${'c'.repeat(near)}\n`],
+      ['whitespace', ' '.repeat(near)],
+    ];
+    for (const [label, token] of runs) {
+      const file = onePage(`BT /F1 9 Tf ${token} (after) Tj ET`).bytes;
+      const t0 = performance.now();
+      const outcome = await run(file);
+      expect(['indexed', 'empty'], label).toContain(outcome.status);
+      expect(performance.now() - t0, label).toBeLessThan(1_000);
+      expect(await abortLatency(file), label).toBeLessThan(100);
+    }
+  });
+
   it('a truncated file, cut anywhere, settles', async () => {
     const { bytes } = onePage(await deflate(bin('BT /F1 9 Tf (the whole sentence) Tj ET')), { contentDict: '/Filter /FlateDecode' });
     for (let cut = 0; cut < bytes.length; cut += 7) {
@@ -412,6 +444,20 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(performance.now() - t0).toBeLessThan(250);
   });
 });
+
+/**
+ * How long an extraction takes to answer once its signal is aborted mid-way: started, aborted
+ * on the next timer turn, timed from the abort.
+ */
+async function abortLatency(body: Uint8Array): Promise<number> {
+  const signal: { aborted: boolean } = { aborted: false };
+  const extracting = pdf.extract({ body, contentType: 'application/pdf', filename: 'f.pdf', maxTextBytes: 1 << 30, signal: signal as ExtractionSignal });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  signal.aborted = true;
+  const t0 = performance.now();
+  await extracting;
+  return performance.now() - t0;
+}
 
 /** Big-endian 4 bytes. */
 function u32(n: number): number[] {

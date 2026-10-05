@@ -128,8 +128,9 @@ function acceptsBy(types: (type: string) => boolean, extensions: readonly string
     const { type } = parseContentType(contentType);
     if (types(type)) return true;
     if (type !== '' && type !== 'application/octet-stream') return false;
-    const ext = /\.([A-Za-z0-9]+)$/.exec(filename)?.[1]?.toLowerCase();
-    return ext !== undefined && extensions.includes(ext);
+    const dot = filename.lastIndexOf('.');
+    const ext = dot < 0 ? '' : filename.slice(dot + 1).toLowerCase();
+    return ext !== '' && extensions.includes(ext);
   };
 }
 

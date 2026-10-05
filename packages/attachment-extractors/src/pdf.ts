@@ -252,13 +252,24 @@ class Lexer {
       this.pos += 1;
       token = { t: 'kw', v: ')' };
     } else {
+      // One forward pass decides whether the word is a number — `[+-]?`, digits with at most
+      // one `.`, at least one digit — as it finds the word's end. Never a regular expression
+      // over the word: an ambiguous one backtracks quadratically on a long digit run that
+      // ends in a letter, which a file can make 256 Ki long (Codex #2062 r1).
       const start = this.pos;
+      let digits = 0;
+      let dots = 0;
+      let numeric = true;
       while (this.pos < this.end && isRegular(this.buf[this.pos]!)) {
+        const c = this.buf[this.pos]!;
+        if (c >= 48 && c <= 57) digits += 1;
+        else if (c === 46) dots += 1;
+        else if (!((c === 43 || c === 45) && this.pos === start)) numeric = false;
         this.pos += 1;
         this.tooLong(start);
       }
       const word = latin1(this.buf.subarray(start, this.pos));
-      const n = /^[+-]?(\d+\.?\d*|\.\d+)$/.test(word) ? Number(word) : Number.NaN;
+      const n = numeric && digits > 0 && dots <= 1 ? Number(word) : Number.NaN;
       token = Number.isFinite(n) ? { t: 'num', v: n } : { t: 'kw', v: word };
     }
     this.pace.charge(this.pos - from);
@@ -1021,8 +1032,16 @@ const GLYPHS: Record<string, string> = {
   ...ACCENTS,
 };
 
-/** A glyph name → its text: the names writers use, `uniXXXX`, `uXXXX`, and composed accents. */
+/** The longest glyph name read; a writer's names are a few characters, `uni…` a few dozen. */
+const GLYPH_NAME_MAX = 64;
+
+/**
+ * A glyph name → its text: the names writers use, `uniXXXX`, `uXXXX`, and composed accents.
+ * The patterns below are anchored with one quantifier each (or fixed-width groups), so none
+ * can backtrack past linear — and a name is at most `GLYPH_NAME_MAX` long besides.
+ */
 function glyphText(name: string): string {
+  if (name.length > GLYPH_NAME_MAX) return '';
   const base = name.split('.')[0]!;
   if (base.includes('_')) return base.split('_').map(glyphText).join('');
   if (GLYPHS[base] !== undefined) return GLYPHS[base]!;
