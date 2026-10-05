@@ -174,10 +174,14 @@ export function assertNoStatefulDdl(sql: string, statefulTables: ReadonlySet<str
     let end = start;
     let depth = 0;
     let inBody = false;
+    // Only a CREATE … TRIGGER has a body. `begin` is a legal identifier elsewhere (`SELECT 1 AS
+    // begin`), and reading it as a body would swallow every statement after it into this one.
+    const head = tokens.slice(start, start + 4).map((t) => (t.quoted || t.punct ? '' : t.text.toLowerCase()));
+    const opensTrigger = head[0] === 'create' && head.slice(1).includes('trigger');
     for (; end < tokens.length; end += 1) {
       const t = tokens[end]!;
       const kw = t.quoted || t.punct ? undefined : t.text.toLowerCase();
-      if (kw === 'begin') inBody = true;
+      if (kw === 'begin' && opensTrigger) inBody = true;
       else if (kw === 'end' && inBody && depth === 0) inBody = false;
       else if (t.punct && t.text === '(') depth += 1;
       else if (t.punct && t.text === ')') depth -= 1;

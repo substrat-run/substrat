@@ -292,6 +292,10 @@ describe('runtime DDL on a stateful table (#119, Codex r3)', () => {
     "ATTACH DATABASE 'x.db' AS x",
     'DETACH DATABASE x',
     'CREATE TABLE ok (id TEXT); ALTER TABLE docs RENAME TO x',
+    // CodeRabbit on #2070: `begin` as an identifier must not open a "trigger body" that hides
+    // the statements after it.
+    'SELECT 1 AS begin; ALTER TABLE docs DROP COLUMN a',
+    'SELECT 1 AS begin; CREATE TRIGGER t BEFORE UPDATE OF _substrat_trashed_at ON docs BEGIN SELECT RAISE(IGNORE); END',
   ];
   for (const sql of refused) {
     it(`refuses: ${sql}`, () => expect(() => assertNoStatefulDdl(sql, stateful)).toThrow(/cannot/));
