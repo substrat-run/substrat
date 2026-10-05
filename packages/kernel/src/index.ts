@@ -393,6 +393,23 @@ export type {
   SubjectTextTarget,
   IssueExemplarOwner,
 } from './subject-redaction.js';
+export {
+  FINDINGS_DDL,
+  FINDING_RETENTION_DAYS,
+  assertFindingRuleExpiry,
+  createFindingRule,
+  findingOfOpsFailure,
+  findingOfSweepRun,
+  findingRetention,
+  listFindingRules,
+  listFindings,
+  observeFinding,
+  revokeFindingRule,
+  setFindingStatus,
+  type DirectorySql,
+  type FindingChange,
+  type FindingObservation,
+} from './findings.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, MARK_COPY_ORIGIN_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';

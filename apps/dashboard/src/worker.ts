@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, importCursorMove, findingKind, findingRuleInput, findingStatus, findingStatusInput, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -5086,6 +5086,79 @@ async function assertMayManageApps(host: ScopeHost, node: DashboardNode): Promis
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   await dash.invoke('dashboard/authorize-scope-change', {});
 }
+
+/**
+ * The findings gates (#1748): the control plane confines the tenant credential to this team,
+ * and these say which PERSON in it may read the inbox (`dashboard:read-findings`) or act on it
+ * (`dashboard:manage-findings`). A refusal is the kernel's 403, before the plane is asked.
+ */
+async function assertMayReadFindings(host: ScopeHost, node: DashboardNode): Promise<void> {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  await dash.invoke('dashboard/authorize-findings-read', {});
+}
+
+async function assertMayManageFindings(host: ScopeHost, node: DashboardNode): Promise<void> {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  await dash.invoke('dashboard/authorize-findings-change', {});
+}
+
+const findingsListQuery = z.object({
+  status: findingStatus.optional(),
+  kind: findingKind.optional(),
+});
+
+/**
+ * The Findings inbox (#1748): this team's findings, most recently seen first. `available:
+ * false` is a plane that predates findings — said as such, never as an empty inbox.
+ */
+app.get('/api/findings', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayReadFindings(host, node);
+  const filter = findingsListQuery.parse({ status: c.req.query('status'), kind: c.req.query('kind') });
+  const entries = await controlPlaneFor(c.env, node.tenantId, node.principal).listFindings(filter);
+  return c.json(entries === null ? { available: false, entries: [] } : { available: true, entries });
+});
+
+/** Acknowledge, resolve or reopen one of this team's findings (#1748). */
+app.put('/api/findings/:id/status', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageFindings(host, node);
+  const { status } = z.object({ status: findingStatusInput }).parse(await c.req.json());
+  return c.json(await controlPlaneFor(c.env, node.tenantId, node.principal).setFindingStatus(c.req.param('id'), status));
+});
+
+/** This team's suppress rules (#1748); `?active=true` keeps the unexpired ones. */
+app.get('/api/findings/rules', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayReadFindings(host, node);
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  return c.json({ entries: await cp.listFindingRules(c.req.query('active') === 'true') });
+});
+
+/** Suppress with a rule: a scope plus an expiry, audited by the plane (#1748). */
+app.post('/api/findings/rules', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageFindings(host, node);
+  const input = findingRuleInput.parse(await c.req.json());
+  return c.json(await controlPlaneFor(c.env, node.tenantId, node.principal).createFindingRule(input), 201);
+});
+
+/** End a suppress rule now (#1748). */
+app.delete('/api/findings/rules/:ruleId', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageFindings(host, node);
+  return c.json(await controlPlaneFor(c.env, node.tenantId, node.principal).revokeFindingRule(c.req.param('ruleId')));
+});
 
 /**
  * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-

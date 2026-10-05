@@ -207,6 +207,13 @@ export const adminAction = z.enum([
   // #2005 — the correction for a mistaken mark: a scope the directory says IS primary, its copy
   // marker removed by staff, one scope at a time. Refused for a scope the directory calls a copy.
   'clearScopeCopyMark',
+  // #1748 — the findings lifecycle: a verdict on one tenant finding (acknowledge / resolve /
+  // reopen), a suppress rule created or revoked, and an open finding the retention pass
+  // resolved as stale instead of deleting it. Each row names the tenant.
+  'setFindingStatus',
+  'createFindingRule',
+  'revokeFindingRule',
+  'resolveStaleFinding',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

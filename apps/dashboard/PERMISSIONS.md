@@ -5,16 +5,18 @@
 
 # Permission snapshot — @substrat-run/dashboard
 
-7 keys · 2 modules · 4 roles
+9 keys · 2 modules · 4 roles
 
 ## 1. Registry — every key a registered manifest declares
 
 | Key | Description | Declared by |
 | --- | --- | --- |
+| `dashboard:manage-findings` | Acknowledge, resolve or reopen findings, and create or revoke suppress rules | `@substrat-run/dashboard` |
 | `dashboard:manage-integrations` | Connect and disconnect third-party providers (GitHub, Scrive) for this tenant | `@substrat-run/dashboard` |
 | `dashboard:manage-members` | Invite and remove team members and see the roster | `@substrat-run/dashboard` |
 | `dashboard:provision-app` | Provision and manage apps (vertical instances) in this tenant — the tenant admin | `@substrat-run/dashboard` |
 | `dashboard:read` | Read the tenant’s apps | `@substrat-run/dashboard` |
+| `dashboard:read-findings` | Read the tenant’s findings and suppress rules | `@substrat-run/dashboard` |
 | `invites:read` | List invitations and their state | `@substrat-run/engine-invites` |
 | `invites:revoke` | Withdraw an invitation before it is accepted | `@substrat-run/engine-invites` |
 | `invites:send` | Invite someone to an organization | `@substrat-run/engine-invites` |
@@ -25,19 +27,21 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
-| `admin` | `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `invites:read`, `invites:revoke`, `invites:send` |
-| `member` | `dashboard:provision-app`, `dashboard:read` |
-| `owner` | `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `invites:read`, `invites:revoke`, `invites:send` |
-| `viewer` | `dashboard:read` |
+| `admin` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings`, `invites:read`, `invites:revoke`, `invites:send` |
+| `member` | `dashboard:manage-findings`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings` |
+| `owner` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings`, `invites:read`, `invites:revoke`, `invites:send` |
+| `viewer` | `dashboard:read`, `dashboard:read-findings` |
 
 ## 3. Coverage — which roles hold each key
 
 | Key | Held by |
 | --- | --- |
+| `dashboard:manage-findings` | `admin`, `member`, `owner` |
 | `dashboard:manage-integrations` | `admin`, `owner` |
 | `dashboard:manage-members` | `admin`, `owner` |
 | `dashboard:provision-app` | `admin`, `member`, `owner` |
 | `dashboard:read` | `admin`, `member`, `owner`, `viewer` |
+| `dashboard:read-findings` | `admin`, `member`, `owner`, `viewer` |
 | `invites:read` | `admin`, `owner` |
 | `invites:revoke` | `admin`, `owner` |
 | `invites:send` | `admin`, `owner` |

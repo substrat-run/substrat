@@ -33,6 +33,13 @@ import {
   opsFailureEntry,
   opsFailureFingerprint,
   issueEntry,
+  findingEntry,
+  findingRuleEntry,
+  type FindingEntry,
+  type FindingFilter,
+  type FindingRuleEntry,
+  type FindingRuleInput,
+  type FindingStatusInput,
   sweepRunEntry,
   FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunsPayload,
@@ -424,6 +431,8 @@ import {
   asyncLinePass,
   type AsyncLinePass,
   type EmittedReport,
+  type FindingChange,
+  assertFindingRuleExpiry,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -958,7 +967,22 @@ interface ControlPlaneStub {
   listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;
   listIssues(query: IssueQuery): Promise<unknown[]>;
   /** #1632: the telemetry retentions, run by the scheduled pass — `telemetryRetentionStatements`. */
-  pruneTelemetry(limit: number): Promise<TelemetryPruneReport>;
+  pruneTelemetry(limit: number): Promise<TelemetryPruneReport & { staled?: FindingChange[] }>;
+  // #1748 — findings; audited here, as every directory mutation is.
+  listFindings(filter: FindingFilter): Promise<FindingEntry[]>;
+  setFindingStatus(tenantId: TenantId, id: string, status: FindingStatusInput, at: string): Promise<FindingChange | undefined>;
+  createFindingRule(
+    tenantId: TenantId,
+    input: FindingRuleInput,
+    createdBy: string,
+    at: string,
+  ): Promise<{ rule: FindingRuleEntry; suppressed: string[] }>;
+  revokeFindingRule(
+    tenantId: TenantId,
+    ruleId: string,
+    at: string,
+  ): Promise<{ before: FindingRuleEntry; after: FindingRuleEntry } | undefined>;
+  listFindingRules(tenantId: TenantId, activeAt: string | undefined, limit: number | undefined): Promise<FindingRuleEntry[]>;
   setIssueStatus(
     fingerprint: string,
     status: 'new' | 'resolved' | 'ignored',
@@ -8517,8 +8541,22 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows.map((r) => sweepRunEntry.parse(r));
       },
       // Checked here as well as in the directory, so the refusal keeps its code across the hop.
-      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> =>
-        this.cp.pruneTelemetry(assertRowLimit('limit', limit)),
+      pruneTelemetry: async (actor, limit: number): Promise<TelemetryPruneReport> => {
+        const { staled = [], ...report } = await this.cp.pruneTelemetry(assertRowLimit('limit', limit));
+        // #1748: a quiet open finding is resolved as stale, audited, never silently deleted.
+        for (const change of staled) {
+          const before = findingEntry.parse(change.before);
+          const after = findingEntry.parse(change.after);
+          await this.recordAdmin(
+            actor,
+            'resolveStaleFinding',
+            { tenantId: after.tenantId, vertical: after.vertical },
+            { id: before.id, status: before.status },
+            { id: after.id, status: after.status, resolution: after.resolution },
+          );
+        }
+        return report;
+      },
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const rows = await this.cp.listIssues({
           status: filter?.status,
@@ -8544,6 +8582,60 @@ export class CloudflareScopeHost implements ScopeHost {
           { fingerprint, status: after.status },
         );
         return after;
+      },
+      listFindings: async (actor, filter?: FindingFilter): Promise<FindingEntry[]> => {
+        const rows = await this.cp.listFindings({ ...filter });
+        await this.recordAccess(actor, 'listFindings', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
+        return rows.map((r) => findingEntry.parse(r));
+      },
+      setFindingStatus: async (actor, tenantId, id, status): Promise<FindingEntry | undefined> => {
+        const change = await this.cp.setFindingStatus(tenantId, id, status, new Date().toISOString());
+        if (!change) return undefined;
+        const before = findingEntry.parse(change.before);
+        const after = findingEntry.parse(change.after);
+        await this.recordAdmin(
+          actor,
+          'setFindingStatus',
+          { tenantId, vertical: after.vertical },
+          { id, status: before.status },
+          { id, status: after.status },
+        );
+        return after;
+      },
+      createFindingRule: async (actor, tenantId, input) => {
+        const at = new Date().toISOString();
+        // Refused here as well as in the directory, so the refusal keeps its code across the hop.
+        assertFindingRuleExpiry(input.expiresAt, at);
+        const created = await this.cp.createFindingRule(tenantId, input, actor, at);
+        const rule = findingRuleEntry.parse(created.rule);
+        await this.recordAdmin(actor, 'createFindingRule', { tenantId }, null, {
+          rule,
+          suppressed: created.suppressed.length,
+        });
+        return { rule, suppressed: created.suppressed.length };
+      },
+      revokeFindingRule: async (actor, tenantId, ruleId): Promise<FindingRuleEntry | undefined> => {
+        const change = await this.cp.revokeFindingRule(tenantId, ruleId, new Date().toISOString());
+        if (!change) return undefined;
+        const before = findingRuleEntry.parse(change.before);
+        const after = findingRuleEntry.parse(change.after);
+        await this.recordAdmin(
+          actor,
+          'revokeFindingRule',
+          { tenantId },
+          { id: ruleId, expiresAt: before.expiresAt },
+          { id: ruleId, expiresAt: after.expiresAt },
+        );
+        return after;
+      },
+      listFindingRules: async (actor, tenantId, filter): Promise<FindingRuleEntry[]> => {
+        const rows = await this.cp.listFindingRules(
+          tenantId,
+          filter?.active ? new Date().toISOString() : undefined,
+          filter?.limit,
+        );
+        await this.recordAccess(actor, 'listFindingRules', { tenantId }, filter, rows.length);
+        return rows.map((r) => findingRuleEntry.parse(r));
       },
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;

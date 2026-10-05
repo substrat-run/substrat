@@ -9,6 +9,9 @@ import {
   opsFailureEntry,
   opsFailureFingerprint,
   issueEntry,
+  type FindingEntry,
+  type FindingFilter,
+  type FindingRuleEntry,
   FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunEntry,
   type FreshnessSpec,
@@ -256,6 +259,16 @@ import {
   ulid,
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
+  FINDINGS_DDL,
+  createFindingRule,
+  findingOfOpsFailure,
+  findingOfSweepRun,
+  findingRetention,
+  listFindingRules,
+  listFindings,
+  observeFinding,
+  revokeFindingRule,
+  setFindingStatus,
   assertRowLimit,
   assertRowOffset,
   type TelemetryPruneReport,
@@ -2212,6 +2225,8 @@ export class SqliteScopeHost implements ScopeHost {
         resolved_at TEXT
       );
       CREATE INDEX IF NOT EXISTS _substrat_issues_seen ON _substrat_issues (last_seen);
+      -- #1748: tenant findings and their suppress rules — kernel-owned DDL (findings.ts).
+      ${FINDINGS_DDL}
       -- The durable sweep record (#1232): one row per unit outcome per pass —
       -- a connection swept/skipped/failed, a schedule fired/skipped/failed. What
       -- makes "when was this last swept" answerable after the log line rolls off.
@@ -9482,6 +9497,8 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_membership_fences', // #1184: the latest removal, per principal
           '_substrat_peer_switches', // #2029: the peer switch's record, per scope
           '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
+          '_substrat_findings', // #1748: the tenant's findings
+          '_substrat_finding_rules', // #1748: the tenant's suppress rules
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {
@@ -10422,6 +10439,9 @@ export class SqliteScopeHost implements ScopeHost {
           );
         const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
         this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
+        // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
+        const finding = findingOfOpsFailure(entry);
+        if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
       },
       listOpsFailures: async (actor, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]> => {
         const where: string[] = [];
@@ -10512,7 +10532,8 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       recordSweepRun: async (entry: SweepRunInput): Promise<void> => {
-        this.directory
+        const at = entry.at ?? new Date().toISOString();
+        const { changes } = this.directory
           .prepare(
             `INSERT OR IGNORE INTO _substrat_sweep_runs
                (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
@@ -10538,12 +10559,16 @@ export class SqliteScopeHost implements ScopeHost {
             entry.eventType ?? null,
             entry.observedAt ?? null,
             entry.platformRequests == null ? null : JSON.stringify(entry.platformRequests),
-            entry.at ?? new Date().toISOString(),
+            at,
           );
         // Prune-on-write, like ops failures and for the same reason: the table stays
         // bounded even on a deployment whose scheduled pass is broken.
         const horizon = new Date(Date.now() - SWEEP_RUN_RETENTION_DAYS * 86_400_000).toISOString();
         this.directory.prepare('DELETE FROM _substrat_sweep_runs WHERE at < ?').run(horizon);
+        // #1748: a failed schedule (Invariant) or a stale freshness verdict (Drift). Only when the
+        // row was written: a replayed drain the unique index ignored is not a second occurrence.
+        const finding = changes > 0 ? findingOfSweepRun(entry) : null;
+        if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
       },
       listSweepRuns: async (actor, filter?: SweepRunFilter): Promise<SweepRunEntry[]> => {
         const where: string[] = [];
@@ -10613,14 +10638,25 @@ export class SqliteScopeHost implements ScopeHost {
           }),
         );
       },
-      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> => {
+      pruneTelemetry: async (actor, limit: number): Promise<TelemetryPruneReport> => {
         // A negative LIMIT is no limit at all to SQLite (#1632): refused before any statement.
         assertRowLimit('limit', limit);
         const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
         for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
           pruned[table] = this.directory.prepare(sql).all(...params).length;
         }
-        return pruned;
+        // #1748: a quiet open finding is resolved as stale, audited, never silently deleted.
+        const findings = findingRetention(redactionSqlOf(this.directory), Date.now(), limit);
+        for (const { before, after } of findings.staled) {
+          this.recordAdmin(
+            actor,
+            'resolveStaleFinding',
+            { tenantId: after.tenantId, vertical: after.vertical },
+            { id: before.id, status: before.status },
+            { id: after.id, status: after.status, resolution: after.resolution },
+          );
+        }
+        return { ...pruned, findings: findings.deleted, findingsStaled: findings.staled.length };
       },
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const where: string[] = [];
@@ -10673,6 +10709,56 @@ export class SqliteScopeHost implements ScopeHost {
           { fingerprint, status: after.status },
         );
         return after;
+      },
+      listFindings: async (actor, filter?: FindingFilter): Promise<FindingEntry[]> => {
+        const rows = listFindings(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listFindings', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
+        return rows;
+      },
+      setFindingStatus: async (actor, tenantId, id, status): Promise<FindingEntry | undefined> => {
+        const change = setFindingStatus(redactionSqlOf(this.directory), tenantId, id, status, new Date().toISOString());
+        if (!change) return undefined;
+        this.recordAdmin(
+          actor,
+          'setFindingStatus',
+          { tenantId, vertical: change.after.vertical },
+          { id, status: change.before.status },
+          { id, status: change.after.status },
+        );
+        return change.after;
+      },
+      createFindingRule: async (actor, tenantId, input) => {
+        const { rule, suppressed } = createFindingRule(
+          redactionSqlOf(this.directory),
+          tenantId,
+          input,
+          actor,
+          new Date().toISOString(),
+        );
+        this.recordAdmin(actor, 'createFindingRule', { tenantId }, null, { rule, suppressed: suppressed.length });
+        return { rule, suppressed: suppressed.length };
+      },
+      revokeFindingRule: async (actor, tenantId, ruleId): Promise<FindingRuleEntry | undefined> => {
+        const change = revokeFindingRule(redactionSqlOf(this.directory), tenantId, ruleId, new Date().toISOString());
+        if (!change) return undefined;
+        this.recordAdmin(
+          actor,
+          'revokeFindingRule',
+          { tenantId },
+          { id: ruleId, expiresAt: change.before.expiresAt },
+          { id: ruleId, expiresAt: change.after.expiresAt },
+        );
+        return change.after;
+      },
+      listFindingRules: async (actor, tenantId, filter): Promise<FindingRuleEntry[]> => {
+        const rows = listFindingRules(
+          redactionSqlOf(this.directory),
+          tenantId,
+          filter?.active ? new Date().toISOString() : undefined,
+          filter?.limit,
+        );
+        this.recordAccess(actor, 'listFindingRules', { tenantId }, filter, rows.length);
+        return rows;
       },
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;

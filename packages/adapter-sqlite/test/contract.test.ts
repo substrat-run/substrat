@@ -10,6 +10,7 @@ import {
   impersonationContractSuite,
   inertScopeContractSuite,
   membershipExecutorContractSuite,
+  findingsContractSuite,
   capabilityAttachmentContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -67,6 +68,19 @@ inertScopeContractSuite('adapter-sqlite', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,
   });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1748: findings — the tenant inbox, its lifecycle, rules and retention, on the directory.
+findingsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-findings-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,
     cleanup: async () => {

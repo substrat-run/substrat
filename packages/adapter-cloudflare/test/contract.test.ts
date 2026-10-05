@@ -34,6 +34,7 @@ import {
   impersonationContractSuite,
   inertScopeContractSuite,
   membershipExecutorContractSuite,
+  findingsContractSuite,
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
@@ -101,6 +102,17 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1748: findings — the directory half lives in the ControlPlaneDO, so this is the proof that
+// the kernel's statements (json_each, RETURNING, the upsert) run on DO SQLite.
+findingsContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
     checker: UNSAFE_allowAllChecker,

@@ -16,6 +16,17 @@ import {
   impersonationRowValues,
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
+  FINDINGS_DDL,
+  createFindingRule,
+  findingOfOpsFailure,
+  findingOfSweepRun,
+  findingRetention,
+  listFindingRules,
+  listFindings,
+  observeFinding,
+  revokeFindingRule,
+  setFindingStatus,
+  type FindingChange,
   assertRowLimit,
   type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
@@ -90,6 +101,7 @@ import type {
   ErrorCode,
 } from '@substrat-run/contracts';
 import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import type { FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1111,6 +1123,8 @@ const DIRECTORY_DDL = `
     resolved_at TEXT
   );
   CREATE INDEX IF NOT EXISTS _substrat_issues_seen ON _substrat_issues (last_seen);
+  -- #1748: tenant findings and their suppress rules - kernel-owned DDL (findings.ts).
+  ${FINDINGS_DDL}
   -- The durable sweep record (#1232): one row per unit outcome per pass - a
   -- connection swept/skipped/failed, a schedule fired/skipped/failed. What makes
   -- "when was this last swept" answerable after the log line rolls off. Pruned on
@@ -1911,6 +1925,8 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_membership_fences', // #1184: the latest removal, per principal
       '_substrat_peer_switches', // #2029: the peer switch's record, per scope
       '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
+      '_substrat_findings', // #1748: the tenant's findings
+      '_substrat_finding_rules', // #1748: the tenant's suppress rules
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -4625,6 +4641,17 @@ export class ControlPlaneDO extends DurableObject {
       );
       const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
       this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
+      // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
+      const finding = findingOfOpsFailure({
+        tenantId: row.tenant_id,
+        scopeId: row.scope_id,
+        operation: row.operation,
+        stage: row.stage,
+        code: row.code as Parameters<typeof findingOfOpsFailure>[0]['code'],
+        vertical: row.vertical,
+        version: row.version,
+      });
+      if (finding) observeFinding(doRedactionSql(this.sql), finding, row.at);
     }
   }
 
@@ -4715,7 +4742,7 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   recordSweepRun(row: SweepRunRow): void {
-    this.sql.exec(
+    const { rowsWritten } = this.sql.exec(
       `INSERT OR IGNORE INTO _substrat_sweep_runs
          (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
           connection_id, error, elapsed_ms, request_id, event_type, observed_at, platform_requests, at)
@@ -4742,6 +4769,23 @@ export class ControlPlaneDO extends DurableObject {
     // deployment whose scheduled pass is broken.
     const horizon = new Date(Date.now() - SWEEP_RUN_RETENTION_DAYS * 86_400_000).toISOString();
     this.sql.exec('DELETE FROM _substrat_sweep_runs WHERE at < ?', horizon);
+    // #1748: a failed schedule (Invariant) or a stale freshness verdict (Drift). Only when the
+    // row was written: a replayed drain the unique index ignored is not a second occurrence.
+    const finding =
+      rowsWritten > 0
+        ? findingOfSweepRun({
+            kind: row.kind,
+            unit: row.unit,
+            outcome: row.outcome,
+            tenantId: row.tenant_id,
+            scopeId: row.scope_id,
+            vertical: row.vertical,
+            version: row.version,
+            operation: row.operation,
+            eventType: row.event_type,
+          })
+        : null;
+    if (finding) observeFinding(doRedactionSql(this.sql), finding, row.at);
   }
 
   listSweepRuns(query: SweepRunQuery): SweepRunEntry[] {
@@ -4805,14 +4849,50 @@ export class ControlPlaneDO extends DurableObject {
 
   /** The fingerprint-grouped failure classes (#1233), most recently seen first. */
   /** #1632: the telemetry retentions, on the scheduled pass's clock — `telemetryRetentionStatements`. */
-  pruneTelemetry(limit: number): TelemetryPruneReport {
+  pruneTelemetry(limit: number): TelemetryPruneReport & { staled: FindingChange[] } {
     // A negative LIMIT is no limit at all to SQLite (#1632): refused before any statement.
     assertRowLimit('limit', limit);
     const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
     for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
       pruned[table] = this.sql.exec(sql, ...params).toArray().length;
     }
-    return pruned;
+    // #1748: the stale-resolved findings go back to the host, which audits each one.
+    const findings = findingRetention(doRedactionSql(this.sql), Date.now(), limit);
+    return { ...pruned, findings: findings.deleted, findingsStaled: findings.staled.length, staled: findings.staled };
+  }
+
+  /** #1748: findings, most recently seen first — `listFindings`. */
+  listFindings(filter: FindingFilter): FindingEntry[] {
+    return listFindings(doRedactionSql(this.sql), filter);
+  }
+
+  /** #1748: a verdict on one tenant finding. Returns before/after for the caller's audit, or undefined. */
+  setFindingStatus(tenantId: TenantId, id: string, status: FindingStatusInput, at: string): FindingChange | undefined {
+    return setFindingStatus(doRedactionSql(this.sql), tenantId, id, status, at);
+  }
+
+  /** #1748: a suppress rule, applied to the findings it covers now. */
+  createFindingRule(
+    tenantId: TenantId,
+    input: FindingRuleInput,
+    createdBy: string,
+    at: string,
+  ): { rule: FindingRuleEntry; suppressed: string[] } {
+    return createFindingRule(doRedactionSql(this.sql), tenantId, input, createdBy, at);
+  }
+
+  /** #1748: end a rule now. */
+  revokeFindingRule(
+    tenantId: TenantId,
+    ruleId: string,
+    at: string,
+  ): { before: FindingRuleEntry; after: FindingRuleEntry } | undefined {
+    return revokeFindingRule(doRedactionSql(this.sql), tenantId, ruleId, at);
+  }
+
+  /** #1748: a tenant's suppress rules. */
+  listFindingRules(tenantId: TenantId, activeAt: string | undefined, limit: number | undefined): FindingRuleEntry[] {
+    return listFindingRules(doRedactionSql(this.sql), tenantId, activeAt, limit);
   }
 
   listIssues(query: IssueQuery): unknown[] {

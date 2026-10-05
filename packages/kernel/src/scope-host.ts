@@ -156,6 +156,11 @@ import type {
   IssueEntry,
   IssueStatus,
   IssueStatusInput,
+  FindingEntry,
+  FindingFilter,
+  FindingRuleEntry,
+  FindingRuleInput,
+  FindingStatusInput,
   DeclaredMigration,
   CheckSubject,
 } from '@substrat-run/contracts';
@@ -3787,6 +3792,43 @@ export interface HostAdmin {
   ): Promise<IssueEntry | undefined>;
 
   /**
+   * Findings (#1748), most recently seen first: the tenant-scoped inbox. `filter.tenantId`
+   * absent is the staff fleet read; every tenant-facing caller passes it, and the HTTP surface
+   * forces it from the principal. Access-logged (K-24). No cursor, for `listIssues`'s reason.
+   */
+  listFindings(actor: PlatformActorId, filter?: FindingFilter): Promise<FindingEntry[]>;
+  /**
+   * A verdict on one of `tenantId`'s findings: acknowledge, resolve, or reopen. Keyed on the
+   * tenant as well as the id, so another tenant's finding reads as unknown (undefined).
+   * Audited with the before/after diff (K-33).
+   */
+  setFindingStatus(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    id: string,
+    status: FindingStatusInput,
+  ): Promise<FindingEntry | undefined>;
+  /**
+   * Suppress with a rule: a scope (kind / operation / code / subject) and an expiry of at most
+   * `FINDING_RULE_MAX_DAYS`. The findings it covers now are suppressed at once; later
+   * occurrences it covers are counted but keep their finding suppressed. Audited, naming how
+   * many findings it suppressed.
+   */
+  createFindingRule(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    input: FindingRuleInput,
+  ): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
+  /** End one of `tenantId`'s rules now. Undefined for an unknown rule. Audited. */
+  revokeFindingRule(actor: PlatformActorId, tenantId: TenantId, ruleId: string): Promise<FindingRuleEntry | undefined>;
+  /** `tenantId`'s suppress rules, newest first; `active` keeps the unexpired ones. Access-logged. */
+  listFindingRules(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    filter?: { active?: boolean; limit?: number },
+  ): Promise<FindingRuleEntry[]>;
+
+  /**
    * Meter 3's ledger (#1054): one line per model call a vertical made through the
    * platform's model host, drained here as a `model-usage` intent. Idempotent on the
    * intent id — a retried drain records nothing twice — and retention-bounded
@@ -4343,6 +4385,12 @@ export interface TelemetryPruneReport {
   opsFailures: number;
   issues: number;
   sweepRuns: number;
+  /**
+   * Findings (#1748) deleted, and open or acked ones resolved as `stale` (each audited) — see
+   * `findingRetention`. Optional so a host that predates findings still satisfies the shape.
+   */
+  findings?: number;
+  findingsStaled?: number;
 }
 
 /**
@@ -4391,7 +4439,7 @@ export const TELEMETRY_PRUNE_BATCH = 500;
 export function telemetryRetentionStatements(
   nowMs: number,
   limit: number,
-): { table: keyof TelemetryPruneReport; sql: string; params: [string, number] }[] {
+): { table: 'opsFailures' | 'issues' | 'sweepRuns'; sql: string; params: [string, number] }[] {
   const horizon = (days: number) => new Date(nowMs - days * 86_400_000).toISOString();
   const bounded = (table: string, column: string) =>
     `DELETE FROM ${table} WHERE rowid IN ` +

@@ -3468,9 +3468,9 @@ export function scopeHostContractSuite(
               ),
             });
 
-            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 3, issues: 3, sweepRuns: 3 });
-            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 2, issues: 2, sweepRuns: 2 });
-            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 0, issues: 0, sweepRuns: 0 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 3, issues: 3, sweepRuns: 3, findings: 0, findingsStaled: 0 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 2, issues: 2, sweepRuns: 2, findings: 0, findingsStaled: 0 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 0, issues: 0, sweepRuns: 0, findings: 0, findingsStaled: 0 });
             for (const b of backlog) {
               expect(await host.admin.listOpsFailures(staff, { operation: b.op })).toEqual([]);
               expect(await host.admin.listIssues(staff, { operation: b.op })).toEqual([]);
@@ -8347,6 +8347,15 @@ export function scopeHostContractSuite(
       expect(await host.admin.listEntitlements(staff, t)).toHaveLength(1);
       expect((await host.admin.listOrgs(staff, t)).filter((o) => o.id === org)).toHaveLength(1);
       expect((await host.admin.resolveIdentity(t, `oidc:reap-${t.toLowerCase()}`, 'x1'))?.principal).toBe(person);
+      // #1748: a finding and a suppress rule are the tenant's too.
+      await host.admin.recordOpsFailure({ actor: staff, operation: 'reap.finding', tenantId: t, message: 'x' });
+      await host.admin.createFindingRule(staff, t, {
+        operation: 'reap.other',
+        expiresAt: instant.parse(new Date(Date.now() + 86_400_000).toISOString()),
+        reason: 'reap fixture',
+      });
+      expect(await host.admin.listFindings(staff, { tenantId: t })).toHaveLength(1);
+      expect(await host.admin.listFindingRules(staff, t)).toHaveLength(1);
 
       // Reap only follows the reversible delete state.
       await expectRefusal(host.admin.reapTenant(staff, t), 'conflict', /not deleting/);
@@ -8368,6 +8377,8 @@ export function scopeHostContractSuite(
       expect(await host.admin.listEntitlements(staff, t)).toHaveLength(0);
       expect((await host.admin.listOrgs(staff, t)).filter((o) => o.id === org)).toHaveLength(0);
       expect(await host.admin.resolveIdentity(t, `oidc:reap-${t.toLowerCase()}`, 'x1')).toBeUndefined();
+      expect(await host.admin.listFindings(staff, { tenantId: t })).toHaveLength(0);
+      expect(await host.admin.listFindingRules(staff, t)).toHaveLength(0);
 
       // The admin log is KEPT WHOLE — the witness outlives the tenant — and records the reap.
       const log = await host.admin.auditLog(staff, { tenantId: t });

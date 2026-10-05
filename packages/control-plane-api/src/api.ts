@@ -37,6 +37,10 @@ import {
   errorCode,
   issueStatus,
   issueStatusInput,
+  findingKind,
+  findingRuleInput,
+  findingStatus,
+  findingStatusInput,
   listPageQuery,
   matchesOutboundHost,
   pageOf,
@@ -1013,6 +1017,20 @@ const issueStatusUpdate = z.object({
   status: issueStatusInput,
 });
 
+// The findings read (#1748). No cursor, for the issues read's reason: the cardinality is the
+// number of distinct shapes a tenant has. `tenantId` is forced for a confined principal.
+const findingsQuery = z.object({
+  tenantId: tenantIdSchema.optional(),
+  status: findingStatus.optional(),
+  kind: findingKind.optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+const findingStatusUpdate = z.object({ status: findingStatusInput }).strict();
+const findingRulesQuery = z.object({
+  active: z.enum(['true', 'false']).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
 /**
  * A TENANT-LEVEL role assignment under an addressed tenant (#1343) — which is
  * what a team membership is, and all this surface does.
@@ -1171,6 +1189,12 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   // grant (`tenantGrantableEntitlement`): the pin alone would let it grant itself any.
   { method: 'PUT', re: /\/tenants\/[^/]+\/entitlements\/[^/]+$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/cross-vertical\/edges$/, pin: 'path' },
+  // Findings (#1748): the tenant's inbox, its verdicts and its suppress rules. The dashboard
+  // checks WHO inside the tenant may read or act (its findings permissions) before calling.
+  { method: 'PUT', re: /\/tenants\/[^/]+\/findings\/[^/]+\/status$/, pin: 'path' },
+  { method: 'GET', re: /\/tenants\/[^/]+\/finding-rules$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+\/finding-rules$/, pin: 'path' },
+  { method: 'DELETE', re: /\/tenants\/[^/]+\/finding-rules\/[^/]+$/, pin: 'path' },
   // Scopes: provision, read, and the lifecycle acts the Data and Deployments tabs offer.
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+$/, pin: 'path' },
@@ -1231,6 +1255,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/admin-log$/, pin: 'query' },
   { method: 'GET', re: /\/ops-failures$/, pin: 'query' },
   { method: 'GET', re: /\/sweep-runs$/, pin: 'query' },
+  { method: 'GET', re: /\/findings$/, pin: 'query' },
   { method: 'GET', re: /\/service-refs$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-metrics$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-metrics-series$/, pin: 'query' },
@@ -8853,6 +8878,63 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const updated = await c.var.admin.setIssueStatus(c.get('actor'), input.fingerprint, input.status);
     if (!updated) return c.json({ error: 'unknown issue fingerprint' }, 404);
     return c.json(updated);
+  });
+
+  // -- findings (#1748): the tenant inbox, with a lifecycle and suppress rules ----
+  // Staff read the fleet; a tenant credential's tenant is forced from the principal, the
+  // /ops-failures posture. Builders never reach any of these (absent from BUILDER_ROUTES): a
+  // finding is the tenant's, not the vertical author's.
+  app.get('/findings', async (c) => {
+    const filter = findingsQuery.parse({
+      tenantId: confinedTenant(c.get('principal')) ?? c.req.query('tenantId'),
+      status: c.req.query('status'),
+      kind: c.req.query('kind'),
+      limit: c.req.query('limit'),
+    });
+    return c.json({ entries: await c.var.admin.listFindings(c.get('actor'), filter) });
+  });
+
+  // A verdict: acknowledge, resolve or reopen. Keyed on the tenant in the path as well as the id,
+  // so another tenant's finding is a 404, never a write.
+  app.put('/tenants/:tenantId/findings/:id/status', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const { status } = findingStatusUpdate.parse(await c.req.json());
+    const updated = await c.var.admin.setFindingStatus(c.get('actor'), tenantId, c.req.param('id'), status);
+    if (!updated) return c.json({ error: 'unknown finding' }, 404);
+    return c.json(updated);
+  });
+
+  app.get('/tenants/:tenantId/finding-rules', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const q = findingRulesQuery.parse({ active: c.req.query('active'), limit: c.req.query('limit') });
+    const entries = await c.var.admin.listFindingRules(c.get('actor'), tenantId, {
+      active: q.active === 'true',
+      ...(q.limit === undefined ? {} : { limit: q.limit }),
+    });
+    return c.json({ entries });
+  });
+
+  // Suppress with a rule: a scope plus an expiry, audited. 201 with the rule and how many
+  // findings it suppressed at once.
+  app.post('/tenants/:tenantId/finding-rules', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const input = findingRuleInput.parse(await c.req.json());
+    return c.json(await c.var.admin.createFindingRule(c.get('actor'), tenantId, input), 201);
+  });
+
+  app.delete('/tenants/:tenantId/finding-rules/:ruleId', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const revoked = await c.var.admin.revokeFindingRule(c.get('actor'), tenantId, c.req.param('ruleId'));
+    if (!revoked) return c.json({ error: 'unknown finding rule' }, 404);
+    return c.json(revoked);
   });
 
   // -- model usage (#1054): meter 3, the one D-30 could not compute -------------
