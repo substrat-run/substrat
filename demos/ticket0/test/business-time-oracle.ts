@@ -13,7 +13,9 @@
  *   - an endpoint the clock never shows was skipped: it moves forward by the length of the
  *     jump that skipped it — wherever that jump is, the same day or across midnight — to
  *     the slot that shows `endpoint + jump`;
- *   - `24:00` is the next date's `00:00`, placed the same way.
+ *   - `24:00` is the next date's `00:00`, placed the same way;
+ *   - a date no slot shows at all was skipped whole, and its windows are not placed: a
+ *     day that never happened was not worked.
  *
  * A window's slots run from where it opens to where it closes, and the open slots are the
  * UNION over every window of every date, taken over the slots themselves, which are
@@ -79,9 +81,12 @@ export function openInstants(schedule: BusinessSchedule, from: number, to: numbe
   };
 
   const open = new Set<number>();
+  // A date no slot shows was skipped whole (Samoa, 2011-12-30): it has no hours to open.
+  const shownDates = new Set(walls.map((w) => Math.floor(w / 1440)));
   const firstDate = Math.floor(walls[0]! / 1440) + 1;
   const lastDate = Math.floor(walls[walls.length - 1]! / 1440) - 1;
   for (let date = firstDate; date <= lastDate; date++) {
+    if (!shownDates.has(date)) continue;
     const iso = dateOf(date);
     const windows =
       schedule.exceptions?.find((e) => e.date === iso)?.windows ??

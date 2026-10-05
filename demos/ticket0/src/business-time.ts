@@ -188,11 +188,15 @@ function windowsOn(c: Compiled, day: number): readonly (readonly [number, number
  * transition — each candidate it would try IS that offset and round-trips, so its answer
  * is `local - offset`, and two lookups serve the whole day.
  */
-function resolver(c: Compiled, day: number): (minute: number) => number {
+function resolver(c: Compiled, day: number): ((minute: number) => number) | null {
   const steady = offsetAt(c.timezone, (day - 1) * DAY);
-  return steady === offsetAt(c.timezone, (day + 2) * DAY)
-    ? (minute) => day * DAY + minute * MINUTE - steady
-    : (minute) => instantOf(c.timezone, day * DAY + minute * MINUTE);
+  if (steady === offsetAt(c.timezone, (day + 2) * DAY)) return (minute) => day * DAY + minute * MINUTE - steady;
+  // A date the clock never shows has no openings at all (Codex round 6): Samoa skipped
+  // 2011-12-30 whole, and nobody worked it. Its midnight would resolve a day forward, onto
+  // a later date — which is how it is told apart from a partial gap, whose times resolve
+  // forward within reach of the day they belong to and keep being counted.
+  if (localDay(c.timezone, instantOf(c.timezone, day * DAY)) !== day) return null;
+  return (minute) => instantOf(c.timezone, day * DAY + minute * MINUTE);
 }
 
 /**
@@ -208,6 +212,7 @@ function resolver(c: Compiled, day: number): (minute: number) => number {
  * 4 of `guaranteedBusinessMs`' proof.
  */
 function openings(c: Compiled, day: number, at = resolver(c, day)): [number, number][] {
+  if (at === null) return [];
   return union(windowsOn(c, day).map(([o, cl]) => [at(o), at(cl)] as const));
 }
 
@@ -263,7 +268,12 @@ function* openTime(c: Compiled, start: number): Generator<readonly [number, numb
       if (b > start) yield [Math.max(a, start), b] as const;
     }
   };
-  for (let day = first; day < first + EXACT_DAYS; day++) {
+  // From the day BEFORE the start's: a skipped hour at the end of that day can carry its
+  // windows past midnight into the start's own day (Nuuk's Saturday 23:00–23:30 lands on
+  // Sunday), and the stream must not depend on where it was entered — a walk from Sunday
+  // 00:10 must count what a walk from Saturday counts after 00:10. A jump is at most a day,
+  // and a date with no instants has no openings, so nothing reaches from further back.
+  for (let day = first - 1; day < first + EXACT_DAYS; day++) {
     // A closed day adds nothing, and costs no lookup: everything held is final. It comes
     // from earlier days, whose wall times lie before this day's 00:00, and a jump moves a
     // time forward by at most a day (Samoa's 2011 jump was exactly one), so it ends by the
@@ -273,6 +283,7 @@ function* openTime(c: Compiled, start: number): Generator<readonly [number, numb
       continue;
     }
     const at = resolver(c, day);
+    if (at === null) continue; // a date the clock never shows: no openings; what is held waits for the next day
     yield* release(at(0));
     held = union([...held, ...openings(c, day, at)]);
   }

@@ -207,10 +207,14 @@ describe('bounds: an exact walk of at most ten years, and null beyond it', () =>
 
   it('a year-long target on a one-minute week is null, after a bounded number of zone lookups', () => {
     // Ten years of local days: 523 open Mondays at two lookups each, plus the start's.
+    // Restored in `finally`: a spy left in place records every later lookup in the file.
     const lookups = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
-    expect(addBusinessMs(sparse, start, 525_600 * MINUTE)).toBeNull();
-    expect(lookups.mock.calls.length).toBeLessThan(1_200);
-    lookups.mockRestore();
+    try {
+      expect(addBusinessMs(sparse, start, 525_600 * MINUTE)).toBeNull();
+      expect(lookups.mock.calls.length).toBeLessThan(1_200);
+    } finally {
+      lookups.mockRestore();
+    }
   });
 
   it('a desk open every hour of every day does no more than two lookups per day of the cap', () => {
@@ -221,12 +225,16 @@ describe('bounds: an exact walk of at most ten years, and null beyond it', () =>
       ),
     };
     const lookups = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
-    expect(addBusinessMs(always, start, 525_600 * MINUTE * 11)).toBeNull();
-    // Two per steady day. A transition puts three days on the slow path (each day's check
-    // spans the day before to the day after), a few more lookups for each time resolved
-    // there, its midnight included: twenty transitions.
-    expect(lookups.mock.calls.length).toBeLessThan(2 * EXACT_DAYS + 1_000);
-    lookups.mockRestore();
+    try {
+      expect(addBusinessMs(always, start, 525_600 * MINUTE * 11)).toBeNull();
+      // Two per steady day, the walk's extra day before the start's included. A transition
+      // puts three days on the slow path (each day's check spans the day before to the day
+      // after): a check that the date exists, and a few more lookups for each time resolved
+      // there, its midnight included. Twenty transitions.
+      expect(lookups.mock.calls.length).toBeLessThan(2 * EXACT_DAYS + 1_500);
+    } finally {
+      lookups.mockRestore();
+    }
   });
 
   it('a schedule with no open time, or an unknown zone, is refused rather than walked', () => {
@@ -462,7 +470,7 @@ describe('openings are one union across midnight', () => {
     expect(addBusinessMs(nuuk, from, 45 * MINUTE)).toBe(oracleAdd(nuuk, from, 45 * MINUTE, '2027-04-10T00:00:00.000Z'));
   });
 
-  it('Samoa skipped 2011-12-30: its windows land on the 31st’s, and a window ending at its 24:00 is empty', () => {
+  it('Samoa skipped 2011-12-30: a date the clock never shows has no openings', () => {
     // Every day 09:00–10:00 and 23:00–24:00. UTC−10 until 2011-12-30T10:00Z, UTC+14 after.
     const apia: BusinessSchedule = {
       timezone: 'Pacific/Apia',
@@ -478,12 +486,11 @@ describe('openings are one union across midnight', () => {
     //   29th 09:00–10:00            → 29th 19:00Z–20:00Z
     //   29th 23:00–24:00            → 30th 09:00Z–10:00Z (24:00 is the skipped 30th's 00:00,
     //                                 moved a day forward to the 31st's, 10:00Z)
-    //   30th 09:00–10:00 (skipped) → a day forward, 31st 09:00–10:00 = 30th 19:00Z–20:00Z
-    //   30th 23:00–24:00 (skipped) → opens on the 31st at 23:00 (31st 09:00Z) but closes at
-    //                                 the 31st's 00:00 (30th 10:00Z): empty
+    //   30th (never shown)          → no openings: the day did not happen
     //   31st 09:00–10:00 (UTC+14)  → 30th 19:00Z–20:00Z: the same hour as the 30th's
     //   31st 23:00–24:00            → 31st 09:00Z–10:00Z
-    // Five hours, where counting the 30th's and the 31st's mornings apart would give six.
+    // Five hours. (Counting the skipped 30th, resolved a day forward, beside the 31st would
+    // give six, or depend on where the walk began: Codex rounds 5 and 6.)
     const [from, to] = ['2011-12-29T00:00:00.000Z', '2011-12-31T12:00:00.000Z'];
     expect(businessMsBetween(apia, from, to)).toBe(5 * HOUR);
     expect(oracleBetween(apia, from, to)).toBe(5 * HOUR);
@@ -491,6 +498,23 @@ describe('openings are one union across midnight', () => {
     expect(addBusinessMs(apia, from, 4 * HOUR)).toBe('2011-12-30T20:00:00.000Z');
     expect(addBusinessMs(apia, from, 5 * HOUR)).toBe('2011-12-31T10:00:00.000Z');
     expect(businessMsBetween(apia, from, '2011-12-30T20:00:00.000Z')).toBe(4 * HOUR);
+  });
+
+  it("Codex's round-6 repro: the skipped Friday counts nothing, from wherever the walk starts", () => {
+    // Only Fridays 09:00–10:00, and Saturday 2011-12-31 closed. The skipped Friday 30th
+    // has no hours; the next Friday is 2012-01-06 (UTC+14), 09:00 local = 2012-01-05T19:00Z.
+    const apia: BusinessSchedule = {
+      timezone: 'Pacific/Apia',
+      weekly: { fri: [{ open: '09:00', close: '10:00' }] },
+      exceptions: [{ date: '2011-12-31', windows: [] }],
+    };
+    const [a, b, c] = ['2011-12-30T00:00:00.000Z', '2011-12-30T10:00:00.000Z', '2011-12-30T21:00:00.000Z'];
+    expect(businessMsBetween(apia, a, c)).toBe(0);
+    expect(businessMsBetween(apia, a, b)).toBe(0);
+    expect(businessMsBetween(apia, b, c)).toBe(0);
+    expect(oracleBetween(apia, a, c)).toBe(0);
+    expect(addBusinessMs(apia, a, HOUR)).toBe('2012-01-05T20:00:00.000Z');
+    expect(addBusinessMs(apia, b, HOUR)).toBe('2012-01-05T20:00:00.000Z');
   });
 
   it("a window the cap's last night carries past the cap is not counted: the walk cannot see the next day", () => {
@@ -526,15 +550,35 @@ describe('openings are one union across midnight', () => {
     ['Pacific/Kiritimati', 1994, 1995, 1],
     ['Pacific/Kwajalein', 1993, 1993, 1],
   ];
-  // Every day the same: windows touching midnight on both sides, one across 02:00–03:00.
-  const allWeek = (timezone: string): BusinessSchedule => {
-    const day = [
-      { open: '00:00', close: '00:45' },
-      { open: '01:30', close: '03:15' },
-      { open: '22:45', close: '23:30' },
-      { open: '23:45', close: '24:00' },
-    ];
-    return { timezone, weekly: Object.fromEntries(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].map((d) => [d, day])) };
+  // A different week for every weekday — one closed, windows touching midnight on both
+  // sides, across 01:00–04:00 where most clocks change, late evening where Nuuk's does —
+  // so a day's hours carried onto the next day's land on DIFFERENT hours (Codex round 6:
+  // identical days hid that a skipped day counted according to where the walk began).
+  const w = (open: string, close: string) => ({ open, close });
+  const VARIED: BusinessSchedule['weekly'] = {
+    mon: [w('00:00', '00:45'), w('09:00', '12:00')],
+    tue: [],
+    wed: [w('01:30', '03:15'), w('23:45', '24:00')],
+    thu: [w('22:45', '23:30'), w('23:30', '24:00')],
+    fri: [w('09:00', '10:00')],
+    sat: [w('00:15', '02:30'), w('23:00', '23:30')],
+    sun: [w('01:00', '04:00'), w('23:45', '24:00')],
+  };
+  const localDate = (timezone: string, t: number) =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(t));
+  /** The varied week, with exceptions on the transition's own date(s) and the dates beside them. */
+  const aroundTransition = (timezone: string, at: number): BusinessSchedule => {
+    const leaving = localDate(timezone, at - MINUTE);
+    const arriving = localDate(timezone, at);
+    const before = localDate(timezone, at - DAY);
+    const after = localDate(timezone, at + DAY);
+    const exceptions = new Map<string, { open: string; close: string }[]>([
+      [before, [w('00:15', '01:00'), w('22:30', '23:45')]],
+      [after, []],
+      [leaving, [w('00:00', '01:15'), w('02:00', '03:00'), w('22:45', '24:00')]],
+      [arriving, [w('00:00', '00:30'), w('01:45', '03:30'), w('23:00', '23:15')]],
+    ]);
+    return { timezone, weekly: VARIED, exceptions: [...exceptions].map(([date, windows]) => ({ date, windows })) };
   };
 
   /** The instants where the zone's offset changes in those years, found with a formatter of its own. */
@@ -556,15 +600,16 @@ describe('openings are one union across midnight', () => {
   }
 
   for (const [timezone, fromYear, toYear, fewest] of ZONES) {
-    it(`${timezone}: every transition ${fromYear}–${toYear} — oracle agreement, monotonic dues, add/between round trip`, () => {
-      const s = allWeek(timezone);
+    it(`${timezone}: every transition ${fromYear}–${toYear} — oracle, monotonic, round trip, path independence`, () => {
       const nights = transitions(timezone, fromYear, toYear);
       expect(nights.length).toBeGreaterThanOrEqual(fewest);
       for (const at of nights) {
+        const s = aroundTransition(timezone, at);
         const from = new Date(at - 2 * DAY).toISOString();
         const to = new Date(at + 2 * DAY).toISOString();
         const slots = openInstants(s, Date.parse(from), Date.parse(to));
-        expect(businessMsBetween(s, from, to)).toBe(slots.length * SLOT);
+        const total = businessMsBetween(s, from, to)!;
+        expect(total).toBe(slots.length * SLOT);
         let previous = '';
         for (let k = 1; k <= slots.length; k++) {
           const due = addBusinessMs(s, from, k * SLOT)!;
@@ -573,8 +618,18 @@ describe('openings are one union across midnight', () => {
           expect(businessMsBetween(s, from, due)).toBe(k * SLOT);
           previous = due;
         }
+        // Path independence: the open time from a to c is the same split at any b, and a
+        // walk entered at b finds the same dues as one entered at a and carried past b.
+        for (let t = Date.parse(from); t <= Date.parse(to); t += SLOT) {
+          const b = new Date(t).toISOString();
+          const ab = businessMsBetween(s, from, b)!;
+          expect(ab + businessMsBetween(s, b, to)!).toBe(total);
+          if ((t - Date.parse(from)) % (4 * SLOT) === 0) {
+            for (const x of [SLOT, 5 * SLOT]) expect(addBusinessMs(s, b, x)).toBe(addBusinessMs(s, from, ab + x));
+          }
+        }
       }
-    }, 300_000);
+    }, 600_000);
   }
 });
 
