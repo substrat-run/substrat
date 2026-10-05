@@ -7,6 +7,8 @@ import {
   connectionId,
   errorCodeOf,
   instant,
+  SCOPE_GATE_REASONS,
+  type SubstratError,
   toProblem,
   moduleId,
   orgId,
@@ -23,7 +25,7 @@ import {
   type ScopeId,
   type ScopeTable,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_RUN_DUE_AT, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_LEASE_MIN_MS, JOB_RUN_DUE_AT, JOB_ADMISSION_MISS_MAX, JOB_LEASE_TOO_SHORT_NOTE, admissionBackoffMs, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -64,6 +66,7 @@ import {
   SWITCH_HOLD_SNAPSHOT_MS,
   SWITCH_HOLDS_NAME,
 } from '../src/host.js';
+import type { DoReply } from '../src/do-reply.js';
 import { SYSTEM_DOOR_REGATES } from '../src/system-door.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
@@ -2561,6 +2564,9 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     );
     // A run that never opens the door: on a held scope it has nothing to wait for.
     h.registerJob(SCHED, 'idle', () => ({ done: true }));
+    // #2034: the same, counted, on the shortest lease a job can hold.
+    // `maxAttempts: 1`, so a claim wrongly charged an attempt would end the run before it ran (#2042 r2).
+    h.registerJob(SCHED, 'brief', () => ((briefPasses += 1), { done: true }), { maxAttempts: 1 }, { leaseMs: JOB_LEASE_MIN_MS });
     // #2028 review: a handler that KEEPS the door's refusal and throws it again on a later pass,
     // raw or (with `inStep`) as the step's wrapper the driver handed back.
     h.registerJob(
@@ -2584,6 +2590,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     return h;
   };
   let hoarded: unknown = null;
+  let briefPasses = 0;
   /** The deferral's deadline, passed: each waiting run on the scope became due just now. */
   const deadlinePassed = (s: ScopeId) =>
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
@@ -2654,12 +2661,12 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   /**
-   * #2028 review r3: one snapshot per drive, each row re-read before it runs, on the DO. Between the
-   * snapshot and the re-reads, where another writer can move rows, one picked run is moved past now and one unpicked
+   * #2028 review r3: one snapshot per drive, each row claimed before it runs (#2034), on the DO. Between the
+   * snapshot and the claims, where another writer can move rows, one picked run is moved past now and one unpicked
    * run becomes due. The moved one is skipped and runs on the next drive; the newly due one is not
    * lost, the next drive runs it; nothing runs twice.
    */
-  it('#1834: a drive acts on its one snapshot, re-reading each run before it runs it', async () => {
+  it('#1834: a drive acts on its one snapshot, claiming each run before it runs it', async () => {
     const s = await newScope();
     const start = (instance: string) =>
       jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance, payload: {} });
@@ -2689,6 +2696,213 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await setNext(b.id, null);
     expect(await h.runDueJobs(t, s, { limit: 2 })).toMatchObject({ attempted: 1, completed: 1 });
     expect(await runOf(s, b.id)).toMatchObject({ status: 'done' });
+  });
+
+  /**
+   * #2034 (#2042 review r1): a claim's answer that comes back after its lease ran out is not
+   * begun. The claim is written in the DO; before its answer reaches the drive, the lease
+   * expires and another drive takes the run over and finishes it. The late drive runs nothing.
+   */
+  it('#2034: a claim answered after its lease ran out runs nothing; another drive has the run', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    let rival: unknown = null;
+    counting.afterJobClaim = async () => {
+      counting.afterJobClaim = null;
+      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      rival = await jobDeployment().runDueJobs(t, s);
+    };
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1, completed: 0 });
+    expect(rival).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+    expect(briefPasses).toBe(1);
+    // The late claim never began its pass, so the takeover cost nothing (#2042 r2).
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', leaseOwner: null, attempts: 0, lastError: null });
+  });
+
+  it('#2034: a claim answered with too little of its lease left enters nothing, and releases the run', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'thin', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    counting.afterJobClaim = async () => {
+      counting.afterJobClaim = null;
+      // Still its own lease, but its reply left less than the margin of it: the drive does not begin.
+      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+    };
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
+    expect(briefPasses).toBe(0);
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 0, admissionMisses: 1, leaseOwner: null });
+    // Released after its admission backoff (skipped here); the next drive runs it, even on `maxAttempts: 1`.
+    await dueNow(s);
+    expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
+    expect(briefPasses).toBe(1);
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', admissionMisses: 0 });
+  });
+
+  /**
+   * #2034 (#2042 review r3, r4): BEGIN is judged by the DO's clock as it runs. Here the BEGIN RPC is
+   * held in transit until the lease is over; the DO then refuses to stamp it, whether or not a
+   * rival took the run over meanwhile.
+   */
+  it('#2034: a BEGIN delayed past its lease stamps nothing, and a rival runs the run once', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late-entry', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    let rival: unknown = null;
+    counting.beforeJobBegin = async () => {
+      counting.beforeJobBegin = null;
+      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      rival = await jobDeployment().runDueJobs(t, s);
+    };
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
+    expect(counting.jobBeginAnswers).toEqual([false]);
+    expect(rival).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+    expect(briefPasses).toBe(1);
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', attempts: 0 });
+  });
+
+  it('#2034: a BEGIN delayed past its lease with no rival is refused by the DO itself', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late-alone', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    counting.beforeJobBegin = async () => {
+      counting.beforeJobBegin = null;
+      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+    };
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
+    // Still the claim's own lease, so only the DO's own clock can have refused the stamp.
+    expect(counting.jobBeginAnswers).toEqual([false]);
+    expect(briefPasses).toBe(0);
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 0, leaseOwner: null });
+  });
+
+  /**
+   * #2034 (#2042 review r3): a run whose every claim comes back too late is not claimed forever.
+   * Each miss is counted on the row and backs the next claim off (the waits are skipped here), and
+   * at JOB_ADMISSION_MISS_MAX it fails, its lease too short for where it runs.
+   */
+  it('#2034: consecutive admission misses back off, then fail the run, lease too short', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'always-late', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    counting.afterJobClaim = () => new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+    const h = jobDeployment(counting.ns);
+    for (let miss = 1; miss < JOB_ADMISSION_MISS_MAX; miss += 1) {
+      const before = Date.now();
+      expect(await h.runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1, failed: 0 });
+      const row = await runOf(s, run.id);
+      expect(row).toMatchObject({ status: 'running', attempts: 0, admissionMisses: miss, leaseOwner: null });
+      expect(Date.parse(row!.nextAttemptAt!)).toBeGreaterThanOrEqual(before + admissionBackoffMs(miss));
+      await dueNow(s);
+    }
+    const last = await h.runDueJobs(t, s);
+    expect(last).toMatchObject({ attempted: 0, failed: 1 });
+    expect(last.errors[0]!.error).toContain(JOB_LEASE_TOO_SHORT_NOTE);
+    expect(await runOf(s, run.id)).toMatchObject({
+      status: 'failed',
+      attempts: 0,
+      admissionMisses: JOB_ADMISSION_MISS_MAX,
+      lastError: expect.stringContaining(`leaseMs ${JOB_LEASE_MIN_MS}`),
+    });
+    expect(briefPasses).toBe(0);
+  });
+
+  it('#2034: twin — a BEGIN resets the admission misses', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late-then-prompt', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    counting.afterJobClaim = () => new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+    for (let i = 0; i < 3; i += 1) {
+      await jobDeployment(counting.ns).runDueJobs(t, s);
+      await dueNow(s);
+    }
+    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 3 });
+    counting.afterJobClaim = null;
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done', admissionMisses: 0 });
+    expect(briefPasses).toBe(1);
+  });
+
+  it("#2034: the DO's miss counts relatively, by its own clock, and BEGIN clears the count", async () => {
+    const s = await newScope();
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'reset', payload: {} });
+    type Store = {
+      jobRunClaim(id: string, owner: string, leaseMs: number): Promise<unknown>;
+      jobRunBegin(id: string, owner: string, marginMs: number): Promise<boolean>;
+      jobRunMiss(id: string, owner: string, note: string): Promise<{ misses: number; failed: boolean } | null>;
+    };
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as Store;
+    const due = () => dueNow(s);
+    for (const [owner, expected] of [['a', 1], ['b', 2], ['c', 3]] as const) {
+      expect(await stub.jobRunClaim(run.id, owner, 60_000)).not.toBeNull();
+      expect(await stub.jobRunMiss(run.id, owner, 'slow')).toEqual({ misses: expected, failed: false });
+      await due();
+    }
+    // A miss by a claim that no longer holds the run writes nothing.
+    expect(await stub.jobRunMiss(run.id, 'c', 'stale')).toBeNull();
+    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 3, leaseOwner: null });
+    expect(await stub.jobRunClaim(run.id, 'd', 60_000)).not.toBeNull();
+    expect(await stub.jobRunBegin(run.id, 'd', 1_000)).toBe(true);
+    expect(await runOf(s, run.id)).toMatchObject({ admissionMisses: 0, leaseOwner: 'd' });
+    // Begun: a miss is refused — the pass is committed.
+    expect(await stub.jobRunMiss(run.id, 'd', 'late')).toBeNull();
+  });
+
+  it('#2034: twin — a claim answered in time runs its pass once', async () => {
+    const s = await newScope();
+    briefPasses = 0;
+    await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'prompt', payload: {} });
+    const counting = countingScopes(env.SCOPE);
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
+    expect(briefPasses).toBe(1);
+  });
+
+  /**
+   * #2034 (#2042 review r1): a coordinator from before leases, in a deploy's overlap with this DO,
+   * drives nothing. Its drive is replayed here call for call against the real DO: #2028's (due keys,
+   * then a re-read it runs without claiming) and #1834's predecessor's (due rows, run as read). Both
+   * re-reads are fenced, so neither drive has a row to run — with a claim holding the run, and with
+   * the run due and unclaimed.
+   */
+  it('#2034: a pre-lease coordinator drives nothing against this DO, claimed or not; the new one drives', async () => {
+    const s = await newScope();
+    type Legacy = {
+      jobRunsDueKeys(now: string, max: number): Promise<{ id: string }[]>;
+      jobRunById(id: string): Promise<{ status: string; next_attempt_at: string | null } | null>;
+      jobRunsDue(now: string, limit: number): Promise<unknown[]>;
+    };
+    const legacy = () => env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as Legacy;
+    /** What an old drive would have run: every row its own reads handed it as running and due. */
+    const oldDrive = async () => {
+      const now = new Date().toISOString();
+      const keys = await legacy().jobRunsDueKeys(now, 500);
+      let runnable = 0;
+      for (const key of keys) {
+        const row = await legacy().jobRunById(key.id);
+        if (row && row.status === 'running' && (row.next_attempt_at === null || row.next_attempt_at <= now)) runnable += 1;
+      }
+      runnable += (await legacy().jobRunsDue(now, 50)).length;
+      return { keys: keys.length, runnable };
+    };
+    const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance: 'legacy', payload: {} });
+    // Due and unclaimed: the old drive sees the key — it is the fence, not the snapshot, that stops it.
+    expect(await oldDrive()).toEqual({ keys: 1, runnable: 0 });
+    // Claimed: a new drive holds it, mid-pass.
+    const counting = countingScopes(env.SCOPE);
+    let during: unknown = null;
+    counting.afterJobClaim = async () => {
+      counting.afterJobClaim = null;
+      during = await oldDrive();
+    };
+    expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
+    expect(during).toEqual({ keys: 0, runnable: 0 });
+    expect(await runOf(s, run.id)).toMatchObject({ status: 'done' });
   });
 
   /** #2028 review: the due order is served by its own index on the DO's SQLite, with no sort step. */
@@ -3729,6 +3943,11 @@ function countingScopes(ns: DurableObjectNamespace) {
     invokes: 0,
     /** #1834 (#2028 r3): runs after a drive's due-key snapshot is read, before it returns: a concurrent drive's window. */
     afterDueKeys: null as (() => Promise<void>) | null,
+    /** #2034 (#2042 r1): runs after a claim was written in the scope, before its answer returns: a slow answer. */
+    afterJobClaim: null as (() => Promise<void>) | null,
+    /** #2034 (#2042 r3, r4): runs before a BEGIN reaches the scope (delayed in transit); then sees its answer. */
+    beforeJobBegin: null as (() => Promise<void>) | null,
+    jobBeginAnswers: [] as boolean[],
   };
   type Rpc = Record<string, (...a: unknown[]) => unknown>;
   const counted = (real: Rpc, id: DurableObjectId) =>
@@ -3753,12 +3972,19 @@ function countingScopes(ns: DurableObjectNamespace) {
                   const answer = (await real[prop]!(...args)) as { state: string; instance: string };
                   return { ...answer, instance: crypto.randomUUID() };
                 }
+                if (prop === 'jobRunBegin') {
+                  if (counts.beforeJobBegin) await counts.beforeJobBegin();
+                  const began = (await real[prop]!(...args)) as boolean;
+                  counts.jobBeginAnswers.push(began);
+                  return began;
+                }
                 const statusRead = prop === 'systemGrantsStatus' ? ++counts.statusReads : 0;
                 if (statusRead && counts.aroundStatusRead) await counts.aroundStatusRead(statusRead, 'before');
                 const answer = await real[prop]!(...args);
                 if (statusRead && counts.aroundStatusRead) await counts.aroundStatusRead(statusRead, 'after');
                 if (prop === 'switchSystemSchedules' && counts.afterMove) await counts.afterMove();
                 if (prop === 'jobRunsDueKeys' && counts.afterDueKeys) await counts.afterDueKeys();
+                if (prop === 'jobRunClaim' && counts.afterJobClaim) await counts.afterJobClaim();
                 return answer;
               },
       },
@@ -5115,5 +5341,84 @@ describe('#1856 — grantEntityLocal refuses a ref the permission graph cannot h
     await expect(probe(entity)).resolves.toMatchObject({ allowed: false });
     await host.grantEntityLocal(s, who, READ, entity);
     await expect(probe(entity)).resolves.toMatchObject({ allowed: true });
+  });
+});
+
+describe('#113 — a refusal raised inside a Durable Object keeps its code across the hop', () => {
+  const staff = platformActorId.parse(ulid());
+  const alice = principalId.parse(ulid());
+  let host: CloudflareScopeHost;
+
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(permMod);
+  });
+
+  const refusal = (p: Promise<unknown>): Promise<Error> =>
+    p.then(
+      () => {
+        throw new Error('expected a refusal');
+      },
+      (e: Error) => e,
+    );
+  /** A world of one tenant and one active scope, fresh per test. */
+  const world = async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `hop-${t.toLowerCase()}`, name: 'Hop' });
+    await host.admin.grantEntitlement(staff, t, 'perm');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    return { t, s };
+  };
+
+  it('a ControlPlaneDO write refuses with its code, and the sentence as written', async () => {
+    const { t } = await world();
+    const taken = await refusal(
+      host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: `hop-${t.toLowerCase()}`, name: 'Twin' }),
+    );
+    expect(errorCodeOf(taken)).toBe('conflict');
+    // Thrown across the hop, workerd would have written `Substrat.conflict: tenant slug …`.
+    expect(taken.message).toBe(`tenant slug 'hop-${t.toLowerCase()}' already taken by ${t} (slugs are unique)`);
+    const ghost = tenantId.parse(ulid());
+    const unknown = await refusal(host.admin.setTenantStatus(staff, ghost, 'suspended'));
+    expect(errorCodeOf(unknown)).toBe('not_found');
+    expect(unknown.message).toBe(`unknown tenant: ${ghost}`);
+  });
+
+  it('the scope gate answers a scope with no tenant record not_found, and its twin is let through', async () => {
+    const { t, s } = await world();
+    await expect(host.getScope(alice, t, s)).resolves.toBeDefined();
+    await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), async (_i, state) => {
+      state.storage.sql.exec('DELETE FROM tenants WHERE tenant_id = ?', t);
+    });
+    const orphan = await refusal(host.getScope(alice, t, s));
+    expect(errorCodeOf(orphan)).toBe('not_found');
+    expect(orphan.message).toBe(`scope has no tenant record: (${t}, ${s})`);
+    expect((orphan as SubstratError).extensions.reason).toBe(SCOPE_GATE_REASONS.unrecorded);
+  });
+
+  it('a directory method called directly still throws, for a coordinator from before the envelope', async () => {
+    const { t } = await world();
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+      setTenantName(tenantId: string, name: string): Promise<string>;
+    };
+    const ghost = tenantId.parse(ulid());
+    const legacy = await refusal(stub.setTenantName(ghost, 'Ghost'));
+    expect(legacy.message).toContain(`unknown tenant: ${ghost}`);
+    await expect(stub.setTenantName(t, 'Renamed')).resolves.toBe('Hop');
+  });
+
+  it('refuses a method name that is not on the replied list', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+      reply(method: string, args: unknown[]): Promise<DoReply<unknown>>;
+    };
+    const reply = await stub.reply('wipeDirectory', []);
+    expect(reply.failure?.message).toBe('not a replied directory method: wipeDirectory');
   });
 });

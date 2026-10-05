@@ -12,107 +12,6 @@ import { SecretBoxUnconfiguredError } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ConnectionRelayError } from './connection-relay.js';
 
-/**
- * Map a `HostAdmin` throw onto a problem document — #113 phase 4.
- *
- * **The code is read first, and the table below is what is left.** A throw that
- * declared what it is (`substratError`, `PermissionDenied`, anything carrying a
- * `Substrat.<code>` name across the RPC hop) is rendered from its own declaration by
- * `toProblem`, extensions and all. Only a throw that declared nothing reaches the
- * patterns, and each pattern that survives is one more `HostAdmin` throw site nobody
- * has typed yet — a to-do list that shortens, rather than a mapping layer that grows.
- *
- * The table names a CODE now, not a status. The status follows from the catalog, so the
- * two can no longer disagree — and the entry says what the failure IS, which is the
- * thing a reviewer can check against the throw site. `409` was never checkable.
- *
- * What has not changed, and should not:
- *
- * - The patterns are less brittle than they look. Every one is a message the CONTRACT
- *   SUITE asserts on (`/unknown tenant/`, `/illegal scope transition/`, `/already
- *   taken/`, `/not active/`), against both adapters. Changing one turns a contract test
- *   red, not just this mapping. Phase 5 migrates those assertions onto codes and this
- *   table goes with them — **one family at a time, and ten are gone.** `unknown vertical`
- *   went first; `unknown version` followed, its ten throw sites across the two adapters
- *   now saying `substratError('not_found', …)` with the contract suite asserting that
- *   code rather than the sentence, so the row had nothing left to do. `deploy refused:`
- *   is the third, and the first whose throw is not in an adapter at all: its one site
- *   is `assertSandboxContract` in this package's own `deploy.ts`, now `substratError(
- *   'forbidden', …)`, pinned by `test/deploy.test.ts` on the code. `still backs` is the
- *   fourth, and the first that fixed an operator-facing BUG rather than only removing a
- *   row: `deleteVertical` refuses twice, and the row read `/still backs \d+ scope\(s\)/`
- *   — which the archived sentence ("still backs 1 ARCHIVED scope(s) — reap or restore
- *   them first") does not match, because the word sits between the digits and `scope(s)`.
- *   Nothing else caught it, so archiving an app and then deleting its vertical answered
- *   `internal error`. Both branches are typed now and a code cannot miss a reword.
- *   `was rejected — publish a new one` is the fifth: `admitVersion`'s refusal of a rejected
- *   version, one site per adapter, now `substratError('conflict', …)` and pinned on the
- *   code by the contract suite. The sixth to eighth are the registry's own refusals, all in
- *   `host.ts` / `adapter-sqlite` and all `conflict`: `is owned by` (`registerVertical` —
- *   claim-on-first-push, a slug's owner is fixed at first push), `is auto-admitted` (the
- *   publish seam, `setVerticalListed`: prod points at a version only the AUTO admission note
- *   vouches for, so a staff admit is what it names as the way out) and `not admitted`
- *   (`bindScopeVersion` and `promoteVersion` refusing a version that is not admitted).
- *   The ninth and tenth are the last two coordinator-only registry refusals: `is already admitted`
- *   (`rejectVersion` — an admitted version may be bound, so it cannot be un-vouched) and
- *   `belongs to '` (`promoteVersion` — a version promoted through a vertical that does not own
- *   it), now `substratError('conflict', …)` at one site per adapter each.
- *   That is the shape every remaining row is waiting for: type the throws, move the
- *   suite's assertion, delete the row. A row is not removed before its throws are typed —
- *   deleting one early turns its refusal into the generic 500 below.
- *
- *   **What decides whether a row CAN go, and it is not the row:** where its throws live.
- *   Both families removed so far are thrown on the COORDINATOR — `adapter-cloudflare`'s
- *   `host.ts` and `adapter-sqlite` — where the real error object reaches this function and
- *   `errorCodeOf` reads it. A throw raised inside a Durable Object does not arrive that
- *   way. workerd folds `name` into the message and resets it, so a `substratError` thrown
- *   in `scope-do.ts` or `control-plane-do.ts` arrives here as a plain `Error` whose
- *   message has grown a `Substrat.<code>: ` prefix — the code lost, and the sentence no
- *   longer the one that was written (it lands in the SQL console UI). That is measured,
- *   not assumed: see the note on `toRpcError` in `adapter-cloudflare/src/scope-do.ts`,
- *   which also names the fix — structure must travel as a VALUE, the `{ ok, error }`
- *   envelope, not as `name`. So typing a DO-side throw today makes things WORSE, and
- *   roughly half the rows still below are waiting on that envelope rather than on
- *   somebody getting around to them. Check where a family throws before planning its row.
- * - Anything unmatched is a 500 with a GENERIC body: an unrecognised throw is, by
- *   definition, one whose message we have not reviewed for what it discloses, and this
- *   surface has cross-tenant reach.
- *
- * **ORDER IS SIGNIFICANT** — first match wins, so every specific pattern must precede
- * the general one it would otherwise be swallowed by. `cannot provision scope under
- * unknown tenant` contains `unknown tenant:`, and listing the general one first turned a
- * precondition conflict into a 404 claiming POST /scopes does not exist. That is the
- * message-matching fragility this file admits to above, caught by the test below rather
- * than by reading.
- */
-const CODE_PATTERNS: readonly [RegExp, ErrorCode][] = [
-  // Well-formed, but conflicts with current state or references something absent.
-  // The addressed collection exists; the request cannot be applied to it.
-  [/cannot provision scope under unknown tenant/, 'conflict'],
-  [/already taken/, 'conflict'],
-  [/illegal scope transition/, 'conflict'],
-  // #1738: a ScopeDO refusing a projection for a tenant other than the one it was provisioned
-  // for. Thrown inside the DO, so it arrives with the code flattened into the message.
-  [/applyProjection refused/, 'conflict'],
-  [/non-active tenant/, 'conflict'],
-  [/not active \(status:/, 'conflict'],
-  // Registry (#31): well-formed, but conflicts with a version's admission state or
-  // ownership, or needs an unacknowledged change acknowledged (the two checkpoints).
-  [/is already registered/, 'conflict'],
-  [/acknowledge it explicitly to promote/, 'conflict'],
-  // The ADDRESSED resource does not exist — including the K-3 fail-closed case
-  // where it exists under a DIFFERENT tenant and must read as absent.
-  [/unknown tenant:/, 'not_found'],
-  [/unknown scope for tenant/, 'not_found'],
-  [/unknown scope /, 'not_found'],
-  // A read-only introspection read (§5.4) for a table the scope's schema does not have.
-  [/unknown table /, 'not_found'],
-  // The SQL console's gate (#219) refused the statement — a malformed request, not a
-  // server fault. The prefix is pinned by the contract suite against both adapters.
-  [/read-only console/, 'validation_failed'],
-  [/scope has no tenant record/, 'not_found'],
-];
-
 export interface ApiError {
   status: ContentfulStatusCode;
   body: Problem;
@@ -130,6 +29,29 @@ const relayed = (status: number, message: string): ApiError => ({
   body: problemForStatus(status, message),
 });
 
+/**
+ * Map a `HostAdmin` throw onto a problem document — #113.
+ *
+ * **The code decides, and nothing else does.** A throw that declared what it is
+ * (`substratError`, `PermissionDenied`, anything carrying a `Substrat.<code>` name) is
+ * rendered from its own declaration by `toProblem`, extensions and all. There is no
+ * message table behind it any more: every `HostAdmin` refusal that used to reach one is
+ * typed at its throw site, on both adapters, and the contract suite asserts the code
+ * rather than the sentence. The last fourteen rows went together, so a reworded refusal
+ * can no longer slip past the table into the generic 500, or be caught by the wrong row.
+ *
+ * Where the throw is raised inside a Durable Object, its code does not survive being
+ * THROWN across the hop: workerd folds `name` into the message and drops every own
+ * property. Those refusals travel as a value instead — the DO answers a `DoReply`
+ * (`adapter-cloudflare/src/do-reply.ts`) or a refusal record, and the coordinator throws
+ * it, typed, on this side. So a new DO-side refusal needs that envelope as well as its
+ * code, or it arrives here untyped.
+ *
+ * Anything untyped is a 500 with a GENERIC body: an unrecognised throw is, by
+ * definition, one whose message we have not reviewed for what it discloses, and this
+ * surface has cross-tenant reach. That is also what makes a new untyped refusal VISIBLE:
+ * it answers `internal error` in its first test, rather than being quietly matched.
+ */
 export function mapError(err: unknown): ApiError {
   // A ControlPlaneError is a DELIBERATE downstream answer, not an unreviewed throw —
   // the VerticalClient wraps the vertical's own JSON status/message in it. Passing it
@@ -169,19 +91,14 @@ export function mapError(err: unknown): ApiError {
   // screen alone.
   if (err instanceof ConnectionRelayError) return relayed(err.status, err.message);
 
-  // THE CODE, FIRST (#113 phase 4). A throw that declared what it is renders from its own
-  // declaration — extensions included, so a `conflict` arrives carrying the `reason` the
-  // engine narrowed it with, and a parse failure its field list. Everything below this
-  // line is a throw site nobody has typed yet.
+  // THE CODE (#113). A throw that declared what it is renders from its own declaration —
+  // extensions included, so a `conflict` arrives carrying the `reason` the engine narrowed
+  // it with, and a parse failure its field list.
   const declared = errorCodeOf(err);
   if (declared !== undefined && err instanceof Error) {
     return { status: PROBLEM_CATALOG[declared].status as ContentfulStatusCode, body: toProblem(err) };
   }
 
-  const message = err instanceof Error ? err.message : String(err);
-  for (const [pattern, code] of CODE_PATTERNS) {
-    if (pattern.test(message)) return coded(code, message);
-  }
   // The generic 500. `toProblem` refuses to disclose the message — that is the rule, and
   // this surface has cross-tenant reach — so the body carries no `detail`. The deprecated
   // `error` duplicate is set by hand to the same constant this branch has always

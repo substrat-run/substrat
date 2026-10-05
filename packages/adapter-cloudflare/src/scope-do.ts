@@ -82,6 +82,13 @@ import {
   assertRowLimit,
   assertRowOffset,
   JOB_RUN_PATCH_SQL,
+  JOB_RUN_CLAIM_SQL,
+  JOB_RUN_RENEW_SQL,
+  JOB_RUN_BEGIN_SQL,
+  JOB_RUN_MISS_SQL,
+  JOB_RUN_MISS_SETTLE_SQL,
+  admissionMissOutcome,
+  JOB_LEASE_EXPIRED_NOTE,
   JOB_STEP_RECORD_SQL,
   DELIVERY_ERROR_REDACTION_SQL,
   REDACTED_DELIVERY_NOTE,
@@ -176,6 +183,7 @@ import {
   scheduleStateHasKind,
   VERTICAL_EVENTS_DDL,
   EXPORT_HOPS_SQL,
+  emptyImportResult,
   IMPORT_CURSORS_SQL,
   IMPORT_CURSOR_OF_SQL,
   OUTBOX_MARK_SQL,
@@ -201,10 +209,13 @@ import {
   type EntityVersionRow,
   type JobRunFilter,
   type JobRunPatch,
+  type JobRunClaim,
   type JobRunRow,
   type JobDueKey,
   type JobStepRow,
   type LiveChange,
+  type LiveNudge,
+  ancestorsWithin,
   type ScheduleStateKind,
 } from '@substrat-run/kernel';
 import type {
@@ -241,9 +252,12 @@ import {
   LIVE_SCOPE_HEADER,
   LIVE_SUBSCRIBE_PATH,
   LIVE_TENANT_HEADER,
+  LIVE_WITHIN_HEADER,
+  decodeLiveWithin,
   type LiveRefusal,
   type LiveSubscription,
 } from './live-reads.js';
+import { replyOf, type DoReply } from './do-reply.js';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql, doBuiltColumnsOf, doRedactionSql, doSpineSql } from './sql.js';
 import {
@@ -279,6 +293,7 @@ import {
   facetEvents,
   readDeadLetters,
   readLifecycleFlow,
+  readOperationSeries,
   readHistory,
   readInvocation,
   readUndrainedOutbox,
@@ -298,12 +313,14 @@ import type {
   DeadLetter,
   LifecycleFlowInput,
   LifecycleFlowResult,
+  OperationSeriesInput,
+  OperationSeriesResult,
   Page,
   LifecycleDelivery,
   ScopeLifecycle,
   StoredScopeLifecycle,
 } from '@substrat-run/contracts';
-import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
+import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
@@ -948,7 +965,7 @@ function concurrencyRefOf(
  * What a capability attachment verb (#1686) answers: its value, or its failure as DATA —
  * `invoke`'s envelope discipline, since a throw across the RPC keeps only its message.
  */
-export type CapabilityAttachmentReply<T> = { value: T; failure?: undefined } | { failure: WireFailure };
+export type CapabilityAttachmentReply<T> = DoReply<T>;
 
 function attachSubject(principal: PrincipalId, connectionId?: string): CheckSubject {
   return connectionId ? { kind: 'connection', id: connectionId } : { kind: 'principal', id: principal };
@@ -1722,15 +1739,7 @@ export function defineScopeDO(
       await this.ensureMigrations();
       return await this.queue.enqueue(async () => {
         const liveSince = this.liveHighWaterMark();
-        const result: ImportResult = {
-          delivered: 0,
-          deadLettered: 0,
-          duplicates: 0,
-          withheld: 0,
-          cursor: batch.after,
-          stale: false,
-          paused: null,
-        };
+        const result: ImportResult = emptyImportResult(batch);
         // #1706's door, for a delivery (`operation: null`), inside the queued body: the producer
         // is a declared peer with its switch on, or nothing runs and the edge pauses.
         let peerSubject: CheckSubject;
@@ -2023,6 +2032,11 @@ export function defineScopeDO(
     /** #1744: one entity's lifecycle replayed over this scope's outbox, where it lives. */
     lifecycleFlow(input: LifecycleFlowInput): LifecycleFlowResult {
       return readLifecycleFlow({ sql: doScopedSql(this.sql) }, input);
+    }
+
+    /** #1750: business volumes per bucket, counted over this scope's outbox. */
+    operationSeries(input: OperationSeriesInput): OperationSeriesResult {
+      return readOperationSeries({ sql: doScopedSql(this.sql) }, input);
     }
 
     migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {
@@ -2892,6 +2906,14 @@ export function defineScopeDO(
           status: 500,
         });
       }
+      // A narrowing the coordinator sent but this end cannot read is refused, never
+      // dropped: dropping it would open the whole scope's feed — to a vouched
+      // subscriber, one the principal's check was never going to filter (#1853).
+      const withinHeader = request.headers.get(LIVE_WITHIN_HEADER);
+      const within = withinHeader === null ? undefined : decodeLiveWithin(withinHeader);
+      if (withinHeader !== null && !within) {
+        return new Response('live reads: unreadable within narrowing', { status: 500 });
+      }
       // A subscriber arriving before the scope's migrations have run would be told
       // about events against a schema it cannot read back through. Same gate every
       // other entry point takes, for the same reason.
@@ -2917,6 +2939,7 @@ export function defineScopeDO(
         tenantId: tenantIdOf.parse(tenantId),
         scopeId: scopeIdOf.parse(scopeId),
         since: new Date().toISOString(),
+        ...(within ? { within } : {}),
       } satisfies LiveSubscription);
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -3051,6 +3074,11 @@ export function defineScopeDO(
      * to nobody. Knowing that a row exists and changed at 14:02 is information about
      * that row, so the empty payload is not what makes this safe; this is.
      *
+     * *Narrowed, when the subscription asked to be* (#1853). A socket opened `within` an
+     * entity hears only rows that reach it through live parent edges — each row's
+     * ancestors are walked once per pass, however many sockets ask. A vouched root
+     * replaces the check above, and its frames are `LiveNudge`s.
+     *
      * *Never able to fail the operation.* The write has committed and the caller has
      * its answer. A socket that has gone away mid-fan-out, or a check that cannot be
      * evaluated, costs a subscriber its live update — which it survives, because the
@@ -3083,6 +3111,28 @@ export function defineScopeDO(
       const announceable = rows.filter((r) => this.liveTargets.has(r.entity_type));
       if (announceable.length === 0) return;
 
+      /**
+       * Is a row's entity beneath a `within` root (#1853)? Each row's ancestors are walked
+       * once per pass, on first need, so a check per socket is a set lookup — every widget
+       * visitor's root is a different session, and a walk per (row, socket) would read the
+       * same parent edges once per visitor. Post-commit state: a `ctx.relink` in the same
+       * operation has already moved the edge the walk follows.
+       */
+      const parents = scopeTupleReader(this.sql);
+      const now = new Date().toISOString();
+      const ancestors = new Map<string, Promise<Set<string>>>();
+      const reaches = async (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
+        let up = ancestors.get(row.id);
+        if (!up) {
+          // A walk that cannot answer is a frame not sent — the same fail-closed rule as the check.
+          up = ancestorsWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, now).catch(
+            () => new Set<string>(),
+          );
+          ancestors.set(row.id, up);
+        }
+        return (await up).has(`${root.entityType}:${root.entityId}`);
+      };
+
       for (const ws of sockets) {
         let subscription: LiveSubscription | null = null;
         try {
@@ -3098,9 +3148,11 @@ export function defineScopeDO(
         // the frames are filtered against an explicit precondition rather than an
         // assumption about how the subscription was created.
         if (subscription.tenantId !== tenantId || subscription.scopeId !== scopeId) continue;
+        const { within } = subscription;
 
         // One context per subscriber, not per event: `ctx.check` is the expensive part
-        // and the context is only the subject it is evaluated for.
+        // and the context is only the subject it is evaluated for. Built on first use, so
+        // a vouched subscriber — whose frames the walk alone decides — never builds one.
         //
         // A frame this subscriber does not pass is NOT recorded as a denial (K-35),
         // and that is deliberate: `recordDenial` is called on a refused REQUEST, where
@@ -3111,43 +3163,57 @@ export function defineScopeDO(
         //
         // The operation name is carried anyway, for the events a fan-out cannot emit
         // but a future reader of this context might.
-        const ctx = this.operationContext(
-          subscription.principal,
-          tenantId,
-          scopeId,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          'live.subscribe',
-        );
+        let ctx: OperationContext | undefined;
+        const { principal } = subscription;
+        const context = () =>
+          (ctx ??= this.operationContext(
+            principal,
+            tenantId,
+            scopeId,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            'live.subscribe',
+          ));
         for (const row of announceable) {
-          // Non-null: `announceable` is exactly the rows whose type is in the map.
-          const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
-          let allowed = false;
-          try {
-            const decision = await ctx.check(permission, {
+          // Narrowing first: it is memoised across sockets, and a row outside the root
+          // is out whatever the principal holds.
+          if (within && !(await reaches(row, within))) continue;
+          let frame: LiveChange | LiveNudge;
+          if (within?.vouched !== undefined) {
+            // The vertical vouched for the root, so the walk above was the whole filter
+            // — and the subscriber holds no read on this row, so it is told only that
+            // something beneath its root changed. Never which row, never how.
+            frame = { kind: 'nudge', id: row.id, at: row.occurred_at };
+          } else {
+            // Non-null: `announceable` is exactly the rows whose type is in the map.
+            const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
+            let allowed = false;
+            try {
+              const decision = await context().check(permission, {
+                entityType: row.entity_type,
+                entityId: row.entity_id,
+              });
+              allowed = decision.allowed;
+            } catch {
+              // A check that cannot answer is a check that refuses. The alternative —
+              // treating an evaluator failure as an allow — turns an outage in the
+              // permission path into a disclosure, which is the one failure mode this
+              // surface must not have.
+              allowed = false;
+            }
+            if (!allowed) continue;
+            frame = {
+              kind: 'change',
+              id: row.id,
+              type: row.type,
               entityType: row.entity_type,
               entityId: row.entity_id,
-            });
-            allowed = decision.allowed;
-          } catch {
-            // A check that cannot answer is a check that refuses. The alternative —
-            // treating an evaluator failure as an allow — turns an outage in the
-            // permission path into a disclosure, which is the one failure mode this
-            // surface must not have.
-            allowed = false;
+              at: row.occurred_at,
+            };
           }
-          if (!allowed) continue;
-          const frame: LiveChange = {
-            kind: 'change',
-            id: row.id,
-            type: row.type,
-            entityType: row.entity_type,
-            entityId: row.entity_id,
-            at: row.occurred_at,
-          };
           try {
             ws.send(JSON.stringify(frame));
           } catch {
@@ -3449,15 +3515,13 @@ export function defineScopeDO(
       connectionId?: string,
     ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>> {
       await this.ensureMigrations();
-      try {
+      return replyOf(() => {
         const ctx = this.operationContext(
           principal, tenantId, scopeId, undefined, connectionId,
           undefined, undefined, undefined, 'attachments.search',
         );
-        return { value: await this.searchAttachmentsAs(ctx, term, limit) };
-      } catch (err) {
-        return { failure: toWireFailure(err) };
-      }
+        return this.searchAttachmentsAs(ctx, term, limit);
+      });
     }
 
     /**
@@ -4431,13 +4495,16 @@ export function defineScopeDO(
       return row;
     }
 
-    /** One run by id, whatever its status. */
-    async jobRunById(id: string): Promise<JobRunRow | null> {
-      return (
-        (this.sql.exec('SELECT * FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as unknown as
-          | JobRunRow
-          | undefined) ?? null
-      );
+    /**
+     * #2034 (#2042 review r1): the FENCE for a coordinator from before leases. Its only caller is
+     * that coordinator's drive, which re-reads a run here and then runs the pass WITHOUT claiming
+     * it, so a row handed back could run beside a claimed pass. It answers "no such run" to it,
+     * always: the old drive skips, and only a coordinator that claims ever drives. Nothing else
+     * reads a run through this method (the operator read is `jobRunList`). The coordinator ships in
+     * the same script as this class, so an old one exists only for a deploy's overlap.
+     */
+    async jobRunById(_id: string): Promise<JobRunRow | null> {
+      return null;
     }
 
     /** Insert a fresh run. The coordinator has already refused a non-queue-safe payload. */
@@ -4454,36 +4521,20 @@ export function defineScopeDO(
     }
 
     /**
-     * `running` runs whose backoff has elapsed, oldest first, after `afterId`.
-     *
-     * The cursor is what lets the coordinator page past runs it cannot drive: it
-     * skips any whose job this deployment does not register, and without a cursor
-     * those rows head every batch forever (`runDueJobRuns`). `afterId` is LAST, as
-     * every argument added to an RPC on this interface must be.
+     * Was: `running` runs whose backoff has elapsed, oldest first, after `afterId` — the due read of
+     * a coordinator from before #1834, which drove every row it returned. Now always empty (below).
      */
-    async jobRunsDue(now: string, limit: number, afterId?: string): Promise<JobRunRow[]> {
-      return this.sql
-        .exec(
-          // `afterId` bound TWICE rather than as `?2`: mixing anonymous and numbered
-          // parameters makes the anonymous ones resume from the highest index used,
-          // which is a footgun for the next person to add a clause. Spelled exactly
-          // as the pure adapter spells it.
-          `SELECT * FROM _substrat_job_runs
-            WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-              AND (? IS NULL OR id > ?)
-            ORDER BY id LIMIT ?`,
-          now,
-          afterId ?? null,
-          afterId ?? null,
-          limit,
-        )
-        .toArray() as unknown as JobRunRow[];
+    async jobRunsDue(_now: string, _limit: number, _afterId?: string): Promise<JobRunRow[]> {
+      // #2034 (#2042 review r1): fenced, as `jobRunById` is. Its only caller is a coordinator from
+      // before #1834, which runs every row this returns without claiming it.
+      return [];
     }
 
     /**
      * #1834: the drive's ONE snapshot of due runs — keys only, in the order they became due
-     * (`JOB_RUN_DUE_AT`, then id). Spelled exactly as the pure adapter spells it. `jobRunsDue`
-     * above stays for a coordinator a deploy behind, which still pages by id.
+     * (`JOB_RUN_DUE_AT`, then id). Spelled exactly as the pure adapter spells it. A coordinator
+     * from before #2034 reads this too, but drives nothing from it: its re-read (`jobRunById`)
+     * is fenced.
      */
     async jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]> {
       return this.sql
@@ -4531,17 +4582,97 @@ export function defineScopeDO(
      * partial update that wrote three of the four would leave a run carrying the
      * last failure's error beside the new cursor, which reads as broken forever.
      */
-    async jobRunPatch(id: string, patch: JobRunPatch): Promise<void> {
-      // A compare-and-set on `running` (#1632) — see `JOB_RUN_PATCH_SQL`.
-      this.sql.exec(
-        JOB_RUN_PATCH_SQL,
+    async jobRunPatch(id: string, patch: JobRunPatch, owner?: string): Promise<boolean> {
+      // A compare-and-set on `running` (#1632) and on the pass's lease (#2034) — see
+      // `JOB_RUN_PATCH_SQL`. `owner` is LAST and optional: a coordinator from before leases
+      // sends none, and patches the unleased rows it drives.
+      return this.sql.exec(JOB_RUN_PATCH_SQL, ...this.jobPatchArgs(id, patch, owner)).rowsWritten > 0;
+    }
+
+    private jobPatchArgs(id: string, patch: JobRunPatch, owner: string | undefined) {
+      return [
         patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
-        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
+        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id, owner ?? null,
+      ] as const;
+    }
+
+    /**
+     * #2034: the claim — `JOB_RUN_CLAIM_SQL`, and whether it took over a lease, read in ONE
+     * `transactionSync`: the single round trip is what makes it indivisible, as in
+     * `jobRunStartOrJoin`. Null = the run is no longer running and due.
+     */
+    async jobRunClaim(id: string, owner: string, leaseMs: number): Promise<JobRunClaim | null> {
+      return this.revision.transactionSync(() => {
+        // #2042 r2, r4: a takeover is charged only when the lease it takes had BEGUN its pass.
+        const before = this.sql.exec('SELECT lease_began_at FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as
+          | { lease_began_at: string | null }
+          | undefined;
+        // #2042 r4: the due test and the expiry are THIS object's clock, never the coordinator's.
+        const now = Date.now();
+        const at = new Date(now).toISOString();
+        const claimed = this.sql
+          .exec(JOB_RUN_CLAIM_SQL, owner, new Date(now + leaseMs).toISOString(), at, JOB_LEASE_EXPIRED_NOTE, id, at)
+          .toArray()[0] as unknown as JobRunRow | undefined;
+        return claimed ? { run: claimed, takeover: (before?.lease_began_at ?? null) !== null } : null;
+      });
+    }
+
+    /**
+     * #2042 r3, r4: an admission miss — `JOB_RUN_MISS_SQL` (the relative count) and
+     * `JOB_RUN_MISS_SETTLE_SQL` (the backoff or failure that count calls for) in ONE transaction,
+     * by this object's clock. Null = the claim no longer held the run, or had begun.
+     */
+    async jobRunMiss(id: string, owner: string, note: string): Promise<{ misses: number; failed: boolean } | null> {
+      return this.revision.transactionSync(() => {
+        const at = new Date(Date.now()).toISOString();
+        const counted = this.sql.exec(JOB_RUN_MISS_SQL, at, id, owner).toArray()[0] as
+          | { admission_misses: number }
+          | undefined;
+        if (!counted) return null;
+        const o = admissionMissOutcome(counted.admission_misses, at, note);
+        this.sql.exec(JOB_RUN_MISS_SETTLE_SQL, o.status, o.nextAttemptAt, o.endedAt, o.lastError, id, counted.admission_misses);
+        return { misses: counted.admission_misses, failed: o.status === 'failed' };
+      });
+    }
+
+    /**
+     * #2034 (#2042 r4): BEGIN a claimed pass — `JOB_RUN_BEGIN_SQL`, the commitment point: one
+     * compare-and-set judged by this object's clock as it runs, never by a time the coordinator
+     * computed. The coordinator invokes the handler if and only if this wrote.
+     */
+    async jobRunBegin(id: string, owner: string, marginMs: number): Promise<boolean> {
+      const now = Date.now();
+      return (
+        this.sql.exec(JOB_RUN_BEGIN_SQL, new Date(now).toISOString(), id, owner, new Date(now + marginMs).toISOString())
+          .rowsWritten > 0
       );
     }
 
-    /** One step's ledger row — a non-null `result` is what means completed. */
+    /**
+     * #2034: a step boundary — renew the pass's lease, then read the step's ledger row, in one
+     * round trip. A pass that lost its lease reads nothing and stops.
+     */
+    async jobStepBegin(
+      runId: string,
+      step: string,
+      owner: string,
+      leaseMs: number,
+    ): Promise<{ held: boolean; row: JobStepRow | null }> {
+      // #2042 r4: renewed to this object's now plus the lease.
+      const until = new Date(Date.now() + leaseMs).toISOString();
+      if (this.sql.exec(JOB_RUN_RENEW_SQL, until, runId, owner).rowsWritten === 0) return { held: false, row: null };
+      return { held: true, row: this.stepRow(runId, step) };
+    }
+
+    /**
+     * One step's ledger row — a non-null `result` is what means completed. Not called by a
+     * coordinator since #2034 (`jobStepBegin` reads it while renewing); kept for one a deploy behind.
+     */
     async jobStepRow(runId: string, step: string): Promise<JobStepRow | null> {
+      return this.stepRow(runId, step);
+    }
+
+    private stepRow(runId: string, step: string): JobStepRow | null {
       return (
         (this.sql
           .exec(
@@ -4561,9 +4692,21 @@ export function defineScopeDO(
       attempts: number,
       lastError: string | null,
       at: string,
-    ): Promise<void> {
-      // Only while the run is still `running` (#1632) — see `JOB_STEP_RECORD_SQL`.
-      this.sql.exec(JOB_STEP_RECORD_SQL, runId, step, result, attempts, lastError, at, runId);
+      owner?: string,
+      leaseMs?: number,
+    ): Promise<boolean> {
+      // Only while the run is still `running` (#1632) and the pass holds its lease (#2034),
+      // renewing the lease — to this object's now plus `leaseMs` (#2042 r4) — in the same
+      // transaction; see `JOB_STEP_RECORD_SQL`. A coordinator from before leases sends neither,
+      // holds no lease, and renews nothing.
+      return this.revision.transactionSync(() => {
+        const until = leaseMs === undefined ? null : new Date(Date.now() + leaseMs).toISOString();
+        if (until !== null && this.sql.exec(JOB_RUN_RENEW_SQL, until, runId, owner ?? null).rowsWritten === 0) {
+          return false;
+        }
+        this.sql.exec(JOB_STEP_RECORD_SQL, runId, step, result, attempts, lastError, at, runId, owner ?? null);
+        return true;
+      });
     }
 
     /**
@@ -4577,17 +4720,16 @@ export function defineScopeDO(
      * results, not to the cursor) then skips work it never did. The kernel's
      * `runJobPass` carries the full argument.
      */
-    async jobCommitPass(id: string, patch: JobRunPatch): Promise<void> {
+    async jobCommitPass(id: string, patch: JobRunPatch, owner?: string): Promise<boolean> {
       // `transactionSync` with both statements inline — NOT `await
       // this.jobRunPatch(...)` then the delete. The await is an output-gate
       // boundary, which is precisely the gap this method exists to close.
-      this.revision.transactionSync(() => {
-        this.sql.exec(
-          JOB_RUN_PATCH_SQL,
-          patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
-          patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
-        );
+      return this.revision.transactionSync(() => {
+        // #2034: the ledger goes only with a patch that applied — a stale holder's commit must
+        // not empty the ledger of the pass that took the run over.
+        if (this.sql.exec(JOB_RUN_PATCH_SQL, ...this.jobPatchArgs(id, patch, owner)).rowsWritten === 0) return false;
         this.sql.exec('DELETE FROM _substrat_job_steps WHERE run_id = ?', id);
+        return true;
       });
     }
 
@@ -5187,8 +5329,22 @@ export function defineScopeDO(
       }));
     }
 
-    /** A bounded page of one table. Unknown table names throw — never queried blind. */
+    /** A bounded page of one table. Unknown table names throw — never queried blind. Kept for a
+     *  coordinator from before #113; the current one calls `introspectTableReply`. */
     introspectTable(table: string, limit: number, offset: number): ScopeTablePage {
+      try {
+        return this.tablePage(table, limit, offset);
+      } catch (e) {
+        throw toRpcError(e);
+      }
+    }
+
+    /** `introspectTable`, its refusal answered as DATA so its code survives the hop (#113). */
+    introspectTableReply(table: string, limit: number, offset: number): Promise<DoReply<ScopeTablePage>> {
+      return replyOf(() => this.tablePage(table, limit, offset));
+    }
+
+    private tablePage(table: string, limit: number, offset: number): ScopeTablePage {
       const known = new Set(
         (
           this.sql
@@ -5196,7 +5352,7 @@ export function defineScopeDO(
             .toArray() as unknown as { name: string }[]
         ).map((r) => r.name),
       );
-      if (!known.has(table)) throw new Error(`unknown table '${table}'`);
+      if (!known.has(table)) throw substratError('not_found', `unknown table '${table}'`);
       // The ceiling clamps; a bound SQLite would misread (NaN, non-finite, fractional,
       // negative) is refused instead of reaching LIMIT / OFFSET (#1632).
       const l = Math.min(assertRowLimit('limit', limit), SCOPE_TABLE_PAGE_MAX);
@@ -5218,8 +5374,22 @@ export function defineScopeDO(
      * (no sqlite3_stmt_readonly analogue), a transaction that ALWAYS rolls back — a
      * statement the gate misclassified still cannot persist a write. Rows are capped
      * at SCOPE_QUERY_ROW_MAX with `truncated` set, never an error.
+     * Kept for a coordinator from before #113; the current one calls `introspectQueryReply`.
      */
     async introspectQuery(sql: string): Promise<ScopeQueryResult> {
+      try {
+        return await this.readOnlyQuery(sql);
+      } catch (e) {
+        throw toRpcError(e);
+      }
+    }
+
+    /** `introspectQuery`, its refusal answered as DATA so its code survives the hop (#113). */
+    introspectQueryReply(sql: string): Promise<DoReply<ScopeQueryResult>> {
+      return replyOf(() => this.readOnlyQuery(sql));
+    }
+
+    private async readOnlyQuery(sql: string): Promise<ScopeQueryResult> {
       const stmt = assertReadOnlyQuery(sql);
       let result: ScopeQueryResult | undefined;
       const rollback = new Error('read-only console rollback');
@@ -5241,7 +5411,7 @@ export function defineScopeDO(
           throw rollback;
         });
       } catch (e) {
-        if (e !== rollback) throw toRpcError(e);
+        if (e !== rollback) throw e;
       }
       return result!;
     }
@@ -5384,6 +5554,12 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
+        // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN lease_owner TEXT',
+        // #2042 r2, r4: whether the holder BEGAN its pass. NULL for any lease already there: free to take over.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN lease_began_at TEXT',
+        // #2042 r3: consecutive admission misses. NULL = none, right for every run already there.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN admission_misses INTEGER',
         // Executor retry state (#100). The defaults read as "terminal", which is
         // right for every row already there: each is a completed delivery or a
         // consumer dead-letter.
@@ -6904,6 +7080,11 @@ export function defineScopeDO(
           source,
         );
       });
+    }
+
+    /** `applyProjection`, its refusal answered as DATA so its code survives the hop (#113). */
+    applyProjectionReply(...args: Parameters<ScopeDO['applyProjection']>): Promise<DoReply<SwitchedOff[]>> {
+      return replyOf(() => this.applyProjection(...args));
     }
 
     /**

@@ -1,5 +1,41 @@
 # @substrat-run/dashboard
 
+## 0.41.0
+
+### Minor Changes
+
+- b2f8c86: An email address counts as an identifier only when the issuer verified it, and this is now the default (#1359).
+
+  - New in `@substrat-run/oidc-rp`: `identifyEmail(env, user)`. It returns `{ email }` when `emailVerified` is `true`. Otherwise it returns `{ email: null, refused }`, where `refused` is `'unverified'` (the issuer said `false`), `'unasserted'` (no claim) or `'no-email'`. `emailRefusalMessage(refused)` gives the sentence to show the person, and `emailRefusalOf(user)` returns the reason without applying the break-glass. `sessionClaims` and `userFromClaims` are now exported: they are the session's own claim encoder and decoder, for code that carries a session inside a token of its own.
+  - The Console's staff roster, the builder studio's staff check, and the Dashboard's invite accept, owner-row heal and support identity all use `identifyEmail`. They need no configuration.
+  - A new team's owner row in the Dashboard stores the owner's address only if it is verified. Otherwise the row's email is empty and the Members view shows "address not verified". The row is keyed by principal, so membership itself is unaffected.
+  - A sign-in whose address is refused still works. It just isn't anyone by address. The control plane's 401 now says why: "sign in again" for a session that carries no claim, and "verify your address" for one the issuer marked unverified.
+  - `OIDC_REQUIRE_EMAIL_VERIFIED` is removed, since the rule it switched on is now the default. The only way to turn it off is `OIDC_ALLOW_UNVERIFIED_EMAIL="true"`, a deployment-wide variable. While it is set, every isolate logs a warning the first time it reads the setting, and every admitted address is logged by `sub`.
+  - The CLI login broker now carries `email_verified` into the session it gives the CLI, using that encoder and decoder. Before this, a CLI session never had the claim.
+  - Sessions signed in before the claim existed carry none, so they are refused until the person signs in again. Sessions last at most seven days.
+
+### Patch Changes
+
+- Updated dependencies [b2f8c86]
+- Updated dependencies [7559e1a]
+- Updated dependencies [21055d5]
+- Updated dependencies [b641075]
+- Updated dependencies [7adf5c7]
+- Updated dependencies [1c411fc]
+- Updated dependencies [fcb587d]
+  - @substrat-run/oidc-rp@0.10.0
+  - @substrat-run/contracts@0.137.0
+  - @substrat-run/kernel@0.137.0
+  - @substrat-run/control-plane-api@0.137.0
+  - @substrat-run/adapter-cloudflare@0.137.0
+  - @substrat-run/engine-protocol@0.13.22
+  - @substrat-run/connector-fortnox@0.4.39
+  - @substrat-run/demo-callout@0.3.55
+  - @substrat-run/engine-invites@0.9.14
+  - @substrat-run/engine-invoicing@0.11.21
+  - @substrat-run/engine-workorder@0.12.21
+  - @substrat-run/control-plane-client@0.1.2
+
 ## 0.40.0
 
 ### Minor Changes

@@ -145,6 +145,8 @@ import type {
   DeadLetter,
   LifecycleFlowInput,
   LifecycleFlowResult,
+  OperationSeriesInput,
+  OperationSeriesResult,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -2894,6 +2896,19 @@ export interface HostAdmin {
   ): Promise<LifecycleFlowResult>;
 
   /**
+   * Calls per `(entityType, operation)` per time bucket over the scope's outbox (#1750) —
+   * `readOperationSeries`, hoisted: the business volumes Pulse draws. The caller passes
+   * the pairs (from the running version's declared lifecycles); the scope holds no model.
+   * Reads no payload; logged like every read here.
+   */
+  operationSeries(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: OperationSeriesInput,
+  ): Promise<OperationSeriesResult>;
+
+  /**
    * One read-only SQL statement against the scope's database — the console the two
    * table-shaped reads deliberately weren't (#219). User SQL DOES reach the DB here,
    * so read-only-ness is enforced per statement instead of by construction: the
@@ -5083,6 +5098,11 @@ export interface ScopeHost {
    * and this driver's contract in `job-run.ts`. `retry` is the DEFAULT policy for
    * the job's steps; a step may pass its own.
    *
+   * `options.leaseMs` (#2034) is how long one pass holds its run without reaching a
+   * step boundary, which renews it — default `JOB_LEASE_MS`. Past it, the run is due
+   * again and the next drive takes it over, counting the silent pass as a failed
+   * attempt. A job whose pass may go longer than that between two steps says so here.
+   *
    * The fourth driver, and a SIBLING of the three that already exist rather than a
    * widening of any of them. An executor retries one delivery whole; a schedule
    * fires one operation that must finish; the platform sweep does a pass of
@@ -5093,6 +5113,7 @@ export interface ScopeHost {
     name: string,
     handler: JobHandler,
     retry?: ExecutorRetryPolicy,
+    options?: { leaseMs?: number },
   ): void;
 
   /**
@@ -5137,12 +5158,10 @@ export interface ScopeHost {
    * grant gate here would STALL it silently rather than refuse it. The authority it
    * exercises is checked where it is used, inside the operations its steps invoke.
    *
-   * **One driver per scope at a time**, and that is a bound the caller holds, not one
-   * this enforces — there is no lease. Coalescing stops duplicate RUNS; two concurrent
-   * calls of THIS would advance the same run together. Every topology the driver is
-   * built for gives a scope one tick (the platform sweep does one call per scope, a
-   * scope DO's alarm fires for its own), so the bound holds by construction; the full
-   * argument, and what an overlap would actually cost, is in `job-run.ts`.
+   * **Overlapping calls are safe** (#2034): each run is CLAIMED before its pass, with a
+   * lease the pass renews at every step boundary, so two calls on one scope never run
+   * one run's handler together. A run whose pass died is taken over once its lease
+   * expires. The full argument is in `job-run.ts`.
    */
   runDueJobs(
     tenantId: TenantId,
@@ -5317,6 +5336,11 @@ export interface ScopeHost {
  * changed at 14:02 is information about that row, so "the body was empty" is not a
  * defence: the filter runs whether or not there is a payload to withhold.
  *
+ * A subscription may be narrowed `within` one entity (#1853), which only removes frames;
+ * the one exception to the per-principal check is a `within` the vertical built with
+ * `vouchedWithin`, whose subscriber is sent bare `LiveNudge` frames and nothing that
+ * names an entity.
+ *
  * **Generic over the runtime's request and response, because the kernel names
  * neither.** This package has one dependency and no DOM or workers lib
  * (`docs/architecture/dependency-policy.md`), which is why `FetchLike` above describes
@@ -5351,7 +5375,72 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
     principal: PrincipalId;
     /** The upgrade request as it arrived, carried whole so the host reads its own headers. */
     request: Req;
+    /**
+     * Narrow the feed to one entity and what hangs beneath it (#1853).
+     *
+     * A frame is then delivered only if its entity IS this one or reaches it upward
+     * through live declared `parent` edges (what `ctx.link` / `ctx.relink` write) — the
+     * walk `ctx.check` makes, rooted here instead of at a grant.
+     *
+     * - **An `EntityRef` narrows and nothing else.** The principal's own per-frame
+     *   `liveTargets` check still runs; `within` is ANDed with it, so it can only take
+     *   frames away. A screen watching one conversation passes it to stop hearing the
+     *   rest of the desk.
+     * - **A `vouchedWithin(…)` value replaces the principal's check.** For a subscriber
+     *   confined by something other than a grant — a widget visitor holding a session
+     *   token the vertical has just redeemed. The vertical asserts access to the root,
+     *   the same trust it already extends in naming `principal`, and the scope's walk is
+     *   the whole filter. Such a subscriber receives `LiveNudge` frames only, which name
+     *   no event type and no entity.
+     */
+    within?: EntityRef | VouchedWithin;
   }): Promise<Res>;
+}
+
+/** The brand only `vouchedWithin` can apply — a literal cannot type-check as one. */
+declare const vouchedBrand: unique symbol;
+const VOUCHED = Symbol('substrat.live.vouched-within');
+
+/**
+ * A `within` root the VERTICAL vouches the subscriber may watch, in place of the
+ * principal's own grants (#1853). Built only by `vouchedWithin`.
+ */
+export interface VouchedWithin {
+  readonly [vouchedBrand]: true;
+  readonly entity: EntityRef;
+  /** Why the vertical vouches — what it checked. Required, and kept on the subscription. */
+  readonly because: string;
+}
+
+/**
+ * Vouch that the subscriber may watch `entity` and everything beneath it, though the
+ * principal it subscribes as holds no read on it.
+ *
+ * The one way to reach the replacing mode, so every use is greppable and none is an
+ * accident: an object literal is refused by the type checker, and anything not built
+ * here is refused by the host at run time (`isVouchedWithin`). Call it only after the
+ * vertical itself has proven access — for ticket0's widget, by redeeming the session
+ * token for the session it names.
+ *
+ * What it costs the subscriber is detail: a vouched feed carries `LiveNudge` frames, so
+ * the scope never tells it which entity changed or how. Root it at an entity whose
+ * subtree holds only what the subscriber may see — the walk is the whole filter.
+ */
+export function vouchedWithin(entity: EntityRef, opts: { because: string }): VouchedWithin {
+  if (!entity?.entityType || !entity?.entityId) {
+    throw substratError('validation_failed', 'vouchedWithin needs an entity with a type and an id');
+  }
+  if (!opts?.because?.trim()) {
+    throw substratError('validation_failed', 'vouchedWithin needs a reason: what the vertical checked');
+  }
+  const value = { entity: { entityType: entity.entityType, entityId: entity.entityId }, because: opts.because };
+  Object.defineProperty(value, VOUCHED, { value: true, enumerable: false });
+  return Object.freeze(value) as unknown as VouchedWithin;
+}
+
+/** Was this value built by `vouchedWithin`? A host asks before it drops the principal's check. */
+export function isVouchedWithin(value: unknown): value is VouchedWithin {
+  return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[VOUCHED] === true;
 }
 
 /**
@@ -5422,6 +5511,26 @@ export interface LiveChange {
   /** When the event was emitted (ISO 8601), i.e. the emitting operation's instant. */
   readonly at: string;
 }
+
+/**
+ * What a vouched subscriber is told (#1853): something beneath its root changed, and
+ * nothing else.
+ *
+ * No event type and no entity, deliberately. A vouched subscriber holds no read on the
+ * entities its frames are about — the vertical vouched for the ROOT, and the scope
+ * cannot know which rows under it the vertical's own read would show. Naming the type
+ * or the id would tell it what it never asked to read. The client re-reads, as it does
+ * on a `LiveChange`.
+ */
+export interface LiveNudge {
+  readonly kind: 'nudge';
+  /** The event id, as on `LiveChange` — for ordering and de-duplication only. */
+  readonly id: string;
+  readonly at: string;
+}
+
+/** Any frame a live read sends. */
+export type LiveFrame = LiveChange | LiveNudge;
 
 /**
  * Refuse a cutoff in the future — at the HostAdmin boundary, not only at the HTTP door.

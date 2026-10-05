@@ -136,7 +136,8 @@ export const PROBLEM_EXTENSIONS = {
     entity: entityRef.optional(),
   }),
   forbidden: z.object({ reason: z.string().min(1).optional() }),
-  not_found: z.strictObject({}),
+  /** `reason` narrows a refusal one surface answers differently: `scope_unrecorded` (#113). */
+  not_found: z.strictObject({ reason: z.string().min(1).optional() }),
   conflict: z.object({ reason: z.string().min(1).optional() }),
   validation_failed: z.object({
     errors: z.array(validationIssue).optional(),
@@ -167,6 +168,24 @@ export const PROBLEM_EXTENSIONS = {
   unavailable: z.object({ reason: z.string().min(1).optional() }),
   internal: z.strictObject({}),
 } as const satisfies Record<ErrorCode, z.ZodType>;
+
+/**
+ * The scope gate's refusals (#113): a tenant or scope that is not active (`conflict`), and a
+ * scope with no tenant record (`not_found`). The control plane answers them as themselves, for
+ * the operator; a vertical's public edge answers both as the router does for a hostname whose
+ * scope is not serving (`NO_APPLICATION_DETAIL`), so a caller cannot tell a request that raced
+ * a suspension from one the router refused.
+ */
+export const SCOPE_GATE_REASONS = { notActive: 'scope_not_active', unrecorded: 'scope_unrecorded' } as const;
+
+/** What the router answers, with a 404, for a hostname with no serving scope behind it. */
+export const NO_APPLICATION_DETAIL = 'No application is configured for this hostname.';
+
+/** Is this a scope-gate refusal (`SCOPE_GATE_REASONS`)? Read by shape, like `errorCodeOf`. */
+export function isScopeGateRefusal(err: unknown): boolean {
+  const reason = (err as SubstratError | null)?.extensions?.reason;
+  return reason === SCOPE_GATE_REASONS.notActive || reason === SCOPE_GATE_REASONS.unrecorded;
+}
 
 /** The extensions legal on one code, as a type — what `substratError` accepts. */
 export type ExtensionsFor<C extends ErrorCode> = z.infer<(typeof PROBLEM_EXTENSIONS)[C]>;
@@ -521,10 +540,11 @@ export function problemForStatus(status: number, detail?: string, instance?: str
 /**
  * The statuses an operation can actually answer with today, for the emitted document.
  *
- * `precondition_failed` (412) and `rate_limited` (429) are declared in the taxonomy
- * so that `If-Match` (#129) and rate limiting (#130) add no vocabulary when they
- * land — but nothing raises them yet, and documenting a failure that cannot occur is
- * worse than documenting none. They join this list with the features that raise them.
+ * `precondition_failed` (412) was declared in the taxonomy so that `If-Match` (#129)
+ * added no vocabulary when it landed, and it is documented per operation, only where a
+ * precondition can be sent. `rate_limited` (429) joined this list with the feature that
+ * raises it (#130): the router counts every hosted request before any operation runs, so
+ * every operation can answer it.
  *
  * This narrows the RFC's §6 Q1 leaning ("emit the full set") on the same reasoning
  * that motivated the question.
@@ -536,6 +556,7 @@ export const DOCUMENTED_ERROR_CODES: readonly ErrorCode[] = [
   'forbidden',
   'not_found',
   'conflict',
+  'rate_limited',
   'unavailable',
   'internal',
 ];

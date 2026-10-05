@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { problemFor } from '@substrat-run/vertical-host';
 import worker, { type Env } from '../src/worker.js';
 
 /**
@@ -411,6 +413,32 @@ describe('router', () => {
     expect(await response.text()).toBe('No application is configured for this hostname.');
     expect(dispatch).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('a vertical answers a scope-gate refusal exactly as this router answers a non-serving hostname (#113)', async () => {
+    // The race the two must agree on: the router read the directory while the scope still served,
+    // and the vertical's gate met it suspended (or unrecorded). Both are the public edge.
+    const readRoute = vi.fn().mockResolvedValue(undefined);
+    const env = {
+      ROUTER_SECRET: SECRET,
+      CONTROL_PLANE: { idFromName: () => 'control-plane', get: () => ({ readRoute }) },
+      DISPATCH: { get: vi.fn() },
+    } as unknown as Env;
+    const routed = await worker.fetch(get('https://held.example.com/'), env);
+    const detail = await routed.text();
+    const refusals = [
+      substratError('conflict', 'scope not active (status: suspended): 01S', { reason: SCOPE_GATE_REASONS.notActive }),
+      substratError('conflict', 'tenant not active (status: deleting): 01T', { reason: SCOPE_GATE_REASONS.notActive }),
+      substratError('not_found', 'scope has no tenant record: (01T, 01S)', { reason: SCOPE_GATE_REASONS.unrecorded }),
+    ];
+    for (const refusal of refusals) {
+      const { status, body } = problemFor(refusal);
+      expect(status).toBe(routed.status);
+      expect(body.code).toBe('not_found');
+      expect(body.detail).toBe(detail);
+      // Nothing of the refusal's own sentence (the status word, the ids) reaches the caller.
+      expect(JSON.stringify(body)).not.toMatch(/suspended|deleting|01S|01T|tenant record/);
+    }
   });
 
   it('404s an unknown hostname', async () => {

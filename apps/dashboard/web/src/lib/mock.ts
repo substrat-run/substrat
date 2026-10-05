@@ -1,4 +1,4 @@
-import type { AppHealthRow, AppMetricsView, AppOverlays, BoundScopesView, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHealthRow, AppMetricsView, BusinessVolumesView, AppOverlays, BoundScopesView, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -647,6 +647,30 @@ export const MOCK_TEAM_TRAFFIC: TeamTrafficSeries = (() => {
     ],
     bucketMinutes: 60,
     available: true,
+  };
+})();
+
+/**
+ * Pulse's business rows (#1750) for the busier mock app: one move that opens an order and
+ * two that end one, on `MOCK_TEAM_TRAFFIC`'s hourly axis — with a quiet day, a busier one,
+ * and a move that happened only yesterday, so every reading of the change column shows.
+ */
+export const MOCK_BUSINESS_VOLUMES: BusinessVolumesView = (() => {
+  const scopeId = '01J2Q8Z3V9K4W7X2M5N6P789AB';
+  const axis = MOCK_TEAM_TRAFFIC.series[0]!.buckets.map((b) => b.start);
+  const row = (state: string, terminal: boolean, fromInitial: boolean, yesterday: number, shape: (i: number) => number) => {
+    const buckets = axis.map((start, i) => ({ start, count: shape(i) }));
+    return { scopeId, entityType: 'order', state, terminal, fromInitial, operations: [`shop/${state}`], today: buckets.reduce((n, b) => n + b.count, 0), yesterday, buckets };
+  };
+  return {
+    window: { since: new Date(Date.now() - 24 * 3600e3).toISOString(), until: new Date().toISOString() },
+    bucketMinutes: 60,
+    rows: [
+      row('shipped', false, true, 31, (i) => (i > 7 && i < 19 ? 2 + ((i * 5) % 4) : 0)),
+      row('closed', true, false, 12, (i) => (i > 9 && i < 20 && i % 2 === 0 ? 3 : 0)),
+      row('cancelled', true, false, 2, () => 0),
+    ],
+    apps: [{ scopeId, unavailable: null }, { scopeId: MOCK_INSTALLED_APP_SCOPE, unavailable: 'no-moves' }],
   };
 })();
 

@@ -38,6 +38,7 @@ import {
 import type { DenialFilter } from './denial.js';
 import type { CapabilityFilter } from './capability.js';
 import type { LifecycleFlowInput } from './lifecycle-flow.js';
+import type { OperationSeriesInput } from './operation-series.js';
 import { errorCode } from './errors.js';
 import { impersonationStamp } from './impersonation.js';
 import { platformRequestFailureOrigin } from './platform-request.js';
@@ -635,6 +636,7 @@ export const delegatedReadMethod = z.enum([
   'invocationEvents',
   'deadLetters',
   'lifecycleFlow',
+  'operationSeries',
 ]);
 export type DelegatedReadMethod = z.infer<typeof delegatedReadMethod>;
 
@@ -653,6 +655,7 @@ export interface DelegatedReadInput {
   invocationEvents: InvocationEventsInput;
   deadLetters: DeadLettersInput;
   lifecycleFlow: LifecycleFlowInput;
+  operationSeries: OperationSeriesInput;
 }
 
 /**
@@ -705,6 +708,13 @@ export const delegatedReadParams: {
   // The entity and the window — not the declaration, which is the caller's copy of the
   // running model and would crowd everything else out of the 500-char cut the adapters make.
   lifecycleFlow: (i) => ({ entityType: i.entityType, since: i.since, until: i.until }),
+  // The window and which entities were counted — not every operation name, which would
+  // crowd the window out of the same 500-char cut.
+  operationSeries: (i) => ({
+    entityTypes: [...new Set(i.moves.map((m) => m.entityType))],
+    since: i.since,
+    until: i.until,
+  }),
 };
 
 /**

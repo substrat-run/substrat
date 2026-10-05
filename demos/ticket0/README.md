@@ -97,14 +97,19 @@ one. The session lives in `localStorage`; a token that no longer names
 anything (reaped session, reseeded desk) is thrown away and replaced silently rather than
 shown to the visitor as an id.
 
-Replies arrive by **polling** — 1.5s while an answer is outstanding, 10s idle, and not at
-all in a hidden tab. That is a stopgap and `widget.js` says so. The inbox and the
-conversation view are pushed to over the desk's live-read WebSocket (`GET /api/live`,
-`mountLiveReads` from `@substrat-run/vertical-host`, #938): a frame names what changed and the screen re-reads it, with the
-poll kept as a slow floor. The widget cannot subscribe yet, because a visitor has no principal
-for the scope to filter frames against, only a session token. A feed narrowed to one
-conversation is platform work (#1853). On the dev server the route answers 501, since the
-node host has no live reads, and every screen polls as before.
+The inbox and the conversation view are pushed to over the desk's live-read WebSocket
+(`GET /api/live`, `mountLiveReads` from `@substrat-run/vertical-host`, #938): a frame names
+what changed and the screen re-reads it, with the poll kept as a slow floor.
+
+The widget has a feed of its own (`GET /widget/sessions/:id/live`, #1853). A visitor has no
+principal, so the desk proves the session token (`ticket0/widget-watch`) and subscribes with
+`vouchedWithin`, rooted at the visitor's **session**. Each public message on the session's
+conversation is linked under the session, and nothing else is, so an internal note, a draft
+or another visitor's chat sends nothing at all. What does arrive is a bare nudge, and the
+widget re-reads its thread. Polling stays underneath: 1.5s while an answer is outstanding and
+10s idle when there is no socket, a 60s floor when there is one, and nothing in a hidden tab.
+On the dev server both live routes answer 501, since the node host has no live reads, and
+every screen polls as before.
 
 The script is served by the dev server from `src/server.ts` with
 `access-control-allow-origin: *` — the script is public, the API behind it is not. A
@@ -380,7 +385,7 @@ Three things differ from `pnpm dev`, and all three live in `worker.ts`:
 
 Everything else is shared code: the `/api` table comes from `spec/model.ts` through
 `src/routes.ts`, and the public `/widget/*` surface is the same
-`harness/widget-surface.ts` both hosts mount — itself now three routes on
+`harness/widget-surface.ts` both hosts mount — its routes sit on
 `vertical-host`'s `mountPublicSurface`, which owns the unauthenticated mount and the
 CORS gate for every vertical that needs one (#936).
 

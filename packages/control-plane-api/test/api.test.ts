@@ -750,6 +750,7 @@ describe('control-plane API', () => {
       invocationEvents: async () => ({ events: [], truncated: false }),
       deadLetters: async () => ({ entries: [], nextCursor: null }),
       lifecycleFlow: async () => ({ observation: { events: 0 } }),
+      operationSeries: async () => ({ series: [] }),
     } as unknown as VerticalClient;
     const delegated = createControlPlaneApi({
       host,
@@ -788,6 +789,20 @@ describe('control-plane API', () => {
             since: '2026-09-01T00:00:00.000Z',
             until: '2026-09-08T00:00:00.000Z',
             stuckLimit: 3,
+          }),
+        },
+      },
+      {
+        // The operation names and the bucket size are what the row must NOT carry.
+        method: 'operationSeries',
+        path: (s) => `/tenants/${t1}/scopes/${s}/operation-series`,
+        init: {
+          method: 'POST',
+          body: JSON.stringify({
+            moves: [{ entityType: 'widget', operation: 'w/go' }],
+            since: '2026-09-01T00:00:00.000Z',
+            until: '2026-09-02T00:00:00.000Z',
+            bucketMinutes: 30,
           }),
         },
       },

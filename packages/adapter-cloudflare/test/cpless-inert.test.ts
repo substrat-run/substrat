@@ -749,8 +749,9 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
       const roles = () => sql(s, 'SELECT tenant_id, role_key FROM _substrat_roles ORDER BY tenant_id, role_key');
       const before = await roles();
       const e = await outcome(hostFor().projectRolesLocal(u, s, [{ key: 'office-admin', permissions: [USE], source: 'vertical' }]));
-      // Across the Durable Object boundary the code survives only in the message.
-      expect(String((e as Error).message)).toContain('Substrat.conflict');
+      // The code crosses the Durable Object boundary as data (#113), and the sentence as written.
+      expect(errorCodeOf(e)).toBe('conflict');
+      expect(String((e as Error).message)).toMatch(/^applyProjection refused: /);
       expect(String((e as Error).message)).toContain(`none for ${u}`);
       expect(await receiptOf(s)).toBeNull();
       expect(await roles()).toEqual(before);
@@ -764,7 +765,7 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
           ownerRoleKey: 'office-admin',
         }),
       );
-      expect(String((reprovision as Error).message)).toContain('Substrat.conflict');
+      expect(errorCodeOf(reprovision)).toBe('conflict');
       expect(await receiptOf(s)).toBeNull();
       // The twin: its own tenant's projection back-fills it.
       await hostFor().projectRolesLocal(t, s, [{ key: 'office-admin', permissions: [USE], source: 'vertical' }]);

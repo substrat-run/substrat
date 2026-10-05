@@ -456,5 +456,72 @@ export function impersonationContractSuite(
         ).rejects.toThrow(/unknown impersonation session/);
       });
     });
+
+    // -- copies of a scope (#2004) --------------------------------------------
+
+    /**
+     * A copy keeps the source's history and none of its power. Sessions live in the directory,
+     * never in a scope, so no dump carries one; the stamps the session left on the scope's rows
+     * are history and travel. A live session opened on the source is refused at every copy of it,
+     * by the (tenant, scope) the session names, and still honoured at the source after a return.
+     */
+    describe('a copy of the scope never honours its live session (#2004)', () => {
+      let source: ScopeId;
+      let session: ImpersonationSession;
+
+      beforeAll(async () => {
+        source = await freshScope();
+        session = await openSession(source, { mode: 'write' });
+        await (await host.getImpersonatedScope(session.id, t1, source)).invoke('perm/authorized-emit', {
+          permission: PERM_USE,
+        });
+      });
+
+      /** The live session is refused at `copy`, and the stamp it left is there as history. */
+      const refusedAt = async (copy: ScopeId) => {
+        await expect(host.getImpersonatedScope(session.id, t1, copy)).rejects.toThrow(/is for \(/);
+        const outbox = await (await host.getScope(anna, t1, copy)).invoke<OutboxRow[]>('perm/read-outbox');
+        const acted = outbox.find((e) => e.type === 'perm.acted');
+        expect(JSON.parse(acted!.impersonation!)).toEqual({ session: session.id, by: staff });
+      };
+      const honouredAtSource = async () => {
+        const stub = await host.getImpersonatedScope(session.id, t1, source);
+        await expect(stub.invoke('perm/whoami')).resolves.toBe(anna);
+      };
+
+      it('the dump a copy is made from carries no session, only the stamps', async () => {
+        const dump = await host.admin.exportScope(staff, t1, source);
+        expect(dump.tables.map((t) => t.name.toLowerCase())).not.toContain('_substrat_impersonations');
+        expect(JSON.stringify(dump.tables.find((t) => t.name === '_substrat_outbox')?.rows)).toContain(session.id);
+      });
+
+      it('a fork (importScope): refused there, honoured at the source', async () => {
+        const fork = scopeId.parse(ulid());
+        await host.importScope(staff, { tenantId: t1, scopeId: fork, vertical: 'imp-vertical' }, await host.admin.exportScope(staff, t1, source));
+        await refusedAt(fork);
+        await honouredAtSource();
+      });
+
+      it('a snapshot and a preview (snapshotScope): the same', async () => {
+        await refusedAt(await host.snapshotScope(staff, t1, source));
+        await refusedAt(await host.snapshotScope(staff, t1, source, { kind: 'preview' }));
+        await honouredAtSource();
+      });
+
+      it("a restore of this scope's backup onto another scope: the same", async () => {
+        const other = await freshScope();
+        await host.restoreScope(staff, t1, other, await host.admin.exportScope(staff, t1, source));
+        await refusedAt(other);
+        await honouredAtSource();
+      });
+
+      it('a restore into the scope the backup came from keeps honouring it', async () => {
+        await host.restoreScope(staff, t1, source, await host.admin.exportScope(staff, t1, source));
+        await honouredAtSource();
+        expect((await host.admin.listImpersonations(staff, { scopeId: source, active: true })).map((s) => s.id)).toContain(
+          session.id,
+        );
+      });
+    });
   });
 }

@@ -1,4 +1,4 @@
-import { resolveObservabilityWindow, TENANT_METRICS_LIMIT } from '@substrat-run/control-plane-api';
+import { observabilityBucketMinutes, resolveObservabilityWindow, TENANT_METRICS_LIMIT } from '@substrat-run/control-plane-api';
 import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 /**
  * The Dashboard — the tenant-facing self-service surface, as a Cloudflare Worker.
@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
@@ -43,6 +43,7 @@ import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer } from './process-map.js';
+import { businessGrid, businessRows, lifecycleMovesOf, type BusinessVolumesAnswer, type BusinessUnavailable } from './business-volumes.js';
 import { placesReconcile, reconcilePlaces } from './places.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
@@ -4601,6 +4602,76 @@ app.get('/api/observability/connector-calls', async (c) => {
     }),
   );
   return c.json({ available: buckets !== null, buckets: buckets ?? [] });
+});
+
+/**
+ * Business volumes on Pulse's clock (#1750): for each of MY apps, every move its running
+ * version's declared lifecycles let the outbox count exactly (`lifecycleMovesOf`), with
+ * today's count, yesterday's, and a series over the card's window.
+ *
+ * Narrowed like the connector series above: the apps are THIS tenant's, resolved from its
+ * own `list-apps` (a foreign `scopeId` is a 404 from `seriesScopes`), and each read goes
+ * through the tenant credential to `/tenants/<this tenant>/scopes/<app>/…`, which the plane
+ * pins to the credential's tenant and cross-checks against the scope's own record (K-3).
+ *
+ * One read per app (more only past 64 counted operations), each one aggregate over a
+ * bounded window: never a read per event or per bucket. An app that cannot answer says why,
+ * beside the rows of the apps that could.
+ */
+app.get('/api/observability/business-volumes', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
+  const hours = chartHours(c.req.query('hours'));
+  let window: { since: string; until: string };
+  try { window = resolveObservabilityWindow({ hours, since: c.req.query('since'), until: c.req.query('until') }); }
+  catch (e) { throw new HTTPException(400, { message: (e as Error).message }); }
+  const grid = businessGrid(window, observabilityBucketMinutes(window));
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  // Apps on one vertical share its registry and, on one version, its model: asked once each.
+  const memo = <T>(cache: Map<string, Promise<T>>, key: string, load: () => Promise<T>) =>
+    cache.get(key) ?? cache.set(key, load()).get(key)!;
+  const deployments = new Map<string, Promise<Deployment>>();
+  const models = new Map<string, Promise<EmittedModel | null>>();
+  const load = () => Promise.all(scopeIds.map(async (id) => {
+    const appRow = apps.find((a) => a.app_scope_id === id)!;
+    const slug = appRow.vertical_slug;
+    const scope = scopeId.parse(id);
+    const unavailable = (why: BusinessUnavailable) => ({ scopeId: id, unavailable: why, rows: [] });
+    const [deployment, boundVersionId] = await Promise.all([memo(deployments, slug, () => verticalDeploymentFromCp(cp, slug)), cp.boundVersionId(scope)]);
+    const { runningId } = versionPair(deployment, boundVersionId);
+    if (runningId === null) return unavailable('no-version');
+    const model = await memo(models, `${slug}@${runningId}`, () => cp.versionModel(slug, runningId));
+    const moves = lifecycleMovesOf(model?.lifecycles);
+    const pairs = moves.flatMap((m) => m.operations.map((operation) => ({ entityType: m.entityType, operation })));
+    if (pairs.length === 0) return unavailable('no-moves');
+    try {
+      const reads = await Promise.all(
+        Array.from({ length: Math.ceil(pairs.length / OPERATION_SERIES_MAX_MOVES) }, (_, i) =>
+          cp.operationSeries(scope, { ...grid, moves: pairs.slice(i * OPERATION_SERIES_MAX_MOVES, (i + 1) * OPERATION_SERIES_MAX_MOVES) }),
+        ),
+      );
+      const read = { ...grid, series: reads.flatMap((r) => r.series) };
+      return { scopeId: id, unavailable: null, rows: businessRows(id, moves, read, window) };
+    } catch (e) {
+      // 404: a control plane or vertical without the route. 502: a vertical script that
+      // falls through to its SPA shell for an `/internal/*` path it predates.
+      if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 502)) return unavailable('not-yet-available');
+      throw e;
+    }
+  }));
+  // Keyed like the sibling Pulse reads: the request's own window, not the grid, which moves every second.
+  const answers = await telemetry(c, node.tenantId, 'business-volumes', { scopeIds, hours, since: c.req.query('since'), until: c.req.query('until') }, load);
+  const answer: BusinessVolumesAnswer = {
+    window,
+    bucketMinutes: grid.bucketMinutes,
+    rows: answers.flatMap((a) => a.rows),
+    apps: answers.map((a) => ({ scopeId: a.scopeId, unavailable: a.unavailable })),
+  };
+  return c.json(answer);
 });
 
 /**

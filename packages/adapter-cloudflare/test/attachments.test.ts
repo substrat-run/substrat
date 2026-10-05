@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { errorCodeOf, permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
   ATTACHMENT_SEARCH_OWNERS_SQL,
   ATTACHMENT_SEARCH_SQL,
@@ -116,6 +116,22 @@ describe('attachment surface (cloudflare host)', () => {
     const ledger = await host.admin.listBlobStores(staff, { tenantId: t });
     expect(ledger).toHaveLength(1);
     expect(ledger[0]!.binding).toBe('ATTACHMENTS');
+  });
+
+  it('refuses an unknown tenant not_found and a non-active one conflict, minting nothing (#113)', async () => {
+    const { host, t, created } = await world();
+    const refusal = (tenant: string) =>
+      host
+        .provisionBlobStore(staff, { tenantId: tenantId.parse(tenant), vertical: 'docs', binding: 'OTHER' })
+        .then(() => undefined, (e: unknown) => e);
+    const unknown = await refusal(ulid());
+    expect(errorCodeOf(unknown)).toBe('not_found');
+    expect((unknown as Error).message).toMatch(/blob store under unknown tenant/);
+    await host.admin.setTenantStatus(staff, t, 'suspended');
+    const inactive = await refusal(t);
+    expect(errorCodeOf(inactive)).toBe('conflict');
+    expect((inactive as Error).message).toMatch(/blob store under non-active tenant \(status: suspended\)/);
+    expect(created).toHaveLength(1); // only world()'s own bucket
   });
 
   it('uploads → lists → opens with byte fidelity, bytes landing in R2 not the DO', async () => {

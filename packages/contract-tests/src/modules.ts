@@ -2980,6 +2980,9 @@ export const liveModManifest = moduleManifest.parse({
   // The declaration under test. `note` is watchable, gated by the key that reads it;
   // `ledger` is absent, and its absence is the assertion.
   liveTargets: [{ entityType: 'note', readPermission: 'live:read' }],
+  // #1853: a note can sit in a folder — sometimes in two — and move between them, which
+  // is what a feed narrowed `within` a folder walks.
+  entityRelations: [{ entityType: 'note', parentType: 'folder' }],
   entitlementKey: 'live',
 });
 
@@ -3035,6 +3038,22 @@ const liveUnshareOp: OperationHandler<{ principal: string; noteId: string }, voi
   });
 };
 
+/** File a note under a folder (#1853) — a second call files it under a second one too. */
+const liveFileOp: OperationHandler<{ noteId: string; folderId: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  ctx.link({ entityType: 'note', entityId: input.noteId }, { entityType: 'folder', entityId: input.folderId });
+};
+
+/** Move a note from one folder to another, the way ticket0's merge moves a message (#1853, #1864). */
+const liveMoveOp: OperationHandler<{ noteId: string; from: string; to: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  ctx.relink(
+    { entityType: 'note', entityId: input.noteId },
+    { entityType: 'folder', entityId: input.from },
+    { entityType: 'folder', entityId: input.to },
+  );
+};
+
 export const liveMod: ModuleRegistration = {
   manifest: liveModManifest,
   migrations: [],
@@ -3042,6 +3061,8 @@ export const liveMod: ModuleRegistration = {
     'live/touch': liveTouchOp as OperationHandler<never, unknown>,
     'live/touch-ledger': liveTouchLedgerOp as OperationHandler<never, unknown>,
     'live/unshare': liveUnshareOp as OperationHandler<never, unknown>,
+    'live/file': liveFileOp as OperationHandler<never, unknown>,
+    'live/move': liveMoveOp as OperationHandler<never, unknown>,
   },
 };
 

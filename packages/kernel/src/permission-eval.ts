@@ -176,13 +176,20 @@ async function switchedOff(subject: CheckSubject, node: Node, scope: ScopeTupleR
  * entity grant (or less far) would be a second algebra.
  */
 async function walkParents<R>(
-  scope: ScopeTupleReader,
+  scope: Pick<ScopeTupleReader, 'parents'>,
   start: string,
   now: string,
   probe: (ref: string, chain: RelationTuple[]) => Promise<R | undefined>,
 ): Promise<R | undefined> {
   type Frontier = { ref: string; chain: RelationTuple[] };
   let frontier: Frontier[] = [{ ref: start, chain: [] }];
+  // Each node is probed and expanded once, at the first (shallowest) depth it is reached,
+  // so the walk costs one `parents` read per distinct node — not one per PATH to it. A
+  // multi-parent row whose parents share an ancestor (a ticket0 message under N widget
+  // sessions, each under one conversation) would otherwise expand that ancestor N times
+  // (#1853). Shallowest-first keeps the answer: a later sighting is never closer to a hit
+  // and never reaches further within the depth bound.
+  const visited = new Set<string>([start]);
   for (let depth = 0; depth <= ENTITY_WALK_DEPTH && frontier.length > 0; depth++) {
     for (const candidate of frontier) {
       const hit = await probe(candidate.ref, candidate.chain);
@@ -198,7 +205,8 @@ async function walkParents<R>(
         // for grants and membership but silently NOT for entity edges — which is the
         // case open question 15 is actually about (a facility moving management
         // company must stop being reachable).
-        if (!live(p, now)) continue;
+        if (!live(p, now) || visited.has(p.object)) continue;
+        visited.add(p.object);
         next.push({
           ref: p.object,
           chain: [...candidate.chain, t(p.subject, 'parent', p.object)],
@@ -208,6 +216,46 @@ async function walkParents<R>(
     frontier = next;
   }
   return undefined;
+}
+
+/**
+ * Is `entity` the `root`, or does it lie beneath it along live declared `parent` edges?
+ *
+ * The walk a capability check makes to its own root (`checkCapability` above), with no
+ * subject and no grant: a live read narrowed `within` an entity (#1853) asks exactly this
+ * of every frame, so it travels the same edges to the same depth, skipping the same
+ * revoked ones. A row linked to two parents (`ctx.link` twice) reaches either root; a row
+ * `ctx.relink`ed away from one reaches only the other (#1864).
+ */
+export async function reachesWithin(
+  scope: Pick<ScopeTupleReader, 'parents'>,
+  entity: EntityRef,
+  root: EntityRef,
+  now: string,
+): Promise<boolean> {
+  const target = `${root.entityType}:${root.entityId}`;
+  const hit = await walkParents(scope, `${entity.entityType}:${entity.entityId}`, now, async (ref) =>
+    ref === target ? true : undefined,
+  );
+  return hit === true;
+}
+
+/**
+ * Every root `reachesWithin` would answer `true` for, as `entityType:entityId` refs — the
+ * entity itself included. The same walk, run to its full depth once, for a caller asking
+ * about many roots: a live fan-out with one socket per widget session (#1853).
+ */
+export async function ancestorsWithin(
+  scope: Pick<ScopeTupleReader, 'parents'>,
+  entity: EntityRef,
+  now: string,
+): Promise<Set<string>> {
+  const seen = new Set<string>();
+  await walkParents(scope, `${entity.entityType}:${entity.entityId}`, now, async (ref) => {
+    seen.add(ref);
+    return undefined;
+  });
+  return seen;
 }
 
 /**

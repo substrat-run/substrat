@@ -8,7 +8,8 @@ description: One error model — RFC 9457 problem+json, a closed code taxonomy, 
 
 Status: **built** (v0.4 — phases 1–4 shipped: the registry, `SubstratError` and `toProblem`
 live in `@substrat-run/contracts` `errors.ts`, failures cross the ScopeDO hop as a value, and
-every vertical serves `application/problem+json`; phase 5, the cleanup, is the open remainder)
+every vertical serves `application/problem+json`; phase 5's pattern half is done — the control
+plane matches no message — and the `error` duplicate and `SlotUnavailable` are what remains)
 
 > Answers issue [#113](https://github.com/substrat-run/substrat/issues/113), the first item
 > of the [#132](https://github.com/substrat-run/substrat/issues/132) tracking list — and the
@@ -127,7 +128,7 @@ A tagged union in `@substrat-run/contracts`. Closed, because an open one is a su
 | `conflict` | 409 | Well-formed, but conflicts with current state: illegal transition, `already taken`, immutable-after-export, `not active`. Carries `reason`. |
 | `validation_failed` | 400 | Input did not parse. Carries `errors: [{ path, message }]`, mapped from the Zod issue list. |
 | `precondition_failed` | 412 | Reserved for `If-Match` (#129). Declared now, unused, so that feature adds no vocabulary. |
-| `rate_limited` | 429 | Reserved for #130. Carries `retryAfter`. |
+| `rate_limited` | 429 | Over a request budget (#130): the router, or `vertical-host`'s `rateLimit()` on a node host. Carries `retryAfter`, beside a `Retry-After` header. |
 | `unavailable` | 503 | A deployment fact, not a fault in the request — e.g. `SecretBoxUnconfiguredError`, a host started without a seal key. |
 | `internal` | 500 | Everything unmatched. **Generic body, always.** |
 
@@ -248,17 +249,33 @@ mechanical, lower traffic.
      demo's `routes.ts` answered it by hand and said why. The demo is gone (2026-09), so no
      in-repo route answers it today — the next vertical composing `booking` inherits the
      same hand-answer until the engine retypes it.
-5. **Cleanup — open.** Contract-suite assertions migrate from message text to `code`; the
-   regex fallback and the `error` duplicate are deleted. `SlotUnavailable` gets its
-   dual-emit here.
+5. **Cleanup — the patterns are gone; the rest is open.** Every `HostAdmin` refusal the
+   control plane used to match by message is typed where it is thrown, on both adapters, and
+   the contract suite asserts its code; `mapError` has no table left, so an untyped throw is
+   the generic 500 and a new one is visible in its first test. Typing a refusal raised INSIDE
+   a Durable Object needed the §3 envelope as well as the code: `ControlPlaneDO.reply` and
+   the ScopeDO's `…Reply` methods answer a failure as data, and the coordinator throws it.
+   Refusals that no pattern ever matched, and so answered the generic 500 for a request the
+   caller could fix (reaping a tenant that is not deleting, a hostname bound elsewhere, an
+   unknown org, …), are typed the same way. A genuine internal failure stays untyped: a
+   store write that did not land, attachment bytes missing from the blob store, and a failed
+   migration, whose message carries the migration's own error text.
+   The scope gate's refusals reached a vertical's own surface untyped, where the vertical
+   answered the caller's 400. They now carry a `reason` (`SCOPE_GATE_REASONS`). The control
+   plane answers them as themselves: `409` naming the status for a non-active tenant or
+   scope, `404` for a scope with no tenant record. A vertical answers them exactly as the
+   router answers a hostname with no serving scope: `404 not_found` with
+   `NO_APPLICATION_DETAIL`, whatever a mapper decided, so a request that raced a suspension
+   reads as one the router refused. An unknown table is `404` on both surfaces. Still open:
+   the `error` duplicate, and `SlotUnavailable`'s dual-emit.
 
-**The constraint phase 4 had to respect, and did:** the contract suite asserts on roughly
+**The constraint phase 4 had to respect, and did:** the contract suite asserted on roughly
 thirty message patterns (`/already taken/`, `/illegal scope transition/`, `/not active/`, …)
-against both adapters. That is a feature — it is why `errors.ts`'s regex table is less
-brittle than it looks — and this document must not turn it red on wording. Keeping `detail`
-verbatim is what buys that, and typing a throw site preserves its message by construction,
-so the whole sweep landed with those assertions untouched. Phase 5 migrates them to the
-stronger check deliberately, as its own reviewable diff.
+against both adapters, and this document must not turn them red on wording. Keeping `detail`
+verbatim is what bought that, and typing a throw site preserves its message by construction,
+so phase 4 landed with those assertions untouched. Phase 5 then moved them onto the code
+(`expectRefusal(…, code)`), keeping a message match only where it tells two branches of one
+code apart, and with that the regex table had nothing left to protect.
 
 ## 6. Open questions
 
