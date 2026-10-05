@@ -326,6 +326,28 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(rowPace.turns).toBeGreaterThanOrEqual(30);
   });
 
+  it('every byte-at-a-time decoder stops as the budget is spent — it never materialises its output first', async () => {
+    const BUDGET = 1024;
+    const content = new Uint8Array(1024 * 1024).fill(0x41);
+    const hex = bin(Array.from(content, (b) => b.toString(16)).join('') + '>');
+    // Each would decode a MiB; each input is a MiB or more of work if read to the end.
+    const cases: [string, (pace: Pace, budget: { remaining: number }) => Promise<{ data: Uint8Array; exhausted: boolean }>][] = [
+      ['ASCIIHex', (pace, budget) => pdfDecoders.asciiHex(hex, budget, pace)],
+      ['ASCII85', (pace, budget) => pdfDecoders.ascii85(bin(ascii85(content)), budget, pace)],
+      ['RunLength', (pace, budget) => pdfDecoders.runLength(cat(...Array.from({ length: 8192 }, () => Uint8Array.of(129, 0x41))), budget, pace)],
+      ['LZW', (pace, budget) => pdfDecoders.lzw(lzwEncode(content), true, budget, pace)],
+    ];
+    for (const [name, decode] of cases) {
+      const pace = counting();
+      const budget = { remaining: BUDGET };
+      const decoded = await decode(pace, budget);
+      expect(decoded, name).toMatchObject({ exhausted: true });
+      expect(decoded.data.length, name).toBe(BUDGET);
+      // The work done is one budget's worth, give or take one run or entry — never the MiB.
+      expect(pace.charged, name).toBeLessThan(3 * BUDGET);
+    }
+  });
+
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
     // A fixed-width placeholder, so pointing it somewhere moves no byte offset in the file.
     const PLACEHOLDER = '/Prev 0000000000';

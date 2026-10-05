@@ -512,8 +512,40 @@ async function lzw(raw: Uint8Array, early: boolean, budget: InflateBudget, pace:
 }
 
 /** ASCIIHex, ASCII85 and RunLength: small, byte-at-a-time, paced and bounded the same way. */
+/**
+ * Decoded bytes, one at a time, into a `Sink` a buffer at a time — so a decoder that produces
+ * bytes singly is held to the budgets AS it produces them, and stops the moment the budget is
+ * spent, rather than materialising its whole output first.
+ */
+class ByteWriter {
+  private readonly buffer: Uint8Array;
+  private n = 0;
+
+  /** Buffered up to the budget left plus one byte, so the write that crosses it is the first one seen. */
+  constructor(
+    private readonly sink: Sink,
+    budget: InflateBudget,
+  ) {
+    this.buffer = new Uint8Array(Math.max(1, Math.min(64 * 1024, budget.remaining + 1)));
+  }
+
+  /** Write one byte; false once the budget is spent and the decoder should stop. */
+  put(byte: number): boolean {
+    this.buffer[this.n++] = byte;
+    return this.n < this.buffer.length || this.flush();
+  }
+
+  flush(): boolean {
+    if (this.n === 0) return true;
+    const more = this.sink.add(this.buffer.slice(0, this.n));
+    this.n = 0;
+    return more;
+  }
+}
+
 async function asciiHex(raw: Uint8Array, budget: InflateBudget, pace: Pace): Promise<Decoded> {
-  const out: number[] = [];
+  const sink = new Sink(budget);
+  const out = new ByteWriter(sink, budget);
   let half = -1;
   for (let i = 0; i < raw.length; i += 1) {
     if (pace.room <= 0) await pace.turn();
@@ -524,25 +556,26 @@ async function asciiHex(raw: Uint8Array, budget: InflateBudget, pace: Pace): Pro
     if (v < 0) continue;
     if (half < 0) half = v;
     else {
-      out.push(half * 16 + v);
+      if (!out.put(half * 16 + v)) return sink.done();
       half = -1;
     }
   }
-  if (half >= 0) out.push(half * 16);
-  const sink = new Sink(budget);
-  sink.add(Uint8Array.from(out));
+  if (half >= 0) out.put(half * 16);
+  out.flush();
   return sink.done();
 }
 
 async function ascii85(raw: Uint8Array, budget: InflateBudget, pace: Pace): Promise<Decoded> {
   const sink = new Sink(budget);
+  const out = new ByteWriter(sink, budget);
   const group: number[] = [];
-  const flush = (n: number): boolean => {
+  /** The first `n` bytes of the group's value; false once the budget is spent. */
+  const emit = (n: number): boolean => {
     let v = 0;
     for (let k = 0; k < 5; k += 1) v = v * 85 + (group[k] ?? 84);
-    const bytes = Uint8Array.of((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
     group.length = 0;
-    return sink.add(bytes.subarray(0, n));
+    for (let k = 0; k < n; k += 1) if (!out.put((v >>> (24 - 8 * k)) & 0xff)) return false;
+    return true;
   };
   let i = raw[0] === 60 && raw[1] === 126 ? 2 : 0;
   for (; i < raw.length; i += 1) {
@@ -552,14 +585,15 @@ async function ascii85(raw: Uint8Array, budget: InflateBudget, pace: Pace): Prom
     if (c === 126) break;
     if (isWhite(c)) continue;
     if (c === 122 && group.length === 0) {
-      if (!sink.add(new Uint8Array(4))) return sink.done();
+      if (!out.put(0) || !out.put(0) || !out.put(0) || !out.put(0)) return sink.done();
       continue;
     }
     if (c < 33 || c > 117) continue;
     group.push(c - 33);
-    if (group.length === 5 && !flush(4)) return sink.done();
+    if (group.length === 5 && !emit(4)) return sink.done();
   }
-  if (group.length > 1) flush(group.length - 1);
+  if (group.length > 1) emit(group.length - 1);
+  out.flush();
   return sink.done();
 }
 
