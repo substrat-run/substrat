@@ -56,8 +56,8 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
       >;
       return (await sqlite.getVerticalScope(caller, tenant, scope)).invoke(operation, input, options);
     },
-    peerSwitchLocal: async (scope: string, vertical: string, to: 'on' | 'off') => {
-      calls.push(['peerSwitchLocal', scope, vertical, to]);
+    peerSwitchLocal: async (scope: string, vertical: string, to: 'on' | 'off', opts?: { tenantHeld?: boolean }) => {
+      calls.push(['peerSwitchLocal', scope, vertical, to, opts]);
       return { held: true, changed: true, permissions: [READ, WRITE] };
     },
   } as unknown as VerticalScopeHost;
@@ -161,7 +161,22 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ held: true, changed: true, permissions: [READ, WRITE] });
-    expect(calls.at(-1)).toEqual(['peerSwitchLocal', s, PEER_CALLER, 'off']);
+    expect(calls.at(-1)).toEqual(['peerSwitchLocal', s, PEER_CALLER, 'off', { tenantHeld: undefined }]);
+  });
+
+  it("carries the platform's tenantHeld through to the host (#2030), and refuses one that is not a boolean", async () => {
+    const post = (body: unknown) =>
+      app.request(
+        '/internal/peer-switch',
+        { method: 'POST', headers: { 'content-type': 'application/json', ...platform }, body: JSON.stringify(body) },
+        ENV,
+      );
+    const body = { scopeId: s, vertical: PEER_CALLER, to: 'off' };
+    expect((await post({ ...body, tenantHeld: true })).status).toBe(200);
+    expect(calls.at(-1)).toEqual(['peerSwitchLocal', s, PEER_CALLER, 'off', { tenantHeld: true }]);
+    const before = calls.length;
+    expect((await post({ ...body, tenantHeld: 'yes' })).status).toBe(400);
+    expect(calls.length).toBe(before);
   });
 
   it('a deployment built before the door answers 501 on both routes', async () => {

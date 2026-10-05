@@ -241,16 +241,30 @@ export const systemSwitchOutcome = z.object({
    * alone says the marker landed, not that anything reads it for a tenant-level grant.
    */
   deniesTenantGrants: z.literal(true).optional(),
+  /**
+   * #2045: the scope had already applied a NEWER switch call on this subject, so this move wrote
+   * nothing (the switch fence). A deployment built before the fence omits it and applies every move.
+   */
+  superseded: z.literal(true).optional(),
+  /**
+   * #2045: the answering code honoured the move's fence. A deployment built before the fence omits
+   * it, and the platform refuses a fenced move whose answer lacks it.
+   */
+  fenced: z.literal(true).optional(),
 });
 export type SystemSwitchOutcome = z.infer<typeof systemSwitchOutcome>;
 
 /**
- * One recorded-off module a deployment switched off INSIDE the unit that re-created the
+ * One recorded-off subject a deployment switched off INSIDE the unit that re-created the
  * scope's grants (#1742): the seat of a provision or reconcile, or the replay of a restore.
- * The wire shape those routes answer with when the platform sent `switchedOff`, so the
- * platform can audit a move its own re-assert, arriving after it, will find already made.
+ * The wire shape those routes answer with when the platform sent `switchedOff` (or, #2029,
+ * `switchedOffPeers`), so the platform can audit a move its own re-assert, arriving after it,
+ * will find already made. A module's entry names `moduleId`; a peer's names `vertical`.
  */
-export const switchedOffInUnit = systemSwitchOutcome.extend({ moduleId });
+export const switchedOffInUnit = z.union([
+  systemSwitchOutcome.extend({ moduleId }),
+  systemSwitchOutcome.omit({ deniesTenantGrants: true }).extend({ vertical: verticalSlug }),
+]);
 export type SwitchedOffInUnit = z.infer<typeof switchedOffInUnit>;
 
 /**

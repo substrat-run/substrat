@@ -178,6 +178,13 @@ export interface VerticalScopeHost {
     /** #1823: of `switchedOff`, the modules held only by a tenant-level grant, which this
      *  deployment has no directory to read — held for the in-unit OFF all the same. */
     tenantHeld?: ModuleId[];
+    /** #2029: the peers the platform's record holds OFF here, switched off in the same unit; and
+     *  (#2030) of those, the ones held only by a tenant-level grant. A host built before them
+     *  ignores both, and the platform's re-assert after the call covers them. */
+    switchedOffPeers?: string[];
+    tenantHeldPeers?: string[];
+    /** #2045: each recorded-off subject's fence, by tuple subject. A host built before it ignores it. */
+    switchFences?: Record<string, string>;
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
@@ -195,6 +202,10 @@ export interface VerticalScopeHost {
       switchedOff?: ModuleId[];
       /** #1823: as on `provisionScopeLocal`. */
       tenantHeld?: ModuleId[];
+      /** #2029: as on `provisionScopeLocal`. */
+      switchedOffPeers?: string[];
+      tenantHeldPeers?: string[];
+      switchFences?: Record<string, string>;
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -372,11 +383,18 @@ export interface VerticalScopeHost {
    * before it satisfies this interface without it — and the route answers 501, which the
    * control plane reports as "redeploy", never as a switch that moved.
    */
+  /**
+   * #2045 (Codex r3): this host's switch movers honour the switch call's fence, and answer every
+   * fenced move with `fenced: true`. What `/internal/switch-fence` reports, which the platform
+   * asks before any switch call records or moves anything. Absent on a host built before it.
+   */
+  readonly switchFenced?: true;
   systemSwitchLocal?(
     scopeId: ScopeId,
     moduleId: ModuleId,
     to: 'on' | 'off',
-    opts?: { tenantHeld?: boolean },
+    /** #2045: `fence`, the switch call's fence — see `/internal/system-switch`'s body. */
+    opts?: { tenantHeld?: boolean; fence?: string },
   ): Promise<SystemSwitchOutcome>;
   /**
    * The far end of the lifecycle delivery (#1713): store the scope's lifecycle as the directory
@@ -421,7 +439,13 @@ export interface VerticalScopeHost {
     options?: InvokeOptions,
   ): Promise<unknown>;
   /** The far end of the peer kill switch (#1706). Optional, 501 when absent, like the rest. */
-  peerSwitchLocal?(scopeId: ScopeId, vertical: string, to: 'on' | 'off'): Promise<PeerSwitchOutcome>;
+  peerSwitchLocal?(
+    scopeId: ScopeId,
+    vertical: string,
+    to: 'on' | 'off',
+    /** #2030: the platform holds a live tenant-level grant for the peer — see the route's body. */
+    opts?: { tenantHeld?: boolean; fence?: string },
+  ): Promise<PeerSwitchOutcome>;
   /**
    * The cross-vertical far ends (#1705 PR 2): the producer's release after a watermark, the
    * consumer's imports and watermarks, and a batch applied to the consumer. Each proves the
@@ -479,6 +503,11 @@ const provisionBody = z.object({
   connectionKeys: z.array(projectedConnectionKey).optional(),
   switchedOff: z.array(moduleIdOf).optional(),
   tenantHeld: z.array(moduleIdOf).optional(),
+  /** #2029: the recorded-off peers, and (#2030) those held only by a tenant-level grant. */
+  switchedOffPeers: z.array(verticalSlugOf).optional(),
+  tenantHeldPeers: z.array(verticalSlugOf).optional(),
+  /** #2045: each recorded-off subject's fence, by tuple subject. */
+  switchFences: z.record(z.string().min(1), z.string().min(1)).optional(),
 });
 /** The parsed provision body handed to `onProvision`. */
 export type ProvisionBody = z.infer<typeof provisionBody>;
@@ -498,6 +527,11 @@ const reconcileBody = z.object({
    */
   switchedOff: z.array(moduleIdOf).optional(),
   tenantHeld: z.array(moduleIdOf).optional(),
+  /** #2029: the recorded-off peers, and (#2030) those held only by a tenant-level grant. */
+  switchedOffPeers: z.array(verticalSlugOf).optional(),
+  tenantHeldPeers: z.array(verticalSlugOf).optional(),
+  /** #2045: each recorded-off subject's fence, by tuple subject. */
+  switchFences: z.record(z.string().min(1), z.string().min(1)).optional(),
 });
 
 /**
@@ -547,6 +581,11 @@ const restoreBody = z.object({
   /** #1742: as on the reconcile — applied to `scopeId`, in the restore's own event. */
   switchedOff: z.array(moduleIdOf).optional(),
   tenantHeld: z.array(moduleIdOf).optional(),
+  /** #2029: the recorded-off peers, and (#2030) those held only by a tenant-level grant. */
+  switchedOffPeers: z.array(verticalSlugOf).optional(),
+  tenantHeldPeers: z.array(verticalSlugOf).optional(),
+  /** #2045: each recorded-off subject's fence, by tuple subject. */
+  switchFences: z.record(z.string().min(1), z.string().min(1)).optional(),
   /** #1869: the scope the dump was captured from. Only its node grants are re-pointed at
    *  `scopeId`; a platform that predates the field sends none, and the host falls back. */
   sourceScopeId: scopeIdOf.optional(),
@@ -672,6 +711,9 @@ const systemSwitchBody = z.object({
   // has no directory to read. Optional: a platform built before it sends none, and a module
   // whose only authority is a tenant grant then answers `held: false`, as it always did.
   tenantHeld: z.boolean().optional(),
+  // #2045: the switch call's fence — the scope refuses a move older than the one it applied.
+  // Optional: a platform built before it sends none, and the move applies as it always did.
+  fence: z.string().min(1).optional(),
 });
 
 /** `/internal/lifecycle` body (#1713) — the scope's lifecycle as the platform read it. */
@@ -705,6 +747,14 @@ const peerSwitchBody = z.object({
   scopeId: scopeIdOf,
   vertical: verticalSlugOf,
   to: z.enum(['on', 'off']),
+  /**
+   * #2030: the platform's directory holds a live TENANT-level `vertical:` grant for the peer.
+   * This deployment has no directory to read it from, and a peer whose only authority on the
+   * scope is that grant must still be switchable here. A platform built before it sends none.
+   */
+  tenantHeld: z.boolean().optional(),
+  /** #2045: the switch call's fence. A platform built before it sends none. */
+  fence: z.string().min(1).optional(),
 });
 
 /**
@@ -888,6 +938,9 @@ export function mountPlatformSurface<Env extends object>(
     const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
+      switchedOffPeers: body.switchedOffPeers,
+      tenantHeldPeers: body.tenantHeldPeers,
+      switchFences: body.switchFences,
       sourceScopeId: body.sourceScopeId,
       exact: body.exact,
       loadStamp: body.loadStamp,
@@ -1424,7 +1477,21 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.systemSwitchLocal) {
       return c.json({ error: 'this deployment cannot switch schedules (#1666) — redeploy it' }, 501);
     }
-    return c.json(await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to, { tenantHeld: body.tenantHeld }));
+    return c.json(
+      await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to, { tenantHeld: body.tenantHeld, fence: body.fence }),
+    );
+  });
+
+  // The switch fence's preflight (#2045, Codex r3): asked by the platform BEFORE a switch call
+  // records or moves anything on a scope served here, so a deployment that cannot honour the fence
+  // is refused up front rather than compensated after its move. A deployment built before this
+  // route answers 404, and a host that predates the fence 501: both read as "redeploy". Behind the
+  // platform-secret gate above, like every `/internal` verb.
+  app.get('/internal/switch-fence', (c) => {
+    if (deps.hostFor(c.env).switchFenced !== true) {
+      return c.json({ error: 'this deployment cannot fence a kill switch (#2045) — redeploy it' }, 501);
+    }
+    return c.json({ fenced: true });
   });
 
   // The lifecycle delivery (#1713): the platform's directory holds a scope's lifecycle, and a
@@ -1499,7 +1566,9 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.peerSwitchLocal) {
       return c.json({ error: 'this deployment cannot switch peers (#1706) — redeploy it' }, 501);
     }
-    return c.json(await host.peerSwitchLocal(body.scopeId, body.vertical, body.to));
+    return c.json(
+      await host.peerSwitchLocal(body.scopeId, body.vertical, body.to, { tenantHeld: body.tenantHeld, fence: body.fence }),
+    );
   });
 
   // The cross-vertical far ends (#1705 PR 2). The shared control plane runs the phase for every
@@ -1585,6 +1654,9 @@ export function mountPlatformSurface<Env extends object>(
       connectionKeys: body.connectionKeys,
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
+      switchedOffPeers: body.switchedOffPeers,
+      tenantHeldPeers: body.tenantHeldPeers,
+      switchFences: body.switchFences,
     });
     await deps.onProvision?.(c.env, body);
     // #1902: onto the platform-supplied sweeper's roster, so the scope's schedules run. Last, so
@@ -1633,6 +1705,9 @@ export function mountPlatformSurface<Env extends object>(
       // #1742: back off inside the seat's unit — see `provisionScopeLocal`.
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
+      switchedOffPeers: body.switchedOffPeers,
+      tenantHeldPeers: body.tenantHeldPeers,
+      switchFences: body.switchFences,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this

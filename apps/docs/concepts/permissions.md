@@ -490,7 +490,9 @@ peers: [
   not come along, and a peer cannot mint a link share.
 - **A tenant can switch one off.** `revokeFromPeer` refuses that app's next call on one scope
   and removes everything it held there, and no re-provision gives it back. `restoreToPeer`
-  gives back exactly what was removed.
+  gives back exactly what was removed. The switch is recorded outside the scope too, so a
+  restore or a rewind to a point before it does not let the app back in. An app whose only
+  access to the scope comes from a tenant-wide grant can be switched off there as well.
 - **Same tenant only.** The platform finds "the instance of that app in this tenant" by its
   slug. It never looks in another tenant, never picks a preview, and refuses to guess when a
   tenant runs two instances of the same app.

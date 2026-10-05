@@ -1,13 +1,17 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
+  SWITCH_FENCES_DDL,
+  moveSwitch,
   switchSystemSchedules,
   systemGrantsStatus,
   systemScheduleState,
   systemSwitchedOff,
   systemSwitchedOffMessage,
   switchRecordedOff,
-  tenantHoldsSystemGrant,
+  peerSwitchedOff,
+  recordedOffFromWire,
+  tenantHoldsGrant,
   tenantSystemSwitchedOffMessage,
   type SwitchSql,
 } from '../src/index.js';
@@ -115,9 +119,40 @@ describe('switchSystemSchedules (#1666)', () => {
     expect(systemSwitchedOff(sql, M)).toBe(true);
     expect(systemSwitchedOff(sql, '@m/y')).toBe(false);
   });
+
+  it('#2029: switchRecordedOff switches the recorded-off peers too, tenant-held ones included', () => {
+    const { db, sql } = fresh();
+    db.prepare(`INSERT INTO _substrat_tuples VALUES (?, ?, ?, NULL, NULL)`).run('vertical:acme/a', 'granted:p:read', `scope:${S}`);
+    const out = switchRecordedOff(sql, {
+      scopeId: S,
+      moduleIds: [],
+      at: 'x',
+      verticals: ['acme/a', 'acme/tenant-only', 'acme/nothing'],
+      tenantHeldVerticals: ['acme/tenant-only'],
+    });
+    expect(out.map((o) => [o.vertical, o.held, o.changed, o.permissions])).toEqual([
+      ['acme/a', true, true, ['p:read']],
+      ['acme/tenant-only', true, true, []],
+      ['acme/nothing', false, false, []],
+    ]);
+    expect(peerSwitchedOff(sql, 'acme/a')).toBe(true);
+    expect(peerSwitchedOff(sql, 'acme/tenant-only')).toBe(true);
+    expect(peerSwitchedOff(sql, 'acme/nothing')).toBe(false);
+  });
+
+  it('#2029: a wire carry names nothing to switch only when it names neither kind', () => {
+    expect(recordedOffFromWire({})).toBeUndefined();
+    expect(recordedOffFromWire({ switchedOff: [], switchedOffPeers: [] })).toBeUndefined();
+    expect(recordedOffFromWire({ switchedOffPeers: ['acme/a'], tenantHeldPeers: ['acme/a'] })).toEqual({
+      moduleIds: [],
+      tenantHeld: undefined,
+      verticals: ['acme/a'],
+      tenantHeldVerticals: ['acme/a'],
+    });
+  });
 });
 
-describe('tenantHoldsSystemGrant (#1823)', () => {
+describe('tenantHoldsGrant (#1823)', () => {
   const T = 't1';
   const M = '@m/x';
   const NOW = '2026-09-21T10:00:00.000Z';
@@ -149,9 +184,17 @@ describe('tenantHoldsSystemGrant (#1823)', () => {
 
   it('a live tenant-level grant holds; nothing, of course, does not', () => {
     const { sql, put } = fresh();
-    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(false);
+    expect(tenantHoldsGrant(sql, 'system', T, M, NOW)).toBe(false);
     put({});
-    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(true);
+    expect(tenantHoldsGrant(sql, 'system', T, M, NOW)).toBe(true);
+  });
+
+  it('#2030: a peer’s tenant grant is asked for as `vertical:<slug>`, never as a module', () => {
+    const { sql, put } = fresh();
+    put({ subject: 'vertical:acme/a' });
+    expect(tenantHoldsGrant(sql, 'peer', T, 'acme/a', NOW)).toBe(true);
+    expect(tenantHoldsGrant(sql, 'system', T, 'acme/a', NOW)).toBe(false);
+    expect(tenantHoldsGrant(sql, 'peer', T, M, NOW)).toBe(false);
   });
 
   it('only a live grant of THIS module, tenant and tenant node counts', () => {
@@ -161,9 +204,9 @@ describe('tenantHoldsSystemGrant (#1823)', () => {
     put({ subject: 'system:@m/other' });
     put({ tenant: 't2' });
     put({ relation: 'role:admin' });
-    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(false);
+    expect(tenantHoldsGrant(sql, 'system', T, M, NOW)).toBe(false);
     put({ relation: 'granted:x:later', expires: '2027-01-01T00:00:00.000Z' });
-    expect(tenantHoldsSystemGrant(sql, T, M, NOW)).toBe(true);
+    expect(tenantHoldsGrant(sql, 'system', T, M, NOW)).toBe(true);
   });
 });
 
@@ -267,5 +310,71 @@ describe('the grant refusal wording (#1743)', () => {
     const seven = tenantSystemSwitchedOffMessage('@m/x', ['s1', 's2', 's3', 's4', 's5', 's6', 's7']);
     expect(seven).toMatch(/scopes s1, s2, s3, s4, s5 and 2 more \(#1666\)/);
     expect(seven).not.toContain('s6');
+  });
+});
+
+/**
+ * #2045: the scope's half of the switch fence, on a real SQLite. A move carries the call it belongs
+ * to; one older than the newest the scope applied writes nothing and says `superseded`.
+ */
+describe('the switch fence (#2045)', () => {
+  const S = 's1';
+  const V = 'acme/a';
+  const fresh = () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec(`CREATE TABLE _substrat_tuples (
+      subject TEXT NOT NULL, relation TEXT NOT NULL, object TEXT NOT NULL,
+      expires_at TEXT, revoked_at TEXT, PRIMARY KEY (subject, relation, object)
+    )`);
+    db.exec(SWITCH_FENCES_DDL);
+    db.prepare(`INSERT INTO _substrat_tuples VALUES (?, ?, ?, NULL, NULL)`).run(`vertical:${V}`, 'granted:p:read', `scope:${S}`);
+    const sql: SwitchSql = {
+      all: (q, ...p) => db.prepare(q).all(...p) as Record<string, unknown>[],
+      run: (q, ...p) => {
+        db.prepare(q).run(...p);
+      },
+    };
+    return { db, sql };
+  };
+  const move = (sql: SwitchSql, to: 'on' | 'off', fence?: string) =>
+    moveSwitch(sql, 'peer', { key: V, scopeId: S, to, at: 'x', fence });
+
+  it('a move older than the one applied is refused and writes nothing', () => {
+    const { sql } = fresh();
+    expect(move(sql, 'on', '01B')).toMatchObject({ held: true });
+    expect(move(sql, 'off', '01A')).toEqual({ held: true, changed: false, permissions: [], superseded: true, fenced: true });
+    expect(peerSwitchedOff(sql, V)).toBe(false);
+  });
+
+  it('twin: a newer one applies, and moves the fence to it', () => {
+    const { db, sql } = fresh();
+    move(sql, 'on', '01A');
+    expect(move(sql, 'off', '01B')).toMatchObject({ held: true, changed: true });
+    expect(peerSwitchedOff(sql, V)).toBe(true);
+    expect(db.prepare('SELECT fence FROM _substrat_switch_fences').get()).toEqual({ fence: '01B' });
+    // The same call again (a re-assert under the record's fence) applies, idempotently.
+    expect(move(sql, 'off', '01B')).toMatchObject({ held: true, changed: false });
+    expect(move(sql, 'off', '01B').superseded).toBeUndefined();
+  });
+
+  it('every move that carried a fence attests it (`fenced`); one that carried none does not (#2045 r2)', () => {
+    const { sql } = fresh();
+    expect(move(sql, 'off', '01A').fenced).toBe(true);
+    expect(move(sql, 'on').fenced).toBeUndefined();
+  });
+
+  it('a move with no fence (a caller from before it) applies and leaves the fence alone', () => {
+    const { db, sql } = fresh();
+    move(sql, 'off', '01B');
+    expect(move(sql, 'on')).toMatchObject({ held: true, changed: true });
+    expect(db.prepare('SELECT fence FROM _substrat_switch_fences').get()).toEqual({ fence: '01B' });
+  });
+
+  it('a move that held nothing writes no fence', () => {
+    const { db, sql } = fresh();
+    expect(moveSwitch(sql, 'peer', { key: 'acme/none', scopeId: S, to: 'off', at: 'x', fence: '01Z' })).toMatchObject({
+      held: false,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM _substrat_switch_fences').get()).toEqual({ n: 0 });
   });
 });

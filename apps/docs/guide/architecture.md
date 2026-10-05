@@ -126,8 +126,11 @@ system beside the kernel. Instead, the platform says which app is calling:
   instance of that vertical. It is never found by hostname or in another tenant, it is never a
   preview, and it is never guessed when a tenant runs two instances.
 - **Revocation takes effect on the next call.** A tenant can switch a peer off on a scope. That
-  removes everything the peer held there, and no re-provision gives it back. A caller that has
-  been suspended or uninstalled is refused on its next call.
+  removes everything the peer held there, and no re-provision gives it back. The switch is
+  recorded outside the scope too, so a restore or a point-in-time rewind to before it does not
+  let the peer back in, and a peer whose only access comes from a tenant-wide grant can be
+  switched off as well. A caller that has been suspended or uninstalled is refused on its next
+  call.
 
 ### Writing one
 

@@ -29,8 +29,10 @@ import {
   principalId,
   scopeId,
   tenantId,
+  type PermissionKey,
   type PrincipalId,
   type ScopeId,
+  type TenantId,
   type VerticalCaller,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
@@ -66,7 +68,16 @@ const refusal = (p: Promise<unknown>): Promise<unknown> =>
     (e: unknown) => e,
   );
 
-export function peerContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
+/**
+ * The peer suite's fixture: a host, and (#2030) a way to give a peer a TENANT-level grant. No
+ * platform verb writes one yet — peer grants are seated per scope — so each adapter writes the
+ * directory's tenant tuple itself, the one the day such a verb lands will write.
+ */
+export interface PeerFixture extends ScopeHostFixture {
+  seatTenantGrant(tenantId: TenantId, subject: string, permission: PermissionKey): Promise<void>;
+}
+
+export function peerContractSuite(adapterName: string, makeFixture: () => Promise<PeerFixture>): void {
   describe(`peer door (#1706): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
     let host: ScopeHost;
@@ -295,6 +306,40 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
       });
     });
 
+    /**
+     * #2029: the switch is recorded OUTSIDE the scope, in the directory, as the schedule switch is
+     * (#1674) — so a scope whose storage lost the marker (a restore of a dump taken before the
+     * switch was pulled) is switched off again by the unit that loads it, not left admitting the
+     * peer until an operator notices.
+     */
+    describe('the record outlives the scope’s storage (#2029)', () => {
+      it('a restore of a dump from before the OFF keeps the peer refused, and the re-assert finds it off', async () => {
+        const before = await host.admin.exportScope(staff, t, s);
+        await off();
+        await host.restoreScope(staff, t, s, before);
+        expect(await held(PEER_CALLER)).toEqual([]);
+        expect(errorCodeOf(await refusal((await asPeer()).invoke('peer/list')))).toBe('forbidden');
+        const reasserted = await host.admin.reassertSystemSwitches(staff, { tenantId: t, scopeId: s });
+        expect(reasserted).toEqual([{ vertical: PEER_CALLER, held: true, changed: false }]);
+        // The other peer was never switched, and the record names nothing for it.
+        expect(await held(PEER_LISTENER)).toEqual([READ]);
+      });
+
+      it('ON gives it back, and a restore after that leaves the peer admitted', async () => {
+        await on();
+        expect(await held(PEER_CALLER)).toEqual([READ, WRITE]);
+        const before = await host.admin.exportScope(staff, t, s);
+        await host.restoreScope(staff, t, s, before);
+        await expect((await asPeer()).invoke('peer/list')).resolves.toBeDefined();
+        expect(await host.admin.reassertSystemSwitches(staff, { tenantId: t, scopeId: s })).toEqual([]);
+      });
+
+      it('twin: a switch for a peer the scope never held records nothing, so nothing is re-asserted', async () => {
+        expect(errorCodeOf(await refusal(off('acme/stranger')))).toBe('not_found');
+        expect(await host.admin.peerSwitchCarry(staff, { tenantId: t, scopeId: s })).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
+      });
+    });
+
     describe('tenant-bound', () => {
       it('the door fails closed on a scope of another tenant, named under this one', async () => {
         // K-3's pair check — the confinement this whole door rests on, so the test pins the
@@ -345,6 +390,85 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
         const row = (await outbox()).find((r) => r.entity_id === 'idem-2')!;
         expect(JSON.parse(row.actor)).toEqual({ vertical: PEER_CALLER, scope: secondCaller });
       });
+    });
+  });
+
+  /**
+   * #2030: a peer whose ONLY authority on a scope is a tenant-level `vertical:` grant. The scope
+   * here is provisioned before the host registers the peer's module, so provisioning seated none
+   * of its keys — the scope holds no row for it at all — and the tenant grant is what admits it.
+   * The switch must still turn it off there: the directory says the tenant holds the grant
+   * (`tenantHeld`), and OFF writes the scope's marker with nothing to tombstone.
+   */
+  describe(`peer door, tenant-level authority only (#2030): ${adapterName}`, () => {
+    let fixture: PeerFixture;
+    let host: ScopeHost;
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const other = scopeId.parse(ulid());
+    const caller: VerticalCaller = { vertical: PEER_CALLER, scope: scopeId.parse(ulid()) };
+    const node = (scope: ScopeId = s) => ({ tenantId: t, scopeId: scope });
+    const asPeer = (scope: ScopeId = s) => host.getVerticalScope(caller, t, scope);
+    const heldBy = async (vertical: string, scope: ScopeId = s) =>
+      (await host.peerCovers(t, scope, vertical, [READ])).filter((c) => c.held).map((c) => c.permission);
+
+    beforeAll(async () => {
+      fixture = await makeFixture();
+      host = fixture.host;
+      await host.admin.createTenant(staff, { id: t, slug: `peer-tw-${t.slice(-8).toLowerCase()}`, name: 'tenant-wide' });
+      await host.admin.grantEntitlement(staff, t, 'peer');
+      for (const scope of [s, other]) await host.provisionScope(staff, { tenantId: t, scopeId: scope });
+      // Registered AFTER the seat, so neither scope holds a row for either peer.
+      host.registerModule(peerMod);
+      for (const scope of [s, other]) await host.admin.activateScope(staff, t, scope);
+    });
+
+    afterAll(async () => {
+      await fixture.cleanup();
+    });
+
+    it('twin first: no row here and no tenant grant — or only ANOTHER peer’s — is not_found, recording nothing', async () => {
+      const offCaller = () =>
+        refusal(host.admin.revokeFromPeer(staff, { vertical: PEER_CALLER, node: node(), reason: 'r' }));
+      expect(errorCodeOf(await offCaller())).toBe('not_found');
+      await fixture.seatTenantGrant(t, `vertical:${PEER_LISTENER}`, READ);
+      expect(errorCodeOf(await offCaller())).toBe('not_found');
+      expect(await host.admin.peerSwitchCarry(staff, node())).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
+      expect(errorCodeOf(await refusal((await asPeer()).invoke('peer/list')))).toBe('permission_denied');
+    });
+
+    it('the tenant grant admits the peer on a scope that holds no row for it', async () => {
+      await fixture.seatTenantGrant(t, `vertical:${PEER_CALLER}`, READ);
+      await expect((await asPeer()).invoke('peer/list')).resolves.toEqual([]);
+      expect(await heldBy(PEER_CALLER)).toEqual([READ]);
+    });
+
+    it('OFF holds it there: the marker is written, nothing is tombstoned, and the peer is refused', async () => {
+      const result = await host.admin.revokeFromPeer(staff, { vertical: PEER_CALLER, node: node(), reason: 'incident' });
+      expect(result).toMatchObject({ vertical: PEER_CALLER, calls: 'off', changed: true, permissions: [] });
+      expect(errorCodeOf(await refusal((await asPeer()).invoke('peer/list')))).toBe('forbidden');
+      expect(await heldBy(PEER_CALLER)).toEqual([]);
+      expect(await host.admin.peerSwitchCarry(staff, node())).toEqual({
+        switchedOffPeers: [PEER_CALLER],
+        tenantHeldPeers: [PEER_CALLER],
+        fences: { [PEER_CALLER]: expect.any(String) },
+      });
+    });
+
+    it('is per peer and per scope: another peer, and the same peer on another scope, are still admitted', async () => {
+      expect(await heldBy(PEER_LISTENER)).toEqual([READ]);
+      await expect((await asPeer(other)).invoke('peer/list')).resolves.toEqual([]);
+    });
+
+    it('ON gives the tenant grant back on that scope, and a repeat ON still holds', async () => {
+      await expect(
+        host.admin.restoreToPeer(staff, { vertical: PEER_CALLER, node: node(), reason: 'resolved' }),
+      ).resolves.toMatchObject({ calls: 'on', changed: true, permissions: [] });
+      await expect((await asPeer()).invoke('peer/list')).resolves.toEqual([]);
+      await expect(
+        host.admin.restoreToPeer(staff, { vertical: PEER_CALLER, node: node(), reason: 'again' }),
+      ).resolves.toMatchObject({ calls: 'on', changed: false });
     });
   });
 }

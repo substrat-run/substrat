@@ -29,6 +29,7 @@ import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@su
 import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
 import { kickCoalescerName, type KickCoalescerDo, type KickOutcome } from '../src/kick-coalescer-do.js';
 import { warmControlPlane } from './do-warmup.js';
+import { armRewind, landRewind } from './pitr-emulation.js';
 
 // #1705 on workerd: the export read (the (type, id) seek and the recursive hop walk), the
 // import journal and the watermark's compare-and-set are DO SQL here, run by real Durable
@@ -275,6 +276,8 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     // Edge health's door read, as the shared control plane makes it: over the consumer
     // deployment's `/internal/peer-grants`, with the admin log's reason joined here.
     peerSwitchDelegation: {
+      // #2045 (Codex r3): a deployment built with the switch fence.
+      fenceSupported: async () => true,
       switch: async () => {
         throw new Error('the suite switches peers on the deployments directly');
       },
@@ -1052,5 +1055,52 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
     await expect(serves(b, into)).resolves.toHaveProperty('cursors');
     // The dump's roles for `a` came along, and the receipt is what stops them serving `a`.
     expect(await refused(serves(a, into))).toBe('conflict');
+  });
+});
+
+/**
+ * #2029: the producer's export read is authorized by the CONSUMER's peer grants on the producer
+ * scope, so it is a peer door too. A producer rewound to before its consumer was switched off has
+ * the consumer's grants back live; the rewind holds the consumer, and the read goes through its
+ * door: held, it answers every key missing, so the edge pauses and nothing leaves.
+ */
+describe('#2029 — a producer rewound past its consumer’s switch releases nothing until the switch is back', { timeout: 20_000 }, () => {
+  const crm = deployment(env.CRM_SCOPE, crmExportMod, CRM_OWNER);
+  const t = tenantId.parse(ulid());
+  const read = { consumer: BOARD_VERTICAL, after: null, wants: [{ type: 'crm.customer-created', schemaVersion: 1 }], limit: 10 };
+
+  const rewound = async (switchOff = true): Promise<ScopeId> => {
+    const p = scopeId.parse(ulid());
+    const owner = await crm.provision(t, p);
+    await (await crm.hostFor().getScope(owner, t, p)).invoke('crm/create', { name: 'Exported' });
+    const atBookmark = await crm.hostFor().exportScopeLocal(p);
+    if (switchOff) await crm.hostFor().peerSwitchLocal(p, BOARD_VERTICAL, 'off');
+    await armRewind(env.CRM_SCOPE, p);
+    await crm.hostFor().rewindScopeLocal(p, 'bm-before-switch', { force: true });
+    await landRewind(env.CRM_SCOPE, p, atBookmark);
+    return p;
+  };
+
+  it('the read pauses with every key missing, and releases nothing', async () => {
+    const p = await rewound();
+    const batch = await crm.hostFor().exportedEventsLocal(t, p, read);
+    expect(batch.events).toEqual([]);
+    expect(batch.paused?.missing.length).toBeGreaterThan(0);
+    expect(batch.next).toBeNull();
+  });
+
+  it('twin: nothing switched off — the rewound scope releases its event', async () => {
+    const p = await rewound(false);
+    const batch = await crm.hostFor().exportedEventsLocal(t, p, read);
+    expect(batch).toMatchObject({ paused: null });
+    expect(batch.events).toHaveLength(1);
+  });
+
+  it('ON lifts the hold, and the event is released', async () => {
+    const p = await rewound();
+    await crm.hostFor().peerSwitchLocal(p, BOARD_VERTICAL, 'on');
+    const batch = await crm.hostFor().exportedEventsLocal(t, p, read);
+    expect(batch).toMatchObject({ paused: null });
+    expect(batch.events).toHaveLength(1);
   });
 });

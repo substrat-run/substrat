@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { platformActorId, tenantId, scopeId } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER, platformActorId, tenantId, scopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { VerticalClient, ControlPlaneError } from '../src/index.js';
 
@@ -983,6 +983,26 @@ it('restoreScope sends the stamp a carry leaves on its copy, and none when not g
   ]);
 });
 
+it('restoreScope sends the recorded-off peers and their tenant-held ones, and reads back a peer move (#2029)', async () => {
+  const bodies: unknown[] = [];
+  const moved = { vertical: 'acme/board-room', held: true, changed: true, permissions: [] };
+  const client = new VerticalClient({
+    fetch: (async (_u: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ tables: 0, switchedOff: [moved] });
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  const out = await client.restoreScope(t, s, [], {
+    switchedOffPeers: ['acme/board-room'],
+    tenantHeldPeers: ['acme/board-room'],
+  });
+  expect(bodies).toEqual([
+    { tenantId: t, scopeId: s, tables: [], switchedOffPeers: ['acme/board-room'], tenantHeldPeers: ['acme/board-room'] },
+  ]);
+  expect(out).toEqual({ tables: 0, switchedOff: [moved] });
+});
+
 it('exportScopeStamped asks for the stamp and reads it off the export, null from a deployment that sends none (#1722)', async () => {
   const replies = [
     new Response('[]', { status: 200, headers: { 'x-substrat-load-stamp': 'stamp-3', 'x-substrat-write-revision': '7' } }),
@@ -1199,6 +1219,41 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
  * failure it is — a peer reported cut off while its calls keep being admitted is the one
  * answer this switch must never give.
  */
+describe('VerticalClient.switchFence (#2045 Codex r3)', () => {
+  const answering = (reply: () => Response, seen: { url: string; headers: Headers }[] = []) =>
+    new VerticalClient({
+      fetch: (async (url: string, init?: RequestInit) => {
+        seen.push({ url, headers: new Headers(init?.headers) });
+        return reply();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('asks the route behind the platform secret, and reads a fenced deployment as true', async () => {
+    const seen: { url: string; headers: Headers }[] = [];
+    await expect(answering(() => Response.json({ fenced: true }), seen).switchFence({ scopeId: s })).resolves.toBe(true);
+    expect(seen[0]?.url).toBe(`https://vertical.invalid/internal/switch-fence?scopeId=${s}`);
+    expect(seen[0]?.headers.get(PLATFORM_SECRET_HEADER)).toBe('secret');
+  });
+
+  it("reads only the deployment's own proof as false: a 404 (no route) and a 501 (a host before the fence)", async () => {
+    await expect(answering(() => new Response('nope', { status: 404 })).switchFence({ scopeId: s })).resolves.toBe(false);
+    await expect(
+      answering(() => Response.json({ error: 'redeploy' }, { status: 501 })).switchFence({ scopeId: s }),
+    ).resolves.toBe(false);
+  });
+
+  it('throws on anything else — a probe that could not be answered is neither verdict', async () => {
+    for (const reply of [
+      () => new Response('<!doctype html><html></html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+      () => Response.json({ fenced: 'yes' }),
+      () => new Response('boom', { status: 500 }),
+    ]) {
+      await expect(answering(reply).switchFence({ scopeId: s })).rejects.toBeInstanceOf(ControlPlaneError);
+    }
+  });
+});
+
 describe('VerticalClient.peerSwitch (#1706)', () => {
   const input = { scopeId: s, vertical: 'acme/board-room', to: 'off' as const };
   const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>
@@ -1220,6 +1275,23 @@ describe('VerticalClient.peerSwitch (#1706)', () => {
     expect(seen).toEqual([
       { path: '/internal/peer-switch', body: { scopeId: s, vertical: 'acme/board-room', to: 'off' } },
     ]);
+  });
+
+  it("carries the deployment's fence attestation through, and an older answer's silence as absent (#2045)", async () => {
+    const fenced = answering(() => Response.json({ held: true, changed: true, permissions: [], fenced: true }));
+    await expect(fenced.peerSwitch({ ...input, fence: '01F' })).resolves.toMatchObject({ fenced: true });
+    const old = answering(() => Response.json({ held: true, changed: true, permissions: [] }));
+    expect((await old.peerSwitch({ ...input, fence: '01F' })).fenced).toBeUndefined();
+  });
+
+  it("posts the platform's tenantHeld when it is given (#2030)", async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const client = answering(
+      () => new Response(JSON.stringify({ held: true, changed: true, permissions: [] }), { status: 200 }),
+      seen,
+    );
+    await client.peerSwitch({ ...input, tenantHeld: true });
+    expect(seen[0]?.body).toEqual({ scopeId: s, vertical: 'acme/board-room', to: 'off', tenantHeld: true });
   });
 
   it('a peer the scope holds nothing for is an answer, not a legacy signal', async () => {
