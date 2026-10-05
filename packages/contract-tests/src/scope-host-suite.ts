@@ -3468,9 +3468,9 @@ export function scopeHostContractSuite(
               ),
             });
 
-            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 3, issues: 3, sweepRuns: 3, findings: 0, findingsStaled: 0 });
-            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 2, issues: 2, sweepRuns: 2, findings: 0, findingsStaled: 0 });
-            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 0, issues: 0, sweepRuns: 0, findings: 0, findingsStaled: 0 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 3, issues: 3, sweepRuns: 3 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 2, issues: 2, sweepRuns: 2 });
+            expect(await host.admin.pruneTelemetry!(staff, 3)).toEqual({ opsFailures: 0, issues: 0, sweepRuns: 0 });
             for (const b of backlog) {
               expect(await host.admin.listOpsFailures(staff, { operation: b.op })).toEqual([]);
               expect(await host.admin.listIssues(staff, { operation: b.op })).toEqual([]);

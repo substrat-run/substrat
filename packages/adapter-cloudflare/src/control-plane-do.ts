@@ -20,13 +20,14 @@ import {
   createFindingRule,
   findingOfOpsFailure,
   findingOfSweepRun,
-  findingRetention,
+  pruneFindings,
   listFindingRules,
   listFindings,
   observeFinding,
   revokeFindingRule,
   setFindingStatus,
   type FindingChange,
+  type FindingPruneReport,
   assertRowLimit,
   type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
@@ -1320,6 +1321,8 @@ export const REPLIED_METHODS = [
   'createOrg',
   'registerIdentityPool',
   'linkIdentity',
+  // #1748: refuses an expiry outside its bounds with validation_failed.
+  'createFindingRule',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -4849,16 +4852,27 @@ export class ControlPlaneDO extends DurableObject {
 
   /** The fingerprint-grouped failure classes (#1233), most recently seen first. */
   /** #1632: the telemetry retentions, on the scheduled pass's clock — `telemetryRetentionStatements`. */
-  pruneTelemetry(limit: number): TelemetryPruneReport & { staled: FindingChange[] } {
+  pruneTelemetry(limit: number): TelemetryPruneReport {
     // A negative LIMIT is no limit at all to SQLite (#1632): refused before any statement.
     assertRowLimit('limit', limit);
     const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
     for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
       pruned[table] = this.sql.exec(sql, ...params).toArray().length;
     }
-    // #1748: the stale-resolved findings go back to the host, which audits each one.
-    const findings = findingRetention(doRedactionSql(this.sql), Date.now(), limit);
-    return { ...pruned, findings: findings.deleted, findingsStaled: findings.staled.length, staled: findings.staled };
+    return pruned;
+  }
+
+  /**
+   * #1748: the findings retention pass, in one unit with its audit rows. `audit` is the row the
+   * host minted (actor, attribution); each stale resolution writes a copy under its own id.
+   */
+  pruneFindings(limit: number, audit: AdminEntryInput): FindingPruneReport {
+    assertRowLimit('limit', limit);
+    return this.ctx.storage.transactionSync(() =>
+      pruneFindings(doRedactionSql(this.sql), Date.now(), limit, (a) =>
+        this.recordAdmin({ ...audit, id: ulid(), tenantId: a.target.tenantId, vertical: a.target.vertical, before: a.before, after: a.after }),
+      ),
+    );
   }
 
   /** #1748: findings, most recently seen first — `listFindings`. */

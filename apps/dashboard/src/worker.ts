@@ -5083,23 +5083,31 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
  * key, so no role changed. Reads stay open — a `viewer` still sees what they may not touch.
  */
 async function assertMayManageApps(host: ScopeHost, node: DashboardNode): Promise<void> {
+  await assertMay(host, node, 'dashboard/authorize-scope-change');
+}
+
+/** Invoke one of the dashboard's check-only gates as the caller: the kernel's 403 when they lack it. */
+async function assertMay(
+  host: ScopeHost,
+  node: DashboardNode,
+  gate: 'dashboard/authorize-scope-change' | 'dashboard/authorize-findings-read' | 'dashboard/authorize-findings-change',
+): Promise<void> {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  await dash.invoke('dashboard/authorize-scope-change', {});
+  await dash.invoke(gate, {});
 }
 
 /**
- * The findings gates (#1748): the control plane confines the tenant credential to this team,
- * and these say which PERSON in it may read the inbox (`dashboard:read-findings`) or act on it
- * (`dashboard:manage-findings`). A refusal is the kernel's 403, before the plane is asked.
+ * The findings routes' common head (#1748): the caller's session, then the gate — which person
+ * may read the inbox (`dashboard:read-findings`) or act on it (`dashboard:manage-findings`) —
+ * and only then the team's control plane. The plane confines the credential to the team; the
+ * gate is what tells the people in it apart, so a refusal never reaches the plane.
  */
-async function assertMayReadFindings(host: ScopeHost, node: DashboardNode): Promise<void> {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  await dash.invoke('dashboard/authorize-findings-read', {});
-}
-
-async function assertMayManageFindings(host: ScopeHost, node: DashboardNode): Promise<void> {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  await dash.invoke('dashboard/authorize-findings-change', {});
+async function findingsPlane(c: Context<{ Bindings: Env }>, may: 'read' | 'manage') {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMay(host, node, may === 'read' ? 'dashboard/authorize-findings-read' : 'dashboard/authorize-findings-change');
+  return controlPlaneFor(c.env, node.tenantId, node.principal);
 }
 
 const findingsListQuery = z.object({
@@ -5112,52 +5120,34 @@ const findingsListQuery = z.object({
  * false` is a plane that predates findings — said as such, never as an empty inbox.
  */
 app.get('/api/findings', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayReadFindings(host, node);
-  const filter = findingsListQuery.parse({ status: c.req.query('status'), kind: c.req.query('kind') });
-  const entries = await controlPlaneFor(c.env, node.tenantId, node.principal).listFindings(filter);
+  const cp = await findingsPlane(c, 'read');
+  const entries = await cp.listFindings(findingsListQuery.parse({ status: c.req.query('status'), kind: c.req.query('kind') }));
   return c.json(entries === null ? { available: false, entries: [] } : { available: true, entries });
 });
 
 /** Acknowledge, resolve or reopen one of this team's findings (#1748). */
 app.put('/api/findings/:id/status', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayManageFindings(host, node);
+  const cp = await findingsPlane(c, 'manage');
   const { status } = z.object({ status: findingStatusInput }).parse(await c.req.json());
-  return c.json(await controlPlaneFor(c.env, node.tenantId, node.principal).setFindingStatus(c.req.param('id'), status));
+  return c.json(await cp.setFindingStatus(c.req.param('id'), status));
 });
 
 /** This team's suppress rules (#1748); `?active=true` keeps the unexpired ones. */
 app.get('/api/findings/rules', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayReadFindings(host, node);
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  const cp = await findingsPlane(c, 'read');
   return c.json({ entries: await cp.listFindingRules(c.req.query('active') === 'true') });
 });
 
 /** Suppress with a rule: a scope plus an expiry, audited by the plane (#1748). */
 app.post('/api/findings/rules', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayManageFindings(host, node);
-  const input = findingRuleInput.parse(await c.req.json());
-  return c.json(await controlPlaneFor(c.env, node.tenantId, node.principal).createFindingRule(input), 201);
+  const cp = await findingsPlane(c, 'manage');
+  return c.json(await cp.createFindingRule(findingRuleInput.parse(await c.req.json())), 201);
 });
 
 /** End a suppress rule now (#1748). */
 app.delete('/api/findings/rules/:ruleId', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayManageFindings(host, node);
-  return c.json(await controlPlaneFor(c.env, node.tenantId, node.principal).revokeFindingRule(c.req.param('ruleId')));
+  const cp = await findingsPlane(c, 'manage');
+  return c.json(await cp.revokeFindingRule(c.req.param('ruleId')));
 });
 
 /**

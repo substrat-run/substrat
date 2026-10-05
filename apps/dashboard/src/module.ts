@@ -681,25 +681,23 @@ const unbindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { 
  * trail to hang off (a fork, or an install made before this dashboard tracked them), and
  * the plane's own audit log records each rebind and reap.
  */
-const authorizeScopeChangeOp: OperationHandler<Record<string, never>, { ok: true }> = async (ctx) => {
-  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
-  return { ok: true };
-};
+/** A check-only operation: it writes nothing, and answers whether the caller holds `perm`. */
+const checkOnly =
+  (perm: PermissionKey): OperationHandler<Record<string, never>, { ok: true }> =>
+  async (ctx) => {
+    assertAllowed(await ctx.check(perm));
+    return { ok: true };
+  };
+
+const authorizeScopeChangeOp = checkOnly(DASHBOARD_PERM.provisionApp);
 
 /**
  * The findings gates (#1748): who inside the tenant may read the inbox, and who may act on it.
  * The control plane confines the tenant credential to the tenant; these say WHICH person.
  * Check-only, like `authorize-scope-change`: the read or the verdict is the plane's.
  */
-const authorizeFindingsReadOp: OperationHandler<Record<string, never>, { ok: true }> = async (ctx) => {
-  assertAllowed(await ctx.check(DASHBOARD_PERM.readFindings));
-  return { ok: true };
-};
-
-const authorizeFindingsChangeOp: OperationHandler<Record<string, never>, { ok: true }> = async (ctx) => {
-  assertAllowed(await ctx.check(DASHBOARD_PERM.manageFindings));
-  return { ok: true };
-};
+const authorizeFindingsReadOp = checkOnly(DASHBOARD_PERM.readFindings);
+const authorizeFindingsChangeOp = checkOnly(DASHBOARD_PERM.manageFindings);
 
 const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
 

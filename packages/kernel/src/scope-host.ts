@@ -168,6 +168,7 @@ import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
 import { substratError } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
+import type { FindingPruneReport } from './findings.js';
 import type { SealedSecret } from './secret-box.js';
 import type {
   SystemSwitchReassert,
@@ -3821,6 +3822,13 @@ export interface HostAdmin {
   ): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
   /** End one of `tenantId`'s rules now. Undefined for an unknown rule. Audited. */
   revokeFindingRule(actor: PlatformActorId, tenantId: TenantId, ruleId: string): Promise<FindingRuleEntry | undefined>;
+  /**
+   * The findings retention pass (#1748) — `pruneFindings`: a quiet open or acked finding is
+   * resolved as `stale` with a `resolveStaleFinding` audit row written in the same unit, never
+   * deleted; closed findings and expired rules past the window are deleted, at most `limit` of
+   * each per call. Optional so a host that predates findings degrades the sweep's phase to `null`.
+   */
+  pruneFindings?(actor: PlatformActorId, limit: number): Promise<FindingPruneReport>;
   /** `tenantId`'s suppress rules, newest first; `active` keeps the unexpired ones. Access-logged. */
   listFindingRules(
     actor: PlatformActorId,
@@ -4385,12 +4393,6 @@ export interface TelemetryPruneReport {
   opsFailures: number;
   issues: number;
   sweepRuns: number;
-  /**
-   * Findings (#1748) deleted, and open or acked ones resolved as `stale` (each audited) — see
-   * `findingRetention`. Optional so a host that predates findings still satisfies the shape.
-   */
-  findings?: number;
-  findingsStaled?: number;
 }
 
 /**
@@ -4439,11 +4441,9 @@ export const TELEMETRY_PRUNE_BATCH = 500;
 export function telemetryRetentionStatements(
   nowMs: number,
   limit: number,
-): { table: 'opsFailures' | 'issues' | 'sweepRuns'; sql: string; params: [string, number] }[] {
+): { table: keyof TelemetryPruneReport; sql: string; params: [string, number] }[] {
   const horizon = (days: number) => new Date(nowMs - days * 86_400_000).toISOString();
-  const bounded = (table: string, column: string) =>
-    `DELETE FROM ${table} WHERE rowid IN ` +
-    `(SELECT rowid FROM ${table} WHERE ${column} < ? ORDER BY ${column} LIMIT ?) RETURNING 1`;
+  const bounded = boundedRetentionDelete;
   return [
     {
       table: 'opsFailures',
@@ -4461,6 +4461,18 @@ export function telemetryRetentionStatements(
       params: [horizon(SWEEP_RUN_RETENTION_DAYS), limit],
     },
   ];
+}
+
+/**
+ * One bounded retention DELETE: at most `LIMIT ?` rows whose `column` is before `?`, oldest
+ * first through the column's own index, `RETURNING 1` so the count is what was deleted. Takes
+ * `(horizon, limit)`. The statement `telemetryRetentionStatements` and `pruneFindings` share.
+ */
+export function boundedRetentionDelete(table: string, column: string): string {
+  return (
+    `DELETE FROM ${table} WHERE rowid IN ` +
+    `(SELECT rowid FROM ${table} WHERE ${column} < ? ORDER BY ${column} LIMIT ?) RETURNING 1`
+  );
 }
 
 /** Filter for `listIssues` (#1233). Bounded by `limit` only — see the verb's doc. */

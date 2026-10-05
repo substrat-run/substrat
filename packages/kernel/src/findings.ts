@@ -19,7 +19,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid } from './ulid.js';
 import type { RedactionSql } from './subject-redaction.js';
-import { assertRowLimit, ISSUE_RETENTION_DAYS } from './scope-host.js';
+import { assertRowLimit, boundedRetentionDelete, ISSUE_RETENTION_DAYS } from './scope-host.js';
 
 /**
  * How long a finding outlives its last occurrence — the issue store's window, since a Recurring
@@ -36,8 +36,6 @@ export const FINDING_RETENTION_DAYS = ISSUE_RETENTION_DAYS;
  * finding it implies, so there is no cron and no scan. Per occurrence that is one indexed rule
  * lookup and one primary-key upsert, over evidence that is already bounded upstream.
  */
-export type DirectorySql = RedactionSql;
-
 export const FINDINGS_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_findings (
     id TEXT PRIMARY KEY,
@@ -67,6 +65,7 @@ export const FINDINGS_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_findings_tenant_seen ON _substrat_findings (tenant_id, last_seen);
   CREATE INDEX IF NOT EXISTS _substrat_findings_seen ON _substrat_findings (last_seen);
+  CREATE INDEX IF NOT EXISTS _substrat_findings_quiet ON _substrat_findings (last_seen) WHERE status IN ('open', 'acked');
   CREATE TABLE IF NOT EXISTS _substrat_finding_rules (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
@@ -263,19 +262,13 @@ function ruleOf(r: RuleRow): FindingRuleEntry {
   });
 }
 
-function rowById(sql: DirectorySql, tenantId: string, id: string): FindingRow | undefined {
-  return sql(`SELECT ${FINDING_COLUMNS} FROM _substrat_findings WHERE tenant_id = ? AND id = ?`, [tenantId, id])[0] as
-    | FindingRow
-    | undefined;
-}
-
 /**
  * The unexpired rule covering this occurrence, if any. A rule field left NULL matches anything;
  * a set one must equal the occurrence's — and `= NULL` is never true, so a rule naming an
  * operation never covers a finding that has none.
  */
 function activeRule(
-  sql: DirectorySql,
+  sql: RedactionSql,
   o: { tenantId: string; kind: string; operation: string | null; code: string | null; subject: string },
   at: string,
 ): string | null {
@@ -303,12 +296,13 @@ const MAX_CODES = 5;
  * - it was `suppressed` and no rule covers it any longer → `open`;
  * - otherwise the status stands (`acked` stays acked: somebody is already on it).
  */
-export function observeFinding(sql: DirectorySql, o: FindingObservation, at: string): void {
+export function observeFinding(sql: RedactionSql, o: FindingObservation, at: string): void {
   const ruleId = activeRule(sql, o, at);
   const existing = sql(
-    `SELECT ${FINDING_COLUMNS} FROM _substrat_findings WHERE tenant_id = ? AND kind = ? AND subject = ?`,
+    `SELECT id, status, regressed, codes, resolved_version, likely_cause
+       FROM _substrat_findings WHERE tenant_id = ? AND kind = ? AND subject = ?`,
     [o.tenantId, o.kind, o.subject],
-  )[0] as FindingRow | undefined;
+  )[0] as Pick<FindingRow, 'id' | 'status' | 'regressed' | 'codes' | 'resolved_version' | 'likely_cause'> | undefined;
   if (!existing) {
     sql(
       `INSERT INTO _substrat_findings (${FINDING_COLUMNS})
@@ -382,7 +376,7 @@ export function observeFinding(sql: DirectorySql, o: FindingObservation, at: str
  * Findings, most recently seen first. No cursor, like the issue read it projects: the
  * cardinality is the number of distinct shapes a tenant has, and `limit` bounds it.
  */
-export function listFindings(sql: DirectorySql, filter: FindingFilter = {}): FindingEntry[] {
+export function listFindings(sql: RedactionSql, filter: FindingFilter = {}): FindingEntry[] {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (filter.tenantId !== undefined) {
@@ -419,34 +413,40 @@ export interface FindingChange {
  * revoking the rule is what ends a suppression.
  */
 export function setFindingStatus(
-  sql: DirectorySql,
+  sql: RedactionSql,
   tenantId: TenantId,
   id: string,
   status: FindingStatusInput,
   at: string,
 ): FindingChange | undefined {
-  const existing = rowById(sql, tenantId, id);
+  const existing = sql(`SELECT ${FINDING_COLUMNS} FROM _substrat_findings WHERE tenant_id = ? AND id = ?`, [
+    tenantId,
+    id,
+  ])[0] as FindingRow | undefined;
   if (!existing) return undefined;
   const resolved = status === 'resolved';
-  sql(
-    `UPDATE _substrat_findings SET
-       status = ?, rule_id = NULL,
-       regressed = CASE WHEN ? THEN 0 ELSE regressed END,
-       resolved_at = CASE WHEN ? THEN ? ELSE resolved_at END,
-       resolved_version = CASE WHEN ? THEN last_version ELSE resolved_version END,
-       resolution = CASE WHEN ? THEN 'verdict' ELSE resolution END,
-       acknowledged_at = CASE WHEN ? = 'acked' THEN ? WHEN ? = 'open' THEN NULL ELSE acknowledged_at END
-     WHERE id = ?`,
-    [status, resolved ? 1 : 0, resolved ? 1 : 0, at, resolved ? 1 : 0, resolved ? 1 : 0, status, at, status, id],
-  );
-  return { before: findingOf(existing), after: findingOf(rowById(sql, tenantId, id)!) };
+  const [after] = sql(
+    `UPDATE _substrat_findings SET status = ?, rule_id = NULL, regressed = ?, resolved_at = ?,
+       resolved_version = ?, resolution = ?, acknowledged_at = ?
+     WHERE id = ? RETURNING ${FINDING_COLUMNS}`,
+    [
+      status,
+      resolved ? 0 : existing.regressed,
+      resolved ? at : existing.resolved_at,
+      resolved ? existing.last_version : existing.resolved_version,
+      resolved ? 'verdict' : existing.resolution,
+      status === 'acked' ? at : status === 'open' ? null : existing.acknowledged_at,
+      id,
+    ],
+  ) as FindingRow[];
+  return { before: findingOf(existing), after: findingOf(after!) };
 }
 
 /**
- * A rule expires in the future and within `FINDING_RULE_MAX_DAYS` of `at`. Exported so a host
- * whose store sits behind an RPC hop can refuse BEFORE it, where the refusal keeps its code.
+ * A rule expires in the future and within `FINDING_RULE_MAX_DAYS` of `at`. A host whose store
+ * sits behind an RPC hop calls `createFindingRule` as a replied method, so this keeps its code.
  */
-export function assertFindingRuleExpiry(expiresAt: string, at: string): void {
+function assertFindingRuleExpiry(expiresAt: string, at: string): void {
   if (!(expiresAt > at)) throw substratError('validation_failed', 'a suppress rule must expire in the future');
   const ceiling = new Date(Date.parse(at) + FINDING_RULE_MAX_DAYS * 86_400_000).toISOString();
   if (expiresAt > ceiling) {
@@ -461,7 +461,7 @@ export function assertFindingRuleExpiry(expiresAt: string, at: string): void {
  * held here (`assertFindingRuleExpiry`), against the same `at` every other write in the call uses.
  */
 export function createFindingRule(
-  sql: DirectorySql,
+  sql: RedactionSql,
   tenantId: TenantId,
   input: FindingRuleInput,
   createdBy: string,
@@ -469,7 +469,10 @@ export function createFindingRule(
 ): { rule: FindingRuleEntry; suppressed: string[] } {
   assertFindingRuleExpiry(input.expiresAt, at);
   const id = ulid();
-  sql(`INSERT INTO _substrat_finding_rules (${RULE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+  const [rule] = sql(
+    `INSERT INTO _substrat_finding_rules (${RULE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     RETURNING ${RULE_COLUMNS}`,
+    [
     id,
     tenantId,
     input.kind ?? null,
@@ -480,15 +483,18 @@ export function createFindingRule(
     input.reason,
     createdBy,
     at,
-  ]);
+    ],
+  ) as RuleRow[];
   const covered = sql(
-    `SELECT id FROM _substrat_findings
+    `UPDATE _substrat_findings SET status = 'suppressed', rule_id = ?
       WHERE tenant_id = ? AND status IN ('open', 'acked', 'suppressed')
         AND (? IS NULL OR kind = ?)
         AND (? IS NULL OR operation = ?)
         AND (? IS NULL OR EXISTS (SELECT 1 FROM json_each(codes) WHERE value = ?))
-        AND (? IS NULL OR subject = ?)`,
+        AND (? IS NULL OR subject = ?)
+      RETURNING id`,
     [
+      id,
       tenantId,
       input.kind ?? null,
       input.kind ?? null,
@@ -500,13 +506,7 @@ export function createFindingRule(
       input.subject ?? null,
     ],
   ) as { id: string }[];
-  for (const { id: findingId } of covered) {
-    sql(`UPDATE _substrat_findings SET status = 'suppressed', rule_id = ? WHERE id = ?`, [id, findingId]);
-  }
-  return {
-    rule: ruleOf(sql(`SELECT ${RULE_COLUMNS} FROM _substrat_finding_rules WHERE id = ?`, [id])[0] as RuleRow),
-    suppressed: covered.map((c) => c.id),
-  };
+  return { rule: ruleOf(rule!), suppressed: covered.map((c) => c.id) };
 }
 
 /**
@@ -514,26 +514,25 @@ export function createFindingRule(
  * them — the same thing an expiry does, brought forward.
  */
 export function revokeFindingRule(
-  sql: DirectorySql,
+  sql: RedactionSql,
   tenantId: TenantId,
   ruleId: string,
   at: string,
 ): { before: FindingRuleEntry; after: FindingRuleEntry } | undefined {
-  const read = () =>
-    sql(`SELECT ${RULE_COLUMNS} FROM _substrat_finding_rules WHERE tenant_id = ? AND id = ?`, [tenantId, ruleId])[0] as
-      | RuleRow
-      | undefined;
-  const existing = read();
+  const existing = sql(`SELECT ${RULE_COLUMNS} FROM _substrat_finding_rules WHERE tenant_id = ? AND id = ?`, [
+    tenantId,
+    ruleId,
+  ])[0] as RuleRow | undefined;
   if (!existing) return undefined;
-  if (existing.expires_at > at) {
-    sql('UPDATE _substrat_finding_rules SET expires_at = ? WHERE id = ?', [at, ruleId]);
-  }
-  return { before: ruleOf(existing), after: ruleOf(read()!) };
+  // An already-expired rule keeps its expiry: revoking it changes nothing.
+  const expiresAt = existing.expires_at > at ? at : existing.expires_at;
+  sql('UPDATE _substrat_finding_rules SET expires_at = ? WHERE id = ?', [expiresAt, ruleId]);
+  return { before: ruleOf(existing), after: ruleOf({ ...existing, expires_at: expiresAt }) };
 }
 
 /** A tenant's rules, newest first; `activeAt` keeps only those unexpired at that instant. */
 export function listFindingRules(
-  sql: DirectorySql,
+  sql: RedactionSql,
   tenantId: TenantId | undefined,
   activeAt?: string,
   limit = 100,
@@ -559,38 +558,63 @@ export function listFindingRules(
   ).map(ruleOf);
 }
 
+/** What one `pruneFindings` pass did. */
+export interface FindingPruneReport {
+  /** Resolved and suppressed findings deleted. */
+  deleted: number;
+  /** Open or acked findings resolved as `stale`, each audited. */
+  staled: number;
+  /** Expired suppress rules deleted. */
+  rulesDeleted: number;
+}
+
+/** The audit row one stale resolution writes — `recordAdmin`'s target, before and after. */
+export interface StaleFindingAudit {
+  target: { tenantId: TenantId; vertical: string | null };
+  before: { id: string; status: FindingStatus };
+  after: { id: string; status: 'resolved'; resolution: 'stale' };
+}
+
 /**
- * The findings half of the retention pass, bounded by `limit` per step, oldest first.
+ * The findings retention pass, bounded by `limit` per step, oldest first. Run in ONE unit with
+ * `audit`, which the adapter points at its own admin-log write, so a stale resolution never
+ * lands without its row.
  *
  * An `open` or `acked` finding is never deleted for going quiet: deleting it would take it out
  * of the inbox of whoever was watching it with nothing said. One quiet for the whole
- * `FINDING_RETENTION_DAYS` is RESOLVED as `stale` instead, and returned so the caller can audit each one.
- * A `resolved` or `suppressed` finding is deleted once both its last occurrence and its last
- * resolve are past the horizon — so a stale-resolved finding stays readable for one more window.
- * An expired rule is deleted once its expiry is past the horizon; the admin log keeps its story.
+ * `FINDING_RETENTION_DAYS` is RESOLVED as `stale` instead, and audited. A `resolved` or
+ * `suppressed` finding is deleted once both its last occurrence and its last resolve are past
+ * the horizon — so a stale-resolved finding stays readable for one more window. An expired rule
+ * is deleted once its expiry is past the horizon; the admin log keeps its story.
  */
-export function findingRetention(
-  sql: DirectorySql,
+export function pruneFindings(
+  sql: RedactionSql,
   nowMs: number,
   limit: number,
-): { deleted: number; staled: FindingChange[]; rulesDeleted: number } {
+  audit: (row: StaleFindingAudit) => void,
+): FindingPruneReport {
   assertRowLimit('limit', limit);
   const now = new Date(nowMs).toISOString();
   const horizon = new Date(nowMs - FINDING_RETENTION_DAYS * 86_400_000).toISOString();
   const quiet = sql(
-    `SELECT ${FINDING_COLUMNS} FROM _substrat_findings
+    `SELECT id, tenant_id, vertical, status FROM _substrat_findings
       WHERE last_seen < ? AND status IN ('open', 'acked') ORDER BY last_seen LIMIT ?`,
     [horizon, limit],
-  ) as FindingRow[];
-  const staled: FindingChange[] = [];
-  for (const row of quiet) {
+  ) as Pick<FindingRow, 'id' | 'tenant_id' | 'vertical' | 'status'>[];
+  if (quiet.length > 0) {
     sql(
       `UPDATE _substrat_findings SET status = 'resolved', resolution = 'stale', resolved_at = ?,
          resolved_version = last_version, regressed = 0
-       WHERE id = ?`,
-      [now, row.id],
+       WHERE id IN (SELECT value FROM json_each(?))`,
+      [now, JSON.stringify(quiet.map((q) => q.id))],
     );
-    staled.push({ before: findingOf(row), after: findingOf(rowById(sql, row.tenant_id, row.id)!) });
+  }
+  for (const q of quiet) {
+    audit({
+      target: { tenantId: q.tenant_id as TenantId, vertical: q.vertical },
+      before: { id: q.id, status: q.status as FindingStatus },
+      after: { id: q.id, status: 'resolved', resolution: 'stale' },
+    });
   }
   const deleted = sql(
     `DELETE FROM _substrat_findings WHERE rowid IN (
@@ -600,10 +624,6 @@ export function findingRetention(
         ORDER BY last_seen LIMIT ?) RETURNING 1`,
     [horizon, horizon, limit],
   ).length;
-  const rulesDeleted = sql(
-    `DELETE FROM _substrat_finding_rules WHERE rowid IN (
-       SELECT rowid FROM _substrat_finding_rules WHERE expires_at < ? ORDER BY expires_at LIMIT ?) RETURNING 1`,
-    [horizon, limit],
-  ).length;
-  return { deleted, staled, rulesDeleted };
+  const rulesDeleted = sql(boundedRetentionDelete('_substrat_finding_rules', 'expires_at'), [horizon, limit]).length;
+  return { deleted, staled: quiet.length, rulesDeleted };
 }

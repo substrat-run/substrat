@@ -392,8 +392,9 @@ export function findingsContractSuite(adapterName: string, makeFixture: () => Pr
         expect(before.find((f) => f.subject === quiet)!.status).toBe('open');
         expect(before.find((f) => f.subject === hidden)!.status).toBe('suppressed');
 
-        const report = await host.admin.pruneTelemetry!(staff, 500);
-        expect(report.findingsStaled).toBeGreaterThanOrEqual(1);
+        const report = await host.admin.pruneFindings!(staff, 500);
+        expect(report.staled).toBeGreaterThanOrEqual(1);
+        expect(report.deleted).toBeGreaterThanOrEqual(1);
 
         const after = await host.admin.listFindings(staff, { tenantId: tb, kind: 'invariant' });
         const stale = after.find((f) => f.subject === quiet)!;
@@ -402,10 +403,15 @@ export function findingsContractSuite(adapterName: string, makeFixture: () => Pr
         expect(after.some((f) => f.subject === hidden)).toBe(false);
 
         const audit = await host.admin.auditLog(staff, { tenantId: tb, action: 'resolveStaleFinding' });
-        expect(audit.some((r) => (r.after as { id: string }).id === stale.id)).toBe(true);
+        expect(audit.find((r) => (r.after as { id: string }).id === stale.id)).toMatchObject({
+          actor: staff,
+          tenantId: tb,
+          before: { id: stale.id, status: 'open' },
+          after: { id: stale.id, status: 'resolved', resolution: 'stale' },
+        });
 
         // A second pass changes nothing: the stale-resolved finding's resolve is recent.
-        await host.admin.pruneTelemetry!(staff, 500);
+        await host.admin.pruneFindings!(staff, 500);
         expect((await host.admin.listFindings(staff, { tenantId: tb, kind: 'invariant' })).find((f) => f.id === stale.id)).toBeDefined();
       });
     });

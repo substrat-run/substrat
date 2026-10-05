@@ -432,7 +432,7 @@ import {
   type AsyncLinePass,
   type EmittedReport,
   type FindingChange,
-  assertFindingRuleExpiry,
+  type FindingPruneReport,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -967,7 +967,8 @@ interface ControlPlaneStub {
   listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;
   listIssues(query: IssueQuery): Promise<unknown[]>;
   /** #1632: the telemetry retentions, run by the scheduled pass — `telemetryRetentionStatements`. */
-  pruneTelemetry(limit: number): Promise<TelemetryPruneReport & { staled?: FindingChange[] }>;
+  pruneTelemetry(limit: number): Promise<TelemetryPruneReport>;
+  pruneFindings(limit: number, audit: AdminEntry): Promise<FindingPruneReport>;
   // #1748 — findings; audited here, as every directory mutation is.
   listFindings(filter: FindingFilter): Promise<FindingEntry[]>;
   setFindingStatus(tenantId: TenantId, id: string, status: FindingStatusInput, at: string): Promise<FindingChange | undefined>;
@@ -8541,22 +8542,14 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows.map((r) => sweepRunEntry.parse(r));
       },
       // Checked here as well as in the directory, so the refusal keeps its code across the hop.
-      pruneTelemetry: async (actor, limit: number): Promise<TelemetryPruneReport> => {
-        const { staled = [], ...report } = await this.cp.pruneTelemetry(assertRowLimit('limit', limit));
-        // #1748: a quiet open finding is resolved as stale, audited, never silently deleted.
-        for (const change of staled) {
-          const before = findingEntry.parse(change.before);
-          const after = findingEntry.parse(change.after);
-          await this.recordAdmin(
-            actor,
-            'resolveStaleFinding',
-            { tenantId: after.tenantId, vertical: after.vertical },
-            { id: before.id, status: before.status },
-            { id: after.id, status: after.status, resolution: after.resolution },
-          );
-        }
-        return report;
-      },
+      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> =>
+        this.cp.pruneTelemetry(assertRowLimit('limit', limit)),
+      // #1748: the DO writes each stale resolution's audit row in the same unit, from this one.
+      pruneFindings: async (actor, limit: number): Promise<FindingPruneReport> =>
+        this.cp.pruneFindings(
+          assertRowLimit('limit', limit),
+          this.adminEntry(actor, 'resolveStaleFinding', { tenantId: null }, null, null),
+        ),
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const rows = await this.cp.listIssues({
           status: filter?.status,
@@ -8603,10 +8596,7 @@ export class CloudflareScopeHost implements ScopeHost {
         return after;
       },
       createFindingRule: async (actor, tenantId, input) => {
-        const at = new Date().toISOString();
-        // Refused here as well as in the directory, so the refusal keeps its code across the hop.
-        assertFindingRuleExpiry(input.expiresAt, at);
-        const created = await this.cp.createFindingRule(tenantId, input, actor, at);
+        const created = await this.directory('createFindingRule', tenantId, input, actor, new Date().toISOString());
         const rule = findingRuleEntry.parse(created.rule);
         await this.recordAdmin(actor, 'createFindingRule', { tenantId }, null, {
           rule,

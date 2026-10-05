@@ -1027,7 +1027,10 @@ const findingsQuery = z.object({
 });
 const findingStatusUpdate = z.object({ status: findingStatusInput }).strict();
 const findingRulesQuery = z.object({
-  active: z.enum(['true', 'false']).optional(),
+  active: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
@@ -8898,8 +8901,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // so another tenant's finding is a 404, never a write.
   app.put('/tenants/:tenantId/findings/:id/status', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (outsideTenant(c.get('principal'), tenantId)) return c.json({ error: 'forbidden' }, 403);
     const { status } = findingStatusUpdate.parse(await c.req.json());
     const updated = await c.var.admin.setFindingStatus(c.get('actor'), tenantId, c.req.param('id'), status);
     if (!updated) return c.json({ error: 'unknown finding' }, 404);
@@ -8908,13 +8910,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/tenants/:tenantId/finding-rules', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
-    const q = findingRulesQuery.parse({ active: c.req.query('active'), limit: c.req.query('limit') });
-    const entries = await c.var.admin.listFindingRules(c.get('actor'), tenantId, {
-      active: q.active === 'true',
-      ...(q.limit === undefined ? {} : { limit: q.limit }),
-    });
+    if (outsideTenant(c.get('principal'), tenantId)) return c.json({ error: 'forbidden' }, 403);
+    const filter = findingRulesQuery.parse({ active: c.req.query('active'), limit: c.req.query('limit') });
+    const entries = await c.var.admin.listFindingRules(c.get('actor'), tenantId, filter);
     return c.json({ entries });
   });
 
@@ -8922,16 +8920,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // findings it suppressed at once.
   app.post('/tenants/:tenantId/finding-rules', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (outsideTenant(c.get('principal'), tenantId)) return c.json({ error: 'forbidden' }, 403);
     const input = findingRuleInput.parse(await c.req.json());
     return c.json(await c.var.admin.createFindingRule(c.get('actor'), tenantId, input), 201);
   });
 
   app.delete('/tenants/:tenantId/finding-rules/:ruleId', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (outsideTenant(c.get('principal'), tenantId)) return c.json({ error: 'forbidden' }, 403);
     const revoked = await c.var.admin.revokeFindingRule(c.get('actor'), tenantId, c.req.param('ruleId'));
     if (!revoked) return c.json({ error: 'unknown finding rule' }, 404);
     return c.json(revoked);

@@ -263,12 +263,13 @@ import {
   createFindingRule,
   findingOfOpsFailure,
   findingOfSweepRun,
-  findingRetention,
+  pruneFindings,
   listFindingRules,
   listFindings,
   observeFinding,
   revokeFindingRule,
   setFindingStatus,
+  type FindingPruneReport,
   assertRowLimit,
   assertRowOffset,
   type TelemetryPruneReport,
@@ -10638,26 +10639,22 @@ export class SqliteScopeHost implements ScopeHost {
           }),
         );
       },
-      pruneTelemetry: async (actor, limit: number): Promise<TelemetryPruneReport> => {
+      pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> => {
         // A negative LIMIT is no limit at all to SQLite (#1632): refused before any statement.
         assertRowLimit('limit', limit);
         const pruned: TelemetryPruneReport = { opsFailures: 0, issues: 0, sweepRuns: 0 };
         for (const { table, sql, params } of telemetryRetentionStatements(Date.now(), limit)) {
           pruned[table] = this.directory.prepare(sql).all(...params).length;
         }
-        // #1748: a quiet open finding is resolved as stale, audited, never silently deleted.
-        const findings = findingRetention(redactionSqlOf(this.directory), Date.now(), limit);
-        for (const { before, after } of findings.staled) {
-          this.recordAdmin(
-            actor,
-            'resolveStaleFinding',
-            { tenantId: after.tenantId, vertical: after.vertical },
-            { id: before.id, status: before.status },
-            { id: after.id, status: after.status, resolution: after.resolution },
-          );
-        }
-        return { ...pruned, findings: findings.deleted, findingsStaled: findings.staled.length };
+        return pruned;
       },
+      // #1748: one transaction, so a stale resolution never lands without its audit row.
+      pruneFindings: async (actor, limit: number): Promise<FindingPruneReport> =>
+        this.directory.transaction(() =>
+          pruneFindings(redactionSqlOf(this.directory), Date.now(), limit, (a) =>
+            this.recordAdmin(actor, 'resolveStaleFinding', a.target, a.before, a.after),
+          ),
+        )(),
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const where: string[] = [];
         const params: (string | number)[] = [];
