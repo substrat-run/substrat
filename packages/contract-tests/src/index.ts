@@ -6,6 +6,7 @@ export { impersonationContractSuite } from './impersonation-suite.js';
 export { capabilityContractSuite } from './capability-suite.js';
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
 export { attachmentTextContractSuite } from './attachment-text-suite.js';
+export type { AttachmentTextHostFixture, AttachmentTextHostOptions } from './attachment-text-suite.js';
 export { ATTACHMENT_TEXT_FIXTURES, DOCX_LINES } from './attachment-text-fixtures.js';
 export type { AttachmentTextFixture } from './attachment-text-fixtures.js';
 export { capabilityExpiryContractSuite } from './capability-expiry-suite.js';

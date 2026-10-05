@@ -23,6 +23,13 @@
  * 6. **Dumps.** A dump carries no extracted text. An in-place restore keeps the text of
  *    the attachments it keeps and drops the rest; a fork, whose bytes stay under the
  *    source scope's key, records each attachment as failed rather than leaving it pending.
+ * 7. **A host's own bounds.** A host tightens the input ceiling, the time budget and the
+ *    text cap; a file over the ceiling is never handed to an extractor, an extractor past
+ *    the budget is recorded failed and its late answer is never indexed, and a bound that
+ *    loosens a default is refused when the host is built.
+ * 8. **The backfill.** Attachments that predate extraction — no text row, no run — are
+ *    queued by a one-shot kernel job on the drive, a bounded batch per pass, and the scope
+ *    is never walked again.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -34,6 +41,7 @@ import {
   scopeId as scopeIdSchema,
   tenantId,
   type AttachmentRecord,
+  type TenantId,
   type EntityRef,
   type PrincipalId,
   type ScopeId,
@@ -41,12 +49,16 @@ import {
 import {
   ATTACHMENT_SEARCH_OWNER_MAX,
   ATTACHMENT_SEARCH_TOO_MANY_OWNERS,
+  ATTACHMENT_TEXT_BACKFILL_BATCH,
+  ATTACHMENT_TEXT_BACKFILL_JOB,
   ATTACHMENT_TEXT_JOB,
   ATTACHMENT_TEXT_MODULE,
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
   SearchTermTooShort,
   isSearchIndexTable,
   ulid,
+  type AttachmentExtractor,
+  type AttachmentTextBounds,
   type AttachmentTextState,
   type ScopeHost,
 } from '@substrat-run/kernel';
@@ -62,55 +74,79 @@ const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 const SETUP_HEAVY_MS = 120_000;
 
 
+/** What a fixture builds its host with. Omitted extractors are the host's real ones. */
+export interface AttachmentTextHostOptions {
+  readonly attachmentExtractors?: readonly AttachmentExtractor[];
+  readonly attachmentTextBounds?: Partial<AttachmentTextBounds>;
+}
+
+export interface AttachmentTextHostFixture extends ScopeHostFixture {
+  /**
+   * Put a scope back where it stood before extraction existed: no text rows and no
+   * extraction runs. The backfill's own run — its marker — is left alone. Written straight
+   * to the store, since no host surface may write the spine.
+   */
+  forgetAttachmentText(tenantId: TenantId, scopeId: ScopeId): Promise<void>;
+}
+
 export function attachmentTextContractSuite(
   adapterName: string,
-  makeFixture: () => Promise<ScopeHostFixture>,
+  makeFixture: (options?: AttachmentTextHostOptions) => Promise<AttachmentTextHostFixture>,
 ): void {
   describe(`attachment text search (#1575): ${adapterName}`, () => {
-    let fixture: ScopeHostFixture;
+    let fixture: AttachmentTextHostFixture;
     let host: ScopeHost;
     const t = tenantId.parse(ulid());
     const staff = platformActorId.parse(ulid());
     const editor: PrincipalId = principalId.parse(ulid()); // perm:read + perm:use, tenant-wide
     const bob: PrincipalId = principalId.parse(ulid()); // no role: entity-narrowed grants only
 
+    /** A tenant with the suite's module, a blob store and its roles. */
+    const prepare = async (h: ScopeHost, tn: TenantId): Promise<void> => {
+      h.registerModule(permMod);
+      await h.admin.createTenant(staff, { id: tn, slug: `att-text-${tn.toLowerCase()}`, name: 'Attachment text' });
+      await h.admin.grantEntitlement(staff, tn, 'perm');
+      await h.provisionBlobStore(staff, { tenantId: tn, vertical: 'docs', binding: 'ATTACHMENTS' });
+      await h.admin.defineRole(staff, tn, { key: 'editor', permissions: [PERM_READ, PERM_USE], source: 'vertical' });
+      await h.admin.assignRole(staff, { principalId: editor, roleKey: 'editor', node: { tenantId: tn, scopeId: null } });
+      // A role at the tenant that holds a DIFFERENT key on the target: never "wide" for reading.
+      await h.admin.defineRole(staff, tn, { key: 'user', permissions: [PERM_USE], source: 'vertical' });
+    };
+
     beforeAll(async () => {
       fixture = await makeFixture();
       host = fixture.host;
-      host.registerModule(permMod);
-      await host.admin.createTenant(staff, { id: t, slug: `att-text-${t.toLowerCase()}`, name: 'Attachment text' });
-      await host.admin.grantEntitlement(staff, t, 'perm');
-      await host.provisionBlobStore(staff, { tenantId: t, vertical: 'docs', binding: 'ATTACHMENTS' });
-      await host.admin.defineRole(staff, t, { key: 'editor', permissions: [PERM_READ, PERM_USE], source: 'vertical' });
-      await host.admin.assignRole(staff, { principalId: editor, roleKey: 'editor', node: { tenantId: t, scopeId: null } });
-      // A role at the tenant that holds a DIFFERENT key on the target: never "wide" for reading.
-      await host.admin.defineRole(staff, t, { key: 'user', permissions: [PERM_USE], source: 'vertical' });
+      await prepare(host, t);
     });
 
     afterAll(async () => {
       await fixture.cleanup();
     });
 
-    /** A scope per test: `runDueJobs` drives a whole scope, so tests must not share one. */
-    const newScope = async (): Promise<ScopeId> => {
-      const s = scopeIdSchema.parse(ulid());
-      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
-      await host.admin.activateScope(staff, t, s);
-      return s;
-    };
-    const upload = async (s: ScopeId, entity: EntityRef, filename: string, contentType: string, body: Uint8Array) =>
-      (await host.attachments(editor, t, s)).upload({ entity, filename, contentType, visibility: 'internal', body });
-    /** Drive the scope's due runs until none are left. */
-    const extract = async (s: ScopeId): Promise<void> => {
-      for (let i = 0; i < 100; i += 1) {
-        if ((await host.runDueJobs(t, s, { limit: 500 })).attempted === 0) return;
-      }
-      throw new Error('extraction runs did not settle');
-    };
-    const stateOf = async (s: ScopeId, id: string): Promise<AttachmentTextState | null> =>
-      (await host.getScope(editor, t, s)).invoke<AttachmentTextState | null>('perm/attachment-text', { id });
-    const search = async (s: ScopeId, who: PrincipalId, term: string, limit?: number): Promise<AttachmentRecord[]> =>
-      (await host.attachments(who, t, s)).search(term, limit === undefined ? undefined : { limit });
+    /** The per-scope verbs, as the editor, on one host and tenant. */
+    const verbs = (hostOf: () => ScopeHost, tn: TenantId) => ({
+      /** A scope per test: `runDueJobs` drives a whole scope, so tests must not share one. */
+      newScope: async (): Promise<ScopeId> => {
+        const s = scopeIdSchema.parse(ulid());
+        await hostOf().provisionScope(staff, { tenantId: tn, scopeId: s, vertical: 'docs' });
+        await hostOf().admin.activateScope(staff, tn, s);
+        return s;
+      },
+      upload: async (s: ScopeId, entity: EntityRef, filename: string, contentType: string, body: Uint8Array) =>
+        (await hostOf().attachments(editor, tn, s)).upload({ entity, filename, contentType, visibility: 'internal', body }),
+      /** Drive the scope's due runs until none are left. */
+      extract: async (s: ScopeId): Promise<void> => {
+        for (let i = 0; i < 100; i += 1) {
+          if ((await hostOf().runDueJobs(tn, s, { limit: 500 })).attempted === 0) return;
+        }
+        throw new Error('extraction runs did not settle');
+      },
+      stateOf: async (s: ScopeId, id: string): Promise<AttachmentTextState | null> =>
+        (await hostOf().getScope(editor, tn, s)).invoke<AttachmentTextState | null>('perm/attachment-text', { id }),
+      search: async (s: ScopeId, who: PrincipalId, term: string, limit?: number): Promise<AttachmentRecord[]> =>
+        (await hostOf().attachments(who, tn, s)).search(term, limit === undefined ? undefined : { limit }),
+    });
+    const { newScope, upload, extract, stateOf, search } = verbs(() => host, t);
     const grant = async (s: ScopeId, who: PrincipalId, entity: EntityRef) =>
       (await host.getScope(editor, t, s)).invoke('perm/share', { principal: who, permission: 'perm:read', entity });
     /** Rows the console read sees — the index itself, not the search surface over it. */
@@ -420,6 +456,161 @@ export function attachmentTextContractSuite(
         expect(await search(fork, editor, 'margay')).toEqual([]);
         // The source is untouched.
         expect((await search(s, editor, 'margay')).map((r) => r.id)).toEqual([rec.id]);
+      });
+    });
+
+    describe("a host's own bounds: tighter than the defaults, and held", () => {
+      /** The bounded host's budget, and how long its late extractor takes to answer anyway. */
+      const BUDGET_MS = 200;
+      const LATE_MS = 1_000;
+      const bounds = { maxInputBytes: 1024, maxTextBytes: 64, timeoutMs: BUDGET_MS };
+      /** Filenames the spy was handed bytes for: a file it never sees was never fetched for it. */
+      const handed: string[] = [];
+      const extractors: AttachmentExtractor[] = [
+        {
+          name: 'spy',
+          accepts: (contentType) => contentType === 'application/x-spy',
+          extract: async ({ body, filename }) => {
+            handed.push(filename);
+            return { text: new TextDecoder().decode(body) };
+          },
+        },
+        {
+          // Ignores its signal and answers well past the budget.
+          name: 'late',
+          accepts: (contentType) => contentType === 'application/x-late',
+          extract: () => new Promise((resolve) => setTimeout(() => resolve({ text: 'quokka late answer' }), LATE_MS)),
+        },
+        {
+          name: 'prompt',
+          accepts: (contentType) => contentType === 'application/x-prompt',
+          extract: async () => ({ text: 'quokka prompt answer' }),
+        },
+      ];
+      let bounded: AttachmentTextHostFixture;
+      const bt = tenantId.parse(ulid());
+      const b = verbs(() => bounded.host, bt);
+
+      beforeAll(async () => {
+        bounded = await makeFixture({ attachmentExtractors: extractors, attachmentTextBounds: bounds });
+        await prepare(bounded.host, bt);
+      });
+
+      afterAll(async () => {
+        await bounded.cleanup();
+      });
+
+      it('never hands an extractor a file over the input ceiling, says why, and extracts the one at it', async () => {
+        const s = await b.newScope();
+        handed.length = 0;
+        const over = await b.upload(s, item('i'), 'over.spy', 'application/x-spy', bytes(`quoll ${'x'.repeat(1019)}`));
+        const at = await b.upload(s, item('i'), 'at.spy', 'application/x-spy', bytes(`numbat ${'x'.repeat(1017)}`));
+        expect([over.size, at.size]).toEqual([1025, 1024]);
+        await b.extract(s);
+        expect(await b.stateOf(s, over.id)).toMatchObject({
+          status: 'failed',
+          extractor: 'spy',
+          detail: 'the file is 1025 bytes, over the 1024-byte input bound',
+        });
+        expect((await b.stateOf(s, at.id))?.status).toBe('indexed');
+        expect(handed).toEqual(['at.spy']);
+        expect(await b.search(s, editor, 'quoll')).toEqual([]);
+        expect((await b.search(s, editor, 'numbat')).map((r) => r.id)).toEqual([at.id]);
+        // The upload itself is whole: a bound on extraction is never a bound on the file.
+        expect((await (await bounded.host.attachments(editor, bt, s)).open(over.id))?.body.length).toBe(1025);
+      });
+
+      it('records an extractor past the time budget as failed, and never indexes its late answer', async () => {
+        const s = await b.newScope();
+        const late = await b.upload(s, item('i'), 'late.bin', 'application/x-late', bytes('bytes'));
+        const prompt = await b.upload(s, item('i'), 'prompt.bin', 'application/x-prompt', bytes('bytes'));
+        await b.extract(s);
+        expect(await b.stateOf(s, late.id)).toMatchObject({
+          status: 'failed',
+          extractor: 'late',
+          detail: `extractor 'late' did not answer within ${BUDGET_MS} ms`,
+        });
+        expect((await b.stateOf(s, prompt.id))?.status).toBe('indexed');
+        // Past the moment the late answer lands, and another drive: still never indexed.
+        await new Promise((resolve) => setTimeout(resolve, LATE_MS + 300));
+        await b.extract(s);
+        expect((await b.search(s, editor, 'quokka')).map((r) => r.id)).toEqual([prompt.id]);
+        expect(await b.search(s, editor, 'late')).toEqual([]);
+        expect((await b.stateOf(s, late.id))?.status).toBe('failed');
+      });
+
+      it("cuts text at the host's cap, not the default's", async () => {
+        const s = await b.newScope();
+        const rec = await b.upload(s, item('i'), 'cap.spy', 'application/x-spy', bytes(`kinkajou ${'word '.repeat(50)}capybara`));
+        await b.extract(s);
+        const state = await b.stateOf(s, rec.id);
+        expect(state).toMatchObject({ status: 'indexed', truncated: true });
+        expect(state!.bytes).toBeLessThanOrEqual(64);
+        expect((await b.search(s, editor, 'kinkajou')).map((r) => r.id)).toEqual([rec.id]);
+        expect(await b.search(s, editor, 'capybara')).toEqual([]);
+      });
+
+      it('refuses, when the host is built, a bound that loosens a default or is not a positive integer', async () => {
+        await expect(makeFixture({ attachmentTextBounds: { timeoutMs: DEFAULT_ATTACHMENT_TEXT_BOUNDS.timeoutMs + 1 } })).rejects.toThrow(
+          /only tighten/,
+        );
+        await expect(makeFixture({ attachmentTextBounds: { maxTextBytes: 0 } })).rejects.toThrow(/positive integer/);
+      });
+    });
+
+    describe('the backfill: attachments from before extraction, queued once, a batch per pass', () => {
+      const backfillRuns = (s: ScopeId) =>
+        host.jobRuns(t, s, { moduleId: ATTACHMENT_TEXT_MODULE, job: ATTACHMENT_TEXT_BACKFILL_JOB });
+      const allTextRows = (s: ScopeId) => count(s, 'SELECT count(*) FROM _substrat_search__attachment_text');
+
+      it('walks a backlog in bounded batches on the drive, makes it searchable, and never walks the scope again', async () => {
+        const s = await newScope();
+        const n = ATTACHMENT_TEXT_BACKFILL_BATCH * 2 + 50;
+        const ids: string[] = [];
+        for (let i = 0; i < n; i += 1) {
+          const body = i === 0 ? 'the solenodon backlog' : `backlog filler ${i}`;
+          ids.push((await upload(s, item(`b${i % 7}`), `old-${i}.txt`, 'text/plain', bytes(body))).id);
+        }
+        const solenodon = ids[0]!;
+        ids.sort();
+        await fixture.forgetAttachmentText(t, s);
+        expect(await allTextRows(s)).toBe(0);
+        expect(await stateOf(s, solenodon)).toBeNull();
+
+        // Each drive is one pass: one batch queued, the cursor at its last id.
+        const expected = [
+          [ATTACHMENT_TEXT_BACKFILL_BATCH, 'running'],
+          [ATTACHMENT_TEXT_BACKFILL_BATCH * 2, 'running'],
+          [n, 'done'],
+        ] as const;
+        for (const [queued, status] of expected) {
+          await host.runDueJobs(t, s);
+          const [run, ...more] = await backfillRuns(s);
+          expect(more).toEqual([]);
+          expect(run).toMatchObject({ status, cursor: ids[queued - 1], counters: { scanned: queued, queued } });
+          expect(await allTextRows(s)).toBe(queued);
+        }
+
+        await extract(s);
+        expect((await stateOf(s, solenodon))?.status).toBe('indexed');
+        expect((await search(s, editor, 'solenodon')).map((r) => r.id)).toEqual([solenodon]);
+
+        // The run is the marker: with the text gone again, no drive starts a second walk.
+        await fixture.forgetAttachmentText(t, s);
+        await extract(s);
+        expect(await backfillRuns(s)).toHaveLength(1);
+        expect(await allTextRows(s)).toBe(0);
+      }, SETUP_HEAVY_MS);
+
+      it('marks no scope that holds no attachment — and one that later gets one, once', async () => {
+        const s = await newScope();
+        await extract(s);
+        expect(await backfillRuns(s)).toEqual([]);
+        const rec = await upload(s, item('i'), 'new.txt', 'text/plain', bytes('the hutia memo'));
+        await extract(s);
+        // Walked once, and found the upload's own row there already: nothing queued twice.
+        expect(await backfillRuns(s)).toMatchObject([{ status: 'done', counters: { scanned: 1, queued: 0 } }]);
+        expect((await search(s, editor, 'hutia')).map((r) => r.id)).toEqual([rec.id]);
       });
     });
   });

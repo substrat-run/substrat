@@ -4,12 +4,16 @@ import { errorCodeOf, type AttachmentRecord, type Decision, type PermissionKey }
 import {
   ATTACHMENT_SEARCH_OWNER_MAX,
   ATTACHMENT_SEARCH_TOO_MANY_OWNERS,
+  ATTACHMENT_TEXT_BACKFILL_JOB,
   ATTACHMENT_TEXT_DDL,
   ATTACHMENT_TEXT_JOB,
   ATTACHMENT_TEXT_MODULE,
   assertJobRegistrable,
+  attachmentTextBackfillJob,
   attachmentTextJob,
   enqueueAttachmentText,
+  queueAttachmentTextBackfill,
+  startAttachmentTextBackfill,
   readAttachmentText,
   reconcileAttachmentText,
   recordAttachmentText,
@@ -23,6 +27,7 @@ import {
   assertAttachmentTextBounds,
   chooseAttachmentExtractor,
   inputBoundRefusal,
+  resolveAttachmentTextBounds,
   runAttachmentExtractor,
   truncateUtf8,
   type AttachmentExtractor,
@@ -190,6 +195,82 @@ describe('the text rows and their index', () => {
     expect(readAttachmentText(s.ctx, 'A1')).toMatchObject({ status: 'unsupported', extractor: null, bytes: null, detail: 'no extractor' });
   });
 
+});
+
+describe('the backfill: attachments that predate extraction, queued once, in bounded batches', () => {
+  const runs = (s: ReturnType<typeof scope>, job: string) =>
+    s.count('SELECT count(*) AS n FROM _substrat_job_runs WHERE module_id = ? AND job = ?', ATTACHMENT_TEXT_MODULE, job);
+
+  it('marks a scope once it holds attachments, and never again — whatever its run became', () => {
+    const s = scope();
+    // An empty scope has nothing to walk, and is not marked: the next drive asks again.
+    expect(startAttachmentTextBackfill(s.sql, 'B0', 't')).toBe(false);
+    expect(runs(s, ATTACHMENT_TEXT_BACKFILL_JOB)).toBe(0);
+    s.attach('A1');
+    expect(startAttachmentTextBackfill(s.sql, 'B1', 't')).toBe(true);
+    expect(s.one('SELECT id, instance, payload, status FROM _substrat_job_runs')).toEqual({
+      id: 'B1',
+      instance: 'scope',
+      payload: '{}',
+      status: 'running',
+    });
+    // The run row is the marker: running, done or failed, a second start writes nothing.
+    for (const status of ['running', 'done', 'failed']) {
+      s.db.prepare('UPDATE _substrat_job_runs SET status = ?').run(status);
+      expect(startAttachmentTextBackfill(s.sql, `B-${status}`, 't'), status).toBe(false);
+    }
+    expect(runs(s, ATTACHMENT_TEXT_BACKFILL_JOB)).toBe(1);
+  });
+
+  it('queues only the attachments with no text row, a batch at a time, by id, and replays to nothing', () => {
+    const s = scope();
+    const ids = Array.from({ length: 450 }, (_, i) => `A${String(i).padStart(4, '0')}`);
+    for (const id of ids) s.attach(id);
+    // Every tenth one already has text — an upload since extraction existed.
+    for (const id of ids.filter((_, i) => i % 10 === 0)) recordAttachmentText(s.sql, id, indexed('kept'), 't');
+    let n = 0;
+    const mint = () => `R${(n += 1)}`;
+    const batches = [];
+    let after: string | null = null;
+    for (;;) {
+      const batch = queueAttachmentTextBackfill(s.sql, after, mint, 't', 200);
+      batches.push(batch);
+      after = batch.last;
+      if (batch.done) break;
+    }
+    expect(batches.map((b) => [b.scanned, b.queued, b.done])).toEqual([
+      [200, 180, false],
+      [200, 180, false],
+      [50, 45, true],
+    ]);
+    expect(batches.map((b) => b.last)).toEqual([ids[199], ids[399], ids[449]]);
+    // Each queued attachment: a pending row and one run. The ones with text are untouched.
+    expect(s.count("SELECT count(*) AS n FROM _substrat_search__attachment_text WHERE status = 'pending'")).toBe(405);
+    expect(s.count("SELECT count(*) AS n FROM _substrat_search__attachment_text WHERE status = 'indexed'")).toBe(45);
+    expect(runs(s, ATTACHMENT_TEXT_JOB)).toBe(405);
+    // A batch replayed after a crash (its cursor never committed) queues nothing twice.
+    expect(queueAttachmentTextBackfill(s.sql, null, mint, 't', 200)).toMatchObject({ scanned: 200, queued: 0 });
+    expect(runs(s, ATTACHMENT_TEXT_JOB)).toBe(405);
+  });
+
+  it('the job: one batch per pass, the cursor handed forward, done at the end', async () => {
+    const seen: (string | null)[] = [];
+    const handler = attachmentTextBackfillJob({
+      queueBatch: async (after) => {
+        seen.push(after);
+        return after === null
+          ? { scanned: 200, queued: 7, last: 'A199', done: false }
+          : { scanned: 3, queued: 0, last: 'A202', done: true };
+      },
+    });
+    const counters: Record<string, number> = {};
+    const pass = (cursor: unknown) =>
+      ({ cursor, count: (k: string, by = 1) => (counters[k] = (counters[k] ?? 0) + by) }) as unknown as JobPassContext;
+    expect(await handler(pass(null))).toEqual({ cursor: 'A199', done: false });
+    expect(await handler(pass('A199'))).toEqual({ cursor: 'A202', done: true });
+    expect(seen).toEqual([null, 'A199']);
+    expect(counters).toEqual({ scanned: 203, queued: 7 });
+  });
 });
 
 describe('searchAttachments: authorize first, then match over readable owners', () => {
@@ -651,6 +732,19 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
       }
     }
     expect(() => assertAttachmentTextBounds(DEFAULT_ATTACHMENT_TEXT_BOUNDS)).not.toThrow();
+  });
+
+  it("resolves a host's bounds over the defaults — tighter only, and each a positive integer", () => {
+    expect(resolveAttachmentTextBounds()).toEqual(DEFAULT_ATTACHMENT_TEXT_BOUNDS);
+    expect(resolveAttachmentTextBounds({ timeoutMs: 5_000 })).toEqual({ ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, timeoutMs: 5_000 });
+    for (const key of ['maxInputBytes', 'maxTextBytes', 'timeoutMs'] as const) {
+      // At the default is allowed; one past it is a bound no adapter can keep.
+      expect(resolveAttachmentTextBounds({ [key]: DEFAULT_ATTACHMENT_TEXT_BOUNDS[key] })[key]).toBe(DEFAULT_ATTACHMENT_TEXT_BOUNDS[key]);
+      expect(() => resolveAttachmentTextBounds({ [key]: DEFAULT_ATTACHMENT_TEXT_BOUNDS[key] + 1 })).toThrow(/only tighten/);
+      for (const bad of [Number.NaN, 0, -1, 1.5]) {
+        expect(() => resolveAttachmentTextBounds({ [key]: bad })).toThrow(/positive integer/);
+      }
+    }
   });
 
   it('truncateUtf8 never splits a character', () => {
