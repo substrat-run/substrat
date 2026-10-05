@@ -2333,6 +2333,15 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../contract-tests
+      '@substrat-run/vertical-auth':
+        specifier: workspace:^
+        version: link:../vertical-auth
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
+      better-sqlite3:
+        specifier: 13.0.3
+        version: 13.0.3
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

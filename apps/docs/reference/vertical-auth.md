@@ -218,6 +218,13 @@ including the two OIDC ones where Better Auth stays dormant:
   through untouched. The grant and the invite row live in two Durable Objects, so when the
   row cannot be written after the role was granted the mount revokes the grant before
   reporting the failure, which is what `revokeScopeRole` is for.
+- `membersHook({ roles, directory })`, from the same subpath, is what a vertical hands
+  [`vertical-host`](/reference/vertical-host)'s `members` to let the dashboard manage its
+  members. `roles` is the list it gives `mountInviteRoutes`. Both doors mint an invite with
+  the one `mintMemberInvite`, so a dashboard invite is accepted at the app's own
+  `/api/accept-invite`. Accepting only binds the login in the directory; the role was granted
+  when the invite was made. A removal from the dashboard withdraws the invite in that same
+  directory, so an old link accepted after it finds nothing.
 
 ## Cookie-domain safety
 

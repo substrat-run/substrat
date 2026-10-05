@@ -205,6 +205,7 @@ import {
   assertReplayableDump,
   delegatedReadRecord,
   ownerTransferAudit,
+  memberChangeAudit,
   copyMarkAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
@@ -320,6 +321,10 @@ import {
   DELIVERY_ERROR_REDACTION_SQL,
   REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
+  applyScopeRoleChange,
+  combineCoverage,
+  scopeRoleHolders,
+  type ScopeRoleHolder,
   admitPeer,
   collectPeers,
   peerSeats,
@@ -4350,6 +4355,69 @@ export class SqliteScopeHost implements ScopeHost {
       }
       return bound;
     });
+  }
+
+  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRoleHolder[]> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.enqueue(() => scopeRoleHolders(switchSqlOf(rt.db), scopeId, this.clock()));
+  }
+
+  async changeScopeRoleBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+    from: string,
+    to: string,
+  ): Promise<Coverage> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const subject = asPrincipal(principalId.parse(caller));
+    const target = principalId.parse(principal);
+    return rt.actor.turn(async () => {
+      const sql = switchSqlOf(rt.db);
+      const now = this.clock();
+      if (!scopeRoleHolders(sql, scopeId, now, target).some((h) => h.roleKey === from)) {
+        throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
+      }
+      // `to` must be a role this tenant defines (it throws otherwise); `from` may be one it
+      // no longer does, which confers nothing and is taken without a bound.
+      const bound = combineCoverage([
+        await this.boundIfDefined(subject, tenantId, scopeId, from),
+        await this.assignmentBound(subject, tenantId, scopeId, to),
+      ]);
+      if (bound.covered) applyScopeRoleChange(sql, scopeId, target, { revoke: [from], grant: to }, now);
+      return bound;
+    });
+  }
+
+  async revokeScopeRolesBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const subject = asPrincipal(principalId.parse(caller));
+    const target = principalId.parse(principal);
+    return rt.actor.turn(async () => {
+      const sql = switchSqlOf(rt.db);
+      const now = this.clock();
+      const held = scopeRoleHolders(sql, scopeId, now, target).map((h) => h.roleKey);
+      const bounds = [];
+      for (const roleKey of held) bounds.push(await this.boundIfDefined(subject, tenantId, scopeId, roleKey));
+      const bound = combineCoverage(bounds);
+      if (!bound.covered) return { coverage: bound, revoked: [] };
+      applyScopeRoleChange(sql, scopeId, target, { revoke: held, grant: null }, now);
+      return { coverage: bound, revoked: held };
+    });
+  }
+
+  /** The bound for taking `roleKey` away: null when the tenant no longer defines it. */
+  private async boundIfDefined(
+    subject: CheckSubject, tenantId: TenantId, scopeId: ScopeId, roleKey: string,
+  ): Promise<Coverage | null> {
+    if (!this.roles.has(`${tenantId}/${roleKey}`)) return null;
+    return this.assignmentBound(subject, tenantId, scopeId, roleKey);
   }
 
   /**
@@ -10203,6 +10271,11 @@ export class SqliteScopeHost implements ScopeHost {
       recordOwnerTransfer: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
+      },
+      /** #1150: one phase of a dashboard member change, written around the vertical's own. */
+      recordMemberChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
+        this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {

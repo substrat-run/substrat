@@ -95,6 +95,10 @@ import {
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   seatScopeTuple,
+  applyScopeRoleChange,
+  combineCoverage,
+  scopeRoleHolders,
+  type ScopeRoleHolder,
   effectiveRoleGrantQuery,
   switchRecordedOff,
   switchSystemSchedules,
@@ -3954,6 +3958,63 @@ export function defineScopeDO(
           );
         }
         return bound;
+      });
+    }
+
+    /** The scope's live scope-level role assignments (#1150). */
+    async scopeRoleHoldersFor(scopeId: ScopeId): Promise<ScopeRoleHolder[]> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() => scopeRoleHolders(this.switchSql(), scopeId, new Date().toISOString()));
+    }
+
+    /**
+     * Move `principal` from `from` to `to` in one serialized scope task (#1150): both bounds,
+     * then the tombstone and the grant together. `null` when `to` is not a role of this tenant;
+     * `'not-held'` when `principal` does not hold `from` (the coordinator types both refusals,
+     * since an error thrown here crosses the RPC flattened).
+     */
+    async changeScopeRoleBoundedFor(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      caller: PrincipalId,
+      principal: PrincipalId,
+      from: string,
+      to: string,
+    ): Promise<Coverage | null | 'not-held'> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () => {
+        const sql = this.switchSql();
+        const now = new Date().toISOString();
+        if (!scopeRoleHolders(sql, scopeId, now, principal).some((h) => h.roleKey === from)) return 'not-held';
+        const subject = { kind: 'principal', id: caller } as const;
+        const grant = await this.assignmentBound(subject, tenantId, scopeId, to);
+        if (!grant) return null;
+        const bound = combineCoverage([await this.assignmentBound(subject, tenantId, scopeId, from), grant]);
+        if (bound.covered) applyScopeRoleChange(sql, scopeId, principal, { revoke: [from], grant: to }, now);
+        return bound;
+      });
+    }
+
+    /** Take every scope role `principal` holds in one serialized scope task, bounded (#1150). */
+    async revokeScopeRolesBoundedFor(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      caller: PrincipalId,
+      principal: PrincipalId,
+    ): Promise<{ coverage: Coverage; revoked: string[] }> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () => {
+        const sql = this.switchSql();
+        const now = new Date().toISOString();
+        const held = scopeRoleHolders(sql, scopeId, now, principal).map((h) => h.roleKey);
+        const subject = { kind: 'principal', id: caller } as const;
+        const bounds = [];
+        // A role the tenant no longer defines answers null: it confers nothing, so no bound.
+        for (const roleKey of held) bounds.push(await this.assignmentBound(subject, tenantId, scopeId, roleKey));
+        const bound = combineCoverage(bounds);
+        if (!bound.covered) return { coverage: bound, revoked: [] };
+        applyScopeRoleChange(sql, scopeId, principal, { revoke: held, grant: null }, now);
+        return { coverage: bound, revoked: held };
       });
     }
 

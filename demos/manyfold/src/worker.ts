@@ -35,7 +35,7 @@ import {
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
-import { mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
+import { membersHook, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 import { MODULES, ROLES } from './provision.js';
 import { MANYFOLD_ENV } from './manifest.js';
 import { serveAsset } from './assets.js';
@@ -285,6 +285,9 @@ mountPlatformSurface<Env>(app, {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
     return owner ? principalId.parse(owner) : null;
   },
+  // The dashboard's Members section (#1150): the roles the invite routes below offer, over the
+  // same directory, so a member invited from the dashboard accepts at this app's own route.
+  members: membersHook({ roles: ROLES.map((r) => r.key), directory: identityDo }),
   // The owner seat as the platform may see it, and the claim link it may mint for one that
   // sits empty after the first-sign-in window (#925). Both read the same directory the
   // provision hook above writes.

@@ -1062,6 +1062,22 @@ export interface OwnerClaimLinkView {
   expiresAt: string;
 }
 
+/** An installed app's members (#1150), as the platform relays them from the app's own deployment. */
+export interface AppMembersView {
+  /** The roles a person may be invited at or moved to — the app's declared member roles. */
+  roles: string[];
+  members: { principal: string; roles: string[]; logins: number; email: string | null; owner: boolean }[];
+  invites: { principal: string; roleKey: string; email: string | null; createdAt: number }[];
+}
+
+/** A freshly minted member invite — shown once, stored nowhere. */
+export interface MemberInviteView {
+  principal: string;
+  roleKey: string;
+  email: string | null;
+  acceptUrl: string;
+}
+
 export interface AppEnvView {
   spec: EnvVarSpec[];
   values: AppEnvValue[];
@@ -1796,6 +1812,26 @@ export const api = {
   /** Mint a claim link for an unclaimed owner seat (#925). */
   appOwnerClaim: (scopeId: string) =>
     call<OwnerClaimLinkView>(`/apps/${encodeURIComponent(scopeId)}/owner-claim`, { method: 'POST' }),
+  /** The app's members (#1150) — 501 when the app declares no member roles. */
+  appMembers: (scopeId: string) => call<AppMembersView>(`/apps/${encodeURIComponent(scopeId)}/members`),
+  /** Invite a member; bounded in the app by what the signed-in person holds there. */
+  appInviteMember: (scopeId: string, input: { roleKey: string; email?: string }) =>
+    call<MemberInviteView>(`/apps/${encodeURIComponent(scopeId)}/members`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    }),
+  appChangeMemberRole: (scopeId: string, principal: string, input: { from: string; to: string }) =>
+    call<unknown>(`/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/role`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    }),
+  appRemoveMember: (scopeId: string, principal: string) =>
+    call<{ revoked: string[]; unbound: number; inviteWithdrawn: boolean }>(
+      `/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/remove`,
+      { method: 'POST' },
+    ),
   appEnv: (scopeId: string) => call<AppEnvView>(`/apps/${encodeURIComponent(scopeId)}/env`),
   /** Upsert env values; an empty value leaves a key unchanged (untouched secret). */
   setAppEnv: (scopeId: string, entries: Array<{ key: string; value: string; secret: boolean }>) =>

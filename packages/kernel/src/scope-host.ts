@@ -1,5 +1,6 @@
 import type { ModuleLog } from './module-log.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
+import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type {
   OnBehalfOf,
   ExportReadInput,
@@ -31,6 +32,7 @@ import type {
   AccessLogEntry,
   DelegatedReadRecord,
   OwnerTransferAudit,
+  MemberChangeAudit,
   CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
@@ -3859,6 +3861,15 @@ export interface HostAdmin {
   recordCopyMark(actor: PlatformActorId, entry: CopyMarkAudit): Promise<void>;
 
   /**
+   * Record one phase of a dashboard member change (#1150) — an invite, a role move or a removal
+   * on an installed vertical's scope — as `manageScopeMember`. The change runs in the vertical's
+   * deployment, so the control plane writes these around its call: `intent` first (and must not
+   * call if this throws), then the outcome. `recordOwnerTransfer`'s shape. Throws when the row
+   * cannot be written.
+   */
+  recordMemberChange(actor: PlatformActorId, entry: MemberChangeAudit): Promise<void>;
+
+  /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including
    * `upToId`, marking them shipped to Tier 2. Returns how many rows moved.
    *
@@ -5127,6 +5138,42 @@ export interface ScopeHost {
     assignee: PrincipalId,
     roleKey: string,
   ): Promise<Coverage>;
+
+  /**
+   * The scope's role roster (#1150): every live scope-level role assignment, one row per
+   * (principal, role). One scope, addressed by the caller after its own (tenant, scope) check
+   * — K-3 is asserted here too — so it is a read of this scope, never a walk across scopes.
+   */
+  listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRoleHolder[]>;
+
+  /**
+   * Move `principal` from scope role `from` to `to` in ONE scope task (#1150): the caller's
+   * bound is asked over both roles (taking `from` away is bounded like granting it, §5.1
+   * consequence 1), then `from` is tombstoned and `to` granted together. Nothing is written
+   * on a refusal, so nobody is left holding both roles or neither. Throws `not_found` for a
+   * `to` this tenant does not define, and `conflict` when `principal` does not hold `from`.
+   */
+  changeScopeRoleBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+    from: string,
+    to: string,
+  ): Promise<Coverage>;
+
+  /**
+   * Take every scope role `principal` holds, in ONE scope task (#1150), bounded by the
+   * caller's authority over each (§5.1 consequence 1: you cannot strip what you could not
+   * have granted). A role the tenant no longer defines confers nothing and is taken without a
+   * bound. A refusal writes nothing; `revoked` names what was taken.
+   */
+  revokeScopeRolesBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }>;
 
   /**
    * The recurring-work declarations of every module registered on this host (#383)

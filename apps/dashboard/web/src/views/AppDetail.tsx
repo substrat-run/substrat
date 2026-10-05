@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle } from '../lib/api';
+import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView } from '../lib/api';
 import { diffRegistries, hasRegistryChange } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
@@ -3088,6 +3088,7 @@ const SETTINGS_SECTIONS = [
   { value: 'environment', label: 'Environment' },
   { value: 'domains', label: 'Domains' },
   { value: 'integrations', label: 'Integrations' },
+  { value: 'members', label: 'Members' },
   { value: 'permissions', label: 'Permissions' },
 ];
 
@@ -3105,7 +3106,191 @@ function Settings({ app, section, onSection, onDeleted, authServers }: { app: Ap
       {section === 'environment' && <EnvVars app={app} />}
       {section === 'domains' && <AppDomains app={app} />}
       {section === 'integrations' && <AppIntegrations app={app} />}
+      {section === 'members' && <AppMembers app={app} />}
       {section === 'permissions' && <Permissions app={app} />}
+    </div>
+  );
+}
+
+/**
+ * Members (Settings tab, #1150): who works in this installed app — invited, moved between its
+ * roles, and removed, from where it was installed. The roster lives in the app's own
+ * deployment and comes back through the platform. Every change is bounded THERE by what the
+ * signed-in person holds in the app (you cannot give a role you do not have, nor take one
+ * away), so a teammate who holds nothing in it sees the list and changes nothing; the app's
+ * refusal is shown as it was given. Removal is destructive and typed to confirm; the owner of
+ * record is moved by handing the owner seat over, not here.
+ */
+function AppMembers({ app }: { app: AppRow }) {
+  const scope = app.app_scope_id;
+  const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
+  const [view, setView] = useState<AppMembersView | null | undefined>(undefined);
+  const [unsupported, setUnsupported] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState<MemberInviteView | null>(null);
+  const [removing, setRemoving] = useState<{ principal: string; label: string } | null>(null);
+  const [confirm, setConfirm] = useState('');
+
+  const read = async () => {
+    if (DEV_MOCK) {
+      setView({ roles: ['admin', 'member'], members: [], invites: [] });
+      return;
+    }
+    try {
+      const v = await api.appMembers(scope);
+      setView(v);
+      setRole((r) => (r && v.roles.includes(r) ? r : (v.roles[v.roles.length - 1] ?? '')));
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 501) setUnsupported(e.message);
+      else setErr(e instanceof ApiError ? e.message : String(e));
+      setView(null);
+    }
+  };
+  useEffect(() => {
+    setView(undefined);
+    setUnsupported(null);
+    setErr(null);
+    setLink(null);
+    void read();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
+
+  /** Run one change, show the app's refusal as given, then re-read the roster. */
+  const act = async (run: () => Promise<unknown>) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await run();
+      await read();
+      return true;
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : String(e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (view === undefined) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Reading this app’s members…</div>;
+  if (unsupported !== null) {
+    return (
+      <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+        This app doesn’t let its members be managed from here — it declares no member roles. Manage its members inside the app itself.
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)' }}>{unsupported}</div>
+      </div>
+    );
+  }
+  if (view === null) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load members — {err}</div>;
+
+  const roleOptions = view.roles.map((r) => ({ value: r, label: r }));
+  const who = (m: { email: string | null; principal: string }) => m.email ?? m.principal;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 820 }}>
+      <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <Eyebrow>Invite someone</Eyebrow>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <Input label="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} style={{ width: 260 }} />
+          <Select label="Role" options={roleOptions} value={role} onChange={(e) => setRole(e.target.value)} style={{ width: 180 }} />
+          <Button
+            disabled={busy || !role}
+            onClick={() => act(async () => {
+              setLink(await api.appInviteMember(scope, { roleKey: role, ...(email.trim() ? { email: email.trim() } : {}) }));
+              setEmail('');
+            })}
+          >
+            {busy ? 'Working…' : 'Create invite link'}
+          </Button>
+        </div>
+        {link && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ ...mono, wordBreak: 'break-all' }}>{link.acceptUrl}</span>
+              <CopyButton text={link.acceptUrl} label="Copy invite link" />
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Send it to the person joining as <b>{link.roleKey}</b>. It works once, is shown once and is stored nowhere.
+            </div>
+          </div>
+        )}
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          You can give only a role whose access you hold in this app yourself.
+        </div>
+      </div>
+
+      {err && <div style={{ ...card, padding: '10px 16px', fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
+
+      <div style={{ ...card, padding: 0 }}>
+        <div style={{ padding: '14px 20px' }}><Eyebrow>Members</Eyebrow></div>
+        {view.members.length === 0 && (
+          <div style={{ padding: '0 20px 16px', fontSize: 13, color: 'var(--text-tertiary)' }}>Nobody holds a role in this app yet.</div>
+        )}
+        {view.members.map((m) => (
+          <div key={m.principal} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', borderTop: '1px solid var(--border-subtle)', fontSize: 13, flexWrap: 'wrap' }}>
+            <span style={{ flex: 1, minWidth: 200, ...(m.email ? {} : mono) }}>{who(m)}</span>
+            {m.owner && <Pill kind="info">owner</Pill>}
+            {m.logins === 0 && <Pill kind="neutral">not signed in yet</Pill>}
+            {m.owner || m.roles.length !== 1 || !view.roles.includes(m.roles[0]!) ? (
+              <span style={{ ...mono, color: 'var(--text-secondary)' }}>{m.roles.join(', ')}</span>
+            ) : (
+              <Select
+                size="sm"
+                options={roleOptions}
+                value={m.roles[0]!}
+                onChange={(e) => {
+                  const to = e.target.value;
+                  if (busy) return;
+                  void act(() => api.appChangeMemberRole(scope, m.principal, { from: m.roles[0]!, to }));
+                }}
+                style={{ width: 160 }}
+              />
+            )}
+            {!m.owner && (
+              <Button size="sm" variant="danger" disabled={busy} onClick={() => { setConfirm(''); setRemoving({ principal: m.principal, label: who(m) }); }}>
+                Remove
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {view.invites.length > 0 && (
+        <div style={{ ...card, padding: 0 }}>
+          <div style={{ padding: '14px 20px' }}><Eyebrow>Open invites</Eyebrow></div>
+          {view.invites.map((i) => (
+            <div key={i.principal} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', borderTop: '1px solid var(--border-subtle)', fontSize: 13 }}>
+              <span style={{ flex: 1 }}>{i.email ?? 'Link with no email'}</span>
+              <span style={{ ...mono, color: 'var(--text-secondary)' }}>{i.roleKey}</span>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => act(() => api.appRemoveMember(scope, i.principal))}>
+                Withdraw
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Dialog
+        open={removing !== null}
+        title={removing ? `Remove ${removing.label}?` : ''}
+        danger
+        confirmLabel="Remove member"
+        onCancel={() => setRemoving(null)}
+        confirmDisabled={busy || !removing || confirm !== removing.label}
+        onConfirm={async () => {
+          const target = removing;
+          if (!target) return;
+          if (await act(() => api.appRemoveMember(scope, target.principal))) setRemoving(null);
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ background: 'var(--status-danger-bg)', borderRadius: 6, padding: '12px 14px', fontSize: 12.5, color: 'var(--status-danger-fg)', lineHeight: 1.6 }}>
+            They lose every role in this app the moment you confirm, and their sign-in stops reaching it. Invite them again to give access back.
+          </div>
+          <Input label="Type their name as shown to confirm" placeholder={removing?.label ?? ''} mono value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        </div>
+      </Dialog>
     </div>
   );
 }

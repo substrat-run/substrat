@@ -39,6 +39,19 @@ import {
   type OwnerTransfer,
   type OwnerTransferAbandon,
 } from './owner-seat.js';
+import {
+  INVITE_DDL,
+  createInvite as createInviteRow,
+  listInvites as listInviteRows,
+  getInvite as getInviteRow,
+  inviteExists as inviteExistsRow,
+  revokeInvite as revokeInviteRow,
+  claimInvite as claimInviteRow,
+  listMemberBindings as listMemberBindingRows,
+  type InviteRow,
+  type MemberBinding,
+} from './member-directory.js';
+export type { InviteRow, MemberBinding } from './member-directory.js';
 
 /**
  * The per-tenant IDENTITY Durable Object — one per tenant, running its OWN Better Auth
@@ -94,14 +107,9 @@ const SCHEMA_STATEMENTS: string[] = [
   // the rules over them live in `owner-seat.ts` so they are unit-tested without a DO; the
   // methods below delegate there.
   ...OWNER_SEAT_DDL,
-  // Outstanding member invites (the post-setup join path). Each is a pre-minted principal +
-  // role the admin already granted at scope level, waiting for a login to claim it by token.
-  // Only the token's HASH is stored — the token itself lives in the accept link, never here.
-  `CREATE TABLE IF NOT EXISTS invite (
-    token_hash TEXT PRIMARY KEY, scope_id TEXT NOT NULL, principal TEXT NOT NULL,
-    role_key TEXT NOT NULL, email TEXT, claimed INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
-  `CREATE INDEX IF NOT EXISTS invite_by_scope ON invite (scope_id)`,
+  // Outstanding member invites (the post-setup join path) — the table and its rows are in
+  // `member-directory.ts`, tested there without a DO.
+  ...INVITE_DDL,
   // This DO's own config — notably its session-signing secret, generated here per tenant.
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   // PER-SCOPE instance config, delivered by the platform via /internal/configure
@@ -337,18 +345,12 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * The plaintext token never reaches the DO — only its hash, so a DB read can't mint access.
    */
   async createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void> {
-    this.ctx.storage.sql.exec(
-      'INSERT INTO invite (token_hash, scope_id, principal, role_key, email) VALUES (?, ?, ?, ?, ?)',
-      tokenHash, scopeId, principal, roleKey, email,
-    );
+    createInviteRow(this.registrySql, scopeId, principal, roleKey, email, tokenHash);
   }
 
   /** The scope's outstanding (unclaimed) invites — for the admin's pending-invites list. No token. */
   async listInvites(scopeId: string): Promise<InviteRow[]> {
-    return [...this.ctx.storage.sql.exec(
-      'SELECT principal, role_key, email, created_at FROM invite WHERE scope_id = ? AND claimed = 0 ORDER BY created_at DESC',
-      scopeId,
-    )].map(inviteRowOf);
+    return listInviteRows(this.registrySql, scopeId);
   }
 
   /**
@@ -356,22 +358,17 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * revoke route reads first: the role an invite confers is the role its removal is bounded by.
    */
   async getInvite(scopeId: string, principal: string): Promise<InviteRow | null> {
-    const r = [...this.ctx.storage.sql.exec(
-      'SELECT principal, role_key, email, created_at FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0',
-      scopeId, principal,
-    )][0];
-    return r ? inviteRowOf(r) : null;
+    return getInviteRow(this.registrySql, scopeId, principal);
   }
 
   /** Is there an unclaimed invite for this token hash? (the sign-up gate consults this post-setup). */
   async inviteExists(scopeId: string, tokenHash: string): Promise<boolean> {
-    const r = [...this.ctx.storage.sql.exec('SELECT 1 FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0', scopeId, tokenHash)][0];
-    return r !== undefined;
+    return inviteExistsRow(this.registrySql, scopeId, tokenHash);
   }
 
   /** Withdraw an unclaimed invite by its (pre-minted) principal — the id the admin sees. */
   async revokeInvite(scopeId: string, principal: string): Promise<void> {
-    this.ctx.storage.sql.exec('DELETE FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0', scopeId, principal);
+    revokeInviteRow(this.registrySql, scopeId, principal);
   }
 
   /**
@@ -381,13 +378,7 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * bound principal resolves its permissions immediately.
    */
   async claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null> {
-    const inv = [...this.ctx.storage.sql.exec('SELECT principal FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0', scopeId, tokenHash)][0] as
-      | { principal: string }
-      | undefined;
-    if (!inv) return null;
-    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, inv.principal);
-    this.ctx.storage.sql.exec('UPDATE invite SET claimed = 1 WHERE scope_id = ? AND token_hash = ?', scopeId, tokenHash);
-    return inv.principal;
+    return claimInviteRow(this.registrySql, scopeId, sub, tokenHash);
   }
 
   /**
@@ -407,6 +398,15 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   /** The subjects bound in this scope, at most `limit` — the whole set a places repair sends. */
   async subjectsOf(scopeId: string, limit: number): Promise<string[]> {
     return subjectsOfRows(this.registrySql, scopeId, limit);
+  }
+
+  /**
+   * Who this directory knows at the scope, by principal (#1150): how many subjects are bound to
+   * each, and the address an invite to it named — the identity half of the dashboard's member
+   * roster. The role half is the scope's own (`listScopeRoleHolders`). One scope, never a walk.
+   */
+  async listMemberBindings(scopeId: string): Promise<MemberBinding[]> {
+    return listMemberBindingRows(this.registrySql, scopeId);
   }
 
   /** A Better Auth instance over THIS DO's SQLite, trusting the caller's origin. */
@@ -482,14 +482,6 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
 }
 
 /** An outstanding invite as the directory returns it — never its token. */
-export type InviteRow = { principal: string; roleKey: string; email: string | null; createdAt: number };
-
-const inviteRowOf = (r: Record<string, SqlStorageValue>): InviteRow => ({
-  principal: r.principal as string,
-  roleKey: r.role_key as string,
-  email: (r.email as string | null) ?? null,
-  createdAt: r.created_at as number,
-});
 
 /** A minimal stub shape — the identity DO's callable surface (avoids leaking the full class type). */
 export type IdentityStub = {
@@ -523,6 +515,7 @@ export type IdentityStub = {
   unbind(scopeId: string, sub: string): Promise<boolean>;
   unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;
   subjectsOf(scopeId: string, limit: number): Promise<string[]>;
+  listMemberBindings(scopeId: string): Promise<MemberBinding[]>;
 };
 
 // Drift pin (#1802): every public IdentityDO method must be on IdentityStub, with the class's

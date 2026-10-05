@@ -50,7 +50,7 @@ import {
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
-import { mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
+import { membersHook, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 
 /** The scope-DO class = the app binary: kernel + protocol + Meridian, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {});
@@ -302,6 +302,9 @@ mountPlatformSurface<Env>(app, {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
     return owner ? principalId.parse(owner) : null;
   },
+  // The dashboard's Members section (#1150): the roles the invite routes below offer, over the
+  // same directory, so a member invited from the dashboard accepts at this app's own route.
+  members: membersHook({ roles: ROLES.map((r) => r.key), directory: identityDo }),
   onConfigure: (env, b) =>
     identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries),
   // The owner seat as the platform may see it, and the claim link it may mint for one that

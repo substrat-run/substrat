@@ -39,6 +39,7 @@ mountPlatformSurface(app, {
   transferOwner,   // hand the owner of record to another member (omit ⇒ 501)
   completeOwnerTransfer, // close that hand-over once seated and revoked (required with it)
   abandonOwnerTransfer,  // close an open hand-over without finishing it (omit ⇒ an abandon 501s)
+  members,         // let the dashboard manage this app's members — vertical-auth's membersHook (omit ⇒ 501)
   onDeleteScope,   // (env, scopeId, tenantId?) — e.g. drop a scope from a registry (optional)
 });
 
@@ -74,6 +75,18 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   revoke mirror because every delegated call re-passes the platform's live-connection
   gate first. Generic in the same sense as the group above: owned by the package,
   answered by your host's `connector…Local` members.
+- **Members** — `GET /internal/members`, `POST /internal/members/invite`, `…/role` and
+  `…/remove`: the dashboard's Members section for an installed app. One scope per call. The
+  platform names the `caller`, the signed-in person, and every change is bounded by what that
+  person holds **in this scope** (the kernel's assignment bound, asked in the same scope task
+  that writes): an invite through `assignScopeRoleBounded`, a role move through
+  `changeScopeRoleBounded`, which takes the old role and grants the new one together or not at
+  all, and a removal through `revokeScopeRolesBounded`. A refusal answers `403` naming what is
+  missing and writes nothing. A removal withdraws the person's open invite first, then takes
+  every scope role, then unbinds every login, so an accept of the old link afterwards finds
+  nothing. The owner of record answers `409`: move it with `owner-transfer`. So does a principal
+  holding a role outside the hook's `roles`, such as a service account. Omit `members` and all
+  four answer `501` (this app declares no member roles), which the dashboard shows as such.
 - **Flavored routes** — `provision`, `reconcile`, `configure`, `owner-seat`,
   `owner-claim`, `owner-transfer` — the package keeps the platform-secret gate, body parse and response
   envelope; you supply only the hook. Omit `resolveOwner` / `onConfigure` / `ownerSeat` /

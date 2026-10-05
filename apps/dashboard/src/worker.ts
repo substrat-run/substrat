@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -4196,6 +4196,46 @@ app.post('/api/apps/:scopeId/owner-claim', async (c) => {
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(await cp.mintOwnerClaim(scope), 201);
+});
+
+/**
+ * The app's MEMBERS (#1150): who works in an installed vertical, invited, moved and removed
+ * from here. The roster and every change live in the app's own deployment, so each route goes
+ * through the plane, which names the scope (K-3) and the signed-in person — the client is
+ * minted for `node.principal` — and the vertical bounds every change by what THAT person holds
+ * in the app (§5.1). A teammate who holds nothing there sees the roster and changes nothing.
+ * Authorized like every other app-scoped route first: the app must be the team's own.
+ */
+async function appMembersTarget(c: Context<{ Bindings: Env }>) {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId') ?? '');
+  return { scope, cp: controlPlaneFor(c.env, node.tenantId, node.principal) };
+}
+
+app.get('/api/apps/:scopeId/members', async (c) => {
+  const { scope, cp } = await appMembersTarget(c);
+  return c.json(await cp.listMembers(scope));
+});
+
+app.post('/api/apps/:scopeId/members', async (c) => {
+  const { scope, cp } = await appMembersTarget(c);
+  const body = memberInviteInput.parse(await c.req.json());
+  return c.json(await cp.inviteMember(scope, body), 201);
+});
+
+app.post('/api/apps/:scopeId/members/:principal/role', async (c) => {
+  const { scope, cp } = await appMembersTarget(c);
+  const body = memberRoleInput.parse(await c.req.json());
+  return c.json(await cp.changeMemberRole(scope, principalId.parse(c.req.param('principal')), body));
+});
+
+app.post('/api/apps/:scopeId/members/:principal/remove', async (c) => {
+  const { scope, cp } = await appMembersTarget(c);
+  return c.json(await cp.removeMember(scope, principalId.parse(c.req.param('principal'))));
 });
 
 app.get('/api/apps/:scopeId/auth', async (c) => {
