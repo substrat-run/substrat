@@ -971,17 +971,25 @@ interface ControlPlaneStub {
   pruneFindings(limit: number, audit: AdminEntry): Promise<FindingPruneReport>;
   // #1748 — findings; audited here, as every directory mutation is.
   listFindings(filter: FindingFilter): Promise<FindingEntry[]>;
-  setFindingStatus(tenantId: TenantId, id: string, status: FindingStatusInput, at: string): Promise<FindingChange | undefined>;
+  setFindingStatus(
+    tenantId: TenantId,
+    id: string,
+    status: FindingStatusInput,
+    at: string,
+    audit: AdminEntry,
+  ): Promise<FindingChange | undefined>;
   createFindingRule(
     tenantId: TenantId,
     input: FindingRuleInput,
     createdBy: string,
     at: string,
+    audit: AdminEntry,
   ): Promise<{ rule: FindingRuleEntry; suppressed: string[] }>;
   revokeFindingRule(
     tenantId: TenantId,
     ruleId: string,
     at: string,
+    audit: AdminEntry,
   ): Promise<{ before: FindingRuleEntry; after: FindingRuleEntry } | undefined>;
   listFindingRules(tenantId: TenantId, activeAt: string | undefined, limit: number | undefined): Promise<FindingRuleEntry[]>;
   setIssueStatus(
@@ -8581,42 +8589,22 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'listFindings', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
         return rows.map((r) => findingEntry.parse(r));
       },
+      // #1748: each findings mutation writes its audit row in the DO's own unit, from the row
+      // minted here (actor, attribution) — so a failed audit write rolls the mutation back.
       setFindingStatus: async (actor, tenantId, id, status): Promise<FindingEntry | undefined> => {
-        const change = await this.cp.setFindingStatus(tenantId, id, status, new Date().toISOString());
-        if (!change) return undefined;
-        const before = findingEntry.parse(change.before);
-        const after = findingEntry.parse(change.after);
-        await this.recordAdmin(
-          actor,
-          'setFindingStatus',
-          { tenantId, vertical: after.vertical },
-          { id, status: before.status },
-          { id, status: after.status },
-        );
-        return after;
+        const audit = this.adminEntry(actor, 'setFindingStatus', { tenantId }, null, null);
+        const change = await this.cp.setFindingStatus(tenantId, id, status, new Date().toISOString(), audit);
+        return change ? findingEntry.parse(change.after) : undefined;
       },
       createFindingRule: async (actor, tenantId, input) => {
-        const created = await this.directory('createFindingRule', tenantId, input, actor, new Date().toISOString());
-        const rule = findingRuleEntry.parse(created.rule);
-        await this.recordAdmin(actor, 'createFindingRule', { tenantId }, null, {
-          rule,
-          suppressed: created.suppressed.length,
-        });
-        return { rule, suppressed: created.suppressed.length };
+        const audit = this.adminEntry(actor, 'createFindingRule', { tenantId }, null, null);
+        const created = await this.directory('createFindingRule', tenantId, input, actor, new Date().toISOString(), audit);
+        return { rule: findingRuleEntry.parse(created.rule), suppressed: created.suppressed.length };
       },
       revokeFindingRule: async (actor, tenantId, ruleId): Promise<FindingRuleEntry | undefined> => {
-        const change = await this.cp.revokeFindingRule(tenantId, ruleId, new Date().toISOString());
-        if (!change) return undefined;
-        const before = findingRuleEntry.parse(change.before);
-        const after = findingRuleEntry.parse(change.after);
-        await this.recordAdmin(
-          actor,
-          'revokeFindingRule',
-          { tenantId },
-          { id: ruleId, expiresAt: before.expiresAt },
-          { id: ruleId, expiresAt: after.expiresAt },
-        );
-        return after;
+        const audit = this.adminEntry(actor, 'revokeFindingRule', { tenantId }, null, null);
+        const change = await this.cp.revokeFindingRule(tenantId, ruleId, new Date().toISOString(), audit);
+        return change ? findingRuleEntry.parse(change.after) : undefined;
       },
       listFindingRules: async (actor, tenantId, filter): Promise<FindingRuleEntry[]> => {
         const rows = await this.cp.listFindingRules(

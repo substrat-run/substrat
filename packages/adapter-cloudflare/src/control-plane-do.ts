@@ -28,6 +28,8 @@ import {
   setFindingStatus,
   type FindingChange,
   type FindingPruneReport,
+  type FindingAudit,
+  type RedactionSql,
   assertRowLimit,
   type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
@@ -4870,15 +4872,29 @@ export class ControlPlaneDO extends DurableObject {
     return pruned;
   }
 
-  /**
-   * #1748: the findings retention pass, in one unit with its audit rows. `audit` is the row the
-   * host minted (actor, attribution); each stale resolution writes a copy under its own id.
-   */
+  /** #1748: the findings retention pass, in one unit with its audit rows. */
   pruneFindings(limit: number, audit: AdminEntryInput): FindingPruneReport {
     assertRowLimit('limit', limit);
+    return this.audited(audit, (sql, write) => pruneFindings(sql, Date.now(), limit, write));
+  }
+
+  /**
+   * #1748: a findings mutation and the audit rows it hands back, in ONE unit, so an audit write
+   * that fails rolls the mutation back. `audit` is the row the host minted, with its actor and
+   * attribution; each row the mutation hands back is written as a copy under its own id.
+   */
+  private audited<R>(audit: AdminEntryInput, run: (sql: RedactionSql, write: (row: FindingAudit) => void) => R): R {
     return this.ctx.storage.transactionSync(() =>
-      pruneFindings(doRedactionSql(this.sql), Date.now(), limit, (a) =>
-        this.recordAdmin({ ...audit, id: ulid(), tenantId: a.target.tenantId, vertical: a.target.vertical, before: a.before, after: a.after }),
+      run(doRedactionSql(this.sql), (a) =>
+        this.recordAdmin({
+          ...audit,
+          id: ulid(),
+          action: a.action,
+          tenantId: a.target.tenantId,
+          vertical: a.target.vertical,
+          before: a.before,
+          after: a.after,
+        }),
       ),
     );
   }
@@ -4888,28 +4904,36 @@ export class ControlPlaneDO extends DurableObject {
     return listFindings(doRedactionSql(this.sql), filter);
   }
 
-  /** #1748: a verdict on one tenant finding. Returns before/after for the caller's audit, or undefined. */
-  setFindingStatus(tenantId: TenantId, id: string, status: FindingStatusInput, at: string): FindingChange | undefined {
-    return setFindingStatus(doRedactionSql(this.sql), tenantId, id, status, at);
+  /** #1748: a verdict on one tenant finding, audited in the same unit. Undefined for an unknown one. */
+  setFindingStatus(
+    tenantId: TenantId,
+    id: string,
+    status: FindingStatusInput,
+    at: string,
+    audit: AdminEntryInput,
+  ): FindingChange | undefined {
+    return this.audited(audit, (sql, write) => setFindingStatus(sql, tenantId, id, status, at, write));
   }
 
-  /** #1748: a suppress rule, applied to the findings it covers now. */
+  /** #1748: a suppress rule, applied to the findings it covers now, audited in the same unit. */
   createFindingRule(
     tenantId: TenantId,
     input: FindingRuleInput,
     createdBy: string,
     at: string,
+    audit: AdminEntryInput,
   ): { rule: FindingRuleEntry; suppressed: string[] } {
-    return createFindingRule(doRedactionSql(this.sql), tenantId, input, createdBy, at);
+    return this.audited(audit, (sql, write) => createFindingRule(sql, tenantId, input, createdBy, at, write));
   }
 
-  /** #1748: end a rule now. */
+  /** #1748: end a rule now, audited in the same unit. */
   revokeFindingRule(
     tenantId: TenantId,
     ruleId: string,
     at: string,
+    audit: AdminEntryInput,
   ): { before: FindingRuleEntry; after: FindingRuleEntry } | undefined {
-    return revokeFindingRule(doRedactionSql(this.sql), tenantId, ruleId, at);
+    return this.audited(audit, (sql, write) => revokeFindingRule(sql, tenantId, ruleId, at, write));
   }
 
   /** #1748: a tenant's suppress rules. */

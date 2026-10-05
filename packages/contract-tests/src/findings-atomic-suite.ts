@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { instant, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { FINDING_RETENTION_DAYS, ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
@@ -15,7 +15,8 @@ export type DirectoryExec = (host: ScopeHost, sql: string) => Promise<void>;
  * - The evidence and the finding it implies commit as one unit. A detector that fails takes the
  *   evidence with it, so the caller's retry — or a drain's replay under the same request id —
  *   writes both, rather than finding the evidence already there and the observation lost.
- * - A verdict, a rule created and a rule revoked commit with their audit row, or not at all.
+ * - A verdict, a rule created and a rule revoked commit with their audit row, or not at all
+ *   — and so does a stale resolution in `pruneFindings`.
  *
  * The failures are injected by SQLite triggers on the directory, the one fault both stores
  * raise the same way, and each is dropped before the retry.
@@ -93,6 +94,68 @@ export function findingsAtomicContractSuite(
       const found = await findingsOf('recurring', (x) => x === issue!.fingerprint);
       expect(found).toHaveLength(1);
       expect(found[0]!.count).toBe(1);
+    });
+
+    describe('an audit write that fails takes its mutation with it', () => {
+      const failAudit = (action: string) =>
+        fault(`fault_audit_${action}`, '_substrat_admin_log', 'INSERT', `NEW.action = '${action}'`);
+      const inADay = () => instant.parse(new Date(Date.now() + 86_400_000).toISOString());
+      const opened = async (operation: string) => {
+        await host.admin.recordOpsFailure({ actor: staff, operation, tenantId: t, scopeId: s, message: 'x' });
+        return (await host.admin.listFindings(staff, { tenantId: t })).find((f) => f.operation === operation)!;
+      };
+
+      it('a verdict', async () => {
+        const f = await opened('atomic.verdict');
+        const heal = await failAudit('setFindingStatus');
+        await expect(host.admin.setFindingStatus(staff, t, f.id, 'resolved')).rejects.toThrow(/injected fault/);
+        await heal();
+        expect((await host.admin.listFindings(staff, { tenantId: t })).find((x) => x.id === f.id)!.status).toBe('open');
+        // The twin: with the audit writable, the same verdict lands with its row.
+        await host.admin.setFindingStatus(staff, t, f.id, 'resolved');
+        const rows = await host.admin.auditLog(staff, { tenantId: t, action: 'setFindingStatus' });
+        expect(rows.filter((r) => (r.after as { id: string }).id === f.id)).toHaveLength(1);
+      });
+
+      it('a rule created, and the findings it would have suppressed', async () => {
+        const f = await opened('atomic.rule');
+        const heal = await failAudit('createFindingRule');
+        await expect(
+          host.admin.createFindingRule(staff, t, { operation: 'atomic.rule', expiresAt: inADay(), reason: 'r' }),
+        ).rejects.toThrow(/injected fault/);
+        await heal();
+        expect(await host.admin.listFindingRules(staff, t)).toHaveLength(0);
+        expect((await host.admin.listFindings(staff, { tenantId: t })).find((x) => x.id === f.id)!.status).toBe('open');
+      });
+
+      it('a rule revoked', async () => {
+        const { rule } = await host.admin.createFindingRule(staff, t, {
+          operation: 'atomic.revoke',
+          expiresAt: inADay(),
+          reason: 'r',
+        });
+        const heal = await failAudit('revokeFindingRule');
+        await expect(host.admin.revokeFindingRule(staff, t, rule.id)).rejects.toThrow(/injected fault/);
+        await heal();
+        expect((await host.admin.listFindingRules(staff, t, { active: true })).map((r) => r.id)).toContain(rule.id);
+      });
+
+      it('a stale resolution', async () => {
+        const unit = `${s}:atomic/quiet`;
+        await host.admin.recordSweepRun({
+          kind: 'schedule',
+          unit,
+          outcome: 'failed',
+          tenantId: t,
+          scopeId: s,
+          operation: 'atomic/quiet',
+          at: instant.parse(new Date(Date.now() - (FINDING_RETENTION_DAYS + 10) * 86_400_000).toISOString()),
+        });
+        const heal = await failAudit('resolveStaleFinding');
+        await expect(host.admin.pruneFindings!(staff, 500)).rejects.toThrow(/injected fault/);
+        await heal();
+        expect((await findingsOf('invariant', (x) => x === unit))[0]!.status).toBe('open');
+      });
     });
   });
 }

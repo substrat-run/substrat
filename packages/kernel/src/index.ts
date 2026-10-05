@@ -406,7 +406,7 @@ export {
   revokeFindingRule,
   setFindingStatus,
   type FindingPruneReport,
-  type StaleFindingAudit,
+  type FindingAudit,
   type FindingChange,
   type FindingObservation,
 } from './findings.js';

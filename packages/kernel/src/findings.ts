@@ -409,6 +409,18 @@ export interface FindingChange {
 }
 
 /**
+ * The audit row a findings mutation writes — `recordAdmin`'s action, target, before and after.
+ * Every mutation below hands it to `audit` INSIDE its own statements, so the adapter that runs
+ * them in one unit commits the change and its row together, or neither (#1748).
+ */
+export interface FindingAudit {
+  action: 'setFindingStatus' | 'createFindingRule' | 'revokeFindingRule' | 'resolveStaleFinding';
+  target: { tenantId: TenantId; vertical: string | null };
+  before: unknown;
+  after: unknown;
+}
+
+/**
  * A person's verdict: acknowledge, resolve, or reopen. Keyed on (tenant, id), so a tenant can
  * never move another tenant's finding by guessing its id. Reopening a suppressed finding lifts
  * it out of its rule for now; the next occurrence the rule still covers suppresses it again —
@@ -420,6 +432,7 @@ export function setFindingStatus(
   id: string,
   status: FindingStatusInput,
   at: string,
+  audit: (row: FindingAudit) => void,
 ): FindingChange | undefined {
   const existing = sql(`SELECT ${FINDING_COLUMNS} FROM _substrat_findings WHERE tenant_id = ? AND id = ?`, [
     tenantId,
@@ -443,7 +456,14 @@ export function setFindingStatus(
       id,
     ],
   ) as FindingRow[];
-  return { before: findingOf(existing), after: findingOf(after!) };
+  const change = { before: findingOf(existing), after: findingOf(after!) };
+  audit({
+    action: 'setFindingStatus',
+    target: { tenantId, vertical: change.after.vertical },
+    before: { id, status: change.before.status },
+    after: { id, status: change.after.status },
+  });
+  return change;
 }
 
 /**
@@ -470,6 +490,7 @@ export function createFindingRule(
   input: FindingRuleInput,
   createdBy: string,
   at: string,
+  audit: (row: FindingAudit) => void,
 ): { rule: FindingRuleEntry; suppressed: string[] } {
   assertFindingRuleExpiry(input.expiresAt, at);
   const id = ulid();
@@ -510,7 +531,14 @@ export function createFindingRule(
       input.subject ?? null,
     ],
   ) as { id: string }[];
-  return { rule: ruleOf(rule!), suppressed: covered.map((c) => c.id) };
+  const created = { rule: ruleOf(rule!), suppressed: covered.map((c) => c.id) };
+  audit({
+    action: 'createFindingRule',
+    target: { tenantId, vertical: null },
+    before: null,
+    after: { rule: created.rule, suppressed: covered.length },
+  });
+  return created;
 }
 
 /**
@@ -522,6 +550,7 @@ export function revokeFindingRule(
   tenantId: TenantId,
   ruleId: string,
   at: string,
+  audit: (row: FindingAudit) => void,
 ): { before: FindingRuleEntry; after: FindingRuleEntry } | undefined {
   const existing = sql(`SELECT ${RULE_COLUMNS} FROM _substrat_finding_rules WHERE tenant_id = ? AND id = ?`, [
     tenantId,
@@ -531,7 +560,14 @@ export function revokeFindingRule(
   // An already-expired rule keeps its expiry: revoking it changes nothing.
   const expiresAt = existing.expires_at > at ? at : existing.expires_at;
   sql('UPDATE _substrat_finding_rules SET expires_at = ? WHERE id = ?', [expiresAt, ruleId]);
-  return { before: ruleOf(existing), after: ruleOf({ ...existing, expires_at: expiresAt }) };
+  const change = { before: ruleOf(existing), after: ruleOf({ ...existing, expires_at: expiresAt }) };
+  audit({
+    action: 'revokeFindingRule',
+    target: { tenantId, vertical: null },
+    before: { id: ruleId, expiresAt: change.before.expiresAt },
+    after: { id: ruleId, expiresAt: change.after.expiresAt },
+  });
+  return change;
 }
 
 /** A tenant's rules, newest first; `activeAt` keeps only those unexpired at that instant. */
@@ -572,13 +608,6 @@ export interface FindingPruneReport {
   rulesDeleted: number;
 }
 
-/** The audit row one stale resolution writes — `recordAdmin`'s target, before and after. */
-export interface StaleFindingAudit {
-  target: { tenantId: TenantId; vertical: string | null };
-  before: { id: string; status: FindingStatus };
-  after: { id: string; status: 'resolved'; resolution: 'stale' };
-}
-
 /**
  * The findings retention pass, bounded by `limit` per step, oldest first. Run in ONE unit with
  * `audit`, which the adapter points at its own admin-log write, so a stale resolution never
@@ -595,7 +624,7 @@ export function pruneFindings(
   sql: RedactionSql,
   nowMs: number,
   limit: number,
-  audit: (row: StaleFindingAudit) => void,
+  audit: (row: FindingAudit) => void,
 ): FindingPruneReport {
   assertRowLimit('limit', limit);
   const now = new Date(nowMs).toISOString();
@@ -615,6 +644,7 @@ export function pruneFindings(
   }
   for (const q of quiet) {
     audit({
+      action: 'resolveStaleFinding',
       target: { tenantId: q.tenant_id as TenantId, vertical: q.vertical },
       before: { id: q.id, status: q.status as FindingStatus },
       after: { id: q.id, status: 'resolved', resolution: 'stale' },

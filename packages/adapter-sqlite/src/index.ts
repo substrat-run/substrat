@@ -269,6 +269,7 @@ import {
   observeFinding,
   revokeFindingRule,
   setFindingStatus,
+  type FindingAudit,
   type FindingPruneReport,
   assertRowLimit,
   assertRowOffset,
@@ -6271,6 +6272,17 @@ export class SqliteScopeHost implements ScopeHost {
     return row;
   }
 
+  /**
+   * A findings mutation (#1748) and the audit rows it hands back, in ONE directory transaction:
+   * an audit write that fails rolls the mutation back, so no verdict, rule or stale resolution
+   * stands without its row.
+   */
+  private auditedFindings<R>(actor: PlatformActorId, run: (sql: RedactionSql, audit: (row: FindingAudit) => void) => R): R {
+    return this.directory.transaction(() =>
+      run(redactionSqlOf(this.directory), (a) => this.recordAdmin(actor, a.action, a.target, a.before, a.after)),
+    )();
+  }
+
   private recordAdmin(
     actor: PlatformActorId,
     action: AdminAction,
@@ -10660,11 +10672,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // #1748: one transaction, so a stale resolution never lands without its audit row.
       pruneFindings: async (actor, limit: number): Promise<FindingPruneReport> =>
-        this.directory.transaction(() =>
-          pruneFindings(redactionSqlOf(this.directory), Date.now(), limit, (a) =>
-            this.recordAdmin(actor, 'resolveStaleFinding', a.target, a.before, a.after),
-          ),
-        )(),
+        this.auditedFindings(actor, (sql, audit) => pruneFindings(sql, Date.now(), limit, audit)),
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const where: string[] = [];
         const params: (string | number)[] = [];
@@ -10722,41 +10730,19 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'listFindings', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
         return rows;
       },
-      setFindingStatus: async (actor, tenantId, id, status): Promise<FindingEntry | undefined> => {
-        const change = setFindingStatus(redactionSqlOf(this.directory), tenantId, id, status, new Date().toISOString());
-        if (!change) return undefined;
-        this.recordAdmin(
-          actor,
-          'setFindingStatus',
-          { tenantId, vertical: change.after.vertical },
-          { id, status: change.before.status },
-          { id, status: change.after.status },
-        );
-        return change.after;
-      },
+      // #1748: every findings mutation runs in ONE transaction with its audit row (`audited`).
+      setFindingStatus: async (actor, tenantId, id, status): Promise<FindingEntry | undefined> =>
+        this.auditedFindings(actor, (sql, audit) => setFindingStatus(sql, tenantId, id, status, new Date().toISOString(), audit))
+          ?.after,
       createFindingRule: async (actor, tenantId, input) => {
-        const { rule, suppressed } = createFindingRule(
-          redactionSqlOf(this.directory),
-          tenantId,
-          input,
-          actor,
-          new Date().toISOString(),
+        const { rule, suppressed } = this.auditedFindings(actor, (sql, audit) =>
+          createFindingRule(sql, tenantId, input, actor, new Date().toISOString(), audit),
         );
-        this.recordAdmin(actor, 'createFindingRule', { tenantId }, null, { rule, suppressed: suppressed.length });
         return { rule, suppressed: suppressed.length };
       },
-      revokeFindingRule: async (actor, tenantId, ruleId): Promise<FindingRuleEntry | undefined> => {
-        const change = revokeFindingRule(redactionSqlOf(this.directory), tenantId, ruleId, new Date().toISOString());
-        if (!change) return undefined;
-        this.recordAdmin(
-          actor,
-          'revokeFindingRule',
-          { tenantId },
-          { id: ruleId, expiresAt: change.before.expiresAt },
-          { id: ruleId, expiresAt: change.after.expiresAt },
-        );
-        return change.after;
-      },
+      revokeFindingRule: async (actor, tenantId, ruleId): Promise<FindingRuleEntry | undefined> =>
+        this.auditedFindings(actor, (sql, audit) => revokeFindingRule(sql, tenantId, ruleId, new Date().toISOString(), audit))
+          ?.after,
       listFindingRules: async (actor, tenantId, filter): Promise<FindingRuleEntry[]> => {
         const rows = listFindingRules(
           redactionSqlOf(this.directory),
