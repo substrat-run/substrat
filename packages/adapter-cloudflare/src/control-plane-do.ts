@@ -6,7 +6,10 @@ import {
   membershipFencesTableExists,
   MEMBERSHIP_FENCE_SINCE_SQL,
   RAISE_MEMBERSHIP_FENCE_SQL,
+  joinedMembershipExpiry,
+  liveOrgMembership,
   tenantCoverage,
+  type MembershipChange,
   type MembershipChangeResult,
   type TenantDirectoryReader,
   IMPERSONATION_COLUMNS,
@@ -3172,15 +3175,16 @@ export class ControlPlaneDO extends DurableObject {
    * fence, then the bound — `boundedBy` covering every permission `roleKey` carries, against the
    * tuples and the role as they stand now (`tenantCoverage`) — then the write: the TENANT role
    * and its audit row for an add, `revokeAndFence`'s three for a removal. The coordinator mints
-   * the row (id, actor, attribution, `causedBy`).
+   * the rows (id, actor, attribution, `causedBy`): the role's, and the org's when the change
+   * names one (#2047) — then the org is bounded here too (`boundedBy` a live member of it) and
+   * joined or left in the same unit, a join expiring no later than `boundedBy`'s own membership.
    */
   applyMembership(
-    change:
-      | { op: 'add'; tenantId: string; principal: string; roleKey: string; boundedBy: string; unlessRemovedSince: string }
-      | { op: 'remove'; tenantId: string; principal: string; roleKey: string; boundedBy: string },
+    change: MembershipChange,
     row: AdminEntryInput,
+    orgRow?: AdminEntryInput,
   ): MembershipChangeResult {
-    const { tenantId, principal, roleKey, boundedBy } = change;
+    const { tenantId, principal, roleKey, boundedBy, orgId } = change;
     return this.ctx.storage.transactionSync((): MembershipChangeResult => {
       if (change.op === 'add') {
         const fence = this.sql.exec(MEMBERSHIP_FENCE_SINCE_SQL, tenantId, principal, change.unlessRemovedSince).toArray()[0] as
@@ -3192,11 +3196,29 @@ export class ControlPlaneDO extends DurableObject {
       if (!role) return { applied: false, unknownRole: roleKey };
       const bound = tenantCoverage(this.directoryReader, tenantId, boundedBy, role.permissions);
       if (!bound.covered) return { applied: false, missing: bound.missing };
-      if (change.op === 'remove') {
-        return { applied: true, changed: this.revokeAndFenceIn(tenantId, principal, `role:${roleKey}`, `tenant:${tenantId}`, row) };
+      // #2047: the org, bounded by `boundedBy`'s own live membership of it.
+      const boundingMembership = orgId ? liveOrgMembership(this.directoryReader, tenantId, boundedBy, orgId) : undefined;
+      if (orgId) {
+        if (!orgRow) throw new Error('applyMembership: an org change needs its audit row');
+        if (!this.readOrg(tenantId, orgId)) return { applied: false, unknownOrg: orgId };
+        if (!boundingMembership) return { applied: false, notMember: orgId };
       }
+      if (change.op === 'remove') {
+        const roleTaken = this.revokeAndFenceIn(tenantId, principal, `role:${roleKey}`, `tenant:${tenantId}`, row);
+        const orgLeft = !!orgId && this.revokeAndFenceIn(tenantId, principal, 'member', `org:${orgId}`, orgRow!);
+        return { applied: true, changed: roleTaken || orgLeft };
+      }
+      const at = new Date().toISOString();
       this.writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`, null);
-      this.recordAdmin({ ...row, at: new Date().toISOString() });
+      this.recordAdmin({ ...row, at });
+      if (orgId && boundingMembership) {
+        const expiresAt = joinedMembershipExpiry(
+          boundingMembership,
+          liveOrgMembership(this.directoryReader, tenantId, principal, orgId),
+        );
+        this.writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`, expiresAt);
+        this.recordAdmin({ ...orgRow!, after: { principal, orgId, ...(expiresAt ? { expiresAt } : {}) }, at });
+      }
       return { applied: true };
     });
   }
@@ -3275,17 +3297,17 @@ export class ControlPlaneDO extends DurableObject {
     tenantId: string,
     object: string,
     includeRevoked: boolean,
-  ): { subject: string; revoked_at: string | null }[] {
+  ): { subject: string; revoked_at: string | null; expires_at: string | null }[] {
     return this.sql
       .exec(
-        `SELECT subject, revoked_at FROM _substrat_tenant_tuples
+        `SELECT subject, revoked_at, expires_at FROM _substrat_tenant_tuples
          WHERE tenant_id = ? AND relation = 'member' AND object = ?
          ${includeRevoked ? '' : 'AND revoked_at IS NULL'}
          ORDER BY subject`,
         tenantId,
         object,
       )
-      .toArray() as unknown as { subject: string; revoked_at: string | null }[];
+      .toArray() as unknown as { subject: string; revoked_at: string | null; expires_at: string | null }[];
   }
 
   tenantTuples(tenantId: string, subject: string, relationPrefix: string): TupleRow[] {

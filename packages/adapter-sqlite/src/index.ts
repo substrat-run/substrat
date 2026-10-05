@@ -410,6 +410,8 @@ import {
   membershipFencesTableExists,
   MEMBERSHIP_FENCE_SINCE_SQL,
   RAISE_MEMBERSHIP_FENCE_SQL,
+  joinedMembershipExpiry,
+  liveOrgMembership,
   tenantCoverage,
   type MembershipChangeResult,
   isSecretBoxConfigured,
@@ -8668,14 +8670,15 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'getOrg', { tenantId }, { orgId }, o ? 1 : 0);
         return o;
       },
-      addMember: async (actor, tenantId, principal, orgId) => {
+      addMember: async (actor, tenantId, principal, orgId, opts) => {
         requireOrg(tenantId, orgId);
         // INSERT OR REPLACE, so re-adding a revoked member clears the tombstone —
         // they are a member again. The add/revoke history is not lost: it lives in
         // the append-only admin log, which is where "what happened" belongs. The
         // tuple carries "what is true now" plus enough to explain a live proof.
-        writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`);
-        this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
+        const expiresAt = opts?.expiresAt ?? null;
+        writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`, expiresAt ?? undefined);
+        this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId, ...(expiresAt ? { expiresAt } : {}) });
       },
       applyMembership: async (actor, change) => {
         // ONE directory transaction, synchronous throughout (#1184): the fence (an add's), the
@@ -8694,9 +8697,32 @@ export class SqliteScopeHost implements ScopeHost {
           if (!role) return { applied: false, unknownRole: roleKey };
           const bound = tenantCoverage(directoryReader, tenantId, boundedBy, role.permissions);
           if (!bound.covered) return { applied: false, missing: bound.missing };
-          if (change.op === 'remove') return { applied: true, changed: revokeTenantRoleAndFence(actor, assignment) };
+          // #2047: the org, bounded by `boundedBy`'s own live membership of it.
+          const { orgId } = change;
+          const boundingMembership = orgId && liveOrgMembership(directoryReader, tenantId, boundedBy, orgId);
+          if (orgId) {
+            if (!readOrg(tenantId, orgId)) return { applied: false, unknownOrg: orgId };
+            if (!boundingMembership) return { applied: false, notMember: orgId };
+          }
+          if (change.op === 'remove') {
+            const roleTaken = revokeTenantRoleAndFence(actor, assignment);
+            const orgLeft =
+              !!orgId &&
+              revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, (at) =>
+                this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null, at),
+              );
+            return { applied: true, changed: roleTaken || orgLeft };
+          }
           writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`);
           this.recordAdmin(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment);
+          if (orgId && boundingMembership) {
+            const expiresAt = joinedMembershipExpiry(
+              boundingMembership,
+              liveOrgMembership(directoryReader, tenantId, principal, orgId),
+            );
+            writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`, expiresAt ?? undefined);
+            this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId, ...(expiresAt ? { expiresAt } : {}) });
+          }
           return { applied: true };
         })();
       },
@@ -8715,18 +8741,19 @@ export class SqliteScopeHost implements ScopeHost {
         requireOrg(tenantId, orgId);
         const rows = this.directory
           .prepare(
-            `SELECT subject, revoked_at FROM _substrat_tenant_tuples
+            `SELECT subject, revoked_at, expires_at FROM _substrat_tenant_tuples
              WHERE tenant_id = ? AND relation = 'member' AND object = ?
              ${options?.includeRevoked ? '' : 'AND revoked_at IS NULL'}
              ORDER BY subject`,
           )
-          .all(tenantId, `org:${orgId}`) as { subject: string; revoked_at: string | null }[];
+          .all(tenantId, `org:${orgId}`) as { subject: string; revoked_at: string | null; expires_at: string | null }[];
         this.recordAccess(actor, 'listMembers', { tenantId }, { orgId, ...options }, rows.length);
         return rows.map((r) =>
           orgMembership.parse({
             principal: r.subject.slice('principal:'.length),
             orgId,
             revokedAt: r.revoked_at,
+            expiresAt: r.expires_at,
           }),
         );
       },

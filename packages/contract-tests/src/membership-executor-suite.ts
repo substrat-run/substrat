@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  instant,
   orgId,
   platformActorId,
   principalId,
@@ -44,7 +45,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
    * change of authority would race into. `failNextAdds` fails that many adds' units outright:
    * the transient failure the retry backstop absorbs.
    */
-  const world = (opts: { hold?: () => Promise<void> } = {}) => {
+  const world = (opts: { hold?: () => Promise<void>; orgs?: 'join' } = {}) => {
     const w = {
       failNextAdds: 0,
       fixture: undefined as unknown as ScopeHostFixture,
@@ -61,7 +62,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       w.host = w.fixture.host;
       w.host.registerModule(membershipFixtureMod);
       // `baseDelayMs: 0` so the backstop case can retry inside a test.
-      registerMembershipExecutor(intercepting(w.host, w, opts.hold), { actor: staff, retry: { baseDelayMs: 0 } });
+      registerMembershipExecutor(intercepting(w.host, w, opts.hold), { actor: staff, retry: { baseDelayMs: 0 }, orgs: opts.orgs });
       const { host, t } = w;
       await host.admin.createTenant(staff, { id: t, slug: `invitefix-${t.slice(-10).toLowerCase()}`, name: 'Invitefix' });
       await host.admin.grantEntitlement(staff, t, 'invitefix');
@@ -705,6 +706,224 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
         expect(await holds(w, joe, INVITEFIX_B)).toBe(false);
         expect(await memberOf(w, joe)).toBe(0);
+      });
+    });
+  });
+  describe(`membership executor (#2047), org joins opted into: ${adapterName}`, () => {
+    // Every unit waits here when shut; open, it passes straight through.
+    let release: () => void = () => undefined;
+    let gate: Promise<void> = Promise.resolve();
+    const w = world({ orgs: 'join', hold: () => gate });
+    const shut = () => {
+      gate = new Promise((r) => (release = r));
+    };
+    const settle = () => new Promise((r) => setTimeout(r, 50));
+
+    /** An org of its own per test, granting `invitefix:b` ONLY in scope s2 — a grant no directory unit sees. */
+    const scopeOnlyOrg = async () => {
+      const org = orgId.parse(ulid());
+      await w.host.admin.createOrg(staff, { id: org, tenantId: w.t, slug: `org-${org.slice(-8).toLowerCase()}`, name: 'Org' });
+      await w.host.admin.grantToOrg(staff, org, INVITEFIX_B, { tenantId: w.t, scopeId: w.s2 });
+      return org;
+    };
+    /** A lead tenant-wide — the role is never what refuses in these tests — optionally a member of `org`. */
+    const lead = async (org?: OrgId, expiresAt?: string) => {
+      const who = principalId.parse(ulid());
+      await w.host.admin.assignRole(staff, { principalId: who, roleKey: 'lead', node: tenantNode(w) });
+      if (org) await w.host.admin.addMember(staff, w.t, who, org, expiresAt ? { expiresAt: instant.parse(expiresAt) } : undefined);
+      return who;
+    };
+    const membership = async (who: PrincipalId, org: OrgId) =>
+      (await w.host.admin.listMembers(staff, w.t, org)).find((m) => m.principal === who);
+
+    /** Refused for good, and nothing of it written: no role, no membership, no reach into s2, no trail. */
+    const expectNothing = async (outcomes: ExecutorOutcome[], who: PrincipalId, org: OrgId, reason: RegExp) => {
+      expect(outcomes.map((o) => o.outcome)).toEqual(['refused']);
+      expect(outcomes[0]!.error).toMatch(reason);
+      expect(await memberOf(w, who, org)).toBe(0);
+      expect(await holds(w, who, INVITEFIX_A)).toBe(false);
+      expect(await holds(w, who, INVITEFIX_B, w.s2)).toBe(false);
+      // No write of this add's: neither the role's row nor the membership's.
+      const written = (await causedBy(w, outcomes[0]!.eventId)).filter((r) => r.action === 'assignRole' || r.action === 'addMember');
+      expect(written).toEqual([]);
+    };
+
+    it('a member of the org joins someone to it: the role and the membership in one unit, and the org reaches them in every scope', async () => {
+      const org = await scopeOnlyOrg();
+      const alice = await lead(org);
+      const joe = principalId.parse(ulid());
+      const outcomes = await asJoiner(w, joe, 'invitefix/accept', await send(w, alice, 'member', org));
+      expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
+      expect(await memberOf(w, joe, org)).toBe(1);
+      expect((await membership(joe, org))?.expiresAt).toBeNull();
+      expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
+      // What the org confers, in the one scope it confers it in, and nowhere else.
+      expect(await holds(w, joe, INVITEFIX_B, w.s2)).toBe(true);
+      expect(await holds(w, joe, INVITEFIX_B)).toBe(false);
+      const rows = await causedBy(w, outcomes[0]!.eventId);
+      expect(rows.map((r) => r.action)).toEqual(['assignRole', 'addMember']);
+      for (const row of rows) expect(row.onBehalfOf).toMatchObject({ principal: alice, tenantId: w.t });
+    });
+
+    it('an inviter who is not a member of the org is refused — the role, too — however much tenant authority they hold', async () => {
+      const org = await scopeOnlyOrg();
+      // A lead tenant-wide, who even holds invitefix:b in s2 directly: everything the org confers.
+      const admin = await lead();
+      await w.host.admin.grant(staff, { principalId: admin, permission: INVITEFIX_B, node: { tenantId: w.t, scopeId: w.s2 }, grantedBy: w.alice });
+      const joe = principalId.parse(ulid());
+      const outcomes = await asJoiner(w, joe, 'invitefix/accept', await send(w, admin, 'member', org));
+      await expectNothing(outcomes, joe, org, /inviter .* is not a member of org /);
+      expect((await w.host.executorDeadLetters(w.t, w.s)).find((d) => d.eventId === outcomes[0]!.eventId)?.error).toMatch(/^refused: /);
+    });
+
+    it('a scope-level org grant cannot be laundered through another org that holds the same grant', async () => {
+      // alice is a member of `mine`, which confers exactly what `theirs` does — at the same scope.
+      const mine = await scopeOnlyOrg();
+      const theirs = await scopeOnlyOrg();
+      const alice = await lead(mine);
+      const joe = principalId.parse(ulid());
+      await expectNothing(await asJoiner(w, joe, 'invitefix/accept', await send(w, alice, 'member', theirs)), joe, theirs, /is not a member of org /);
+      // Twin: the org she IS a member of, she can join someone to.
+      const kim = principalId.parse(ulid());
+      expect((await asJoiner(w, kim, 'invitefix/accept', await send(w, alice, 'member', mine))).map((o) => o.outcome)).toEqual(['delivered']);
+      expect(await holds(w, kim, INVITEFIX_B, w.s2)).toBe(true);
+      expect(await memberOf(w, kim, theirs)).toBe(0);
+    });
+
+    it('an inviter removed from the org while the add is held: refused in the unit, and neither the role nor the membership lands', async () => {
+      const org = await scopeOnlyOrg();
+      const carol = await lead(org);
+      const joe = principalId.parse(ulid());
+      const inv = await send(w, carol, 'member', org);
+      shut();
+      const accepting = asJoiner(w, joe, 'invitefix/accept', inv);
+      await settle();
+      await w.host.admin.removeMember(staff, w.t, carol, org);
+      release();
+      await expectNothing(await accepting, joe, org, /inviter .* is not a member of org /);
+    });
+
+    it('twin: an inviter who stays a member through the hold joins them', async () => {
+      const org = await scopeOnlyOrg();
+      const carol = await lead(org);
+      const joe = principalId.parse(ulid());
+      const inv = await send(w, carol, 'member', org);
+      shut();
+      const accepting = asJoiner(w, joe, 'invitefix/accept', inv);
+      await settle();
+      release();
+      expect((await accepting).map((o) => o.outcome)).toEqual(['delivered']);
+      expect(await memberOf(w, joe, org)).toBe(1);
+      expect(await holds(w, joe, INVITEFIX_B, w.s2)).toBe(true);
+    });
+
+    it('an inviter demoted while the add is held: the role\'s bound refuses, and the org is not joined either', async () => {
+      const org = await scopeOnlyOrg();
+      const carol = await lead(org);
+      const joe = principalId.parse(ulid());
+      const inv = await send(w, carol, 'lead', org);
+      shut();
+      const accepting = asJoiner(w, joe, 'invitefix/accept', inv);
+      await settle();
+      await w.host.admin.unassignRole(staff, { principalId: carol, roleKey: 'lead', node: tenantNode(w) });
+      release();
+      await expectNothing(await accepting, joe, org, /inviter .* no longer holds invitefix:a, invitefix:b/);
+    });
+
+    it('the joiner removed from the org while the add is held: the fence refuses both', async () => {
+      const org = await scopeOnlyOrg();
+      const alice = await lead(org);
+      const joe = principalId.parse(ulid());
+      const inv = await send(w, alice, 'member', org);
+      shut();
+      const accepting = asJoiner(w, joe, 'invitefix/accept', inv);
+      await settle();
+      await w.host.admin.removeMember(staff, w.t, joe, org);
+      release();
+      await expectNothing(await accepting, joe, org, /was removed after this request was made/);
+    });
+
+    describe('a temporary member cannot confer a permanent membership', () => {
+      const later = '2999-01-01T00:00:00.000Z';
+
+      it('the joiner\'s membership expires when the inviter\'s does', async () => {
+        const org = await scopeOnlyOrg();
+        const temp = await lead(org, later);
+        const joe = principalId.parse(ulid());
+        expect((await asJoiner(w, joe, 'invitefix/accept', await send(w, temp, 'member', org))).map((o) => o.outcome)).toEqual(['delivered']);
+        expect((await membership(joe, org))?.expiresAt).toBe(later);
+        const row = (await w.host.admin.auditLog(staff, { tenantId: w.t, action: 'addMember', limit: 500 })).find((r) => JSON.stringify(r.after).includes(joe));
+        expect(row?.after).toMatchObject({ principal: joe, orgId: org, expiresAt: later });
+      });
+
+      it('twin: an inviter whose membership never lapses confers one that never lapses', async () => {
+        const org = await scopeOnlyOrg();
+        const alice = await lead(org);
+        const joe = principalId.parse(ulid());
+        await asJoiner(w, joe, 'invitefix/accept', await send(w, alice, 'member', org));
+        expect(await membership(joe, org)).toMatchObject({ expiresAt: null, revokedAt: null });
+      });
+
+      it('a re-invitation by a temporary member does not cut short a membership the joiner already holds', async () => {
+        const org = await scopeOnlyOrg();
+        const temp = await lead(org, later);
+        const joe = principalId.parse(ulid());
+        await w.host.admin.addMember(staff, w.t, joe, org);
+        expect((await asJoiner(w, joe, 'invitefix/accept', await send(w, temp, 'member', org))).map((o) => o.outcome)).toEqual(['delivered']);
+        expect((await membership(joe, org))?.expiresAt).toBeNull();
+      });
+
+      it('an inviter whose membership has already lapsed is no member, and confers nothing', async () => {
+        const org = await scopeOnlyOrg();
+        const lapsed = await lead(org, '2000-01-01T00:00:00.000Z');
+        const joe = principalId.parse(ulid());
+        await expectNothing(await asJoiner(w, joe, 'invitefix/accept', await send(w, lapsed, 'member', org)), joe, org, /is not a member of org /);
+      });
+    });
+
+    describe('removal is bounded the same way', () => {
+      const joined = async () => {
+        const org = await scopeOnlyOrg();
+        const alice = await lead(org);
+        const joe = principalId.parse(ulid());
+        expect((await asJoiner(w, joe, 'invitefix/accept', await send(w, alice, 'member', org))).map((o) => o.outcome)).toEqual(['delivered']);
+        return { org, alice, joe };
+      };
+
+      it('a member removes: the role and the membership go together, each audited', async () => {
+        const { org, alice, joe } = await joined();
+        const outcomes = await removeAs(w, alice, joe, 'member', org);
+        expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
+        expect(await memberOf(w, joe, org)).toBe(0);
+        expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
+        expect(await holds(w, joe, INVITEFIX_B, w.s2)).toBe(false);
+        expect((await causedBy(w, outcomes[0]!.eventId)).map((r) => r.action)).toEqual(['unassignRole', 'removeMember']);
+      });
+
+      it('a remover who is not a member of the org removes nothing — neither the membership nor the role', async () => {
+        const { org, joe } = await joined();
+        const outsider = await lead();
+        const outcomes = await removeAs(w, outsider, joe, 'member', org);
+        expect(outcomes.map((o) => o.outcome)).toEqual(['refused']);
+        expect(outcomes[0]!.error).toMatch(/remover .* is not a member of org /);
+        expect(await memberOf(w, joe, org)).toBe(1);
+        expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
+        expect(await holds(w, joe, INVITEFIX_B, w.s2)).toBe(true);
+      });
+
+      it('a remover taken out of the org while their removal is held removes nothing', async () => {
+        const { org, joe } = await joined();
+        const carol = await lead(org);
+        shut();
+        const removing = removeAs(w, carol, joe, 'member', org);
+        await settle();
+        await w.host.admin.removeMember(staff, w.t, carol, org);
+        release();
+        const outcomes = await removing;
+        expect(outcomes.map((o) => o.outcome)).toEqual(['refused']);
+        expect(outcomes[0]!.error).toMatch(/remover .* is not a member of org /);
+        expect(await memberOf(w, joe, org)).toBe(1);
+        expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
       });
     });
   });

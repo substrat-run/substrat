@@ -747,6 +747,8 @@ export const orgMembership = z.object({
   principal: principalId,
   orgId,
   revokedAt: instant.nullable(),
+  /** When the membership lapses on its own (#2047), or `null` for never. */
+  expiresAt: instant.nullable().default(null),
 });
 export type OrgMembership = z.infer<typeof orgMembership>;
 

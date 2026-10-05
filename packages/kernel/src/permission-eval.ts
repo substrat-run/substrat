@@ -576,6 +576,44 @@ export function tenantCoverage(
 }
 
 /**
+ * `principal`'s live membership of `orgId` — its tuple, or `undefined` (#2047). Synchronous, for
+ * the org bound a directory unit asks: joining someone to an org, or taking them out of it,
+ * needs the inviter or remover to be a live member themselves.
+ *
+ * That is the exact K-21 bound for an org. Membership confers the same thing on every member,
+ * at every node — the org's tenant grants, its grants in each scope's own store, its
+ * entity-narrowed grants, and whatever it is granted later — so a member holds everything a
+ * join would confer, and a non-member does not. No scope store is read, because none needs to
+ * be: equality of membership is the comparison.
+ */
+export function liveOrgMembership(
+  reader: TenantDirectoryReader,
+  tenantId: string,
+  principal: string,
+  orgId: string,
+): PermissionTupleRow | undefined {
+  const now = reader.now();
+  return reader
+    .tenantTuples(tenantId, `principal:${principal}`, 'member')
+    .find((row) => row.relation === 'member' && row.object === `org:${orgId}` && live(row, now));
+}
+
+/**
+ * When a membership written by a join expires (#2047): never later than the membership of the
+ * principal whose authority bounded it, so a temporary member cannot confer a permanent one,
+ * and never earlier than a live membership the joiner already holds, which a re-invitation must
+ * not cut short. `null` is "never".
+ */
+export function joinedMembershipExpiry(
+  bound: Pick<PermissionTupleRow, 'expires_at'>,
+  existing: Pick<PermissionTupleRow, 'expires_at'> | undefined,
+): string | null {
+  if (!existing) return bound.expires_at;
+  if (existing.expires_at === null || bound.expires_at === null) return null;
+  return existing.expires_at > bound.expires_at ? existing.expires_at : bound.expires_at;
+}
+
+/**
  * What one tuple row contributes at `nodeObj` — a role to expand, a permission held directly, or
  * nothing — for `covers` and `tenantCoverage` alike, so the two read a row the same way.
  */
