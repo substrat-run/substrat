@@ -43,6 +43,7 @@ import {
   modelUsageLine,
 } from '@substrat-run/contracts';
 import { MAX_SEARCH_LIMIT } from '@substrat-run/kernel';
+import { dayNumberOf, isTimeZone, minutesOf } from '../src/business-time.js';
 
 /**
  * How much wider than the answer the knowledge-base search asks the index for.
@@ -450,6 +451,81 @@ const slaTargetsByPriority = z
   })
   .strict();
 
+/** How many openings one day may have: a morning, an afternoon, an evening, and one spare. */
+export const BUSINESS_WINDOWS_PER_DAY_MAX = 4;
+/**
+ * How many dated exceptions a desk may hold: a year of them, every day named.
+ *
+ * Also what keeps the business-time walk bounded (`src/business-time.ts`): past its
+ * ten-year exact horizon the walk counts whole weeks at once, except across an exception,
+ * which it walks a day at a time. So the work is the horizon plus at most two weeks per
+ * exception, whatever dates they name, and this cap is what makes that a number.
+ */
+export const BUSINESS_EXCEPTIONS_MAX = 366;
+
+/** A local wall-clock time, `HH:MM`, 24-hour; `24:00` is the end of the day. */
+const wallClockTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/, 'HH:MM, 00:00–24:00');
+
+/**
+ * A day's openings, earliest first and not overlapping: `[{ open: '09:00', close: '17:00' }]`.
+ * Empty is closed. Ordered and disjoint at save time so the widget's line and the clock
+ * read the same day, and so a typo that overlaps two windows is refused rather than
+ * counted twice.
+ */
+const businessWindows = z
+  .array(
+    z
+      .object({ open: wallClockTime, close: wallClockTime })
+      .strict()
+      .refine((w) => minutesOf(w.open) < minutesOf(w.close), 'a window closes after it opens'),
+  )
+  .max(BUSINESS_WINDOWS_PER_DAY_MAX)
+  .refine(
+    (ws) => ws.every((w, i) => i === 0 || minutesOf(ws[i - 1]!.close) <= minutesOf(w.open)),
+    'windows are in order and do not overlap',
+  );
+
+/**
+ * A desk's opening hours (#1648): a standing week in one timezone, and dated days that
+ * replace it. `src/business-time.ts` is what reads it, and says how DST is resolved.
+ */
+export const businessHoursSchedule = z
+  .object({
+    /** An IANA zone, `Europe/Stockholm`. The windows are wall-clock time in it. */
+    timezone: z.string().min(1).refine(isTimeZone, 'an IANA timezone, such as Europe/Stockholm'),
+    weekly: z
+      .object({
+        mon: businessWindows.optional(),
+        tue: businessWindows.optional(),
+        wed: businessWindows.optional(),
+        thu: businessWindows.optional(),
+        fri: businessWindows.optional(),
+        sat: businessWindows.optional(),
+        sun: businessWindows.optional(),
+      })
+      .strict()
+      // A week with no open time has no business time in it, and a business-time target
+      // on it would never fall due. Refused here rather than discovered by the clock.
+      .refine((week) => Object.values(week).some((ws) => (ws ?? []).length > 0), 'open at least once a week'),
+    /**
+     * Holidays and special days: the date's windows REPLACE its weekday's. `[]` is closed
+     * all day; windows are special hours. One entry per date.
+     */
+    exceptions: z
+      .array(
+        z
+          .object({
+            date: z.string().refine((d) => !Number.isNaN(dayNumberOf(d)), 'a date, YYYY-MM-DD'),
+            windows: businessWindows,
+          })
+          .strict(),
+      )
+      .max(BUSINESS_EXCEPTIONS_MAX)
+      .refine((es) => new Set(es.map((e) => e.date)).size === es.length, 'one exception per date')
+      .optional(),
+  })
+  .strict();
+
 /**
  * Everything `desk_settings.settings` may say — the built-in behaviours a desk switches
  * on, one key each (#1083).
@@ -495,10 +571,25 @@ export const deskSettingsBlob = z
       .object({
         firstResponseMinutes: slaTargetsByPriority.optional(),
         resolutionMinutes: slaTargetsByPriority.optional(),
+        /**
+         * Which clock the targets count on (#1648). `calendar`, or absent, is every
+         * minute. `business` is only the minutes inside `businessHours`, so "4 hours" on
+         * a Friday-evening mail falls due on Monday. With `business` and no usable
+         * `businessHours` the targets count calendar time: a desk is never left with a
+         * clock that cannot run out.
+         */
+        clock: z.enum(['calendar', 'business']).optional(),
       })
       .strict()
       .nullable()
       .optional(),
+    /**
+     * The desk's opening hours, structured (#1648): `businessHoursSchedule`. Read by a
+     * `sla` on the `business` clock, and by the widget, which shows the line derived from
+     * it in place of the free-text `business_hours` note. Absent or `null` is none, and
+     * the widget falls back to the note. Set whole, like every key here.
+     */
+    businessHours: businessHoursSchedule.nullable().optional(),
     /**
      * Tag a conversation on arrival when its subject or first message says something a
      * rule looks for (#1083). Swept by `ticket0/auto-tag`.
@@ -1699,6 +1790,12 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       fromAddress: z.string().email().optional(),
       greeting: z.string().min(1).optional(),
       allowedOrigins: z.array(z.string().url()).optional(),
+      /**
+       * The desk's opening hours as a free-text NOTE, shown to widget visitors verbatim
+       * when the desk has no structured hours (`settings.businessHours`, #1648), and read
+       * by nothing else. Never parsed: it is whatever a person typed. Absent keeps it,
+       * `null` clears it.
+       */
       businessHours: z.string().nullable().optional(),
       /**
        * Hand the assistant the autonomous role, or take it back. Optional with a
