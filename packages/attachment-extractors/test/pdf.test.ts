@@ -10,7 +10,7 @@ import {
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
 import { pdfDecoders, pdfLexer } from '../src/pdf.js';
-import { Pace } from '../src/shared.js';
+import { CALL_COST, Pace } from '../src/shared.js';
 import { zip } from './zip.js';
 
 /** A `Pace` that counts the work charged to it: what a decoder did, not only what it returned. */
@@ -381,6 +381,18 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     const pace = counting();
     expect(() => pdfLexer(cat('%', 'c'.repeat(32 * 1024 * 1024)), pace).next()).toThrow(/longer than the extraction reads/);
     expect(pace.charged).toBeLessThan(EXTRACTION_STRIDE + 16);
+  });
+
+  it('a step of a tiny-step loop costs at least CALL_COST, so a stride holds a bounded number of steps', async () => {
+    // Counted, not timed: a one-byte token, and a find that matches at once, each charge the floor.
+    const tokens = counting();
+    const lex = pdfLexer(bin('q '.repeat(10_000)), tokens);
+    for (let i = 0; i < 10_000; i += 1) lex.next();
+    expect(tokens.charged).toBeGreaterThanOrEqual(10_000 * CALL_COST);
+    const finds = counting();
+    const dashes = '-'.repeat(20_000);
+    for (let p = 0, i = 0; i < 10_000; i += 1) p = (await finds.find(dashes, '--', p)) + 1;
+    expect(finds.charged).toBeGreaterThanOrEqual(10_000 * CALL_COST);
   });
 
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
