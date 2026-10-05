@@ -846,9 +846,6 @@ interface ControlPlaneStub {
   ): Promise<void>;
   listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
   switchRecordsOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, 'on' | 'off'][]>;
-  switchedOffOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<string[]>;
-  /** #2045: each record row's operation id, by subject — the fence a re-assert or carry moves with. */
-  switchFencesOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, string][]>;
   /** #2045: each record row's position and fence together — what a move to the record reads, never the two apart. */
   switchRecordStatesOf(
     kind: SwitchKind,
@@ -2111,8 +2108,6 @@ function nullControlPlane(): ControlPlaneStub {
     restoreSwitchRecord: noop,
     listSystemSwitches: async () => [],
     switchRecordsOf: async () => [],
-    switchedOffOf: async () => [],
-    switchFencesOf: async () => [],
     switchRecordStatesOf: async () => [],
     switchesOwedOf: async () => [],
     clearSwitchOwed: noop,

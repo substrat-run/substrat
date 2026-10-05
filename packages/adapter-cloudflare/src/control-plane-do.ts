@@ -28,10 +28,8 @@ import {
   recordWriteSuperseded,
   restoreSwitchRecord,
   scopesSwitchedOffFor,
-  switchFencesOf,
   switchRecordStatesOf,
   switchRecordsOf,
-  switchedOffOf,
   switchesBackfillSqlOf,
   switchesDdlOf,
   switchesTableExists,
@@ -3849,11 +3847,6 @@ export class ControlPlaneDO extends DurableObject {
     return [...switchRecordsOf(this.kernelSql, kind, tenantId, scopeId)];
   }
 
-  /** #2045: each record row's operation id, by subject — the fence a re-assert or carry moves with. */
-  switchFencesOf(kind: SwitchKind, tenantId: string, scopeId: string): [string, string][] {
-    return [...switchFencesOf(this.kernelSql, kind, tenantId, scopeId)];
-  }
-
   /** #2045: each record row's position and fence, by subject, read together — `switchRecordStatesOf`. */
   switchRecordStatesOf(kind: SwitchKind, tenantId: string, scopeId: string): [string, { position: 'on' | 'off'; fence: string }][] {
     return [...switchRecordStatesOf(this.kernelSql, kind, tenantId, scopeId)];
@@ -3867,11 +3860,6 @@ export class ControlPlaneDO extends DurableObject {
   /** #2045: the scope confirmed a move of this subject under `fence` — `clearSwitchOwed`. */
   clearSwitchOwed(kind: SwitchKind, tenantId: string, scopeId: string, key: string, fence: string): void {
     clearSwitchOwed(this.kernelSql, kind, tenantId, scopeId, key, fence);
-  }
-
-  /** The subjects of one kind a re-assert switches back off on one scope. */
-  switchedOffOf(kind: SwitchKind, tenantId: string, scopeId: string): string[] {
-    return switchedOffOf(this.kernelSql, kind, tenantId, scopeId);
   }
 
   /** The tenant's LIVE connection grants (#592) — the provision/reconcile gather read. */

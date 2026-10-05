@@ -1085,9 +1085,9 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
         const k = kinds[kind];
         await k.switch('off', 'A');
         const landOn = { match: (a: unknown[]) => a[0] === kind, run: async () => void (await k.switch('on', 'B')) };
-        for (const read of ['switchRecordStatesOf', 'switchedOffOf']) after.set(read, landOn);
+        after.set('switchRecordStatesOf', landOn);
         await platform.admin.reassertSystemSwitches(staff, node);
-        expect(after.size).toBe(1); // the ON landed, after the re-assert's first read of the record
+        expect(after.size).toBe(0); // the ON landed, after the re-assert's first read of the record
         expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
       });
 
@@ -1271,9 +1271,9 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
     const before = await platform.admin.peerSwitchCarry(staff, node);
     expect(before.switchedOffPeers).toEqual([PEER_CALLER]);
     const landOn = { match: (a: unknown[]) => a[0] === 'peer', run: async () => void (await kinds.peer.switch('on', 'B')) };
-    for (const read of ['switchRecordStatesOf', 'switchedOffOf']) after.set(read, landOn);
+    after.set('switchRecordStatesOf', landOn);
     expect(await platform.admin.peerSwitchCarry(staff, node)).toEqual(before);
-    expect(after.size).toBe(1); // the ON landed, after the carry's read of the record
+    expect(after.size).toBe(0); // the ON landed, after the carry's read of the record
     // Twin: the next carry reads the ON, and carries nothing.
     expect(await platform.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
   });
