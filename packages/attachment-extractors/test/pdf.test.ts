@@ -303,7 +303,9 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
   it('a page tree that loops fails; one that fans out without end stops at the node bound', async () => {
     const loop = build([CATALOG, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Pages /Kids [2 0 R] /Count 1 >>', HELVETICA]);
     expect(await settles(loop.bytes)).toEqual({ status: 'failed', extractor: 'pdf', detail: 'the PDF page tree loops' });
-    // 100 × 100 × 100 leaves through shared nodes: a million pages from seven objects.
+    // 100 × 100 × 100 leaves through shared nodes: a million pages from eight objects. One leaf
+    // in a hundred draws text and the rest draw nothing, so the text stays far under the output
+    // cap: only the node bound can end this walk early.
     const kids = (n: number) => `[${`${n} 0 R `.repeat(100)}]`;
     const fan = build([
       CATALOG,
@@ -312,7 +314,8 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
       HELVETICA,
       stream('', 'BT /F1 9 Tf (fanned) Tj ET'),
       `<< /Type /Pages /Kids ${kids(7)} >>`,
-      `<< /Type /Pages /Kids ${kids(3)} >>`,
+      `<< /Type /Pages /Kids [3 0 R ${'8 0 R '.repeat(99)}] >>`,
+      '<< /Type /Page /Parent 2 0 R >>',
     ]);
     expect(await settles(fan.bytes, 20_000)).toMatchObject({ status: 'indexed', truncated: true });
   });
