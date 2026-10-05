@@ -7,7 +7,7 @@
  * entity-narrowed grant counting for nothing — and a refusal writes no grant and no row.
  */
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { permissionKey, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
@@ -289,6 +289,9 @@ describe('scope-role writes over a CP-less host — all or nothing (#1150)', () 
   });
 
   afterAll(async () => host.close());
+
+  // A case failing between its CREATE and its DROP must not leave the trigger to the next one.
+  afterEach(async () => sqlIn('DROP TRIGGER IF EXISTS injected'));
 
   it('a role move whose grant fails keeps the old role — never neither', async () => {
     const m = principalId.parse(ulid());
