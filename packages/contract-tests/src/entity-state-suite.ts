@@ -397,12 +397,18 @@ export function entityStateContractSuite(
     it('refuses a module write to either column, in every position a write names one', async () => {
       const id = await doc();
       await as.alice.invoke('state/trash', { id });
+      const before = await as.alice.invoke<HistoryEntry[]>('state/history', { id });
       await expectGuarded(`UPDATE state_docs SET _substrat_trashed_at = NULL WHERE id = '${id}'`);
       await expectGuarded(`UPDATE state_docs SET title = 'x', _substrat_archived_at = '2026' WHERE id = '${id}'`);
       await expectGuarded(
         `UPDATE state_docs SET title = (SELECT title FROM state_docs WHERE id = 'x'), _substrat_trashed_at = NULL`,
       );
       await expectGuarded(`UPDATE state_docs SET (title, _substrat_trashed_at) = ('x', NULL)`);
+      // Codex r2: a CASE … END before the target ended the first scanner's list at its END.
+      await expectGuarded(`UPDATE state_docs SET title = CASE WHEN 1 THEN 'x' ELSE title END, _substrat_trashed_at = NULL WHERE id = '${id}'`);
+      await expectGuarded(
+        `UPDATE state_docs SET title = (SELECT CASE WHEN 1 THEN 'END' END), "_substrat_trashed_at" = NULL WHERE id = '${id}'`,
+      );
       await expectGuarded(`UPDATE state_docs SET "_substrat_trashed_at" = NULL`);
       await expectGuarded(
         `INSERT INTO state_docs (id, title, owner, _substrat_archived_at) VALUES ('${ulid()}', 't', 'o', '2026')`,
@@ -413,8 +419,9 @@ export function entityStateContractSuite(
       );
       await expectGuarded('ALTER TABLE state_docs DROP COLUMN _substrat_trashed_at');
       await expectGuarded('ALTER TABLE state_docs RENAME COLUMN _substrat_trashed_at TO gone');
-      // Nothing above reached the row.
+      // Nothing above reached the row, or its history.
       expect(await as.alice.invoke('state/state', { id })).toBe('trashed');
+      expect(await as.alice.invoke<HistoryEntry[]>('state/history', { id })).toEqual(before);
     });
 
     it('lets a module READ the columns, in a SELECT and in the WHERE of its own write', async () => {

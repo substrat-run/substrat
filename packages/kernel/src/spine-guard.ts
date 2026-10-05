@@ -193,45 +193,64 @@ export function assertNoReservedColumnWrite(sql: string, statefulTables?: Readon
     }
     return k;
   };
-  const SET_ENDS = new Set(['where', 'from', 'returning', 'order', 'limit', 'end']);
+  /** Keywords that end an assignment list when they stand at its own depth. */
+  const SET_ENDS = new Set(['where', 'from', 'returning', 'order', 'limit']);
+
+  /**
+   * The assignment targets of the `SET` list starting after `start`, judged by STRUCTURE.
+   *
+   * Everything that can hold a comma, a keyword or another `SET` is nested: a parenthesised
+   * expression or subquery, and a `CASE … END`, each pushed on one stack, so an `END` closes a
+   * `CASE` that is open and ends the list only when none is (the trigger body's `END`). Strings,
+   * comments and quoted identifiers never reach here as keywords — `tokenizeSql` keeps a quoted
+   * token apart. A target is the first token of the list and the first after each comma at the
+   * list's own depth; a `(a, b)` there is a row-value target, every name in it a target.
+   */
+  const setTargets = (start: number, onTarget: (name: string) => void): void => {
+    const nesting: ('paren' | 'case')[] = [];
+    let expectTarget = true;
+    for (let k = start; k < tokens.length; k += 1) {
+      const t = tokens[k]!;
+      const kw = t.quoted || t.punct ? undefined : t.text.toLowerCase();
+      if (nesting.length === 0) {
+        if (t.punct && (t.text === ';' || t.text === ')')) return;
+        if (kw === 'end' || (kw !== undefined && SET_ENDS.has(kw))) return;
+        if (t.punct && t.text === ',') {
+          expectTarget = true;
+          continue;
+        }
+        if (expectTarget) {
+          expectTarget = false;
+          if (t.punct && t.text === '(') {
+            k = namesInParens(k, onTarget) - 1;
+            continue;
+          }
+          if (!t.punct) {
+            onTarget(t.text);
+            continue;
+          }
+        }
+      }
+      if (t.punct && t.text === '(') nesting.push('paren');
+      else if (kw === 'case') nesting.push('case');
+      else if (t.punct && t.text === ')') {
+        while (nesting.length && nesting.pop() !== 'paren');
+      } else if (kw === 'end' && nesting[nesting.length - 1] === 'case') nesting.pop();
+    }
+  };
 
   for (let i = 0; i < tokens.length; i += 1) {
     const verb = word(i);
     if (verb === 'set') {
-      // Walk the assignment list. A target is the first thing after SET and after each
-      // comma at the list's own depth; everything else is an expression, which may read.
-      let depth = 0;
-      let expectTarget = true;
-      for (let k = i + 1; k < tokens.length; k += 1) {
-        const t = tokens[k]!;
-        if (t.punct) {
-          if (t.text === ';') break;
-          if (t.text === '(') {
-            if (depth === 0 && expectTarget) {
-              k = namesInParens(k, (name) => {
-                if (namesSpineTable(name)) refuse(name, 'SET target');
-              }) - 1;
-              expectTarget = false;
-              continue;
-            }
-            depth += 1;
-          } else if (t.text === ')') {
-            if (depth === 0) break; // the end of an enclosing group
-            depth -= 1;
-          } else if (t.text === ',' && depth === 0) {
-            expectTarget = true;
-          }
-          continue;
-        }
-        if (depth === 0 && !t.quoted && SET_ENDS.has(t.text.toLowerCase())) break;
-        if (expectTarget && depth === 0) {
-          if (namesSpineTable(t.text)) refuse(t.text, 'SET target');
-          expectTarget = false;
-        }
-      }
+      setTargets(i + 1, (name) => {
+        if (namesSpineTable(name)) refuse(name, 'SET target');
+      });
       continue;
     }
     if (verb === 'insert' || verb === 'replace') {
+      // `replace(` is SQLite's string function, not the statement — which always reads
+      // `REPLACE INTO`. Read as a statement, its argument list became a "column list".
+      if (verb === 'replace' && word(i + 1) !== 'into') continue;
       let k = i + 1;
       let replaces = verb === 'replace';
       while (word(k) !== undefined && MODIFIERS[verb]!.has(word(k)!)) {
@@ -239,6 +258,7 @@ export function assertNoReservedColumnWrite(sql: string, statefulTables?: Readon
         k += 1;
       }
       const target = tokens[k];
+      if (!target || target.punct) continue;
       k += 1; // past the target table
       if (word(k) === 'as') k += 2; // an alias
       const table = target && !target.punct ? (target.text.split('.').pop() ?? '').toLowerCase() : '';
