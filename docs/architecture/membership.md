@@ -227,8 +227,11 @@ is refused when the joiner was removed after it was requested.
   is still on its way takes nothing and must still win; K-21's audit contract is unchanged,
   and a no-op still writes no audit row. The fence is its own table for that reason.
 - The add's unit refuses when the fence stands at or after the request less
-  `MEMBERSHIP_REMOVAL_SKEW_MS` (5 minutes). The directory and the scope share no clock, so
-  ties and near-ties go to the removal. The cost: someone removed less than that before
+  `MEMBERSHIP_REMOVAL_SKEW_MS` (5 minutes). The fence and the request are kept in one clock
+  domain per adapter. The pure host stamps both with its own clock. The ControlPlaneDO mints a
+  removal's time inside its unit, never before the awaited call that reaches it, and that time
+  and a ScopeDO's `occurredAt` are the platform's NTP-disciplined time, sub-second apart. The
+  window absorbs that, and ties go to the removal. The cost: someone removed less than that before
   accepting a NEW invite is refused, and the invite can be resent.
 - The fence is carried by a directory backup and restore like every directory table, and
   cleared with the tenant's other rows on a reap.
