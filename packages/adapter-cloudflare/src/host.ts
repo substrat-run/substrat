@@ -851,12 +851,17 @@ interface ControlPlaneStub {
   restoreSwitchRecord(
     key: { kind: SwitchKind; tenantId: string; scopeId: string; key: string; operationId: string },
     prior: SwitchRecordPrior,
+    /** #2045: also clear the call's own owed mark, in the same directory transaction. */
+    clearOwed?: boolean,
   ): Promise<void>;
   listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
   switchRecordsOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, 'on' | 'off'][]>;
-  switchedOffOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<string[]>;
-  /** #2045: each record row's operation id, by subject — the fence a re-assert or carry moves with. */
-  switchFencesOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, string][]>;
+  /** #2045: each record row's position and fence together — what a move to the record reads, never the two apart. */
+  switchRecordStatesOf(
+    kind: SwitchKind,
+    tenantId: string,
+    scopeId: string,
+  ): Promise<[string, { position: 'on' | 'off'; fence: string }][]>;
   /** #2045: the subjects owed a re-assert to their record — every switch call's, until the scope confirms it. */
   switchesOwedOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, string][]>;
   clearSwitchOwed(kind: SwitchKind, tenantId: string, scopeId: string, key: string, fence: string): Promise<void>;
@@ -2113,8 +2118,7 @@ function nullControlPlane(): ControlPlaneStub {
     restoreSwitchRecord: noop,
     listSystemSwitches: async () => [],
     switchRecordsOf: async () => [],
-    switchedOffOf: async () => [],
-    switchFencesOf: async () => [],
+    switchRecordStatesOf: async () => [],
     switchesOwedOf: async () => [],
     clearSwitchOwed: noop,
     // #1823: no tenant tuples here either — the platform reads them and sends `tenantHeld`.
@@ -4182,13 +4186,15 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     at: string,
   ): Promise<{ keys: string[]; tenantHeld: string[]; fences: Map<string, string> }> {
-    const keys = await this.cp.switchedOffOf(kind, tenantId, scopeId);
-    if (!keys.length) return { keys, tenantHeld: [], fences: new Map() };
-    const [tenantHeld, fences] = await Promise.all([
-      this.cp.tenantHeldOf(kind, tenantId, keys, at),
-      this.cp.switchFencesOf(kind, tenantId, scopeId),
-    ]);
-    return { keys, tenantHeld, fences: new Map(fences) };
+    // #2045: the OFF rows and their fences in one read, so every key carried has its own row's fence.
+    const fences = new Map(
+      (await this.cp.switchRecordStatesOf(kind, tenantId, scopeId))
+        .filter(([, row]) => row.position === 'off')
+        .map(([key, row]) => [key, row.fence]),
+    );
+    const keys = [...fences.keys()];
+    if (!keys.length) return { keys, tenantHeld: [], fences };
+    return { keys, tenantHeld: await this.cp.tenantHeldOf(kind, tenantId, keys, at), fences };
   }
 
   async snapshotScope(
@@ -5683,17 +5689,24 @@ export class CloudflareScopeHost implements ScopeHost {
       // would switch the subject off the day it is installed; left `on`, the next reconcile of
       // a wiped scope would leave it running. Retried once; a failure of both lands on the
       // outcome row as `recordError`, and the call says so.
+      //
+      // The scope confirmed this call's move (or that there was nothing to move), so its mark goes.
+      // Held nothing, it goes WITH the undo, in one directory transaction: the row put back carries
+      // the prior call's older id, and no later re-assert confirms under a fence older than this
+      // call's mark. An undo that fails twice leaves the record AND the mark this call's, and the
+      // next re-assert confirms both under it. Held, a failed clear is not the call's: the mark only
+      // costs the next re-assert one idempotent move under this same record.
       let recordError: string | null = null;
+      let owedError: string | null = null;
       if (!outcome.held) {
-        const undo = () => this.cp.restoreSwitchRecord(record, prior);
+        const undo = () => this.cp.restoreSwitchRecord(record, prior, true);
         recordError = await undo().then(
           () => null,
           () => undo().then(() => null, errorOf),
         );
+      } else {
+        owedError = await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, operationId).then(() => null, errorOf);
       }
-      // The scope confirmed this call's move (or that there was nothing to move), so its mark goes.
-      // A failure here is not the call's: the mark only costs the next re-assert one idempotent move.
-      const owedError = await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, operationId).then(() => null, errorOf);
       await this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',
@@ -5907,10 +5920,11 @@ export class CloudflareScopeHost implements ScopeHost {
       for (const key of reverts) {
         // Re-read immediately before the move: a staff OFF that completed since the read above
         // (record `off`) must not get a transient ON a due schedule, or a peer call, could use.
-        const current = new Map(await this.cp.switchRecordsOf(kind, tenantId, scopeId));
-        // #2045: under the fence of the ON the record holds, which is the operator's own call.
-        const fence = new Map(await this.cp.switchFencesOf(kind, tenantId, scopeId)).get(key);
-        if (current.get(key) !== 'on' || fence === undefined) continue;
+        // #2045: under the fence of the ON the record holds, which is the operator's own call — read
+        // with the position, so it is that ON's fence and no other call's.
+        const current = new Map(await this.cp.switchRecordStatesOf(kind, tenantId, scopeId)).get(key);
+        if (current?.position !== 'on') continue;
+        const fence = current.fence;
         const outcome = await move(key, 'on', at, undefined, fence);
         reverted.add(key);
         if (outcome.changed) {
@@ -5932,8 +5946,7 @@ export class CloudflareScopeHost implements ScopeHost {
       const results: SystemSwitchReassert[] = [];
       const held = new Set(tenantHeld);
       for (const key of keys) {
-        const fence = fences.get(key);
-        if (fence === undefined) continue; // the row went between the two reads: nothing recorded off
+        const fence = fences.get(key)!; // `recordedOff` read each key with its own row's fence
         const outcome = await move(key, 'off', at, held.has(key), fence);
         if (outcome.changed) {
           await this.recordAdmin(actor, action, target, null, { operationId: ulid(), ...reassertOffRow(kind, key, outcome.permissions) });
@@ -5949,19 +5962,18 @@ export class CloudflareScopeHost implements ScopeHost {
       const settled = new Set([...keys, ...reverted]);
       const pending = [...owed.keys()].filter((key) => !settled.has(key));
       if (pending.length) {
-        const [now, nowFences] = await Promise.all([
-          this.cp.switchRecordsOf(kind, tenantId, scopeId).then((rows) => new Map(rows)),
-          this.cp.switchFencesOf(kind, tenantId, scopeId).then((rows) => new Map(rows)),
-        ]);
+        // Position and fence in one read: an ON is sent only under the fence of the ON it read.
+        const now = new Map(await this.cp.switchRecordStatesOf(kind, tenantId, scopeId));
         for (const key of pending) {
-          const fence = nowFences.get(key);
-          if (now.get(key) !== 'on' || fence === undefined) {
+          const row = now.get(key);
+          if (row?.position !== 'on') {
             // No record (a call that held nothing, whose undo removed its row), or one that turned
             // OFF since the read above, which the next pass moves: nothing to send on this one. A
             // missing row's mark goes under its own id, so a newer call's mark stays.
-            if (fence === undefined) await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, owed.get(key)!);
+            if (row === undefined) await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, owed.get(key)!);
             continue;
           }
+          const fence = row.fence;
           const outcome = await move(key, 'on', at, undefined, fence);
           if (outcome.changed) {
             await this.recordAdmin(actor, action, target, null, { operationId: ulid(), ...reassertOnRow(kind, key, outcome.permissions) });

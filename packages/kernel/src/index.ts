@@ -456,6 +456,7 @@ export {
   switchAuditSubject,
   switchNotFoundMessage,
   switchFencesOf,
+  switchRecordStatesOf,
   switchRecordsOf,
   switchSubjectOf,
   switchSupersededMessage,

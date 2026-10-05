@@ -1066,6 +1066,8 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
     const deployment = {
       position: 'on' as 'on' | 'off',
       fail: false,
+      /** Whether the module holds anything on the scope: false, and a move holds nothing. */
+      holds: true,
       calls: 0,
       /** #1823: run inside the move — the window between the record write and the scope moving. */
       during: undefined as (() => Promise<void>) | undefined,
@@ -1081,6 +1083,7 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
           deployment.calls++;
           await deployment.during?.();
           if (deployment.fail) throw new Error('vertical unreachable during system-switch');
+          if (!deployment.holds) return { ...fencedFor(a), held: false, changed: false, permissions: [] };
           const changed = deployment.position !== a.to;
           deployment.position = a.to;
           return { ...fencedFor(a), held: true, changed, permissions: [] };
@@ -1100,7 +1103,14 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
         .map((e) => e.after as { phase: string; recordError?: string })
         .filter((a) => a.phase !== 'intent');
     const records = () => host.admin.listSystemSwitches(staff, { scopeId: s });
-    return { host, node, deployment, outcomes, records };
+    /** #2045: the subjects this scope still owes a re-assert, read from the directory DO itself. */
+    const owed = async () => {
+      const cp = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+        switchesOwedOf(kind: 'system', tenantId: string, scopeId: string): Promise<[string, string][]>;
+      };
+      return cp.switchesOwedOf('system', t, s);
+    };
+    return { host, node, deployment, outcomes, records, owed };
   };
 
   it('an OFF whose record write fails moves nothing: the call fails, audited, and a repeat records and moves (#1823)', async () => {
@@ -1146,6 +1156,32 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
     deployment.fail = false;
     await host.admin.reassertSystemSwitches(staff, node);
     expect(deployment.position).toBe('off');
+  });
+
+  it('a call that held nothing takes its owed mark back with its undo, in one transaction — no separate clear to fail (#2045)', async () => {
+    // A separate clear that failed here would strand the mark for good: the undo puts back the prior
+    // call's OLDER operation id, every later re-assert confirms under that fence, and a mark newer
+    // than its fence is never cleared, so the scope would be reconciled on every pass.
+    const { host, node, deployment, outcomes, records, owed } = await setup('clearSwitchOwed', Infinity);
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'first' });
+    const [first] = await records();
+    expect(await owed()).toEqual([[SCHED, first!.operationId]]); // the held call's own clear failed: owed
+    deployment.holds = false;
+    const e = await host.admin.restoreToSystem(staff, { moduleId: SCHED, node, reason: 'second' }).then(() => null, (x: unknown) => x);
+    expect(errorCodeOf(e)).toBe('not_found');
+    expect((await outcomes()).at(-1)).toMatchObject({ phase: 'refused' });
+    expect((await outcomes()).at(-1)).not.toHaveProperty('recordError');
+    // The record is the first call's again, under its older id. The second call's mark (one row per
+    // subject, so it had replaced the first's) went with the undo, though every separate clear fails:
+    // left behind, it would sit newer than the fence any re-assert of this record confirms under.
+    expect(await records()).toEqual([expect.objectContaining({ position: 'off', reason: 'first', operationId: first!.operationId })]);
+    expect(await owed()).toEqual([]);
+  });
+
+  it('twin: a call that held something clears its own mark, with nothing to undo (#2045)', async () => {
+    const { host, node, owed } = await setup('none', 0);
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
+    expect(await owed()).toEqual([]);
   });
 
   it('a failed ON keeps its record too, so no undo is attempted that could fail (#2045)', async () => {

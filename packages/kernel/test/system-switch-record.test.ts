@@ -11,6 +11,7 @@ import {
   switchesOwedOf,
   recordWriteSuperseded,
   switchFencesOf,
+  switchRecordStatesOf,
   switchesBackfillSqlOf,
   listSystemSwitchRecords,
   recordSwitchedOff,
@@ -461,6 +462,24 @@ describe('the peer switch record (#2029)', () => {
     const newer = { ...row, reason: 'newest on', operationId: '01D' };
     expect(recordWriteSuperseded(recordSwitchedOn(sql, newer), newer)).toBe(false);
     expect([...switchRecordsOf(sql, 'peer', T, S)]).toEqual([[V, 'on']]);
+  });
+
+  it('reads each row\'s position and fence together, of one kind only (#2045)', () => {
+    const { db, sql } = fresh();
+    db.exec(PEER_SWITCHES_DDL);
+    const row = { tenantId: T, scopeId: S, actor: 'staff', reason: 'r', at: 'x' };
+    recordSwitchedOff(sql, { kind: 'peer', ...row, key: 'a-peer', operationId: '01A' });
+    recordSwitchedOn(sql, { kind: 'peer', ...row, key: 'b-peer', operationId: '01B' });
+    recordSwitchedOff(sql, { kind: 'system', ...row, key: 'a-peer', operationId: '01C' });
+    expect([...switchRecordStatesOf(sql, 'peer', T, S)]).toEqual([
+      ['a-peer', { position: 'off', fence: '01A' }],
+      ['b-peer', { position: 'on', fence: '01B' }],
+    ]);
+    // A newer call moves the row: the read answers its position with ITS fence, never a mix.
+    recordSwitchedOn(sql, { kind: 'peer', ...row, key: 'a-peer', operationId: '01D' });
+    expect(switchRecordStatesOf(sql, 'peer', T, S).get('a-peer')).toEqual({ position: 'on', fence: '01D' });
+    expect([...switchRecordStatesOf(sql, 'system', T, S)]).toEqual([['a-peer', { position: 'off', fence: '01C' }]]);
+    expect([...switchRecordStatesOf(sql, 'peer', T, 'another-scope')]).toEqual([]);
   });
 
   it('a reaped scope forgets both kinds, and its owed marks (#2045)', () => {

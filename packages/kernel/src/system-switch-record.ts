@@ -722,6 +722,28 @@ export function switchFencesOf(db: SwitchSql, kind: SwitchKind, tenantId: string
   return new Map(rows.map((r) => [String(r.k), String(r.operation_id)]));
 }
 
+/**
+ * #2045: each record row's position AND operation id, by subject, in ONE read. A caller that moves
+ * the scope to a row's position under the row's fence must take both from the same instant: read
+ * apart, a row that moves between them pairs one call's position with another call's fence (an OFF
+ * carried under the ON's fence applies, since the scope holds that very fence), and a row the undo
+ * deleted between them is moved with no fence at all, which the scope applies unconditionally.
+ */
+export function switchRecordStatesOf(
+  db: SwitchSql,
+  kind: SwitchKind,
+  tenantId: string,
+  scopeId: string,
+): Map<string, { position: 'on' | 'off'; fence: string }> {
+  const { table, key } = RECORDS[kind];
+  const rows = db.all(
+    `SELECT ${key} AS k, position, operation_id FROM ${table} WHERE tenant_id = ? AND scope_id = ? ORDER BY ${key}`,
+    tenantId,
+    scopeId,
+  );
+  return new Map(rows.map((r) => [String(r.k), { position: positionOf(r.position), fence: String(r.operation_id) }]));
+}
+
 /** #2045: the tuple subject a record key names (`system:<m>`, `vertical:<v>`) — how a carry keys its fences. */
 export const switchSubjectOf = (kind: SwitchKind, key: string): string => `${RECORDS[kind].subjectPrefix}${key}`;
 
