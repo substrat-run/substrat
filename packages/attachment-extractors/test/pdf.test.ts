@@ -6,7 +6,7 @@ import {
   type ExtractionOutcome,
   type ExtractionSignal,
 } from '@substrat-run/kernel';
-import { PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfExtractor, pdfTables } from '../src/index.js';
+import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfExtractor, pdfTables } from '../src/index.js';
 
 /**
  * The PDF extractor, through the kernel's own enforcement (`runAttachmentExtractor`), so an
@@ -260,6 +260,30 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     const page = '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents [5 0 R 6 0 R 7 0 R] >>';
     const file = build([CATALOG, PAGES, page, HELVETICA, ...[0, 1, 2].map(() => stream('/Filter /FlateDecode', piece))]).bytes;
     expect(await settles(file)).toEqual({ status: 'empty', extractor: 'pdf' });
+  });
+
+  it('an UNFILTERED stream is held to both decoded budgets, at the limit and one byte past it', async () => {
+    // Content of exactly `size` bytes: the text first, then strings, then spaces to the byte.
+    const sized = (size: number): string => {
+      let content = 'BT /F1 9 Tf (raw head) Tj ET\n';
+      const block = `(${'x'.repeat(200_000)}) z\n`;
+      while (content.length + block.length <= size - 1_000) content += block;
+      return content + ' '.repeat(size - content.length);
+    };
+    expect(textOf(await run(onePage(sized(PDF_STREAM_MAX)).bytes))).toBe('raw head');
+    expect(await run(onePage(sized(PDF_STREAM_MAX + 1)).bytes)).toEqual({
+      status: 'failed',
+      extractor: 'pdf',
+      detail: 'a PDF stream decodes past the extraction bound',
+    });
+    // The file-wide budget: at it the text is whole; one byte past, it is read up to the budget.
+    const small = pdfExtractor({ ...DEFAULT_EXTRACTOR_BOUNDS, maxInflatedBytes: 4096 });
+    const runSmall = (body: Uint8Array) =>
+      runAttachmentExtractor(small, { body, contentType: 'application/pdf', filename: 'f.pdf' }, DEFAULT_ATTACHMENT_TEXT_BOUNDS);
+    const head = 'BT /F1 9 Tf (raw head) Tj ET\n';
+    const page = (size: number) => onePage(head + ' '.repeat(size - head.length)).bytes;
+    expect(await runSmall(page(4096))).toMatchObject({ status: 'indexed', text: 'raw head', truncated: false });
+    expect(await runSmall(page(4097))).toMatchObject({ status: 'indexed', text: 'raw head', truncated: true });
   });
 
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {

@@ -804,7 +804,16 @@ class PdfDocument {
     let exhausted = false;
     let result: Decoded | null = null;
     try {
-      for (const { name, parms } of filtersOf(s.dict)) {
+      const filters = filtersOf(s.dict);
+      if (filters.length === 0) {
+        // Unfiltered bytes are decoded bytes too, held to both budgets like any filter's output:
+        // past the per-stream bound the file fails, past the total the data ends there.
+        const sink = new Sink(this.budget);
+        sink.add(data);
+        result = sink.done();
+        return result;
+      }
+      for (const { name, parms } of filters) {
         // An image filter is not text, and an unknown one is not read: either way, no data.
         const filter = Object.hasOwn(FILTERS, name) ? FILTERS[name]! : null;
         if (!filter) return null;
