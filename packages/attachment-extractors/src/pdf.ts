@@ -1690,10 +1690,12 @@ export async function pdfExtract(
   maxInflatedBytes: number,
   maxTextBytes: number,
   signal: ExtractionSignal,
+  /** The memory budget; the package's own tests pass one to read what was charged. */
+  retained: Retained = new Retained(maxInflatedBytes * PDF_RETAINED_FACTOR + PDF_RETAINED_BASE),
 ): Promise<{ text: string; truncated: boolean }> {
   if (latin1(body.subarray(0, 1024)).indexOf('%PDF-') < 0) throw new MalformedInput('not a PDF file');
   const pace = new Pace(signal);
-  const doc = new PdfDocument(body, { remaining: maxInflatedBytes }, pace, new Retained(maxInflatedBytes * PDF_RETAINED_FACTOR + PDF_RETAINED_BASE));
+  const doc = new PdfDocument(body, { remaining: maxInflatedBytes }, pace, retained);
   let root: PdfDict | null = null;
   const refuseEncrypted = (): void => {
     if (doc.trailer.has('Encrypt')) throw new Refusal('the PDF is encrypted, and encrypted PDFs are not read');

@@ -11,8 +11,8 @@ import {
   type ExtractionSignal,
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
-import { pdfDecoders, pdfLexer } from '../src/pdf.js';
-import { CALL_COST, Pace } from '../src/shared.js';
+import { pdfDecoders, pdfExtract, pdfLexer } from '../src/pdf.js';
+import { CALL_COST, Pace, Retained } from '../src/shared.js';
 import { zip } from './zip.js';
 
 /** A `Pace` that counts the work charged to it: what a decoder did, not only what it returned. */
@@ -420,6 +420,33 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(await peakMemory(file)).toBeLessThan(32 * MEMORY_MIB);
     // Code 0 maps to the base ('A', then spaces); code 2 counts its last unit up by two ('"').
     expect(textOf(await run(file))).toBe('A A "');
+  });
+
+  it('what the reader keeps is charged to the memory budget — counted, not timed', async () => {
+    const charged = async (body: Uint8Array) => {
+      const retained = new Retained(1 << 30);
+      await pdfExtract(body, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, retained);
+      return retained.bytes;
+    };
+    const baseline = await charged(onePage('BT /F1 9 Tf (x) Tj ET').bytes);
+    // A cached stream: its decoded bytes.
+    expect(await charged(onePage(`BT /F1 9 Tf (x) Tj ET${' '.repeat(MEMORY_MIB)}`).bytes) - baseline).toBeGreaterThanOrEqual(MEMORY_MIB);
+    // Cross-reference entries: a fixed cost each, however little they point at.
+    const many = build(Array.from({ length: 2_000 }, (_, i) => (i === 0 ? CATALOG : i === 1 ? PAGES : i === 2 ? PAGE : i === 3 ? HELVETICA : i === 4 ? stream('', 'BT /F1 9 Tf (x) Tj ET') : 'null'))).bytes;
+    expect(await charged(many) - baseline).toBeGreaterThanOrEqual(1_995 * 64);
+    // Fonts: each one used holds a decoder — and a ToUnicode several fonts share is parsed once.
+    const fonts = (n: number) => {
+      const names = Array.from({ length: n }, (_, i) => `/F${i} ${i + 7} 0 R`).join(' ');
+      const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << ${names} >> >> /Contents 5 0 R >>`;
+      const content = Array.from({ length: n }, (_, i) => `BT /F${i} 9 Tf <0001> Tj ET`).join('\n');
+      const cmap = `begincmap ${Array.from({ length: 50 }, (_, k) => `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(k * 100 + j).toString(16).padStart(4, '0')}> <0041>`).join(' ')} endbfchar`).join(' ')} endcmap`;
+      const font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>';
+      return build([CATALOG, PAGES, page, HELVETICA, stream('', content), stream('', cmap), ...Array.from({ length: n }, () => font)]).bytes;
+    };
+    const one = await charged(fonts(1));
+    const forty = await charged(fonts(40));
+    expect(forty - one).toBeGreaterThanOrEqual(39 * 32 * 1024); // a decoder per font
+    expect(forty - one).toBeLessThan(39 * 32 * 1024 + 39 * 4 * 1024); // and the 5 000-code CMap once, not 40 times
   });
 
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
