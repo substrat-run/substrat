@@ -217,7 +217,11 @@ class Lexer {
   }
 
   private tooLong(from: number): void {
-    if (this.pos - from > TOKEN_MAX) throw new MalformedInput('a PDF token is longer than the extraction reads');
+    if (this.pos - from > TOKEN_MAX) {
+      // What was read is charged even though the token is refused: the work was done.
+      this.pace.charge(this.pos - from);
+      throw new MalformedInput('a PDF token is longer than the extraction reads');
+    }
   }
 
   /** Skip whitespace and comments. */
@@ -1616,3 +1620,6 @@ export const pdfTables = { glyphText, WIN_ANSI, MAC_ROMAN, STANDARD };
 
 /** The stream decoders, for the package's own tests: each judged on what it charges and keeps. */
 export const pdfDecoders = { unpredict, asciiHex, ascii85, runLength, lzw };
+
+/** The lexer, for the package's own tests: judged on what it charges for one token. */
+export const pdfLexer = (buf: Uint8Array, pace: Pace): { next(): unknown } => new Lexer(buf, 0, buf.length, pace);

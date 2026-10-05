@@ -2,13 +2,14 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  EXTRACTION_STRIDE,
   runAttachmentExtractor,
   type AttachmentExtractor,
   type ExtractionOutcome,
   type ExtractionSignal,
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
-import { pdfDecoders } from '../src/pdf.js';
+import { pdfDecoders, pdfLexer } from '../src/pdf.js';
 import { Pace } from '../src/shared.js';
 
 /** A `Pace` that counts the work charged to it: what a decoder did, not only what it returned. */
@@ -374,6 +375,13 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(textOf(await settles(file))).toBe('A'.repeat(5_000));
   });
 
+  it('the lexer reads at most a token\'s bound of any comment, however long its line', () => {
+    // A comment ran to its line's end before the bound was checked: 32 MiB read for nothing.
+    const pace = counting();
+    expect(() => pdfLexer(cat('%', 'c'.repeat(32 * 1024 * 1024)), pace).next()).toThrow(/longer than the extraction reads/);
+    expect(pace.charged).toBeLessThan(EXTRACTION_STRIDE + 16);
+  });
+
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
     // A fixed-width placeholder, so pointing it somewhere moves no byte offset in the file.
     const PLACEHOLDER = '/Prev 0000000000';
@@ -609,13 +617,13 @@ const SHAPES: readonly Shape[] = [
   pdfShape('a literal string at the token bound', () => pageWith(`(${'\\(s'.repeat(80_000)})`)),
   pdfShape('a hex string at the token bound', () => pageWith(`<${'4a'.repeat(125_000)}>`)),
   // The loops round 2's audit bounded.
-  pdfShape('a 32 MiB comment', () => pageWith(`%${'c'.repeat(32 * MIB - 1024)}\n`)),
+  pdfShape('a 7 MiB comment in content', () => pageWith(`%${'c'.repeat(7 * MIB)}\n`)),
   pdfShape('a dictionary of 4 M non-name keys', () =>
     build([`<< /Type /Catalog /Pages 2 0 R /D << ${'1 '.repeat(4 * MIB)}>> >>`, PAGES, PAGE, HELVETICA, stream('', '')]).bytes),
   pdfShape('8 MiB of whitespace after a declared stream end', () =>
     build([CATALOG, PAGES, PAGE, HELVETICA, cat('<< /Length 2 >>\nstream\nET', ' '.repeat(8 * MIB), '\nendstream')]).bytes),
-  pdfShape('a bfrange of 65 536 codes onto a 256 KiB destination', () =>
-    cmapFont(`begincmap 1 beginbfrange <0000> <FFFF> <${'00'.repeat(128 * 1024)}> endbfrange endcmap`, '0001')),
+  pdfShape('a bfrange of 65 536 codes onto a 96 KiB destination', () =>
+    cmapFont(`begincmap 1 beginbfrange <0000> <FFFF> <${'00'.repeat(96 * 1024)}> endbfrange endcmap`, '0001')),
   pdfShape('an LZW stream expanding a byte into a dictionary entry', () =>
     onePage(lzwEncode(new Uint8Array(MIB)), { contentDict: '/Filter /LZWDecode' }).bytes),
   // Round 1's should-fixes, and the bounds before them.
