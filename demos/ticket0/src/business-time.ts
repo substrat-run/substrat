@@ -244,9 +244,14 @@ function union(intervals: readonly (readonly [number, number])[]): [number, numb
  *     skipped hour lands at or after the midnight it follows;
  *   - `M_d` never decreases with `d`. It need not increase: a local day can last no real
  *     time at all. Samoa skipped 2011-12-30 whole (`Pacific/Apia` went from UTC−10 to
- *     UTC+14), so that date's midnight and the next are one instant, and every time on it
- *     resolves a day forward, onto the 31st's — a skipped day contributes nothing the 31st
- *     does not, and its windows land in the union beside the 31st's.
+ *     UTC+14), so that date's midnight and the next are one instant. A date the clock
+ *     never shows has no openings at all (`resolver`): nobody worked it, and resolving its
+ *     hours a day forward made what it contributed depend on where a walk began (Codex
+ *     round 6).
+ *
+ * And the walk enters a day early: a skipped hour at the end of the day before the start's
+ * can carry windows past midnight into the start's own day, and the stream must be the
+ * same wherever it is entered — `between(a, c) = between(a, b) + between(b, c)`.
  *
  * So before day `d` is merged in, everything already merged that ends by `M_d` can never
  * meet a later opening, and is final. Only what reaches past it is held back. (Holding one
@@ -371,7 +376,9 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
  *      starts now or later, which every conversation does. It is NOT true of every date the
  *      type accepts: the dateline moves jumped a whole day forward (`Pacific/Kwajalein`
  *      1993, `Pacific/Kiritimati` 1994-12-31, `Pacific/Apia` 2011-12-30). A walk across one
- *      of those is still exact; it is only this guarantee that does not cover it. Days `d … d + 7 × 522` lie inside eleven
+ *      of those is still exact; it is only this guarantee that does not cover it — such a
+ *      jump skips a whole date, whose open time is simply absent, which step 2 does not
+ *      allow for and the stated assumption rules out. Days `d … d + 7 × 522` lie inside eleven
  *      calendar years, so at most `11 × 2` forward jumps, each costing at most
  *      `min(2 × FORWARD_JUMP_MAX, 2 × the longest day's open time)`.
  *   5. The walk is clipped at the midnight that ends its last day, `d + EXACT_DAYS - 1`, which
