@@ -8,9 +8,10 @@ import {
   type ExtractionOutcome,
   type ExtractionSignal,
 } from '@substrat-run/kernel';
-import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
+import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
 import { pdfDecoders, pdfLexer } from '../src/pdf.js';
 import { Pace } from '../src/shared.js';
+import { zip } from './zip.js';
 
 /** A `Pace` that counts the work charged to it: what a decoder did, not only what it returned. */
 class CountingPace extends Pace {
@@ -584,6 +585,7 @@ const ABORTED_ANSWER_MS = 150;
 const SETTLE_MS = 3_000;
 
 const MIB = 1024 * 1024;
+const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 interface Shape {
   readonly name: string;
@@ -644,6 +646,12 @@ const SHAPES: readonly Shape[] = [
   { name: 'html: a 16 MiB unclosed comment', extractor: htmlExtractor(), contentType: 'text/html', body: () => enc(`<p>x</p><!--${'-'.repeat(16 * MIB)}`) },
   { name: 'html: 2 M unclosed tags', extractor: htmlExtractor(), contentType: 'text/html', body: () => enc('<a '.repeat(2 * MIB)) },
   { name: 'text: 32 MiB of one line', extractor: textExtractor(), contentType: 'text/plain', body: () => new Uint8Array(32 * MIB).fill(0x61) },
+  { name: 'docx: 20 000 central-directory entries', extractor: docxExtractor(), contentType: DOCX, body: () =>
+    zip([{ name: 'word/document.xml', data: enc('<w:t>x</w:t>') }, ...Array.from({ length: 19_999 }, (_, i) => ({ name: `p/${i}`, data: new Uint8Array(0), method: 0 }))]) },
+  { name: 'docx: a part inflating past the budget', extractor: docxExtractor(), contentType: DOCX, body: () =>
+    zip([{ name: 'word/document.xml', data: new Uint8Array(17 * MIB).fill(0x20) }]) },
+  { name: 'docx: one 8 MiB unclosed tag', extractor: docxExtractor(), contentType: DOCX, body: () =>
+    zip([{ name: 'word/document.xml', data: enc(`<w:t ${'a'.repeat(8 * MIB)}`) }]) },
 ];
 
 describe('the abort-latency harness: no shape holds the thread, aborted or not', () => {
