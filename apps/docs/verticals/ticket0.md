@@ -35,6 +35,14 @@ begins with a stranger in a chat bubble on somebody else's page. It proves:
   a resolve on the way to closed would strand it in the inbox for good. Only resolving stamps
   `resolved_at`, and the reports count that stamp, so an emptied inbox moves no number. The
   customer-facing read is written once and strips author ids.
+- **Saved replies are a library, not a clipboard.** A canned answer is the desk's, shared, or
+  one agent's alone, and a colleague's personal reply does not exist to anybody else. Replies
+  file into flat folders. Each one counts how many sent messages used it. The count is
+  **attested**: the agent's composer says which replies went into a message, and the server
+  accepts only replies that agent may use, each at most once per message. It does not check
+  the text, because placeholders and edits would make that check undercount without telling
+  anyone. Curating the shared library takes `saved-reply:manage`, which the assistant roles
+  do not hold.
 - **Failure is never silent.** A turn that could not answer carries its reason, the
   conversation draws it as a card, and *Settings → Assistant* says which model this install
   answers with and lists the newest failures.

@@ -6076,9 +6076,10 @@ const operations = {
     for (const key of macroPermissions(visibility, actions)) {
       assertAllowed(await ctx.check(key, conversationRef(conversation.id)));
     }
-    // The other replies the agent inserted, each resolved here exactly as the macro is:
-    // one the caller may not use, or that is not in this desk, refuses the whole send
-    // rather than being skipped, so a client cannot count what it cannot see.
+    // The other replies the agent ATTESTS went into this message, each resolved here exactly
+    // as the macro is: one the caller may not use, or that is not in this desk, refuses the
+    // whole send rather than being skipped, so a client cannot count what it cannot see.
+    // Deduplicated with the macro's own id, so one message counts a reply at most once.
     const used = [...new Set([reply.id, ...(input.alsoUsed ?? [])])];
     const alsoUsed = used.slice(1).map((id) => savedReplyOrThrow(ctx, id).id);
 

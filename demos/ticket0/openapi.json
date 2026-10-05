@@ -968,6 +968,10 @@
             }
           }
         ],
+        "description": "Counts each reply used, `savedReplyId` and `alsoUsed` together, once per message. The count is attested by the sender, not proven: every id must be a reply the sender may use, but the server does not check the reply’s text is in `body`.",
+        "tags": [
+          "Saved replies"
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3213,6 +3217,7 @@
             }
           }
         ],
+        "description": "Shared by default, which needs `saved-reply:manage`; `personal: true` needs only `conversation:draft`.",
         "tags": [
           "Saved replies"
         ],
@@ -3564,6 +3569,7 @@
             }
           }
         ],
+        "description": "The desk’s shared replies and the caller’s own personal ones, oldest first. A colleague’s personal reply is never listed.",
         "tags": [
           "Saved replies"
         ],
@@ -3780,6 +3786,9 @@
             }
           }
         ],
+        "tags": [
+          "Saved replies"
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -3896,6 +3905,9 @@
               "default": "asc"
             }
           }
+        ],
+        "tags": [
+          "Saved replies"
         ],
         "responses": {
           "200": {
@@ -4675,6 +4687,10 @@
             }
           }
         ],
+        "description": "Its replies are unfiled, never deleted.",
+        "tags": [
+          "Saved replies"
+        ],
         "responses": {
           "200": {
             "description": "The operation result.",
@@ -4781,6 +4797,9 @@
               "maxLength": 255
             }
           }
+        ],
+        "tags": [
+          "Saved replies"
         ],
         "requestBody": {
           "required": true,
@@ -16031,6 +16050,10 @@
               "maxLength": 255
             }
           }
+        ],
+        "description": "One way: the reply is the desk’s from then on. Refused with `conflict` if the desk already has the title.",
+        "tags": [
+          "Saved replies"
         ],
         "requestBody": {
           "required": true,

@@ -1036,10 +1036,13 @@ export const ticket0Entities = defineEntities({
       /** The folder it is filed in, or null for unfiled. A `savedReplyFolder` id. */
       folder_id: z.string().nullable(),
       /**
-       * How many sent messages used it (#1087). Moved by `apply-saved-reply` alone, in
-       * the transaction that writes the message, so a preview, an insert into the
-       * composer or an abandoned draft counts nothing. Zero for every reply older than
-       * the column: nothing before it recorded a use.
+       * How many sent messages an agent ATTESTED used it (#1087). Moved by
+       * `apply-saved-reply` alone, in the transaction that writes the message, so a
+       * preview, an insert into the composer or an abandoned draft counts nothing. It is
+       * attested rather than proven: the server checks that the sender may use the reply
+       * and counts it at most once per message, but it does not try to find the reply's
+       * text in what was sent, which placeholders and edits would make an undercount
+       * nobody sees. Zero for every reply older than the column.
        */
       use_count: z.number(),
       /** When a sent message last used it. Null is never, since the counter existed. */
@@ -3844,6 +3847,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * `savedReplyId`, as before. Every id is resolved by the server and must be a reply the
    * caller may use, in this desk, or the whole send is refused. Skipping it quietly would
    * let a client count replies it cannot see.
+   *
+   * **The count is ATTESTED, not proven.** It means "an agent said this reply went into a
+   * message they sent". The server bounds the claim: only ids the sender may use, each
+   * counted at most once per message (`savedReplyId` and `alsoUsed` deduplicated together),
+   * and the event names who attested it, as every event's actor does. It does not look for
+   * the reply's text in `body`. Placeholders and the agent's own edits change that text,
+   * so a containment check would quietly undercount the replies that were used most
+   * carefully, and an undercount nobody sees is worse than a claim with a name on it.
    */
   'ticket0/apply-saved-reply': {
     summary: 'Send a canned answer and run its actions, all or nothing',
@@ -3854,7 +3865,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       body: z.string().min(1).optional(),
       /** Public by default: that is what a canned answer is for. `internal` posts it as a note. */
       visibility: z.enum(['public', 'internal']).optional(),
-      /** Other saved replies whose text is in `body`. Counted as used; their actions do not run. */
+      /**
+       * Other saved replies the sender attests went into `body`. Each is counted once as used
+       * (an attestation, not a check of the text); their actions do not run.
+       */
       alsoUsed: z.array(z.string()).max(SAVED_REPLY_ALSO_USED_MAX).optional(),
     }),
     output: z.object({

@@ -150,7 +150,14 @@ describe('use is counted when a message is sent, and only then', () => {
     expect((await get(desk, desk.anna, empty.id)).use_count).toBe(0);
   });
 
-  it('counts each reply named in alsoUsed once, and runs none of their actions', async () => {
+  /**
+   * The count is ATTESTED (#1087, Codex r1 on #2065): the body here says nothing of
+   * "Greeting" or "Escalate", and both are still counted, because the sender said they went
+   * in. That is the contract, stated, not a gap: the server bounds the claim (visible ids
+   * only, once per message) and the event names who made it. Checking the text instead
+   * would undercount every reply a placeholder or an edit changed, silently.
+   */
+  it('counts what the sender attests, each reply once per message, under the sender’s name, and runs none of their actions', async () => {
     const desk = await freshDesk();
     const conversation = await mail(desk);
     const main = await create(desk, desk.anna, { title: 'Answer' });
@@ -176,6 +183,18 @@ describe('use is counted when a message is sent, and only then', () => {
       saved_reply_id: main.id,
       also_used: [greeting.id, urgent.id],
     });
+    // Who attested it is the event's actor: the agent who sent the message.
+    expect(kit.events(desk, 'ticket0.saved-reply-applied').at(-1)!.actor).toContain(desk.anna);
+
+    // A second message naming the same replies counts each of them once more, not twice.
+    await (await as(desk, desk.anna)).invoke('ticket0/apply-saved-reply', {
+      conversationId: conversation,
+      savedReplyId: greeting.id,
+      body: 'Hello again.',
+      alsoUsed: [greeting.id, greeting.id],
+    });
+    expect((await get(desk, desk.anna, greeting.id)).use_count).toBe(2);
+    expect((await get(desk, desk.anna, main.id)).use_count).toBe(1);
   });
 
   it('refuses the whole send when alsoUsed names a reply the caller may not use, and counts nothing', async () => {
