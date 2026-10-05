@@ -33,7 +33,7 @@ tracking: ["#119"]
 
 ## What it does not do, stated
 
-- **The kernel filters only the reads it composes.** A handler's own `SELECT … WHERE id = ?` sees an archived or binned row exactly as before. A get-by-id asks `ctx.entityState`, and a hand-written list adds the predicate itself. Mechanical refusal of an entity-addressed operation on a binned entity is a follow-up, not this record.
+- **The kernel filters only the reads it composes.** A handler's own `SELECT … WHERE id = ?` sees an archived or binned row exactly as before. A get-by-id asks `ctx.entityState`, and a hand-written list adds the predicate itself. That is a check every operation has to remember, and the first adopter shows the cost: review found two of todo's sixteen list operations (`list-shares`, `revoke-share`) still reaching a binned list after the rest had been converted. Each check is one line, and a review is what found the misses. That class of bug is why the follow-up matters: the host refuses an entity-addressed operation on a binned entity unless the operation opts in. It is not in this record.
 - **No cascade.** Binning a list does not bin its items. They are hidden because every read of them goes through the list. A scope-wide read over children (todo's `search-items`) asks the parent's state itself.
 - **Archived and binned entities keep their natural `key`.** A restore can never collide, and reusing a name means deleting the binned entity first.
 - **No purge horizon yet.** The permanent delete is still the vertical's own delete operation. When a horizon arrives it will run that operation, so cascade rules stay the vertical's. Purging is not erasure: the events stay. Erasure reaches a binned row because the row never moved tables.
