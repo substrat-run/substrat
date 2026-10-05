@@ -576,6 +576,48 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(await run(file)).toMatchObject({ status: 'empty' });
   }, 30_000);
 
+  it('the same code defined 250 000 times inside the budget: read whole, and the last definition wins', async () => {
+    const outcome = await run(await cmapFlood(2_500));
+    expect(outcome).toMatchObject({ status: 'indexed', truncated: false });
+    expect(textOf(outcome)).toBe('B');
+  }, 30_000);
+
+  it('sealing a CMap charges every heap step, however many definitions open at one code — counted, not timed', async () => {
+    // One code named 250 000 times opens every definition at a single boundary; 250 000 codes
+    // written descending open one each. Parsing and ordering cost the same; the difference is
+    // the heap, which a charge per boundary (Codex #2075 r2) did not see at all.
+    const n = 250_000;
+    const sealed = async (code: (i: number) => number) => {
+      const lines = Array.from({ length: n / 100 }, (_, k) =>
+        `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${code(k * 100 + j).toString(16).padStart(6, '0')}> <0041>`).join(' ')} endbfchar`);
+      const pace = counting();
+      await pdfCMap(bin(`begincmap\n${lines.join('\n')}\nendcmap`), pace, new Retained(1 << 30));
+      return pace.charged;
+    };
+    const crowded = await sealed(() => 1);
+    const apart = await sealed((i) => 0xffffff - i);
+    // A heap of up to n: at least 16 levels for most of the pushes.
+    expect(crowded - apart).toBeGreaterThan((n / 2) * 16 * CALL_COST);
+  }, 30_000);
+
+  it('a string drawn through a CMap is charged a lookup per byte, so a long one is decoded a window at a time — counted, not timed', async () => {
+    // Each byte is a code placed and mapped by binary searches; a token-long string of them,
+    // charged as a byte scan, held the thread ~15–30 ms through a large CMap (Codex #2075 r2).
+    const cmap = `begincmap 1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfrange <0000> <FFFF> <0041> endbfrange endcmap`;
+    const charged = async (codes: number) => {
+      const pace = counting();
+      const file = cmapFont(cmap, '0001'.repeat(codes));
+      const out = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, pace);
+      expect(out.text.trim()).toBe('B'.repeat(codes));
+      return pace;
+    };
+    const short = await charged(1);
+    const long = await charged(50_000);
+    // 100 000 bytes more drawn, each decoded as a lookup (the lexing of their hex comes on top).
+    expect(long.charged - short.charged).toBeGreaterThanOrEqual(100_000 * 32);
+    expect(long.turns - short.turns).toBeGreaterThanOrEqual(10);
+  });
+
   it('what the reader keeps is charged to the memory budget — counted, not timed', async () => {
     const charged = async (body: Uint8Array) => {
       const retained = new Retained(1 << 30);
@@ -898,15 +940,10 @@ const SHAPES: readonly Shape[] = [
       `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(0x1_ffff - k * 100 - j).toString(16).padStart(6, '0')}> <0041>`).join(' ')} endbfchar`);
     return cmapFont(`begincmap\n1 begincodespacerange <000000> <FFFFFF> endcodespacerange\n${sections.join('\n')}\nendcmap`, '01ffff');
   }),
-  pdfShape('a CMap defining one code until the memory budget is spent', async () => {
-    // 580 000 definitions in under 8 MiB decoded: the budget, not a count, ends them.
-    const section = `100 beginbfchar ${'<0001> <0041> '.repeat(100)}endbfchar\n`;
-    const cmap = enc(`begincmap\n${section.repeat(5_800)}endcmap`);
-    return onePage('BT /F1 9 Tf <0001> Tj ET', {
-      font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
-      extra: [stream('/Filter /FlateDecode', await deflate(cmap))],
-    }).bytes;
-  }),
+  // 580 000 definitions in under 8 MiB decoded: the budget, not a count, ends them as they are parsed.
+  pdfShape('a CMap defining one code until the memory budget is spent', () => cmapFlood(5_800)),
+  // 250 000, inside the budget: they all reach `seal`, which opens every one at a single boundary.
+  pdfShape('a CMap defining one code 250 000 times, inside the memory budget', () => cmapFlood(2_500)),
   pdfShape('500 fonts sharing one ToUnicode of 30 000 codes', () => {
     const chars = Array.from({ length: 300 }, (_, k) =>
       `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(k * 100 + j).toString(16).padStart(4, '0')}> <00410042>`).join(' ')} endbfchar`).join('\n');
@@ -1071,6 +1108,19 @@ function utf16(b: number[]): string {
   for (let i = 0; i + 1 < b.length; i += 2) s += String.fromCharCode((b[i]! << 8) | b[i + 1]!);
   if (b.length % 2 === 1) s += String.fromCharCode(b[b.length - 1]!);
   return s;
+}
+
+/**
+ * A Type0 font whose ToUnicode names code 1 `sections` × 100 times as `A`, then once more as
+ * `B`, drawing code 1: a Flate stream, so the CMap's size is not the file's.
+ */
+async function cmapFlood(sections: number): Promise<Uint8Array> {
+  const section = `100 beginbfchar ${'<0001> <0041> '.repeat(100)}endbfchar\n`;
+  const cmap = enc(`begincmap\n${section.repeat(sections)}1 beginbfchar <0001> <0042> endbfchar\nendcmap`);
+  return onePage('BT /F1 9 Tf <0001> Tj ET', {
+    font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
+    extra: [stream('/Filter /FlateDecode', await deflate(cmap))],
+  }).bytes;
 }
 
 /** Big-endian 4 bytes. */

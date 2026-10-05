@@ -1130,10 +1130,24 @@ async function scanObjects(doc: PdfDocument): Promise<void> {
 
 // -- fonts --------------------------------------------------------------------------------
 
-/** How one font's string bytes become text. */
+/**
+ * How one font's string bytes become text: the codes starting in `from`…`until`, whole — the
+ * last may run past `until` — and where the next code starts, so a long string is decoded a
+ * window at a time and never cut inside a code.
+ */
 interface FontDecoder {
-  decode(bytes: Uint8Array): string;
+  decode(bytes: Uint8Array, from: number, until: number): { text: string; next: number };
 }
+
+/** A decoder for a font this cannot read: nothing, for every code. */
+const SILENT: FontDecoder = { decode: (bytes) => ({ text: '', next: bytes.length }) };
+
+/**
+ * What decoding one string byte is charged: a code's place in the code space and its mapping
+ * are each a binary search — over a CMap's segments, which the memory budget admits by the
+ * hundred thousand — not the constant a byte scan is.
+ */
+const DECODE_COST_PER_BYTE = 32;
 
 const ACCENTS: Record<string, string> = {
   acute: '́', grave: '̀', circumflex: '̂', dieresis: '̈', tilde: '̃', ring: '̊',
@@ -1398,12 +1412,28 @@ class CodeMap {
       let nextEnd = 0;
       const boundary = (): number =>
         Math.min(nextLo < n ? this.los[byLo[nextLo]!]! : Infinity, nextEnd < n ? this.his[byEnd[nextEnd]!]! + 1 : Infinity);
+      // A heap step sifts through every level: charged as that many steps.
+      const sift = (): number => CALL_COST * (32 - Math.clz32(size + 1));
       for (let at = boundary(); at !== Infinity; ) {
         if (pace.room <= 0) await pace.turn();
         pace.charge(CALL_COST);
-        while (nextLo < n && this.los[byLo[nextLo]!]! === at) push(byLo[nextLo++]!);
-        while (nextEnd < n && this.his[byEnd[nextEnd]!]! + 1 === at) nextEnd += 1;
-        while (size > 0 && this.his[heap[0]!]! < at) pop();
+        // Any number of definitions may open, end or expire at one boundary — one code named
+        // 250 000 times opens them all here — so each is paced on its own, not the boundary once.
+        while (nextLo < n && this.los[byLo[nextLo]!]! === at) {
+          if (pace.room <= 0) await pace.turn();
+          pace.charge(sift());
+          push(byLo[nextLo++]!);
+        }
+        while (nextEnd < n && this.his[byEnd[nextEnd]!]! + 1 === at) {
+          if (pace.room <= 0) await pace.turn();
+          pace.charge(CALL_COST);
+          nextEnd += 1;
+        }
+        while (size > 0 && this.his[heap[0]!]! < at) {
+          if (pace.room <= 0) await pace.turn();
+          pace.charge(sift());
+          pop();
+        }
         const following = boundary();
         if (size > 0) {
           // The winner here is open until the next boundary at least: its own end is one.
@@ -1587,13 +1617,14 @@ async function cmapOf(doc: PdfDocument, ref: PdfValue | undefined): Promise<CMap
 }
 
 /**
- * A string's text through a code space and a code → text map: each code the shortest length
- * whose bytes fall in the space (or `fallback` bytes), placed by at most four binary searches.
- * The work is a constant per byte of the string — which the lexer has already charged.
+ * A string's text through a code space and a code → text map, for the codes starting in
+ * `from`…`until`: each code the shortest length whose bytes fall in the space (or `fallback`
+ * bytes), placed by at most four binary searches, and mapped by one more.
  */
-function codesToText(bytes: Uint8Array, spaces: CodeSpace, fallback: number, map: CodeMap): string {
+function codesToText(bytes: Uint8Array, from: number, until: number, spaces: CodeSpace, fallback: number, map: CodeMap): { text: string; next: number } {
   let s = '';
-  for (let i = 0; i < bytes.length; ) {
+  let i = from;
+  while (i < until) {
     let length = 0;
     let code = 0;
     for (let n = 1; n <= 4 && i + n <= bytes.length; n += 1) {
@@ -1611,7 +1642,7 @@ function codesToText(bytes: Uint8Array, spaces: CodeSpace, fallback: number, map
     s += map.get(length, code) ?? '';
     i += length;
   }
-  return s;
+  return { text: s, next: i };
 }
 
 /** A font's decoder: `/ToUnicode` first, then its encoding; unreadable composite fonts give nothing. */
@@ -1627,7 +1658,7 @@ async function fontDecoder(doc: PdfDocument, font: PdfDict): Promise<FontDecoder
     const encoding = isName(encRef) ? null : await cmapOf(doc, encRef);
     if (encoding && !encoding.spaces.empty) spaces = encoding.spaces;
     else if (!encoding && toUnicode && !toUnicode.spaces.empty) spaces = toUnicode.spaces;
-    return { decode: (bytes) => (toUnicode ? codesToText(bytes, spaces, 2, toUnicode.map) : '') };
+    return toUnicode ? { decode: (bytes, from, until) => codesToText(bytes, from, until, spaces, 2, toUnicode.map) } : SILENT;
   }
   // A simple font: one byte per code.
   const enc = await doc.resolve(font.get('Encoding'));
@@ -1649,13 +1680,13 @@ async function fontDecoder(doc: PdfDocument, font: PdfDict): Promise<FontDecoder
     }
   }
   return {
-    decode: (bytes) => {
+    decode: (bytes, from, until) => {
       let s = '';
-      for (let i = 0; i < bytes.length; i += 1) {
+      for (let i = from; i < until; i += 1) {
         const mapped = toUnicode?.map.get(1, bytes[i]!);
         s += mapped ?? table[bytes[i]!] ?? '';
       }
-      return s;
+      return { text: s, next: until };
     },
   };
 }
@@ -1712,11 +1743,19 @@ async function interpret(r: Reading, content: Uint8Array, resources: PdfDict | n
   let font: FontDecoder | null = null;
   const fontsDict = await doc.resolveDict(resources?.get('Font'));
   const xobjects = await doc.resolveDict(resources?.get('XObject'));
-  const show = (v: PdfValue | undefined): void => {
+  // A string up to a token long, each byte a lookup: decoded a window at a time, charged as
+  // the work it is, so the thread is never held for the whole string at once.
+  const show = async (v: PdfValue | undefined): Promise<void> => {
     if (!isString(v) || !font) return;
-    // Decoding is a constant per byte (`codesToText`), charged as the work it is.
-    pace.charge(v.bytes.length);
-    emit(r, font.decode(v.bytes));
+    const { bytes } = v;
+    for (let at = 0; at < bytes.length; ) {
+      if (pace.room <= 0) await pace.turn();
+      const until = Math.min(bytes.length, at + Math.max(1, Math.floor(pace.room / DECODE_COST_PER_BYTE)));
+      const { text, next } = font.decode(bytes, at, until);
+      pace.charge((next - at) * DECODE_COST_PER_BYTE);
+      emit(r, text);
+      at = next;
+    }
   };
   for (;;) {
     if (pace.room <= 0) await pace.turn();
@@ -1748,21 +1787,21 @@ async function interpret(r: Reading, content: Uint8Array, resources: PdfDict | n
         font = r.fonts.get(fontDict) ?? null;
         if (!font) {
           // A font this cannot read draws nothing; the rest of the page still reads.
-          font = await fontDecoder(doc, fontDict).catch(onlyDamage<FontDecoder>({ decode: () => '' }));
+          font = await fontDecoder(doc, fontDict).catch(onlyDamage<FontDecoder>(SILENT));
           r.fonts.set(fontDict, font);
         }
       }
-    } else if (op === 'Tj') show(operands[operands.length - 1]);
+    } else if (op === 'Tj') await show(operands[operands.length - 1]);
     else if (op === "'" || op === '"') {
       emit(r, '\n');
-      show(operands[operands.length - 1]);
+      await show(operands[operands.length - 1]);
     } else if (op === 'TJ') {
       const arr = operands[operands.length - 1];
       if (Array.isArray(arr)) {
         for (const item of arr) {
           // A wide negative adjustment is the gap a writer leaves for a space.
           if (typeof item === 'number' && item < -150) emit(r, ' ');
-          else show(item);
+          else await show(item);
         }
       }
     } else if (op === 'Td' || op === 'TD') {
@@ -1863,9 +1902,10 @@ export async function pdfExtract(
   signal: ExtractionSignal,
   /** The memory budget; the package's own tests pass one to read what was charged. */
   retained: Retained = new Retained(maxInflatedBytes * PDF_RETAINED_FACTOR + PDF_RETAINED_BASE),
+  /** The work budget; the package's own tests pass one to count what was charged. */
+  pace: Pace = new Pace(signal),
 ): Promise<{ text: string; truncated: boolean }> {
   if (latin1(body.subarray(0, 1024)).indexOf('%PDF-') < 0) throw new MalformedInput('not a PDF file');
-  const pace = new Pace(signal);
   const doc = new PdfDocument(body, { remaining: maxInflatedBytes }, pace, retained);
   let root: PdfDict | null = null;
   const refuseEncrypted = (): void => {
