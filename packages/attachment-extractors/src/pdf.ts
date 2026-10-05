@@ -101,8 +101,16 @@ export const PDF_RETAINED_BASE = 4 * 1024 * 1024;
 const OBJECT_COST_PER_BYTE = 4;
 /** The fixed cost of an entry kept in a map or list: a cross-reference entry, a CMap entry, a parsed object. */
 const ENTRY_COST = 64;
-/** What a font's decoder holds: a 256-entry table of short strings. */
-const FONT_COST = 32 * 1024;
+/**
+ * What a font's decoder holds, measured rather than guessed: 20 000 decoders built the way
+ * `fontDecoder` builds them and kept alive, over a collected heap (`node --expose-gc`,
+ * `heapUsed` before and after, divided by the count). A simple font held 2 233 bytes (its
+ * copied 256-entry table and its closure); each `/Differences` entry another ~78, its fresh
+ * glyph string included; a composite font's closure 248. Rounded up.
+ */
+const SIMPLE_FONT_COST = 2_560;
+const DIFFERENCE_COST = 64;
+const COMPOSITE_FONT_COST = 256;
 /** Whitespace read between a stream's declared end and its `endstream`. */
 const STREAM_END_SPAN = 64;
 
@@ -1581,10 +1589,11 @@ function codesToText(bytes: Uint8Array, spaces: CodeSpace, fallback: number, map
 /** A font's decoder: `/ToUnicode` first, then its encoding; unreadable composite fonts give nothing. */
 async function fontDecoder(doc: PdfDocument, font: PdfDict): Promise<FontDecoder> {
   const subtype = nameOf(font.get('Subtype'));
-  // Each font's decoder is kept for the extraction (`Reading.fonts`): charged before it is built.
-  doc.retained.take(FONT_COST);
+  // Each font's decoder is kept for the extraction (`Reading.fonts`): charged before it is built,
+  // for what it holds. A CMap it reads is charged as that CMap is parsed, once however many fonts share it.
   const toUnicode = await cmapOf(doc, font.get('ToUnicode'));
   if (subtype === 'Type0') {
+    doc.retained.take(COMPOSITE_FONT_COST);
     const encRef = font.get('Encoding');
     let spaces = IDENTITY_SPACE;
     const encoding = isName(encRef) ? null : await cmapOf(doc, encRef);
@@ -1597,13 +1606,18 @@ async function fontDecoder(doc: PdfDocument, font: PdfDict): Promise<FontDecoder
   const encDict = isDict(enc) ? enc : null;
   const baseName = nameOf(encDict ? encDict.get('BaseEncoding') : enc) ?? '';
   const base = Object.hasOwn(BASE_ENCODINGS, baseName) ? BASE_ENCODINGS[baseName]! : subtype === 'TrueType' ? WIN_ANSI : STANDARD;
+  doc.retained.take(SIMPLE_FONT_COST);
   const table: (string | null)[] = [...base];
   const differences = encDict?.get('Differences');
   if (Array.isArray(differences)) {
     let code = 0;
     for (const d of differences) {
       if (typeof d === 'number') code = d;
-      else if (isName(d) && code >= 0 && code < 256) table[code++] = glyphText(d.name);
+      else if (isName(d) && code >= 0 && code < 256) {
+        const text = glyphText(d.name);
+        doc.retained.take(DIFFERENCE_COST + text.length * 2);
+        table[code++] = text;
+      }
     }
   }
   return {
@@ -1876,4 +1890,6 @@ export const pdfDecoders = { unpredict, asciiHex, ascii85, runLength, lzw };
 /** The CMap parser, for the package's own tests. */
 export const pdfCMap = (data: Uint8Array, pace: Pace, retained: Retained): Promise<{ map: { get(length: number, code: number): string | undefined } }> =>
   parseCMap(data, pace, retained);
+/** What a font's decoder is charged, for the package's own tests. */
+export const pdfFontCosts = { simple: SIMPLE_FONT_COST, difference: DIFFERENCE_COST, composite: COMPOSITE_FONT_COST };
 export const pdfLexer = (buf: Uint8Array, pace: Pace): { next(): unknown } => new Lexer(buf, 0, buf.length, pace);

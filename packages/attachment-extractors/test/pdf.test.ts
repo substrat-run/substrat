@@ -11,7 +11,7 @@ import {
   type ExtractionSignal,
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
-import { pdfCMap, pdfDecoders, pdfExtract, pdfLexer } from '../src/pdf.js';
+import { pdfCMap, pdfDecoders, pdfExtract, pdfFontCosts, pdfLexer } from '../src/pdf.js';
 import { CALL_COST, Pace, Retained } from '../src/shared.js';
 import { zip } from './zip.js';
 
@@ -342,6 +342,66 @@ describe('pdf: what it reads', () => {
   });
 });
 
+describe('pdf: valid documents the budgets never cut — at the default bounds', () => {
+  // The twin of the hostile files: each bound is sized so a real document reads whole. A file
+  // here that came back truncated would be a bound charging what nothing holds.
+  const whole = async (file: Uint8Array, words: string[]) => {
+    const outcome = await run(file);
+    expect(outcome).toMatchObject({ status: 'indexed', truncated: false });
+    expect(textOf(outcome).split(/\s+/).filter(Boolean)).toEqual(words);
+  };
+
+  it('2 000 simple fonts on one page, each drawing its own word', async () => {
+    const n = 2_000;
+    const fonts = Array.from({ length: n }, (_, i) => `/F${i} ${i + 5} 0 R`).join(' ');
+    const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << ${fonts} >> >> /Contents 4 0 R >>`;
+    const content = Array.from({ length: n }, (_, i) => `BT /F${i} 9 Tf 0 ${-i} Td (w${i}) Tj ET`).join('\n');
+    // Half of them re-encode a few codes, as subset fonts do.
+    const font = (i: number) =>
+      `<< /Type /Font /Subtype /Type1 /BaseFont /Sub${i} /Encoding ${i % 2 ? '/WinAnsiEncoding' : '<< /BaseEncoding /WinAnsiEncoding /Differences [65 /A /B /C] >>'} >>`;
+    await whole(build([CATALOG, PAGES, page, stream('', content), ...Array.from({ length: n }, (_, i) => font(i))]).bytes, Array.from({ length: n }, (_, i) => `w${i}`));
+  }, 30_000);
+
+  it('1 000 pages sharing one resource dictionary and one font', async () => {
+    const n = 1_000;
+    // 1 catalog, 2 the page tree, 3… the pages, then the resources, the font and each page's content.
+    const resources = n + 3;
+    const kids = Array.from({ length: n }, (_, i) => `${i + 3} 0 R`).join(' ');
+    const pages = Array.from({ length: n }, (_, i) => `<< /Type /Page /Parent 2 0 R /Resources ${resources} 0 R /Contents ${resources + 2 + i} 0 R >>`);
+    const contents = Array.from({ length: n }, (_, i) => stream('', `BT /F1 9 Tf (page${i}) Tj ET`));
+    const file = build([CATALOG, `<< /Type /Pages /Kids [${kids}] /Count ${n} >>`, ...pages, `<< /Font << /F1 ${resources + 1} 0 R >> >>`, HELVETICA, ...contents]).bytes;
+    await whole(file, Array.from({ length: n }, (_, i) => `page${i}`));
+  }, 30_000);
+
+  it('a CJK font: a ToUnicode of 20 000 codes and a range, every code drawn', async () => {
+    const n = 20_000;
+    const code = (i: number) => (i + 1).toString(16).padStart(4, '0');
+    const sections = Array.from({ length: n / 100 }, (_, k) =>
+      `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${code(k * 100 + j)}> <${(0x4e00 + k * 100 + j).toString(16)}>`).join(' ')} endbfchar`);
+    const cmap = `begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n${sections.join('\n')}\n1 beginbfrange <F000> <F0FF> <3041> endbfrange\nendcmap`;
+    const drawn = `<${Array.from({ length: n }, (_, i) => code(i)).join('')}> Tj <F000F001F002> Tj`;
+    const built = onePage(`BT /F1 9 Tf ${drawn} ET`, {
+      font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
+      extra: [stream('', cmap)],
+    }).bytes;
+    const expected = String.fromCharCode(...Array.from({ length: n }, (_, i) => 0x4e00 + i)) + '\u3041\u3042\u3043';
+    const outcome = await run(built);
+    expect(outcome).toMatchObject({ status: 'indexed', truncated: false });
+    expect(textOf(outcome).replace(/\s+/g, '')).toBe(expected);
+  }, 30_000);
+
+  it('a few pages of text among 24 MiB of images', async () => {
+    // Images are drawn, never decoded: their bytes count against the file's size, not its memory.
+    const image = (i: number) => stream(`/Type /XObject /Subtype /Image /Width 2048 /Height 1024 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`, new Uint8Array(6 * MIB).fill(0x30 + i));
+    const xobjects = Array.from({ length: 4 }, (_, i) => `/Im${i} ${i + 6} 0 R`).join(' ');
+    const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << ${xobjects} >> >> /Contents 5 0 R >>`;
+    const content = Array.from({ length: 4 }, (_, i) => `q 400 0 0 200 0 ${i * 200} cm /Im${i} Do Q BT /F1 9 Tf (figure${i}) Tj ET`).join('\n');
+    const file = build([CATALOG, PAGES, page, HELVETICA, stream('', content), ...Array.from({ length: 4 }, (_, i) => image(i))]).bytes;
+    expect(file.length).toBeGreaterThan(24 * MIB);
+    await whole(file, ['figure0', 'figure1', 'figure2', 'figure3']);
+  }, 30_000);
+});
+
 describe('pdf: hostile files end failed or empty, promptly, and never throw', () => {
   it('a deflate bomb: one stream decoding past the per-stream bound fails the file', async () => {
     const bomb = await deflate(new Uint8Array(PDF_STREAM_MAX + 1024));
@@ -526,8 +586,21 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     };
     const one = await charged(fonts(1));
     const forty = await charged(fonts(40));
-    expect(forty - one).toBeGreaterThanOrEqual(39 * 32 * 1024); // a decoder per font
-    expect(forty - one).toBeLessThan(39 * 32 * 1024 + 39 * 4 * 1024); // and the 5 000-code CMap once, not 40 times
+    // A decoder per font, charged what a composite decoder holds; and the 5 000-code CMap (over
+    // 300 KiB of definitions and segments) once, not 40 times — a font's own objects aside.
+    expect(forty - one).toBeGreaterThanOrEqual(39 * pdfFontCosts.composite);
+    expect(forty - one).toBeLessThan(39 * (pdfFontCosts.composite + 2 * 1024));
+    // A simple font: its table and closure, and each /Differences entry it adds.
+    const simple = (differences: string) =>
+      onePage('BT /F1 9 Tf (x) Tj ET', { font: `<< /Type /Font /Subtype /Type1 /BaseFont /X /Encoding << /Differences [${differences}] >> >>` }).bytes;
+    const plain = await charged(simple(''));
+    const named = await charged(simple(`32 ${'/a '.repeat(100)}`));
+    expect(named - plain).toBeGreaterThanOrEqual(100 * pdfFontCosts.difference);
+    const second = onePage('BT /F1 9 Tf (x) Tj /F2 9 Tf (y) Tj ET', {
+      page: '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>',
+      extra: [HELVETICA],
+    }).bytes;
+    expect(await charged(second) - baseline).toBeGreaterThanOrEqual(pdfFontCosts.simple);
   });
 
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
