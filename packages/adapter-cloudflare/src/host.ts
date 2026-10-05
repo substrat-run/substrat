@@ -426,6 +426,7 @@ import {
   asyncLinePass,
   type AsyncLinePass,
   type EmittedReport,
+  memberAddedAudit,
 } from '@substrat-run/kernel';
 import { attributedHost } from '@substrat-run/kernel';
 import {
@@ -459,6 +460,7 @@ import type {
   ConnectionGrantDoRow,
   EntitlementRow,
   HostnameRow,
+  MemberTupleRow,
   OrgRow,
   RoleRow,
   RouteRow,
@@ -753,7 +755,7 @@ interface ControlPlaneStub {
   ): Promise<boolean>;
   listOrgs(tenantId: string): Promise<OrgRow[]>;
   /** #1184: a bounded, fenced tenant-role add, as one DO unit. */
-  applyMembership(change: MembershipChange, row: AdminEntry): Promise<MembershipChangeResult>;
+  applyMembership(change: MembershipChange, row: AdminEntry, orgRow?: AdminEntry): Promise<MembershipChangeResult>;
   /**
    * #1184: a tenant-level removal — the K-21 tombstone, the removal fence and (only if it
    * changed anything) the audit row — as one DO unit. Returns whether anything changed.
@@ -763,7 +765,7 @@ interface ControlPlaneStub {
     tenantId: string,
     object: string,
     includeRevoked: boolean,
-  ): Promise<{ subject: string; revoked_at: string | null }[]>;
+  ): Promise<MemberTupleRow[]>;
   grantEntitlement(
     tenantId: string,
     key: string,
@@ -7127,29 +7129,33 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'getOrg', { tenantId }, { orgId }, r ? 1 : 0);
         return r ? mapOrg(r) : undefined;
       },
-      addMember: async (actor, tenantId, principal, orgId) => {
+      addMember: async (actor, tenantId, principal, orgId, opts) => {
         await requireOrg(tenantId, orgId);
+        const expiresAt = opts?.expiresAt ?? null;
         await this.cp.writeTenantTuple(
           tenantId,
           `principal:${principal}`,
           'member',
           `org:${orgId}`,
-          null,
+          expiresAt,
         );
-        await this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
+        await this.recordAdmin(actor, 'addMember', { tenantId }, null, memberAddedAudit(principal, orgId, expiresAt));
         await this.fanOut(tenantId); // membership is a tenant-level tuple
       },
       applyMembership: async (actor, change) => {
         // The row is minted here, where attribution and `causedBy` live, and written by the
         // ControlPlaneDO in the same synchronous method as the fence, the bound and the tuple
         // (#1184): one DO unit, so nothing lands between the check and the write.
-        const { tenantId, principal, roleKey, op } = change;
+        const { tenantId, principal, roleKey, op, orgId } = change;
         const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
         const result = await this.cp.applyMembership(
           change,
           op === 'add'
             ? this.adminEntry(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment)
             : this.adminEntry(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
+          // #2047: the org's own row, when the change joins or leaves one. The unit fills in its
+          // `before`/`after` and writes it only for what it does — a join's carries the expiry.
+          orgId ? this.adminEntry(actor, op === 'add' ? 'addMember' : 'removeMember', { tenantId }, null, null) : undefined,
         );
         // The tenant-level tuple, or its tombstone, reaches the projections.
         if (result.applied && (op === 'add' || result.changed)) await this.fanOut(tenantId);
@@ -7181,6 +7187,7 @@ export class CloudflareScopeHost implements ScopeHost {
             principal: r.subject.slice('principal:'.length),
             orgId,
             revokedAt: r.revoked_at,
+            expiresAt: r.expires_at,
           }),
         );
       },

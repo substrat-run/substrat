@@ -927,9 +927,7 @@ export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => voi
 
 /**
  * One membership change for `HostAdmin.applyMembership` (#1184): a TENANT-level role assigned
- * or taken away, and nothing else. No org is joined or left — what an org confers lives partly
- * in each scope's own store, where no directory unit can bound it, so authorizing an org
- * membership is its own capability.
+ * or taken away and, when `orgId` is given (#2047), the org joined or left in the same unit.
  */
 export type MembershipChange = {
   tenantId: TenantId;
@@ -942,6 +940,15 @@ export type MembershipChange = {
    * read inside the unit (`tenantCoverage`).
    */
   boundedBy: PrincipalId;
+  /**
+   * The org joined (an add) or left (a removal) beside the role (#2047). Bounded by membership:
+   * the unit applies nothing unless `boundedBy` is a live member of it, read inside the unit
+   * (`liveOrgMembership`). A member holds everything the org confers — its grants in each
+   * scope's own store included — so that is the whole bound, and no scope is read. A join's
+   * membership expires no later than `boundedBy`'s own (`joinedMembershipExpiry`). Absent, the
+   * change is the role alone.
+   */
+  orgId?: OrgId;
 } & (
   | {
       op: 'add';
@@ -952,15 +959,18 @@ export type MembershipChange = {
 );
 
 /**
- * What the unit did: applied, or why not — fenced by a removal (an add only), or out of the
- * bound. A removal that applied says whether it took anything (`changed`); one that took
- * nothing still raised the fence.
+ * What the unit did: applied, or why not — fenced by a removal (an add only), out of the role's
+ * bound, or out of the org's (#2047: `boundedBy` is no live member of it). A removal that
+ * applied says whether it took anything (`changed`); one that took nothing still raised the
+ * fence.
  */
 export type MembershipChangeResult =
   | { applied: true; changed?: boolean }
   | { applied: false; removedAt: string }
   | { applied: false; missing: PermissionKey[] }
-  | { applied: false; unknownRole: string };
+  | { applied: false; unknownRole: string }
+  | { applied: false; unknownOrg: OrgId }
+  | { applied: false; notMember: OrgId };
 
 /**
  * An **executor**: out-of-band host code that effects, outside a scope, what a module
@@ -2054,11 +2064,17 @@ export interface HostAdmin {
     node: Node,
     entity?: EntityRef,
   ): Promise<void>;
+  /**
+   * Make `principal` a member of the org. `opts.expiresAt` (#2047) makes the membership lapse
+   * then, as any expiring tuple does; absent, it never lapses. Re-adding replaces the row,
+   * clearing a tombstone and setting the expiry anew.
+   */
   addMember(
     actor: PlatformActorId,
     tenantId: TenantId,
     principal: PrincipalId,
     orgId: OrgId,
+    opts?: { expiresAt?: Instant },
   ): Promise<void>;
   /**
    * One membership change, applied as ONE directory unit (#1184): a single SQLite transaction or
@@ -2069,6 +2085,11 @@ export interface HostAdmin {
    * audit row. A REMOVE unassigns it and raises the fence, as a tenant-level `unassignRole`
    * does. A removal, a grant, a role redefinition or a demotion lands wholly before the unit
    * (and governs it) or wholly after it, never between its check and its write.
+   *
+   * With `orgId` (#2047) the org is joined or left in the same unit, and bounded there too:
+   * `boundedBy` must be a live member of it. An add writes the membership — expiring no later
+   * than `boundedBy`'s own — with an `addMember` audit row; a removal tombstones it, with a
+   * `removeMember` row if it took anything. The role and the org apply together or not at all.
    *
    * The fence is `_substrat_membership_fences`: every tenant-level `unassignRole` and every
    * `removeMember` raises it for the person, in the same unit as its revoke — a no-op included,

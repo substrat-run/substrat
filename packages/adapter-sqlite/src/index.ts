@@ -417,6 +417,8 @@ import {
   membershipFencesTableExists,
   MEMBERSHIP_FENCE_SINCE_SQL,
   RAISE_MEMBERSHIP_FENCE_SQL,
+  memberAddedAudit,
+  orgChangeBound,
   tenantCoverage,
   type MembershipChangeResult,
   isSecretBoxConfigured,
@@ -6622,7 +6624,7 @@ export class SqliteScopeHost implements ScopeHost {
       subject: string,
       relation: string,
       object: string,
-      expiresAt?: string,
+      expiresAt?: string | null,
     ) =>
       this.directory
         .prepare(
@@ -6659,6 +6661,16 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null, at),
       );
     };
+    // An org membership written or tombstoned with its audit row — `addMember` and `removeMember`,
+    // and the membership executor's unit (#2047), one spelling each. Leaving raises the fence too.
+    const joinOrg = (actor: PlatformActorId, tenantId: TenantId, principal: PrincipalId, orgId: OrgId, expiresAt: string | null): void => {
+      writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`, expiresAt);
+      this.recordAdmin(actor, 'addMember', { tenantId }, null, memberAddedAudit(principal, orgId, expiresAt));
+    };
+    const leaveOrgAndFence = (actor: PlatformActorId, tenantId: TenantId, principal: PrincipalId, orgId: OrgId): boolean =>
+      revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, (at) =>
+        this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null, at),
+      );
     // The tenant-level reads the checker makes, synchronous, for the bound inside a unit.
     const directoryReader = directoryTenantReader({
       directory: this.directory,
@@ -8716,14 +8728,13 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'getOrg', { tenantId }, { orgId }, o ? 1 : 0);
         return o;
       },
-      addMember: async (actor, tenantId, principal, orgId) => {
+      addMember: async (actor, tenantId, principal, orgId, opts) => {
         requireOrg(tenantId, orgId);
         // INSERT OR REPLACE, so re-adding a revoked member clears the tombstone —
         // they are a member again. The add/revoke history is not lost: it lives in
         // the append-only admin log, which is where "what happened" belongs. The
         // tuple carries "what is true now" plus enough to explain a live proof.
-        writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`);
-        this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
+        joinOrg(actor, tenantId, principal, orgId, opts?.expiresAt ?? null);
       },
       applyMembership: async (actor, change) => {
         // ONE directory transaction, synchronous throughout (#1184): the fence (an add's), the
@@ -8742,9 +8753,21 @@ export class SqliteScopeHost implements ScopeHost {
           if (!role) return { applied: false, unknownRole: roleKey };
           const bound = tenantCoverage(directoryReader, tenantId, boundedBy, role.permissions);
           if (!bound.covered) return { applied: false, missing: bound.missing };
-          if (change.op === 'remove') return { applied: true, changed: revokeTenantRoleAndFence(actor, assignment) };
+          // #2047: the org, bounded by `boundedBy`'s own live membership of it.
+          const { orgId } = change;
+          const org = orgId ? { orgId, ...orgChangeBound(directoryReader, tenantId, { ...change, orgId }) } : undefined;
+          if (org) {
+            if (!readOrg(tenantId, org.orgId)) return { applied: false, unknownOrg: org.orgId };
+            if (!org.bounded) return { applied: false, notMember: org.orgId };
+          }
+          if (change.op === 'remove') {
+            const roleTaken = revokeTenantRoleAndFence(actor, assignment);
+            const orgLeft = !!org && leaveOrgAndFence(actor, tenantId, principal, org.orgId);
+            return { applied: true, changed: roleTaken || orgLeft };
+          }
           writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`);
           this.recordAdmin(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment);
+          if (org?.bounded) joinOrg(actor, tenantId, principal, org.orgId, org.expiresAt);
           return { applied: true };
         })();
       },
@@ -8753,28 +8776,25 @@ export class SqliteScopeHost implements ScopeHost {
         // Tombstone (K-21), never DELETE: a repeat revoke neither moves the timestamp nor writes
         // a second audit row. One transaction with the removal fence (#1184), which a no-op
         // raises too.
-        this.directory.transaction(() =>
-          revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, (at) =>
-            this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null, at),
-          ),
-        )();
+        this.directory.transaction(() => leaveOrgAndFence(actor, tenantId, principal, orgId))();
       },
       listMembers: async (actor, tenantId, orgId, options) => {
         requireOrg(tenantId, orgId);
         const rows = this.directory
           .prepare(
-            `SELECT subject, revoked_at FROM _substrat_tenant_tuples
+            `SELECT subject, revoked_at, expires_at FROM _substrat_tenant_tuples
              WHERE tenant_id = ? AND relation = 'member' AND object = ?
              ${options?.includeRevoked ? '' : 'AND revoked_at IS NULL'}
              ORDER BY subject`,
           )
-          .all(tenantId, `org:${orgId}`) as { subject: string; revoked_at: string | null }[];
+          .all(tenantId, `org:${orgId}`) as { subject: string; revoked_at: string | null; expires_at: string | null }[];
         this.recordAccess(actor, 'listMembers', { tenantId }, { orgId, ...options }, rows.length);
         return rows.map((r) =>
           orgMembership.parse({
             principal: r.subject.slice('principal:'.length),
             orgId,
             revokedAt: r.revoked_at,
+            expiresAt: r.expires_at,
           }),
         );
       },

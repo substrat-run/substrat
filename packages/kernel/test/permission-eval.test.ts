@@ -11,6 +11,8 @@ import {
 import {
   ancestorsWithin,
   createTupleEvaluator,
+  joinedMembershipExpiry,
+  liveOrgMembership,
   reachesWithin,
   tenantCoverage,
   type PermissionTupleReader,
@@ -455,16 +457,17 @@ describe('a switched-off subject (#1823)', () => {
   });
 });
 
-describe('tenantCoverage (#1184) — `covers` at the tenant node, without yielding', () => {
-  /** The same rows as `readerFor`, with every answer in hand, as a directory unit reads them. */
-  const directoryFor = (world: World): TenantDirectoryReader => {
-    const reader = readerFor(world);
-    return {
-      now: reader.now,
-      tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
-      getRole: (tenantId, key) => reader.getRole(tenantId, key) as RoleDefinition | undefined,
-    };
+/** The same rows as `readerFor`, with every answer in hand, as a directory unit reads them. */
+const directoryFor = (world: World): TenantDirectoryReader => {
+  const reader = readerFor(world);
+  return {
+    now: reader.now,
+    tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
+    getRole: (tenantId, key) => reader.getRole(tenantId, key) as RoleDefinition | undefined,
   };
+};
+
+describe('tenantCoverage (#1184) — `covers` at the tenant node, without yielding', () => {
   const ROLES = { staff: staff([WO_READ, TODO_READ]), lead: { key: 'lead', permissions: [WO_WRITE], source: 'vertical' } as RoleDefinition };
   const me = `principal:${ALICE}`;
   const past = '2025-01-01T00:00:00.000Z';
@@ -514,6 +517,33 @@ describe('tenantCoverage (#1184) — `covers` at the tenant node, without yieldi
       for (const required of asks) answers.add(tenantCoverage(directoryFor({ ...world, roles: ROLES }), T, ALICE, required).covered);
     }
     expect([...answers].sort()).toEqual([false, true]);
+  });
+});
+
+describe('the org bound (#2047) — a live membership, and the expiry a join inherits', () => {
+  const directory = (tenant: PermissionTupleRow[]) => directoryFor({ tenant });
+  const me = `principal:${ALICE}`;
+  const past = '2025-01-01T00:00:00.000Z';
+  const later = '2027-01-01T00:00:00.000Z';
+
+  it('is a member only through a live membership of that very org', () => {
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`)]), T, ALICE, ORG)).toBeDefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { expires_at: later })]), T, ALICE, ORG)).toBeDefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { revoked_at: past })]), T, ALICE, ORG)).toBeUndefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { expires_at: past })]), T, ALICE, ORG)).toBeUndefined();
+    expect(liveOrgMembership(directory([row(me, 'member', 'org:01JZ00000000000000000000B2')]), T, ALICE, ORG)).toBeUndefined();
+    // Holding what the org holds is not membership of it.
+    expect(liveOrgMembership(directory([row(me, 'granted:todo:write', `tenant:${T}`), row(`org:${ORG}`, 'granted:todo:write', `tenant:${T}`)]), T, ALICE, ORG)).toBeUndefined();
+  });
+
+  it('a join expires no later than the inviter, and never earlier than what the joiner already holds', () => {
+    const at = (expires_at: string | null) => ({ expires_at });
+    expect(joinedMembershipExpiry(at(null), undefined)).toBeNull();
+    expect(joinedMembershipExpiry(at(later), undefined)).toBe(later);
+    expect(joinedMembershipExpiry(at(later), at(null))).toBeNull();
+    expect(joinedMembershipExpiry(at(null), at(later))).toBeNull();
+    expect(joinedMembershipExpiry(at(later), at('2026-06-01T00:00:00.000Z'))).toBe(later);
+    expect(joinedMembershipExpiry(at('2026-06-01T00:00:00.000Z'), at(later))).toBe(later);
   });
 });
 

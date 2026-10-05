@@ -169,7 +169,16 @@ export {
 } from './permission-checker.js';
 export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
-export { ancestorsWithin, createTupleEvaluator, reachesWithin, tenantCoverage } from './permission-eval.js';
+export {
+  ancestorsWithin,
+  createTupleEvaluator,
+  joinedMembershipExpiry,
+  liveOrgMembership,
+  memberAddedAudit,
+  orgChangeBound,
+  reachesWithin,
+  tenantCoverage,
+} from './permission-eval.js';
 export type {
   PermissionTupleReader,
   TenantDirectoryReader,
