@@ -112,6 +112,17 @@ export function isAttachmentTextRun(run: { module_id: string; job: string }): bo
   return run.module_id === ATTACHMENT_TEXT_MODULE && run.job === ATTACHMENT_TEXT_JOB;
 }
 
+/** The backfill's job name: queues extraction for attachments that predate it. */
+export const ATTACHMENT_TEXT_BACKFILL_JOB = 'attachment-text-backfill';
+
+/** Is this run the kernel's backfill run? */
+export function isAttachmentTextBackfillRun(run: { module_id: string; job: string }): boolean {
+  return run.module_id === ATTACHMENT_TEXT_MODULE && run.job === ATTACHMENT_TEXT_BACKFILL_JOB;
+}
+
+/** Attachments one backfill pass looks at — the bound on what a pass writes, too. */
+export const ATTACHMENT_TEXT_BACKFILL_BATCH = 200;
+
 /**
  * Refuse a job registered under the kernel's own module id — every adapter's `registerJob`
  * calls this first.
@@ -224,11 +235,18 @@ export interface AttachmentTextState {
 const RUN_PAYLOAD_KEY = 'attachmentId';
 
 /**
- * Start one attachment's extraction run unless a LIVE one exists — the driver's own
- * coalescing rule (`startJobRun`), as one statement, so a re-queue joins an extraction in
- * flight rather than racing it.
+ * Start one of the kernel's runs unless a LIVE one exists for its key — the driver's own
+ * coalescing rule (`startJobRun`), as one statement, so a re-queue joins a run in flight
+ * rather than racing it.
  */
-function startAttachmentTextRun(sql: ScopedSql, attachmentId: string, runId: string, at: string): void {
+function startKernelRun(
+  sql: ScopedSql,
+  job: string,
+  instance: string,
+  payload: Record<string, string>,
+  runId: string,
+  at: string,
+): void {
   sql.exec(
     `INSERT INTO _substrat_job_runs
        (id, module_id, job, instance, payload, subject_id, status, cursor, counters, attempts,
@@ -238,19 +256,13 @@ function startAttachmentTextRun(sql: ScopedSql, attachmentId: string, runId: str
         SELECT 1 FROM _substrat_job_runs
          WHERE module_id = ? AND job = ? AND instance = ? AND status = 'running'
       )`,
-    [
-      runId,
-      ATTACHMENT_TEXT_MODULE,
-      ATTACHMENT_TEXT_JOB,
-      attachmentId,
-      JSON.stringify({ [RUN_PAYLOAD_KEY]: attachmentId }),
-      at,
-      at,
-      ATTACHMENT_TEXT_MODULE,
-      ATTACHMENT_TEXT_JOB,
-      attachmentId,
-    ],
+    [runId, ATTACHMENT_TEXT_MODULE, job, instance, JSON.stringify(payload), at, at, ATTACHMENT_TEXT_MODULE, job, instance],
   );
+}
+
+/** Start one attachment's extraction run, coalesced with a live one. */
+function startAttachmentTextRun(sql: ScopedSql, attachmentId: string, runId: string, at: string): void {
+  startKernelRun(sql, ATTACHMENT_TEXT_JOB, attachmentId, { [RUN_PAYLOAD_KEY]: attachmentId }, runId, at);
 }
 
 /**
@@ -343,6 +355,94 @@ export function reconcileAttachmentText(
   // One run each: a run id is a ULID, which SQL cannot mint.
   for (const { attachment_id } of queued) startAttachmentTextRun(sql, attachment_id, mintId(), at);
   return { removed, queued: queued.length };
+}
+
+/**
+ * Start the scope's backfill (#1575) — once in its life, and only once it holds attachments.
+ *
+ * An attachment uploaded before extraction existed has no text row, so nothing ever queued
+ * it and nothing would: it stayed unsearchable, and `readAttachmentText` answered null for
+ * it forever. The backfill finds those. It is a kernel job like extraction, so the work rides
+ * the job driver, off every request: this function only writes the run, and the driver's
+ * passes walk the attachments `ATTACHMENT_TEXT_BACKFILL_BATCH` at a time.
+ *
+ * **The run row is the marker.** Runs are retained, so a scope whose backfill ever started
+ * never starts another — done, failed or still running. Every upload since extraction
+ * existed writes its own text row, and a restore or a fork reconciles its own
+ * (`reconcileAttachmentText`), so one walk is all a scope ever needs. A scope with no
+ * attachments yet is not marked: an empty scope has nothing to walk, and the first upload
+ * after it is marked costs one walk over rows that all have text.
+ *
+ * Read before it writes, so the drive that calls it on every pass writes nothing once the
+ * scope is marked: two index probes. Returns whether it started the run.
+ */
+export function startAttachmentTextBackfill(sql: ScopedSql, runId: string, at: string): boolean {
+  const [row] = sql.query<{ has: number; marked: number }>(
+    `SELECT EXISTS (SELECT 1 FROM _substrat_attachments) AS has,
+            EXISTS (SELECT 1 FROM _substrat_job_runs WHERE module_id = ? AND job = ?) AS marked`,
+    [ATTACHMENT_TEXT_MODULE, ATTACHMENT_TEXT_BACKFILL_JOB],
+  );
+  if (!row || Number(row.has) !== 1 || Number(row.marked) === 1) return false;
+  startKernelRun(sql, ATTACHMENT_TEXT_BACKFILL_JOB, 'scope', {}, runId, at);
+  return true;
+}
+
+/** What one backfill batch did. `last` is the cursor the next batch resumes after. */
+export interface AttachmentTextBackfillBatch {
+  readonly scanned: number;
+  readonly queued: number;
+  readonly last: string | null;
+  /** True when the batch reached the end of the attachments. */
+  readonly done: boolean;
+}
+
+/**
+ * One backfill batch, inside the caller's transaction: the next `batch` attachments after
+ * `after`, by id, and an extraction queued for each that has no text row. Bounded by what it
+ * LOOKS AT, not by what it queues, so a pass over attachments that all have text costs the
+ * same as one that queues every row. Idempotent: a batch replayed after a crash finds the
+ * rows it queued and queues nothing twice.
+ */
+export function queueAttachmentTextBackfill(
+  sql: ScopedSql,
+  after: string | null,
+  mintId: () => string,
+  at: string,
+  batch: number = ATTACHMENT_TEXT_BACKFILL_BATCH,
+): AttachmentTextBackfillBatch {
+  const rows = sql.query<{ id: string; missing: number }>(
+    `SELECT a.id, t.attachment_id IS NULL AS missing
+       FROM _substrat_attachments a
+       LEFT JOIN _substrat_search__attachment_text t ON t.attachment_id = a.id
+      WHERE a.id > ?
+      ORDER BY a.id
+      LIMIT ?`,
+    [after ?? '', batch],
+  );
+  let queued = 0;
+  for (const { id, missing } of rows) {
+    if (Number(missing) !== 1) continue;
+    enqueueAttachmentText(sql, id, mintId(), at);
+    queued += 1;
+  }
+  return { scanned: rows.length, queued, last: rows.at(-1)?.id ?? after, done: rows.length < batch };
+}
+
+/**
+ * The backfill job: one batch per pass, the cursor the last attachment id it looked at. The
+ * batch commits on its own and the cursor with the pass, so a pass that dies between the two
+ * replays a batch that queues nothing twice (`queueAttachmentTextBackfill`).
+ */
+export function attachmentTextBackfillJob(source: {
+  queueBatch(after: string | null): Promise<AttachmentTextBackfillBatch>;
+}): JobHandler {
+  return async (pass) => {
+    const after = typeof pass.cursor === 'string' ? pass.cursor : null;
+    const { scanned, queued, last, done } = await source.queueBatch(after);
+    pass.count('scanned', scanned);
+    pass.count('queued', queued);
+    return { cursor: last, done };
+  };
 }
 
 /**

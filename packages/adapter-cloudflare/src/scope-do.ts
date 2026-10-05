@@ -153,6 +153,9 @@ import {
   attachmentRecordOfRow,
   enqueueAttachmentText,
   reconcileAttachmentText,
+  queueAttachmentTextBackfill,
+  startAttachmentTextBackfill,
+  type AttachmentTextBackfillBatch,
   recordAttachmentText,
   searchAttachments,
   type AttachmentRowShape,
@@ -3544,6 +3547,30 @@ export function defineScopeDO(
       return this.queue.enqueue(async () =>
         this.revision.transactionSync(() =>
           recordAttachmentText(doSpineSql(this.sql), attachmentId, outcome, new Date().toISOString()),
+        ),
+      );
+    }
+
+    /**
+     * #1575: start the scope's one-shot backfill, unless it is marked or holds no
+     * attachments (`startAttachmentTextBackfill` reads before it writes, so a marked scope
+     * writes nothing — and moves no write revision — on every drive).
+     */
+    async attachmentTextBackfillStart(): Promise<boolean> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () =>
+        this.revision.transactionSync(() =>
+          startAttachmentTextBackfill(doSpineSql(this.sql), ulid(), new Date().toISOString()),
+        ),
+      );
+    }
+
+    /** #1575: one backfill batch, in one transaction (`queueAttachmentTextBackfill`). */
+    async attachmentTextBackfillBatch(after: string | null): Promise<AttachmentTextBackfillBatch> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () =>
+        this.revision.transactionSync(() =>
+          queueAttachmentTextBackfill(doSpineSql(this.sql), after, ulid, new Date().toISOString()),
         ),
       );
     }

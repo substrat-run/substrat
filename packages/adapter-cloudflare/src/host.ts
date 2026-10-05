@@ -334,11 +334,16 @@ import {
   startJobRun,
   attachmentTextJob,
   assertAttachmentExtractors,
+  resolveAttachmentTextBounds,
   assertJobRegistrable,
+  isAttachmentTextBackfillRun,
   isAttachmentTextRun,
+  attachmentTextBackfillJob,
   searchLimit,
   searchMatchExpression,
   type AttachmentExtractor,
+  type AttachmentTextBackfillBatch,
+  type AttachmentTextBounds,
   type ExtractionOutcome,
   type JobDriveReport,
   type JobDueKey,
@@ -1448,6 +1453,10 @@ interface ScopeStubRpc {
   attachmentTextSource(attachmentId: string): Promise<AttachmentRecord | null>;
   /** #1575: write an extraction outcome; false when the attachment was removed meanwhile. */
   attachmentTextRecord(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean>;
+  /** #1575: start the one-shot backfill unless the scope is marked or holds no attachments. */
+  attachmentTextBackfillStart(): Promise<boolean>;
+  /** #1575: one backfill batch after `after`, in one transaction. */
+  attachmentTextBackfillBatch(after: string | null): Promise<AttachmentTextBackfillBatch>;
   /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
    *  `entitlements` (#304) rides the same snapshot — preserve-on-undefined, so a role-only re-projection
    *  leaves projected entitlements untouched. */
@@ -1900,6 +1909,11 @@ export interface CloudflareScopeHostOptions {
    * that reason, which is a valid configuration rather than a broken one.
    */
   attachmentExtractors?: readonly AttachmentExtractor[];
+  /**
+   * Tighter bounds for attachment text extraction (#1575): input ceiling, text cap, time
+   * budget. Each may only lower the kernel's default (`resolveAttachmentTextBounds`).
+   */
+  attachmentTextBounds?: Partial<AttachmentTextBounds>;
   /**
    * Service accounts minted by this vertical, read before CP-less provisioning/reconcile
    * (#1896). Their roles still authorize work but do not prevent human lockout repair.
@@ -2356,6 +2370,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly attachmentBuckets: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
+  private readonly attachmentTextBounds: AttachmentTextBounds;
   private readonly executors = new Map<string, RegisteredEffector>();
   /**
    * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
@@ -2424,6 +2439,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.attachmentBuckets = options.attachmentBuckets ?? ambientAttachmentBucket;
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
+    this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
@@ -2846,6 +2862,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       // K-43: the host's parsers, handed in — this adapter imports none.
       this.attachmentExtractors,
+      this.attachmentTextBounds,
     );
   }
 
@@ -2870,13 +2887,23 @@ export class CloudflareScopeHost implements ScopeHost {
     // advance, and an archived one's never move again.
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    // #1575: the kernel's extraction job is this host's own, bound to this scope — no
-    // deployment registers it, and none can shadow it.
+    // #1575: the kernel's extraction jobs are this host's own, bound to this scope — no
+    // deployment registers them, and none can shadow them. The backfill starts here, on
+    // the drive, so a scope's first request never pays for attachments that predate it.
+    const stub = this.scopeStub(scopeId);
+    await stub.attachmentTextBackfillStart();
     const attachmentText = { handler: this.attachmentTextHandler(tenantId, scopeId) };
+    const backfill = {
+      handler: attachmentTextBackfillJob({ queueBatch: (after) => stub.attachmentTextBackfillBatch(after) }),
+    };
     return runDueJobRuns({
       store: this.jobStore(scopeId),
       handlerFor: (run) =>
-        isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
+        isAttachmentTextRun(run)
+          ? attachmentText
+          : isAttachmentTextBackfillRun(run)
+            ? backfill
+            : this.jobs.get(`${run.module_id}/${run.job}`),
       now: () => new Date().toISOString(),
       // #1834: the door is opened FOR this pass, so its "not now" is tied to this pass alone.
       openScope: async (run, pass) =>

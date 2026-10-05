@@ -157,6 +157,26 @@ export function assertAttachmentTextBounds(bounds: AttachmentTextBounds): void {
 }
 
 /**
+ * A host's `attachmentTextBounds` option, over the defaults: each given bound replaces the
+ * default, and each may only TIGHTEN it. The defaults are sized to the platform — the text
+ * cap to a Durable Object row, the input ceiling to a Worker's memory — so a looser bound is
+ * one no adapter can keep, and refusing it when the host is built is cheaper than learning it
+ * from a scope. A host under a CPU limit below the 30 s budget is the case for tightening.
+ */
+export function resolveAttachmentTextBounds(given: Partial<AttachmentTextBounds> = {}): AttachmentTextBounds {
+  const bounds = { ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, ...given };
+  assertAttachmentTextBounds(bounds);
+  for (const key of ['maxInputBytes', 'maxTextBytes', 'timeoutMs'] as const) {
+    if (bounds[key] > DEFAULT_ATTACHMENT_TEXT_BOUNDS[key]) {
+      throw new Error(
+        `attachment text bound ${key} may only tighten the default ${DEFAULT_ATTACHMENT_TEXT_BOUNDS[key]}, not raise it to ${bounds[key]}`,
+      );
+    }
+  }
+  return bounds;
+}
+
+/**
  * Refuse, when the host is built, an extractor list it could not honour: a missing or
  * repeated name, an `accepts` or `extract` that is not a function, or a `maxInputBytes` that
  * is not a positive integer. Failing here, once, is the alternative to misreading the

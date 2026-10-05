@@ -470,13 +470,19 @@ import {
   type SearchIndexPlan,
   type SearchOptions,
   type AttachmentExtractor,
+  type AttachmentTextBounds,
   ATTACHMENT_TEXT_DDL,
   assertAttachmentExtractors,
+  resolveAttachmentTextBounds,
   assertJobRegistrable,
   attachmentRecordOfRow,
   attachmentTextJob,
   enqueueAttachmentText,
+  isAttachmentTextBackfillRun,
   isAttachmentTextRun,
+  queueAttachmentTextBackfill,
+  startAttachmentTextBackfill,
+  attachmentTextBackfillJob,
   reconcileAttachmentText,
   recordAttachmentText,
   searchAttachments,
@@ -753,6 +759,11 @@ export interface SqliteScopeHostOptions {
    * that reason, which is a valid configuration rather than a broken one.
    */
   attachmentExtractors?: readonly AttachmentExtractor[];
+  /**
+   * Tighter bounds for attachment text extraction (#1575): input ceiling, text cap, time
+   * budget. Each may only lower the kernel's default (`resolveAttachmentTextBounds`).
+   */
+  attachmentTextBounds?: Partial<AttachmentTextBounds>;
   /** Directory holding one SQLite file per scope plus the directory database. */
   dir: string;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
@@ -1637,6 +1648,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly secretBox: SecretBox;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
+  private readonly attachmentTextBounds: AttachmentTextBounds;
   private readonly fetchImpl: FetchLike;
   private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
@@ -1655,6 +1667,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
+    this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
@@ -5520,6 +5533,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // K-43: the host's parsers, handed in — this adapter imports none.
       this.attachmentExtractors,
+      this.attachmentTextBounds,
     );
   }
 
@@ -5540,13 +5554,27 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<JobDriveReport> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    // #1575: the kernel's extraction job is this host's own, bound to this scope — no
-    // deployment registers it, and none can shadow it.
+    // #1575: the kernel's extraction jobs are this host's own, bound to this scope — no
+    // deployment registers them, and none can shadow them. The backfill starts here, on
+    // the drive, so a scope's first request never pays for attachments that predate it.
+    await rt.actor.enqueue(() => startAttachmentTextBackfill(spineSql(rt.db), ulid(), this.clock()));
     const attachmentText = { handler: this.attachmentTextHandler(rt) };
+    const backfill = {
+      handler: attachmentTextBackfillJob({
+        queueBatch: (after) =>
+          rt.actor.enqueue(() =>
+            rt.db.transaction(() => queueAttachmentTextBackfill(spineSql(rt.db), after, ulid, this.clock()))(),
+          ),
+      }),
+    };
     return runDueJobRuns({
       store: this.jobStore(rt),
       handlerFor: (run) =>
-        isAttachmentTextRun(run) ? attachmentText : this.jobs.get(`${run.module_id}/${run.job}`),
+        isAttachmentTextRun(run)
+          ? attachmentText
+          : isAttachmentTextBackfillRun(run)
+            ? backfill
+            : this.jobs.get(`${run.module_id}/${run.job}`),
       now: this.clock,
       openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
       maxPasses: options?.maxPasses,
