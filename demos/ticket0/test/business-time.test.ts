@@ -190,6 +190,21 @@ describe('bounds: an exact walk of at most ten years, and null beyond it', () =>
     expect(businessMsBetween(sparse, start, pastIt)).toBeNull();
   });
 
+  it("between: the cap's own 24:00 close is inside it; a millisecond later is not (Codex round 2)", () => {
+    // Sundays round the clock, from a Tuesday: the walk's last day, 3659, is a Sunday whose
+    // 24:00 close is the first instant of the day past the cap.
+    const sundays: BusinessSchedule = { timezone: 'UTC', weekly: { sun: [{ open: '00:00', close: '24:00' }] } };
+    const due = addBusinessMs(sundays, start, 523 * DAY)!;
+    expect(due).toBe(new Date(Date.parse(start) + EXACT_DAYS * DAY).toISOString());
+    expect(businessMsBetween(sundays, start, due)).toBe(523 * DAY);
+    expect(businessMsBetween(sundays, start, new Date(Date.parse(due) + 1).toISOString())).toBeNull();
+    // The same boundary in a zone with DST: the round trip holds where midnight is local.
+    const sthlm = { ...sundays, timezone: 'Europe/Stockholm' };
+    const local = addBusinessMs(sthlm, start, 522 * DAY);
+    expect(local).not.toBeNull();
+    expect(businessMsBetween(sthlm, start, local!)).toBe(522 * DAY);
+  });
+
   it('a year-long target on a one-minute week is null, after a bounded number of zone lookups', () => {
     // Ten years of local days: 523 open Mondays at two lookups each, plus the start's.
     const lookups = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');

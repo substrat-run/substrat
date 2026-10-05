@@ -226,7 +226,9 @@ export function addBusinessMs(schedule: BusinessSchedule, start: string, ms: num
 
 /**
  * How much open time lies in [from, to). Zero when `to` is not after `from`. Null when `to`
- * is past the cap counted from `from`, or for a refused schedule, as above.
+ * is past the cap counted from `from` — later than the local midnight that ends the walk's
+ * last day, which is itself allowed, being that day's `24:00` close and so an instant
+ * `addBusinessMs` can answer — or for a refused schedule, as above.
  */
 export function businessMsBetween(schedule: BusinessSchedule, from: string, to: string): number | null {
   const c = compile(schedule);
@@ -234,7 +236,7 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
   const start = Date.parse(from);
   const end = Date.parse(to);
   if (!(end > start)) return 0;
-  if (localDay(c.timezone, end) >= localDay(c.timezone, start) + EXACT_DAYS) return null;
+  if (end > instantOf(c.timezone, (localDay(c.timezone, start) + EXACT_DAYS) * DAY)) return null;
   let total = 0;
   for (const [a, b] of openTime(c, start)) {
     if (a >= end) break;
