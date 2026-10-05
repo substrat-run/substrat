@@ -1,8 +1,10 @@
 /**
  * The desk's opening hours as the Settings form holds them (#1648).
  *
- * A leaf, for `sla.ts`'s reason: no imports, so the vertical's suite can reach the
- * translation without a DOM. The form is text a person types (`09:00–17:00` in a box per
+ * A leaf, for `sla.ts`'s reason: nothing that drags `api.ts` in, so the vertical's suite
+ * can reach the translation without a DOM. Its one import is `src/business-time.ts`, which
+ * imports nothing itself, so a time, a date and a timezone mean here what they mean to the
+ * desk's clock. The form is text a person types (`09:00–17:00` in a box per
  * weekday, one exception per line), and the desk stores a structured schedule
  * (`deskSettingsBlob.businessHours`); the translation between the two is where it can go
  * wrong, so it lives here.
@@ -11,6 +13,8 @@
  * `spec/model.ts`). This file judges it first only so the message can name the box.
  */
 
+import { dayNumberOf, isTimeZone, minutesOf, WALL_CLOCK_TIME } from '../../src/business-time.js';
+
 export const HOURS_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type HoursDay = (typeof HOURS_DAYS)[number];
 
@@ -18,7 +22,7 @@ export const HOURS_DAY_LABELS: Record<HoursDay, string> = {
   mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday',
 };
 
-/** Restated from `spec/model.ts`, which is not browser code; `test/business-hours-form.test.ts` holds them equal. */
+/** Restated from `spec/model.ts`, which is not browser code; `test/sla-business-hours.test.ts` holds them equal. */
 export const HOURS_WINDOWS_PER_DAY_MAX = 4;
 export const HOURS_EXCEPTIONS_MAX = 366;
 
@@ -42,8 +46,6 @@ export interface HoursForm {
   exceptions: string;
 }
 
-const TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/;
-const minutes = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
 const windowsText = (ws: readonly Window[]) => ws.map((w) => `${w.open}–${w.close}`).join(', ');
 
 export function emptyHoursForm(): HoursForm {
@@ -95,31 +97,15 @@ function parseWindows(text: string): Window[] | string {
     const m = /^\s*(\d{2}:\d{2})\s*[–-]\s*(\d{2}:\d{2})\s*$/.exec(part);
     if (!m) return `"${part.trim()}" is not a window - write 09:00–17:00`;
     const [open, close] = [m[1]!, m[2]!];
-    if (!TIME.test(open) || !TIME.test(close) || open === '24:00') return `"${part.trim()}": times run 00:00–24:00`;
-    if (minutes(open) >= minutes(close)) return `"${part.trim()}" closes before it opens`;
+    if (!WALL_CLOCK_TIME.test(open) || !WALL_CLOCK_TIME.test(close) || open === '24:00') return `"${part.trim()}": times run 00:00–24:00`;
+    if (minutesOf(open) >= minutesOf(close)) return `"${part.trim()}" closes before it opens`;
     const last = out[out.length - 1];
-    if (last && minutes(last.close) > minutes(open)) return 'windows must be in order and must not overlap';
+    if (last && minutesOf(last.close) > minutesOf(open)) return 'windows must be in order and must not overlap';
     out.push({ open, close });
   }
   if (out.length > HOURS_WINDOWS_PER_DAY_MAX) return `at most ${HOURS_WINDOWS_PER_DAY_MAX} windows a day`;
   return out;
 }
-
-const isDate = (s: string) => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (!m) return false;
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  return d.toISOString().slice(0, 10) === s;
-};
-
-const isTimeZone = (tz: string) => {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const isEmpty = (form: HoursForm) =>
   form.timezone.trim() === '' && HOURS_DAYS.every((d) => form.days[d].trim() === '') && form.exceptions.trim() === '';
@@ -145,11 +131,11 @@ export function hoursPayloadOf(form: HoursForm): { setting: HoursSetting | null 
   for (const line of form.exceptions.split('\n').map((l) => l.trim()).filter(Boolean)) {
     const [date = '', ...rest] = line.split(/\s+/);
     const what = rest.join(' ');
-    if (!isDate(date)) return { error: `Exception "${line}": start with a date, 2026-12-24.` };
+    if (Number.isNaN(dayNumberOf(date))) return { error: `Exception "${line}": start with a date, 2026-12-24.` };
     if (exceptions.some((e) => e.date === date)) return { error: `Exception ${date}: listed twice.` };
+    if (what === '') return { error: `Exception ${date}: say "closed" or give the hours.` };
     const ws = what.toLowerCase() === 'closed' ? [] : parseWindows(what);
     if (typeof ws === 'string') return { error: `Exception ${date}: ${ws}, or "closed".` };
-    if (what.trim() === '') return { error: `Exception ${date}: say "closed" or give the hours.` };
     exceptions.push({ date, windows: ws });
   }
   if (exceptions.length > HOURS_EXCEPTIONS_MAX) return { error: `At most ${HOURS_EXCEPTIONS_MAX} exceptions.` };

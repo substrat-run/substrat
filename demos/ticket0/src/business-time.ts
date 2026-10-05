@@ -33,7 +33,7 @@
  * on, and every due that matters is inside the exact walk.
  */
 
-export const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 export type Weekday = (typeof WEEKDAYS)[number];
 
 /** One opening, `HH:MM` local, `close` may be `24:00`. `open < close`. */
@@ -50,20 +50,13 @@ export interface BusinessSchedule {
 }
 
 /** How many local days are walked one at a time before whole weeks may be counted at once. */
-export const EXACT_DAYS = 3660;
+const EXACT_DAYS = 3660;
 
 const DAY = 86_400_000;
 const MINUTE = 60_000;
 
-/** Whether this runtime knows `timezone` as an IANA zone. */
-export function isTimeZone(timezone: string): boolean {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: timezone });
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** A wall-clock time as a window names one: `HH:MM`, 24-hour, `24:00` the end of the day. */
+export const WALL_CLOCK_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/;
 
 /** `HH:MM` → minutes since local midnight. `24:00` is 1440. */
 export function minutesOf(hhmm: string): number {
@@ -101,6 +94,16 @@ function formatter(timezone: string): Intl.DateTimeFormat {
     formatters.set(timezone, f);
   }
   return f;
+}
+
+/** Whether this runtime knows `timezone` as an IANA zone. Builds (and keeps) its formatter. */
+export function isTimeZone(timezone: string): boolean {
+  try {
+    formatter(timezone);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The local wall clock at instant `t`, as if it were UTC, in ms. */
@@ -176,12 +179,23 @@ function compile(schedule: BusinessSchedule): Compiled | null {
   };
 }
 
-/** A local day's openings as instants, earliest first. */
+/**
+ * A local day's openings as instants, earliest first.
+ *
+ * `instantOf` per wall-clock time costs three or four zone lookups. On a day whose offset
+ * is the same from the day before to the day after — every day but the two a year around
+ * a transition — each candidate it would try IS that offset and round-trips, so its answer
+ * is `local - offset`, and two lookups serve the whole day.
+ */
 function openings(c: Compiled, day: number): (readonly [number, number])[] {
   const windows = c.exceptions.get(day) ?? c.weekly[(((day + 4) % 7) + 7) % 7]!;
-  return windows.map(
-    ([o, cl]) => [instantOf(c.timezone, day * DAY + o * MINUTE), instantOf(c.timezone, day * DAY + cl * MINUTE)] as const,
-  );
+  if (windows.length === 0) return [];
+  const steady = offsetAt(c.timezone, (day - 1) * DAY);
+  const at =
+    steady === offsetAt(c.timezone, (day + 2) * DAY)
+      ? (minute: number) => day * DAY + minute * MINUTE - steady
+      : (minute: number) => instantOf(c.timezone, day * DAY + minute * MINUTE);
+  return windows.map(([o, cl]) => [at(o), at(cl)] as const);
 }
 
 /** The first exception on or after `day`, or Infinity. */
@@ -191,14 +205,30 @@ function nextException(c: Compiled, day: number): number {
 }
 
 /**
- * How many whole weeks may be counted at once from `day` without being walked: none
- * inside the exact horizon, none that would reach an exception or `limitDay` (exclusive),
- * and one fewer than fits, so the last stretch is always walked.
+ * The open time from `start` onwards, in order, without end: each opening as `[from, to)`
+ * (clipped to begin no earlier than `start`), or `{ weeks }` — open time counted a whole
+ * stretch at once rather than walked.
+ *
+ * Whole weeks are counted only past the exact horizon, never across an exception, never
+ * up to `limitDay(day)` (exclusive), and always one fewer than fits, so the last stretch is
+ * walked. The consumer stops it.
  */
-function weeksToSkip(c: Compiled, day: number, walked: number, limitDay: number): number {
-  if (walked < EXACT_DAYS) return 0;
-  const room = Math.min(nextException(c, day), limitDay) - day;
-  return Math.max(0, Math.floor(room / 7) - 1);
+function* openTime(
+  c: Compiled,
+  start: number,
+  limitDay: (day: number) => number,
+): Generator<readonly [number, number] | { readonly weeks: number }> {
+  for (let day = localDay(c.timezone, start), walked = 0; ; walked++, day++) {
+    if (walked >= EXACT_DAYS) {
+      const room = Math.min(nextException(c, day), limitDay(day)) - day;
+      const skip = Math.floor(room / 7) - 1;
+      if (skip > 0) {
+        yield { weeks: skip * c.weekMs };
+        day += skip * 7;
+      }
+    }
+    for (const [open, close] of openings(c, day)) if (close > start) yield [Math.max(open, start), close];
+  }
 }
 
 /**
@@ -209,24 +239,20 @@ function weeksToSkip(c: Compiled, day: number, walked: number, limitDay: number)
 export function addBusinessMs(schedule: BusinessSchedule, start: string, ms: number): string | null {
   const c = compile(schedule);
   if (c === null) return null;
-  let cursor = Date.parse(start);
+  const from = Date.parse(start);
   let remaining = Math.max(0, ms);
-  if (remaining === 0) return new Date(cursor).toISOString();
-  let day = localDay(c.timezone, cursor);
-  for (let walked = 0; ; walked++, day++) {
-    const skip = weeksToSkip(c, day, walked, day + Math.ceil(remaining / c.weekMs) * 7);
-    if (skip > 0) {
-      remaining -= skip * c.weekMs;
-      day += skip * 7;
-      cursor = -Infinity;
+  if (remaining === 0) return new Date(from).toISOString();
+  // A jump never reaches past the week `remaining` runs out in, so it never overshoots.
+  for (const piece of openTime(c, from, (day) => day + Math.ceil(remaining / c.weekMs) * 7)) {
+    if ('weeks' in piece) {
+      remaining -= piece.weeks;
+      continue;
     }
-    for (const [open, close] of openings(c, day)) {
-      if (close <= cursor) continue;
-      const from = Math.max(open, cursor);
-      if (remaining <= close - from) return new Date(from + remaining).toISOString();
-      remaining -= close - from;
-    }
+    const [a, b] = piece;
+    if (remaining <= b - a) return new Date(a + remaining).toISOString();
+    remaining -= b - a;
   }
+  throw new Error('unreachable: open time never ends');
 }
 
 /** How much open time lies in [from, to). Zero when `to` is not after `from`; null as above. */
@@ -236,28 +262,23 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
   const start = Date.parse(from);
   const end = Date.parse(to);
   if (!(end > start)) return 0;
-  let total = 0;
   const lastDay = localDay(c.timezone, end);
-  for (let day = localDay(c.timezone, start), walked = 0; day <= lastDay; walked++, day++) {
-    const skip = weeksToSkip(c, day, walked, lastDay);
-    if (skip > 0) {
-      total += skip * c.weekMs;
-      day += skip * 7;
+  let total = 0;
+  for (const piece of openTime(c, start, () => lastDay)) {
+    if ('weeks' in piece) {
+      total += piece.weeks;
+      continue;
     }
-    for (const [open, close] of openings(c, day)) {
-      const a = Math.max(open, start);
-      const b = Math.min(close, end);
-      if (b > a) total += b - a;
-    }
+    const [a, b] = piece;
+    if (a >= end) break;
+    total += Math.min(b, end) - a;
   }
   return total;
 }
 
-const LABELS: Record<Weekday, string> = {
-  sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat',
-};
+const label = (d: Weekday) => d[0]!.toUpperCase() + d.slice(1);
 /** The order a week is read in: Monday first. */
-const READING_ORDER: readonly Weekday[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const READING_ORDER: readonly Weekday[] = [...WEEKDAYS.slice(1), WEEKDAYS[0]];
 
 /**
  * The schedule as one line a visitor reads: consecutive days with the same windows run
@@ -284,6 +305,6 @@ export function describeSchedule(schedule: BusinessSchedule): string {
   }
   const open = groups
     .filter((g) => g.hours !== '')
-    .map((g) => `${g.from === g.to ? LABELS[g.from] : `${LABELS[g.from]}–${LABELS[g.to]}`} ${g.hours}`);
+    .map((g) => `${g.from === g.to ? label(g.from) : `${label(g.from)}–${label(g.to)}`} ${g.hours}`);
   return `${open.join('; ')} (${schedule.timezone})`;
 }

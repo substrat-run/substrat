@@ -2729,17 +2729,6 @@ function isAutonomous(ctx: OperationContext): boolean {
  *
  * Readers ask for one key and compare it to exactly `true`; see `roundRobinOn`.
  */
-/**
- * The opening hours a visitor is shown (#1648): `describeSchedule` of the structured
- * hours, or the free-text `business_hours` note when there are none. Structured wins
- * outright rather than being joined to the note, because the note on most desks is the
- * same week written by hand, and showing it twice is how the two drift apart in public.
- */
-export function displayedBusinessHours(row: DeskRow): string | null {
-  const hours = businessHoursOf(row);
-  return hours ? describeSchedule(hours) : row.business_hours;
-}
-
 function storedSettings(row: DeskRow): Record<string, unknown> {
   if (row.settings === null) return {};
   try {
@@ -2875,6 +2864,17 @@ interface SlaPolicy {
 function businessHoursOf(row: DeskRow): BusinessSchedule | null {
   const parsed = businessHoursSchedule.safeParse(storedSettings(row).businessHours);
   return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The opening hours a visitor is shown (#1648): `describeSchedule` of the structured
+ * hours, or the free-text `business_hours` note when there are none. Structured wins
+ * outright rather than being joined to the note, because the note on most desks is the
+ * same week written by hand, and showing it twice is how the two drift apart in public.
+ */
+function displayedBusinessHours(row: DeskRow): string | null {
+  const hours = businessHoursOf(row);
+  return hours ? describeSchedule(hours) : row.business_hours;
 }
 
 /**
@@ -3289,10 +3289,9 @@ function beginSnooze(ctx: OperationContext, id: string): void {
  */
 function endSnooze(ctx: OperationContext, id: string): void {
   const conversation = conversationOrThrow(ctx, id);
-  const asleepSince = conversation.snoozed_at;
-  if (asleepSince === null) return;
+  if (conversation.snoozed_at === null) return;
   const hours = slaPolicy(desk(ctx))?.hours ?? null;
-  const slept = slaClockBetween(hours, asleepSince, ctx.now());
+  const slept = slaClockBetween(hours, conversation.snoozed_at, ctx.now());
   const paused = SLA_TARGETS.filter((t) => t.pausesOnSnooze);
   const shifts = paused.map(
     (t) => `${t.due} = CASE WHEN ${t.due} IS NOT NULL AND ${t.running} THEN ? ELSE ${t.due} END`,

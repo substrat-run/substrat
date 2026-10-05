@@ -33,6 +33,7 @@
  * either way, and discovering them later would mean a migration rather than an edit.
  */
 import {
+  calendarDate,
   clientContext,
   defineEntities,
   defineLifecycles,
@@ -43,7 +44,7 @@ import {
   modelUsageLine,
 } from '@substrat-run/contracts';
 import { MAX_SEARCH_LIMIT } from '@substrat-run/kernel';
-import { dayNumberOf, isTimeZone, minutesOf } from '../src/business-time.js';
+import { isTimeZone, minutesOf, WALL_CLOCK_TIME } from '../src/business-time.js';
 
 /**
  * How much wider than the answer the knowledge-base search asks the index for.
@@ -464,7 +465,7 @@ export const BUSINESS_WINDOWS_PER_DAY_MAX = 4;
 export const BUSINESS_EXCEPTIONS_MAX = 366;
 
 /** A local wall-clock time, `HH:MM`, 24-hour; `24:00` is the end of the day. */
-const wallClockTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/, 'HH:MM, 00:00–24:00');
+const wallClockTime = z.string().regex(WALL_CLOCK_TIME, 'HH:MM, 00:00–24:00');
 
 /**
  * A day's openings, earliest first and not overlapping: `[{ open: '09:00', close: '17:00' }]`.
@@ -515,7 +516,7 @@ export const businessHoursSchedule = z
       .array(
         z
           .object({
-            date: z.string().refine((d) => !Number.isNaN(dayNumberOf(d)), 'a date, YYYY-MM-DD'),
+            date: calendarDate,
             windows: businessWindows,
           })
           .strict(),

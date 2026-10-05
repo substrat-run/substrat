@@ -5,7 +5,7 @@
  * transition, a holiday — because the only way a "4 business hours" promise goes wrong is
  * by counting time the desk was shut, or failing to count time it was open.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   addBusinessMs,
   businessMsBetween,
@@ -171,9 +171,13 @@ describe('bounds: the walk ends, whatever the schedule says', () => {
 
   it('a one-minute week reaches a year-long target, and at the right minute', () => {
     const s: BusinessSchedule = { timezone: 'UTC', weekly: { mon: [{ open: '12:00', close: '12:01' }] } };
-    const began = performance.now();
+    // The work is the zone lookups, so that is what is counted: the ten-year exact walk is
+    // about five hundred open Mondays, two lookups each, and the 10 000 years after it are
+    // counted a week-run at a time. Walked day by day, it would be over a million.
+    const lookups = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
     const due = addBusinessMs(s, start, target)!;
-    expect(performance.now() - began).toBeLessThan(5_000);
+    expect(lookups.mock.calls.length).toBeLessThan(5_000);
+    lookups.mockRestore();
     // The 525 600th one-minute window ends 525 599 weeks after the first.
     expect(Date.parse(due)).toBe(Date.UTC(2026, 0, 5, 12, 1) + 525_599 * 7 * DAY);
     expect(businessMsBetween(s, start, due)).toBe(target);

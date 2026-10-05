@@ -13,13 +13,7 @@
  * land on Monday would pass against a clock that ignored the setting and a target that
  * happened to be long.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { moduleId, platformActorId, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
-import { manualClock, ulid, type ManualClock, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import { afterAll, describe, expect, it } from 'vitest';
 import { BUSINESS_EXCEPTIONS_MAX, BUSINESS_WINDOWS_PER_DAY_MAX } from '../spec/model.js';
 import {
   emptyHoursForm,
@@ -29,26 +23,10 @@ import {
   hoursPayloadOf,
 } from '../app/src/business-hours.js';
 import { slaFormOf, slaPayloadOf } from '../app/src/sla.js';
-import { ticket0Manifest } from '../src/manifest.js';
-import { ROLES } from '../src/provision.js';
-import { buildHost } from '../src/seed.js';
+import { createKit, ORIGIN, type Desk } from './desk-kit.js';
 
-let dir: string;
-let host: ScopeHost;
-let clock: ManualClock;
-
-const TICKET0 = moduleId.parse(ticket0Manifest.id);
-const staff = platformActorId.parse(ulid());
-const ORIGIN = 'https://desk.example';
-
-interface Desk {
-  readonly tenant: ReturnType<typeof tenantId.parse>;
-  readonly scope: ReturnType<typeof scopeId.parse>;
-  readonly admin: PrincipalId;
-  readonly relay: PrincipalId;
-  readonly widget: PrincipalId;
-  readonly agent: PrincipalId;
-}
+const kit = createKit('ticket0-bh-');
+afterAll(() => kit.dispose());
 
 interface Conversation {
   id: string;
@@ -66,54 +44,26 @@ const WEEKDAYS_UTC = {
   weekly: { mon: nineToFive, tue: nineToFive, wed: nineToFive, thu: nineToFive, fri: nineToFive },
 };
 
-let desks = 0;
-
 async function freshDesk(settings: Record<string, unknown>): Promise<Desk> {
-  desks += 1;
-  const tenant = tenantId.parse(ulid());
-  const scope = scopeId.parse(ulid());
-  await host.admin.createTenant(staff, { id: tenant, slug: `bh-${desks}`, name: `Desk ${desks}` });
-  await host.admin.grantEntitlement(staff, tenant, ticket0Manifest.entitlementKey as string);
-  await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'ticket0' });
-  await host.admin.activateScope(staff, tenant, scope);
-  for (const role of ROLES) await host.admin.defineRole(staff, tenant, role);
-  const node = { tenantId: tenant, scopeId: scope };
-  const mint = async (roleKey: string) => {
-    const p = principalId.parse(ulid());
-    await host.admin.assignRole(staff, { principalId: p, roleKey, node });
-    return p;
-  };
-  const desk: Desk = {
-    tenant,
-    scope,
-    admin: await mint('desk-admin'),
-    relay: await mint('relay'),
-    widget: await mint('widget'),
-    agent: await mint('agent'),
-  };
-  await (await as(desk, desk.admin)).invoke('ticket0/configure-desk', { allowedOrigins: [ORIGIN], settings });
-  await (await as(desk, desk.agent)).invoke('ticket0/set-agent-profile', {
-    displayName: 'Agent',
-    avatarUrl: null,
-    signature: null,
-  });
+  const desk = await kit.freshDesk({ agents: 1 });
+  await kit.configure(desk, settings);
   return desk;
 }
 
-const as = (desk: Desk, who: PrincipalId): Promise<ScopeStub> => host.getScope(who, desk.tenant, desk.scope);
-const admin = (desk: Desk) => as(desk, desk.admin);
-const agent = (desk: Desk) => as(desk, desk.agent);
+const admin = (desk: Desk) => kit.as(desk, desk.admin);
+const agent = (desk: Desk) => kit.as(desk, desk.agents[0]!);
 
 /** Stand at `iso`. Always forward: the spine is a log, and a log does not go back. */
 function at(iso: string): void {
-  if (Date.parse(iso) < Date.parse(clock.now())) throw new Error(`clock would go back to ${iso}`);
-  clock.set(iso);
+  if (Date.parse(iso) < Date.parse(kit.clock.now())) throw new Error(`clock would go back to ${iso}`);
+  kit.clock.set(iso);
 }
 
 let mails = 0;
+/** A mail arrives at exactly the instant the test stands at (`kit.mail` moves the clock a minute first). */
 async function mail(desk: Desk): Promise<string> {
   mails += 1;
-  const arrived = (await (await as(desk, desk.relay)).invoke('ticket0/ingest-message', {
+  const arrived = (await (await kit.as(desk, desk.relay)).invoke('ticket0/ingest-message', {
     conversationId: null,
     contactEmail: `customer-${mails}@customer.example`,
     contactName: null,
@@ -127,10 +77,7 @@ async function mail(desk: Desk): Promise<string> {
 const read = async (desk: Desk, id: string) =>
   (await (await admin(desk)).invoke('ticket0/get-conversation', { conversationId: id })) as Conversation;
 
-async function sweep(desk: Desk): Promise<number> {
-  const stub = await host.getSystemScope(TICKET0, desk.tenant, desk.scope);
-  return ((await stub.invoke('ticket0/escalate-sla-breaches')) as { breached: number }).breached;
-}
+const sweep = (desk: Desk) => kit.sweep(desk, 'ticket0/escalate-sla-breaches', 'breached');
 
 const soon = async (desk: Desk, withinMinutes: number) =>
   ((await (await admin(desk)).invoke('ticket0/breaching-soon', { withinMinutes })) as {
@@ -138,20 +85,11 @@ const soon = async (desk: Desk, withinMinutes: number) =>
   }).rows;
 
 const widgetHours = async (desk: Desk) =>
-  ((await (await as(desk, desk.widget)).invoke('ticket0/widget-start', { origin: ORIGIN })) as {
+  ((await (await kit.as(desk, desk.widget)).invoke('ticket0/widget-start', { origin: ORIGIN })) as {
     businessHours: string | null;
   }).businessHours;
 
 const FR_4H = { firstResponseMinutes: { normal: 240 } };
-
-beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'ticket0-bh-'));
-  // A Monday. Every test moves forward from wherever the last one left the clock.
-  clock = manualClock('2026-10-05T08:00:00.000Z');
-  host = buildHost(dir, clock.read);
-});
-
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('the business clock decides when a target falls due', () => {
   it('a Friday-evening mail with four hours falls due on Monday, and the sweep waits for it', async () => {
@@ -236,7 +174,7 @@ describe('a snooze on the business clock gives back business time (#1648)', () =
 
     at('2027-04-08T16:30:00.000Z');
     const a = await agent(desk);
-    await a.invoke('ticket0/assign', { conversationId: id, assignee: desk.agent });
+    await a.invoke('ticket0/assign', { conversationId: id, assignee: desk.agents[0] });
     await a.invoke('ticket0/snooze', { conversationId: id, until: '2027-04-12T09:30:00.000Z' });
     at('2027-04-12T09:30:00.000Z'); // Monday 09:30
     await a.invoke('ticket0/wake', { conversationId: id });
@@ -268,7 +206,7 @@ describe('a snooze on the business clock gives back business time (#1648)', () =
     const id = await mail(desk);
     at('2027-04-15T16:30:00.000Z');
     const a = await agent(desk);
-    await a.invoke('ticket0/assign', { conversationId: id, assignee: desk.agent });
+    await a.invoke('ticket0/assign', { conversationId: id, assignee: desk.agents[0] });
     await a.invoke('ticket0/snooze', { conversationId: id, until: '2027-04-19T09:30:00.000Z' });
     at('2027-04-19T09:30:00.000Z');
     await a.invoke('ticket0/wake', { conversationId: id });
@@ -326,14 +264,11 @@ describe('the line the widget shows', () => {
   it('a stored shape this version never wrote reads as no hours: the note shows, and the clock is the calendar', async () => {
     const desk = await freshDesk({ sla: { ...FR_4H, clock: 'business' } });
     await (await admin(desk)).invoke('ticket0/configure-desk', { businessHours: 'Ring us' });
-    const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`));
-    try {
+    kit.sql(desk, (db) =>
       db.prepare('UPDATE ticket0_desk_settings SET settings = ?').run(
         JSON.stringify({ sla: { ...FR_4H, clock: 'business' }, businessHours: { tz: 'UTC', days: 'weekdays' } }),
-      );
-    } finally {
-      db.close();
-    }
+      ),
+    );
     expect(await widgetHours(desk)).toBe('Ring us');
     at('2027-05-07T16:00:00.000Z'); // Friday
     const id = await mail(desk);
