@@ -82,6 +82,24 @@
 	// isolation lives in the read proxy's WHERE, and AE samples fairly per index value.
 	"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_router" }],
 
+	// Request rate limits (#130), counted here after the resolve and before the dispatch:
+	// every key begins `<tenant>:<scope>:`, so no tenant spends another's budget. Two buckets
+	// — per credential (a hashed bearer, else a hashed session cookie, else the client
+	// address) and per client address, set five times higher. Conservative: a normal client
+	// never meets them. Cloudflare's binding counts per location, approximately, and allows
+	// a `period` of 10 or 60 only. The binding's limit cannot be read at runtime, so
+	// `RATE_LIMITS` says it again for the response headers; test/rate-limit.test.ts
+	// refuses the two disagreeing. Turning it off is removing the binding: an absent binding
+	// is not counted. A limiter that throws lets the request through and logs
+	// `rate-limit-unavailable` (fail open).
+	"ratelimits": [
+		{ "name": "RATE_LIMIT_CREDENTIAL", "namespace_id": "1301", "simple": { "limit": 1200, "period": 60 } },
+		{ "name": "RATE_LIMIT_IP", "namespace_id": "1302", "simple": { "limit": 6000, "period": 60 } }
+	],
+	"vars": {
+		"RATE_LIMITS": { "credential": { "limit": 1200, "period": 60 }, "ip": { "limit": 6000, "period": 60 } }
+	},
+
 	// Tenant hostnames route here: `<slug>.<jurisdiction>.substrat.run`. The wildcard
 	// is one route per jurisdiction (a route wildcard matches one level), backed by the
 	// ACM advanced cert + a proxied `*.<jurisdiction>` DNS record (K-30/D-35). Only
@@ -125,6 +143,14 @@
 			],
 			"services": [{ "binding": "CONTROL_PLANE_KICK", "service": "substrat-control-plane-test" }], // differs: test CP worker
 			"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_router_test" }], // differs: test data stays out of prod charts
+			// #130, same budgets as prod. Own namespaces, so test traffic never shares a counter.
+			"ratelimits": [
+				{ "name": "RATE_LIMIT_CREDENTIAL", "namespace_id": "1311", "simple": { "limit": 1200, "period": 60 } }, // differs: namespace
+				{ "name": "RATE_LIMIT_IP", "namespace_id": "1312", "simple": { "limit": 6000, "period": 60 } } // differs: namespace
+			],
+			"vars": {
+				"RATE_LIMITS": { "credential": { "limit": 1200, "period": 60 }, "ip": { "limit": 6000, "period": 60 } }
+			},
 			// Test tenant hostnames: <slug>.global.test.substrat.run. This two-level
 			// wildcard needs an ACM advanced cert for `*.global.test.substrat.run` + a
 			// proxied `*.global.test` DNS record on substrat.run (same setup prod's

@@ -8,6 +8,7 @@ import {
   PAGE_LINK_HEADER,
   PAGE_TOTAL_HEADER,
 } from './pagination.js';
+import { RATE_LIMIT_HEADER, RATE_LIMIT_POLICY_HEADER, RETRY_AFTER_HEADER } from './rate-limit.js';
 import {
   DOCUMENTED_ERROR_CODES,
   type ErrorCode,
@@ -138,6 +139,7 @@ const ERROR_STATUS_PROSE: Readonly<Record<number, string>> = {
   403: 'Refused — the caller lacks the permission this operation checks, or policy forbids it.',
   404: 'Unknown operation, or an entity named in the input does not exist.',
   409: 'Conflicts with current state — an illegal transition, a name already taken, or a record that is immutable now.',
+  429: 'Too many requests for this credential or client address. Wait `Retry-After` seconds, then retry.',
   500: 'Internal error. The body carries no `detail`, deliberately — an unreviewed message is not disclosed on a multi-tenant surface.',
   503: 'The deployment cannot serve this — a required platform facility is unconfigured.',
 };
@@ -149,6 +151,7 @@ const ERROR_RESPONSE_NAME: Readonly<Record<number, string>> = {
   403: 'Forbidden',
   404: 'NotFound',
   409: 'Conflict',
+  429: 'RateLimited',
   500: 'InternalError',
   503: 'Unavailable',
 };
@@ -177,6 +180,27 @@ const ERROR_RESPONSES: Readonly<Record<string, unknown>> = Object.fromEntries(
   ]),
 );
 
+/**
+ * What a failure carries besides its body, per documented status. Only the 429 has any
+ * (#130): the header a client backs off by, foremost.
+ */
+const ERROR_RESPONSE_HEADERS: Readonly<Record<number, Readonly<Record<string, unknown>>>> = {
+  429: {
+    [RETRY_AFTER_HEADER]: {
+      description: 'Seconds to wait before retrying.',
+      schema: { type: 'integer', minimum: 0 },
+    },
+    [RATE_LIMIT_HEADER]: {
+      description: 'The budget that refused: `"<bucket>";r=0;t=<seconds until it resets>`.',
+      schema: { type: 'string' },
+    },
+    [RATE_LIMIT_POLICY_HEADER]: {
+      description: 'Every budget the request was counted against: `"<bucket>";q=<limit>;w=<window seconds>`, comma-separated.',
+      schema: { type: 'string' },
+    },
+  },
+};
+
 /** The definitions those references point at, written once per document. */
 const ERROR_RESPONSE_COMPONENTS: Readonly<Record<string, unknown>> = Object.fromEntries(
   DOCUMENTED_STATUSES.map((status) => {
@@ -186,6 +210,7 @@ const ERROR_RESPONSE_COMPONENTS: Readonly<Record<string, unknown>> = Object.from
       ERROR_RESPONSE_NAME[status] as string,
       {
         description: `${ERROR_STATUS_PROSE[status]} Carries \`code\`: ${codeList}.`,
+        ...(ERROR_RESPONSE_HEADERS[status] ? { headers: ERROR_RESPONSE_HEADERS[status] } : {}),
         content: { 'application/problem+json': { schema: { $ref: PROBLEM_SCHEMA_REF } } },
       },
     ];
