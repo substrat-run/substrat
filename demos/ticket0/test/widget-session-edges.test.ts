@@ -60,154 +60,6 @@ async function thread(admin: ScopeStub, conversationId: string) {
   ).entries;
 }
 
-describe('a widget session holds its conversation’s public messages, and nothing else (#1853)', () => {
-  it('hangs a public message under the session — and neither an internal note nor a draft', async () => {
-    const desk = await kit.freshDesk({ agents: 1 });
-    const admin = await kit.as(desk, desk.admin);
-    const visit = await kit.chat(desk, 'Where is my order?');
-    await admin.invoke('ticket0/post-note', { conversationId: visit.conversationId, body: 'internal only' });
-    await admin.invoke('ticket0/post-public-reply', { conversationId: visit.conversationId, body: 'On its way.' });
-    const turn = (await admin.invoke('ticket0/record-answer', {
-      conversationId: visit.conversationId,
-      turnId: 'edges-draft',
-      model: 'offline/extractive',
-      body: 'a draft nobody approved',
-      inputTokens: 0,
-      outputTokens: 0,
-      citedArticleIds: [],
-      outcome: 'drafted',
-    })) as { id: string };
-
-    const rows = await thread(admin, visit.conversationId);
-    const note = rows.find((m) => m.body_text === 'internal only')!;
-    const publics = rows.filter((m) => m.visibility === 'public');
-    expect(publics.map((m) => m.body_text)).toEqual(expect.arrayContaining(['Where is my order?', 'On its way.']));
-
-    expect(await reaches(desk, message(note.id), session(visit.sessionId))).toBe(false);
-    expect(await reaches(desk, { entityType: 'aiTurn', entityId: turn.id }, session(visit.sessionId))).toBe(false);
-    // The twin: both public messages — the visitor's own and the desk's reply — do.
-    for (const m of publics) expect(await reaches(desk, message(m.id), session(visit.sessionId))).toBe(true);
-    // And another visitor's session holds none of them.
-    const other = await kit.chat(desk, 'Somebody else entirely');
-    for (const m of publics) expect(await reaches(desk, message(m.id), session(other.sessionId))).toBe(false);
-  });
-
-  it('moves the session onto a follow-up without widening either thread to the other’s followers', async () => {
-    const desk = await kit.freshDesk({ agents: 1 });
-    const admin = await kit.as(desk, desk.admin);
-    const widget = await kit.as(desk, desk.widget);
-    const visit = await kit.chat(desk, 'First question');
-    await admin.invoke('ticket0/post-public-reply', { conversationId: visit.conversationId, body: 'First answer' });
-    await admin.invoke('ticket0/close', { conversationId: visit.conversationId });
-    // The visitor writes again on the same token: a closed thread opens a follow-up and the
-    // session moves to it (`moveSession`).
-    const next = (await widget.invoke('ticket0/widget-post', {
-      sessionId: visit.sessionId,
-      token: visit.token,
-      body: 'Second question',
-    })) as { id: string; conversation_id: string };
-    expect(next.conversation_id).not.toBe(visit.conversationId);
-    const before = (await thread(admin, visit.conversationId)).filter((m) => m.visibility === 'public');
-
-    // One parent: the follow-up. The closed thread's edge is tombstoned, not left beside it.
-    const parents = kit.sql(desk, (db) =>
-      db
-        .prepare(`SELECT object FROM _substrat_tuples WHERE subject = ? AND relation = 'parent' AND revoked_at IS NULL`)
-        .all(`widgetSession:${visit.sessionId}`),
-    );
-    expect(parents).toEqual([{ object: `conversation:${next.conversation_id}` }]);
-
-    // The follow-up's message is under the session; the closed thread's are not any more.
-    expect(await reaches(desk, message(next.id), session(visit.sessionId))).toBe(true);
-    for (const m of before) expect(await reaches(desk, message(m.id), session(visit.sessionId))).toBe(false);
-
-    // The property the invariant exists for: a grant on either conversation reaches only
-    // its own thread. Each message still reaches its own conversation (the twin).
-    expect(await reaches(desk, message(next.id), conversation(visit.conversationId))).toBe(false);
-    expect(await reaches(desk, message(next.id), conversation(next.conversation_id))).toBe(true);
-    for (const m of before) {
-      expect(await reaches(desk, message(m.id), conversation(next.conversation_id))).toBe(false);
-      expect(await reaches(desk, message(m.id), conversation(visit.conversationId))).toBe(true);
-    }
-  });
-
-  it('leaves the desk’s read of a visitor’s browser where it was after a move', async () => {
-    // `widget-session` is the one staff read of a session, and it has always selected by the
-    // session's CURRENT conversation in SQL: the closed thread showed no browser after a move
-    // while the session was still linked to it, and shows none now that it is relinked. No
-    // read reaches a session through the walk, so the relink takes nothing from anybody.
-    const desk = await kit.freshDesk({ agents: 1 });
-    const admin = await kit.as(desk, desk.admin);
-    const visit = await kit.chat(desk, 'Before the close');
-    await admin.invoke('ticket0/close', { conversationId: visit.conversationId });
-    const next = (await (await kit.as(desk, desk.widget)).invoke('ticket0/widget-post', {
-      sessionId: visit.sessionId,
-      token: visit.token,
-      body: 'After the close',
-    })) as { conversation_id: string };
-    const browserOn = async (conversationId: string) =>
-      ((await admin.invoke('ticket0/widget-session', { conversationId })) as { session: { id: string } | null }).session;
-    expect(await browserOn(visit.conversationId)).toBeNull();
-    expect((await browserOn(next.conversation_id))?.id).toBe(visit.sessionId);
-  });
-
-  it('after a merge, every session on the survivor holds every public message on it', async () => {
-    const desk = await kit.freshDesk({ agents: 1 });
-    const admin = await kit.as(desk, desk.admin);
-    const widget = await kit.as(desk, desk.widget);
-    const loser = await kit.chat(desk, 'Asked once');
-    // The same visitor again, in a second thread: the merge rule is one contact.
-    const started = (await widget.invoke('ticket0/widget-start', { origin: 'https://desk.example' })) as {
-      sessionId: string;
-      token: string;
-    };
-    // A verified visitor's opening names their contact; set it as the host's signature would.
-    const contact = (await kit.read(desk, loser.conversationId)).contact_id;
-    kit.sql(desk, (db) =>
-      db.prepare('UPDATE ticket0_widget_openings SET contact_id = ? WHERE id = ?').run(contact, started.sessionId),
-    );
-    const second = (await widget.invoke('ticket0/widget-post', {
-      sessionId: started.sessionId,
-      token: started.token,
-      body: 'Asked twice',
-    })) as { id: string; conversation_id: string };
-    await admin.invoke('ticket0/post-public-reply', { conversationId: second.conversation_id, body: 'Survivor reply' });
-    await admin.invoke('ticket0/post-note', { conversationId: loser.conversationId, body: 'moved note' });
-    const moved = (await thread(admin, loser.conversationId));
-
-    await admin.invoke('ticket0/merge', { conversationId: loser.conversationId, intoConversationId: second.conversation_id });
-
-    const merged = await thread(admin, second.conversation_id);
-    const publics = merged.filter((m) => m.visibility === 'public');
-    expect(publics.length).toBeGreaterThanOrEqual(3);
-    // …and the moved internal note went nowhere near either session.
-    const note = moved.find((m) => m.body_text === 'moved note')!;
-    for (const s of [loser.sessionId, started.sessionId]) {
-      for (const m of publics) expect(await reaches(desk, message(m.id), session(s))).toBe(true);
-      expect(await reaches(desk, message(note.id), session(s))).toBe(false);
-    }
-  });
-
-  it('widget-watch proves the token, and nothing else, before a feed opens', async () => {
-    const desk = await kit.freshDesk({ agents: 0 });
-    const widget = await kit.as(desk, desk.widget);
-    const visit = await kit.chat(desk);
-    expect(await widget.invoke('ticket0/widget-watch', { sessionId: visit.sessionId, token: visit.token })).toEqual({
-      sessionId: visit.sessionId,
-    });
-    await expect(
-      widget.invoke('ticket0/widget-watch', { sessionId: visit.sessionId, token: 'not-the-token' }),
-    ).rejects.toMatchObject({ code: 'permission_denied' });
-    // An opening — no message yet — is watchable too: its public messages will hang under
-    // the same id the moment it is bound.
-    const opening = (await widget.invoke('ticket0/widget-start', { origin: 'https://desk.example' })) as {
-      sessionId: string;
-      token: string;
-    };
-    expect(await widget.invoke('ticket0/widget-watch', opening)).toEqual({ sessionId: opening.sessionId });
-  });
-});
-
 /** Every live `publicThread → widgetSession` edge, as `thread>session` strings. */
 function threadSeats(desk: Desk): string[] {
   return (
@@ -251,15 +103,8 @@ function liveParents(desk: Desk, subject: string): string[] {
 }
 
 /** How many `entity.relinked` one operation has written so far. */
-function relinks(desk: Desk, operation: string): number {
-  return (
-    kit.sql(desk, (db) =>
-      db
-        .prepare(`SELECT COUNT(*) AS n FROM _substrat_outbox WHERE type = 'entity.relinked' AND operation = ?`)
-        .get(operation),
-    ) as { n: number }
-  ).n;
-}
+const relinks = (desk: Desk, operation: string) =>
+  kit.events(desk, 'entity.relinked').filter((e) => e.operation === operation).length;
 
 /** A second widget thread for the same contact as `first`, so the two may be merged. */
 async function sameVisitorAgain(desk: Desk, first: { conversationId: string }, body: string) {
@@ -268,6 +113,7 @@ async function sameVisitorAgain(desk: Desk, first: { conversationId: string }, b
     sessionId: string;
     token: string;
   };
+  // A verified visitor's opening names their contact; set it as the host's signature would.
   const contact = (await kit.read(desk, first.conversationId)).contact_id;
   kit.sql(desk, (db) =>
     db.prepare('UPDATE ticket0_widget_openings SET contact_id = ? WHERE id = ?').run(contact, started.sessionId),
@@ -284,6 +130,126 @@ async function writeAfterClose(desk: Desk, visit: { sessionId: string; token: st
     conversation_id: string;
   };
 }
+
+describe('a widget session holds its conversation’s public messages, and nothing else (#1853)', () => {
+  it('hangs a public message under the session — and neither an internal note nor a draft', async () => {
+    const desk = await kit.freshDesk({ agents: 1 });
+    const admin = await kit.as(desk, desk.admin);
+    const visit = await kit.chat(desk, 'Where is my order?');
+    await admin.invoke('ticket0/post-note', { conversationId: visit.conversationId, body: 'internal only' });
+    await admin.invoke('ticket0/post-public-reply', { conversationId: visit.conversationId, body: 'On its way.' });
+    const turn = (await admin.invoke('ticket0/record-answer', {
+      conversationId: visit.conversationId,
+      turnId: 'edges-draft',
+      model: 'offline/extractive',
+      body: 'a draft nobody approved',
+      inputTokens: 0,
+      outputTokens: 0,
+      citedArticleIds: [],
+      outcome: 'drafted',
+    })) as { id: string };
+
+    const rows = await thread(admin, visit.conversationId);
+    const note = rows.find((m) => m.body_text === 'internal only')!;
+    const publics = rows.filter((m) => m.visibility === 'public');
+    expect(publics.map((m) => m.body_text)).toEqual(expect.arrayContaining(['Where is my order?', 'On its way.']));
+
+    expect(await reaches(desk, message(note.id), session(visit.sessionId))).toBe(false);
+    expect(await reaches(desk, { entityType: 'aiTurn', entityId: turn.id }, session(visit.sessionId))).toBe(false);
+    // The twin: both public messages — the visitor's own and the desk's reply — do.
+    for (const m of publics) expect(await reaches(desk, message(m.id), session(visit.sessionId))).toBe(true);
+    // And another visitor's session holds none of them.
+    const other = await kit.chat(desk, 'Somebody else entirely');
+    for (const m of publics) expect(await reaches(desk, message(m.id), session(other.sessionId))).toBe(false);
+  });
+
+  it('moves the session onto a follow-up without widening either thread to the other’s followers', async () => {
+    const desk = await kit.freshDesk({ agents: 1 });
+    const admin = await kit.as(desk, desk.admin);
+    const visit = await kit.chat(desk, 'First question');
+    await admin.invoke('ticket0/post-public-reply', { conversationId: visit.conversationId, body: 'First answer' });
+    await admin.invoke('ticket0/close', { conversationId: visit.conversationId });
+    // The visitor writes again on the same token: a closed thread opens a follow-up and the
+    // session moves to it (`moveSession`).
+    const next = await writeAfterClose(desk, visit, 'Second question');
+    expect(next.conversation_id).not.toBe(visit.conversationId);
+    const before = (await thread(admin, visit.conversationId)).filter((m) => m.visibility === 'public');
+
+    // One parent: the follow-up. The closed thread's edge is tombstoned, not left beside it.
+    expect(liveParents(desk, `widgetSession:${visit.sessionId}`)).toEqual([`conversation:${next.conversation_id}`]);
+
+    // The follow-up's message is under the session; the closed thread's are not any more.
+    expect(await reaches(desk, message(next.id), session(visit.sessionId))).toBe(true);
+    for (const m of before) expect(await reaches(desk, message(m.id), session(visit.sessionId))).toBe(false);
+
+    // The property the invariant exists for: a grant on either conversation reaches only
+    // its own thread. Each message still reaches its own conversation (the twin).
+    expect(await reaches(desk, message(next.id), conversation(visit.conversationId))).toBe(false);
+    expect(await reaches(desk, message(next.id), conversation(next.conversation_id))).toBe(true);
+    for (const m of before) {
+      expect(await reaches(desk, message(m.id), conversation(next.conversation_id))).toBe(false);
+      expect(await reaches(desk, message(m.id), conversation(visit.conversationId))).toBe(true);
+    }
+  });
+
+  it('leaves the desk’s read of a visitor’s browser where it was after a move', async () => {
+    // `widget-session` is the one staff read of a session, and it has always selected by the
+    // session's CURRENT conversation in SQL: the closed thread showed no browser after a move
+    // while the session was still linked to it, and shows none now that it is relinked. No
+    // read reaches a session through the walk, so the relink takes nothing from anybody.
+    const desk = await kit.freshDesk({ agents: 1 });
+    const admin = await kit.as(desk, desk.admin);
+    const visit = await kit.chat(desk, 'Before the close');
+    await admin.invoke('ticket0/close', { conversationId: visit.conversationId });
+    const next = await writeAfterClose(desk, visit, 'After the close');
+    const browserOn = async (conversationId: string) =>
+      ((await admin.invoke('ticket0/widget-session', { conversationId })) as { session: { id: string } | null }).session;
+    expect(await browserOn(visit.conversationId)).toBeNull();
+    expect((await browserOn(next.conversation_id))?.id).toBe(visit.sessionId);
+  });
+
+  it('after a merge, every session on the survivor holds every public message on it', async () => {
+    const desk = await kit.freshDesk({ agents: 1 });
+    const admin = await kit.as(desk, desk.admin);
+    const loser = await kit.chat(desk, 'Asked once');
+    // The same visitor again, in a second thread: the merge rule is one contact.
+    const second = await sameVisitorAgain(desk, loser, 'Asked twice');
+    await admin.invoke('ticket0/post-public-reply', { conversationId: second.conversationId, body: 'Survivor reply' });
+    await admin.invoke('ticket0/post-note', { conversationId: loser.conversationId, body: 'moved note' });
+    const moved = (await thread(admin, loser.conversationId));
+
+    await admin.invoke('ticket0/merge', { conversationId: loser.conversationId, intoConversationId: second.conversationId });
+
+    const merged = await thread(admin, second.conversationId);
+    const publics = merged.filter((m) => m.visibility === 'public');
+    expect(publics.length).toBeGreaterThanOrEqual(3);
+    // …and the moved internal note went nowhere near either session.
+    const note = moved.find((m) => m.body_text === 'moved note')!;
+    for (const s of [loser.sessionId, second.sessionId]) {
+      for (const m of publics) expect(await reaches(desk, message(m.id), session(s))).toBe(true);
+      expect(await reaches(desk, message(note.id), session(s))).toBe(false);
+    }
+  });
+
+  it('widget-watch proves the token, and nothing else, before a feed opens', async () => {
+    const desk = await kit.freshDesk({ agents: 0 });
+    const widget = await kit.as(desk, desk.widget);
+    const visit = await kit.chat(desk);
+    expect(await widget.invoke('ticket0/widget-watch', { sessionId: visit.sessionId, token: visit.token })).toEqual({
+      sessionId: visit.sessionId,
+    });
+    await expect(
+      widget.invoke('ticket0/widget-watch', { sessionId: visit.sessionId, token: 'not-the-token' }),
+    ).rejects.toMatchObject({ code: 'permission_denied' });
+    // An opening — no message yet — is watchable too: its public messages will hang under
+    // the same id the moment it is bound.
+    const opening = (await widget.invoke('ticket0/widget-start', { origin: 'https://desk.example' })) as {
+      sessionId: string;
+      token: string;
+    };
+    expect(await widget.invoke('ticket0/widget-watch', opening)).toEqual({ sessionId: opening.sessionId });
+  });
+});
 
 describe('one public thread per conversation, hung under the sessions on it (#2044)', () => {
   it('holds the invariant across bind, follow-up, merge, merge-then-move and discard', async () => {

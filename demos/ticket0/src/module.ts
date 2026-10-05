@@ -1207,9 +1207,17 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
  *
  * **What it costs.** A public message holds two edges, its conversation and its thread,
  * whatever the number of sessions. A session moving changes one thread edge off and one
- * on, whatever the thread's length. A live fan-out still reads each ancestor once per row
- * (#1853), and a thread has one session per widget chat merged into its conversation.
+ * on, whatever the thread's length. A merge relinks each moved public message's thread
+ * edge, as it already relinks its conversation edge, plus one off and one on per moved
+ * session. A live fan-out still reads each ancestor once per row (#1853), and a thread has
+ * one session per widget chat merged into its conversation.
  */
+function sessionsOn(ctx: OperationContext, conversationId: string): { id: string }[] {
+  return ctx.sql.query<{ id: string }>('SELECT id FROM ticket0_widget_sessions WHERE conversation_id = ?', [
+    conversationId,
+  ]);
+}
+
 function seatSession(ctx: OperationContext, sessionId: string, conversationId: string): void {
   ctx.link(threadRef(conversationId), sessionRef(sessionId));
 }
@@ -2015,12 +2023,7 @@ async function discardConversation(
   // A follow is a read grant on this thread, and a tombstone is no thread to read.
   await dropFollowers(ctx, conversation.id);
   // Its sessions go below, so their hold on its public thread goes first (#2044).
-  for (const session of ctx.sql.query<{ id: string }>(
-    'SELECT id FROM ticket0_widget_sessions WHERE conversation_id = ?',
-    [conversation.id],
-  )) {
-    unseatSession(ctx, session.id, conversation.id);
-  }
+  for (const session of sessionsOn(ctx, conversation.id)) unseatSession(ctx, session.id, conversation.id);
   for (const table of [
     'ticket0_messages',
     'ticket0_conversation_tags',
@@ -5392,10 +5395,17 @@ const operations = {
      * is where the human is now looking.
      */
     const survivorRef = conversationRef(survivor.id);
-    const movedSessions = ctx.sql.query<{ id: string }>(
-      'SELECT id FROM ticket0_widget_sessions WHERE conversation_id = ?',
-      [conversation.id],
+    // Read before the rows move: the loser's public messages and its sessions, whose
+    // thread edges follow below (#2044).
+    const movedPublic = ctx.sql.query<{ id: string }>(
+      `SELECT m.id FROM ticket0_messages m
+        WHERE m.conversation_id = ?
+          AND EXISTS (SELECT 1 FROM _substrat_tuples t
+                       WHERE t.subject = 'message:' || m.id AND t.relation = 'parent'
+                         AND t.object = ? AND t.revoked_at IS NULL)`,
+      [conversation.id, `publicThread:${conversation.id}`],
     );
+    const movedSessions = sessionsOn(ctx, conversation.id);
     for (const [table, entityType] of [
       ['ticket0_messages', 'message'],
       ['ticket0_ai_turns', 'aiTurn'],
@@ -5417,16 +5427,7 @@ const operations = {
     // thread, which every session now on the survivor holds; and each of the loser's
     // sessions off the loser's thread and onto the survivor's, which `widget-thread` now
     // shows them. The survivor's own sessions already hold its thread.
-    for (const m of ctx.sql.query<{ id: string }>(
-      `SELECT m.id FROM ticket0_messages m
-        WHERE m.conversation_id = ? AND m.visibility = 'public'
-          AND EXISTS (SELECT 1 FROM _substrat_tuples t
-                       WHERE t.subject = 'message:' || m.id AND t.relation = 'parent'
-                         AND t.object = ? AND t.revoked_at IS NULL)`,
-      [survivor.id, `publicThread:${conversation.id}`],
-    )) {
-      ctx.relink(messageRef(m.id), threadRef(conversation.id), threadRef(survivor.id));
-    }
+    for (const m of movedPublic) ctx.relink(messageRef(m.id), threadRef(conversation.id), threadRef(survivor.id));
     for (const session of movedSessions) {
       unseatSession(ctx, session.id, conversation.id);
       seatSession(ctx, session.id, survivor.id);
