@@ -34,6 +34,8 @@
  * where a customer lives — the model already said it.
  */
 import type { SqlMigration } from './scope-host.js';
+import { assertSqlIdentifier } from './sql-identifier.js';
+import type { EntityStateName } from '@substrat-run/contracts';
 
 /** How a declared searchable is matched. `prefix` unless it says otherwise. */
 export type SearchTokenizer = 'prefix' | 'substring';
@@ -81,7 +83,7 @@ export interface SearchOptions {
    * picker nobody asked to show it in. `archived` asks for the archive. The bin is not here —
    * `ctx.searchTrashed` reads it, checking the declared trash key per hit.
    */
-  readonly view?: 'active' | 'archived';
+  readonly view?: Exclude<EntityStateName, 'trashed'>;
 }
 
 /**
@@ -124,21 +126,8 @@ export class NotSearchable extends Error {
   }
 }
 
-/**
- * SQL identifiers reach the DDL by interpolation — there is no parameter form for
- * a table or column name — so every one of them is checked against this first.
- * The inputs are declarations rather than user input, but a declaration is still
- * a string somebody typed, and "it came from the manifest" is exactly the
- * reasoning that makes an injection a surprise.
- */
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-function assertIdentifier(kind: string, value: string, where: string): string {
-  if (!IDENTIFIER.test(value)) {
-    throw new Error(`search: ${where} names ${kind} '${value}', which is not a plain SQL identifier`);
-  }
-  return value;
-}
+const assertIdentifier = (kind: string, value: string, where: string): string =>
+  assertSqlIdentifier('search', kind, value, where);
 
 /** `@acme/vertical` → `acme_vertical`: an id is not an identifier, and the index table needs one. */
 function slug(value: string): string {

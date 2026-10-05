@@ -43,9 +43,10 @@
  */
 import { PAGE_CURSOR_RESTART, SubstratError, ULID_PATTERN, z } from '@substrat-run/contracts';
 import { fromBase64url, toBase64url } from './base64url.js';
-import type { EntityStateDeclaration, EntityStateView } from '@substrat-run/contracts';
-import { assertActiveOnly, entityStatePlans, entityStateWhere, stateColumnsOf, viewsOf, type StateColumns } from './entity-state.js';
+import type { EntityStateDeclaration, EntityStateName } from '@substrat-run/contracts';
+import { entityStatePlans, entityStateWhere, stateColumnsOf, viewsOf, type StateColumns } from './entity-state.js';
 import type { SqlMigration } from './scope-host.js';
+import { SQL_IDENTIFIER, assertSqlIdentifier } from './sql-identifier.js';
 
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 declare const TextDecoder: new (label: string, options: { fatal: boolean }) => { decode(input: Uint8Array): string };
@@ -94,20 +95,8 @@ export function isListIndexName(name: string): boolean {
   return name.startsWith(LIST_INDEX_PREFIX);
 }
 
-/**
- * SQL identifiers reach the DDL by interpolation — there is no parameter form
- * for a table or column name — so every one is checked first. Same reasoning as
- * `search-index.ts`: a declaration is still a string somebody typed, and "it came
- * from the manifest" is exactly the reasoning that makes an injection a surprise.
- */
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-function assertIdentifier(kind: string, value: string, where: string): string {
-  if (!IDENTIFIER.test(value)) {
-    throw new Error(`list: ${where} names ${kind} '${value}', which is not a plain SQL identifier`);
-  }
-  return value;
-}
+const assertIdentifier = (kind: string, value: string, where: string): string =>
+  assertSqlIdentifier('list', kind, value, where);
 
 /** `@acme/vertical` → `acme_vertical`: an id is not an identifier, an index name needs one. */
 function slug(value: string): string {
@@ -364,7 +353,7 @@ export interface ListQueryParams {
    * Which rows (#119). `active` when unset — an archived or trashed row is never in a page
    * nobody asked to see it in. Refused for an entity that declares no such view.
    */
-  readonly view?: EntityStateView;
+  readonly view?: EntityStateName;
 }
 
 /** A composed read: the page query, and the count over the same `WHERE`. */
@@ -425,7 +414,7 @@ export class CursorMismatch extends SubstratError {
 const cursorEnvelope = z.strictObject({
   v: z.literal(1),
   order: z.enum(['asc', 'desc']),
-  sort: z.string().regex(IDENTIFIER),
+  sort: z.string().regex(SQL_IDENTIFIER),
   value: z.string(),
   id: z.string().optional(),
 });
@@ -535,11 +524,8 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
   const args: unknown[] = [];
   // The view first, in the exact words the partial index was created with — SQLite uses a
   // partial index only when the query's WHERE carries its terms.
-  if (plan.states) {
-    where.push(entityStateWhere(plan.entityType, plan.states, params.view ?? 'active'));
-  } else {
-    assertActiveOnly(plan.entityType, params.view);
-  }
+  const view = entityStateWhere(plan.entityType, plan.states, params.view);
+  if (view) where.push(view);
   for (const [column, value] of filters) {
     if (!plan.filterable.includes(column)) {
       throw new FilterNotDeclared(plan.entityType, column, plan.filterable);

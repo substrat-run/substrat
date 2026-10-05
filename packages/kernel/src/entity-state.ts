@@ -46,17 +46,16 @@ import {
   TRASHED_AT_COLUMN,
   entityStateChangedPayload,
   substratError,
-  type Decision,
   type DomainEventInput,
   type EntityRef,
   type EntityStateDeclaration,
   type EntityStateName,
-  type EntityStateView,
   type Instant,
   type PermissionKey,
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
-import type { ScopedSql, SqlMigration } from './scope-host.js';
+import type { OperationContext, ScopedSql, SqlMigration } from './scope-host.js';
+import { assertSqlIdentifier } from './sql-identifier.js';
 
 /** A resolved declaration: everything the DDL, the reads and the verbs need. */
 export interface EntityStatePlan {
@@ -70,14 +69,8 @@ export interface EntityStatePlan {
   readonly trashPermission?: PermissionKey;
 }
 
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-function assertIdentifier(kind: string, value: string, where: string): string {
-  if (!IDENTIFIER.test(value)) {
-    throw new Error(`entity state: ${where} names ${kind} '${value}', which is not a plain SQL identifier`);
-  }
-  return value;
-}
+/** The operation's own check — a pass is recorded as one of its authorizations (K-34). */
+export type StateCheck = OperationContext['check'];
 
 /**
  * Resolve one module's declarations. Refuses rather than skips, for `searchIndexPlans`'s
@@ -107,8 +100,8 @@ export function entityStatePlans(
     plans.push({
       moduleId,
       entityType: decl.entityType,
-      table: assertIdentifier('a table', decl.table, where),
-      idColumn: assertIdentifier('an id column', decl.idColumn ?? 'id', where),
+      table: assertSqlIdentifier('entity state', 'a table', decl.table, where),
+      idColumn: assertSqlIdentifier('entity state', 'an id column', decl.idColumn ?? 'id', where),
       ...(decl.archivePermission ? { archivePermission: decl.archivePermission } : {}),
       ...(decl.trashPermission ? { trashPermission: decl.trashPermission } : {}),
     });
@@ -151,20 +144,9 @@ export function entityStateMigrations(
 }
 
 /**
- * Index the plans by entity type for a whole scope. Two modules declaring one entity type is
- * refused: the table is one module's, and two answers to "who may trash it" is no answer.
- */
-export function statePlansByEntityType(
-  modules: readonly { readonly id: string; readonly entityStates?: readonly EntityStateDeclaration[] }[],
-): Map<string, EntityStatePlan> {
-  const byType = new Map<string, EntityStatePlan>();
-  for (const mod of modules) addStatePlans(byType, mod.id, mod.entityStates);
-  return byType;
-}
-
-/**
- * Add one module's plans to a registry, refusing a second declaration of a type — and a key
- * the module does not declare. The entity is the module's, so its keys are too: a key nobody
+ * Add one module's plans to a scope's registry, refusing a second declaration of a type — the
+ * table is one module's, and two answers to "who may trash it" is no answer — and a key the
+ * module does not declare. The entity is the module's, so its keys are too: a key nobody
  * declared reaches no role, no grant shape and no `PERMISSIONS.md`, and would make the verb
  * look gated while nobody could ever pass it.
  */
@@ -172,16 +154,14 @@ export function addStatePlans(
   byType: Map<string, EntityStatePlan>,
   moduleId: string,
   declarations: readonly EntityStateDeclaration[] | undefined,
-  declaredKeys?: readonly { readonly key: string }[],
+  declaredKeys: readonly { readonly key: string }[],
 ): void {
   for (const plan of entityStatePlans(moduleId, declarations)) {
-    if (declaredKeys) {
-      for (const key of [plan.archivePermission, plan.trashPermission]) {
-        if (key && !declaredKeys.some((p) => p.key === key)) {
-          throw new Error(
-            `entity state: ${moduleId} gates '${plan.entityType}' on '${key}', which it does not declare in \`permissions\``,
-          );
-        }
+    for (const key of [plan.archivePermission, plan.trashPermission]) {
+      if (key && !declaredKeys.some((p) => p.key === key)) {
+        throw new Error(
+          `entity state: ${moduleId} gates '${plan.entityType}' on '${key}', which it does not declare in \`permissions\``,
+        );
       }
     }
     const existing = byType.get(plan.entityType);
@@ -207,7 +187,7 @@ export const stateColumnsOf = (plan: EntityStatePlan): StateColumns => ({
 });
 
 /** The views an entity with these columns has — `active` always, then one per column. */
-export function viewsOf(columns: StateColumns): EntityStateView[] {
+export function viewsOf(columns: StateColumns): EntityStateName[] {
   return ['active', ...(columns.archive ? (['archived'] as const) : []), ...(columns.trash ? (['trashed'] as const) : [])];
 }
 
@@ -218,40 +198,44 @@ export function viewsOf(columns: StateColumns): EntityStateView[] {
  * contains the index's own terms, so the list index DDL and the list query both come from
  * here — a reworded copy would plan a scan in production and pass every test.
  *
- * Refuses a view the entity does not have: asking an entity with no trash for its trashed
- * rows is a wiring mistake, and an empty page would read as an empty bin.
+ * `columns` absent is an entity that declares no state: every row is active, so there is no
+ * predicate. A view the entity does not have is refused rather than answered empty — asking
+ * an entity with no trash for its trashed rows is a wiring mistake, and an empty page would
+ * read as an empty bin.
  */
 export function entityStateWhere(
   entityType: string,
   columns: StateColumns,
-  view: EntityStateView,
+  view: EntityStateName,
   alias?: string,
-): string {
-  const col = (name: string) => (alias ? `${alias}.${name}` : name);
-  if (view === 'archived' && !columns.archive) throw viewNotDeclared(entityType, view);
-  if (view === 'trashed' && !columns.trash) throw viewNotDeclared(entityType, view);
-  const terms: string[] = [];
-  if (view === 'trashed') {
-    terms.push(`${col(TRASHED_AT_COLUMN)} IS NOT NULL`);
-  } else {
-    if (columns.archive) terms.push(`${col(ARCHIVED_AT_COLUMN)} IS ${view === 'archived' ? 'NOT ' : ''}NULL`);
-    if (columns.trash) terms.push(`${col(TRASHED_AT_COLUMN)} IS NULL`);
+): string;
+export function entityStateWhere(
+  entityType: string,
+  columns: StateColumns | undefined,
+  view: EntityStateName | undefined,
+  alias?: string,
+): string | undefined;
+export function entityStateWhere(
+  entityType: string,
+  columns: StateColumns | undefined,
+  view: EntityStateName | undefined,
+  alias?: string,
+): string | undefined {
+  const asked = view ?? 'active';
+  if ((asked === 'archived' && !columns?.archive) || (asked === 'trashed' && !columns?.trash)) {
+    throw substratError(
+      'validation_failed',
+      `'${entityType}' has no ${asked} view — it declares no ${asked === 'archived' ? 'archive' : 'trash'}`,
+      { errors: [{ path: 'view', message: `not declared for '${entityType}'` }] },
+    );
   }
+  if (!columns) return undefined;
+  const col = (name: string) => (alias ? `${alias}.${name}` : name);
+  if (asked === 'trashed') return `${col(TRASHED_AT_COLUMN)} IS NOT NULL`;
+  const terms: string[] = [];
+  if (columns.archive) terms.push(`${col(ARCHIVED_AT_COLUMN)} IS ${asked === 'archived' ? 'NOT ' : ''}NULL`);
+  if (columns.trash) terms.push(`${col(TRASHED_AT_COLUMN)} IS NULL`);
   return terms.join(' AND ');
-}
-
-function viewNotDeclared(entityType: string, view: EntityStateView): Error {
-  return substratError(
-    'validation_failed',
-    `'${entityType}' has no ${view} view — it declares no ${view === 'archived' ? 'archive' : 'trash'}`,
-    { errors: [{ path: 'view', message: `not declared for '${entityType}'` }] },
-  );
-}
-
-/** Refuse a non-active view of an entity that declares no state at all. */
-export function assertActiveOnly(entityType: string, view: EntityStateView | undefined): void {
-  if (view === undefined || view === 'active') return;
-  throw viewNotDeclared(entityType, view);
 }
 
 /** The two columns as one row holds them. */
@@ -263,16 +247,36 @@ interface StateRow {
 const stateOf = (row: StateRow): EntityStateName =>
   row.trashed_at !== null ? 'trashed' : row.archived_at !== null ? 'archived' : 'active';
 
-/** One row's state, or `null` when the row does not exist. */
-export function readEntityState(sql: ScopedSql, plan: EntityStatePlan, entityId: string): EntityStateName | null {
+/** One row's two columns, or `undefined` when the row does not exist. */
+function readStateRow(sql: ScopedSql, plan: EntityStatePlan, entityId: string): StateRow | undefined {
   const columns = stateColumnsOf(plan);
-  const row = sql.query<StateRow>(
+  return sql.query<StateRow>(
     `SELECT ${columns.archive ? ARCHIVED_AT_COLUMN : 'NULL'} AS archived_at, ` +
       `${columns.trash ? TRASHED_AT_COLUMN : 'NULL'} AS trashed_at ` +
       `FROM ${plan.table} WHERE ${plan.idColumn} = ?`,
     [entityId],
   )[0];
-  return row ? stateOf(row) : null;
+}
+
+/**
+ * The plan for `entityType`, and the key one of its states is gated on — or `validation_failed`
+ * naming what the entity does not declare. Shared by the verbs and the trashed readers, so
+ * "declares no trash" is one sentence.
+ */
+export function stateKeyOf(
+  plans: ReadonlyMap<string, EntityStatePlan>,
+  verb: string,
+  entityType: string,
+  which: 'archive' | 'trash',
+): { plan: EntityStatePlan; key: PermissionKey } {
+  const plan = plans.get(entityType);
+  const key = which === 'archive' ? plan?.archivePermission : plan?.trashPermission;
+  if (!plan || !key) {
+    throw substratError('validation_failed', `${verb}: '${entityType}' declares no ${which}`, {
+      errors: [{ path: 'entityType', message: `'${entityType}' declares no ${which}` }],
+    });
+  }
+  return { plan, key };
 }
 
 /** What the verbs need from the adapter. */
@@ -283,8 +287,7 @@ export interface EntityStateDeps {
   plans: ReadonlyMap<string, EntityStatePlan>;
   /** The operation's instant — what each column is stamped with. */
   now: Instant;
-  /** The operation's own check, so a pass is recorded as one of its authorizations (K-34). */
-  check: (permission: PermissionKey, entity: EntityRef) => Promise<Decision>;
+  check: StateCheck;
   /** `ctx.emit`'s kernel writer — stamps the actor, the authorization chain and the operation. */
   emit: (event: DomainEventInput) => void;
   /** K-42's read-only refusal, for the effecting verbs. */
@@ -292,89 +295,40 @@ export interface EntityStateDeps {
 }
 
 /** The verbs, as `OperationContext` carries them. */
-export interface EntityStateVerbs {
-  archive(entity: EntityRef): Promise<void>;
-  unarchive(entity: EntityRef): Promise<void>;
-  trash(entity: EntityRef): Promise<void>;
-  restore(entity: EntityRef): Promise<void>;
-  entityState(entity: EntityRef): EntityStateName | null;
-}
+export type EntityStateVerbs = Pick<OperationContext, 'archive' | 'unarchive' | 'trash' | 'restore' | 'entityState'>;
 
 type Move = {
   readonly verb: string;
-  readonly key: 'archivePermission' | 'trashPermission';
+  readonly which: 'archive' | 'trash';
   readonly from: readonly EntityStateName[];
-  readonly column: string;
+  readonly column: 'archived_at' | 'trashed_at';
   readonly set: boolean;
   readonly type: string;
 };
 
+const COLUMN = { archived_at: ARCHIVED_AT_COLUMN, trashed_at: TRASHED_AT_COLUMN } as const;
+
 const MOVES = {
-  archive: {
-    verb: 'ctx.archive',
-    key: 'archivePermission',
-    from: ['active'],
-    column: ARCHIVED_AT_COLUMN,
-    set: true,
-    type: ENTITY_ARCHIVED,
-  },
-  unarchive: {
-    verb: 'ctx.unarchive',
-    key: 'archivePermission',
-    from: ['archived'],
-    column: ARCHIVED_AT_COLUMN,
-    set: false,
-    type: ENTITY_UNARCHIVED,
-  },
+  archive: { verb: 'ctx.archive', which: 'archive', from: ['active'], column: 'archived_at', set: true, type: ENTITY_ARCHIVED },
+  unarchive: { verb: 'ctx.unarchive', which: 'archive', from: ['archived'], column: 'archived_at', set: false, type: ENTITY_UNARCHIVED },
   // Archived rows may be trashed: "delete this old thing" is the commonest reason to open an
   // archive at all. The archive survives the trip, which is what `restore` relies on.
-  trash: {
-    verb: 'ctx.trash',
-    key: 'trashPermission',
-    from: ['active', 'archived'],
-    column: TRASHED_AT_COLUMN,
-    set: true,
-    type: ENTITY_TRASHED,
-  },
-  restore: {
-    verb: 'ctx.restore',
-    key: 'trashPermission',
-    from: ['trashed'],
-    column: TRASHED_AT_COLUMN,
-    set: false,
-    type: ENTITY_RESTORED,
-  },
+  trash: { verb: 'ctx.trash', which: 'trash', from: ['active', 'archived'], column: 'trashed_at', set: true, type: ENTITY_TRASHED },
+  restore: { verb: 'ctx.restore', which: 'trash', from: ['trashed'], column: 'trashed_at', set: false, type: ENTITY_RESTORED },
 } as const satisfies Record<string, Move>;
 
 export function createEntityStateVerbs(deps: EntityStateDeps): EntityStateVerbs {
-  const planFor = (verb: string, entity: EntityRef): EntityStatePlan => {
-    const plan = deps.plans.get(entity.entityType);
-    if (!plan) {
-      throw substratError(
-        'validation_failed',
-        `${verb}: '${entity.entityType}' declares no archive or trash — declare one on the entity`,
-      );
-    }
-    return plan;
-  };
-
-  const move = async (m: Move, entity: EntityRef): Promise<void> => {
+  const move = async (m: Move, entity: EntityRef): Promise<EntityStateName> => {
     deps.assertWrites(m.verb);
-    const plan = planFor(m.verb, entity);
-    const key = plan[m.key];
-    if (!key) {
-      throw substratError(
-        'validation_failed',
-        `${m.verb}: '${entity.entityType}' declares no ${m.key === 'archivePermission' ? 'archive' : 'trash'}`,
-      );
-    }
+    const { plan, key } = stateKeyOf(deps.plans, m.verb, entity.entityType, m.which);
     // The DECLARED key, on THIS entity, before anything about the row is read: whether it
     // exists is not something a caller without the key gets to learn.
     assertAllowed(await deps.check(key, entity));
-    const from = readEntityState(deps.sql, plan, entity.entityId);
-    if (from === null) {
+    const row = readStateRow(deps.sql, plan, entity.entityId);
+    if (!row) {
       throw substratError('not_found', `${m.verb}: ${entity.entityType}:${entity.entityId} does not exist`);
     }
+    const from = stateOf(row);
     if (!m.from.includes(from)) {
       throw substratError(
         'conflict',
@@ -383,13 +337,12 @@ export function createEntityStateVerbs(deps: EntityStateDeps): EntityStateVerbs 
         { reason: 'invalid_transition' },
       );
     }
-    deps.sql.exec(`UPDATE ${plan.table} SET ${m.column} = ? WHERE ${plan.idColumn} = ?`, [
-      m.set ? deps.now : null,
-      entity.entityId,
-    ]);
-    const to = readEntityState(deps.sql, plan, entity.entityId) as EntityStateName;
+    const at = m.set ? deps.now : null;
+    deps.sql.exec(`UPDATE ${plan.table} SET ${COLUMN[m.column]} = ? WHERE ${plan.idColumn} = ?`, [at, entity.entityId]);
+    const to = stateOf({ ...row, [m.column]: at });
     const payload = entityStateChangedPayload.parse({ entity, from, to }); // strips extra keys
     deps.emit({ type: m.type, schemaVersion: 1, entity: payload.entity, piiClass: 'none', payload });
+    return to;
   };
 
   return {
@@ -397,30 +350,16 @@ export function createEntityStateVerbs(deps: EntityStateDeps): EntityStateVerbs 
     unarchive: (entity) => move(MOVES.unarchive, entity),
     trash: (entity) => move(MOVES.trash, entity),
     restore: (entity) => move(MOVES.restore, entity),
-    entityState: (entity) => readEntityState(deps.sql, planFor('ctx.entityState', entity), entity.entityId),
+    entityState: (entity) => {
+      const plan = deps.plans.get(entity.entityType);
+      if (!plan) {
+        throw substratError(
+          'validation_failed',
+          `ctx.entityState: '${entity.entityType}' declares no archive or trash — declare one on the entity`,
+        );
+      }
+      const row = readStateRow(deps.sql, plan, entity.entityId);
+      return row ? stateOf(row) : null;
+    },
   };
-}
-
-/**
- * Keep the rows of a trashed read the caller may see in the bin (#119).
- *
- * The trashed readers check the DECLARED trash key per row, inside the kernel, so a handler
- * cannot forget it: a member who holds the key on their own lists sees their own bin and
- * nobody else's. Per row because the key is usually entity-narrowed; a scope-wide holder
- * passes every row and pays one cheap check each.
- */
-export async function keepTrashedVisible<T>(
-  plan: EntityStatePlan,
-  rows: readonly T[],
-  idOf: (row: T) => string,
-  check: (permission: PermissionKey, entity: EntityRef) => Promise<Decision>,
-): Promise<T[]> {
-  const key = plan.trashPermission;
-  if (!key) throw viewNotDeclared(plan.entityType, 'trashed');
-  const kept: T[] = [];
-  for (const row of rows) {
-    const decision = await check(key, { entityType: plan.entityType, entityId: idOf(row) });
-    if (decision.allowed) kept.push(row);
-  }
-  return kept;
 }

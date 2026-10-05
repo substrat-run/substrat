@@ -161,7 +161,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
-import { substratError } from '@substrat-run/contracts';
+import { substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
 import type {
@@ -209,7 +209,7 @@ export interface PageParams {
    * Which rows of an archivable entity (#119): `active` when unset, `archived` to read the
    * archive. Refused for an entity that declares no archive. The bin is `ctx.pageTrashed`.
    */
-  readonly view?: 'active' | 'archived';
+  readonly view?: Exclude<EntityStateName, 'trashed'>;
 }
 
 /**
@@ -546,23 +546,25 @@ export interface OperationContext {
    * - Stamps `_substrat_archived_at` with the operation's instant and emits one kernel-authored
    *   `entity.archived`, with the actor and the authorization chain on its envelope.
    * - Transactional with the operation, like every other write.
+   *
+   * Resolves to the state the entity is now in.
    */
-  archive(entity: EntityRef): Promise<void>;
+  archive(entity: EntityRef): Promise<EntityStateName>;
   /** Bring an archived entity back to active. Same key, refusals and recording as `archive`. */
-  unarchive(entity: EntityRef): Promise<void>;
+  unarchive(entity: EntityRef): Promise<EntityStateName>;
   /**
    * Move an entity to the trash (#119) — a reversible delete. Needs `trash: { permission }`
    * on the entity, and checks that key on it. An `active` or an `archived` entity may be
    * trashed; the archive survives the trip, so a `restore` returns it to the archive.
    * Emits `entity.trashed`.
    */
-  trash(entity: EntityRef): Promise<void>;
+  trash(entity: EntityRef): Promise<EntityStateName>;
   /**
    * Take an entity out of the trash, back to the state it was trashed from — `archived` if it
    * was archived, `active` otherwise. Checks the trash key. Emits `entity.restored`, whose
-   * payload's `to` says which.
+   * payload's `to` says which — and so does the value it resolves to.
    */
-  restore(entity: EntityRef): Promise<void>;
+  restore(entity: EntityRef): Promise<EntityStateName>;
   /**
    * The state of one archivable/trashable entity — `active`, `archived` or `trashed` — or
    * `null` when the row does not exist. What a get-by-id reads before deciding what to answer:
@@ -571,7 +573,7 @@ export interface OperationContext {
    * Checks no permission, like every read on `ctx`. Throws `validation_failed` for an entity
    * type that declares neither.
    */
-  entityState(entity: EntityRef): 'active' | 'archived' | 'trashed' | null;
+  entityState(entity: EntityRef): EntityStateName | null;
   /**
    * One page of the TRASH of a declared entity (#119) — `ctx.page` over the trashed rows,
    * with the declared trash key checked on EACH row inside the kernel, so a handler cannot

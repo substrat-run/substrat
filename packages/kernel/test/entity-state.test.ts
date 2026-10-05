@@ -8,7 +8,7 @@ import {
   listIndexDdl,
   listIndexPlans,
   moduleMigrations,
-  statePlansByEntityType,
+  addStatePlans,
 } from '../src/index.js';
 
 /**
@@ -29,12 +29,10 @@ describe('entityStatePlans: refuses', () => {
   });
   it('an entity declared twice in one module, or by two modules', () => {
     expect(() => entityStatePlans('@m', [both, both])).toThrow(/twice/);
-    expect(() =>
-      statePlansByEntityType([
-        { id: '@a', entityStates: [both] },
-        { id: '@b', entityStates: [both] },
-      ]),
-    ).toThrow(/both '@a' and '@b'/);
+    const keys = [{ key: 'doc:archive' }, { key: 'doc:trash' }];
+    const plans = new Map();
+    addStatePlans(plans, '@a', [both], keys);
+    expect(() => addStatePlans(plans, '@b', [both], keys)).toThrow(/both '@a' and '@b'/);
   });
   it('a table name that is not a plain identifier', () => {
     expect(() => entityStatePlans('@m', [{ ...both, table: 'docs; DROP TABLE x' }])).toThrow(/identifier/);
@@ -145,7 +143,6 @@ describe('assertNoReservedColumnWrite', () => {
 
 describe('addStatePlans', () => {
   it('refuses a key the module does not declare, and admits one it does', async () => {
-    const { addStatePlans } = await import('../src/index.js');
     expect(() => addStatePlans(new Map(), '@m', [both], [{ key: 'doc:archive' }])).toThrow(/does not declare/);
     const plans = new Map();
     addStatePlans(plans, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);

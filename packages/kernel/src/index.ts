@@ -223,10 +223,7 @@ export {
   entityStateMigrations,
   entityStatePlans,
   entityStateWhere,
-  keepTrashedVisible,
-  readEntityState,
   stateColumnsOf,
-  statePlansByEntityType,
 } from './entity-state.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
 export { createTrashedReads, searchStateWhere, uncheckedView } from './entity-state-reads.js';

@@ -35,14 +35,6 @@ import { permissionKey } from './ids.js';
 export const entityStateName = z.enum(['active', 'archived', 'trashed']);
 export type EntityStateName = z.infer<typeof entityStateName>;
 
-/**
- * Which rows a kernel-composed read returns. `active` is the default everywhere; the other
- * two must be asked for. `trashed` is not accepted by `ctx.page` or `ctx.search`: it has its
- * own permission-checked readers (`ctx.pageTrashed`, `ctx.searchTrashed`).
- */
-export const entityStateView = entityStateName;
-export type EntityStateView = EntityStateName;
-
 /** The kernel-owned column that records an archive. */
 export const ARCHIVED_AT_COLUMN = '_substrat_archived_at';
 /** The kernel-owned column that records a trash. */

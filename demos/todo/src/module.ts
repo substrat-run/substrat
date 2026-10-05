@@ -60,9 +60,9 @@ function rankOrder(hits: readonly { id: string }[], rows: readonly ItemRow[]): I
   return hits.map((hit) => byId.get(hit.id)).filter((row): row is ItemRow => row !== undefined);
 }
 
-/** The list, or a refusal — never a silent empty answer. */
 /**
- * The list, or `not_found` — and a list in the bin is not found either (#119).
+ * The list, or a refusal — never a silent empty answer. A list in the bin is not found either
+ * (#119).
  *
  * The kernel leaves binned lists out of the reads it composes; this is the read it does not
  * compose, so it asks. A binned list is gone from everyone's point of view until it is
@@ -75,9 +75,6 @@ function listOrThrow(ctx: OperationContext, id: string, binned: 'refuse' | 'allo
   }
   return row;
 }
-
-/** Where a list is now, as the archive and trash operations answer. */
-const stateOf = (ctx: OperationContext, id: string) => ({ id, state: ctx.entityState(listRef(id))! });
 
 /** The list an item sits on — every item permission is really the list's. */
 function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; list: ListRow } {
@@ -171,26 +168,22 @@ const operations = {
    */
   'todo/archive-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
-    await ctx.archive(listRef(input.listId));
-    return stateOf(ctx, input.listId);
+    return { id: input.listId, state: await ctx.archive(listRef(input.listId)) };
   },
 
   'todo/unarchive-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
-    await ctx.unarchive(listRef(input.listId));
-    return stateOf(ctx, input.listId);
+    return { id: input.listId, state: await ctx.unarchive(listRef(input.listId)) };
   },
 
   'todo/trash-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listTrash, listRef(input.listId)));
-    await ctx.trash(listRef(input.listId));
-    return stateOf(ctx, input.listId);
+    return { id: input.listId, state: await ctx.trash(listRef(input.listId)) };
   },
 
   'todo/restore-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listTrash, listRef(input.listId)));
-    await ctx.restore(listRef(input.listId));
-    return stateOf(ctx, input.listId);
+    return { id: input.listId, state: await ctx.restore(listRef(input.listId)) };
   },
 
   // The bin. `pageTrashed` checks `list:trash` on every list itself, so there is no per-row

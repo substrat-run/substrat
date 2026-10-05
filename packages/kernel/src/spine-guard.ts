@@ -142,6 +142,9 @@ export function assertNoSpineWrite(sql: string): void {
  * without anyone remembering to list it here.
  */
 export function assertNoReservedColumnWrite(sql: string): void {
+  // Every token is a substring of the text, so a statement that never spells the prefix names
+  // no reserved column — and that is nearly every statement, which then skips the second scan.
+  if (!/_substrat/i.test(sql)) return;
   const tokens = tokenizeSql(sql, { punctuation: true });
   const refuse = (column: string, how: string): never => {
     throw substratError(
