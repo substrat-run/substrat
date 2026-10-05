@@ -6,7 +6,7 @@
  * admin confers, and takes back, only a role whose permissions they hold at the scope — an
  * entity-narrowed grant counting for nothing — and a refusal writes no grant and no row.
  */
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -227,5 +227,63 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
     expect(await probe(principal, READ)).toBe(false);
     expect((await revoke(manager, principal)).status).toBe(204);
     expect(directory.rows.has(principal)).toBe(false);
+  });
+});
+
+/**
+ * A member's role move and removal are ONE transaction in the ScopeDO (Codex #2057 r1) — the
+ * twin of adapter-sqlite's. The bound and the writes already ran in one queued task; this holds
+ * the other half: a statement failing part-way takes the earlier ones with it. Injected with a
+ * trigger in the DO's own storage.
+ */
+describe('scope-role writes over a CP-less host — all or nothing (#1150)', () => {
+  let host: CloudflareScopeHost;
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+  const BILL = permissionKey.parse('perm:use');
+  const owner = principalId.parse(ulid());
+  const stub = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+  const sqlIn = (statement: string) => runInDurableObject(stub(), (_i, state) => void state.storage.sql.exec(statement));
+  const inject = (when: string) => sqlIn(`CREATE TRIGGER injected ${when} BEGIN SELECT RAISE(ABORT, 'injected failure'); END;`);
+  const rolesOf = async (who: PrincipalId) => (await host.listScopeRoleHolders(t, s, who)).map((h) => h.roleKey).sort();
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({ scope: env.SCOPE, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    await host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [
+        { key: 'lead', permissions: [READ, BILL], source: 'vertical' },
+        { key: 'agent', permissions: [READ], source: 'vertical' },
+      ],
+      ownerRoleKey: 'lead',
+    });
+  });
+
+  afterAll(async () => host.close());
+
+  it('a role move whose grant fails keeps the old role — never neither', async () => {
+    const m = principalId.parse(ulid());
+    await host.assignScopeRoleBounded(t, s, owner, m, 'agent');
+    await inject(`BEFORE INSERT ON _substrat_tuples WHEN NEW.relation = 'role:lead'`);
+    await expect(host.changeScopeRoleBounded(t, s, owner, m, 'agent', 'lead')).rejects.toThrow(/injected failure/);
+    expect(await rolesOf(m)).toEqual(['agent']);
+    await sqlIn('DROP TRIGGER injected');
+    expect((await host.changeScopeRoleBounded(t, s, owner, m, 'agent', 'lead')).covered).toBe(true);
+    expect(await rolesOf(m)).toEqual(['lead']);
+  });
+
+  it('a removal whose second tombstone fails takes nothing', async () => {
+    const m = principalId.parse(ulid());
+    await host.assignScopeRoleBounded(t, s, owner, m, 'agent');
+    await host.assignScopeRoleBounded(t, s, owner, m, 'lead');
+    await inject(`BEFORE UPDATE ON _substrat_tuples WHEN NEW.relation = 'role:lead' AND NEW.revoked_at IS NOT NULL`);
+    await expect(host.revokeScopeRolesBounded(t, s, owner, m)).rejects.toThrow(/injected failure/);
+    expect(await rolesOf(m)).toEqual(['agent', 'lead']);
+    await sqlIn('DROP TRIGGER injected');
+    expect((await host.revokeScopeRolesBounded(t, s, owner, m)).revoked.sort()).toEqual(['agent', 'lead']);
+    expect(await rolesOf(m)).toEqual([]);
   });
 });

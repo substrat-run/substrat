@@ -9,7 +9,8 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
@@ -218,5 +219,74 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
     const res = await invite(stranger, 'reader');
     expect([res.status, await res.text()]).toEqual([403, 'only an admin can manage invites']);
     expect(grants).toEqual([]);
+  });
+});
+
+/**
+ * A member's role move and removal are ONE transaction on the store (Codex #2057 r1). The bound
+ * and the write already ran in one actor turn; this is the other half — a statement that fails
+ * part-way must take the earlier ones with it. Injected with a trigger on the scope's own file.
+ */
+describe('scope-role writes over the SQLite host — all or nothing (#1150)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const node = { tenantId: t, scopeId: s };
+  const READ = permissionKey.parse('perm:read');
+  const BILL = permissionKey.parse('perm:use');
+  const owner = principalId.parse(ulid());
+  let dir: string;
+  let host: SqliteScopeHost;
+  let file: InstanceType<typeof Database>;
+  const rolesOf = async (who: PrincipalId) =>
+    (await host.listScopeRoleHolders(t, s, who)).map((h) => h.roleKey).sort();
+  const inject = (sql: string) => file.exec(`CREATE TRIGGER injected ${sql} BEGIN SELECT RAISE(ABORT, 'injected failure'); END;`);
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-role-atomic-'));
+    host = new SqliteScopeHost({ dir });
+    host.registerModule(permMod);
+    await host.admin.createTenant(staff, { id: t, slug: 'role-atomic', name: 'Role Atomic' });
+    await host.admin.grantEntitlement(staff, t, 'perm');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.defineRole(staff, t, { key: 'lead', permissions: [READ, BILL], source: 'vertical' });
+    await host.admin.defineRole(staff, t, { key: 'agent', permissions: [READ], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: owner, roleKey: 'lead', node });
+    file = new Database(join(dir, `${t}__${s}.sqlite`));
+  });
+
+  afterAll(async () => {
+    file.close();
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    file.exec('DROP TRIGGER IF EXISTS injected');
+  });
+
+  it('a role move whose grant fails keeps the old role — never neither', async () => {
+    const m = principalId.parse(ulid());
+    await host.assignScopeRoleBounded(t, s, owner, m, 'agent');
+    inject(`BEFORE INSERT ON _substrat_tuples WHEN NEW.relation = 'role:lead'`);
+    await expect(host.changeScopeRoleBounded(t, s, owner, m, 'agent', 'lead')).rejects.toThrow(/injected failure/);
+    expect(await rolesOf(m)).toEqual(['agent']);
+    // The twin: with nothing injected, the same move lands.
+    file.exec('DROP TRIGGER injected');
+    expect((await host.changeScopeRoleBounded(t, s, owner, m, 'agent', 'lead')).covered).toBe(true);
+    expect(await rolesOf(m)).toEqual(['lead']);
+  });
+
+  it('a removal whose second tombstone fails takes nothing', async () => {
+    const m = principalId.parse(ulid());
+    await host.assignScopeRoleBounded(t, s, owner, m, 'agent');
+    await host.assignScopeRoleBounded(t, s, owner, m, 'lead');
+    inject(`BEFORE UPDATE ON _substrat_tuples WHEN NEW.relation = 'role:lead' AND NEW.revoked_at IS NOT NULL`);
+    await expect(host.revokeScopeRolesBounded(t, s, owner, m)).rejects.toThrow(/injected failure/);
+    expect(await rolesOf(m)).toEqual(['agent', 'lead']);
+    file.exec('DROP TRIGGER injected');
+    expect((await host.revokeScopeRolesBounded(t, s, owner, m)).revoked.sort()).toEqual(['agent', 'lead']);
+    expect(await rolesOf(m)).toEqual([]);
   });
 });

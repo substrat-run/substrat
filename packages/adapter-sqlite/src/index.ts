@@ -4371,7 +4371,7 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = await this.openActiveScope(tenantId, scopeId);
     const target = principalId.parse(principal);
     const answer = await rt.actor.turn(() =>
-      changeScopeRole(switchSqlOf(rt.db), scopeId, target, from, to, this.clock(), this.roleBound(caller, tenantId, scopeId)),
+      changeScopeRole(switchSqlOf(rt.db), scopeId, target, from, to, this.clock(), this.roleBound(caller, tenantId, scopeId), (run) => rt.db.transaction(run)()),
     );
     if (answer === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
     if (answer === 'unknown-to') throw unknownRoleError(to);
@@ -4386,7 +4386,10 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<{ coverage: Coverage; revoked: string[] }> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.turn(() =>
-      revokeScopeRoles(switchSqlOf(rt.db), scopeId, principalId.parse(principal), this.clock(), this.roleBound(caller, tenantId, scopeId)),
+      revokeScopeRoles(
+        switchSqlOf(rt.db), scopeId, principalId.parse(principal), this.clock(), this.roleBound(caller, tenantId, scopeId),
+        (run) => rt.db.transaction(run)(),
+      ),
     );
   }
 

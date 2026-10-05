@@ -96,33 +96,43 @@ export function combineCoverage(bounds: readonly (Coverage | null)[]): Coverage 
 export type RoleBound = (roleKey: string) => Promise<Coverage | null>;
 
 /**
+ * The adapter's own synchronous transaction (`db.transaction(run)()` on SQLite, the write
+ * revision's `transactionSync` in the Durable Object). The writes of one change run inside it,
+ * after every bound has passed, so a statement that fails part-way — the grant after the
+ * tombstone, the third of four tombstones — takes the earlier ones with it.
+ */
+export type Atomically = <T>(run: () => T) => T;
+
+/**
  * Move `principal` from `from` to `to` (#1150) — the whole decision, for an adapter to run in
  * ONE scope task: `from` must be held, `to` must be defined, the caller's bound over both, then
- * the tombstone and the grant together. `not-held` and `unknown-to` wrote nothing; neither does
+ * the tombstone and the grant together, in one transaction. `not-held` and `unknown-to` wrote nothing; neither does
  * a coverage that does not cover. The adapter turns the two refusals into its own errors.
  */
 export async function changeScopeRole(
   sql: SwitchSql, scopeId: string, principal: PrincipalId, from: string, to: string, now: string, bound: RoleBound,
+  atomically: Atomically,
 ): Promise<Coverage | 'not-held' | 'unknown-to'> {
   if (!scopeRoleHolders(sql, scopeId, now, principal).some((h) => h.roleKey === from)) return 'not-held';
   const grant = await bound(to);
   if (!grant) return 'unknown-to';
   const covered = combineCoverage([await bound(from), grant]);
-  if (covered.covered) applyScopeRoleChange(sql, scopeId, principal, { revoke: [from], grant: to }, now);
+  // One transaction: a grant that fails leaves `from` held, never neither role (Codex #2057 r1).
+  if (covered.covered) atomically(() => applyScopeRoleChange(sql, scopeId, principal, { revoke: [from], grant: to }, now));
   return covered;
 }
 
 /**
  * Take every scope role `principal` holds (#1150), for an adapter to run in ONE scope task: the
  * caller's bound over each (a role the tenant no longer defines is taken without one), then all
- * the tombstones, or none. `revoked` names what was taken.
+ * the tombstones in one transaction, or none. `revoked` names what was taken.
  */
 export async function revokeScopeRoles(
-  sql: SwitchSql, scopeId: string, principal: PrincipalId, now: string, bound: RoleBound,
+  sql: SwitchSql, scopeId: string, principal: PrincipalId, now: string, bound: RoleBound, atomically: Atomically,
 ): Promise<{ coverage: Coverage; revoked: string[] }> {
   const held = scopeRoleHolders(sql, scopeId, now, principal).map((h) => h.roleKey);
   const covered = combineCoverage(await Promise.all(held.map(bound)));
   if (!covered.covered) return { coverage: covered, revoked: [] };
-  applyScopeRoleChange(sql, scopeId, principal, { revoke: held, grant: null }, now);
+  atomically(() => applyScopeRoleChange(sql, scopeId, principal, { revoke: held, grant: null }, now));
   return { coverage: covered, revoked: held };
 }

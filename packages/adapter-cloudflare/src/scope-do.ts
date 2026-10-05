@@ -3974,7 +3974,10 @@ export function defineScopeDO(
     ): Promise<Coverage | 'not-held' | 'unknown-to'> {
       await this.ensureMigrations();
       return this.queue.enqueue(() =>
-        changeScopeRole(this.switchSql(), scopeId, principal, from, to, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId)),
+        changeScopeRole(
+          this.switchSql(), scopeId, principal, from, to, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId),
+          (run) => this.revision.transactionSync(run),
+        ),
       );
     }
 
@@ -3984,7 +3987,10 @@ export function defineScopeDO(
     ): Promise<{ coverage: Coverage; revoked: string[] }> {
       await this.ensureMigrations();
       return this.queue.enqueue(() =>
-        revokeScopeRoles(this.switchSql(), scopeId, principal, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId)),
+        revokeScopeRoles(
+          this.switchSql(), scopeId, principal, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId),
+          (run) => this.revision.transactionSync(run),
+        ),
       );
     }
 
