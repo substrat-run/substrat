@@ -22,6 +22,11 @@
  *   `PDF_TREE_DEPTH_MAX` deep and never through one of its own ancestors, a form XObject at
  *   most `PDF_FORM_DEPTH_MAX` deep and never inside itself. Every walk is a loop with a depth
  *   counter or a recursion with one: none follows what the file says without counting.
+ * - **Memory** (`Retained`): what the extraction keeps — cached decoded streams, a page's
+ *   joined content, parsed objects, cross-reference entries, CMap entries, font decoders — is
+ *   charged before it is allocated, at most `PDF_RETAINED_FACTOR` × the inflate budget plus
+ *   `PDF_RETAINED_BASE`. Every other allocation is bounded by a named constant: a token, a
+ *   stream (`PDF_STREAM_MAX`), the text collected, the operand stack.
  * - **Work**: a token or a direct object larger than `EXTRACTION_STRIDE` is refused, so the
  *   synchronous lexer never runs more than a stride between two checks of the signal, and
  *   every loop over the file — the lexer's, the byte searches, the decoders, the content

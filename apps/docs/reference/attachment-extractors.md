@@ -70,6 +70,9 @@ a hang:
 - **Nesting** is bounded everywhere: arrays and dictionaries, the page tree (which may never
   pass through its own ancestor), form XObjects (never drawn inside themselves), and object
   streams, which may not nest at all.
+- **Memory** is budgeted the same way: everything an extraction keeps (decoded streams, joined
+  page content, parsed objects, CMaps, fonts) is charged before it is allocated, at most twice
+  the inflate budget plus 4 MiB. Past that, the text read so far is kept, marked truncated.
 - **Work** is paced against the kernel's time budget, so an aborted extraction stops within
   one stride.
 
