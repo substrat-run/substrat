@@ -104,13 +104,13 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
      * hand the caller that row's id and timestamp — the very thing the per-row check withholds.
      *
      * So the walk runs internally past refused rows until it has `limit` visible ones or reaches
-     * the end, and the cursor is minted from the last VISIBLE row (null at the end). Past
-     * `TRASH_SCAN_BUDGET` rows it stops: with a visible row in hand it returns what it found,
-     * continued from that row; with none it answers exactly as the end of the bin answers —
-     * `[]` and no cursor.
+     * the end, and the cursor is minted from the last VISIBLE row of a FULL page. Past
+     * `TRASH_SCAN_BUDGET` rows it stops, and a page that stops short of `limit` — at the end or
+     * at the budget — answers the same way either way: the visible rows it found, and no cursor.
+     * A cursor on a short page would say "the budget ran out", which is the bin's size again.
      *
-     * That last answer can be wrong: a caller whose rows sit more than the budget past the
-     * previous one's never sees them. It is chosen over the alternatives on purpose. A cursor
+     * That answer can be wrong: a page that stops at the budget truncates the walk silently, and
+     * a caller whose rows sit more than the budget past the previous one's never sees them. It is chosen over the alternatives on purpose. A cursor
      * would carry a hidden row's position (the leak above), and a refusal — or a count in a
      * message — tells the caller the bin holds more than the budget of rows they cannot see,
      * which is its own disclosure. Only a sealed (authenticated, opaque) continuation can carry
@@ -161,10 +161,9 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
         cursor = cursorOf(rows[rows.length - 1]!, sortColumn, plan.idColumn, order, 'trashed');
         if (scanned >= budget) break;
       }
-      const last = kept[kept.length - 1];
-      if (last) return { entries: kept as never[], nextCursor: cursorOf(last, sortColumn, plan.idColumn, order, 'trashed') };
-      // Indistinguishable from the end of the bin, deliberately — see above.
-      return { entries: [], nextCursor: null };
+      // Fewer than `limit` visible rows, and the budget spent: answered exactly as the end of the
+      // bin is — whatever was found, and no cursor — deliberately; see above.
+      return { entries: kept as never[], nextCursor: null };
     },
 
     async searchTrashed(entityType, term, options) {

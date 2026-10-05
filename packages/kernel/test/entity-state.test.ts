@@ -231,16 +231,12 @@ describe('ctx.pageTrashed walks past refused rows without handing out their posi
     expect(third).toEqual({ entries: [], nextCursor: null });
   });
 
-  it('within the scan budget, returns what it found and continues from it', async () => {
-    const { reads } = setup(ten);
-    // Budget 4: the first call reads d0–d3 and finds d1; the next, continued from d1, reads
-    // d2–d5 and finds d4. Each returned cursor is a visible row's.
-    const r = reads(new Set(['d1', 'd4']), 4);
-    const first = await r.pageTrashed('doc', { limit: 5 });
-    expect(first.entries.map((e) => (e as { id: string }).id)).toEqual(['d1']);
-    expect(first.nextCursor).not.toBeNull();
-    const rest = await r.pageTrashed('doc', { limit: 5, cursor: first.nextCursor! });
-    expect(rest.entries.map((e) => (e as { id: string }).id)).toEqual(['d4']);
+  it('answers a short page the same at the end and at the budget: what it found, and no cursor', async () => {
+    // The visible prefix [d0], either side of a budget of 4: a bin of 3 ends inside the budget,
+    // bins of 4 and 5 spend it. A cursor on any of them would tell which.
+    const page = (size: number) => setup(ten.slice(0, size)).reads(new Set(['d0']), 4).pageTrashed('doc', { limit: 5 });
+    const expected = { entries: [expect.objectContaining({ id: 'd0' })], nextCursor: null };
+    for (const size of [3, 4, 5]) expect(await page(size), `bin of ${size}`).toEqual(expected);
   });
 
   it('answers a budget spent on refused rows exactly as it answers the end of the bin', async () => {
