@@ -405,6 +405,26 @@ async function assertMayCurate(ctx: OperationContext, row: SavedReplyRow): Promi
   if (row.owner === SHARED_OWNER) assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
 }
 
+/** The reply of this owner already holding this title, other than `exceptId`. The key's rule, asked. */
+function titleTaken(ctx: OperationContext, owner: string, title: string, exceptId = ''): SavedReplyRow | undefined {
+  return ctx.sql.query<SavedReplyRow>(
+    'SELECT * FROM ticket0_saved_replies WHERE owner = ? AND title = ? AND id <> ?',
+    [owner, title, exceptId],
+  )[0];
+}
+
+/** A `folderId` input resolved: absent keeps `current`, null unfiles, an id must name a folder. */
+function folderFrom(ctx: OperationContext, input: string | null | undefined, current: string | null): string | null {
+  if (input === undefined) return current;
+  return input === null ? null : savedReplyFolderOrThrow(ctx, input).id;
+}
+
+/** The whole row, as `saved-reply-created` and `-updated` announce it. */
+function savedReplyPayload(row: ReturnType<typeof savedReplyPublic>): Record<string, unknown> {
+  const { id, title, body, created_by, created_at, actions, owner, folder_id } = row;
+  return { id, title, body, created_by, created_at, actions, owner, folder_id };
+}
+
 function savedReplyFolderOrThrow(ctx: OperationContext, id: string): SavedReplyFolderRow {
   const row = ctx.sql.query<SavedReplyFolderRow>('SELECT * FROM ticket0_saved_reply_folders WHERE id = ?', [
     id,
@@ -5889,12 +5909,9 @@ const operations = {
     const owner = input.personal ? String(ctx.principal) : SHARED_OWNER;
     // A shared reply is pasted by every colleague, so adding one is curation.
     if (owner === SHARED_OWNER) assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
-    const existing = ctx.sql.query<SavedReplyRow>(
-      'SELECT * FROM ticket0_saved_replies WHERE owner = ? AND title = ?',
-      [owner, input.title],
-    )[0];
+    const existing = titleTaken(ctx, owner, input.title);
     if (existing) return savedReplyPublic(existing);
-    const folderId = input.folderId === undefined ? null : savedReplyFolderOrThrow(ctx, input.folderId).id;
+    const folderId = folderFrom(ctx, input.folderId, null);
     const id = ulid();
     ctx.sql.exec(
       `INSERT INTO ticket0_saved_replies
@@ -5908,16 +5925,7 @@ const operations = {
       schemaVersion: 1,
       entity: { entityType: 'savedReply', entityId: row.id },
       piiClass: 'none',
-      payload: {
-        id: row.id,
-        title: row.title,
-        body: row.body,
-        created_by: row.created_by,
-        created_at: row.created_at,
-        actions: row.actions,
-        owner: row.owner,
-        folder_id: row.folder_id,
-      },
+      payload: savedReplyPayload(row),
     });
     return row;
   },
@@ -5950,21 +5958,12 @@ const operations = {
     await assertMayCurate(ctx, existing);
     const title = input.title ?? existing.title;
     const body = input.body ?? existing.body;
-    const clash = ctx.sql.query<SavedReplyRow>(
-      'SELECT * FROM ticket0_saved_replies WHERE owner = ? AND title = ? AND id <> ?',
-      [existing.owner, title, existing.id],
-    )[0];
-    if (clash) {
+    if (titleTaken(ctx, existing.owner, title, existing.id)) {
       throw substratError('conflict', `another saved reply is already called "${title}"`);
     }
     const actions =
       input.actions !== undefined ? storedActions(input.actions) : existing.actions;
-    const folderId =
-      input.folderId === undefined
-        ? existing.folder_id
-        : input.folderId === null
-          ? null
-          : savedReplyFolderOrThrow(ctx, input.folderId).id;
+    const folderId = folderFrom(ctx, input.folderId, existing.folder_id);
     if (
       title === existing.title &&
       body === existing.body &&
@@ -5983,16 +5982,7 @@ const operations = {
       schemaVersion: 1,
       entity: { entityType: 'savedReply', entityId: row.id },
       piiClass: 'none',
-      payload: {
-        id: row.id,
-        title: row.title,
-        body: row.body,
-        created_by: row.created_by,
-        created_at: row.created_at,
-        actions: row.actions,
-        owner: row.owner,
-        folder_id: row.folder_id,
-      },
+      payload: savedReplyPayload(row),
     });
     return row;
   },
@@ -6029,11 +6019,7 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
     const existing = savedReplyOrThrow(ctx, input.savedReplyId);
     if (existing.owner === SHARED_OWNER) return savedReplyPublic(existing);
-    const clash = ctx.sql.query<SavedReplyRow>(
-      'SELECT * FROM ticket0_saved_replies WHERE owner = ? AND title = ?',
-      [SHARED_OWNER, existing.title],
-    )[0];
-    if (clash) {
+    if (titleTaken(ctx, SHARED_OWNER, existing.title)) {
       throw substratError('conflict', `the desk already has a saved reply called "${existing.title}"`);
     }
     ctx.sql.exec('UPDATE ticket0_saved_replies SET owner = ? WHERE id = ?', [SHARED_OWNER, existing.id]);
@@ -6089,9 +6075,8 @@ const operations = {
     // The other replies the agent inserted, each resolved here exactly as the macro is:
     // one the caller may not use, or that is not in this desk, refuses the whole send
     // rather than being skipped, so a client cannot count what it cannot see.
-    const alsoUsed = [...new Set(input.alsoUsed ?? [])]
-      .filter((id) => id !== reply.id)
-      .map((id) => savedReplyOrThrow(ctx, id).id);
+    const used = [...new Set([reply.id, ...(input.alsoUsed ?? [])])];
+    const alsoUsed = used.slice(1).map((id) => savedReplyOrThrow(ctx, id).id);
 
     const body = input.body ?? renderFor(ctx, conversation, reply).body;
     if (body.trim() === '') {
@@ -6113,7 +6098,6 @@ const operations = {
 
     // The count, in the transaction that wrote the message: a send that fails anywhere
     // above counts nothing, and a preview or an insert never reaches this line.
-    const used = [reply.id, ...alsoUsed];
     ctx.sql.exec(
       `UPDATE ticket0_saved_replies SET use_count = use_count + 1, last_used_at = ?
         WHERE id IN (${used.map(() => '?').join(', ')})`,

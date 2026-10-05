@@ -49,6 +49,8 @@ export interface Desk {
   readonly admin: PrincipalId;
   readonly relay: PrincipalId;
   readonly widget: PrincipalId;
+  /** The supervised assistant: `conversation:draft` and reads, no curation, no ring. */
+  readonly assistant: PrincipalId;
   /** The people on the desk, in the order they joined — NOT ring order. */
   readonly agents: PrincipalId[];
 }
@@ -188,7 +190,7 @@ export function createKit(prefix: string): Kit {
         signature: null,
       });
 
-      const desk: Desk = { tenant, scope, admin, relay, widget, agents: [] };
+      const desk: Desk = { tenant, scope, admin, relay, widget, assistant, agents: [] };
       for (let i = 0; i < agents; i++) await kit.hire(desk);
       return desk;
     },

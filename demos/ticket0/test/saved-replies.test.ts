@@ -15,35 +15,23 @@
  *
  * Plus migration 0025, on a desk that has replies from before it.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, principalId, scopeId, tenantId, type Page, type PrincipalId } from '@substrat-run/contracts';
-import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import { platformActorId, scopeId, tenantId, type Page, type PrincipalId } from '@substrat-run/contracts';
+import { ulid, type ScopeStub } from '@substrat-run/kernel';
 import { ticket0Manifest } from '../src/manifest.js';
-import { MODULES, ROLES } from '../src/provision.js';
+import { MODULES } from '../src/provision.js';
 import { mountApi } from '../src/routes.js';
-import { buildHost } from '../src/seed.js';
 import { listsBefore0025 } from './before-0025.js';
+import { createKit, type Desk } from './desk-kit.js';
 
-let dir: string;
-let host: ScopeHost;
-
-const staff = platformActorId.parse(ulid());
-
-interface Desk {
-  tenant: ReturnType<typeof tenantId.parse>;
-  scope: ReturnType<typeof scopeId.parse>;
-  admin: PrincipalId;
-  anna: PrincipalId;
-  bo: PrincipalId;
-  assistant: PrincipalId;
-  relay: PrincipalId;
-}
+const kit = createKit('ticket0-saved-replies-');
+afterAll(() => kit.dispose());
 
 interface SavedReply {
   id: string;
@@ -60,51 +48,16 @@ interface Folder {
   name: string;
 }
 
-let desks = 0;
+/** The kit's desk, with its first two agents named for the scenarios that tell them apart. */
+type Named = Desk & { anna: PrincipalId; bo: PrincipalId };
 
-async function freshDesk(): Promise<Desk> {
-  desks += 1;
-  const tenant = tenantId.parse(ulid());
-  const scope = scopeId.parse(ulid());
-  await host.admin.createTenant(staff, { id: tenant, slug: `saved-replies-${desks}`, name: `Desk ${desks}` });
-  await host.admin.grantEntitlement(staff, tenant, ticket0Manifest.entitlementKey as string);
-  await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'ticket0' });
-  await host.admin.activateScope(staff, tenant, scope);
-  for (const role of ROLES) await host.admin.defineRole(staff, tenant, role);
-  const node = { tenantId: tenant, scopeId: scope };
-  const mint = async (roleKey: string) => {
-    const p = principalId.parse(ulid());
-    await host.admin.assignRole(staff, { principalId: p, roleKey, node });
-    return p;
-  };
-  const desk: Desk = {
-    tenant,
-    scope,
-    admin: await mint('desk-admin'),
-    anna: await mint('agent'),
-    bo: await mint('agent'),
-    assistant: await mint('assistant'),
-    relay: await mint('relay'),
-  };
-  await (await as(desk, desk.admin)).invoke('ticket0/configure-desk', { allowedOrigins: ['https://desk.example'] });
-  return desk;
+async function freshDesk(): Promise<Named> {
+  const desk = await kit.freshDesk({ agents: 2 });
+  return { ...desk, anna: desk.agents[0]!, bo: desk.agents[1]! };
 }
 
-const as = (desk: Desk, who: PrincipalId): Promise<ScopeStub> => host.getScope(who, desk.tenant, desk.scope);
-
-let mails = 0;
-async function mail(desk: Desk): Promise<string> {
-  mails += 1;
-  const arrived = (await (await as(desk, desk.relay)).invoke('ticket0/ingest-message', {
-    conversationId: null,
-    contactEmail: `customer-${mails}@customer.example`,
-    contactName: 'Kim',
-    subject: `Question ${mails}`,
-    bodyText: 'Something is not working.',
-    emailMessageId: `<saved-${mails}@mail.example>`,
-  })) as { conversation_id: string };
-  return arrived.conversation_id;
-}
+const as = (desk: Desk, who: PrincipalId): Promise<ScopeStub> => kit.as(desk, who);
+const mail = (desk: Desk): Promise<string> => kit.mail(desk);
 
 async function create(desk: Desk, who: PrincipalId, input: Record<string, unknown>): Promise<SavedReply> {
   return (await (await as(desk, who)).invoke('ticket0/create-saved-reply', { body: 'Hi {{contact.name}}.', ...input })) as SavedReply;
@@ -123,28 +76,13 @@ async function messageCount(desk: Desk, conversationId: string): Promise<number>
   return page.entries.length;
 }
 
-/** Every event of these types on the desk's spine — harness code, read-only. */
-function events(desk: Desk, type: string): Record<string, unknown>[] {
-  const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`), { readonly: true });
-  try {
-    return (db.prepare('SELECT payload FROM _substrat_outbox WHERE type = ? ORDER BY id').all(type) as { payload: string }[]).map(
-      (r) => JSON.parse(r.payload) as Record<string, unknown>,
-    );
-  } finally {
-    db.close();
-  }
-}
+/** Every event of this type on the desk's spine, payload parsed. */
+const events = (desk: Desk, type: string): Record<string, unknown>[] =>
+  kit.events(desk, type).map((e) => JSON.parse(e.payload) as Record<string, unknown>);
 
 const notFound = { code: 'not_found' };
 const denied = { code: 'permission_denied' };
 const conflict = { code: 'conflict' };
-
-beforeAll(() => {
-  dir = mkdtempSync(join(tmpdir(), 'ticket0-saved-replies-'));
-  host = buildHost(dir);
-});
-
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('use is counted when a message is sent, and only then', () => {
   it('counts nothing for a preview or a read, and exactly one per sent message', async () => {
@@ -469,7 +407,7 @@ describe('over HTTP, as the composer and the picker call it', () => {
     const conversation = await mail(desk);
     let caller: PrincipalId = desk.anna;
     const app = new Hono();
-    mountApi(app, async () => host.getScope(caller, desk.tenant, desk.scope));
+    mountApi(app, async () => kit.host.getScope(caller, desk.tenant, desk.scope));
     const json = (method: string, path: string, body?: unknown) =>
       app.request(`/api${path}`, {
         method,

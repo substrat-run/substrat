@@ -881,8 +881,9 @@ function Composer({
         // A forward runs no macro: a macro's reply is the customer's or a note, and its
         // actions are work on the customer's thread, not a question to somebody else.
         await api.forwardMessage({ conversationId: conv.id, to: to.trim(), body });
-      } else if (macro || used.length > 0) {
-        const savedReplyId = macro?.id ?? (used[0] as string);
+      } else if (used.length > 0) {
+        // Every pick is in `used`, the macro's too; the macro is the one whose actions run.
+        const savedReplyId = macro?.id ?? used[0]!;
         await api.applySavedReply({
           conversationId: conv.id,
           savedReplyId,
@@ -1260,7 +1261,7 @@ function SavedReplies({
   // By title, as the library always listed: the server pages in id order now that the
   // list is "shared or mine" and composed by its handler.
   const shown = items
-    .filter((r) => (inFolder === 'all' ? true : inFolder === 'none' ? r.folder_id === null : r.folder_id === inFolder))
+    .filter((r) => inFolder === 'all' || r.folder_id === (inFolder === 'none' ? null : inFolder))
     .filter((r) => (r.title + r.body).toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => a.title.localeCompare(b.title));
   const active = shown[Math.min(i, shown.length - 1)];
@@ -1427,25 +1428,20 @@ function SavedReplies({
           disabled={draft !== null}
           style={{ flex: 1 }}
         />
-        <select
-          className="input"
+        <FolderSelect
+          folders={folders}
           value={inFolder}
-          onChange={(e) => {
-            setInFolder(e.target.value);
+          onChange={(v) => {
+            setInFolder(v);
             setI(0);
           }}
           disabled={draft !== null}
           style={{ width: 150 }}
-          aria-label="Folder"
-        >
-          <option value="all">All folders</option>
-          <option value="none">Unfiled</option>
-          {folders.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.name}
-            </option>
-          ))}
-        </select>
+          none={[
+            ['all', 'All folders'],
+            ['none', 'Unfiled'],
+          ]}
+        />
       </div>
       {error ? (
         <div
@@ -1512,20 +1508,13 @@ function SavedReplies({
               onChange={(actions) => setDraft({ ...draft, actions })}
             />
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <select
-                className="input"
+              <FolderSelect
+                folders={folders}
                 value={draft.folderId ?? ''}
-                onChange={(e) => setDraft({ ...draft, folderId: e.target.value === '' ? null : e.target.value })}
-                aria-label="Folder"
+                onChange={(v) => setDraft({ ...draft, folderId: v === '' ? null : v })}
                 style={{ flex: 1 }}
-              >
-                <option value="">Unfiled</option>
-                {folders.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
+                none={[['', 'Unfiled']]}
+              />
               {draft.id === null ? (
                 <label className="t-small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   <input
@@ -1622,6 +1611,40 @@ function SavedReplies({
         )}
       </div>
     </div>
+  );
+}
+
+/** A choice of folder, after the `none` choices that are not a folder (every one, unfiled). */
+function FolderSelect({
+  folders,
+  value,
+  onChange,
+  none,
+  disabled,
+  style,
+}: {
+  folders: Folder[];
+  value: string;
+  onChange: (value: string) => void;
+  none: [value: string, label: string][];
+  disabled?: boolean;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <select
+      className="input"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      style={style}
+      aria-label="Folder"
+    >
+      {[...none, ...folders.map((f): [string, string] => [f.id, f.name])].map(([v, label]) => (
+        <option key={v} value={v}>
+          {label}
+        </option>
+      ))}
+    </select>
   );
 }
 
