@@ -244,8 +244,9 @@ function union(intervals: readonly (readonly [number, number])[]): [number, numb
  *     does not, and its windows land in the union beside the 31st's.
  *
  * So before day `d` is merged in, everything already merged that ends by `M_d` can never
- * meet a later opening, and is final — "by", not "before", which is what keeps a skipped
- * day (two equal midnights) correct. Only what reaches past it is held back.
+ * meet a later opening, and is final. Only what reaches past it is held back. (Holding one
+ * that ends exactly at `M_d` a day longer would change nothing: it could only merge with
+ * an opening that starts where it ends, and an adjacent pair counts the same as two.)
  *
  * The cap is an instant for the same reason: the walk never looks at the day after its
  * last, whose openings start at or after that day's midnight, so nothing before that
