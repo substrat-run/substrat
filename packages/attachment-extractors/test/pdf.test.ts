@@ -339,7 +339,7 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
   it('every byte-at-a-time decoder stops as the budget is spent — it never materialises its output first', async () => {
     const BUDGET = 1024;
     const content = new Uint8Array(1024 * 1024).fill(0x41);
-    const hex = bin(Array.from(content, (b) => b.toString(16)).join('') + '>');
+    const hex = bin(`${'41'.repeat(content.length)}>`); // the content's bytes, 0x41 each
     // Each would decode a MiB; each input is a MiB or more of work if read to the end.
     const cases: [string, (pace: Pace, budget: { remaining: number }) => Promise<{ data: Uint8Array; exhausted: boolean }>][] = [
       ['ASCIIHex', (pace, budget) => pdfDecoders.asciiHex(hex, budget, pace)],
@@ -428,6 +428,15 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     // Code 0 maps to the base ('A', then spaces); code 2 counts its last unit up by two ('"').
     expect(textOf(await run(file))).toBe('A A "');
   });
+
+  it('one object parsed under 2 000 numbers is kept at most as often as the memory bound allows', async () => {
+    // An array of 100 K numbers: the value whose memory per byte read is the worst, against
+    // what a parsed object is charged. Uncharged, all 2 000 copies were parsed and kept. The
+    // bound is the peak, not the clock: parsing to the budget is ~5 M tokens, which takes time.
+    const file = sharedObject(`[${'1 '.repeat(100 * 1024)}]`);
+    expect(await peakMemory(file)).toBeLessThan(PEAK_MIB * MEMORY_MIB);
+    expect(await run(file)).toMatchObject({ status: 'empty' });
+  }, 30_000);
 
   it('what the reader keeps is charged to the memory budget — counted, not timed', async () => {
     const charged = async (body: Uint8Array) => {
@@ -730,40 +739,9 @@ const SHAPES: readonly Shape[] = [
       HELVETICA, stream('', ' '.repeat(MIB))]).bytes),
   pdfShape('a CMap mapping 131 072 codes onto 512-byte destinations', () =>
     cmapFont(`begincmap 2 beginbfrange <0000> <FFFF> <${'0041'.repeat(256)}> <0100> <01FF> <${'0041'.repeat(256)}> endbfrange endcmap`, '0001')),
-  pdfShape('one 200 KiB object parsed under 2 000 numbers', async () => {
-    // An object stream whose header names every number at offset 0, and a page tree whose
-    // kids are those numbers: the same bytes, parsed and kept once per number.
-    const nums = Array.from({ length: 2_000 }, (_, i) => i + 10);
-    const header = nums.map((n) => `${n} 0`).join(' ') + ' ';
-    const objstm = stream(`/Type /ObjStm /N ${nums.length} /First ${header.length}`, header + `[${'1 '.repeat(100 * 1024)}]`);
-    const kids = `[${nums.map((n) => `${n} 0 R`).join(' ')}]`;
-    const head = bin('%PDF-1.7\n');
-    const o1 = cat('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
-    const o2 = cat(`2 0 obj\n<< /Type /Pages /Kids ${kids} >>\nendobj\n`);
-    const o3 = cat('3 0 obj\n', objstm, '\nendobj\n');
-    const offs = [head.length, head.length + o1.length, head.length + o1.length + o2.length];
-    const xrefAt = offs[2]! + o3.length;
-    const rows = [
-      '0000000000 65535 f \n',
-      ...offs.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`),
-      ...Array.from({ length: 6 }, () => '0000000000 65535 f \n'),
-    ].join('');
-    // Objects 10…2009 live in object stream 3: a cross-reference stream says so.
-    const w = new Uint8Array(3 + nums.length * 7);
-    void w;
-    const xs = (() => {
-      const rowsBin: number[] = [];
-      for (let n = 0; n < 2_010; n += 1) {
-        if (n === 0) rowsBin.push(0, 0, 0, 0, 0, 0xff, 0xff);
-        else if (n <= 3) rowsBin.push(1, ...u32(offs[n - 1]!), 0, 0);
-        else if (n < 10) rowsBin.push(0, 0, 0, 0, 0, 0, 0);
-        else rowsBin.push(2, 0, 0, 0, 3, (n - 10) >> 8, (n - 10) & 0xff);
-      }
-      return stream('/Type /XRef /Size 2010 /W [1 4 2] /Root 1 0 R', Uint8Array.from(rowsBin));
-    })();
-    void rows;
-    return cat(head, o1, o2, o3, '4 0 obj\n', xs, `\nendobj\nstartxref\n${xrefAt}\n%%EOF\n`);
-  }),
+  // A string: as many bytes kept per parse as a dense array, at a fraction of the lexing. The
+  // array, whose memory per byte is the worst, is held to the peak in its own test above.
+  pdfShape('one 200 KiB string parsed under 2 000 numbers', () => sharedObject(`(${'x'.repeat(200 * 1024)})`)),
   pdfShape('500 fonts sharing one ToUnicode of 30 000 codes', () => {
     const chars = Array.from({ length: 300 }, (_, k) =>
       `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(k * 100 + j).toString(16).padStart(4, '0')}> <00410042>`).join(' ')} endbfchar`).join('\n');
@@ -891,6 +869,33 @@ async function peakMemory(body: Uint8Array, extractor: AttachmentExtractor = pdf
   return peak - base;
 }
 
+/**
+ * An object stream whose header names 2 000 object numbers at the same offset, and a page tree
+ * whose kids are those numbers: `value`'s bytes, parsed and kept once per number.
+ */
+function sharedObject(value: string): Uint8Array {
+  const nums = Array.from({ length: 2_000 }, (_, i) => i + 10);
+  const header = nums.map((n) => `${n} 0`).join(' ') + ' ';
+  const objstm = stream(`/Type /ObjStm /N ${nums.length} /First ${header.length}`, header + value);
+  const kids = `[${nums.map((n) => `${n} 0 R`).join(' ')}]`;
+  const head = bin('%PDF-1.7\n');
+  const o1 = cat('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  const o2 = cat(`2 0 obj\n<< /Type /Pages /Kids ${kids} >>\nendobj\n`);
+  const o3 = cat('3 0 obj\n', objstm, '\nendobj\n');
+  const offs = [head.length, head.length + o1.length, head.length + o1.length + o2.length];
+  const xrefAt = offs[2]! + o3.length;
+  // Objects 10…2009 live in object stream 3: a cross-reference stream says so.
+  const rows: number[] = [];
+  for (let n = 0; n < 2_010; n += 1) {
+    if (n === 0) rows.push(0, 0, 0, 0, 0, 0xff, 0xff);
+    else if (n <= 3) rows.push(1, ...u32(offs[n - 1]!), 0, 0);
+    else if (n < 10) rows.push(0, 0, 0, 0, 0, 0, 0);
+    else rows.push(2, 0, 0, 0, 3, (n - 10) >> 8, (n - 10) & 0xff);
+  }
+  const xs = stream('/Type /XRef /Size 2010 /W [1 4 2] /Root 1 0 R', Uint8Array.from(rows));
+  return cat(head, o1, o2, o3, '4 0 obj\n', xs, `\nendobj\nstartxref\n${xrefAt}\n%%EOF\n`);
+}
+
 /** Big-endian 4 bytes. */
 function u32(n: number): number[] {
   return [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
@@ -927,23 +932,28 @@ function lzwEncode(data: Uint8Array): Uint8Array {
       acc &= (1 << bits) - 1;
     }
   };
-  const dict = new Map<string, number>();
-  for (let i = 0; i < 256; i += 1) dict.set(String.fromCharCode(i), i);
+  // The dictionary as a trie — (prefix code, next byte) → code — so a long run of one byte,
+  // whose entries grow to a thousand bytes, costs a lookup per byte rather than a string each.
+  const dict = new Map<number, number>();
   let next = 258;
   put(256);
-  let w = '';
+  let w = -1;
   for (const b of data) {
-    const wc = w + String.fromCharCode(b);
-    if (dict.has(wc)) {
-      w = wc;
+    if (w < 0) {
+      w = b;
       continue;
     }
-    put(dict.get(w)!);
-    dict.set(wc, next++);
+    const found = dict.get(w * 256 + b);
+    if (found !== undefined) {
+      w = found;
+      continue;
+    }
+    put(w);
+    dict.set(w * 256 + b, next++);
     if (next + 1 >= 1 << width && width < 12) width += 1;
-    w = String.fromCharCode(b);
+    w = b;
   }
-  if (w) put(dict.get(w)!);
+  if (w >= 0) put(w);
   put(257);
   if (bits > 0) out.push((acc << (8 - bits)) & 0xff);
   return Uint8Array.from(out);
