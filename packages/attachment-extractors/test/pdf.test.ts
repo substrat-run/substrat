@@ -407,6 +407,21 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(await run(file)).toMatchObject({ status: 'empty' });
   });
 
+  it('a CMap range is held as one entry, its destinations computed on lookup — never a string per code', async () => {
+    // Two permitted ranges of 65 536 codes onto 512-byte destinations: a string per code grew
+    // the heap by ~500 MiB from a 1.5 KiB file (Codex #2062 r3). The twin: codes still map.
+    const base = `0041${'0020'.repeat(255)}`; // 'A' and 255 spaces: 512 bytes
+    const cmap = `begincmap 1 begincodespacerange <0000> <FFFF> endcodespacerange 2 beginbfrange <0000> <FFFF> <${base}> <0100> <01FF> <${base}> endbfrange endcmap`;
+    const file = onePage('BT /F1 9 Tf <00000002> Tj ET', {
+      font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
+      extra: [stream('', cmap)],
+    }).bytes;
+    expect(file.length).toBeLessThan(4 * 1024);
+    expect(await peakMemory(file)).toBeLessThan(32 * MEMORY_MIB);
+    // Code 0 maps to the base ('A', then spaces); code 2 counts its last unit up by two ('"').
+    expect(textOf(await run(file))).toBe('A A "');
+  });
+
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
     // A fixed-width placeholder, so pointing it somewhere moves no byte offset in the file.
     const PLACEHOLDER = '/Prev 0000000000';
