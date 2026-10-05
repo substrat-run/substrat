@@ -447,7 +447,27 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
         return { covered: false, missing: [...new Set(required)] as [PermissionKey, ...PermissionKey[]] };
       }
       const subjects = await subjectsOf(subject, node, now);
-      const held = await heldAt(subjects.map((s) => s.ref), node, now);
+      const getRole = roleReaderFor(node.tenantId);
+
+      const held = new Set<string>();
+      for (const nodeObj of nodeObjectsOf(node)) {
+        for (const s of subjects) {
+          const rows = nodeObj.scoped
+            ? scope
+              ? await scope.tuples(s.ref, '')
+              : []
+            : await reader.tenantTuples(node.tenantId, s.ref, '');
+          for (const row of rows) {
+            if (row.object !== nodeObj.obj || !live(row, now)) continue;
+            if (row.relation.startsWith('role:')) {
+              const role = await getRole(row.relation.slice('role:'.length));
+              for (const p of role?.permissions ?? []) held.add(p);
+            } else if (row.relation.startsWith('granted:')) {
+              held.add(row.relation.slice('granted:'.length));
+            }
+          }
+        }
+      }
 
       // Order follows the request so a refusal reads predictably; deduplicated so a caller
       // passing the same key twice does not see it twice.
@@ -458,42 +478,62 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
     },
 
-    /**
-     * What a tuple subject holds at `node` by itself (#1184): its live node-level role and
-     * `granted:` tuples, roles expanded — `covers`' held set for one subject, with no
-     * membership expansion and no switch (an org has neither). Entity-narrowed grants never
-     * count, for `covers`' reason.
-     */
-    async confers(subjectRef: string, node: Node): Promise<PermissionKey[]> {
-      return [...(await heldAt([subjectRef], node, reader.now()))] as PermissionKey[];
-    },
-
     check,
   };
 
-  /** The node-level permissions `refs` hold together at `node` — `covers`' one walk. */
-  async function heldAt(refs: readonly string[], node: Node, now: string): Promise<Set<string>> {
-    const scope = reader.scopeFor(node);
-    const getRole = roleReaderFor(node.tenantId);
-    const held = new Set<string>();
-    for (const nodeObj of nodeObjectsOf(node)) {
-      for (const ref of refs) {
-        const rows = nodeObj.scoped
-          ? scope
-            ? await scope.tuples(ref, '')
-            : []
-          : await reader.tenantTuples(node.tenantId, ref, '');
-        for (const row of rows) {
-          if (row.object !== nodeObj.obj || !live(row, now)) continue;
-          if (row.relation.startsWith('role:')) {
-            const role = await getRole(row.relation.slice('role:'.length));
-            for (const p of role?.permissions ?? []) held.add(p);
-          } else if (row.relation.startsWith('granted:')) {
-            held.add(row.relation.slice('granted:'.length));
-          }
-        }
+}
+
+/**
+ * A directory read that never yields (#1184): what a directory UNIT — one SQLite transaction,
+ * one synchronous ControlPlaneDO method — can consult without letting another write in. The
+ * tenant-level half of `PermissionTupleReader`, with every answer in hand.
+ */
+export interface TenantDirectoryReader {
+  now(): string;
+  tenantTuples(tenantId: string, subject: string, relationPrefix: string): PermissionTupleRow[];
+  getRole(tenantId: string, key: string): RoleDefinition | undefined;
+}
+
+/**
+ * `covers` at the TENANT node, synchronously (#1184): the K-21 set comparison over the
+ * principal and every org it is a live member of, each one's live tenant-level `role:` and
+ * `granted:` tuples, roles expanded. The membership executor's bound, asked again inside the
+ * unit that writes the role, so a grant, role definition or demotion landing between its
+ * early check and its write cannot be written past.
+ *
+ * The same answer as `createTupleEvaluator(reader).covers(principal, required, tenantNode)` —
+ * a tenant node has no scope store, no entity walk and no switch — which
+ * `permission-eval.test.ts` pins over the cases where the two could part.
+ */
+export function tenantCoverage(
+  reader: TenantDirectoryReader,
+  tenantId: string,
+  principal: string,
+  required: readonly PermissionKey[],
+): Coverage {
+  if (required.length === 0) return { covered: true, missing: [] };
+  const now = reader.now();
+  const tenantObj = `tenant:${tenantId}`;
+  const self = `principal:${principal}`;
+  // Rule 4, as `subjectsOf` has it: the principal and its live orgs.
+  const subjects = [self];
+  for (const m of reader.tenantTuples(tenantId, self, 'member')) {
+    if (m.relation === 'member' && live(m, now)) subjects.push(m.object);
+  }
+  const held = new Set<string>();
+  for (const ref of subjects) {
+    for (const row of reader.tenantTuples(tenantId, ref, '')) {
+      if (row.object !== tenantObj || !live(row, now)) continue;
+      if (row.relation.startsWith('role:')) {
+        for (const p of reader.getRole(tenantId, row.relation.slice('role:'.length))?.permissions ?? []) held.add(p);
+      } else if (row.relation.startsWith('granted:')) {
+        held.add(row.relation.slice('granted:'.length));
       }
     }
-    return held;
   }
+  const missing: PermissionKey[] = [];
+  for (const p of required) {
+    if (!held.has(p) && !missing.includes(p)) missing.push(p);
+  }
+  return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
 }

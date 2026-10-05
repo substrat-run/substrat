@@ -66,33 +66,6 @@ export interface PermissionChecker {
     required: readonly PermissionKey[],
     node: Node,
   ): Promise<Coverage>;
-  /**
-   * The node-level permissions a tuple subject — an `org:<id>` — holds at `node` by itself
-   * (#1184): what joining it would confer. Optional, because a checker that cannot answer
-   * it cannot bound a membership, and `coversConferred` refuses rather than guess.
-   */
-  confers?(subjectRef: string, node: Node): Promise<PermissionKey[]>;
-}
-
-/**
- * §5.1's bound over EVERYTHING an effect would confer at `node` (#1184): the role's
- * permissions, and — when the effect also joins an org — every permission that org holds
- * there, read from the directory, never from whoever asked. Joining an org grants what the
- * org holds, so bounding the role alone would let an invite confer the org's authority on
- * top of it.
- */
-export async function coversConferred(
-  checker: PermissionChecker,
-  subject: CheckSubject,
-  rolePermissions: readonly PermissionKey[],
-  orgId: string | undefined,
-  node: Node,
-): Promise<Coverage> {
-  if (orgId === undefined) return checker.covers(subject, rolePermissions, node);
-  if (!checker.confers) {
-    throw new Error('this permission checker cannot say what an org confers — refusing to bound a membership');
-  }
-  return checker.covers(subject, [...rolePermissions, ...(await checker.confers(`org:${orgId}`, node))], node);
 }
 
 /**
@@ -192,7 +165,6 @@ export const UNSAFE_allowAllChecker: PermissionChecker = {
   // Holds everything, so it covers everything — including the escalation bound, which
   // is exactly why this must never be wired anywhere a tenant can reach.
   covers: async () => ({ covered: true, missing: [] }),
-  confers: async () => [],
   check: async (principal, permission, node) => ({
     allowed: true,
     proof: [

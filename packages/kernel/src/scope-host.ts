@@ -921,42 +921,31 @@ export type ConsumerHandler = (ctx: OperationContext, event: DomainEvent) => voi
  */
 export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => void | Promise<void>;
 
-/** One membership change for `HostAdmin.applyMembership` (#1184). Tenant-level only. */
+/**
+ * One membership ADD for `HostAdmin.applyMembership` (#1184): a TENANT-level role, and nothing
+ * else. No org is joined — what an org confers lives partly in each scope's own store, where no
+ * directory unit can bound it, so authorizing an org membership is its own capability.
+ */
 export interface MembershipChange {
-  op: 'add' | 'remove';
   tenantId: TenantId;
   principal: PrincipalId;
-  orgId: OrgId;
-  /** The tenant-level role the change assigns or takes away. */
+  /** The tenant-level role assigned. */
   roleKey: string;
-  /** `add` only: apply nothing when a removal names `principal` at or after this instant. */
-  unlessRemovedSince?: Instant;
+  /**
+   * Whose authority bounds the write (§5.1): the unit applies nothing unless this principal
+   * covers every permission `roleKey` carries, read inside the unit (`tenantCoverage`).
+   */
+  boundedBy: PrincipalId;
+  /** Apply nothing when `principal`'s removal fence stands at or after this instant. */
+  unlessRemovedSince: Instant;
 }
 
-export type MembershipChangeResult = { applied: true } | { applied: false; removedAt: string };
-
-/** The admin actions that take a person out — what `unlessRemovedSince` looks for. */
-export const MEMBERSHIP_REMOVAL_ACTIONS = ['unassignRole', 'removeMember'] as const;
-
-/**
- * The newest removal of `principal` among admin-log rows (`before` as stored, JSON text or
- * parsed): `unassignRole` records the assignment (`principalId`), `removeMember` the membership
- * (`principal`). The one reading both adapters' `applyMembership` judge by.
- */
-export function removalOf(
-  rows: readonly { at: string; before: unknown }[],
-  principal: PrincipalId,
-): string | undefined {
-  let newest: string | undefined;
-  for (const row of rows) {
-    const before = (typeof row.before === 'string' ? JSON.parse(row.before) : row.before) as
-      | { principalId?: unknown; principal?: unknown }
-      | null;
-    if (before?.principalId !== principal && before?.principal !== principal) continue;
-    if (newest === undefined || row.at > newest) newest = row.at;
-  }
-  return newest;
-}
+/** What the unit did: applied, or why not — fenced by a removal, or out of the bound. */
+export type MembershipChangeResult =
+  | { applied: true }
+  | { applied: false; removedAt: string }
+  | { applied: false; missing: PermissionKey[] }
+  | { applied: false; unknownRole: string };
 
 /**
  * An **executor**: out-of-band host code that effects, outside a scope, what a module
@@ -1005,17 +994,12 @@ export interface ExecutorScope {
   /** One entity's history in this scope — `readHistory`'s answer, oldest first. */
   history(entity: EntityRef, page?: ListPage): Promise<Page<HistoryEntry>>;
   /**
-   * May `principal` confer `roleKey` — and, given `orgId`, membership of that org — at this
-   * scope's node, or at the tenant node (`level: 'tenant'`)? The K-21 set comparison
-   * `ctx.canAssign` answers, narrowing-aware, over the tenant's projected role UNION every
-   * permission the org holds at that node (`coversConferred`): joining an org grants what it
-   * holds. Throws `unknownRoleError` for a role this tenant does not define.
+   * May `principal` confer `roleKey` at this scope's node, or at the tenant node
+   * (`level: 'tenant'`)? The K-21 set comparison `ctx.canAssign` answers, narrowing-aware,
+   * over the tenant's projected role. Throws `unknownRoleError` for a role this tenant does
+   * not define.
    */
-  covers(
-    principal: PrincipalId,
-    conferred: { roleKey: string; orgId?: string },
-    level: 'scope' | 'tenant',
-  ): Promise<Coverage>;
+  covers(principal: PrincipalId, roleKey: string, level: 'scope' | 'tenant'): Promise<Coverage>;
 }
 
 /**
@@ -2038,16 +2022,17 @@ export interface HostAdmin {
     orgId: OrgId,
   ): Promise<void>;
   /**
-   * One membership change, applied as ONE directory unit (#1184): the org membership and the
-   * TENANT-level role together, with both admin-log rows, in a single SQLite transaction or a
-   * single ControlPlaneDO method. Nothing else can land between its check and its writes, so
-   * an add and a removal of the same person serialize: whichever the directory takes first,
-   * the other sees.
+   * One membership add, applied as ONE directory unit (#1184): a single SQLite transaction or a
+   * single synchronous ControlPlaneDO method, with no await inside it. In that unit it reads
+   * `principal`'s removal fence, re-evaluates the bound — `boundedBy` must still cover every
+   * permission `roleKey` carries, against the directory as it stands (`tenantCoverage`) — and
+   * only then assigns the TENANT-level role and writes its audit row. A removal, a grant, a
+   * role redefinition or a demotion lands wholly before the unit (and refuses it) or wholly
+   * after it (and governs from then on), never between its check and its write.
    *
-   * An `add` carrying `unlessRemovedSince` first looks, inside the unit, for an `unassignRole`
-   * or `removeMember` row naming the principal at or after that instant, and applies nothing
-   * when it finds one. A `remove` always records both rows, even when nothing was held: the
-   * membership executor's removal must leave a trace that a still-pending add can see.
+   * The fence is `_substrat_membership_fences`: every tenant-level `unassignRole` and every
+   * `removeMember` raises it for the person, in the same unit as its revoke — a no-op included,
+   * since a removal of someone whose add is still on its way must still win.
    */
   applyMembership(actor: PlatformActorId, change: MembershipChange): Promise<MembershipChangeResult>;
   /**

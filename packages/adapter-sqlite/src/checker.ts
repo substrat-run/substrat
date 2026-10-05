@@ -10,6 +10,7 @@ import {
   type PermissionTupleReader,
   type PermissionTupleRow,
   type ScopeTupleReader,
+  type TenantDirectoryReader,
 } from '@substrat-run/kernel';
 
 /**
@@ -88,16 +89,15 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
 };
 
 /**
- * Build the evaluator described above over one host's directory, scope databases
- * and role table. Stateless per call: everything it knows it reads at check time,
- * which is what makes check-after-write consistent and what lets `deps.clock`
- * decide expiry rather than the wall clock.
+ * The directory's tenant-level reads, synchronous (#1184): what the evaluator reads tenant
+ * tuples and roles through, and what a directory transaction hands `tenantCoverage` — one
+ * reader, so the bound inside a unit reads exactly the rows a check does.
  */
-export function createTupleChecker(deps: CheckerDeps): PermissionChecker {
-  const readNow: () => string = deps.clock ?? (() => new Date().toISOString());
-
-  const reader: PermissionTupleReader = {
-    now: readNow,
+export function directoryTenantReader(
+  deps: Pick<CheckerDeps, 'directory' | 'getRole' | 'clock'>,
+): TenantDirectoryReader {
+  return {
+    now: deps.clock ?? (() => new Date().toISOString()),
     tenantTuples: (tenantId, subject, relationPrefix) =>
       deps.directory
         .prepare(
@@ -106,6 +106,18 @@ export function createTupleChecker(deps: CheckerDeps): PermissionChecker {
         )
         .all(tenantId, subject, `${relationPrefix}%`) as PermissionTupleRow[],
     getRole: (tenantId, key) => deps.getRole(tenantId, key),
+  };
+}
+
+/**
+ * Build the evaluator described above over one host's directory, scope databases
+ * and role table. Stateless per call: everything it knows it reads at check time,
+ * which is what makes check-after-write consistent and what lets `deps.clock`
+ * decide expiry rather than the wall clock.
+ */
+export function createTupleChecker(deps: CheckerDeps): PermissionChecker {
+  const reader: PermissionTupleReader = {
+    ...directoryTenantReader(deps),
     // No scope on the node, or no open database for it, means no scope-level tuples and
     // no entity walk — the entity tuples are in that database and nowhere else.
     scopeFor: (node: Node) => {

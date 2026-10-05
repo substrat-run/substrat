@@ -107,8 +107,6 @@ export {
   backoffAt,
   globalFetch,
   executorOutcomeOf,
-  MEMBERSHIP_REMOVAL_ACTIONS,
-  removalOf,
   parseValidationRecords,
   resolveRetryPolicy,
   OPS_FAILURE_RETENTION_DAYS,
@@ -164,11 +162,12 @@ export {
   PermissionDenied,
   UNSAFE_allowAllChecker,
 } from './permission-checker.js';
-export { actorOf, asPrincipal, coversConferred, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
+export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
-export { createTupleEvaluator } from './permission-eval.js';
+export { createTupleEvaluator, tenantCoverage } from './permission-eval.js';
 export type {
   PermissionTupleReader,
+  TenantDirectoryReader,
   PermissionTupleRow,
   ScopeTupleReader,
 } from './permission-eval.js';
@@ -780,3 +779,4 @@ export {
   type MemberRemoveRequestedPayload,
   type MembershipExecutorOptions,
 } from './membership-executor.js';
+export { MEMBERSHIP_FENCES_DDL, MEMBERSHIP_FENCE_SINCE_SQL, RAISE_MEMBERSHIP_FENCE_SQL } from './membership-fence.js';

@@ -1,7 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
-  MEMBERSHIP_REMOVAL_ACTIONS,
-  removalOf,
+  MEMBERSHIP_FENCES_DDL,
+  MEMBERSHIP_FENCE_SINCE_SQL,
+  RAISE_MEMBERSHIP_FENCE_SQL,
+  tenantCoverage,
+  type MembershipChangeResult,
   IMPERSONATION_COLUMNS,
   IMPERSONATION_DDL,
   impersonationByIdQuery,
@@ -95,6 +98,7 @@ interface TupleRow {
   relation: string;
   object: string;
   expires_at: string | null;
+  revoked_at: string | null;
 }
 
 interface TenantRow {
@@ -1006,6 +1010,7 @@ const DIRECTORY_DDL = `
   );
   ${IMPERSONATION_DDL}
   ${SYSTEM_SWITCHES_DDL}
+  ${MEMBERSHIP_FENCES_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_admin_log (
     id TEXT PRIMARY KEY,
     actor TEXT NOT NULL,
@@ -1857,6 +1862,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_entitlements', // per-tenant SKU flags
       'orgs', // K-22 org records
       '_substrat_system_switches', // #1674: the schedule switch's record, per scope
+      '_substrat_membership_fences', // #1184: the latest removal, per principal
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -3075,58 +3081,61 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * Tombstone a membership (K-21), never DELETE. Guarded on `revoked_at IS NULL`
-   * so a repeat revoke neither moves the timestamp nor produces a second audit
-   * row. Returns whether it changed, so the coordinator can skip the audit write.
-   */
-  /**
-   * One membership change as ONE DO unit (#1184) — `HostAdmin.applyMembership`. Synchronous,
-   * so no other request into this object runs between the "removed since" read and the
-   * writes: an add and a removal of the same person serialize here. The coordinator mints the
-   * audit rows (ids, actor, attribution, `causedBy`); this writes them with the tuples.
+   * A membership add as ONE DO unit (#1184) — `HostAdmin.applyMembership`. Synchronous, so no
+   * other request into this object runs between its reads and its writes: the principal's
+   * removal fence, then the bound — `boundedBy` covering every permission `roleKey` carries,
+   * against the tuples and the role as they stand now (`tenantCoverage`) — then the TENANT
+   * role and its audit row. The coordinator mints the row (id, actor, attribution, `causedBy`).
    */
   applyMembership(
-    change: { op: 'add' | 'remove'; tenantId: string; principal: string; orgId: string; roleKey: string; unlessRemovedSince?: string },
-    rows: { member: AdminEntryInput; role: AdminEntryInput },
-  ): { applied: true } | { applied: false; removedAt: string } {
-    const { tenantId, principal, orgId, roleKey } = change;
-    if (!this.readOrg(tenantId, orgId)) throw new Error(`unknown org ${orgId} in tenant ${tenantId}`);
-    const subject = `principal:${principal}`;
-    const member = `org:${orgId}`;
-    const role = `role:${roleKey}`;
-    const tenantNode = `tenant:${tenantId}`;
-    if (change.op === 'add') {
-      if (change.unlessRemovedSince) {
-        const removedAt = removalOf(
-          this.sql
-            .exec(
-              `SELECT at, before FROM _substrat_admin_log
-               WHERE tenant_id = ? AND action IN (SELECT value FROM json_each(?)) AND at >= ?`,
-              tenantId,
-              JSON.stringify(MEMBERSHIP_REMOVAL_ACTIONS),
-              change.unlessRemovedSince,
-            )
-            .toArray() as unknown as { at: string; before: string | null }[],
-          principal as PrincipalId,
-        );
-        if (removedAt) return { applied: false, removedAt };
-      }
-      this.writeTenantTuple(tenantId, subject, 'member', member, null);
-      this.recordAdmin(rows.member);
-      this.writeTenantTuple(tenantId, subject, role, tenantNode, null);
-      this.recordAdmin(rows.role);
+    change: { tenantId: string; principal: string; roleKey: string; boundedBy: string; unlessRemovedSince: string },
+    row: AdminEntryInput,
+  ): MembershipChangeResult {
+    const { tenantId, principal, roleKey, boundedBy } = change;
+    return this.ctx.storage.transactionSync((): MembershipChangeResult => {
+      const fence = this.sql.exec(MEMBERSHIP_FENCE_SINCE_SQL, tenantId, principal, change.unlessRemovedSince).toArray()[0] as
+        | { removed_at: string }
+        | undefined;
+      if (fence) return { applied: false, removedAt: fence.removed_at };
+      const role = this.getRole(tenantId, roleKey);
+      if (!role) return { applied: false, unknownRole: roleKey };
+      const bound = tenantCoverage(
+        {
+          now: () => new Date().toISOString(),
+          tenantTuples: (t, subject, prefix) => this.tenantTuples(t, subject, prefix),
+          getRole: (t, key) => this.getRole(t, key),
+        },
+        tenantId,
+        boundedBy,
+        role.permissions,
+      );
+      if (!bound.covered) return { applied: false, missing: bound.missing };
+      this.writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`, null);
+      this.recordAdmin(row);
       return { applied: true };
-    }
-    this.revokeTenantTuple(tenantId, subject, role, tenantNode, rows.role.at);
-    this.revokeTenantTuple(tenantId, subject, 'member', member, rows.member.at);
-    // Recorded whether or not anything was held: a pending add must see this removal.
-    this.recordAdmin(rows.role);
-    this.recordAdmin(rows.member);
-    return { applied: true };
+    });
   }
 
-  revokeMember(tenantId: string, subject: string, object: string, at: string): boolean {
-    return this.revokeTenantTuple(tenantId, subject, 'member', object, at);
+  /**
+   * A tenant-level removal as ONE DO unit (#1184) — `unassignRole` at the tenant node, and
+   * `removeMember`: the tombstone, the principal's removal fence, and the audit row, which
+   * K-21 writes only when something changed. The fence is raised either way: a removal of
+   * someone whose add is still on its way takes nothing, and must still win. One method, so
+   * no add can run between the revoke and the fence. Returns whether anything changed.
+   */
+  revokeAndFence(
+    tenantId: string,
+    principal: string,
+    relation: string,
+    object: string,
+    row: AdminEntryInput,
+  ): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const changed = this.revokeTenantTuple(tenantId, `principal:${principal}`, relation, object, row.at);
+      this.sql.exec(RAISE_MEMBERSHIP_FENCE_SQL, tenantId, principal, row.at);
+      if (changed) this.recordAdmin(row);
+      return changed;
+    });
   }
 
   /** Tombstone any tenant tuple by its exact (subject, relation, object). Returns

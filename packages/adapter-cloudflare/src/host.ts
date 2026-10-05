@@ -436,7 +436,6 @@ import type {
   VersionRow,
   VersionListRow,
   LifecycleTargetRow,
-  AdminEntryInput,
 } from './control-plane-do.js';
 
 /**
@@ -715,14 +714,16 @@ interface ControlPlaneStub {
     createdAt: string,
   ): Promise<boolean>;
   listOrgs(tenantId: string): Promise<OrgRow[]>;
-  /** K-21 tombstone. Returns whether anything changed (idempotent revoke). */
-  revokeMember(tenantId: string, subject: string, object: string, at: string): Promise<boolean>;
+  /** #1184: a bounded, fenced tenant-role add, as one DO unit. */
   applyMembership(
-    change: { op: 'add' | 'remove'; tenantId: string; principal: string; orgId: string; roleKey: string; unlessRemovedSince?: string },
-    rows: { member: AdminEntryInput; role: AdminEntryInput },
+    change: { tenantId: string; principal: string; roleKey: string; boundedBy: string; unlessRemovedSince: string },
+    row: AdminEntry,
   ): Promise<MembershipChangeResult>;
-  /** Tombstone any tenant tuple by exact (subject, relation, object) — e.g. a role. Idempotent. */
-  revokeTenantTuple(tenantId: string, subject: string, relation: string, object: string, at: string): Promise<boolean>;
+  /**
+   * #1184: a tenant-level removal — the K-21 tombstone, the removal fence and (only if it
+   * changed anything) the audit row — as one DO unit. Returns whether anything changed.
+   */
+  revokeAndFence(tenantId: string, principal: string, relation: string, object: string, row: AdminEntry): Promise<boolean>;
   listMembers(
     tenantId: string,
     object: string,
@@ -1174,7 +1175,7 @@ interface ScopeStubRpc {
     permissions: PermissionKey[],
   ): Promise<PeerCoverage[]>;
   /** `ctx.canAssign`'s bound for a named principal (#1931); `null` for a role the tenant lacks. */
-  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string, atTenant?: boolean, orgId?: string): Promise<Coverage | null>;
+  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string, atTenant?: boolean): Promise<Coverage | null>;
   assignScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage | null>;
@@ -2396,8 +2397,8 @@ export class CloudflareScopeHost implements ScopeHost {
     return {
       history: async (entity, page) =>
         stub.entityHistory({ entityType: entity.entityType, entityId: entity.entityId, limit: page?.limit, cursor: page?.cursor }),
-      covers: async (principal, { roleKey, orgId }, level) => {
-        const bound = await stub.canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey, level === 'tenant', orgId);
+      covers: async (principal, roleKey, level) => {
+        const bound = await stub.canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey, level === 'tenant');
         if (!bound) throw unknownRoleError(roleKey);
         return coverage.parse(bound);
       },
@@ -5789,20 +5790,24 @@ export class CloudflareScopeHost implements ScopeHost {
         // a repeat unassign stays silent (no second audit row, no needless fan-out).
         const subject = `principal:${assignment.principalId}`;
         const relation = `role:${assignment.roleKey}`;
-        const now = new Date().toISOString();
-        const changed = assignment.node.scopeId
-          ? await this.scopeStub(assignment.node.scopeId).revokeTuple(subject, relation, `scope:${assignment.node.scopeId}`, now)
-          : await this.cp.revokeTenantTuple(assignment.node.tenantId, subject, relation, `tenant:${assignment.node.tenantId}`, now);
+        const { tenantId, scopeId } = assignment.node;
+        if (!scopeId) {
+          // One ControlPlaneDO method (#1184): the revoke, the removal fence (raised even when
+          // nothing was held) and the audit row, so no add can land between any two of them.
+          const changed = await this.cp.revokeAndFence(
+            tenantId,
+            assignment.principalId,
+            relation,
+            `tenant:${tenantId}`,
+            this.adminEntry(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
+          );
+          // A tenant-level revoke changes the projected set — the tombstone must reach scopes.
+          if (changed) await this.fanOut(tenantId);
+          return;
+        }
+        const changed = await this.scopeStub(scopeId).revokeTuple(subject, relation, `scope:${scopeId}`, new Date().toISOString());
         if (!changed) return;
-        await this.recordAdmin(
-          actor,
-          'unassignRole',
-          { tenantId: assignment.node.tenantId, scopeId: assignment.node.scopeId },
-          assignment,
-          null,
-        );
-        // A tenant-level revoke changes the projected set — the tombstone must reach scopes.
-        if (!assignment.node.scopeId) await this.fanOut(assignment.node.tenantId);
+        await this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId }, assignment, null);
       },
       grant: async (actor, raw: CapabilityGrant) => {
         // Parsed like its `grantToConnection`/`grantToSystem` siblings, not taken on
@@ -6733,48 +6738,33 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.fanOut(tenantId); // membership is a tenant-level tuple
       },
       applyMembership: async (actor, change) => {
-        // The rows are minted here, where attribution and `causedBy` live, and written by the
-        // ControlPlaneDO in the same synchronous method as the tuples and the "removed since"
-        // read (#1184): one DO unit, so an add and a removal of the same person serialize.
-        const { tenantId, principal, orgId, roleKey, op } = change;
-        const at = new Date().toISOString();
-        const row = (action: AdminAction, scopeId: null | undefined, change: unknown): AdminEntryInput => ({
-          id: ulid(),
-          actor,
-          action,
-          tenantId,
-          causedBy: this.causedBy,
-          onBehalfOf: this.onBehalfOf,
-          scopeId: scopeId ?? null,
-          vertical: null,
-          before: op === 'remove' ? change : null,
-          after: op === 'add' ? change : null,
-          at,
-        });
-        const result = await this.cp.applyMembership(change, {
-          member: row(op === 'add' ? 'addMember' : 'removeMember', undefined, { principal, orgId }),
-          role: row(op === 'add' ? 'assignRole' : 'unassignRole', null, {
+        // The row is minted here, where attribution and `causedBy` live, and written by the
+        // ControlPlaneDO in the same synchronous method as the fence, the bound and the tuple
+        // (#1184): one DO unit, so nothing lands between the check and the write.
+        const { tenantId, principal, roleKey } = change;
+        const result = await this.cp.applyMembership(
+          change,
+          this.adminEntry(actor, 'assignRole', { tenantId, scopeId: null }, null, {
             principalId: principal,
             roleKey,
             node: { tenantId, scopeId: null },
           }),
-        });
-        if (result.applied) await this.fanOut(tenantId); // tenant-level tuples reach the projections
+        );
+        if (result.applied) await this.fanOut(tenantId); // the tenant-level tuple reaches the projections
         return result;
       },
       removeMember: async (actor, tenantId, principal, orgId) => {
         await requireOrg(tenantId, orgId);
-        // Tombstone (K-21), never DELETE. The DO reports whether anything changed
-        // so a repeat revoke stays a silent no-op rather than a second audit row.
-        const changed = await this.cp.revokeMember(
+        // Tombstone (K-21), never DELETE, with the removal fence in the same DO method
+        // (#1184). A repeat revoke stays a silent no-op rather than a second audit row.
+        const changed = await this.cp.revokeAndFence(
           tenantId,
-          `principal:${principal}`,
+          principal,
+          'member',
           `org:${orgId}`,
-          new Date().toISOString(),
+          this.adminEntry(actor, 'removeMember', { tenantId }, { principal, orgId }, null),
         );
-        if (!changed) return;
-        await this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null);
-        await this.fanOut(tenantId); // the tombstone must reach the projections
+        if (changed) await this.fanOut(tenantId); // the tombstone must reach the projections
       },
       listMembers: async (actor, tenantId, orgId, options) => {
         await requireOrg(tenantId, orgId);
@@ -8537,7 +8527,21 @@ export class CloudflareScopeHost implements ScopeHost {
     before: unknown,
     after: unknown,
   ): Promise<void> {
-    await this.cp.recordAdmin({
+    await this.cp.recordAdmin(this.adminEntry(actor, action, target, before, after));
+  }
+
+  /**
+   * One admin-log row, minted here where attribution and `causedBy` live — for `recordAdmin`,
+   * and for a ControlPlaneDO method that writes its row in the same unit as its effect (#1184).
+   */
+  private adminEntry(
+    actor: PlatformActorId,
+    action: AdminAction,
+    target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
+    before: unknown,
+    after: unknown,
+  ): AdminEntry {
+    return {
       id: ulid(),
       actor,
       action,
@@ -8549,7 +8553,7 @@ export class CloudflareScopeHost implements ScopeHost {
       before: before ?? null,
       after: after ?? null,
       at: new Date().toISOString(),
-    });
+    };
   }
 
   /**

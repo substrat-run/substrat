@@ -28,32 +28,38 @@ import {
  * Both are driven inline by the emitting call, with the outbox and `_substrat_deliveries` as
  * the retry backstop, so the common case completes inside the request.
  *
+ * **What it effects: a tenant-level role, and nothing else.** An add assigns the invited role
+ * at the tenant node; a removal unassigns it. Neither joins nor leaves an org, although both
+ * payloads name one (the invites engine keys its invitations by org): what an org confers
+ * includes grants in each scope's own store, which no directory unit can bound, so making
+ * someone a member of an org is authority this seam does not carry.
+ *
  * **Authority.** Every payload field is module-written, so none of them is authority.
  *
  * - An ADD is bounded by the inviter: the kernel-stamped `actor` of the invitation's own
- *   `invites.sent` event, asked through the K-21 set comparison NOW, at the node the role is
- *   assigned at. A sender demoted or removed since the send is refused. The joiner is the
- *   request's own actor, who must have made the invitation's first acceptance, and the
- *   request must be the first one naming that invitation: one invitation, one join. The most a
- *   module can do is make the principal who actually invoked it look like the sender — the
- *   same delegation bound `ctx.grant` has.
+ *   `invites.sent` event, asked through the K-21 set comparison at the tenant node. Asked
+ *   twice: early, to refuse cheaply, and again inside the directory unit that writes the role
+ *   (`applyMembership`), so a demotion, a grant lost or a role widened in between is not
+ *   written past. The joiner is the request's own actor, who must have made the invitation's
+ *   first acceptance, and the request must be the first one naming that invitation: one
+ *   invitation, one join. The most a module can do is make the principal who actually invoked
+ *   it look like the sender — the same delegation bound `ctx.grant` has.
  * - A REMOVE is bounded by the remover, the request's own actor (§5.1: removal takes the
  *   same bound, or a junior admin could strip a role they could not have granted).
  *
- * **Removal wins.** An add is refused when the joiner was removed AFTER it was requested, by
- * any recorded removal: a later `member.remove-requested` on the same membership, or an
- * `unassignRole` / `removeMember` admin row naming them since the request. The first is the
- * ordering this seam owns — an admin who removes someone whose add is still retrying is not
- * overtaken by the retry. The second covers every removal made outside it, including the
- * ones made by hand before this executor existed: an add requested back then and never
- * effected would otherwise re-admit someone who was removed in the meantime.
+ * **Removal wins.** An add is refused when the joiner was removed after it was requested: by a
+ * later `member.remove-requested` on the same membership (ordered by outbox id), or by any
+ * tenant-level removal at all — staff's included, and a no-op one — which raises the person's
+ * removal fence in the directory unit that revokes. The add's own unit reads the fence, and a
+ * fence at or after `occurredAt - MEMBERSHIP_REMOVAL_SKEW_MS` refuses it.
  *
  * A refusal is terminal (`refuseDelivery`): journaled with its reason, never retried, listed
  * by `executorDeadLetters`, and reported to the emitting call through `onExecutorOutcomes`.
  *
  * **The trail.** Admin rows are written by `actor`, the platform identity that executed them,
  * `onBehalfOf` (#977) the person whose authority bounded them, and with `causedBy` = the event
- * id: the correlation id that joins the scope's half of the trail to the directory's.
+ * id: the correlation id that joins the scope's half of the trail to the directory's. A
+ * removal that took nothing writes no row (K-21), but still raises the fence.
  *
  * **Idempotent.** A delivered event never reaches its handler again. A crash between the
  * effect and its journal row re-runs the handler, and every write it makes is idempotent.
@@ -83,7 +89,8 @@ const memberAddRequested = z.object({
 
 /**
  * `member.remove-requested` v1 — what a vertical emits to take someone out: the role it
- * holds them at and the org they joined. Fat (D-19), like the add.
+ * holds them at, and the org its invitation named. Fat (D-19), like the add. The executor
+ * takes the role away; the org is the vertical's own vocabulary and is not touched.
  */
 export const memberRemoveRequestedPayload = z.object({
   principal: principalId,
@@ -114,12 +121,11 @@ export interface MembershipExecutorOptions {
 }
 
 /**
- * How far before a request a removal made OUTSIDE this seam still wins over it (#1184):
- * 5 minutes. Such a removal is a directory admin row stamped by the directory's clock; the
- * request is a scope event stamped by the scope's. The two stores share no causal order, so
- * a tie goes to the removal and so does anything within this skew. The cost, stated: someone
- * removed by staff less than this before they accept a NEW invite is refused — resend it.
- * Removals through the seam need no window: they are ordered by outbox id.
+ * How far before a request a removal still wins over it (#1184): 5 minutes. A removal's fence
+ * is stamped by the directory's clock; the request is a scope event stamped by the scope's.
+ * The two stores share no causal order, so a tie goes to the removal and so does anything
+ * within this skew. The cost, stated: someone removed less than this before they accept a NEW
+ * invite is refused — resend it. Removals through the seam are also ordered by outbox id.
  */
 export const MEMBERSHIP_REMOVAL_SKEW_MS = 5 * 60_000;
 
@@ -140,22 +146,23 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   host.registerExecutor(
     id,
     MEMBER_ADD_REQUESTED,
-    async (admin, event, scope) => {
+    async (_admin, event, scope) => {
       const decided = await authorizeAdd(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, inviter } = decided;
-      // One directory unit: the final "removed since" check, the membership, the role and
-      // their audit rows. A removal made outside the seam lands before it (and refuses it) or
-      // after it (and undoes it) — never between.
+      // One directory unit: the fence, the bound asked again, the role and its audit row. A
+      // removal or a change of authority lands wholly before it or wholly after it.
       const applied = await adminFor(inviter, event).applyMembership(options.actor, {
-        op: 'add',
         tenantId: event.tenantId,
         principal: request.principal,
-        orgId: request.orgId,
         roleKey: request.roleKey,
+        boundedBy: inviter,
         unlessRemovedSince: instant.parse(new Date(Date.parse(event.occurredAt) - MEMBERSHIP_REMOVAL_SKEW_MS).toISOString()),
       });
-      return applied.applied ? undefined : refuseDelivery(`${request.principal} was removed after this request was made`);
+      if (applied.applied) return undefined;
+      if ('removedAt' in applied) return refuseDelivery(`${request.principal} was removed after this request was made`);
+      if ('unknownRole' in applied) return refuseDelivery(`no such role in this tenant: ${applied.unknownRole}`);
+      return refuseDelivery(`the inviter ${inviter} no longer holds ${applied.missing.join(', ')}, which '${request.roleKey}' confers`);
     },
     options.retry,
   );
@@ -167,14 +174,12 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       const decided = await authorizeRemove(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, remover } = decided;
-      // One unit, and always recorded — even with nothing held — so an add still pending for
-      // this person sees the removal inside its own unit, wherever its drain runs.
-      await adminFor(remover, event).applyMembership(options.actor, {
-        op: 'remove',
-        tenantId: event.tenantId,
-        principal: request.principal,
-        orgId: request.orgId,
+      // One directory unit on either adapter: the revoke, its audit row if it took anything,
+      // and the fence — raised even with nothing held, so a pending add sees this removal.
+      await adminFor(remover, event).unassignRole(options.actor, {
+        principalId: request.principal,
         roleKey: request.roleKey,
+        node: { tenantId: event.tenantId, scopeId: null },
       });
       return undefined;
     },
@@ -198,23 +203,16 @@ function requestOf<T extends { tenantId: string }>(
   return { request: parsed.data };
 }
 
-/**
- * §5.1's bound for `who` over everything the effect confers at the node — `roleKey`'s
- * permissions and, given `orgId`, every permission that org holds there — or the refusal
- * saying what is missing.
- */
+/** §5.1's bound for `who` over `roleKey` at the tenant node, or the refusal saying what is missing. */
 async function bounded(
   scope: ExecutorScope,
   who: PrincipalId,
-  conferred: { roleKey: string; orgId?: string },
+  roleKey: string,
   as: 'inviter' | 'remover',
 ): Promise<Refused | null> {
-  const { roleKey } = conferred;
   try {
-    const bound = await scope.covers(who, conferred, 'tenant');
-    return bound.covered
-      ? null
-      : refused(`the ${as} ${who} no longer holds ${bound.missing.join(', ')}, which '${roleKey}'${conferred.orgId ? ` or org ${conferred.orgId}` : ''} confers`);
+    const bound = await scope.covers(who, roleKey, 'tenant');
+    return bound.covered ? null : refused(`the ${as} ${who} no longer holds ${bound.missing.join(', ')}, which '${roleKey}' confers`);
   } catch (err) {
     if (isUnknownRoleError(err, roleKey)) return refused(`no such role in this tenant: ${roleKey}`);
     throw err;
@@ -261,14 +259,13 @@ async function authorizeAdd(
   );
   if (earlier) return refused(`invitation ${request.invitationId} was already used, by request ${earlier.id}`);
 
-  // A removal through the seam, ordered after this request by outbox id. Removals outside
-  // the seam are judged by `applyMembership`, inside the unit that writes.
+  // A removal through the seam, ordered after this request by outbox id. Every removal also
+  // raises the fence `applyMembership` reads inside the unit that writes.
   if (membership.some((e) => e.type === MEMBER_REMOVE_REQUESTED && e.id > event.id)) {
     return refused(`${request.principal} was removed after this request was made`);
   }
-  // The role AND the org: joining an org grants what the org holds, and its id is
-  // module-written, so the bound reads the org's grants from the directory.
-  const bound = await bounded(scope, inviter.data, { roleKey: request.roleKey, orgId: request.orgId }, 'inviter');
+  // The early refusal; `applyMembership` asks the same bound again inside its unit.
+  const bound = await bounded(scope, inviter.data, request.roleKey, 'inviter');
   return bound ?? { request, inviter: inviter.data };
 }
 
@@ -281,8 +278,7 @@ async function authorizeRemove(
   if ('refused' in parsed) return parsed;
   const remover = principalId.safeParse(event.actor);
   if (!remover.success) return refused('the removal was not requested by a principal');
-  const { roleKey, orgId } = parsed.request;
-  const bound = await bounded(scope, remover.data, { roleKey, orgId }, 'remover');
+  const bound = await bounded(scope, remover.data, parsed.request.roleKey, 'remover');
   return bound ?? { request: parsed.request, remover: remover.data };
 }
 

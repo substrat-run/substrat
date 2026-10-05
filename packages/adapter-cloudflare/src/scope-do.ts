@@ -61,7 +61,6 @@ import {
   ulid,
   DO_SQL_LIMITS,
   unknownRoleError,
-  coversConferred,
   createUlid,
   type UlidMint,
   assertAllowed,
@@ -3771,12 +3770,10 @@ export function defineScopeDO(
       roleKey: string,
       /** #1184: bound at the TENANT node instead — a membership executor assigning tenant-wide. */
       atTenant = false,
-      /** #1184: an org the assignment also joins — its grants count toward the bound. */
-      orgId?: string,
     ): Promise<Coverage | null> {
       await this.ensureMigrations();
       return this.queue.enqueue(() =>
-        this.assignmentBound({ kind: 'principal', id: principal }, tenantId, atTenant ? null : scopeId, roleKey, orgId),
+        this.assignmentBound({ kind: 'principal', id: principal }, tenantId, atTenant ? null : scopeId, roleKey),
       );
     }
 
@@ -3814,11 +3811,10 @@ export function defineScopeDO(
       tenantId: TenantId,
       scopeId: ScopeId | null,
       roleKey: string,
-      orgId?: string,
     ): Promise<Coverage | null> {
       const role = await this.controlPlaneReader().getRole(tenantId, roleKey);
       if (!role) return null;
-      return coversConferred(this.checker, subject, role.permissions, orgId, { tenantId, scopeId });
+      return this.checker.covers(subject, role.permissions, { tenantId, scopeId });
     }
 
     /**

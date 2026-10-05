@@ -210,7 +210,6 @@ import {
 import {
   actorOf,
   asPrincipal,
-  coversConferred,
   assertAllowed,
   assertNoSecret,
   assertPermissionKey,
@@ -382,8 +381,10 @@ import {
   executorOutcomeOf,
   isDeliveryRefusal,
   refusalJournalText,
-  removalOf,
-  MEMBERSHIP_REMOVAL_ACTIONS,
+  MEMBERSHIP_FENCES_DDL,
+  MEMBERSHIP_FENCE_SINCE_SQL,
+  RAISE_MEMBERSHIP_FENCE_SQL,
+  tenantCoverage,
   type MembershipChangeResult,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
@@ -546,7 +547,7 @@ import { attributedHost } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
-import { createTupleChecker } from './checker.js';
+import { createTupleChecker, directoryTenantReader } from './checker.js';
 
 /**
  * A fault in the database itself (full, corrupt, I/O), as opposed to one statement failing.
@@ -2098,6 +2099,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
       ${IMPERSONATION_DDL}
       ${SYSTEM_SWITCHES_DDL}
+      ${MEMBERSHIP_FENCES_DDL}
       CREATE TABLE IF NOT EXISTS _substrat_admin_log (
         id TEXT PRIMARY KEY,
         actor TEXT NOT NULL,
@@ -4327,14 +4329,12 @@ export class SqliteScopeHost implements ScopeHost {
     /** Null for the tenant node — the executor's `level: 'tenant'` (#1184). */
     scopeId: ScopeId | null,
     roleKey: string,
-    /** #1184: an org the assignment also joins — its grants count toward the bound. */
-    orgId?: string,
   ): Promise<Coverage> {
     const role = this.roles.get(`${tenantId}/${roleKey}`);
     if (!role) {
       throw unknownRoleError(roleKey);
     }
-    return coversConferred(this.checker, subject, role.permissions, orgId, { tenantId, scopeId });
+    return this.checker.covers(subject, role.permissions, { tenantId, scopeId });
   }
 
   /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
@@ -5041,14 +5041,8 @@ export class SqliteScopeHost implements ScopeHost {
   private executorScope(rt: ScopeRuntime): ExecutorScope {
     return {
       history: async (entity, page) => readHistory({ sql: scopedSql(rt.db) }, entity, page),
-      covers: (principal, { roleKey, orgId }, level) =>
-        this.assignmentBound(
-          asPrincipal(principalId.parse(principal)),
-          rt.tenantId,
-          level === 'scope' ? rt.scopeId : null,
-          roleKey,
-          orgId,
-        ),
+      covers: (principal, roleKey, level) =>
+        this.assignmentBound(asPrincipal(principalId.parse(principal)), rt.tenantId, level === 'scope' ? rt.scopeId : null, roleKey),
     };
   }
 
@@ -6503,6 +6497,16 @@ export class SqliteScopeHost implements ScopeHost {
         )
         .run(tenantId, subject, relation, object, expiresAt ?? null);
 
+    // #1184: the removal fence, raised in the same transaction as a tenant-level revoke.
+    const raiseFence = (tenantId: string, principal: string, at: string) =>
+      this.directory.prepare(RAISE_MEMBERSHIP_FENCE_SQL).run(tenantId, principal, at);
+    // The tenant-level reads the checker makes, synchronous, for the bound inside a unit.
+    const directoryReader = directoryTenantReader({
+      directory: this.directory,
+      getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
+      clock: () => this.clock(),
+    });
+
     // The EXPLICIT grant: `INSERT OR REPLACE` clears a tombstone, because a re-grant must
     // grant. Provisioning seats with `seatScopeTuple` instead, which never un-revokes
     // (#1659) — keep the two apart.
@@ -6987,12 +6991,21 @@ export class SqliteScopeHost implements ScopeHost {
                 .run(now, subject, relation, `scope:${scopeNode}`).changes,
           );
         } else {
-          changes = this.directory
-            .prepare(
-              `UPDATE _substrat_tenant_tuples SET revoked_at = ?
-               WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-            )
-            .run(now, assignment.node.tenantId, subject, relation, `tenant:${assignment.node.tenantId}`).changes;
+          // One directory transaction (#1184): the revoke, the removal fence — raised even
+          // when nothing was held, so an add still on its way cannot land after this — and
+          // the audit row, which K-21 writes only when something changed.
+          const { tenantId } = assignment.node;
+          this.directory.transaction(() => {
+            changes = this.directory
+              .prepare(
+                `UPDATE _substrat_tenant_tuples SET revoked_at = ?
+                 WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+              )
+              .run(now, tenantId, subject, relation, `tenant:${tenantId}`).changes;
+            raiseFence(tenantId, assignment.principalId, now);
+            if (changes > 0) this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null);
+          })();
+          return;
         }
         if (changes === 0) return; // never assigned, or already revoked — idempotent, unaudited
         this.recordAdmin(
@@ -8584,69 +8597,41 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
       },
       applyMembership: async (actor, change) => {
-        // ONE directory transaction, synchronous throughout (#1184): nothing else on this host
-        // can land between the "removed since" read and the writes, and a failure leaves none.
-        const { tenantId, principal, orgId, roleKey } = change;
-        const subject = `principal:${principal}`;
-        const member = `org:${orgId}`;
-        const role = `role:${roleKey}`;
-        const tenantNode = `tenant:${tenantId}`;
+        // ONE directory transaction, synchronous throughout (#1184): the fence, the bound and
+        // the write. Nothing else on this host lands between them, and a failure leaves none.
+        const { tenantId, principal, roleKey, boundedBy } = change;
         const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
         return this.directory.transaction((): MembershipChangeResult => {
-          requireOrg(tenantId, orgId);
-          if (change.op === 'add') {
-            if (change.unlessRemovedSince) {
-              const removedAt = removalOf(
-                this.directory
-                  .prepare(
-                    `SELECT at, before FROM _substrat_admin_log
-                     WHERE tenant_id = ? AND action IN (SELECT value FROM json_each(?)) AND at >= ?`,
-                  )
-                  .all(tenantId, JSON.stringify(MEMBERSHIP_REMOVAL_ACTIONS), change.unlessRemovedSince) as {
-                  at: string;
-                  before: string | null;
-                }[],
-                principal,
-              );
-              if (removedAt) return { applied: false, removedAt };
-            }
-            writeTenantTuple(tenantId, subject, 'member', member);
-            this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
-            writeTenantTuple(tenantId, subject, role, tenantNode);
-            this.recordAdmin(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment);
-            return { applied: true };
-          }
-          const now = new Date().toISOString();
-          const revoke = this.directory.prepare(
-            `UPDATE _substrat_tenant_tuples SET revoked_at = ?
-             WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-          );
-          revoke.run(now, tenantId, subject, role, tenantNode);
-          revoke.run(now, tenantId, subject, 'member', member);
-          // Recorded whether or not anything was held: a pending add must see this removal.
-          this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null);
-          this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null);
+          const fence = this.directory
+            .prepare(MEMBERSHIP_FENCE_SINCE_SQL)
+            .get(tenantId, principal, change.unlessRemovedSince) as { removed_at: string } | undefined;
+          if (fence) return { applied: false, removedAt: fence.removed_at };
+          const role = directoryReader.getRole(tenantId, roleKey);
+          if (!role) return { applied: false, unknownRole: roleKey };
+          const bound = tenantCoverage(directoryReader, tenantId, boundedBy, role.permissions);
+          if (!bound.covered) return { applied: false, missing: bound.missing };
+          writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`);
+          this.recordAdmin(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment);
           return { applied: true };
         })();
       },
       removeMember: async (actor, tenantId, principal, orgId) => {
         requireOrg(tenantId, orgId);
         // Tombstone (K-21), never DELETE. Guarded on `revoked_at IS NULL` so a
-        // repeat revoke neither moves the timestamp nor writes a second audit row.
-        const info = this.directory
-          .prepare(
-            `UPDATE _substrat_tenant_tuples SET revoked_at = ?
-             WHERE tenant_id = ? AND subject = ? AND relation = 'member' AND object = ?
-               AND revoked_at IS NULL`,
-          )
-          .run(
-            new Date().toISOString(),
-            tenantId,
-            `principal:${principal}`,
-            `org:${orgId}`,
-          );
-        if (info.changes === 0) return; // never a member, or already revoked
-        this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null);
+        // repeat revoke neither moves the timestamp nor writes a second audit row. One
+        // transaction with the removal fence (#1184), which a no-op raises too.
+        const now = new Date().toISOString();
+        this.directory.transaction(() => {
+          const info = this.directory
+            .prepare(
+              `UPDATE _substrat_tenant_tuples SET revoked_at = ?
+               WHERE tenant_id = ? AND subject = ? AND relation = 'member' AND object = ?
+                 AND revoked_at IS NULL`,
+            )
+            .run(now, tenantId, `principal:${principal}`, `org:${orgId}`);
+          raiseFence(tenantId, principal, now);
+          if (info.changes > 0) this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null);
+        })();
       },
       listMembers: async (actor, tenantId, orgId, options) => {
         requireOrg(tenantId, orgId);
@@ -9415,6 +9400,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_entitlements', // per-tenant SKU flags
           'orgs', // K-22 org records
           '_substrat_system_switches', // #1674: the schedule switch's record, per scope
+          '_substrat_membership_fences', // #1184: the latest removal, per principal
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {
