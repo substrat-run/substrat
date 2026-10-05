@@ -114,6 +114,29 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
         return event.id;
       }, 'routed');
     });
+
+    it('two views with two causes, their writes interleaved across awaits: each row carries its own', async () => {
+      // A null cause beside a non-null one cannot catch two causes trading places, so both are
+      // set here. Both views are made before either's admin is first read (it is built lazily),
+      // and each is written through twice.
+      const e1 = ulid();
+      const e2 = ulid();
+      const a = host.attributed!({ principal: alice, tenantId: t }, { causedBy: e1 });
+      const b = host.attributed!({ principal: alice, tenantId: t }, { causedBy: e2 });
+      const [a1, a2, b1, b2] = [tagOf('a1'), tagOf('a2'), tagOf('b1'), tagOf('b2')];
+      const write = (view: ScopeHost, slug: string) =>
+        view.admin.createOrg(staff, { id: orgId.parse(ulid()), tenantId: t, slug, name: slug });
+
+      const first = write(a, a1); // A starts…
+      await write(b, b1); // …B writes while A's write is in flight…
+      await first;
+      await write(a, a2); // …A writes again…
+      await write(b, b2); // …and B again.
+
+      const created = await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 });
+      const causeOf = (slug: string) => created.find((r) => (r.after as { slug?: string } | null)?.slug === slug)?.causedBy;
+      expect([a1, a2, b1, b2].map(causeOf)).toEqual([e1, e1, e2, e2]);
+    });
   });
 }
 
