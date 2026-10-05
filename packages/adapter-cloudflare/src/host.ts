@@ -841,6 +841,8 @@ interface ControlPlaneStub {
   restoreSwitchRecord(
     key: { kind: SwitchKind; tenantId: string; scopeId: string; key: string; operationId: string },
     prior: SwitchRecordPrior,
+    /** #2045: also clear the call's own owed mark, in the same directory transaction. */
+    clearOwed?: boolean,
   ): Promise<void>;
   listSystemSwitches(filter?: SystemSwitchRecordFilter): Promise<SystemSwitchRecordRow[]>;
   switchRecordsOf(kind: SwitchKind, tenantId: string, scopeId: string): Promise<[string, 'on' | 'off'][]>;
@@ -5629,17 +5631,24 @@ export class CloudflareScopeHost implements ScopeHost {
       // would switch the subject off the day it is installed; left `on`, the next reconcile of
       // a wiped scope would leave it running. Retried once; a failure of both lands on the
       // outcome row as `recordError`, and the call says so.
+      //
+      // The scope confirmed this call's move (or that there was nothing to move), so its mark goes.
+      // Held nothing, it goes WITH the undo, in one directory transaction: the row put back carries
+      // the prior call's older id, and no later re-assert confirms under a fence older than this
+      // call's mark. An undo that fails twice leaves the record AND the mark this call's, and the
+      // next re-assert confirms both under it. Held, a failed clear is not the call's: the mark only
+      // costs the next re-assert one idempotent move under this same record.
       let recordError: string | null = null;
+      let owedError: string | null = null;
       if (!outcome.held) {
-        const undo = () => this.cp.restoreSwitchRecord(record, prior);
+        const undo = () => this.cp.restoreSwitchRecord(record, prior, true);
         recordError = await undo().then(
           () => null,
           () => undo().then(() => null, errorOf),
         );
+      } else {
+        owedError = await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, operationId).then(() => null, errorOf);
       }
-      // The scope confirmed this call's move (or that there was nothing to move), so its mark goes.
-      // A failure here is not the call's: the mark only costs the next re-assert one idempotent move.
-      const owedError = await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, operationId).then(() => null, errorOf);
       await this.recordAdmin(actor, action, target, null, {
         ...base,
         phase: outcome.held ? 'applied' : 'refused',

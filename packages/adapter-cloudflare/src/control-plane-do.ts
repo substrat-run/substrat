@@ -3811,12 +3811,22 @@ export class ControlPlaneDO extends DurableObject {
     });
   }
 
-  /** Put a row back as the switch call's record write found it — the move that followed it failed. */
+  /**
+   * Put a row back as the switch call's record write found it — the move that followed it held
+   * nothing. #2045: with `clearOwed`, the call's own owed mark goes in the same transaction. The
+   * row put back carries the PRIOR call's operation id, which is the fence every later re-assert
+   * confirms under, and a mark newer than that fence is never cleared by one; so a mark left behind
+   * by a separate clear that failed would keep the scope un-receipted on every pass.
+   */
   restoreSwitchRecord(
     key: { kind: SwitchKind; tenantId: string; scopeId: string; key: string; operationId: string },
     prior: SwitchRecordPrior,
+    clearOwed = false,
   ): void {
-    restoreSwitchRecord(this.kernelSql, key, prior);
+    this.ctx.storage.transactionSync(() => {
+      restoreSwitchRecord(this.kernelSql, key, prior);
+      if (clearOwed) clearSwitchOwed(this.kernelSql, key.kind, key.tenantId, key.scopeId, key.key, key.operationId);
+    });
   }
 
   /**
