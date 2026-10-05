@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
@@ -395,6 +397,16 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(finds.charged).toBeGreaterThanOrEqual(10_000 * CALL_COST);
   });
 
+  it('a page that names one stream four hundred times joins nothing past the memory bound', async () => {
+    // 96 references to a 1 MiB stream held ~100 MiB of ArrayBuffers before any budget looked
+    // (Codex #2062 r3): the join was sized by the references, not by what was decoded.
+    const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents [${'5 0 R '.repeat(400)}] >>`;
+    const file = build([CATALOG, PAGES, page, HELVETICA, stream('', `BT /F1 9 Tf (once) Tj ET ${' '.repeat(MEMORY_MIB)}`)]).bytes;
+    expect(file.length).toBeLessThan(2 * MEMORY_MIB);
+    expect(await peakMemory(file)).toBeLessThan(96 * MEMORY_MIB);
+    expect(await run(file)).toMatchObject({ status: 'empty' });
+  });
+
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
     // A fixed-width placeholder, so pointing it somewhere moves no byte offset in the file.
     const PLACEHOLDER = '/Prev 0000000000';
@@ -731,6 +743,35 @@ async function longestHold(body: Uint8Array, extractor: AttachmentExtractor = pd
     clearInterval(tick);
   }
   return Math.max(worst, performance.now() - last);
+}
+
+// A collector to call, so a peak is measured from a settled heap rather than from garbage.
+setFlagsFromString('--expose-gc');
+const collect = runInNewContext('gc') as () => void;
+const MEMORY_MIB = 1024 * 1024;
+
+/**
+ * The most memory held while `body` was extracted, over a collected baseline: heap plus
+ * external (ArrayBuffers), sampled every millisecond beside the extraction, start to finish.
+ */
+async function peakMemory(body: Uint8Array, extractor: AttachmentExtractor = pdf, contentType = 'application/pdf'): Promise<number> {
+  const held = () => {
+    const m = process.memoryUsage();
+    return m.heapUsed + m.external;
+  };
+  collect();
+  const base = held();
+  let peak = base;
+  const tick = setInterval(() => {
+    peak = Math.max(peak, held());
+  }, 1);
+  try {
+    await extractor.extract({ body, contentType, filename: 'f', maxTextBytes: 512 * 1024, signal: { aborted: false } });
+    peak = Math.max(peak, held());
+  } finally {
+    clearInterval(tick);
+  }
+  return peak - base;
 }
 
 /** Big-endian 4 bytes. */

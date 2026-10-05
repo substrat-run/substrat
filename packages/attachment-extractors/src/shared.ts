@@ -209,6 +209,41 @@ export async function inflateChunks(
  */
 export const COLLECT_FACTOR = 2;
 
+/** Raised when an extraction would retain more than its memory bound. */
+export class RetainedBoundExceeded extends ExtractionBoundExceeded {}
+
+/**
+ * `Pace`'s memory twin: what one extraction may hold at once (#2062 r3). Every allocation that
+ * can grow with the input — a cached stream, a concatenation, a parsed object, a string kept
+ * in a map — `take`s its size BEFORE it is made, and what is freed again is `give`n back. Past
+ * the bound the allocation is refused, never made: the extraction ends there, truncated or
+ * failed exactly as a spent time budget ends it. Allocations not charged here are each bounded
+ * by a named constant (a token, a stream, the text collected) instead.
+ */
+export class Retained {
+  private held = 0;
+
+  constructor(readonly limit: number) {}
+
+  /** Bytes held now. */
+  get bytes(): number {
+    return this.held;
+  }
+
+  /** Reserve `bytes` before allocating them; throws when that would pass the bound. */
+  take(bytes: number): void {
+    if (this.held + bytes > this.limit) {
+      throw new RetainedBoundExceeded('the extraction would retain more than its memory bound');
+    }
+    this.held += bytes;
+  }
+
+  /** Return `bytes` taken earlier, once what they were taken for is no longer held. */
+  give(bytes: number): void {
+    this.held = Math.max(0, this.held - bytes);
+  }
+}
+
 /** A per-file inflate budget, shared by every part or stream one extraction reads. */
 export interface InflateBudget {
   remaining: number;

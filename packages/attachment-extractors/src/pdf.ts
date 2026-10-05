@@ -47,6 +47,8 @@ import { EXTRACTION_STRIDE, type ExtractionSignal } from '@substrat-run/kernel';
 import {
   CALL_COST,
   COLLECT_FACTOR,
+  Retained,
+  RetainedBoundExceeded,
   ExtractionBoundExceeded,
   MalformedInput,
   Pace,
@@ -82,6 +84,14 @@ const CMAP_SPACES_MAX = 256;
 const CMAP_DST_MAX = 512;
 /** How far back from `obj` the scan looks for `N G `: two numbers and the space around them. */
 const OBJ_HEADER_SPAN = 48;
+/**
+ * What one PDF extraction may hold at once, as a multiple of its inflate budget (`Retained`):
+ * the decoded streams themselves (at most one inflate budget), and as much again for what is
+ * built from them — parsed objects, the cross-reference, CMaps, fonts, joined page content.
+ */
+export const PDF_RETAINED_FACTOR = 2;
+/** And a base the structures need whatever the inflate budget: fonts, the cross-reference, objects. */
+export const PDF_RETAINED_BASE = 4 * 1024 * 1024;
 /** Whitespace read between a stream's declared end and its `endstream`. */
 const STREAM_END_SPAN = 64;
 
@@ -741,6 +751,7 @@ class PdfDocument {
     readonly buf: Uint8Array,
     readonly budget: InflateBudget,
     readonly pace: Pace,
+    readonly retained: Retained,
   ) {}
 
   /**
@@ -1521,7 +1532,7 @@ async function interpret(r: Reading, content: Uint8Array, resources: PdfDict | n
 }
 
 /** A page's content: one stream or an array of them, read as one. */
-async function pageContent(doc: PdfDocument, page: PdfDict): Promise<Decoded | null> {
+async function pageContent(doc: PdfDocument, page: PdfDict): Promise<(Decoded & { readonly held: number }) | null> {
   const c = await doc.resolve(page.get('Contents'));
   const parts = Array.isArray(c) ? c : [c];
   const pieces: Uint8Array[] = [];
@@ -1537,7 +1548,12 @@ async function pageContent(doc: PdfDocument, page: PdfDict): Promise<Decoded | n
     if ((exhausted = d.exhausted)) break;
   }
   if (pieces.length === 0) return null;
-  return { data: concatBytes(pieces), exhausted };
+  if (pieces.length === 1) return { data: pieces[0]!, exhausted, held: 0 };
+  // Joining is a new allocation of every part's size — a part named twice is joined twice —
+  // so it is charged before it is made, and given back once the page is read (#2062 r3).
+  const held = pieces.reduce((n, p) => n + p.length, 0);
+  doc.retained.take(held);
+  return { data: concatBytes(pieces), exhausted, held };
 }
 
 /** Walk the page tree in order, drawing each page: depth- and node-bounded, ancestors refused. */
@@ -1562,7 +1578,11 @@ async function readPages(r: Reading, node: PdfValue, inherited: PdfDict | null, 
   const content = await pageContent(r.doc, dict).catch(onlyDamage(null));
   if (!content) return;
   // A damaged page keeps the text read before the damage; the next page still reads.
-  await interpret(r, content.data, resources, 0).catch(onlyDamage(undefined));
+  try {
+    await interpret(r, content.data, resources, 0).catch(onlyDamage(undefined));
+  } finally {
+    r.doc.retained.give(content.held);
+  }
   emit(r, '\n\n');
   if (content.exhausted) throw new Enough();
 }
@@ -1580,7 +1600,7 @@ export async function pdfExtract(
 ): Promise<{ text: string; truncated: boolean }> {
   if (latin1(body.subarray(0, 1024)).indexOf('%PDF-') < 0) throw new MalformedInput('not a PDF file');
   const pace = new Pace(signal);
-  const doc = new PdfDocument(body, { remaining: maxInflatedBytes }, pace);
+  const doc = new PdfDocument(body, { remaining: maxInflatedBytes }, pace, new Retained(maxInflatedBytes * PDF_RETAINED_FACTOR + PDF_RETAINED_BASE));
   let root: PdfDict | null = null;
   const refuseEncrypted = (): void => {
     if (doc.trailer.has('Encrypt')) throw new Refusal('the PDF is encrypted, and encrypted PDFs are not read');
@@ -1614,7 +1634,9 @@ export async function pdfExtract(
   try {
     await readPages(r, root.get('Pages') ?? null, null, 0);
   } catch (err) {
-    if (!(err instanceof Enough)) throw err;
+    // A spent memory bound while reading pages ends the reading as the text budget does: what
+    // was read is kept, marked cut. Before the pages, it fails the file (`extractWith`).
+    if (!(err instanceof Enough) && !(err instanceof RetainedBoundExceeded)) throw err;
     truncated = true;
   }
   return { text: r.out.join(''), truncated };
