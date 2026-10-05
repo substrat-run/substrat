@@ -75,6 +75,8 @@ const TOKEN_MAX = EXTRACTION_STRIDE;
 const OPERANDS_MAX = 256;
 /** Codes a CMap may map, across every range in it. */
 const CMAP_CODES_MAX = 1 << 17;
+/** How far back from `obj` the scan looks for `N G `: two numbers and the space around them. */
+const OBJ_HEADER_SPAN = 48;
 
 // -- values ---------------------------------------------------------------------------
 
@@ -1007,16 +1009,20 @@ async function scanObjects(doc: PdfDocument): Promise<void> {
   const OBJ = ascii('obj');
   const streams: number[] = [];
   for (let at = await findBytes(buf, OBJ, 0, doc.pace); at >= 0; at = await findBytes(buf, OBJ, at + 3, doc.pace)) {
-    // Back over `N G ` before `obj`.
+    // Back over `N G ` before `obj` — never further than `OBJ_HEADER_SPAN`: a header is two
+    // short numbers, and a digit run longer than that is not one, however long it goes on.
+    const floor = Math.max(0, at - OBJ_HEADER_SPAN);
+    doc.pace.charge(OBJ_HEADER_SPAN);
     let k = at - 1;
-    while (k >= 0 && isWhite(buf[k]!)) k -= 1;
+    while (k >= floor && isWhite(buf[k]!)) k -= 1;
     const genEnd = k + 1;
-    while (k >= 0 && buf[k]! >= 48 && buf[k]! <= 57) k -= 1;
+    while (k >= floor && buf[k]! >= 48 && buf[k]! <= 57) k -= 1;
     if (k + 1 === genEnd) continue;
-    while (k >= 0 && isWhite(buf[k]!)) k -= 1;
+    while (k >= floor && isWhite(buf[k]!)) k -= 1;
     const numEnd = k + 1;
-    while (k >= 0 && buf[k]! >= 48 && buf[k]! <= 57) k -= 1;
-    if (k + 1 === numEnd || (k >= 0 && isRegular(buf[k]!))) continue;
+    while (k >= floor && buf[k]! >= 48 && buf[k]! <= 57) k -= 1;
+    // Stopped at the floor still inside the number: not a header this scan reads.
+    if (k + 1 === numEnd || k < floor || (k >= 0 && isRegular(buf[k]!))) continue;
     doc.addEntry(Number(latin1(buf.subarray(k + 1, numEnd))), { type: 1, offset: k + 1 }, true);
   }
   for (const [num] of doc.xref) {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
   runAttachmentExtractor,
+  type AttachmentExtractor,
   type ExtractionOutcome,
   type ExtractionSignal,
 } from '@substrat-run/kernel';
@@ -348,6 +349,17 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     }
   });
 
+  it('the object scan never walks back over a digit run longer than a header — the timer is never held', async () => {
+    // No xref, so the scan reads the file: an 8 MiB digit run ends at `obj`. It is not a header,
+    // and reading back over it whole held the thread 433 ms (Codex #2062 r2).
+    const file = cat('%PDF-1.7\n', '9'.repeat(8 * 1024 * 1024), ' 0 obj\n<< >>\nendobj\n');
+    expect(await longestHold(file)).toBeLessThan(150);
+    expect((await settles(file)).status).toBe('failed');
+    // The twin: a header of ordinary width is still found by the scan.
+    const { bytes, xrefAt } = onePage('BT /F1 9 Tf (scanned header) Tj ET');
+    expect(textOf(await run(bytes.subarray(0, xrefAt)))).toBe('scanned header');
+  });
+
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
     // A fixed-width placeholder, so pointing it somewhere moves no byte offset in the file.
     const PLACEHOLDER = '/Prev 0000000000';
@@ -543,6 +555,26 @@ async function abortLatency(body: Uint8Array): Promise<number> {
   const t0 = performance.now();
   await extracting;
   return performance.now() - t0;
+}
+
+/**
+ * The longest the thread was held while `body` was extracted: the widest gap between ticks of a
+ * 1 ms interval running beside it, start to finish — not only the first few milliseconds.
+ */
+async function longestHold(body: Uint8Array, extractor: AttachmentExtractor = pdf, contentType = 'application/pdf'): Promise<number> {
+  let last = performance.now();
+  let worst = 0;
+  const tick = setInterval(() => {
+    const now = performance.now();
+    worst = Math.max(worst, now - last);
+    last = now;
+  }, 1);
+  try {
+    await extractor.extract({ body, contentType, filename: 'f', maxTextBytes: 1 << 30, signal: { aborted: false } });
+  } finally {
+    clearInterval(tick);
+  }
+  return Math.max(worst, performance.now() - last);
 }
 
 /** Big-endian 4 bytes. */
