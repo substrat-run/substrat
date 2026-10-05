@@ -202,6 +202,13 @@ describe('bounds: the walk ends, whatever the schedule says', () => {
     expect(Date.parse(due)).toBe(instantOf('Europe/Stockholm', lastMonday * DAY + (12 * 60 + 1) * MINUTE));
   });
 
+  it('the first ten years are walked exactly: half a year of night windows loses the spring hour', () => {
+    // 26 Sundays of 01:00–04:00 in Stockholm, one of them the night the clocks go forward.
+    // Counted a week at a time by wall clock it would be 78 h; counted for real it is 77.
+    const night: BusinessSchedule = { timezone: 'Europe/Stockholm', weekly: { sun: [{ open: '01:00', close: '04:00' }] } };
+    expect(businessMsBetween(night, '2026-01-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z')).toBe(77 * HOUR);
+  });
+
   it('a schedule with no open time, or an unknown zone, is refused rather than walked', () => {
     expect(addBusinessMs({ timezone: 'UTC', weekly: {} }, start, HOUR)).toBeNull();
     expect(addBusinessMs({ timezone: 'UTC', weekly: { mon: [] } }, start, HOUR)).toBeNull();
