@@ -224,13 +224,16 @@ async function bounded(
   roleKey: string,
   as: 'inviter' | 'remover',
 ): Promise<Refused | null> {
+  // Read the way the unit's own answer is, so one `refusalOf` words both.
+  let refusal: Exclude<MembershipChangeResult, { applied: true }> | null;
   try {
     const bound = await scope.covers(who, roleKey, 'tenant');
-    return bound.covered ? null : refused(`the ${as} ${who} no longer holds ${bound.missing.join(', ')}, which '${roleKey}' confers`);
+    refusal = bound.covered ? null : { applied: false, missing: bound.missing };
   } catch (err) {
-    if (isUnknownRoleError(err, roleKey)) return refused(`no such role in this tenant: ${roleKey}`);
-    throw err;
+    if (!isUnknownRoleError(err, roleKey)) throw err;
+    refusal = { applied: false, unknownRole: roleKey };
   }
+  return refusal && { refused: refusalOf(refusal, { principal: who, roleKey }, as, who) };
 }
 
 /** Everything that decides whether an add may be effected. Reads only. */

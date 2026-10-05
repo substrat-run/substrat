@@ -458,24 +458,13 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
               : []
             : await reader.tenantTuples(node.tenantId, s.ref, '');
           for (const row of rows) {
-            if (row.object !== nodeObj.obj || !live(row, now)) continue;
-            if (row.relation.startsWith('role:')) {
-              const role = await getRole(row.relation.slice('role:'.length));
-              for (const p of role?.permissions ?? []) held.add(p);
-            } else if (row.relation.startsWith('granted:')) {
-              held.add(row.relation.slice('granted:'.length));
-            }
+            const grant = heldBy(row, nodeObj.obj, now);
+            if (grant?.role !== undefined) for (const p of (await getRole(grant.role))?.permissions ?? []) held.add(p);
+            else if (grant) held.add(grant.permission);
           }
         }
       }
-
-      // Order follows the request so a refusal reads predictably; deduplicated so a caller
-      // passing the same key twice does not see it twice.
-      const missing: PermissionKey[] = [];
-      for (const p of required) {
-        if (!held.has(p) && !missing.includes(p)) missing.push(p);
-      }
-      return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
+      return coverageOf(required, held);
     },
 
     check,
@@ -514,23 +503,50 @@ export function tenantCoverage(
   if (required.length === 0) return { covered: true, missing: [] };
   const now = reader.now();
   const tenantObj = `tenant:${tenantId}`;
-  const self = `principal:${principal}`;
-  // Rule 4, as `subjectsOf` has it: the principal and its live orgs.
-  const subjects = [self];
-  for (const m of reader.tenantTuples(tenantId, self, 'member')) {
-    if (m.relation === 'member' && live(m, now)) subjects.push(m.object);
-  }
+  const roles = new Map<string, readonly string[]>();
+  const permissionsOf = (key: string): readonly string[] => {
+    let permissions = roles.get(key);
+    if (!permissions) roles.set(key, (permissions = reader.getRole(tenantId, key)?.permissions ?? []));
+    return permissions;
+  };
   const held = new Set<string>();
-  for (const ref of subjects) {
-    for (const row of reader.tenantTuples(tenantId, ref, '')) {
-      if (row.object !== tenantObj || !live(row, now)) continue;
-      if (row.relation.startsWith('role:')) {
-        for (const p of reader.getRole(tenantId, row.relation.slice('role:'.length))?.permissions ?? []) held.add(p);
-      } else if (row.relation.startsWith('granted:')) {
-        held.add(row.relation.slice('granted:'.length));
-      }
+  const fold = (rows: readonly PermissionTupleRow[]) => {
+    for (const row of rows) {
+      const grant = heldBy(row, tenantObj, now);
+      if (grant?.role !== undefined) for (const p of permissionsOf(grant.role)) held.add(p);
+      else if (grant) held.add(grant.permission);
     }
+  };
+  // Rule 4, as `subjectsOf` has it: the principal's own rows, then each live org's — one read
+  // of the principal yields both its memberships and its own grants.
+  const own = reader.tenantTuples(tenantId, `principal:${principal}`, '');
+  fold(own);
+  for (const m of own) {
+    if (m.relation === 'member' && live(m, now)) fold(reader.tenantTuples(tenantId, m.object, ''));
   }
+  return coverageOf(required, held);
+}
+
+/**
+ * What one tuple row contributes at `nodeObj` — a role to expand, a permission held directly, or
+ * nothing — for `covers` and `tenantCoverage` alike, so the two read a row the same way.
+ */
+function heldBy(
+  row: PermissionTupleRow,
+  nodeObj: string,
+  now: string,
+): { role: string; permission?: undefined } | { role?: undefined; permission: string } | undefined {
+  if (row.object !== nodeObj || !live(row, now)) return undefined;
+  if (row.relation.startsWith('role:')) return { role: row.relation.slice('role:'.length) };
+  if (row.relation.startsWith('granted:')) return { permission: row.relation.slice('granted:'.length) };
+  return undefined;
+}
+
+/**
+ * `required` against `held`. Order follows the request so a refusal reads predictably;
+ * deduplicated so a caller passing the same key twice does not see it twice.
+ */
+function coverageOf(required: readonly PermissionKey[], held: ReadonlySet<string>): Coverage {
   const missing: PermissionKey[] = [];
   for (const p of required) {
     if (!held.has(p) && !missing.includes(p)) missing.push(p);

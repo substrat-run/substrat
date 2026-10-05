@@ -96,15 +96,14 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
 export function directoryTenantReader(
   deps: Pick<CheckerDeps, 'directory' | 'getRole' | 'clock'>,
 ): TenantDirectoryReader {
+  let tuplesStmt: Database.Statement | undefined;
   return {
     now: deps.clock ?? (() => new Date().toISOString()),
     tenantTuples: (tenantId, subject, relationPrefix) =>
-      deps.directory
-        .prepare(
-          `SELECT ${TUPLE_COLUMNS} FROM _substrat_tenant_tuples
-           WHERE tenant_id = ? AND subject = ? AND relation LIKE ?`,
-        )
-        .all(tenantId, subject, `${relationPrefix}%`) as PermissionTupleRow[],
+      (tuplesStmt ??= deps.directory.prepare(
+        `SELECT ${TUPLE_COLUMNS} FROM _substrat_tenant_tuples
+         WHERE tenant_id = ? AND subject = ? AND relation LIKE ?`,
+      )).all(tenantId, subject, `${relationPrefix}%`) as PermissionTupleRow[],
     getRole: (tenantId, key) => deps.getRole(tenantId, key),
   };
 }

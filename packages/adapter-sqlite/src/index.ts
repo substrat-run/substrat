@@ -6502,25 +6502,28 @@ export class SqliteScopeHost implements ScopeHost {
         )
         .run(tenantId, subject, relation, object, expiresAt ?? null);
 
-    // #1184: the removal fence, raised in the same transaction as a tenant-level revoke.
-    const raiseFence = (tenantId: string, principal: string, at: string) =>
-      this.directory.prepare(RAISE_MEMBERSHIP_FENCE_SQL).run(tenantId, principal, at);
-    // A tenant-level unassign, for inside a directory transaction (#1184): the tombstone (K-21),
-    // the removal fence — raised even when nothing was held, so an add still on its way cannot
-    // land after this — and the audit row, which K-21 writes only when something changed.
-    const revokeTenantRoleAndFence = (actor: PlatformActorId, assignment: RoleAssignment): boolean => {
-      const { tenantId } = assignment.node;
+    // #1184: a tenant-level removal, for inside a directory transaction — the tombstone
+    // (K-21), the removal fence, raised even when nothing was held so an add still on its way
+    // cannot land after this, and the audit row (`audit`), which K-21 writes only when
+    // something changed. The shape of the Durable-Object adapter's `revokeAndFence`.
+    let revokeStmt: Database.Statement | undefined;
+    let fenceStmt: Database.Statement | undefined;
+    const revokeAndFence = (tenantId: string, principal: string, relation: string, object: string, audit: () => void): boolean => {
       const now = new Date().toISOString();
       const changed =
-        this.directory
-          .prepare(
-            `UPDATE _substrat_tenant_tuples SET revoked_at = ?
-             WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-          )
-          .run(now, tenantId, `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `tenant:${tenantId}`).changes > 0;
-      raiseFence(tenantId, assignment.principalId, now);
-      if (changed) this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null);
+        (revokeStmt ??= this.directory.prepare(
+          `UPDATE _substrat_tenant_tuples SET revoked_at = ?
+           WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+        )).run(now, tenantId, `principal:${principal}`, relation, object).changes > 0;
+      (fenceStmt ??= this.directory.prepare(RAISE_MEMBERSHIP_FENCE_SQL)).run(tenantId, principal, now);
+      if (changed) audit();
       return changed;
+    };
+    const revokeTenantRoleAndFence = (actor: PlatformActorId, assignment: RoleAssignment): boolean => {
+      const { tenantId } = assignment.node;
+      return revokeAndFence(tenantId, assignment.principalId, `role:${assignment.roleKey}`, `tenant:${tenantId}`, () =>
+        this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
+      );
     };
     // The tenant-level reads the checker makes, synchronous, for the bound inside a unit.
     const directoryReader = directoryTenantReader({
@@ -8620,21 +8623,14 @@ export class SqliteScopeHost implements ScopeHost {
       },
       removeMember: async (actor, tenantId, principal, orgId) => {
         requireOrg(tenantId, orgId);
-        // Tombstone (K-21), never DELETE. Guarded on `revoked_at IS NULL` so a
-        // repeat revoke neither moves the timestamp nor writes a second audit row. One
-        // transaction with the removal fence (#1184), which a no-op raises too.
-        const now = new Date().toISOString();
-        this.directory.transaction(() => {
-          const info = this.directory
-            .prepare(
-              `UPDATE _substrat_tenant_tuples SET revoked_at = ?
-               WHERE tenant_id = ? AND subject = ? AND relation = 'member' AND object = ?
-                 AND revoked_at IS NULL`,
-            )
-            .run(now, tenantId, `principal:${principal}`, `org:${orgId}`);
-          raiseFence(tenantId, principal, now);
-          if (info.changes > 0) this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null);
-        })();
+        // Tombstone (K-21), never DELETE: a repeat revoke neither moves the timestamp nor writes
+        // a second audit row. One transaction with the removal fence (#1184), which a no-op
+        // raises too.
+        this.directory.transaction(() =>
+          revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, () =>
+            this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null),
+          ),
+        )();
       },
       listMembers: async (actor, tenantId, orgId, options) => {
         requireOrg(tenantId, orgId);

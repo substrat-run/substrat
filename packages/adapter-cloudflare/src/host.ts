@@ -5786,7 +5786,6 @@ export class CloudflareScopeHost implements ScopeHost {
       unassignRole: async (actor, assignment: RoleAssignment) => {
         // Tombstone (K-21) — the checker skips revoked rows. A no-op returns false so
         // a repeat unassign stays silent (no second audit row, no needless fan-out).
-        const subject = `principal:${assignment.principalId}`;
         const relation = `role:${assignment.roleKey}`;
         const { tenantId, scopeId } = assignment.node;
         if (!scopeId) {
@@ -5803,7 +5802,12 @@ export class CloudflareScopeHost implements ScopeHost {
           if (changed) await this.fanOut(tenantId);
           return;
         }
-        const changed = await this.scopeStub(scopeId).revokeTuple(subject, relation, `scope:${scopeId}`, new Date().toISOString());
+        const changed = await this.scopeStub(scopeId).revokeTuple(
+          `principal:${assignment.principalId}`,
+          relation,
+          `scope:${scopeId}`,
+          new Date().toISOString(),
+        );
         if (!changed) return;
         await this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId }, assignment, null);
       },

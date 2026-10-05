@@ -8,6 +8,7 @@ import {
   RAISE_MEMBERSHIP_FENCE_SQL,
   tenantCoverage,
   type MembershipChangeResult,
+  type TenantDirectoryReader,
   IMPERSONATION_COLUMNS,
   IMPERSONATION_DDL,
   impersonationByIdQuery,
@@ -3092,6 +3093,13 @@ export class ControlPlaneDO extends DurableObject {
       .toArray() as unknown as OrgRow[];
   }
 
+  /** The tenant-level reads, synchronous, for a bound asked inside one of this object's units (#1184). */
+  private readonly directoryReader: TenantDirectoryReader = {
+    now: () => new Date().toISOString(),
+    tenantTuples: (tenantId, subject, prefix) => this.tenantTuples(tenantId, subject, prefix),
+    getRole: (tenantId, key) => this.getRole(tenantId, key),
+  };
+
   /**
    * A membership change as ONE DO unit (#1184) — `HostAdmin.applyMembership`. Synchronous, so
    * no other request into this object runs between its reads and its writes: an add's removal
@@ -3116,19 +3124,10 @@ export class ControlPlaneDO extends DurableObject {
       }
       const role = this.getRole(tenantId, roleKey);
       if (!role) return { applied: false, unknownRole: roleKey };
-      const bound = tenantCoverage(
-        {
-          now: () => new Date().toISOString(),
-          tenantTuples: (t, subject, prefix) => this.tenantTuples(t, subject, prefix),
-          getRole: (t, key) => this.getRole(t, key),
-        },
-        tenantId,
-        boundedBy,
-        role.permissions,
-      );
+      const bound = tenantCoverage(this.directoryReader, tenantId, boundedBy, role.permissions);
       if (!bound.covered) return { applied: false, missing: bound.missing };
       if (change.op === 'remove') {
-        return { applied: true, changed: this.revokeFencing(tenantId, principal, `role:${roleKey}`, `tenant:${tenantId}`, row) };
+        return { applied: true, changed: this.revokeAndFenceIn(tenantId, principal, `role:${roleKey}`, `tenant:${tenantId}`, row) };
       }
       this.writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`, null);
       this.recordAdmin(row);
@@ -3150,11 +3149,11 @@ export class ControlPlaneDO extends DurableObject {
     object: string,
     row: AdminEntryInput,
   ): boolean {
-    return this.ctx.storage.transactionSync(() => this.revokeFencing(tenantId, principal, relation, object, row));
+    return this.ctx.storage.transactionSync(() => this.revokeAndFenceIn(tenantId, principal, relation, object, row));
   }
 
   /** `revokeAndFence`'s writes, for inside a transaction a caller already holds. */
-  private revokeFencing(tenantId: string, principal: string, relation: string, object: string, row: AdminEntryInput): boolean {
+  private revokeAndFenceIn(tenantId: string, principal: string, relation: string, object: string, row: AdminEntryInput): boolean {
     const changed = this.revokeTenantTuple(tenantId, `principal:${principal}`, relation, object, row.at);
     this.sql.exec(RAISE_MEMBERSHIP_FENCE_SQL, tenantId, principal, row.at);
     if (changed) this.recordAdmin(row);
