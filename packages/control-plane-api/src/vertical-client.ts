@@ -261,6 +261,12 @@ export interface ProvisionInstanceInput {
   switchedOff?: ModuleId[];
   /** Of `switchedOff`, the modules held on this scope only by a tenant-level grant (#1823). */
   tenantHeld?: ModuleId[];
+  /** #2029: the peers the record holds OFF here, switched off in the same unit; a vertical that
+   *  predates the field ignores it. And of those, the ones held only by a tenant grant (#2030). */
+  switchedOffPeers?: string[];
+  tenantHeldPeers?: string[];
+  /** #2045: each recorded-off subject's fence, by tuple subject. A vertical that predates it ignores it. */
+  switchFences?: Record<string, string>;
 }
 
 export interface ConfigureInstanceInput {
@@ -365,6 +371,11 @@ export interface ReconcileInstanceInput {
   switchedOff?: ModuleId[];
   /** Of `switchedOff`, the modules held only by a tenant-level grant (#1823) — as at provision. */
   tenantHeld?: ModuleId[];
+  /** #2029: the recorded-off peers, and those held only by a tenant grant — as at provision. */
+  switchedOffPeers?: string[];
+  tenantHeldPeers?: string[];
+  /** #2045: each recorded-off subject's fence, by tuple subject. A vertical that predates it ignores it. */
+  switchFences?: Record<string, string>;
 }
 
 /**
@@ -780,6 +791,8 @@ export class VerticalClient {
     to: 'on' | 'off';
     /** #1823: the platform holds a live tenant-level grant for the module — see the route's body. */
     tenantHeld?: boolean;
+    /** #2045: the switch call's fence — see the route's body. */
+    fence?: string;
   }): Promise<SystemSwitchOutcome> {
     const verb = 'system-switch';
     const lost =
@@ -801,6 +814,33 @@ export class VerticalClient {
         body: JSON.stringify(input),
       }),
     );
+  }
+
+  /**
+   * The switch fence's preflight (#2045, Codex r3): does the deployment serving this scope honour
+   * a switch call's fence? Asked before any switch call records or moves anything there.
+   *
+   * `false` only on the deployment's own proof that it cannot: a **404** (built before the route)
+   * or its **501** (a host that predates the fence). Everything else — a transport failure, a
+   * refusal, an unreadable or wrong-shaped 200 — throws, so a probe that could not be answered
+   * never reads as either verdict, and the switch call fails before it has written anything.
+   */
+  async switchFence(input: { scopeId: ScopeId }): Promise<boolean> {
+    const verb = 'switch-fence';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const rule = {
+      legacy501: true,
+      lost: `whether the deployment serving scope ${input.scopeId} honours the switch fence could not be read. Nothing was switched; retry.`,
+    };
+    const answer = await this.routeAnswer(verb, rule, () =>
+      this.options.fetch(`${base}/internal/switch-fence?scopeId=${encodeURIComponent(input.scopeId)}`, {
+        method: 'GET',
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (answer === PREDATES) return false;
+    if ((answer as { fenced?: unknown } | null)?.fenced === true) return true;
+    throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — ${rule.lost}`);
   }
 
   /**
@@ -874,7 +914,15 @@ export class VerticalClient {
    * it is, because the request may have landed and the switch may have moved before the
    * answer was lost.
    */
-  async peerSwitch(input: { scopeId: ScopeId; vertical: string; to: 'on' | 'off' }): Promise<PeerSwitchOutcome> {
+  async peerSwitch(input: {
+    scopeId: ScopeId;
+    vertical: string;
+    to: 'on' | 'off';
+    /** #2030: the platform holds a live tenant-level grant for the peer — see the route's body. */
+    tenantHeld?: boolean;
+    /** #2045: the switch call's fence — see the route's body. */
+    fence?: string;
+  }): Promise<PeerSwitchOutcome> {
     const verb = 'peer-switch';
     const lost =
       `the switch for peer '${input.vertical}' on scope ${input.scopeId} may or may not have moved. ` +
@@ -1052,6 +1100,10 @@ export class VerticalClient {
     opts?: {
       switchedOff?: ModuleId[];
       tenantHeld?: ModuleId[];
+      /** #2029: the recorded-off peers, and those held only by a tenant grant (#2030). */
+      switchedOffPeers?: string[];
+      tenantHeldPeers?: string[];
+      switchFences?: Record<string, string>;
       sourceScopeId?: ScopeId;
       exact?: boolean;
       loadStamp?: string;
@@ -1071,6 +1123,9 @@ export class VerticalClient {
         tables,
         ...(opts?.switchedOff ? { switchedOff: opts.switchedOff } : {}),
         ...(opts?.tenantHeld ? { tenantHeld: opts.tenantHeld } : {}),
+        ...(opts?.switchedOffPeers ? { switchedOffPeers: opts.switchedOffPeers } : {}),
+        ...(opts?.tenantHeldPeers ? { tenantHeldPeers: opts.tenantHeldPeers } : {}),
+        ...(opts?.switchFences ? { switchFences: opts.switchFences } : {}),
         ...(opts?.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
         ...(opts?.exact ? { exact: true } : {}),
         ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),

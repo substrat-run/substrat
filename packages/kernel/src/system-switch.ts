@@ -78,6 +78,18 @@ export type SystemScheduleState = 'on' | 'off' | 'ungranted';
 const subjectOf = (moduleId: string): string => `system:${moduleId}`;
 
 /**
+ * Which kill switch: a module's system authority (`system:<module>`, #1666) or a peer
+ * vertical's (`vertical:<slug>`, #1706). Both move the same marker through `switchSubjectGrants`.
+ */
+export type SwitchKind = 'system' | 'peer';
+
+/** The tuple-subject prefix of a peer vertical (#1706) — `vertical:acme/board-room`. Re-exported by `peer.ts`. */
+export const PEER_SUBJECT_PREFIX = 'vertical:';
+
+/** The tuple subject a peer's grants are seated under. The slug only, never the instance. Re-exported by `peer.ts`. */
+export const peerSubjectRef = (vertical: string): string => `${PEER_SUBJECT_PREFIX}${vertical}`;
+
+/**
  * "Is this subject's OFF marker live?", as a SQL predicate over ONE bound parameter (the
  * subject). The one spelling the gate, the grant refusal and the provisioning seat share,
  * so the three cannot disagree about what "switched off" means.
@@ -206,7 +218,41 @@ export interface SwitchOutcome {
    * that OFF", and refuses it rather than record a scope off that is not.
    */
   deniesTenantGrants?: true;
+  /**
+   * #2045: the move was refused, and nothing written, because the scope has already applied a
+   * NEWER switch call on this subject (`SWITCH_FENCES_DDL`). The scope stays where the newer call
+   * put it, which is also where the directory's record is. Absent from a deployment built before
+   * the fence, which applies every move it is sent.
+   */
+  superseded?: true;
+  /**
+   * #2045 (Codex r2): this code honoured the call's fence — set on every answer to a move that
+   * carried one, superseded or not. A deployment built before the fence drops the field and the
+   * fence with it, and would apply an older call's move after a newer one, so the platform refuses
+   * a fenced move whose answer lacks this, as it refuses an OFF without `deniesTenantGrants`.
+   */
+  fenced?: true;
 }
+
+/**
+ * #2045: the fence a scope keeps per switched subject — the operation id (a ULID) of the newest
+ * switch call it has applied. The directory's record (`system-switch-record.ts`) refuses a write
+ * older than the one it holds, and the scope refuses a move older than the one it applied, so the
+ * two always end on the SAME call's position, whatever order two concurrent calls' writes and moves
+ * arrive in. Without it, operator A recording OFF, then B recording ON and moving ON, then A's OFF
+ * landing, left the record ON beside a scope that is OFF, and a later restore re-admitted the
+ * subject. Keyed by (subject, object) as the marker is, so a copy of another scope's rows fences
+ * nothing here. Part of the scope's own storage: a restore or rewind takes it back with the marker.
+ */
+export const SWITCH_FENCES_DDL = `
+  CREATE TABLE IF NOT EXISTS _substrat_switch_fences (
+    subject TEXT NOT NULL,
+    object  TEXT NOT NULL,
+    -- The operation id of the newest switch call applied here. A ULID, so it orders by text.
+    fence   TEXT NOT NULL,
+    PRIMARY KEY (subject, object)
+  );
+`;
 
 /**
  * Move one module's switch on one scope. Idempotent: a repeat changes nothing and says so.
@@ -229,43 +275,85 @@ export interface SwitchOutcome {
  */
 export function switchSystemSchedules(
   db: SwitchSql,
-  input: { moduleId: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
+  input: { moduleId: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean; fence?: string },
 ): SwitchOutcome {
-  const outcome = switchSubjectGrants(db, {
-    subject: subjectOf(input.moduleId),
-    scopeId: input.scopeId,
-    to: input.to,
-    at: input.at,
-    tenantHeld: input.tenantHeld,
-  });
+  const { moduleId, ...rest } = input;
+  const outcome = switchSubjectGrants(db, { subject: subjectOf(moduleId), ...rest });
   return { ...outcome, deniesTenantGrants: true };
 }
 
-/** One module `switchRecordedOff` switched off — `SwitchedOffInUnit`'s shape. */
-export interface SwitchedOff extends SwitchOutcome {
-  moduleId: string;
+/**
+ * One subject `switchRecordedOff` switched off — `SwitchedOffInUnit`'s shape: a module
+ * (`moduleId`), or since #2029 a peer vertical (`vertical`).
+ */
+export type SwitchedOff = SwitchOutcome & ({ moduleId: string; vertical?: never } | { vertical: string; moduleId?: never });
+
+/**
+ * What the platform carries into a unit that re-creates a scope's grants (#1742): the subjects
+ * its directory records OFF on that scope, and of those, the ones held there only by a
+ * tenant-level grant (#1823, #2030). Subjects only, never a scope: the unit names its own.
+ */
+export interface RecordedOffCarry {
+  moduleIds: readonly string[];
+  tenantHeld?: readonly string[];
+  /** #2029: the recorded-off peers. Absent from a platform that predates the peer record. */
+  verticals?: readonly string[];
+  tenantHeldVerticals?: readonly string[];
+  /**
+   * #2045: the fence of each recorded-off subject, by tuple subject (`system:<m>`, `vertical:<v>`):
+   * the operation id of the call the record holds. A subject the scope has since moved under a newer
+   * call is left as that call put it. Absent from a platform built before the fence.
+   */
+  fences?: Readonly<Record<string, string>>;
 }
 
 /**
- * Switch the directory's recorded-off modules off again, inside the unit that re-created the
+ * The same carry as it crosses the wire to a vertical's deployment (#1742): the provision,
+ * reconcile and restore bodies, and `SwitchCarry` on the platform side. `switchedOffPeers` and
+ * `tenantHeldPeers` are #2029's; a deployment built before them strips both, and the platform's
+ * re-assert after the call switches those peers off instead.
+ */
+export interface SwitchCarryWire {
+  switchedOff?: readonly string[];
+  tenantHeld?: readonly string[];
+  switchedOffPeers?: readonly string[];
+  tenantHeldPeers?: readonly string[];
+  /** #2045: `RecordedOffCarry.fences`, as it crosses the wire. A deployment built before it strips it. */
+  switchFences?: Readonly<Record<string, string>>;
+}
+
+/** A wire carry as the unit runs it, or undefined when it names nothing to switch off. */
+export function recordedOffFromWire(wire: SwitchCarryWire): RecordedOffCarry | undefined {
+  if (!wire.switchedOff?.length && !wire.switchedOffPeers?.length) return undefined;
+  return {
+    moduleIds: wire.switchedOff ?? [],
+    tenantHeld: wire.tenantHeld,
+    verticals: wire.switchedOffPeers,
+    tenantHeldVerticals: wire.tenantHeldPeers,
+    fences: wire.switchFences,
+  };
+}
+
+/**
+ * Switch the directory's recorded-off subjects off again, inside the unit that re-created the
  * scope's grants (#1742): a provision's or reconcile's seat, or a restore's replay. The caller
  * runs it in that same unit, AFTER the seat, so the grants the seat created are the ones OFF
  * tombstones and records, and a later restore gives back exactly those (#1674's order). No
- * schedule can run between the seat and this, because nothing can run between them.
+ * schedule can run, and no peer call be admitted, between the seat and this, because nothing
+ * can run between them.
  *
- * `scopeId` is the scope `db` is, and the caller passes the one the request provisions or
- * restores, never a second id: the list names modules, never scopes, so it can only reach
- * the scope that unit is already writing. A module the scope holds nothing for answers
- * `held: false` and writes nothing, as the switch always does — unless it is in `tenantHeld`,
- * the recorded-off modules the caller found a live tenant-level grant for (#1823). Off only:
- * nothing here turns a module on.
+ * `moduleIds` are the recorded-off modules, `verticals` the recorded-off peers (#2029). `scopeId`
+ * is the scope `db` is, and the caller passes the one the request provisions or restores, never
+ * a second id: the lists name subjects, never scopes, so they can only reach the scope that unit
+ * is already writing. A subject the scope holds nothing for answers `held: false` and writes
+ * nothing, as the switch always does — unless it is in `tenantHeld` / `tenantHeldVerticals`, the
+ * recorded-off subjects the caller found a live tenant-level grant for (#1823, #2030). Off only:
+ * nothing here turns anything on.
  */
-export function switchRecordedOff(
-  db: SwitchSql,
-  input: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
-): SwitchedOff[] {
+export function switchRecordedOff(db: SwitchSql, input: RecordedOffCarry & { scopeId: string; at: string }): SwitchedOff[] {
   const tenantHeld = new Set(input.tenantHeld ?? []);
-  return [...new Set(input.moduleIds)].map((moduleId) => ({
+  const fenceOf = (subject: string): string | undefined => input.fences?.[subject];
+  const modules: SwitchedOff[] = [...new Set(input.moduleIds)].map((moduleId) => ({
     moduleId,
     ...switchSystemSchedules(db, {
       moduleId,
@@ -273,8 +361,38 @@ export function switchRecordedOff(
       to: 'off',
       at: input.at,
       tenantHeld: tenantHeld.has(moduleId),
+      fence: fenceOf(subjectOf(moduleId)),
     }),
   }));
+  const peersHeld = new Set(input.tenantHeldVerticals ?? []);
+  const peers: SwitchedOff[] = [...new Set(input.verticals ?? [])].map((vertical) => ({
+    vertical,
+    ...moveSwitch(db, 'peer', {
+      key: vertical,
+      scopeId: input.scopeId,
+      to: 'off',
+      at: input.at,
+      tenantHeld: peersHeld.has(vertical),
+      fence: fenceOf(peerSubjectRef(vertical)),
+    }),
+  }));
+  return [...modules, ...peers];
+}
+
+/**
+ * Move one kill switch of either kind on one scope (#2029): `switchSystemSchedules` for a
+ * module, `switchSubjectGrants` over `vertical:<key>` for a peer. `key` is the module id or the
+ * peer's slug. The one mover the adapters' shared switch body and their re-asserts call.
+ */
+export function moveSwitch(
+  db: SwitchSql,
+  kind: SwitchKind,
+  input: { key: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean; fence?: string },
+): SwitchOutcome {
+  const { key, ...rest } = input;
+  return kind === 'system'
+    ? switchSystemSchedules(db, { moduleId: key, ...rest })
+    : switchSubjectGrants(db, { subject: peerSubjectRef(key), ...rest });
 }
 
 /**
@@ -288,10 +406,52 @@ export function switchRecordedOff(
  */
 export function switchSubjectGrants(
   db: SwitchSql,
-  input: { subject: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
+  input: {
+    subject: string;
+    scopeId: string;
+    to: 'on' | 'off';
+    at: string;
+    tenantHeld?: boolean;
+    /**
+     * #2045: the switch call this move belongs to — its operation id, or for a re-assert the one the
+     * directory's record holds. A move older than the fence the scope keeps is refused (`superseded`);
+     * one at or past it applies and moves the fence to it. Absent, the move applies and leaves the
+     * fence alone: a caller from before the fence.
+     */
+    fence?: string;
+  },
+): SwitchOutcome {
+  const object = `scope:${input.scopeId}`;
+  const stored =
+    input.fence === undefined
+      ? undefined
+      : (db.all(`SELECT fence FROM _substrat_switch_fences WHERE subject = ? AND object = ?`, input.subject, object)[0] as
+          | { fence: string }
+          | undefined);
+  if (input.fence !== undefined && stored !== undefined && stored.fence > input.fence) {
+    return { held: true, changed: false, permissions: [], superseded: true, fenced: true };
+  }
+  const outcome: SwitchOutcome = applySwitch(db, input, object);
+  if (input.fence !== undefined) outcome.fenced = true;
+  if (input.fence !== undefined && outcome.held) {
+    db.run(
+      `INSERT INTO _substrat_switch_fences (subject, object, fence) VALUES (?, ?, ?)
+       ON CONFLICT (subject, object) DO UPDATE SET fence = excluded.fence`,
+      input.subject,
+      object,
+      input.fence,
+    );
+  }
+  return outcome;
+}
+
+/** `switchSubjectGrants`' move itself, once the fence has let it through. */
+function applySwitch(
+  db: SwitchSql,
+  input: { subject: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean },
+  object: string,
 ): SwitchOutcome {
   const subject = input.subject;
-  const object = `scope:${input.scopeId}`;
   const grants = db.all(
     `SELECT relation, revoked_at FROM _substrat_tuples
       WHERE subject = ? AND object = ? AND substr(relation, 1, 8) = 'granted:'

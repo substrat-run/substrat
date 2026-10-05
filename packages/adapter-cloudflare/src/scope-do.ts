@@ -265,10 +265,14 @@ import {
   admitPeer,
   collectPeers,
   switchPeer,
+  peerSubjectRef,
+  subjectGrantState,
+  type RecordedOffCarry,
   type PeerDeclarations,
   assertNoSecret,
   CAPABILITY_DDL,
   COPY_ORIGIN_DDL,
+  SWITCH_FENCES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
@@ -593,6 +597,7 @@ const KERNEL_DDL = `
     taken_at TEXT NOT NULL,
     pending TEXT NOT NULL
   );
+  ${SWITCH_FENCES_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -1546,7 +1551,19 @@ export function defineScopeDO(
      * On the queue, so no operation is mid-transaction while the outbox is read. An event
      * must not reach another vertical before the transaction that wrote it has committed.
      */
-    async exportedEventsRead(input: ExportReadInput, tenantId: TenantId, scopeId: ScopeId): Promise<ExportedBatch> {
+    async exportedEventsRead(
+      input: ExportReadInput,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      /**
+       * #2029: the consumer is a peer, so the read is gated by its door. `instance` pins it to the
+       * gate's read, as every door call is; `held` says the rewind hold keeps the consumer off, and
+       * then it holds nothing here: every key is missing, the answer a switched-off consumer gets.
+       */
+      door?: { instance: string } | { held: true },
+    ): Promise<ExportedBatch | SystemDoorMoved> {
+      const held = door !== undefined && 'held' in door;
+      if (!held && this.peerDoorMoved(input.consumer, door?.instance)) return SYSTEM_DOOR_MOVED;
       await this.ensureMigrations();
       const plan = exportReadPlan(this.crossVertical.exports(), input.wants);
       const quiet: ExportedBatch = {
@@ -1558,9 +1575,11 @@ export function defineScopeDO(
         more: false,
       };
       if (plan.types.length === 0) return quiet;
-      const missing = (await this.peerCovers(tenantId, scopeId, input.consumer, plan.keys as PermissionKey[]))
-        .filter((c) => !c.held)
-        .map((c) => c.permission);
+      const missing = held
+          ? (plan.keys as PermissionKey[])
+          : (await this.peerCoverage(tenantId, scopeId, input.consumer, plan.keys as PermissionKey[]))
+              .filter((c) => !c.held)
+              .map((c) => c.permission);
       if (missing.length > 0) return { ...quiet, paused: { missing } };
       return await this.queue.enqueue(() => {
         const q = exportReadQuery(plan.types, input.after, input.limit);
@@ -1708,9 +1727,16 @@ export function defineScopeDO(
      * The coordinator parses the batch before it gets here and runs the executors after.
      * Executors live on the coordinator here, as they do after an invoke.
      */
-    async importApply(batch: ImportBatch, tenantId: TenantId, scopeId: ScopeId): Promise<ImportResult> {
-      await this.ensureMigrations();
+    async importApply(
+      batch: ImportBatch,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      /** #2029: the instance the peer door's gate read for the producer; on another, nothing applies. */
+      doorInstance?: string,
+    ): Promise<ImportResult | SystemDoorMoved> {
       const source = batch.source;
+      if (this.peerDoorMoved(source.vertical, doorInstance)) return SYSTEM_DOOR_MOVED;
+      await this.ensureMigrations();
       return await this.queue.enqueue(async () => {
         const liveSince = this.liveHighWaterMark();
         const result: ImportResult = emptyImportResult(batch);
@@ -2172,7 +2198,7 @@ export function defineScopeDO(
      */
     async seatTuples(
       tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
-      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
+      switchOff?: RecordedOffCarry & { scopeId: string; at: string },
     ): Promise<SwitchedOff[]> {
       return this.queue.enqueue(() =>
         this.revision.transactionSync(() => {
@@ -2578,6 +2604,8 @@ export function defineScopeDO(
         // operation off its allowlist are refused `forbidden`; none is a K-35 denial.
         let peerSubject: CheckSubject | undefined;
         if (verticalCaller !== undefined) {
+          // #2029: pinned to the instance the peer door's gate read against the rewind hold.
+          this.assertPeerDoor(verticalCaller.vertical, systemDoorInstance);
           peerSubject = admitPeer(this.switchSql(), this.peers, verticalCaller, operation);
           idempotencySubjectRef = peerSubject;
         }
@@ -3696,23 +3724,49 @@ export function defineScopeDO(
      */
     private assertSystemDoor(moduleId: string | undefined, expected: string | undefined): SystemDoorPass | undefined {
       if (moduleId === undefined) return undefined;
+      this.assertDoorPin(`module '${moduleId}'`, 'system door', expected);
+      return { moduleId, [SYSTEM_DOOR_PASSED]: true };
+    }
+
+    /** #2029: the peer door's pin, for a call acting as `vertical:<slug>` — `assertDoorPin`. */
+    private assertPeerDoor(vertical: string, expected: string | undefined): void {
+      this.assertDoorPin(`vertical '${vertical}'`, 'peer door', expected);
+    }
+
+    /**
+     * #2029: the peer door's pin for an RPC that answers a missed pin as `SystemDoorMoved` rather
+     * than through `invoke`'s envelope: true when it missed. A call with no pin still throws.
+     */
+    private peerDoorMoved(vertical: string, expected: string | undefined): boolean {
+      try {
+        this.assertPeerDoor(vertical, expected);
+        return false;
+      } catch (err) {
+        if (err instanceof SystemDoorMovedError) return true;
+        throw err;
+      }
+    }
+
+    /**
+     * #1834's pin, for any door (#2029: the peer door's too). A call acting as a switched subject
+     * must carry the instance the host's door gate read, and is refused on any other instance —
+     * the moved one as the module-private `SystemDoorMovedError`, so the door re-gates.
+     */
+    private assertDoorPin(what: string, door: 'system door' | 'peer door', expected: string | undefined): void {
       // Strict, and deliberately so: no pin means no door gated this call, so it is refused rather
       // than run unchecked. The one innocent caller is a worker a deploy behind, still running host
       // code from before the pin, during a rolling deploy. Its refusal is transient: the host and this
       // object ship in the same bundle, so the window lasts as long as the rollout. Nothing ran, and
       // the reason says "not now" (`SYSTEM_DOOR_WAIT`) to whoever reads it: a schedule fires on the
-      // next pass, and a job run retries on its next drive.
+      // next pass, a job run retries on its next drive, and a peer caller retries.
       if (expected === undefined) {
-        throw substratError(
-          'forbidden',
-          `a call acting as module '${moduleId}' reached this scope without passing the system door`,
-          { reason: SYSTEM_DOOR_WAIT },
-        );
+        throw substratError('forbidden', `a call acting as ${what} reached this scope without passing the ${door}`, {
+          reason: SYSTEM_DOOR_WAIT,
+        });
       }
       if (expected !== this.instanceId) {
-        throw new SystemDoorMovedError("the scope restarted after the system door's gate read it; gate it again");
+        throw new SystemDoorMovedError(`the scope restarted after the ${door}'s gate read it; gate it again`);
       }
-      return { moduleId, [SYSTEM_DOOR_PASSED]: true };
     }
 
     /**
@@ -3762,10 +3816,12 @@ export function defineScopeDO(
       to: 'on' | 'off',
       at: string,
       tenantHeld = false,
+      /** #2045: the switch call's fence — the scope refuses a move older than the one it applied. */
+      fence?: string,
     ): Promise<SwitchOutcome & { instance: string }> {
       const outcome = await this.queue.enqueue(() =>
         this.revision.transactionSync(() =>
-          switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at, tenantHeld }),
+          switchSystemSchedules(this.switchSql(), { moduleId, scopeId, to, at, tenantHeld, fence }),
         ),
       );
       // #1819: the instance that applied it, which the rewind hold's release rule reads.
@@ -3792,10 +3848,35 @@ export function defineScopeDO(
      * Move one PEER's kill switch on this scope (#1706) — the kernel's `switchPeer`, which is
      * the schedule switch's statement with a `vertical:` subject. Queued, one transaction.
      */
-    async switchPeer(vertical: string, scopeId: string, to: 'on' | 'off', at: string): Promise<SwitchOutcome> {
-      return this.queue.enqueue(() =>
-        this.revision.transactionSync(() => switchPeer(this.switchSql(), { vertical, scopeId, to, at })),
+    async switchPeer(
+      vertical: string,
+      scopeId: string,
+      to: 'on' | 'off',
+      at: string,
+      /** #2030: the directory holds a live tenant-level `vertical:` grant for the peer. */
+      tenantHeld = false,
+      /** #2045: the switch call's fence — the scope refuses a move older than the one it applied. */
+      fence?: string,
+    ): Promise<SwitchOutcome & { instance: string }> {
+      const outcome = await this.queue.enqueue(() =>
+        this.revision.transactionSync(() =>
+          switchPeer(this.switchSql(), { vertical, scopeId, to, at, tenantHeld, fence }),
+        ),
       );
+      // #2029: the instance that applied it, which the rewind hold's release rule reads.
+      return { ...outcome, instance: this.instanceId };
+    }
+
+    /**
+     * #2029: the peer door's state read — where one peer stands here (`subjectGrantState` over its
+     * subject, the predicate `admitPeer` refuses on), and the instance that answered it. The door
+     * consults the rewind hold after this read and pins every call it then makes to this instance.
+     */
+    async peerDoorState(vertical: string): Promise<{ state: SystemScheduleState; instance: string }> {
+      return {
+        state: subjectGrantState(this.switchSql(), peerSubjectRef(vertical), new Date().toISOString()),
+        instance: this.instanceId,
+      };
     }
 
     /**
@@ -3805,6 +3886,19 @@ export function defineScopeDO(
      * it walks is the slug alone.
      */
     async peerCovers(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      vertical: string,
+      permissions: PermissionKey[],
+      /** #2029: the instance the peer door's gate read; on another, nothing is read. */
+      doorInstance?: string,
+    ): Promise<PeerCoverage[] | SystemDoorMoved> {
+      if (this.peerDoorMoved(vertical, doorInstance)) return SYSTEM_DOOR_MOVED;
+      return this.peerCoverage(tenantId, scopeId, vertical, permissions);
+    }
+
+    /** `peerCovers`' read, for this object's own callers, which gated the peer themselves. */
+    private async peerCoverage(
       tenantId: TenantId,
       scopeId: ScopeId,
       vertical: string,
@@ -3894,7 +3988,9 @@ export function defineScopeDO(
     // the host can tell storage the rewind will discard from storage it restored. On ONE object
     // per deployment, the one named `SWITCH_HOLDS_NAME` and never a scope's own: the claims
     // themselves, because a rewind replaces the rewound scope's whole storage. The claims table
-    // is created on first use, so no scope ever carries it.
+    // is created on first use, so no scope ever carries it. #2029: `module_id` holds a hold KEY —
+    // a module id, bare as #1819 stored it, or a peer's `vertical:<slug>`, which no module id can
+    // spell (a module id has no `:`).
 
     /** This instance, and nothing before or after it: a restart is a new id. */
     private readonly instanceId = crypto.randomUUID();
@@ -5596,7 +5692,7 @@ export function defineScopeDO(
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
          *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
-        switchOff?: { moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] };
+        switchOff?: RecordedOffCarry & { at: string };
         /** The scope the dump was captured FROM (#1869), whose grants the re-point moves. */
         sourceScopeId?: ScopeId;
         /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
@@ -7041,7 +7137,7 @@ export function defineScopeDO(
       /** The directory's recorded-off modules (#1742), switched off in THIS unit right after the
        *  seat, so no sweep can run the grants the seat just re-created. `scopeId` is the scope
        *  this projection provisions (the object of `scopeTuples`), never another. */
-      switchOff?: { scopeId: string; moduleIds: readonly string[]; at: string; tenantHeld?: readonly string[] },
+      switchOff?: RecordedOffCarry & { scopeId: string; at: string },
       /** Declared service subjects excluded only from human lockout repair (#1896). */
       serviceSubjects?: readonly string[],
     ): Promise<SwitchedOff[]> {

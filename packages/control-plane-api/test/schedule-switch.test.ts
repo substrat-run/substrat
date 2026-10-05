@@ -694,21 +694,46 @@ describe('the record is carried into the deployment and its in-unit move audited
   const FORGED = moduleId.parse('@test/never-switched');
   let dir: string;
   let host: SqliteScopeHost;
-  const bodies: { verb: string; scopeId: string; switchedOff?: unknown; tenantHeld?: unknown }[] = [];
+  const bodies: {
+    verb: string;
+    scopeId: string;
+    switchedOff?: unknown;
+    tenantHeld?: unknown;
+    switchedOffPeers?: unknown;
+    tenantHeldPeers?: unknown;
+  }[] = [];
   /** #1869: where each restore was told its tables came from. */
   const restoreSources: { sourceScopeId?: string; exact?: boolean }[] = [];
   /** A move per module the platform sent, plus one the record never switched off. */
-  const report = (switchedOff: string[] | undefined) =>
-    switchedOff
+  const report = (switchedOff: string[] | undefined, peers?: string[]) =>
+    switchedOff || peers
       ? {
-          switchedOff: [...switchedOff, FORGED].map((m) => ({ moduleId: m, held: true, changed: true, permissions: ['tick:run'] })),
+          switchedOff: [
+            ...[...(switchedOff ?? []), FORGED].map((m) => ({ moduleId: m, held: true, changed: true, permissions: ['tick:run'] })),
+            // #2029: a peer's in-unit move names `vertical`.
+            ...(peers ?? []).map((v) => ({ vertical: v, held: true, changed: true, permissions: [] })),
+          ],
         }
       : {};
 
   const deployment = {
-    reconcileInstance: async (input: { tenantId: string; scopeId: string; switchedOff?: string[]; tenantHeld?: string[] }) => {
-      bodies.push({ verb: 'reconcile', scopeId: input.scopeId, switchedOff: input.switchedOff, tenantHeld: input.tenantHeld });
-      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid(), ...report(input.switchedOff) };
+    reconcileInstance: async (input: {
+      tenantId: string;
+      scopeId: string;
+      switchedOff?: string[];
+      tenantHeld?: string[];
+      switchedOffPeers?: string[];
+      tenantHeldPeers?: string[];
+    }) => {
+      bodies.push({
+        verb: 'reconcile',
+        scopeId: input.scopeId,
+        switchedOff: input.switchedOff,
+        tenantHeld: input.tenantHeld,
+        switchedOffPeers: input.switchedOffPeers,
+        tenantHeldPeers: input.tenantHeldPeers,
+      });
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: ulid(), ...report(input.switchedOff, input.switchedOffPeers) };
     },
     provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string; switchedOff?: string[] }) => {
       bodies.push({ verb: 'provision', scopeId: input.scopeId, switchedOff: input.switchedOff });
@@ -795,6 +820,27 @@ describe('the record is carried into the deployment and its in-unit move audited
       { verb: 'reconcile', scopeId: s, switchedOff: [TICK, TENANT_ONLY], tenantHeld: [TENANT_ONLY] },
       { verb: 'restore', scopeId: s, switchedOff: [TICK, TENANT_ONLY], tenantHeld: [TENANT_ONLY] },
     ]);
+  });
+
+  it('a recorded-off peer rides as switchedOffPeers (tenant-held ones as tenantHeldPeers), and its move is audited (#2029)', async () => {
+    const PEER = 'acme/board-room';
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'tick-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    // A tenant-level `vertical:` grant, written as the directory holds one (no verb writes it yet).
+    (host as unknown as { directory: { prepare(q: string): { run(...a: unknown[]): void } } }).directory
+      .prepare(`INSERT OR REPLACE INTO _substrat_tenant_tuples (tenant_id, subject, relation, object, expires_at) VALUES (?, ?, ?, ?, NULL)`)
+      .run(t, `vertical:${PEER}`, 'granted:x:read', `tenant:${t}`);
+    await host.admin.revokeFromPeer(staff, { vertical: PEER, node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    // The scope loses its marker, the record keeps it.
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    bodies.length = 0;
+    expect((await app().request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers: asStaff })).status).toBe(200);
+    expect(bodies).toEqual([
+      { verb: 'reconcile', scopeId: s, switchedOff: undefined, tenantHeld: undefined, switchedOffPeers: [PEER], tenantHeldPeers: [PEER] },
+    ]);
+    const peerRows = (await host.admin.auditLog(staff, { scopeId: s, action: ['reassertPeerSwitch'] })).map((e) => e.after);
+    expect(peerRows).toContainEqual(expect.objectContaining({ vertical: PEER, calls: 'off', changed: true, inUnit: true }));
   });
 
   it('the install route carries the record, never the caller: a switchedOff in its body is dropped', async () => {

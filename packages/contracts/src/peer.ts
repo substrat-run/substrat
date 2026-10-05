@@ -120,6 +120,10 @@ export const peerSwitchOutcome = z.object({
   held: z.boolean(),
   changed: z.boolean(),
   permissions: z.array(permissionKey),
+  /** #2045: as `SystemSwitchOutcome.superseded` — a newer call on this peer had already landed. */
+  superseded: z.literal(true).optional(),
+  /** #2045: as `SystemSwitchOutcome.fenced`. */
+  fenced: z.literal(true).optional(),
 });
 export type PeerSwitchOutcome = z.infer<typeof peerSwitchOutcome>;
 

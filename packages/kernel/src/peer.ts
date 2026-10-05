@@ -22,6 +22,9 @@
  *   so a switched-off peer holds nothing to ANY check — `covers` included — without the checker
  *   knowing the marker exists; and `seatScopeTuple` seats nothing for a subject whose marker is
  *   live, so no re-provision can hand the grants back. `restoreToPeer` is the only way back.
+ *   The switch is also recorded in the directory (#2029, `system-switch-record.ts`, kind
+ *   `peer`), so a scope whose storage loses the marker — a wipe, a restore, a PITR rewind — gets
+ *   it back from every carry's re-assert, exactly as a module's does.
  * - **`peerGrantsStatus`** — the read half of that switch: every peer this scope holds or has
  *   held grants for, and where each stands. The SAME predicate `admitPeer` gates on, so the
  *   status a tenant reads and the answer a call gets cannot disagree.
@@ -44,19 +47,18 @@ import {
 } from '@substrat-run/contracts';
 import { isPrimaryScope } from './platform-sweep.js';
 import {
+  PEER_SUBJECT_PREFIX,
   SYSTEM_SWITCH_OFF_RELATION,
+  peerSubjectRef,
   subjectGrantState,
   subjectSwitchedOff,
-  switchSubjectGrants,
+  moveSwitch,
   type SwitchOutcome,
   type SwitchSql,
 } from './system-switch.js';
 
-/** The tuple-subject prefix of a peer vertical — `vertical:acme/board-room`. */
-export const PEER_SUBJECT_PREFIX = 'vertical:';
+export { PEER_SUBJECT_PREFIX, peerSubjectRef };
 
-/** The tuple subject a peer's grants are seated under. The slug only, never the instance. */
-export const peerSubjectRef = (vertical: string): string => `${PEER_SUBJECT_PREFIX}${vertical}`;
 
 /** One peer vertical as every registered module declares it, together. */
 export interface PeerDeclaration {
@@ -153,20 +155,19 @@ export function admitPeer(
 
 /**
  * Move one peer's kill switch on one scope. Idempotent, and `held: false` with nothing written
- * when the scope holds neither a grant nor a marker for that peer — a typo'd slug, or a peer this
- * scope was never provisioned with, must not write a marker that silently blocks it the day a
- * version declaring it lands. Run inside one transaction.
+ * when the peer has no authority reaching the scope: no grant and no marker here, and no live
+ * TENANT-level `vertical:<slug>` grant (`tenantHeld`, which the caller reads from the directory).
+ * A typo'd slug, or a peer this scope was never provisioned with, must not write a marker that
+ * silently blocks it the day a version declaring it lands. A peer whose only authority here is a
+ * tenant-level grant IS held (#2030): OFF writes the marker, which the door and the evaluator
+ * both refuse it on, and tombstones nothing. Run inside one transaction.
  */
 export function switchPeer(
   db: SwitchSql,
-  input: { vertical: string; scopeId: string; to: 'on' | 'off'; at: string },
+  input: { vertical: string; scopeId: string; to: 'on' | 'off'; at: string; tenantHeld?: boolean; fence?: string },
 ): SwitchOutcome {
-  return switchSubjectGrants(db, {
-    subject: peerSubjectRef(input.vertical),
-    scopeId: input.scopeId,
-    to: input.to,
-    at: input.at,
-  });
+  const { vertical, ...rest } = input;
+  return moveSwitch(db, 'peer', { key: vertical, ...rest });
 }
 
 /** Is this peer switched off on the scope `db` is? */
