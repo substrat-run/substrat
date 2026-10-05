@@ -575,7 +575,9 @@ describe('openings are one union across midnight', () => {
     const exceptions = new Map<string, { open: string; close: string }[]>([
       [before, [w('00:15', '01:00'), w('22:30', '23:45')]],
       [after, []],
-      [leaving, [w('00:00', '01:15'), w('02:00', '03:00'), w('22:45', '24:00')]],
+      // 23:15–23:45 opens inside a late-evening skipped hour (Nuuk's) and is carried past
+      // midnight onto the arriving date: a walk entered there must still find it.
+      [leaving, [w('00:00', '01:15'), w('02:00', '03:00'), w('22:30', '22:45'), w('23:15', '23:45')]],
       [arriving, [w('00:00', '00:30'), w('01:45', '03:30'), w('23:00', '23:15')]],
     ]);
     return { timezone, weekly: VARIED, exceptions: [...exceptions].map(([date, windows]) => ({ date, windows })) };
