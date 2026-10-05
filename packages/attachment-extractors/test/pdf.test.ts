@@ -11,7 +11,7 @@ import {
   type ExtractionSignal,
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
-import { PDF_RETAINED_BASE, PDF_RETAINED_FACTOR, pdfCMap, pdfDecoders, pdfExtract, pdfFontCosts, pdfLexer } from '../src/pdf.js';
+import { PDF_RETAINED_BASE, PDF_RETAINED_FACTOR, pdfCMap, pdfCodeMap, pdfDecoders, pdfExtract, pdfFontCosts, pdfLexer } from '../src/pdf.js';
 import { CALL_COST, Pace, Retained } from '../src/shared.js';
 import { zip } from './zip.js';
 
@@ -701,6 +701,33 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
       }
     }
   }, 30_000);
+
+  it('sealing charges every push, every end and every pop — the whole account, exactly', async () => {
+    // One code defined n times: n pushes into a growing heap at its first code, then n ends and
+    // n pops from a shrinking one at the code past it. Every step of the sweep is in this sum,
+    // so leaving out the end charge, or a pop's, is a different number.
+    const n = 1_000;
+    const map = pdfCodeMap(new Retained(1 << 30));
+    for (let i = 0; i < n; i += 1) map.setChar(2, 1, 'A');
+    const pace = counting();
+    await map.seal(pace);
+    const levels = (size: number) => 32 - Math.clz32(size + 1); // a sift through a heap of `size`
+    let pushes = 0;
+    let pops = 0;
+    for (let size = 0; size < n; size += 1) pushes += levels(size);
+    for (let size = n; size > 0; size -= 1) pops += levels(size);
+    const passes = Math.ceil(Math.log2(n));
+    const account = {
+      ordered: 1, // the first pair is out of order: one check
+      orders: 2 * n * passes, // two stable merge sorts, every element moved each pass
+      boundaries: 2, // the code, and the code past it
+      pushes,
+      ends: n,
+      pops,
+    };
+    expect(pace.charged).toBe(CALL_COST * Object.values(account).reduce((a, b) => a + b, 0));
+    expect(map.get(2, 1)).toBe('A');
+  });
 
   it('what the reader keeps is charged to the memory budget — counted, not timed', async () => {
     const charged = async (body: Uint8Array) => {
