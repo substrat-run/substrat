@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { orgId, platformActorId, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
 import {
@@ -15,8 +16,8 @@ import { INVITEFIX_A, membershipFixtureMod } from '@substrat-run/contract-tests'
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
- * #1184: a removal made OUTSIDE the seam is a directory admin row on the directory's clock; the
- * request it races is a scope event on the scope's. The two share no causal order, so a removal
+ * #1184: a removal raises the person's fence in the directory, on the directory's clock; the
+ * request it races is a scope event on the scope's. The two share no causal order, so a fence
  * at or after `occurredAt - MEMBERSHIP_REMOVAL_SKEW_MS` wins — a tie included.
  *
  * SQLite only, and that is the reason this is not in the contract suite: the pure host takes a
@@ -55,12 +56,19 @@ describe('membership executor — a removal outside the seam against the skew wi
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** Remove `joe` the old way — a role granted and taken back by hand — and answer when. */
+  /** Remove `joe` by hand — a role granted and taken back — and answer when the fence says. */
   const removedByHand = async (joe: PrincipalId): Promise<string> => {
     await host.admin.assignRole(staff, { principalId: joe, roleKey: 'member', node });
     await host.admin.unassignRole(staff, { principalId: joe, roleKey: 'member', node });
-    const rows = await host.admin.auditLog(staff, { tenantId: t, action: 'unassignRole' });
-    return rows.filter((r) => JSON.stringify(r.before).includes(joe)).at(-1)!.at;
+    const directory = new Database(join(dir, '_directory.sqlite'), { readonly: true });
+    try {
+      const fence = directory
+        .prepare('SELECT removed_at FROM _substrat_membership_fences WHERE tenant_id = ? AND principal = ?')
+        .get(t, joe) as { removed_at: string };
+      return fence.removed_at;
+    } finally {
+      directory.close();
+    }
   };
 
   /** alice invites, `joe` accepts; what the inline tail did with joe's request. */

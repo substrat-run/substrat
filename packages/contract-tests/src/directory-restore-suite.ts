@@ -276,6 +276,19 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
       });
     });
 
+    it('a removal fence survives the round trip, row for row (#1184)', async () => {
+      await using(async (dir, fresh) => {
+        const fence = { tenant_id: 'tenant-a', principal: '01JZ00000000000000000000F1', removed_at: '2026-09-29T00:00:00.000Z' };
+        await dir.restore(withTable(fresh, '_substrat_membership_fences', (t) => ({ ...t, rows: [rowOf(t.columns, fence)] })));
+        await dir.settle();
+        const before = await dir.snapshot();
+        expect(recordsOf(find(before, '_substrat_membership_fences'))).toEqual([fence]);
+        await dir.restore(before);
+        await dir.settle();
+        expect(recordsOf(find(await dir.snapshot(), '_substrat_membership_fences'))).toEqual([fence]);
+      });
+    });
+
     describe('refused, and the directory is left exactly as it was', () => {
       const refusals: Refusal[] = [
         [
