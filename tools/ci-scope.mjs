@@ -250,46 +250,73 @@ export function lockfileScope(baseText, headText) {
 
 // ── Shards ──────────────────────────────────────────────────────────────────
 //
-// Seconds each package's `test` took in a full CI run on main (2026-09-26). Only a
-// weight: a package missing here gets DEFAULT_WEIGHT and still lands in a shard, and
-// a stale number costs balance, never coverage. The three longest suites are pinned
-// to different shards so they never queue behind one another.
+// Seconds each unit's tests took in a full CI run on main (2026-10-05, run 37300954024).
+// Only a weight: a unit missing here gets DEFAULT_WEIGHT and still lands in a shard, and
+// a stale number costs balance, never coverage. The three longest units are pinned to
+// different shards so they never queue behind one another.
+//
+// A unit is a package's `test` script, or — for a package listed in PARTS — one of the
+// scripts that together make up its `test`. adapter-cloudflare's suite is one workerd
+// running every file in series (`singleWorker`), and at 13 minutes it was the whole length
+// of whichever shard it landed in: no amount of balancing the other packages could shorten
+// it. Its files cannot run side by side inside vitest either — every file shares one
+// workerd and its heap, which runs out at two workers — so the split is across jobs. Its
+// `contract.test.ts` alone is half of it, and is one part; every other file is the other.
+// The two scripts partition the suite by construction: one names the file, the other
+// excludes exactly that file, so a new test file lands in `test:rest` and is never lost.
+
+export const PARTS = {
+  'packages/adapter-cloudflare': ['test:contract', 'test:rest'],
+};
 
 export const PINNED = {
-  'packages/adapter-cloudflare': 0,
-  'demos/auth-server': 1,
-  'apps/control-plane': 2,
+  'packages/adapter-cloudflare#test:contract': 0,
+  'packages/adapter-cloudflare#test:rest': 1,
+  'demos/auth-server': 2,
 };
 
 export const WEIGHTS = {
-  'packages/adapter-cloudflare': 86, 'demos/auth-server': 92, 'apps/control-plane': 50,
-  'packages/control-plane-api': 38, 'demos/ticket0': 36, 'demos/manyfold': 30,
-  'demos/meridian': 30, 'demos/tock': 28, 'packages/builder-workspace': 22,
-  'apps/dashboard/web': 20, 'packages/cli': 19, 'packages/adapter-sqlite': 19,
-  'packages/kernel': 18, 'apps/dashboard': 18, 'engines/protocol': 17, 'demos/callout': 17,
-  'connectors/scrive': 16, 'demos/handlebar': 15, 'engines/invoicing': 13, 'demos/shop': 13,
-  'apps/builder': 13, 'packages/contracts': 12, 'engines/booking': 12, 'engines/workorder': 12,
-  'apps/console': 12, 'engines/absence': 11, 'engines/metering': 11, 'engines/invites': 10,
-  'demos/todo': 10, 'packages/vertical-host': 9, 'packages/vertical-auth': 9,
-  'packages/oidc-rp': 8, 'connectors/planima': 7, 'packages/model-emit': 7, 'apps/docs': 7,
-  'packages/builder-generator': 7, 'connectors/fortnox': 7, 'apps/social-relay': 6,
-  'packages/contract-tests': 6, 'packages/model-providers': 6, 'packages/template-check': 6,
-  'apps/vertical-egress': 4, 'apps/router': 4,
+  'packages/adapter-cloudflare#test:contract': 430, 'packages/adapter-cloudflare#test:rest': 370,
+  'demos/ticket0': 73, 'demos/auth-server': 65, 'packages/adapter-sqlite': 43, 'apps/control-plane': 30,
+  'packages/control-plane-api': 26, 'packages/attachment-extractors': 24, 'packages/cli': 23,
+  'packages/kernel': 22, 'apps/dashboard': 21, 'apps/dashboard/web': 20, 'demos/meridian': 20,
+  'packages/builder-workspace': 14, 'demos/callout': 11, 'packages/contracts': 11, 'engines/invoicing': 10,
+  'connectors/scrive': 10, 'demos/manyfold': 10, 'packages/vertical-host': 9, 'engines/invites': 9,
+  'engines/booking': 8, 'apps/console': 8, 'demos/handlebar': 8, 'engines/absence': 7, 'engines/protocol': 7,
+  'demos/tock': 6, 'packages/oidc-rp': 6, 'engines/workorder': 6, 'connectors/fortnox': 5, 'demos/todo': 5,
+  'apps/router': 4, 'apps/builder': 4, 'engines/metering': 4, 'packages/model-emit': 4,
 };
 export const DEFAULT_WEIGHT = 3;
 
 /**
- * Split `packages` ([{ name, dir }]) into `n` shards: pinned packages first, then the
- * rest heaviest-first onto the lightest shard. Deterministic for the same input, so
- * every job in a run computes the same split. Throws unless the shards partition the
- * input exactly — a package in no shard would be a package nobody tests.
+ * The units a selection is tested as: a package's `test`, or each of its PARTS. A part is
+ * named `<package>#<script>` and keyed in PINNED and WEIGHTS as `<dir>#<script>`.
+ */
+export function unitsOf(packages) {
+  return packages.flatMap((p) =>
+    PARTS[p.dir] ? PARTS[p.dir].map((script) => ({ name: `${p.name}#${script}`, dir: `${p.dir}#${script}` })) : [p],
+  );
+}
+
+/** A unit name's package and script: `{ name, script }`, the script `test` for a whole package. */
+export function parseUnit(unit) {
+  const i = unit.indexOf('#');
+  return i === -1 ? { name: unit, script: 'test' } : { name: unit.slice(0, i), script: unit.slice(i + 1) };
+}
+
+/**
+ * Split `packages` ([{ name, dir }]) into `n` shards of units (see `unitsOf`): pinned
+ * units first, then the rest heaviest-first onto the lightest shard. Deterministic for
+ * the same input, so every job in a run computes the same split. Throws unless the
+ * shards partition the units exactly — a unit in no shard would be tests nobody runs.
  */
 export function assignShards(packages, n) {
   if (!Number.isInteger(n) || n < 1) throw new Error(`shard count must be a positive integer, got ${n}`);
+  const units = unitsOf(packages);
   const shards = Array.from({ length: n }, () => ({ load: 0, packages: [] }));
   const weight = (p) => WEIGHTS[p.dir] ?? DEFAULT_WEIGHT;
   const rest = [];
-  for (const p of packages) {
+  for (const p of units) {
     const pin = PINNED[p.dir];
     if (pin !== undefined && pin < n) {
       shards[pin].packages.push(p);
@@ -303,7 +330,7 @@ export function assignShards(packages, n) {
     shards[target].load += weight(p);
   }
   const out = shards.map((s) => s.packages.map((p) => p.name).sort());
-  assertPartition(packages.map((p) => p.name), out);
+  assertPartition(units.map((p) => p.name), out);
   return out;
 }
 
@@ -335,6 +362,18 @@ export function buildNames(names, all) {
   return [...new Set([...names, ...nested])].sort();
 }
 
+/**
+ * `names` plus the workspace members whose directory encloses one of them — the inverse
+ * of buildNames' nesting, and undeclared for the same reason. A demo's suites assert
+ * against its built `app/`, so a change that lands only inside the app has to test the
+ * demo too; pnpm's selector follows declared edges and would select the app alone.
+ */
+export function enclosingNames(names, all) {
+  const dirs = all.filter((p) => names.includes(p.name)).map((p) => p.dir);
+  const enclosing = all.filter((p) => dirs.some((d) => d.startsWith(`${p.dir}/`))).map((p) => p.name);
+  return [...new Set([...names, ...enclosing])].sort();
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
@@ -351,8 +390,14 @@ function workspace(filters) {
     .sort((a, b) => a.dir.localeCompare(b.dir));
 }
 
-export function decide({ event, base, files, lockfile, all, selectChanged }) {
+// The changesets "Version packages" PR is the last gate before `pnpm publish -r`, and its
+// diff (package.json versions, CHANGELOGs) says nothing about what the release carries —
+// so it runs everything, like a push to main, however small it looks.
+export const RELEASE_BRANCH = /^changeset-release\//;
+
+export function decide({ event, base, head, files, lockfile, all, selectChanged }) {
   if (event !== 'pull_request') return { everything: `a ${event} runs everything` };
+  if (head !== undefined && RELEASE_BRANCH.test(head)) return { everything: `the release PR (${head}) runs everything` };
   const { widening, inMembers, lockfile: lockfileChanged } = classify(files);
   if (widening.length > 0) {
     return { everything: 'changed outside every package:', detail: widening };
@@ -400,10 +445,16 @@ function main(argv) {
     result = decide({
       event,
       base,
+      head: process.env.GITHUB_HEAD_REF || undefined,
       files: event === 'pull_request' ? git('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean) : [],
       lockfile: () => lockfileScope(git('show', `${base}:${LOCKFILE}`), git('show', `HEAD:${LOCKFILE}`)),
       all,
-      selectChanged: (extra) => workspace([`...[${base}]`, ...extra.map((n) => `...${n}`)]),
+      selectChanged: (extra) => {
+        const changed = workspace([`...[${base}]`, ...extra.map((n) => `...${n}`)]);
+        const names = changed.map((p) => p.name);
+        const more = enclosingNames(names, all).filter((n) => !names.includes(n));
+        return more.length === 0 ? changed : workspace([`...[${base}]`, ...[...extra, ...more].map((n) => `...${n}`)]);
+      },
     });
   }
 
@@ -433,10 +484,17 @@ function main(argv) {
     for (const [i, names] of shards.entries()) console.log(`shard ${i + 1}/${of}: ${names.length} package(s)${i === index ? ' ← this job' : ''}`);
     const mine = shards[index];
     for (const name of mine) console.log(`  ${name}`);
+    const units = mine.map(parseUnit);
+    const names = [...new Set(units.map((u) => u.name))];
     outputs.count = String(mine.length);
-    outputs.filters = mine.map((name) => `--filter=${name}`).join(' ');
+    // Whole packages, run by their `test` script in one `pnpm -r`.
+    outputs.filters = units.filter((u) => u.script === 'test').map((u) => `--filter=${u.name}`).join(' ');
+    // Parts of a split package (PARTS), each run by its own script: `<package>#<script>`.
+    outputs.parts = mine.filter((unit) => parseUnit(unit).script !== 'test').join(' ');
+    // Every package this shard tests any of, for the steps that prepare a package as a whole.
+    outputs.package_filters = names.map((name) => `--filter=${name}`).join(' ');
     // What this shard's tests need built: its packages, their nested apps, and dependencies.
-    outputs.build_filters = buildNames(mine, all).map((name) => `--filter=${name}...`).join(' ');
+    outputs.build_filters = buildNames(names, all).map((name) => `--filter=${name}...`).join(' ');
   }
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(outputs).map(([k, v]) => `${k}=${v}\n`).join(''));
