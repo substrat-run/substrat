@@ -126,6 +126,13 @@ export function assertNoSpineWrite(sql: string, statefulTables?: ReadonlySet<str
 const DDL_VERBS = new Set(['create', 'alter', 'drop']);
 
 /**
+ * A statement can be DDL only if its text spells one of these words, and almost none does — so the
+ * two scans below are skipped for nearly every statement a module runs. Text, not tokens: a word
+ * inside a string makes the scan run and find nothing, which costs a scan and nothing else.
+ */
+const MAYBE_DDL = /\b(create|alter|drop|attach|detach)\b/i;
+
+/**
  * Refuse runtime DDL that would take a stateful table's guarantees away (#119, Codex r3).
  *
  * #1811 made a module's own DDL through `ctx.sql` a supported path, and it stays one. But a table
@@ -147,6 +154,7 @@ const DDL_VERBS = new Set(['create', 'alter', 'drop']);
  * unrelated tables, an index on a stateful table, an added column — is untouched.
  */
 export function assertNoStatefulDdl(sql: string, statefulTables: ReadonlySet<string>): void {
+  if (!MAYBE_DDL.test(sql)) return;
   const tokens = tokenizeSql(sql, { punctuation: true });
   const refuse = (what: string): never => {
     throw substratError(
@@ -224,6 +232,7 @@ export function assertNoStatefulDdl(sql: string, statefulTables: ReadonlySet<str
 
 /** Does this SQL change the schema — any statement in it a CREATE, ALTER or DROP? */
 export function changesSchema(sql: string): boolean {
+  if (!MAYBE_DDL.test(sql)) return false;
   const tokens = tokenizeSql(sql, { punctuation: true });
   let first = true;
   for (const t of tokens) {
