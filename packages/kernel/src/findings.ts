@@ -473,16 +473,16 @@ export function createFindingRule(
     `INSERT INTO _substrat_finding_rules (${RULE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      RETURNING ${RULE_COLUMNS}`,
     [
-    id,
-    tenantId,
-    input.kind ?? null,
-    input.operation ?? null,
-    input.code ?? null,
-    input.subject ?? null,
-    input.expiresAt,
-    input.reason,
-    createdBy,
-    at,
+      id,
+      tenantId,
+      input.kind ?? null,
+      input.operation ?? null,
+      input.code ?? null,
+      input.subject ?? null,
+      input.expiresAt,
+      input.reason,
+      createdBy,
+      at,
     ],
   ) as RuleRow[];
   const covered = sql(
