@@ -1262,4 +1262,19 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
       });
     });
   }
+
+  it('the peer carry answers each peer with its own row\'s fence, though an ON lands right after it reads the record (CodeRabbit)', async () => {
+    // Read apart, the OFF key and the fence came from two instants: the ON landing between them put
+    // its own fence on the carried OFF, which the scope holds, so the carry's in-unit OFF applied.
+    const { platform, node, kinds, after } = await setup();
+    await kinds.peer.switch('off', 'A');
+    const before = await platform.admin.peerSwitchCarry(staff, node);
+    expect(before.switchedOffPeers).toEqual([PEER_CALLER]);
+    const landOn = { match: (a: unknown[]) => a[0] === 'peer', run: async () => void (await kinds.peer.switch('on', 'B')) };
+    for (const read of ['switchRecordStatesOf', 'switchedOffOf']) after.set(read, landOn);
+    expect(await platform.admin.peerSwitchCarry(staff, node)).toEqual(before);
+    expect(after.size).toBe(1); // the ON landed, after the carry's read of the record
+    // Twin: the next carry reads the ON, and carries nothing.
+    expect(await platform.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
+  });
 });
