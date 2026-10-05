@@ -3625,7 +3625,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       // event carries them; and a PERSONAL reply's event must not say what it does either,
       // so `actions` left with them. One declared shape per type, so the shared reply's
       // event is the same shape. What a macro does still reaches the trail when it runs:
-      // `saved-reply-applied` names its action types, and each action emits its own event.
+      // each action emits its own event about the conversation.
       schemaVersion: 2,
       payload: ['id', 'owner', 'folder_id', 'created_by', 'created_at'],
     },
@@ -3895,8 +3895,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     },
     emits: {
       // About the MACRO: the reply and each action already publish their own event
-      // about the conversation. This one says which canned answer did it, which is the
-      // fact a usage count will be read from.
+      // about the conversation. This one says which canned answers the sender attests went
+      // into the message; the count itself is `use_count`, moved in the same transaction.
       entity: 'savedReply',
       entityIdFrom: 'saved_reply_id',
       type: 'ticket0.saved-reply-applied',
