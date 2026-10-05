@@ -209,6 +209,11 @@ export interface WidgetSession {
   timezone: string | null;
 }
 
+/** `ticket0_public_threads` — declared in spec/model.ts. */
+export interface PublicThread {
+  id: string;
+}
+
 /** `ticket0_widget_openings` — declared in spec/model.ts. */
 export interface WidgetOpening {
   id: string;

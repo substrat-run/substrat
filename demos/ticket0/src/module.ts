@@ -120,6 +120,8 @@ type ParticipantRow = EntityRow<typeof ticket0Entities, 'conversationParticipant
 
 const conversationRef = (id: string) => ({ entityType: 'conversation', entityId: id });
 const sessionRef = (id: string) => ({ entityType: 'widgetSession', entityId: id });
+/** A conversation's public thread shares the conversation's id (#2044). */
+const threadRef = (conversationId: string) => ({ entityType: 'publicThread', entityId: conversationId });
 const messageRef = (id: string) => ({ entityType: 'message', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
 const sourceRef = (id: string) => ({ entityType: 'kbSource', entityId: id });
@@ -1179,74 +1181,62 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
     }
   }
   ctx.link(messageRef(id), conversationRef(m.conversationId));
-  if (m.visibility === 'public') {
-    for (const session of sessionsOn(ctx, m.conversationId)) ctx.link(messageRef(id), sessionRef(session.id));
-  }
+  if (m.visibility === 'public') ctx.link(messageRef(id), threadRef(m.conversationId));
   return messageOrThrow(ctx, id);
 }
 
 /**
- * What a widget session may see, written as edges (#1853).
+ * What a widget session may see, written as edges (#1853, #2044).
  *
  * The visitor's live feed is narrowed to their session, and the scope walks parent edges
  * to decide what reaches it. So the session's subtree must be exactly what `widget-thread`
  * shows them: every PUBLIC message on the session's current conversation, and nothing
- * else. Internal notes, forwards and the assistant's drafts never hang here, so their
- * writes produce no nudge at all.
+ * else. Each public message hangs once under its conversation's `publicThread`, and the
+ * thread hangs under the sessions on that conversation. Internal notes, forwards and the
+ * assistant's drafts never hang on a thread, so their writes produce no nudge at all.
  *
  * Two rules keep that true, and both are about not widening `ctx.check`:
  *
- * - **A session has one parent: its current conversation.** A message under a session
- *   reaches every parent the session has, so a session left under a conversation it moved
- *   away from would hand that conversation's followers the new thread's public messages.
+ * - **A session has one parent: its current conversation.** A message reaches every parent
+ *   the session above its thread has, so a session left under a conversation it moved away
+ *   from would hand that conversation's followers the new thread's public messages.
  *   `moveSession` relinks rather than links for that reason, and a merge relinks too.
- * - **A session holds only its current conversation's messages.** When it moves, the old
- *   thread's messages are taken off it (`unseatSession`) before the new ones go on.
+ * - **Thread X hangs under session s exactly while s is on X.** When a session moves, the
+ *   old thread comes off it (`unseatSession`) and the new one goes on (`seatSession`), in
+ *   the same transaction.
  *
- * **What it costs, and the bound.** Each public message holds one edge per session on its
- * conversation, so a write links that many times and a live fan-out walks that many
- * ancestors per row (each read once, #1853). The count is small by construction: every
- * widget opening opens its OWN conversation (`bindOpening`), a follow-up receives the one
- * session that moved onto it, and the only way a conversation gains more is a person
- * merging another of the same contact's conversations into it. So it is one, plus one per
- * merged-in chat. #2044 is the representation that would make it one edge regardless.
+ * **What it costs.** A public message holds two edges, its conversation and its thread,
+ * whatever the number of sessions. A session moving changes one thread edge off and one
+ * on, whatever the thread's length. A live fan-out still reads each ancestor once per row
+ * (#1853), and a thread has one session per widget chat merged into its conversation.
  */
-function sessionsOn(ctx: OperationContext, conversationId: string): { id: string }[] {
-  return ctx.sql.query<{ id: string }>('SELECT id FROM ticket0_widget_sessions WHERE conversation_id = ?', [
-    conversationId,
-  ]);
-}
-
-/**
- * Whether message `m` (aliased in the outer query) hangs under the session bound as the
- * next parameter. A primary-key lookup on the spine, which a module may read (never write).
- */
-const UNDER_SESSION = `EXISTS (SELECT 1 FROM _substrat_tuples t
-   WHERE t.subject = 'message:' || m.id AND t.relation = 'parent' AND t.object = ? AND t.revoked_at IS NULL)`;
-
-/** Hang every public message of `conversationId` under the session — those not under it already. */
 function seatSession(ctx: OperationContext, sessionId: string, conversationId: string): void {
-  for (const m of ctx.sql.query<{ id: string }>(
-    `SELECT m.id FROM ticket0_messages m
-      WHERE m.conversation_id = ? AND m.visibility = 'public' AND NOT ${UNDER_SESSION}`,
-    [conversationId, `widgetSession:${sessionId}`],
-  )) {
-    ctx.link(messageRef(m.id), sessionRef(sessionId));
-  }
+  ctx.link(threadRef(conversationId), sessionRef(sessionId));
 }
 
 /**
- * Take the session's messages off it, when it leaves `conversationId`. There is no unlink,
- * so each edge is MOVED onto that conversation — a parent the message already has, so the
- * move writes nothing new and only tombstones the session edge.
+ * Take `conversationId`'s thread off the session, when the session leaves it. The edge is
+ * MOVED onto the thread's own conversation — a parent it already has, which `ctx.relink`
+ * documents as tombstoning the old edge and writing nothing new. One `entity.relinked`, on
+ * the thread's timeline, per session move.
  */
 function unseatSession(ctx: OperationContext, sessionId: string, conversationId: string): void {
-  for (const m of ctx.sql.query<{ id: string }>(
-    `SELECT m.id FROM ticket0_messages m WHERE m.conversation_id = ? AND ${UNDER_SESSION}`,
-    [conversationId, `widgetSession:${sessionId}`],
-  )) {
-    ctx.relink(messageRef(m.id), sessionRef(sessionId), conversationRef(conversationId));
-  }
+  // A relink needs a live edge to move, and every session has had one since it was bound
+  // (migration 0026 for the ones before). Should one be missing there is nothing to take
+  // off, and throwing would take the visitor's message down with it.
+  if (!hasLiveParent(ctx, `publicThread:${conversationId}`, `widgetSession:${sessionId}`)) return;
+  ctx.relink(threadRef(conversationId), sessionRef(sessionId), conversationRef(conversationId));
+}
+
+/** Whether `child` has a live parent edge to `parent`. A primary-key read of the spine. */
+function hasLiveParent(ctx: OperationContext, child: string, parent: string): boolean {
+  return (
+    ctx.sql.query(
+      `SELECT 1 AS live FROM _substrat_tuples
+        WHERE subject = ? AND relation = 'parent' AND object = ? AND revoked_at IS NULL`,
+      [child, parent],
+    ).length > 0
+  );
 }
 
 /**
@@ -2024,6 +2014,13 @@ async function discardConversation(
   closeConversation(ctx, conversation, edge);
   // A follow is a read grant on this thread, and a tombstone is no thread to read.
   await dropFollowers(ctx, conversation.id);
+  // Its sessions go below, so their hold on its public thread goes first (#2044).
+  for (const session of ctx.sql.query<{ id: string }>(
+    'SELECT id FROM ticket0_widget_sessions WHERE conversation_id = ?',
+    [conversation.id],
+  )) {
+    unseatSession(ctx, session.id, conversation.id);
+  }
   for (const table of [
     'ticket0_messages',
     'ticket0_conversation_tags',
@@ -2596,6 +2593,9 @@ function openConversation(
   // The edge the permission walk follows: a contact's grant on their own entity
   // reaches their conversations through this, and reaches nobody else's.
   ctx.link(conversationRef(id), contactRef(contact.id));
+  // Its public thread, which its public messages and its widget sessions meet at (#2044).
+  ctx.sql.exec('INSERT INTO ticket0_public_threads (id) VALUES (?)', [id]);
+  ctx.link(threadRef(id), conversationRef(id));
   return conversationOrThrow(ctx, id);
 }
 
@@ -3348,6 +3348,7 @@ function bindOpening(ctx: OperationContext, opening: OpeningRow): ConversationRo
   );
   ctx.sql.exec('DELETE FROM ticket0_widget_openings WHERE id = ?', [opening.id]);
   ctx.link(sessionRef(opening.id), conversationRef(conversation.id));
+  seatSession(ctx, opening.id, conversation.id);
   return conversation;
 }
 
@@ -3357,9 +3358,10 @@ function bindOpening(ctx: OperationContext, opening: OpeningRow): ConversationRo
  * The visitor's token is unchanged and their browser learns nothing: what they have is
  * a chat bubble, and which row it writes into is the desk's business.
  *
- * The session's edge MOVES with it, and the old thread's messages come off it (#1853):
- * a session holds one parent, for the reason on `sessionsOn`. That it once belonged to
- * the old thread stays on its timeline, as the move's `entity.relinked`.
+ * The session's edge MOVES with it, and the old public thread comes off it (#1853,
+ * #2044): a session holds one parent and one thread, for the reasons on `seatSession`.
+ * That it once belonged to the old thread stays on its timeline, as the move's
+ * `entity.relinked`.
  */
 function moveSession(
   ctx: OperationContext,
@@ -3374,14 +3376,9 @@ function moveSession(
   unseatSession(ctx, sessionId, from.id);
   // Relink needs a live edge to move. Every session has had one since it was bound, but a
   // relink that throws here would take a visitor's message down with it, so link instead.
-  const edge =
-    ctx.sql.query(
-      `SELECT 1 AS live FROM _substrat_tuples
-        WHERE subject = ? AND relation = 'parent' AND object = ? AND revoked_at IS NULL`,
-      [`widgetSession:${sessionId}`, `conversation:${from.id}`],
-    ).length > 0;
-  if (edge) ctx.relink(sessionRef(sessionId), conversationRef(from.id), conversationRef(conversation.id));
-  else ctx.link(sessionRef(sessionId), conversationRef(conversation.id));
+  if (hasLiveParent(ctx, `widgetSession:${sessionId}`, `conversation:${from.id}`)) {
+    ctx.relink(sessionRef(sessionId), conversationRef(from.id), conversationRef(conversation.id));
+  } else ctx.link(sessionRef(sessionId), conversationRef(conversation.id));
   seatSession(ctx, sessionId, conversation.id);
   return conversation;
 }
@@ -5395,6 +5392,10 @@ const operations = {
      * is where the human is now looking.
      */
     const survivorRef = conversationRef(survivor.id);
+    const movedSessions = ctx.sql.query<{ id: string }>(
+      'SELECT id FROM ticket0_widget_sessions WHERE conversation_id = ?',
+      [conversation.id],
+    );
     for (const [table, entityType] of [
       ['ticket0_messages', 'message'],
       ['ticket0_ai_turns', 'aiTurn'],
@@ -5412,11 +5413,24 @@ const operations = {
         ctx.relink({ entityType, entityId: row.id }, loserRef, survivorRef);
       }
     }
-    // Every session now on the survivor holds every public message now on it (#1853):
-    // the loser's sessions gain the survivor's thread, which `widget-thread` now shows
-    // them, and the survivor's sessions gain the moved messages. Nothing comes off — the
-    // moved messages' edges to the loser's sessions are still true, those sessions moved too.
-    for (const session of sessionsOn(ctx, survivor.id)) seatSession(ctx, session.id, survivor.id);
+    // The public thread follows (#2044): each moved public message onto the survivor's
+    // thread, which every session now on the survivor holds; and each of the loser's
+    // sessions off the loser's thread and onto the survivor's, which `widget-thread` now
+    // shows them. The survivor's own sessions already hold its thread.
+    for (const m of ctx.sql.query<{ id: string }>(
+      `SELECT m.id FROM ticket0_messages m
+        WHERE m.conversation_id = ? AND m.visibility = 'public'
+          AND EXISTS (SELECT 1 FROM _substrat_tuples t
+                       WHERE t.subject = 'message:' || m.id AND t.relation = 'parent'
+                         AND t.object = ? AND t.revoked_at IS NULL)`,
+      [survivor.id, `publicThread:${conversation.id}`],
+    )) {
+      ctx.relink(messageRef(m.id), threadRef(conversation.id), threadRef(survivor.id));
+    }
+    for (const session of movedSessions) {
+      unseatSession(ctx, session.id, conversation.id);
+      seatSession(ctx, session.id, survivor.id);
+    }
     // A mail's delivery record names the conversation its message is in, so it moves
     // with the message (#1088).
     ctx.sql.exec('UPDATE ticket0_mail_deliveries SET conversation_id = ? WHERE conversation_id = ?', [

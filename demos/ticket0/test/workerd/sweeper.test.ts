@@ -1239,6 +1239,114 @@ describe("ticket0 on workerd — the widget's feed nudges a visitor about their 
     expect(before).toEqual(['Before the close.']);
     expect(await thread(session)).toEqual(['After the close.']);
   });
+
+  /** `entity.relinked` rows one operation wrote, and an entity's live parents, in the desk's own storage. */
+  const relinksBy = async (operation: string) =>
+    runInDurableObject(scopeStub(), async (_instance, state) =>
+      Number(
+        [
+          ...state.storage.sql.exec(
+            `SELECT COUNT(*) AS n FROM _substrat_outbox WHERE type = 'entity.relinked' AND operation = ?`,
+            operation,
+          ),
+        ][0]!.n,
+      ),
+    );
+  const liveParents = async (subject: string) =>
+    runInDurableObject(scopeStub(), async (_instance, state) =>
+      [
+        ...state.storage.sql.exec(
+          `SELECT object FROM _substrat_tuples WHERE subject = ? AND relation = 'parent' AND revoked_at IS NULL ORDER BY object`,
+          subject,
+        ),
+      ].map((r) => String(r.object)),
+    );
+
+  it('moves a long thread off the session with two relinks, and each message holds two edges (#2044)', async () => {
+    const session = await visitor();
+    const first = await say(session, 'The opening line.');
+    const desk_ = await admin();
+    const replies: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      replies.push(
+        (await desk_.invoke<{ id: string }>('ticket0/post-public-reply', { conversationId: first.conversation_id, body: `Reply ${i}` })).id,
+      );
+    }
+    for (const id of [first.id, ...replies]) {
+      expect(await liveParents(`message:${id}`)).toEqual([`conversation:${first.conversation_id}`, `publicThread:${first.conversation_id}`]);
+    }
+    await desk_.invoke('ticket0/close', { conversationId: first.conversation_id });
+    const before = await relinksBy('ticket0/widget-post');
+    const next = await say(session, 'After the close.');
+    // The session's own edge and the closed thread coming off it — not one per message.
+    expect((await relinksBy('ticket0/widget-post')) - before).toBe(2);
+    expect(await liveParents(`publicThread:${first.conversation_id}`)).toEqual([`conversation:${first.conversation_id}`]);
+    expect(await liveParents(`publicThread:${next.conversation_id}`)).toEqual(
+      [`conversation:${next.conversation_id}`, `widgetSession:${session.sessionId}`].sort(),
+    );
+  });
+
+  it('a socket re-opened after a merge hears the survivor, and after a move only its own new thread (#2044)', async () => {
+    // Two widget chats from one person, merged: both sessions now sit on the survivor.
+    const loser = await visitor();
+    const lost = await say(loser, 'Asked first.');
+    const keeper = await visitor();
+    const kept = await say(keeper, 'Asked again.');
+    await runInDurableObject(scopeStub(), async (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE ticket0_conversations SET contact_id = (SELECT contact_id FROM ticket0_conversations WHERE id = ?) WHERE id = ?`,
+        lost.conversation_id,
+        kept.conversation_id,
+      );
+    });
+    const desk_ = await admin();
+    await desk_.invoke('ticket0/merge', { conversationId: lost.conversation_id, intoConversationId: kept.conversation_id });
+
+    // The loser's browser reconnects — a reload, a dropped socket — after the merge.
+    const reopened = await watch(loser);
+    const keeperFeed = await watch(keeper);
+    await desk_.invoke('ticket0/post-note', { conversationId: kept.conversation_id, body: 'Internal, after the merge.' });
+    await settle();
+    expect(reopened.frames).toEqual([]);
+    expect(keeperFeed.frames).toEqual([]);
+    await desk_.invoke('ticket0/post-public-reply', { conversationId: kept.conversation_id, body: 'One answer for both.' });
+    await settle();
+    expect(reopened.frames.length).toBeGreaterThan(0);
+    expect(keeperFeed.frames.length).toBeGreaterThan(0);
+    for (const frame of [...reopened.frames, ...keeperFeed.frames]) expect(Object.keys(frame).sort()).toEqual(['at', 'id', 'kind']);
+    // A message the merge MOVED is on the survivor's thread too: a write to it reaches the
+    // session that was always on the survivor.
+    const keeperBefore = keeperFeed.frames.length;
+    await (await service('relay')).invoke('ticket0/record-delivery', {
+      messageId: lost.id,
+      emailMessageId: `<lost-${ulid()}@mail.example>`,
+    });
+    await settle();
+    expect(keeperFeed.frames.length).toBeGreaterThan(keeperBefore);
+
+    // Merge, then a move: the survivor closes, the loser's visitor writes and moves on alone.
+    await desk_.invoke('ticket0/close', { conversationId: kept.conversation_id });
+    const moved = await say(loser, 'Something new.');
+    expect(moved.conversation_id).not.toBe(kept.conversation_id);
+    await settle();
+    const heardByLoser = reopened.frames.length;
+    const heardByKeeper = keeperFeed.frames.length;
+    // A reply on the follow-up reaches the moved session only; one on the survivor, the other only.
+    await desk_.invoke('ticket0/post-public-reply', { conversationId: moved.conversation_id, body: 'On the follow-up.' });
+    await settle();
+    expect(reopened.frames.length).toBeGreaterThan(heardByLoser);
+    expect(keeperFeed.frames).toHaveLength(heardByKeeper);
+    const loserNow = reopened.frames.length;
+    await (await service('relay')).invoke('ticket0/record-delivery', {
+      messageId: kept.id,
+      emailMessageId: `<kept-${ulid()}@mail.example>`,
+    });
+    await settle();
+    expect(reopened.frames).toHaveLength(loserNow);
+    // The twin: the session still on the survivor hears that same write.
+    expect(keeperFeed.frames.length).toBeGreaterThan(heardByKeeper);
+    expect(await thread(loser)).toEqual(['Something new.', 'On the follow-up.']);
+  });
 });
 
 describe('ticket0 on workerd — an owner hand-over moves the owner the lockout repair re-seats (#1665)', () => {

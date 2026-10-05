@@ -519,8 +519,9 @@ describe('tenantCoverage (#1184) — `covers` at the tenant node, without yieldi
 
 /**
  * #1853: the walk reads each distinct node once, however many paths lead to it. A ticket0
- * public message sits under its conversation AND under every widget session on it, and each
- * session sits under the same conversation — so without the dedupe, the conversation (and
+ * public message sat under its conversation AND under every widget session on it (since #2044
+ * it is the message's public thread that does), and each session sits under the same
+ * conversation — so without the dedupe, the conversation (and
  * everything above it) was expanded once per session: 2,001 reads for one message under
  * 1,000 sessions. A live fan-out pays this per committed row.
  */

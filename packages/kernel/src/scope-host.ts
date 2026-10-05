@@ -514,6 +514,10 @@ export interface OperationContext {
    * - `from` must be a live parent edge of `child`; `conflict` otherwise. Every other
    *   parent a multi-parent entity has is left alone.
    * - `from` equal to `to` is a no-op: nothing written, nothing emitted.
+   * - A `to` that is ALREADY a live parent of `child` is the way to detach one parent of a
+   *   multi-parent child (#2044): the `from` edge is tombstoned, the live `to` edge is left
+   *   exactly as it was (no second row, no revive), and `entity.relinked` is still emitted.
+   *   The child keeps every other parent. The contract suite holds both adapters to it.
    * - The old edge is tombstoned (K-21), not deleted, and one `entity.relinked` spine event
    *   records the move on the child's timeline, stamped like any event the operation emits.
    * - Transactional with the operation: a relink whose operation throws never happened.

@@ -7446,6 +7446,28 @@ export function scopeHostContractSuite(
         expect(await relinked(item('rl6'))).toHaveLength(2);
       });
 
+      /**
+       * The documented way to DETACH one parent of a multi-parent child (#2044): relink it
+       * onto a parent it already has. ticket0 takes a conversation's public thread off a
+       * widget session this way, so it is contract, not an accident of `writeEdge`.
+       */
+      it('relink onto a live parent detaches `from` only: `to` untouched, other parents kept', async () => {
+        await link(item('rl-dt'), box('rb1'));
+        await link(item('rl-dt'), box('rb2'));
+        await link(item('rl-dt'), box('rb3'));
+        await move(item('rl-dt'), box('rb1'), box('rb2'));
+        expect(await edges(item('rl-dt'))).toEqual([
+          { object: 'box:rb1', revoked: true },
+          { object: 'box:rb2', revoked: false },
+          { object: 'box:rb3', revoked: false },
+        ]);
+        // One move, recorded as one; the live `to` was neither revived nor re-announced.
+        const events = await relinked(item('rl-dt'));
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ payload: { child: item('rl-dt'), from: box('rb1'), to: box('rb2') } });
+        expect(await relinked(item('rl-dt'), 'entity.linked')).toEqual([]);
+      });
+
       it('link revives an edge relink moved away from — INSERT OR IGNORE would have kept it dead', async () => {
         await link(item('rl7'), box('rb1'));
         // The twin first: a first-time link records nothing, as it never has.
