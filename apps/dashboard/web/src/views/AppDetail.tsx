@@ -3142,6 +3142,7 @@ function AppMembers({ app }: { app: AppRow }) {
     try {
       const v = await api.appMembers(scope);
       setView(v);
+      setErr(null);
       setRole((r) => (r && v.roles.includes(r) ? r : (v.roles[v.roles.length - 1] ?? '')));
     } catch (e) {
       if (e instanceof ApiError && e.status === 501) setUnsupported(e.message);
