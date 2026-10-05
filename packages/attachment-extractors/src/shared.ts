@@ -81,6 +81,16 @@ export async function checkpoint(signal: ExtractionSignal): Promise<void> {
  * `scan`; that is what makes "stops within one stride" true of an `indexOf` across a long run
  * of text, a comment or an unclosed tag, and not only of the loop around it.
  */
+/**
+ * What one call into the pace costs on top of the units it reads: a search, a scan, a decode, a
+ * token. A loop of tiny steps — a `find` per dash of a dashed comment, a token per byte — reads
+ * a unit or two a step, but each step has a fixed cost (a call, a slice, an await) that units of
+ * text do not count; charged as units alone, a stride was ~128 K such steps, ~100–300 ms under
+ * load, between two checks (Codex #2062 r2, found by the harness). With the floor, a stride is at
+ * most `EXTRACTION_STRIDE / CALL_COST` steps, whatever their size.
+ */
+export const CALL_COST = 64;
+
 export class Pace {
   private left = EXTRACTION_STRIDE;
 
@@ -104,6 +114,7 @@ export class Pace {
 
   /** `s.indexOf(needle, from)`, searched one window at a time. */
   async find(s: string, needle: string, from: number): Promise<number> {
+    this.charge(CALL_COST);
     for (let at = from; at < s.length; ) {
       await this.turn();
       const end = Math.min(s.length, at + this.left);
@@ -122,6 +133,7 @@ export class Pace {
 
   /** Visit `s` from `from`; `step(c, k)` returns true to stop at `k`. The index stopped at, or -1. */
   async scan(s: string, from: number, step: (c: number, k: number) => boolean): Promise<number> {
+    this.charge(CALL_COST);
     for (let k = from; k < s.length; ) {
       await this.turn();
       const start = k;
@@ -139,6 +151,7 @@ export class Pace {
 
   /** Bytes through `decoder` a window at a time; `stream` keeps a character cut by an edge whole. */
   async decode(decoder: Decoder, bytes: Uint8Array, out: string[]): Promise<void> {
+    this.charge(CALL_COST);
     for (let at = 0; at < bytes.length; ) {
       await this.turn();
       const end = Math.min(bytes.length, at + this.left);

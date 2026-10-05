@@ -45,6 +45,7 @@
  */
 import { EXTRACTION_STRIDE, type ExtractionSignal } from '@substrat-run/kernel';
 import {
+  CALL_COST,
   COLLECT_FACTOR,
   ExtractionBoundExceeded,
   MalformedInput,
@@ -136,6 +137,7 @@ const latin1 = (b: Uint8Array): string => {
 
 /** The first `needle` in `buf` at or after `from`, searched a window at a time; -1 when none. */
 async function findBytes(buf: Uint8Array, needle: Uint8Array, from: number, pace: Pace): Promise<number> {
+  pace.charge(CALL_COST);
   const first = needle[0]!;
   for (let at = from; at < buf.length; ) {
     await pace.turn();
@@ -157,6 +159,7 @@ async function findBytes(buf: Uint8Array, needle: Uint8Array, from: number, pace
 
 /** The last `needle` in `buf`, looking back at most `span` bytes from the end, a window at a time. */
 async function findLast(buf: Uint8Array, needle: Uint8Array, span: number, pace: Pace): Promise<number> {
+  pace.charge(CALL_COST);
   const stop = Math.max(0, buf.length - span);
   for (let at = buf.length - needle.length; at >= stop; ) {
     await pace.turn();
@@ -286,7 +289,9 @@ class Lexer {
       const n = numeric && digits > 0 && dots <= 1 ? Number(word) : Number.NaN;
       token = Number.isFinite(n) ? { t: 'num', v: n } : { t: 'kw', v: word };
     }
-    this.pace.charge(this.pos - from);
+    // A token's bytes, and the fixed cost of making one (`CALL_COST`): a stream of one-byte
+    // tokens is a call per byte.
+    this.pace.charge(this.pos - from + CALL_COST);
     return token;
   }
 

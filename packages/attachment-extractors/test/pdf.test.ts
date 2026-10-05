@@ -614,6 +614,8 @@ const SHAPES: readonly Shape[] = [
     )),
   // Round 1's blocker, and its class: a run near the token bound of every token class.
   pdfShape('a digit run ending in a letter', () => pageWith(`${'1'.repeat(60_000)}x`)),
+  // A loop of tiny steps: each token a byte, each step's fixed cost charged (`CALL_COST`).
+  pdfShape('3 M one-byte tokens', () => pageWith('q '.repeat(3 * MIB))),
   pdfShape('a keyword at the token bound', () => pageWith('k'.repeat(250 * 1024))),
   pdfShape('a name with escapes at the token bound', () => pageWith(`/${'#41a'.repeat(60_000)}`)),
   pdfShape('a literal string at the token bound', () => pageWith(`(${'\\(s'.repeat(80_000)})`)),
