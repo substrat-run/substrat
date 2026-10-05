@@ -26,6 +26,8 @@ const shared = vi.hoisted(() => ({ host: null as unknown }));
 vi.mock('cloudflare:workers', () => ({ DurableObject: class {} }));
 vi.mock('@substrat-run/adapter-cloudflare', () => ({
   defineScopeDO: () => class {},
+  defineScopeSweeperDO: () => class {},
+  SCOPE_SWEEPER_NAME: 'scope-sweeper',
   ControlPlaneDO: class {},
   CloudflareScopeHost: class {
     constructor() {
