@@ -187,6 +187,55 @@ That is the event id rather than a separate correlation field: the envelope alre
 carries a unique kernel-stamped id, and reusing it avoids widening a frozen contract to
 say something it already says.
 
+**A handler can refuse for good.** An executor that decides an event must never be
+effected returns `refuseDelivery(reason)` instead of throwing. The delivery is journaled
+terminal with that reason, never retried, and listed by `executorDeadLetters`. It is a
+return value so that module code, which can only throw, cannot produce one. The emitting
+call learns what happened through `InvokeOptions.onExecutorOutcomes`, so a request can
+tell its caller "refused" or "still pending" instead of reporting success.
+
+### Membership, written once {#membership-executor}
+
+Joining someone to a team is the case this seam exists for, so the kernel ships the
+executor rather than leaving each host to write one:
+
+```ts
+import { registerMembershipExecutor } from '@substrat-run/kernel';
+
+registerMembershipExecutor(host, { actor: SERVICE_ACTOR }); // tenant-level, the only level
+```
+
+It consumes `member.add-requested`, which `@substrat-run/engine-invites` emits on accept,
+and assigns the invited role at the tenant node, as one directory unit
+(`HostAdmin.applyMembership`). That is all it does: it joins nobody to an org, although the
+request names one. What an org confers can include grants in each scope's own store, which no
+directory unit can bound, so org membership is not authority this seam carries.
+
+Nothing in the payload is taken as authority. The inviter is the kernel-stamped actor of the
+invitation's own `invites.sent` event, and the role is assigned only if that inviter **still**
+holds every permission it carries: the comparison `ctx.canAssign` makes, asked again inside the
+unit that writes, so a demotion, a lost grant or a widened role landing in between is not
+written past. One invitation joins one person, once. An inviter
+demoted or removed between send and accept is refused. So is a request that names another
+tenant, a joiner other than the one who accepted, a role the invitation was not sent for,
+or an invitation somebody else accepted first. The admin rows record the service actor as
+executing, `onBehalfOf` the inviter, `causedBy` the event.
+
+Removal goes through the same seam: a vertical emits `member.remove-requested` on
+`membership:<principal>`, and the executor takes the role away, bounded by the **remover's**
+own authority, asked inside the unit as the inviter's is. **Removal wins.** Every tenant-level `unassignRole` and every `removeMember`,
+a staff member's or the executor's, raises the person's removal fence in the same directory
+unit as its revoke, even when there was nothing to revoke. An add is refused when a later
+`member.remove-requested` names the joiner, or when the fence stands at or after the request
+less `MEMBERSHIP_REMOVAL_SKEW_MS` (5 minutes: the directory and the scope share no clock, so
+a tie and anything within the window go to the removal). So a join still retrying when the
+person is removed never lands afterwards, and neither does one that was on its way when staff
+removed someone who did not hold the role yet.
+
+A module shows the effect it asked for as it actually stands with `readExecutorDelivery`
+from `@substrat-run/kernel`: unattempted, retrying, delivered, refused (and why), or
+dead-lettered, read off the delivery journal.
+
 ## How work leaves the scope {#drain}
 
 Consumers run inside the scope. Two kinds of work cannot: a **platform intent** needs

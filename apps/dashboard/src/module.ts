@@ -2,7 +2,13 @@ import { z } from 'zod';
 import { moduleManifest, permissionKey, type PermissionKey, type OrgId } from '@substrat-run/contracts';
 import {
   assertAllowed,
+  MEMBER_ADD_REQUESTED,
+  MEMBER_REMOVE_REQUESTED,
+  MEMBERSHIP_EXECUTOR_ID,
+  membershipEntity,
+  readExecutorDelivery,
   ulid,
+  type MemberRemoveRequestedPayload,
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
@@ -78,7 +84,8 @@ export const dashboardManifest = moduleManifest.parse({
       description: 'Connect and disconnect third-party providers (GitHub, Scrive) for this tenant',
     },
   ],
-  events: { emits: [], consumes: [] },
+  // #1184: a removal is asked of the kernel's membership executor, as an add is by the invites engine.
+  events: { emits: [{ type: MEMBER_REMOVE_REQUESTED, schemaVersion: 1 }], consumes: [] },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   attachmentTargets: [],
   entitlementKey: 'dashboard',
@@ -363,6 +370,34 @@ export const dashboardMigrations = [
         account_ref    TEXT,
         account_label  TEXT
       );
+    `,
+  },
+  {
+    version: '0014-member-joining',
+    sql: `
+      -- 'joining' (#1184): an accepted invite whose membership the kernel's executor has not
+      -- effected yet. The accept commits before the role exists, so the row says so rather
+      -- than 'active'; the roster read resolves it against the executor's journal (pending,
+      -- refused and why, or joined). SQLite cannot widen a CHECK in place, so the table is
+      -- rebuilt with its rows, constraints and index exactly as 0003 made them.
+      CREATE TABLE dashboard_members_0014 (
+        id            TEXT PRIMARY KEY,
+        principal     TEXT UNIQUE,
+        email         TEXT NOT NULL,
+        role_key      TEXT NOT NULL,
+        status        TEXT NOT NULL CHECK (status IN ('active','invited','revoked','joining')),
+        invitation_id TEXT UNIQUE,
+        invited_by    TEXT NOT NULL,
+        invited_at    TEXT NOT NULL,
+        joined_at     TEXT
+      );
+      INSERT INTO dashboard_members_0014
+        (id, principal, email, role_key, status, invitation_id, invited_by, invited_at, joined_at)
+        SELECT id, principal, email, role_key, status, invitation_id, invited_by, invited_at, joined_at
+          FROM dashboard_members;
+      DROP TABLE dashboard_members;
+      ALTER TABLE dashboard_members_0014 RENAME TO dashboard_members;
+      CREATE INDEX dashboard_members_by_status ON dashboard_members (status);
     `,
   },
 ];
@@ -1004,7 +1039,14 @@ export interface DashboardMemberRow {
   principal: string | null;
   email: string;
   role_key: string;
-  status: 'active' | 'invited' | 'revoked';
+  /**
+   * Stored: 'active' | 'invited' | 'revoked' | 'joining'. As `list-members` returns it, a
+   * 'joining' row is resolved against the membership executor's journal (#1184): 'active' once
+   * it joined, 'refused' (with `refusal`) once it never will, 'joining' while it is pending.
+   */
+  status: 'active' | 'invited' | 'revoked' | 'joining' | 'refused';
+  /** Why the membership was refused — only on a row `list-members` resolved to 'refused'. */
+  refusal?: string;
   invitation_id: string | null;
   invited_by: string;
   invited_at: string;
@@ -1090,14 +1132,15 @@ const acceptInviteInput = z.object({
  * member yet, so there is no permission to check — the identifier hash IS the
  * authority, per the invites engine). Composes `acceptInvite` (verifies the hash,
  * transitions state, emits invites.accepted + member.add-requested) and flips the
- * roster row to active in the SAME transaction. The kernel role assignment + identity
- * link are effected by the worker afterwards (they need platform authority / the sub).
+ * roster row to joining in the SAME transaction. The role assignment is effected after
+ * the commit by the membership executor (#1184, `membership.ts`), the
+ * identity link by the worker (it needs the sub).
  */
 const acceptInviteOp: OperationHandler<z.infer<typeof acceptInviteInput>, { roleKey: string }> = async (ctx, raw) => {
   const input = acceptInviteInput.parse(raw);
   const invitation = await acceptInvite(ctx, input); // throws "not acceptable" on any mismatch
   ctx.sql.exec(
-    `UPDATE dashboard_members SET principal = ?, status = 'active', joined_at = ? WHERE invitation_id = ?`,
+    `UPDATE dashboard_members SET principal = ?, status = 'joining', joined_at = ? WHERE invitation_id = ?`,
     [ctx.principal, ctx.now(), input.invitationId],
   );
   return { roleKey: invitation.role_key };
@@ -1219,12 +1262,31 @@ const listMembersInput = z.object(listPageInput);
 const listMembersOp: OperationHandler<z.infer<typeof listMembersInput>, DashboardMemberRow[]> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
   const input = listMembersInput.parse(raw ?? {});
-  return ctx.sql.query<DashboardMemberRow>(
-    `SELECT * FROM dashboard_members WHERE status IN ('active','invited')${input.cursor ? ' AND id < ?' : ''}
+  const rows = ctx.sql.query<DashboardMemberRow>(
+    `SELECT * FROM dashboard_members WHERE status IN ('active','invited','joining')${input.cursor ? ' AND id < ?' : ''}
        ORDER BY id DESC${input.limit ? ' LIMIT ?' : ''}`,
     [...(input.cursor ? [input.cursor] : []), ...(input.limit ? [input.limit] : [])],
   );
+  return rows.map((row) => joinedAs(ctx, row));
 };
+
+/**
+ * A 'joining' row as it actually stands (#1184): the membership executor's journal for the
+ * request its accept emitted. Read, never written back — a read must not mutate (#964).
+ */
+function joinedAs(ctx: OperationContext, row: DashboardMemberRow): DashboardMemberRow {
+  if (row.status !== 'joining' || !row.principal) return row;
+  const delivery = readExecutorDelivery(ctx, {
+    executorId: MEMBERSHIP_EXECUTOR_ID,
+    eventType: MEMBER_ADD_REQUESTED,
+    entity: membershipEntity(row.principal),
+  });
+  if (delivery?.state === 'delivered') return { ...row, status: 'active' };
+  if (delivery?.state === 'refused' || delivery?.state === 'dead-lettered') {
+    return { ...row, status: 'refused', refusal: delivery.error ?? delivery.state };
+  }
+  return row;
+}
 
 /**
  * The caller leaves the team — marks their OWN roster row revoked. The worker then
@@ -1234,7 +1296,7 @@ const listMembersOp: OperationHandler<z.infer<typeof listMembersInput>, Dashboar
  */
 const leaveSelfOp: OperationHandler<Record<string, never>, void> = async (ctx) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE principal = ? AND status = 'active'`, [ctx.principal]);
+  ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE principal = ? AND status IN ('active','joining')`, [ctx.principal]);
 };
 
 /**
@@ -1253,8 +1315,8 @@ const deleteTeamOp: OperationHandler<Record<string, never>, { members: Array<{ p
   if (!me || me.role_key !== 'owner') {
     throw new Error('permission denied: only the owner can delete the organization');
   }
-  const active = ctx.sql.query<DashboardMemberRow>(`SELECT * FROM dashboard_members WHERE status = 'active'`);
-  ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE status = 'active'`);
+  const active = ctx.sql.query<DashboardMemberRow>(`SELECT * FROM dashboard_members WHERE status IN ('active','joining')`);
+  ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE status IN ('active','joining')`);
   return {
     members: active
       .filter((m) => m.principal)
@@ -1265,20 +1327,45 @@ const deleteTeamOp: OperationHandler<Record<string, never>, { members: Array<{ p
 const removeMemberInput = z.object({ memberId: z.string().min(1) });
 
 /**
- * Remove an ACTIVE member from the roster projection (the worker separately revokes
- * their kernel role via `unassignRole` — that is what actually cuts access). The
- * owner cannot be removed. Returns the removed principal + role so the worker knows
- * what to unassign; a no-match (already gone, or the owner) returns null.
+ * Remove a member (#1184). The roster row is revoked here and `member.remove-requested` asks
+ * the kernel's membership executor to take the role away, after the
+ * commit and inline — the same seam the join went through, so a join still pending when the
+ * person is removed can never land afterwards. §5.1's bound applies to removal as to
+ * assignment: you cannot strip a role you could not have granted. The owner cannot be
+ * removed. Returns the principal so the worker can sever their login; null for no match
+ * (already gone, or the owner).
  */
-const removeMemberOp: OperationHandler<z.infer<typeof removeMemberInput>, { principal: string; roleKey: string } | null> = async (ctx, raw) => {
+const removeMemberOp: OperationHandler<
+  z.infer<typeof removeMemberInput>,
+  { principal: string; roleKey: string } | null
+> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.manageMembers));
   const input = removeMemberInput.parse(raw);
   const row = ctx.sql.query<DashboardMemberRow>(
-    `SELECT * FROM dashboard_members WHERE id = ? AND status = 'active' AND role_key != 'owner'`,
+    `SELECT * FROM dashboard_members WHERE id = ? AND status IN ('active','joining') AND role_key != 'owner'`,
     [input.memberId],
   )[0];
   if (!row || !row.principal) return null;
+  const bound = await ctx.canAssign(row.role_key);
+  if (!bound.covered) {
+    throw new Error(`permission denied: you cannot remove a '${row.role_key}': you do not hold ${bound.missing.join(', ')}`);
+  }
+  const team = ctx.sql.query<{ org_id: string }>('SELECT org_id FROM dashboard_team LIMIT 1')[0];
+  if (!team) throw new Error('team not initialised');
   ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE id = ?`, [input.memberId]);
+  const payload: MemberRemoveRequestedPayload = {
+    principal: row.principal as MemberRemoveRequestedPayload['principal'],
+    orgId: team.org_id as MemberRemoveRequestedPayload['orgId'],
+    tenantId: ctx.tenantId,
+    roleKey: row.role_key,
+  };
+  ctx.emit({
+    type: MEMBER_REMOVE_REQUESTED,
+    schemaVersion: 1,
+    entity: membershipEntity(row.principal),
+    piiClass: 'none',
+    payload,
+  });
   return { principal: row.principal, roleKey: row.role_key };
 };
 

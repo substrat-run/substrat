@@ -289,7 +289,9 @@ import {
   type MigrateScopeOutcome,
   type MigrationFrontier,
   type ExecutorHandler,
+  type ExecutorOutcome,
   type ExecutorRetryPolicy,
+  type ExecutorScope,
   backoffAt,
   platformRequestHistoryQuery,
   platformRequestOf,
@@ -400,6 +402,16 @@ import {
   newImpersonationSession,
   type ImpersonationRow,
   resolveRetryPolicy,
+  executorOutcomeOf,
+  isDeliveryRefusal,
+  refusalJournalText,
+  membershipFencesBackfillSql,
+  MEMBERSHIP_FENCES_DDL,
+  membershipFencesTableExists,
+  MEMBERSHIP_FENCE_SINCE_SQL,
+  RAISE_MEMBERSHIP_FENCE_SQL,
+  tenantCoverage,
+  type MembershipChangeResult,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
@@ -565,7 +577,7 @@ import { attributedHost } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
-import { createTupleChecker } from './checker.js';
+import { createTupleChecker, directoryTenantReader } from './checker.js';
 
 /**
  * A fault in the database itself (full, corrupt, I/O), as opposed to one statement failing.
@@ -2118,6 +2130,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
       ${IMPERSONATION_DDL}
       ${SYSTEM_SWITCHES_DDL}
+      ${MEMBERSHIP_FENCES_DDL}
       ${PEER_SWITCHES_DDL}
       ${SWITCH_OWED_DDL}
       CREATE TABLE IF NOT EXISTS _substrat_admin_log (
@@ -2298,8 +2311,12 @@ export class SqliteScopeHost implements ScopeHost {
     this.directory.transaction(() => {
       // Each kill switch's record (#1674, #2029) is backfilled on the pass that creates its table.
       const newRecords = SWITCH_KINDS.filter((kind) => !switchesTableExists(switchSqlOf(this.directory), kind));
+      const fencesAreNew = !membershipFencesTableExists(switchSqlOf(this.directory));
       this.buildDirectorySchema();
       for (const kind of newRecords) this.directory.exec(switchesBackfillSqlOf(kind));
+      // #1184: the removal fence, for everyone removed before it existed — the same once-only
+      // gate — stamped now, by the host clock (`membershipFencesBackfillSql` says why).
+      if (fencesAreNew) this.directory.exec(membershipFencesBackfillSql(this.clock()));
     })();
     this.splitVersionMigrations();
   }
@@ -4344,7 +4361,8 @@ export class SqliteScopeHost implements ScopeHost {
   private async assignmentBound(
     subject: CheckSubject,
     tenantId: TenantId,
-    scopeId: ScopeId,
+    /** Null for the tenant node — the executor's `level: 'tenant'` (#1184). */
+    scopeId: ScopeId | null,
     roleKey: string,
   ): Promise<Coverage> {
     const role = this.roles.get(`${tenantId}/${roleKey}`);
@@ -4744,6 +4762,8 @@ export class SqliteScopeHost implements ScopeHost {
         let replayed = false;
         // #1746: what this call itself emitted, for `onEmitted`. Set only after a commit.
         let emittedReport: EmittedReport | undefined;
+        // #1184: what this call's executors did inline, for `onExecutorOutcomes`.
+        const executorOutcomes: ExecutorOutcome[] | undefined = invokeOptions?.onExecutorOutcomes ? [] : undefined;
         const invoked = await rt.actor.enqueue(async () => {
           // #1237: the invocation this call belongs to, for the duration of it. Set
           // INSIDE the actor task — the actor serializes invoke and dispatch alike, so
@@ -4922,7 +4942,7 @@ export class SqliteScopeHost implements ScopeHost {
             // #1525: still inside the actor task that set it, so these deliveries are
             // this call's own work — the same tail its consumers' emits are stamped in.
             await this.dispatch(rt, rt.invocationId);
-            await this.dispatchExecutors(rt, rt.invocationId);
+            await this.dispatchExecutors(rt, rt.invocationId, executorOutcomes);
           }
           if (exportMark !== null && !replayed) {
             const q = exportedSinceQuery(exportTypes, exportMark);
@@ -4943,6 +4963,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
         if (replayed) invokeOptions?.onIdempotentReplay?.();
         if (emittedReport) invokeOptions?.onEmitted?.(emittedReport);
+        if (executorOutcomes && !replayed && session?.mode !== 'read-only') invokeOptions?.onExecutorOutcomes?.(executorOutcomes);
         return invoked;
       },
     };
@@ -5047,6 +5068,19 @@ export class SqliteScopeHost implements ScopeHost {
    * At-least-once still requires idempotent handlers. Retry is the backstop, not a
    * substitute.
    */
+  /**
+   * #1184: the scope reads an executor's handler may make, built over `rt` directly. The
+   * handler runs INSIDE this scope's actor task, so a host read that re-enqueued — the
+   * public `canAssign`, `admin.entityHistory` — would wait on the task holding it.
+   */
+  private executorScope(rt: ScopeRuntime): ExecutorScope {
+    return {
+      history: async (entity, page) => readHistory({ sql: scopedSql(rt.db) }, entity, page),
+      covers: (principal, roleKey, level) =>
+        this.assignmentBound(asPrincipal(principalId.parse(principal)), rt.tenantId, level === 'scope' ? rt.scopeId : null, roleKey),
+    };
+  }
+
   private async dispatchExecutors(
     rt: ScopeRuntime,
     /**
@@ -5057,6 +5091,8 @@ export class SqliteScopeHost implements ScopeHost {
      * a recorded fact whose correctness argument differs per adapter drifts.
      */
     invocationId: string | null,
+    /** #1184: what each attempt did, for the emitting call's `onExecutorOutcomes`. */
+    outcomes?: ExecutorOutcome[],
   ): Promise<ExecutorDrainReport> {
     const report: ExecutorDrainReport = {
       attempted: 0,
@@ -5067,7 +5103,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.executors.size === 0) return report;
     const lines = asyncLinePass(this.invocationLineSink);
     try {
-      await this.dispatchExecutorsPass(rt, invocationId, report, lines);
+      await this.dispatchExecutorsPass(rt, invocationId, report, lines, outcomes);
     } finally {
       lines.end();
     }
@@ -5079,8 +5115,10 @@ export class SqliteScopeHost implements ScopeHost {
     invocationId: string | null,
     report: ExecutorDrainReport,
     lines: AsyncLinePass,
+    outcomes: ExecutorOutcome[] | undefined,
   ): Promise<void> {
     const now = new Date().toISOString();
+    const scope = this.executorScope(rt);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects. Every executor is host code acting with platform authority — a
     // connector with the tenant's credential, a plain executor with `HostAdmin` — so its
@@ -5134,25 +5172,43 @@ export class SqliteScopeHost implements ScopeHost {
           lines.write({ ...unit, attempt: attempts, outcome: 'dead-lettered' });
           continue;
         }
+        const outcomeOf = (outcome: ExecutorOutcome['outcome'], error?: unknown): void => {
+          outcomes?.push(executorOutcomeOf(id, event, outcome, error));
+        };
         if (isInert()) {
           const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, INERT_SCOPE_REASON, TERMINAL_RETRY, invocationId);
           report.inert = (report.inert ?? 0) + 1;
+          outcomeOf('inert', INERT_SCOPE_REASON);
           // Its own outcome, never `delivered`: no handler ran (#2005).
           lines.write({ ...unit, attempt: attempts, outcome: 'inert' });
           continue;
         }
         this.causedBy = event.id;
         try {
+          let result: unknown;
           if (executor.kind === 'connector') {
             // `true`: dispatchExecutors is only ever reached from inside
             // `rt.actor.enqueue` (invoke's post-commit tail, or drainDue).
             await executor.handler(this.connectorContext(rt, executor.timeoutMs, true, event.id), event);
           } else {
-            await executor.handler(this.admin, event);
+            result = await executor.handler(this.admin, event, scope);
           }
-          const { attempts } = this.recordExecutorDelivery(rt, row.id, deliveryId, null, executor.retry, invocationId);
-          report.delivered += 1;
-          lines.write({ ...unit, attempt: attempts, outcome: 'delivered' });
+          // #1184: a refusal is the handler's own terminal decision — journaled with its
+          // reason, never retried, and listed by `executorDeadLetters` beside an exhausted one.
+          const refused = isDeliveryRefusal(result) ? result : null;
+          const text = refused && refusalJournalText(refused);
+          const { attempts } = this.recordExecutorDelivery(
+            rt, row.id, deliveryId, text, refused ? TERMINAL_RETRY : executor.retry, invocationId,
+          );
+          if (refused) {
+            report.deadLettered += 1;
+            outcomeOf('refused', refused.reason);
+            lines.write({ ...unit, attempt: attempts, outcome: 'dead-lettered', error: text });
+          } else {
+            report.delivered += 1;
+            outcomeOf('delivered');
+            lines.write({ ...unit, attempt: attempts, outcome: 'delivered' });
+          }
         } catch (err) {
           const { dead, attempts } = this.recordExecutorDelivery(
             rt,
@@ -5164,6 +5220,7 @@ export class SqliteScopeHost implements ScopeHost {
           );
           if (dead) report.deadLettered += 1;
           else report.retrying += 1;
+          outcomeOf(dead ? 'dead-lettered' : 'retrying', err);
           lines.write({ ...unit, attempt: attempts, outcome: dead ? 'dead-lettered' : 'retrying', error: err });
         } finally {
           this.causedBy = null;
@@ -6204,6 +6261,8 @@ export class SqliteScopeHost implements ScopeHost {
     target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
     before: unknown,
     after: unknown,
+    /** When the row says it happened; the wall clock unless the write took its time elsewhere (#1184). */
+    at: string = new Date().toISOString(),
   ): void {
     this.directory
       .prepare(
@@ -6223,7 +6282,7 @@ export class SqliteScopeHost implements ScopeHost {
         this.causedBy,
         // #977: set only on an attributed view (`attributed`), never on the host itself.
         this.onBehalfOf === null ? null : JSON.stringify(this.onBehalfOf),
-        new Date().toISOString(),
+        at,
       );
   }
 
@@ -6524,6 +6583,40 @@ export class SqliteScopeHost implements ScopeHost {
            VALUES (?, ?, ?, ?, ?)`,
         )
         .run(tenantId, subject, relation, object, expiresAt ?? null);
+
+    // #1184: a tenant-level removal, for inside a directory transaction — the tombstone
+    // (K-21), the removal fence, raised even when nothing was held so an add still on its way
+    // cannot land after this, and the audit row (`audit`), which K-21 writes only when
+    // something changed. The shape of the Durable-Object adapter's `revokeAndFence`.
+    //
+    // All three are stamped by the HOST clock, the one that stamps a scope event's `occurredAt`:
+    // the fence is compared with an add's `occurredAt`, and two clocks would let a host clock
+    // running ahead of the wall push a removal under the skew window (Codex round 3).
+    let revokeStmt: Database.Statement | undefined;
+    let fenceStmt: Database.Statement | undefined;
+    const revokeAndFence = (tenantId: string, principal: string, relation: string, object: string, audit: (at: string) => void): boolean => {
+      const now = this.clock();
+      const changed =
+        (revokeStmt ??= this.directory.prepare(
+          `UPDATE _substrat_tenant_tuples SET revoked_at = ?
+           WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+        )).run(now, tenantId, `principal:${principal}`, relation, object).changes > 0;
+      (fenceStmt ??= this.directory.prepare(RAISE_MEMBERSHIP_FENCE_SQL)).run(tenantId, principal, now);
+      if (changed) audit(now);
+      return changed;
+    };
+    const revokeTenantRoleAndFence = (actor: PlatformActorId, assignment: RoleAssignment): boolean => {
+      const { tenantId } = assignment.node;
+      return revokeAndFence(tenantId, assignment.principalId, `role:${assignment.roleKey}`, `tenant:${tenantId}`, (at) =>
+        this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null, at),
+      );
+    };
+    // The tenant-level reads the checker makes, synchronous, for the bound inside a unit.
+    const directoryReader = directoryTenantReader({
+      directory: this.directory,
+      getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
+      clock: () => this.clock(),
+    });
 
     // The EXPLICIT grant: `INSERT OR REPLACE` clears a tombstone, because a re-grant must
     // grant. Provisioning seats with `seatScopeTuple` instead, which never un-revokes
@@ -6967,40 +7060,26 @@ export class SqliteScopeHost implements ScopeHost {
         // Tombstone (K-21), never DELETE — the checker skips revoked_at rows, so the
         // assignment stops resolving while staying visible to audit. Guarded on
         // `revoked_at IS NULL` so a repeat unassign is a silent no-op.
-        const subject = `principal:${assignment.principalId}`;
-        const relation = `role:${assignment.roleKey}`;
-        const now = new Date().toISOString();
-        let changes: number;
-        if (assignment.node.scopeId) {
-          // On the scope actor (#1678): a revoke that joined a stranger's transaction and
-          // rolled back with it left the role LIVE after the caller was told it was gone.
-          const scopeNode = assignment.node.scopeId;
-          const rt = this.runtime(assignment.node.tenantId, scopeNode);
-          changes = await rt.actor.turn(
-            () =>
-              rt.db
-                .prepare(
-                  `UPDATE _substrat_tuples SET revoked_at = ?
-                   WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-                )
-                .run(now, subject, relation, `scope:${scopeNode}`).changes,
-          );
-        } else {
-          changes = this.directory
-            .prepare(
-              `UPDATE _substrat_tenant_tuples SET revoked_at = ?
-               WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-            )
-            .run(now, assignment.node.tenantId, subject, relation, `tenant:${assignment.node.tenantId}`).changes;
+        const scopeNode = assignment.node.scopeId;
+        if (!scopeNode) {
+          // One directory transaction (#1184): the revoke, the removal fence and the audit row.
+          this.directory.transaction(() => revokeTenantRoleAndFence(actor, assignment))();
+          return;
         }
-        if (changes === 0) return; // never assigned, or already revoked — idempotent, unaudited
-        this.recordAdmin(
-          actor,
-          'unassignRole',
-          { tenantId: assignment.node.tenantId, scopeId: assignment.node.scopeId },
-          assignment,
-          null,
+        // On the scope actor (#1678): a revoke that joined a stranger's transaction and
+        // rolled back with it left the role LIVE after the caller was told it was gone.
+        const rt = this.runtime(assignment.node.tenantId, scopeNode);
+        const changes = await rt.actor.turn(
+          () =>
+            rt.db
+              .prepare(
+                `UPDATE _substrat_tuples SET revoked_at = ?
+                 WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+              )
+              .run(new Date().toISOString(), `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeNode}`).changes,
         );
+        if (changes === 0) return; // never assigned, or already revoked — idempotent, unaudited
+        this.recordAdmin(actor, 'unassignRole', { tenantId: assignment.node.tenantId, scopeId: scopeNode }, assignment, null);
       },
       grant: async (actor: PlatformActorId, raw: CapabilityGrant) => {
         // Parsed like its `grantToConnection`/`grantToSystem` siblings, not taken on
@@ -8598,24 +8677,39 @@ export class SqliteScopeHost implements ScopeHost {
         writeTenantTuple(tenantId, `principal:${principal}`, 'member', `org:${orgId}`);
         this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
       },
+      applyMembership: async (actor, change) => {
+        // ONE directory transaction, synchronous throughout (#1184): the fence (an add's), the
+        // bound and the write. Nothing else on this host lands between them, and a failure
+        // leaves none.
+        const { tenantId, principal, roleKey, boundedBy } = change;
+        const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
+        return this.directory.transaction((): MembershipChangeResult => {
+          if (change.op === 'add') {
+            const fence = this.directory
+              .prepare(MEMBERSHIP_FENCE_SINCE_SQL)
+              .get(tenantId, principal, change.unlessRemovedSince) as { removed_at: string } | undefined;
+            if (fence) return { applied: false, removedAt: fence.removed_at };
+          }
+          const role = directoryReader.getRole(tenantId, roleKey);
+          if (!role) return { applied: false, unknownRole: roleKey };
+          const bound = tenantCoverage(directoryReader, tenantId, boundedBy, role.permissions);
+          if (!bound.covered) return { applied: false, missing: bound.missing };
+          if (change.op === 'remove') return { applied: true, changed: revokeTenantRoleAndFence(actor, assignment) };
+          writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`);
+          this.recordAdmin(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment);
+          return { applied: true };
+        })();
+      },
       removeMember: async (actor, tenantId, principal, orgId) => {
         requireOrg(tenantId, orgId);
-        // Tombstone (K-21), never DELETE. Guarded on `revoked_at IS NULL` so a
-        // repeat revoke neither moves the timestamp nor writes a second audit row.
-        const info = this.directory
-          .prepare(
-            `UPDATE _substrat_tenant_tuples SET revoked_at = ?
-             WHERE tenant_id = ? AND subject = ? AND relation = 'member' AND object = ?
-               AND revoked_at IS NULL`,
-          )
-          .run(
-            new Date().toISOString(),
-            tenantId,
-            `principal:${principal}`,
-            `org:${orgId}`,
-          );
-        if (info.changes === 0) return; // never a member, or already revoked
-        this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null);
+        // Tombstone (K-21), never DELETE: a repeat revoke neither moves the timestamp nor writes
+        // a second audit row. One transaction with the removal fence (#1184), which a no-op
+        // raises too.
+        this.directory.transaction(() =>
+          revokeAndFence(tenantId, principal, 'member', `org:${orgId}`, (at) =>
+            this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null, at),
+          ),
+        )();
       },
       listMembers: async (actor, tenantId, orgId, options) => {
         requireOrg(tenantId, orgId);
@@ -9087,6 +9181,7 @@ export class SqliteScopeHost implements ScopeHost {
           loadDirectoryDump(dump.tables, {
             columnsOf: (name) => builtColumnsOf(this.directory, name),
             exec: (sql) => this.directory.exec(sql),
+            now: () => this.clock(),
             insert: (sql, rows) => {
               const insert = this.directory.prepare(sql);
               for (const row of rows) insert.run(...(row as unknown[]));
@@ -9384,6 +9479,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_entitlements', // per-tenant SKU flags
           'orgs', // K-22 org records
           '_substrat_system_switches', // #1674: the schedule switch's record, per scope
+          '_substrat_membership_fences', // #1184: the latest removal, per principal
           '_substrat_peer_switches', // #2029: the peer switch's record, per scope
           '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
         ];

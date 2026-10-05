@@ -177,6 +177,77 @@ construction. §3 named the split trail as the main thing that gets worse under 
 pattern; joining it is cheap to design now and impossible to reconstruct after two years of
 uncorrelated rows — which is exactly when someone asks.
 
+**The executor is the kernel's, mounted once (#1184).** `registerMembershipExecutor(host,
+{ actor })` in `@substrat-run/kernel` consumes `member.add-requested` and assigns the role at
+the **tenant** node, and only there. It joins no org: an org's grants can live in each scope's
+own store, where no directory unit can bound them, so authorizing org membership needs a
+capability of its own, and the request's `orgId` stays the invites engine's vocabulary. A scope-level role lives in
+the scope's store and membership in the directory, and no single operation spans the two.
+A scope role already has an atomic check-and-grant, `assignScopeRoleBounded`, which is what
+`vertical-auth`'s invite routes use.
+
+The correlation id is the event's own kernel-minted id, carried back as `causedBy` on the
+admin row. Nothing in the payload is authority, because module code wrote it:
+
+- The inviter is the kernel-stamped actor of the invitation's `invites.sent` event. §5.1's
+  set comparison asks, at execution time, whether that inviter still holds every permission
+  the role carries. A sender demoted or removed since the send is refused.
+- The joiner is the request's own actor. It must have made the invitation's first
+  acceptance, and the request must be the first one naming that invitation, so one
+  invitation joins one person once.
+- The bound is no weaker than `ctx.grant`'s delegation: the most a module can do is make
+  the principal who really invoked it look like the sender.
+
+The effect is ONE directory unit, `HostAdmin.applyMembership`: a SQLite transaction, or one
+synchronous ControlPlaneDO method, with no await inside it. It reads the person's removal
+fence, asks the bound again against the directory as it stands (`tenantCoverage`, the
+synchronous twin of `covers` at the tenant node, pinned to it by test), and only then writes
+the role and its audit row. The executor's own earlier check is the cheap refusal; the one
+inside the unit is the one that decides, so a demotion, a lost grant or a widened role landing
+between the two is never written past.
+
+A refusal is terminal (`refuseDelivery`, a return value module code cannot produce),
+journaled with the missing permissions, and reported to the accepting call through
+`onExecutorOutcomes`. The admin rows name the platform actor that executed them and,
+through `attributed` (#977), the inviter `onBehalfOf` whom they were written. That answers
+the `PlatformActorId` question: the actor is the hand, and the person whose authority bounded
+the write is recorded beside it, not laundered away.
+
+Removal is the mirror: `member.remove-requested`, bounded by the remover (§5.1 consequence
+1) the same two ways, early and again inside the unit, so a remover demoted in between
+removes nobody. The unit takes the tenant role away exactly as a tenant-level `unassignRole`
+does. **Removal wins**: an add
+is refused when the joiner was removed after it was requested.
+
+- A removal through the seam is ordered by outbox id.
+- Every tenant-level `unassignRole` and every `removeMember`, staff's or the executor's,
+  raises the person's **removal fence** (`_substrat_membership_fences`) in the same unit as
+  its revoke: one transaction, or one ControlPlaneDO method, so no add can land between the
+  revoke and the fence. A no-op removal raises it too, because a removal of someone whose add
+  is still on its way takes nothing and must still win; K-21's audit contract is unchanged,
+  and a no-op still writes no audit row. The fence is its own table for that reason.
+- The add's unit refuses when the fence stands at or after the request less
+  `MEMBERSHIP_REMOVAL_SKEW_MS` (5 minutes). The fence and the request are kept in one clock
+  domain per adapter. The pure host stamps both with its own clock. The ControlPlaneDO mints a
+  removal's time inside its unit, never before the awaited call that reaches it, and that time
+  and a ScopeDO's `occurredAt` are the platform's NTP-disciplined time, sub-second apart. The
+  window absorbs that, and ties go to the removal. The cost: someone removed less than that before
+  accepting a NEW invite is refused, and the invite can be resent.
+- The fence is carried by a directory backup and restore like every directory table, and
+  cleared with the tenant's other rows on a reap.
+- **The backlog.** Every accept since the invites engine shipped emitted a request nothing
+  consumed, so a first drain finds a backlog. The fence is backfilled once from the admin log
+  (`membershipFencesBackfillSql`: everyone a tenant-level `unassignRole` or `removeMember` ever
+  named) on the construction that creates the table, and on a restore whose dump predates it.
+  Each backfilled fence stands at the adapter's clock at that moment, never the audit row's own
+  time, which was stamped in another clock domain. So every request emitted before the backfill
+  for anyone ever removed is refused. Nothing legitimate is lost: anyone re-added before the
+  executor existed got their role by hand and still holds it. The cost: someone with a
+  historical removal who accepts a new invite within 5 minutes of the deploy must have it resent.
+
+The dashboard mounts it with its own scope sweeper as the backstop, and shows an accepted
+member as `joining` until the journal says otherwise (`readExecutorDelivery`).
+
 ### 4.3 Revocation: tombstone, never delete (K-21, shipped)
 
 A revoked tuple keeps its row and gains a `revoked_at` the checker's walk skips. Decided
@@ -291,7 +362,8 @@ rate-limited. The mechanics came from [booking-social](../rfc/booking-social.md)
 don't search" — written for a consumer social graph, and they transferred intact.
 
 **The engine owns the flow; the executor owns the effect.** On accept the engine
-*emits* `member.add-requested` and the connector (§4.2) effects it. An earlier draft of
+*emits* `invites.accepted` and `member.add-requested`, and the kernel's membership executor
+(§4.2) effects the second. An earlier draft of
 this section said the engine "calls the §4 seam", which was the in-scope framing §4.1
 corrects: the engine cannot call anything that writes the directory, because that write
 is outside its transaction. It asks. That is why the seam had to exist first — without

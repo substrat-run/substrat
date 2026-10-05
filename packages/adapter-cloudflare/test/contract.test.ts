@@ -33,6 +33,7 @@ import {
   capabilityContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  membershipExecutorContractSuite,
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
@@ -103,6 +104,18 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
     checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1184: the membership executor, on the DEFAULT tuple checker — the bound is a set
+// comparison an allow-all checker would answer "covered" for everything. Its executors run
+// here on the coordinator; the fixture module is in `contractTestModules`, so the ScopeDO has it.
+membershipExecutorContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
 });

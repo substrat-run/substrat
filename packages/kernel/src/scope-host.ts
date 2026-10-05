@@ -1,4 +1,5 @@
 import type { ModuleLog } from './module-log.js';
+import type { DeliveryRefusal } from './delivery-refusal.js';
 import type {
   OnBehalfOf,
   ExportReadInput,
@@ -773,6 +774,18 @@ export interface InvokeOptions {
    * uncapped count, so a reader can tell a short list from a truncated one.
    */
   readonly onEmitted?: (report: EmittedReport) => void;
+  /**
+   * Called after the operation COMMITS and its executors ran inline (#1184), with what each
+   * delivery of this call's events did. The inline path is the common case of K-22 §4.2,
+   * so the request holder is the one who can tell a person their accept was refused rather
+   * than report success for an effect that never happened.
+   *
+   * Every delivery the call's post-commit tail attempted, which can include an earlier
+   * call's retry that came due: a caller picks out its own by `eventType` and `entity`.
+   * Never called for a rolled-back operation, a read-only session or an
+   * idempotent replay. Absent from a host that predates it — read that as "not reported".
+   */
+  readonly onExecutorOutcomes?: (outcomes: readonly ExecutorOutcome[]) => void;
 }
 
 /** How many of an invocation's own events `onEmitted` names (#1746). `total` is uncapped. */
@@ -911,6 +924,43 @@ export type ConsumerHandler = (ctx: OperationContext, event: DomainEvent) => voi
 export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => void | Promise<void>;
 
 /**
+ * One membership change for `HostAdmin.applyMembership` (#1184): a TENANT-level role assigned
+ * or taken away, and nothing else. No org is joined or left — what an org confers lives partly
+ * in each scope's own store, where no directory unit can bound it, so authorizing an org
+ * membership is its own capability.
+ */
+export type MembershipChange = {
+  tenantId: TenantId;
+  principal: PrincipalId;
+  /** The tenant-level role assigned or taken away. */
+  roleKey: string;
+  /**
+   * Whose authority bounds the write (§5.1) — the inviter of an add, the remover of a removal:
+   * the unit applies nothing unless this principal covers every permission `roleKey` carries,
+   * read inside the unit (`tenantCoverage`).
+   */
+  boundedBy: PrincipalId;
+} & (
+  | {
+      op: 'add';
+      /** Apply nothing when `principal`'s removal fence stands at or after this instant. */
+      unlessRemovedSince: Instant;
+    }
+  | { op: 'remove' }
+);
+
+/**
+ * What the unit did: applied, or why not — fenced by a removal (an add only), or out of the
+ * bound. A removal that applied says whether it took anything (`changed`); one that took
+ * nothing still raised the fence.
+ */
+export type MembershipChangeResult =
+  | { applied: true; changed?: boolean }
+  | { applied: false; removedAt: string }
+  | { applied: false; missing: PermissionKey[] }
+  | { applied: false; unknownRole: string };
+
+/**
  * An **executor**: out-of-band host code that effects, outside a scope, what a module
  * asked for inside one (K-22 §4.2; D-18's triage rule — effects on the outside world
  * are connectors).
@@ -929,8 +979,74 @@ export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => voi
  * It receives `HostAdmin`, not `ctx`: it acts with platform authority, which is
  * precisely what module code must never hold. Admin writes it makes are stamped with
  * the causing event's id (`causedBy`), so the split trail joins.
+ *
+ * A handler that decides an event must never be effected RETURNS `refuseDelivery(reason)`
+ * (#1184). The delivery is journaled terminal with the reason, never retried. A return
+ * value rather than a thrown error, so module code cannot produce one: the most an
+ * operation can do is throw, and a throw is retried like any other failure.
  */
-export type ExecutorHandler = (admin: HostAdmin, event: DomainEvent) => void | Promise<void>;
+export type ExecutorHandler = (
+  admin: HostAdmin,
+  event: DomainEvent,
+  scope: ExecutorScope,
+) => void | DeliveryRefusal | Promise<void | DeliveryRefusal>;
+
+/**
+ * The scope an executor's event came from, as the executor may read it (#1184).
+ *
+ * Here rather than through `HostAdmin` or the host, and the pure adapter is why: its
+ * handler runs INSIDE the scope's actor task, and every host read of a scope re-enqueues
+ * on that actor, so `host.canAssign` from a handler waits on the task holding it and never
+ * returns. The adapter builds this to suit where the handler runs, as it builds a
+ * connector's `openAttachment`.
+ *
+ * Reads only, and checks no permission: the caller is host code that already holds
+ * platform authority. Both answer about the event's own (tenant, scope), never another.
+ */
+export interface ExecutorScope {
+  /** One entity's history in this scope — `readHistory`'s answer, oldest first. */
+  history(entity: EntityRef, page?: ListPage): Promise<Page<HistoryEntry>>;
+  /**
+   * May `principal` confer `roleKey` at this scope's node, or at the tenant node
+   * (`level: 'tenant'`)? The K-21 set comparison `ctx.canAssign` answers, narrowing-aware,
+   * over the tenant's projected role. Throws `unknownRoleError` for a role this tenant does
+   * not define.
+   */
+  covers(principal: PrincipalId, roleKey: string, level: 'scope' | 'tenant'): Promise<Coverage>;
+}
+
+/**
+ * What one executor delivery did inside the call that emitted its event (#1184) — what
+ * `InvokeOptions.onExecutorOutcomes` reports. `refused` is terminal by the handler's own
+ * decision; `dead-lettered` is terminal by exhaustion; `retrying` will be tried again.
+ */
+export interface ExecutorOutcome {
+  readonly executorId: string;
+  readonly eventId: string;
+  readonly eventType: string;
+  /** The event's entity, as `<entityType>:<entityId>` — how a caller finds its own event. */
+  readonly entity: string;
+  readonly outcome: 'delivered' | 'retrying' | 'dead-lettered' | 'refused' | 'inert' | 'routed';
+  /** The refusal reason, or the failure's message. Absent on a delivery. */
+  readonly error?: string;
+}
+
+/** One delivery's `ExecutorOutcome` — the one builder both adapters report through. */
+export function executorOutcomeOf(
+  executorId: string,
+  event: DomainEvent,
+  outcome: ExecutorOutcome['outcome'],
+  error?: unknown,
+): ExecutorOutcome {
+  return {
+    executorId,
+    eventId: event.id,
+    eventType: event.type,
+    entity: `${event.entity.entityType}:${event.entity.entityId}`,
+    outcome,
+    ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }),
+  };
+}
 
 /**
  * How hard the host tries before it gives up on one delivery (#100).
@@ -1673,6 +1789,10 @@ export interface HostAdmin {
    * role that was never assigned (or already revoked) is a silent no-op. Takes a
    * `PlatformActorId` like every admin mutation — the caller's own authority to do
    * this is decided above the kernel (e.g. the dashboard's manage-members check).
+   *
+   * At the TENANT node it also raises the principal's removal fence (#1184), in the same
+   * unit as the revoke and whether or not anything was held, so a membership-executor add
+   * still on its way for them is refused. The no-op stays unaudited.
    */
   unassignRole(actor: PlatformActorId, assignment: RoleAssignment): Promise<void>;
   grant(actor: PlatformActorId, grant: CapabilityGrant): Promise<void>;
@@ -1939,6 +2059,21 @@ export interface HostAdmin {
     orgId: OrgId,
   ): Promise<void>;
   /**
+   * One membership change, applied as ONE directory unit (#1184): a single SQLite transaction or
+   * a single synchronous ControlPlaneDO method, with no await inside it. In that unit it
+   * re-evaluates the bound — `boundedBy` must still cover every permission `roleKey` carries,
+   * against the directory as it stands (`tenantCoverage`) — and only then writes. An ADD also
+   * reads `principal`'s removal fence first, then assigns the TENANT-level role and writes its
+   * audit row. A REMOVE unassigns it and raises the fence, as a tenant-level `unassignRole`
+   * does. A removal, a grant, a role redefinition or a demotion lands wholly before the unit
+   * (and governs it) or wholly after it, never between its check and its write.
+   *
+   * The fence is `_substrat_membership_fences`: every tenant-level `unassignRole` and every
+   * `removeMember` raises it for the person, in the same unit as its revoke — a no-op included,
+   * since a removal of someone whose add is still on its way must still win.
+   */
+  applyMembership(actor: PlatformActorId, change: MembershipChange): Promise<MembershipChangeResult>;
+  /**
    * Revoke a membership (K-21). **Tombstones, never deletes**: the tuple keeps its
    * row, gains a `revokedAt`, and the permission walk skips it. Deletion would
    * destroy the audit property K-4 rests on — a tuple that once granted access is
@@ -1949,6 +2084,9 @@ export interface HostAdmin {
    * no-op, and a no-op is not audited. Re-adding via `addMember` clears the
    * tombstone (they are a member again); the add/revoke history lives in the admin
    * log, which is append-only.
+   *
+   * Raises the principal's removal fence (#1184) in the same unit as the revoke, a no-op
+   * included, so a membership-executor add still on its way for them is refused.
    */
   removeMember(
     actor: PlatformActorId,

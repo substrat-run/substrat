@@ -2,6 +2,7 @@ import { SPINE_PREFIX, namesSpineTable, substratError } from '@substrat-run/cont
 import { SCHEDULE_STATE_KIND_OF_OP } from './platform-sweep.js';
 import { isSearchIndexTable } from './search-index.js';
 import { SWITCH_KINDS, dumpCarriesSwitches, switchesBackfillSqlOf } from './system-switch-record.js';
+import { dumpCarriesMembershipFences, membershipFencesBackfillSql } from './membership-fence.js';
 
 /**
  * How a restore, fork or carry loads a dump's `_substrat_*` spine tables (#1883). One
@@ -245,7 +246,9 @@ function assertWithinColumnCap(
  * 4. fill a pre-directory scope row's naming columns (`LEGACY_SCOPE_ROWS_BACKFILL`);
  * 5. backfill each kill switch's record (the schedule switch's, #1674, and the peer switch's,
  *    #2029) from the dump's own admin log, when the dump predates that record. One that carried
- *    it keeps its rows and is never backfilled over.
+ *    it keeps its rows and is never backfilled over;
+ * 6. backfill the membership removal fence the same way, when the dump predates it (#1184),
+ *    stamped `host.now()`: the restoring adapter's clock, at load time.
  *
  * A throw anywhere is the caller's transaction rolling back, so the directory keeps what it held.
  */
@@ -261,6 +264,8 @@ export function loadDirectoryDump(
      * dump's unknown ones, which can pass it while each list alone does not.
      */
     maxColumns?: number;
+    /** The adapter's clock — what a removal fence backfilled from a pre-fence dump stands at (#1184). */
+    now: () => string;
   },
 ): void {
   assertDirectoryTablesBuilt(tables.map((t) => t.name), host.columnsOf);
@@ -272,4 +277,5 @@ export function loadDirectoryDump(
   for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) host.exec(stmt);
   const names = tables.map((t) => t.name);
   for (const kind of SWITCH_KINDS) if (!dumpCarriesSwitches(names, kind)) host.exec(switchesBackfillSqlOf(kind));
+  if (!dumpCarriesMembershipFences(names)) host.exec(membershipFencesBackfillSql(host.now()));
 }

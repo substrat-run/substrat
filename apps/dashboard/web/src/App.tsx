@@ -159,7 +159,7 @@ export function App() {
   const [toast, setToast] = useState<{ status: 'success' | 'danger'; title: string; detail?: string }>();
   // Set when a signed-in user follows an invite meant for a different email — shown
   // instead of dropping them into onboarding ("create a team").
-  const [inviteBlock, setInviteBlock] = useState<{ token: string; teamName?: string; invitedEmail?: string; signedInAs?: string } | null>(null);
+  const [inviteBlock, setInviteBlock] = useState<{ token: string; teamName?: string; invitedEmail?: string; signedInAs?: string; refusal?: string } | null>(null);
 
   // Theme → data-theme on the root (every token flips; no per-theme overrides).
   useEffect(() => {
@@ -299,12 +299,15 @@ export function App() {
           window.history.replaceState(null, '', '/team');
           window.location.reload();
           return;
-        } catch {
+        } catch (err) {
           // Signed in with the right email but the engine still refused (the invite
           // lapsed or was revoked). Show a clear block, never the onboarding dead-end.
+          // A 409 is the membership executor refusing it (#1184): the sender no longer
+          // holds what it grants. That card says so, in the server's words.
           if (!live) return;
           window.history.replaceState(null, '', '/');
-          setInviteBlock({ token, teamName: preview?.teamName, invitedEmail: preview?.email, signedInAs: (who as { email?: string | null }).email ?? undefined });
+          const refusal = err instanceof ApiError && err.status === 409 ? err.message : undefined;
+          setInviteBlock({ token, teamName: preview?.teamName, invitedEmail: preview?.email, signedInAs: (who as { email?: string | null }).email ?? undefined, refusal });
           return;
         }
       }
@@ -854,6 +857,7 @@ export function App() {
         teamName={inviteBlock.teamName}
         invitedEmail={inviteBlock.invitedEmail}
         signedInAs={inviteBlock.signedInAs}
+        refusal={inviteBlock.refusal}
         onSignOut={() => signOut({ returnTo: `/invite/${inviteBlock.token}` })}
         onContinue={() => window.location.assign('/')}
       />

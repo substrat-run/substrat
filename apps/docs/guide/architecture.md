@@ -98,6 +98,15 @@ drift between the declaration and what is checked in.
 
 See [Modules & the manifest](/concepts/modules).
 
+Some effects are not the scope's to make: giving someone a tenant-wide role writes
+directory state, outside any one scope's transaction. A module **asks** for
+those with an event, committed with its own write, and an **executor** effects them out of
+band, as host code that holds the authority module code never does. It runs inline after
+the commit, with the outbox as its retry backstop, and can refuse a request outright. The
+kernel ships one such executor, for membership: it assigns the role an accepted invite
+names, or takes it away on a removal, only within the authority of whoever asked. See
+[the connector seam](/concepts/events#membership-executor).
+
 ## Calling another vertical: the peer door
 
 Two verticals of one tenant sometimes need each other's operations. A board-room app reads

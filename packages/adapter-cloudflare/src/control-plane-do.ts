@@ -1,5 +1,14 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
+  membershipFencesBackfillSql,
+  MEMBERSHIP_FENCES_DDL,
+  MEMBERSHIP_FENCES_TABLE,
+  membershipFencesTableExists,
+  MEMBERSHIP_FENCE_SINCE_SQL,
+  RAISE_MEMBERSHIP_FENCE_SQL,
+  tenantCoverage,
+  type MembershipChangeResult,
+  type TenantDirectoryReader,
   IMPERSONATION_COLUMNS,
   IMPERSONATION_DDL,
   impersonationByIdQuery,
@@ -66,6 +75,7 @@ import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
   OnBehalfOf,
+  PrincipalId,
   DeclaredMigration,
   ListPage,
   OpsFailureEntry,
@@ -106,6 +116,7 @@ interface TupleRow {
   relation: string;
   object: string;
   expires_at: string | null;
+  revoked_at: string | null;
 }
 
 interface TenantRow {
@@ -1017,6 +1028,7 @@ const DIRECTORY_DDL = `
   );
   ${IMPERSONATION_DDL}
   ${SYSTEM_SWITCHES_DDL}
+  ${MEMBERSHIP_FENCES_DDL}
   ${PEER_SWITCHES_DDL}
   ${SWITCH_OWED_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_admin_log (
@@ -1389,11 +1401,20 @@ export class ControlPlaneDO extends DurableObject {
    */
   private applyDirectorySchema(): void {
     const newRecords = SWITCH_KINDS.filter((kind) => !switchesTableExists(this.kernelSql, kind));
-    this.buildDirectorySchema({ holdSwitchRecords: newRecords });
+    const fencesAreNew = !membershipFencesTableExists(this.kernelSql);
+    this.buildDirectorySchema({ holdSwitchRecords: newRecords, holdFences: fencesAreNew });
     for (const kind of newRecords) {
       this.ctx.storage.transactionSync(() => {
         for (const stmt of splitSqlStatements(switchesDdlOf(kind))) this.sql.exec(stmt);
         this.sql.exec(switchesBackfillSqlOf(kind));
+      });
+    }
+    // #1184: the removal fence and its backfill from the admin log, together, the same way.
+    if (fencesAreNew) {
+      this.ctx.storage.transactionSync(() => {
+        for (const stmt of splitSqlStatements(MEMBERSHIP_FENCES_DDL)) this.sql.exec(stmt);
+        // Stamped now, inside this unit (`membershipFencesBackfillSql` says why).
+        this.sql.exec(membershipFencesBackfillSql(new Date().toISOString()));
       });
     }
   }
@@ -1403,12 +1424,13 @@ export class ControlPlaneDO extends DurableObject {
    * holds forward to that shape: the construction's pass, and a restore's (#1898, #1912), which
    * runs it inside its transaction onto an emptied directory, before loading any row.
    * `holdSwitchRecords` leaves those kinds' record statements (#1674, #2029) to the caller, which
-   * creates each table with its backfill.
+   * creates each table with its backfill; `holdFences` does the same for #1184's removal fence.
    */
-  private buildDirectorySchema({ holdSwitchRecords }: { holdSwitchRecords: readonly SwitchKind[] }): void {
+  private buildDirectorySchema({ holdSwitchRecords, holdFences = false }: { holdSwitchRecords: readonly SwitchKind[]; holdFences?: boolean }): void {
     const held = holdSwitchRecords.map(switchesTableOf);
     for (const stmt of DIRECTORY_DDL_PLAN.loop) {
       if (held.some((table) => stmt.includes(table))) continue;
+      if (holdFences && stmt.includes(MEMBERSHIP_FENCES_TABLE)) continue;
       this.sql.exec(stmt);
     }
     this.ensureDirectoryColumns();
@@ -1744,6 +1766,7 @@ export class ControlPlaneDO extends DurableObject {
       loadDirectoryDump(tables, {
         columnsOf: (name) => doBuiltColumnsOf(this.sql, name),
         exec: (sql) => this.sql.exec(sql),
+        now: () => new Date().toISOString(),
         maxColumns: DO_SQL_LIMITS.columns,
         insert: (sql, rows) => {
           for (const row of rows) this.sql.exec(sql, ...(row as unknown[]));
@@ -1886,6 +1909,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_entitlements', // per-tenant SKU flags
       'orgs', // K-22 org records
       '_substrat_system_switches', // #1674: the schedule switch's record, per scope
+      '_substrat_membership_fences', // #1184: the latest removal, per principal
       '_substrat_peer_switches', // #2029: the peer switch's record, per scope
       '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
     ]) {
@@ -3136,13 +3160,81 @@ export class ControlPlaneDO extends DurableObject {
       .toArray() as unknown as OrgRow[];
   }
 
+  /** The tenant-level reads, synchronous, for a bound asked inside one of this object's units (#1184). */
+  private readonly directoryReader: TenantDirectoryReader = {
+    now: () => new Date().toISOString(),
+    tenantTuples: (tenantId, subject, prefix) => this.tenantTuples(tenantId, subject, prefix),
+    getRole: (tenantId, key) => this.getRole(tenantId, key),
+  };
+
   /**
-   * Tombstone a membership (K-21), never DELETE. Guarded on `revoked_at IS NULL`
-   * so a repeat revoke neither moves the timestamp nor produces a second audit
-   * row. Returns whether it changed, so the coordinator can skip the audit write.
+   * A membership change as ONE DO unit (#1184) — `HostAdmin.applyMembership`. Synchronous, so
+   * no other request into this object runs between its reads and its writes: an add's removal
+   * fence, then the bound — `boundedBy` covering every permission `roleKey` carries, against the
+   * tuples and the role as they stand now (`tenantCoverage`) — then the write: the TENANT role
+   * and its audit row for an add, `revokeAndFence`'s three for a removal. The coordinator mints
+   * the row (id, actor, attribution, `causedBy`).
    */
-  revokeMember(tenantId: string, subject: string, object: string, at: string): boolean {
-    return this.revokeTenantTuple(tenantId, subject, 'member', object, at);
+  applyMembership(
+    change:
+      | { op: 'add'; tenantId: string; principal: string; roleKey: string; boundedBy: string; unlessRemovedSince: string }
+      | { op: 'remove'; tenantId: string; principal: string; roleKey: string; boundedBy: string },
+    row: AdminEntryInput,
+  ): MembershipChangeResult {
+    const { tenantId, principal, roleKey, boundedBy } = change;
+    return this.ctx.storage.transactionSync((): MembershipChangeResult => {
+      if (change.op === 'add') {
+        const fence = this.sql.exec(MEMBERSHIP_FENCE_SINCE_SQL, tenantId, principal, change.unlessRemovedSince).toArray()[0] as
+          | { removed_at: string }
+          | undefined;
+        if (fence) return { applied: false, removedAt: fence.removed_at };
+      }
+      const role = this.getRole(tenantId, roleKey);
+      if (!role) return { applied: false, unknownRole: roleKey };
+      const bound = tenantCoverage(this.directoryReader, tenantId, boundedBy, role.permissions);
+      if (!bound.covered) return { applied: false, missing: bound.missing };
+      if (change.op === 'remove') {
+        return { applied: true, changed: this.revokeAndFenceIn(tenantId, principal, `role:${roleKey}`, `tenant:${tenantId}`, row) };
+      }
+      this.writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`, null);
+      this.recordAdmin({ ...row, at: new Date().toISOString() });
+      return { applied: true };
+    });
+  }
+
+  /**
+   * A tenant-level removal as ONE DO unit (#1184) — `unassignRole` at the tenant node, and
+   * `removeMember`: the tombstone, the principal's removal fence, and the audit row, which
+   * K-21 writes only when something changed. The fence is raised either way: a removal of
+   * someone whose add is still on its way takes nothing, and must still win. One method, so
+   * no add can run between the revoke and the fence. Returns whether anything changed.
+   */
+  revokeAndFence(
+    tenantId: string,
+    principal: string,
+    relation: string,
+    object: string,
+    row: AdminEntryInput,
+  ): boolean {
+    return this.ctx.storage.transactionSync(() => this.revokeAndFenceIn(tenantId, principal, relation, object, row));
+  }
+
+  /**
+   * `revokeAndFence`'s writes, for inside a transaction a caller already holds.
+   *
+   * The time is minted HERE, in the unit, never taken from `row.at`: the coordinator mints its
+   * row before an awaited RPC, and a queue delay in between would age the fence by however
+   * long the call waited, which an add's cutoff would read as a removal from before its window
+   * (Codex round 3). The fence is compared with an add's `occurredAt`, stamped by the ScopeDO's
+   * clock. Both are this platform's own NTP-disciplined time, sub-second apart, which is far
+   * inside `MEMBERSHIP_REMOVAL_SKEW_MS`.
+   */
+  private revokeAndFenceIn(tenantId: string, principal: string, relation: string, object: string, row: AdminEntryInput): boolean {
+    const at = new Date().toISOString();
+    const changed = this.revokeTenantTuple(tenantId, `principal:${principal}`, relation, object, at);
+    this.sql.exec(RAISE_MEMBERSHIP_FENCE_SQL, tenantId, principal, at);
+    if (changed) this.recordAdmin({ ...row, at });
+    return changed;
   }
 
   /** Tombstone any tenant tuple by its exact (subject, relation, object). Returns

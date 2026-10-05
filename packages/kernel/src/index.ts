@@ -10,7 +10,11 @@ export type {
   ExecutorDeadLetter,
   ExecutorDrainReport,
   ExecutorHandler,
+  ExecutorOutcome,
   ExecutorRetryPolicy,
+  ExecutorScope,
+  MembershipChange,
+  MembershipChangeResult,
   ConnectorConnection,
   ScopedConnectorConnection,
   ConnectorContext,
@@ -104,6 +108,7 @@ export {
   requiredEntitlementFor,
   backoffAt,
   globalFetch,
+  executorOutcomeOf,
   parseValidationRecords,
   resolveRetryPolicy,
   OPS_FAILURE_RETENTION_DAYS,
@@ -164,9 +169,10 @@ export {
 } from './permission-checker.js';
 export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
-export { ancestorsWithin, createTupleEvaluator, reachesWithin } from './permission-eval.js';
+export { ancestorsWithin, createTupleEvaluator, reachesWithin, tenantCoverage } from './permission-eval.js';
 export type {
   PermissionTupleReader,
+  TenantDirectoryReader,
   PermissionTupleRow,
   ScopeTupleReader,
 } from './permission-eval.js';
@@ -548,7 +554,7 @@ export {
   type RefusedGuard,
 } from './refusals.js';
 export { REFUSAL_COLUMNS, mapRefusalRow, refusalListQuery, type RefusalDbRow } from './refusal-query.js';
-export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters } from './timeline.js';
+export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters, readExecutorDelivery, type ExecutorDelivery, type ExecutorDeliveryState } from './timeline.js';
 export type { ScopeWalkPage } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 // #1636: one undecodable spine row no longer takes a list — or a delivery loop — with it.
@@ -808,3 +814,30 @@ export {
   type RegisteredImport,
 } from './vertical-events.js';
 export { attributedHost } from './attribution.js';
+export {
+  isDeliveryRefusal,
+  refuseDelivery,
+  refusalJournalText,
+  REFUSAL_JOURNAL_PREFIX,
+  type DeliveryRefusal,
+} from './delivery-refusal.js';
+export {
+  MEMBER_ADD_REQUESTED,
+  MEMBER_REMOVE_REQUESTED,
+  MEMBERSHIP_EXECUTOR_ID,
+  MEMBERSHIP_REMOVAL_SKEW_MS,
+  membershipEntity,
+  membershipRemoveExecutorId,
+  memberRemoveRequestedPayload,
+  registerMembershipExecutor,
+  type MemberRemoveRequestedPayload,
+  type MembershipExecutorOptions,
+} from './membership-executor.js';
+export {
+  membershipFencesBackfillSql,
+  MEMBERSHIP_FENCES_DDL,
+  MEMBERSHIP_FENCES_TABLE,
+  MEMBERSHIP_FENCE_SINCE_SQL,
+  RAISE_MEMBERSHIP_FENCE_SQL,
+  membershipFencesTableExists,
+} from './membership-fence.js';

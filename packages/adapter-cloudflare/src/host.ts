@@ -278,11 +278,18 @@ import {
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
   type ExecutorHandler,
+  type ExecutorOutcome,
+  type MembershipChange,
+  type MembershipChangeResult,
+  type ExecutorScope,
   type ExecutorRetryPolicy,
   type MigrateScopeOutcome,
   type MigrationFrontier,
   backoffAt,
   resolveRetryPolicy,
+  executorOutcomeOf,
+  isDeliveryRefusal,
+  refusalJournalText,
   isSecretBoxConfigured,
   unconfiguredSecretBox,
   createSubjectKeys,
@@ -743,10 +750,13 @@ interface ControlPlaneStub {
     createdAt: string,
   ): Promise<boolean>;
   listOrgs(tenantId: string): Promise<OrgRow[]>;
-  /** K-21 tombstone. Returns whether anything changed (idempotent revoke). */
-  revokeMember(tenantId: string, subject: string, object: string, at: string): Promise<boolean>;
-  /** Tombstone any tenant tuple by exact (subject, relation, object) — e.g. a role. Idempotent. */
-  revokeTenantTuple(tenantId: string, subject: string, relation: string, object: string, at: string): Promise<boolean>;
+  /** #1184: a bounded, fenced tenant-role add, as one DO unit. */
+  applyMembership(change: MembershipChange, row: AdminEntry): Promise<MembershipChangeResult>;
+  /**
+   * #1184: a tenant-level removal — the K-21 tombstone, the removal fence and (only if it
+   * changed anything) the audit row — as one DO unit. Returns whether anything changed.
+   */
+  revokeAndFence(tenantId: string, principal: string, relation: string, object: string, row: AdminEntry): Promise<boolean>;
   listMembers(
     tenantId: string,
     object: string,
@@ -1215,7 +1225,7 @@ interface ScopeStubRpc {
     doorInstance: string,
   ): Promise<PeerCoverage[] | SystemDoorMoved>;
   /** `ctx.canAssign`'s bound for a named principal (#1931); `null` for a role the tenant lacks. */
-  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage | null>;
+  canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string, atTenant?: boolean): Promise<Coverage | null>;
   assignScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage | null>;
@@ -2543,6 +2553,23 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * #1184: the scope reads an executor's handler may make. Plain RPCs to the ScopeDO: the
+   * handler runs here on the coordinator, after the DO's own task has returned.
+   */
+  private executorScope(tenantId: TenantId, scopeId: ScopeId): ExecutorScope {
+    const stub = this.scopeStub(scopeId);
+    return {
+      history: async (entity, page) =>
+        stub.entityHistory({ entityType: entity.entityType, entityId: entity.entityId, limit: page?.limit, cursor: page?.cursor }),
+      covers: async (principal, roleKey, level) => {
+        const bound = await stub.canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey, level === 'tenant');
+        if (!bound) throw unknownRoleError(roleKey);
+        return coverage.parse(bound);
+      },
+    };
+  }
+
+  /**
    * Drain this scope's outbox into the registered executors (K-22 §4.2).
    *
    * Runs on the coordinator because executors act through `HostAdmin`, which the
@@ -2568,6 +2595,8 @@ export class CloudflareScopeHost implements ScopeHost {
      * call" for every attempt an operation's own tail made.
      */
     invocationId: string | null,
+    /** #1184: what each attempt did, for the emitting call's `onExecutorOutcomes`. */
+    outcomes?: ExecutorOutcome[],
   ): Promise<ExecutorDrainReport> {
     const report: ExecutorDrainReport = {
       attempted: 0,
@@ -2581,7 +2610,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // attempt runs — the DO only journals it.
     const lines = asyncLinePass();
     try {
-      await this.drainExecutorsPass(tenantId, scopeId, invocationId, report, lines);
+      await this.drainExecutorsPass(tenantId, scopeId, invocationId, report, lines, outcomes);
     } finally {
       lines.end();
     }
@@ -2594,8 +2623,10 @@ export class CloudflareScopeHost implements ScopeHost {
     invocationId: string | null,
     report: ExecutorDrainReport,
     lines: AsyncLinePass,
+    outcomes: ExecutorOutcome[] | undefined,
   ): Promise<void> {
     const stub = this.scopeStub(scopeId);
+    const scope = this.executorScope(tenantId, scopeId);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
     // outbound effects, so its deliveries are journaled terminal with the reason and no
     // handler runs (`isInertScope`). Asked on the first due event, once per pass: most passes
@@ -2632,6 +2663,9 @@ export class CloudflareScopeHost implements ScopeHost {
         attempt,
         startedAt: Date.now(),
       });
+      const outcomeOf = (event: DomainEvent, outcome: ExecutorOutcome['outcome'], error?: unknown): void => {
+        outcomes?.push(executorOutcomeOf(id, event, outcome, error));
+      };
       for (const bad of undecodable) {
         report.attempted += 1;
         const attempt = await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
@@ -2645,6 +2679,7 @@ export class CloudflareScopeHost implements ScopeHost {
           // No next attempt, like an undecodable row: a scope does not become primary.
           const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, INERT_SCOPE_REASON, null, invocationId);
           report.inert = (report.inert ?? 0) + 1;
+          outcomeOf(event, 'inert', INERT_SCOPE_REASON);
           // Its own outcome, never `delivered`: no handler ran (#2005).
           lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'inert' });
           continue;
@@ -2669,6 +2704,7 @@ export class CloudflareScopeHost implements ScopeHost {
               invocationId,
             );
             report.routedToPlatform! += 1;
+            outcomeOf(event, 'routed');
             // Handed on, not run here: the platform's drain owns its attempts from now on.
             lines.write({ ...unitOf(event.id, 1), startedAt, outcome: 'routed' });
           } else if (executor.kind === 'connector') {
@@ -2678,12 +2714,24 @@ export class CloudflareScopeHost implements ScopeHost {
             );
             const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
+            outcomeOf(event, 'delivered');
             lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
           } else {
-            await executor.handler(this.admin, event);
-            const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
-            report.delivered += 1;
-            lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
+            const result = await executor.handler(this.admin, event, scope);
+            // #1184: a refusal is the handler's own terminal decision — journaled with its
+            // reason, no next attempt, listed by `executorDeadLetters` beside an exhausted one.
+            const refused = isDeliveryRefusal(result) ? result : null;
+            const text = refused && refusalJournalText(refused);
+            const attempt = await stub.recordExecutorAttempt(event.id, deliveryId, text, null, invocationId);
+            if (refused) {
+              report.deadLettered += 1;
+              outcomeOf(event, 'refused', refused.reason);
+              lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'dead-lettered', error: text });
+            } else {
+              report.delivered += 1;
+              outcomeOf(event, 'delivered');
+              lines.write({ ...unitOf(event.id, attempt), startedAt, outcome: 'delivered' });
+            }
           }
         } catch (err) {
           const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
@@ -2701,6 +2749,7 @@ export class CloudflareScopeHost implements ScopeHost {
           );
           if (exhausted) report.deadLettered += 1;
           else report.retrying += 1;
+          outcomeOf(event, exhausted ? 'dead-lettered' : 'retrying', err);
           lines.write({
             ...unitOf(event.id, attempts),
             startedAt,
@@ -5194,12 +5243,14 @@ export class CloudflareScopeHost implements ScopeHost {
         // this scope's outbox — and draining anyway would run executors and
         // connectors as a side effect of a session that may not have side effects.
         // Whatever the outbox already held is the drain sweep's own backstop.
+        // #1184: what this call's executors did inline, for `onExecutorOutcomes`.
+        const executorOutcomes: ExecutorOutcome[] | undefined = invokeOptions?.onExecutorOutcomes ? [] : undefined;
         const drained =
           session?.mode === 'read-only'
             ? { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0, routedToPlatform: 0 }
             // #1525: this drain is part of the call that emitted the events — the
             // coordinator's half of the post-commit tail the DO ran the consumers in.
-            : await this.drainExecutors(tenantId, scopeId, invokeOptions?.invocationId ?? null);
+            : await this.drainExecutors(tenantId, scopeId, invokeOptions?.invocationId ?? null, executorOutcomes);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
         // Routed connector deliveries (#574 phase 3) count too: the inline drain just
@@ -5211,6 +5262,9 @@ export class CloudflareScopeHost implements ScopeHost {
         if (envelope.concurrency) invokeOptions?.onEntityVersion?.(envelope.concurrency.version);
         if (envelope.idempotency?.replayed) invokeOptions?.onIdempotentReplay?.();
         if (envelope.emitted) invokeOptions?.onEmitted?.(envelope.emitted);
+        if (executorOutcomes && session?.mode !== 'read-only' && !envelope.idempotency?.replayed) {
+          invokeOptions?.onExecutorOutcomes?.(executorOutcomes);
+        }
         return envelope.result as O;
       },
     };
@@ -6027,22 +6081,30 @@ export class CloudflareScopeHost implements ScopeHost {
       unassignRole: async (actor, assignment: RoleAssignment) => {
         // Tombstone (K-21) — the checker skips revoked rows. A no-op returns false so
         // a repeat unassign stays silent (no second audit row, no needless fan-out).
-        const subject = `principal:${assignment.principalId}`;
         const relation = `role:${assignment.roleKey}`;
-        const now = new Date().toISOString();
-        const changed = assignment.node.scopeId
-          ? await this.scopeStub(assignment.node.scopeId).revokeTuple(subject, relation, `scope:${assignment.node.scopeId}`, now)
-          : await this.cp.revokeTenantTuple(assignment.node.tenantId, subject, relation, `tenant:${assignment.node.tenantId}`, now);
-        if (!changed) return;
-        await this.recordAdmin(
-          actor,
-          'unassignRole',
-          { tenantId: assignment.node.tenantId, scopeId: assignment.node.scopeId },
-          assignment,
-          null,
+        const { tenantId, scopeId } = assignment.node;
+        if (!scopeId) {
+          // One ControlPlaneDO method (#1184): the revoke, the removal fence (raised even when
+          // nothing was held) and the audit row, so no add can land between any two of them.
+          const changed = await this.cp.revokeAndFence(
+            tenantId,
+            assignment.principalId,
+            relation,
+            `tenant:${tenantId}`,
+            this.adminEntry(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
+          );
+          // A tenant-level revoke changes the projected set — the tombstone must reach scopes.
+          if (changed) await this.fanOut(tenantId);
+          return;
+        }
+        const changed = await this.scopeStub(scopeId).revokeTuple(
+          `principal:${assignment.principalId}`,
+          relation,
+          `scope:${scopeId}`,
+          new Date().toISOString(),
         );
-        // A tenant-level revoke changes the projected set — the tombstone must reach scopes.
-        if (!assignment.node.scopeId) await this.fanOut(assignment.node.tenantId);
+        if (!changed) return;
+        await this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId }, assignment, null);
       },
       grant: async (actor, raw: CapabilityGrant) => {
         // Parsed like its `grantToConnection`/`grantToSystem` siblings, not taken on
@@ -6982,19 +7044,34 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
         await this.fanOut(tenantId); // membership is a tenant-level tuple
       },
+      applyMembership: async (actor, change) => {
+        // The row is minted here, where attribution and `causedBy` live, and written by the
+        // ControlPlaneDO in the same synchronous method as the fence, the bound and the tuple
+        // (#1184): one DO unit, so nothing lands between the check and the write.
+        const { tenantId, principal, roleKey, op } = change;
+        const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
+        const result = await this.cp.applyMembership(
+          change,
+          op === 'add'
+            ? this.adminEntry(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment)
+            : this.adminEntry(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
+        );
+        // The tenant-level tuple, or its tombstone, reaches the projections.
+        if (result.applied && (op === 'add' || result.changed)) await this.fanOut(tenantId);
+        return result;
+      },
       removeMember: async (actor, tenantId, principal, orgId) => {
         await requireOrg(tenantId, orgId);
-        // Tombstone (K-21), never DELETE. The DO reports whether anything changed
-        // so a repeat revoke stays a silent no-op rather than a second audit row.
-        const changed = await this.cp.revokeMember(
+        // Tombstone (K-21), never DELETE, with the removal fence in the same DO method
+        // (#1184). A repeat revoke stays a silent no-op rather than a second audit row.
+        const changed = await this.cp.revokeAndFence(
           tenantId,
-          `principal:${principal}`,
+          principal,
+          'member',
           `org:${orgId}`,
-          new Date().toISOString(),
+          this.adminEntry(actor, 'removeMember', { tenantId }, { principal, orgId }, null),
         );
-        if (!changed) return;
-        await this.recordAdmin(actor, 'removeMember', { tenantId }, { principal, orgId }, null);
-        await this.fanOut(tenantId); // the tombstone must reach the projections
+        if (changed) await this.fanOut(tenantId); // the tombstone must reach the projections
       },
       listMembers: async (actor, tenantId, orgId, options) => {
         await requireOrg(tenantId, orgId);
@@ -8781,7 +8858,21 @@ export class CloudflareScopeHost implements ScopeHost {
     before: unknown,
     after: unknown,
   ): Promise<void> {
-    await this.cp.recordAdmin({
+    await this.cp.recordAdmin(this.adminEntry(actor, action, target, before, after));
+  }
+
+  /**
+   * One admin-log row, minted here where attribution and `causedBy` live — for `recordAdmin`,
+   * and for a ControlPlaneDO method that writes its row in the same unit as its effect (#1184).
+   */
+  private adminEntry(
+    actor: PlatformActorId,
+    action: AdminAction,
+    target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
+    before: unknown,
+    after: unknown,
+  ): AdminEntry {
+    return {
       id: ulid(),
       actor,
       action,
@@ -8793,7 +8884,7 @@ export class CloudflareScopeHost implements ScopeHost {
       before: before ?? null,
       after: after ?? null,
       at: new Date().toISOString(),
-    });
+    };
   }
 
   /**

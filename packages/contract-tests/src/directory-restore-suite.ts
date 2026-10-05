@@ -276,6 +276,54 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
       });
     });
 
+    it('a removal fence survives the round trip, row for row (#1184)', async () => {
+      await using(async (dir, fresh) => {
+        const fence = { tenant_id: 'tenant-a', principal: '01JZ00000000000000000000F1', removed_at: '2026-09-29T00:00:00.000Z' };
+        await dir.restore(withTable(fresh, '_substrat_membership_fences', (t) => ({ ...t, rows: [rowOf(t.columns, fence)] })));
+        await dir.settle();
+        const before = await dir.snapshot();
+        expect(recordsOf(find(before, '_substrat_membership_fences'))).toEqual([fence]);
+        await dir.restore(before);
+        await dir.settle();
+        expect(recordsOf(find(await dir.snapshot(), '_substrat_membership_fences'))).toEqual([fence]);
+      });
+    });
+
+    it('a dump from before the removal fence: the fence is backfilled from its admin log, standing at the restore (#1184)', async () => {
+      await using(async (dir, fresh) => {
+        const P = '01JZ00000000000000000000F2';
+        const Q = '01JZ00000000000000000000F3';
+        const log = (id: string, action: string, scope: string | null, before: unknown, at: string) =>
+          ({ id, actor: 'staff', action, tenant_id: 'tenant-a', scope_id: scope, before: JSON.stringify(before), at });
+        const rows = [
+          // Two tenant-level removals of P: the later one is the fence.
+          log('01JZ0000000000000000000L01', 'unassignRole', null, { principalId: P, roleKey: 'member', node: { tenantId: 'tenant-a', scopeId: null } }, '2026-09-01T00:00:00.000Z'),
+          log('01JZ0000000000000000000L02', 'removeMember', null, { principal: P, orgId: 'o1' }, '2026-09-02T00:00:00.000Z'),
+          // A removal at one scope is not a tenant removal: Q gets no fence.
+          log('01JZ0000000000000000000L03', 'unassignRole', 's1', { principalId: Q, roleKey: 'member', node: { tenantId: 'tenant-a', scopeId: 's1' } }, '2026-09-03T00:00:00.000Z'),
+        ];
+        const dump = withTable(
+          fresh.filter((t) => t.name !== '_substrat_membership_fences'),
+          '_substrat_admin_log',
+          (t) => ({ ...t, rows: rows.map((r) => rowOf(t.columns, r)) }),
+        );
+        // The audit rows' own times are in the clock domain of whoever wrote them; the fence
+        // stands at the restoring adapter's clock instead, so it cannot sit below a request the
+        // dump's scopes still hold (Codex round 4).
+        const before = new Date().toISOString();
+        await dir.restore(dump);
+        await dir.settle();
+        const fences = recordsOf(find(await dir.snapshot(), '_substrat_membership_fences'));
+        expect(fences.map((f) => [f.tenant_id, f.principal])).toEqual([['tenant-a', P]]);
+        expect(String(fences[0]!.removed_at) >= before).toBe(true);
+
+        // Twin: a dump that carries the table, empty, is taken as it is — never backfilled over.
+        await dir.restore(withTable(dump.concat(find(fresh, '_substrat_membership_fences')), '_substrat_admin_log', (t) => t));
+        await dir.settle();
+        expect(recordsOf(find(await dir.snapshot(), '_substrat_membership_fences'))).toEqual([]);
+      });
+    });
+
     describe('refused, and the directory is left exactly as it was', () => {
       const refusals: Refusal[] = [
         [

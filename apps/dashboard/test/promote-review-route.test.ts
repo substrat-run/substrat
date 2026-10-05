@@ -24,13 +24,15 @@ const shared = vi.hoisted(() => ({ host: null as unknown }));
 vi.mock('cloudflare:workers', () => ({ DurableObject: class {} }));
 vi.mock('@substrat-run/adapter-cloudflare', () => ({
   defineScopeDO: () => class {},
+  defineScopeSweeperDO: () => class {},
+  SCOPE_SWEEPER_NAME: 'scope-sweeper',
   ControlPlaneDO: class {},
   CloudflareScopeHost: class {
     constructor() {
       const target = shared.host as object;
       return new Proxy(target, {
         get(t, key) {
-          if (key === 'registerModule') return () => undefined;
+          if (key === 'registerModule' || key === 'registerExecutor') return () => undefined;
           const v = Reflect.get(t, key) as unknown;
           return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
         },

@@ -43,6 +43,10 @@ outside this scope's transaction — so the engine *asks*, and a privileged
 The payload is deliberately **fat**: the executor must never need a cross-module read
 to act on it.
 
+The kernel's [membership executor](/concepts/events#membership-executor) is the one that
+consumes it: it assigns `roleKey` at the tenant node, bounded by the inviter. `orgId` is the
+invitation's own key, and joins the person to nothing.
+
 This is also why acceptance is atomic in the way that matters. `ctx.emit` commits with
 the engine's own write, so an accept that fails leaves no event and therefore no
 membership. An in-scope cross-database write could not offer that — it could land in

@@ -29,12 +29,17 @@
 			// watch (comment the URL, reap on close). Fed by the App webhook; needs
 			//   wrangler secret put GITHUB_APP_WEBHOOK_SECRET
 			// to match the App settings' webhook secret.
-			{ "name": "GITHUB_REPO_LINK", "class_name": "GithubRepoLinkDO" }
+			{ "name": "GITHUB_REPO_LINK", "class_name": "GithubRepoLinkDO" },
+			// The retry backstop for this deployment's executors (#1184): a singleton whose
+			// alarm drains the team scopes' due deliveries — a team accept the inline path
+			// could not finish. The platform sweep does not reach these scopes.
+			{ "name": "SWEEPER", "class_name": "SweeperDO" }
 		]
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"] },
-		{ "tag": "v2", "new_sqlite_classes": ["GithubRepoLinkDO"] }
+		{ "tag": "v2", "new_sqlite_classes": ["GithubRepoLinkDO"] },
+		{ "tag": "v3", "new_sqlite_classes": ["SweeperDO"] }
 	],
 	// REQUIRED (dashboard.md §6): a service binding to the SHARED control plane — the
 	// directory the router reads. Apps provision there through the tenant-narrowed seam
@@ -112,12 +117,14 @@
 				"bindings": [
 					{ "name": "SCOPE", "class_name": "ScopeDO" },
 					{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
-					{ "name": "GITHUB_REPO_LINK", "class_name": "GithubRepoLinkDO" }
+					{ "name": "GITHUB_REPO_LINK", "class_name": "GithubRepoLinkDO" },
+					{ "name": "SWEEPER", "class_name": "SweeperDO" }
 				]
 			},
 			"migrations": [
 				{ "tag": "v1", "new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"] },
-				{ "tag": "v2", "new_sqlite_classes": ["GithubRepoLinkDO"] }
+				{ "tag": "v2", "new_sqlite_classes": ["GithubRepoLinkDO"] },
+				{ "tag": "v3", "new_sqlite_classes": ["SweeperDO"] }
 			],
 			// Provision against the TEST control plane, not prod.
 			"services": [

@@ -24,8 +24,9 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
-import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
+import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
+import { effectVerdict, registerDashboardMembership } from './membership.js';
+import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
@@ -101,6 +102,12 @@ const STAFF = platformActorId.parse('01JZ000000000000000000DAS1');
 
 interface Env extends OidcEnv, EmailIdentityEnv {
   SCOPE: DurableObjectNamespace;
+  /**
+   * The dashboard's scope sweeper (#1184) — `SweeperDO` below. It drains the executor
+   * deliveries the inline path left due, which is the retry backstop for a team accept.
+   * Optional so a local run without the binding still serves; nothing is enrolled then.
+   */
+  SWEEPER?: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
   /**
    * This deployment's own platform zones, comma-separated — the same var the control
@@ -221,8 +228,6 @@ interface Env extends OidcEnv, EmailIdentityEnv {
    */
   PLATFORM_SECRET?: string;
 }
-
-const DASHBOARD_CP_ACTOR = platformActorId.parse('01JZ000000000000000000DASH');
 
 /**
  * Tenant tokens this isolate has already minted, by tenant and signed-in person (#977).
@@ -509,8 +514,14 @@ function secretBoxFor(env: Env): SecretBox | undefined {
   return webCryptoSecretBox(env.SECRET_BOX_KEY_ID ?? 'sb1', key);
 }
 
-/** The coordinator is stateless — rebuilt per request; durable state lives in the DOs + D1. */
-function hostFor(env: Env): CloudflareScopeHost {
+/**
+ * The coordinator is stateless — rebuilt per request; durable state lives in the DOs + D1.
+ *
+ * `membership` mounts the membership executor (#1184), which only the accept route and the
+ * sweeper need. A host with any executor drains on every write it makes, so mounting it on
+ * every request would add that drain to every route for an event only the accept emits.
+ */
+function hostFor(env: Env, opts: { membership?: boolean } = {}): CloudflareScopeHost {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
@@ -522,8 +533,30 @@ function hostFor(env: Env): CloudflareScopeHost {
     scopeLocalPermissions: env.SCOPE_LOCAL_PERMISSIONS === '1',
   });
   for (const m of MODULES) host.registerModule(m);
+  if (opts.membership) registerDashboardMembership(host);
   hostMemo.set(host, resolveMemoFor(env.CONTROL_PLANE));
   return host;
+}
+
+/**
+ * The retry backstop for the dashboard's executors (#1184): a singleton whose alarm drains
+ * every enrolled team scope's due deliveries. The platform's sweep does not reach this
+ * deployment's scopes (its own drain phase is off), and the dashboard is not pushed, so no
+ * sweeper is supplied to it — it wires the same `defineScopeSweeperDO` a pushed vertical
+ * gets, by hand. Its modules declare no schedules, so a pass is a drain.
+ */
+export const SweeperDO = defineScopeSweeperDO<Env>({ intervalMs: 120_000, host: (env) => hostFor(env, { membership: true }) });
+
+/**
+ * Put a team scope on the sweeper's roster. Idempotent, and best-effort: a missed enroll
+ * costs only the backstop for that scope until the next enroll, never the request. Called by
+ * the accept, the one route that emits what the executor effects. Team scopes are never
+ * forked, so enrolling from a request cannot enroll a copy.
+ */
+async function enrollTeamScope(env: Env, tenant: TenantId, scope: ScopeId): Promise<void> {
+  if (!env.SWEEPER) return;
+  const sweeper = env.SWEEPER.get(env.SWEEPER.idFromName(SCOPE_SWEEPER_NAME)) as unknown as ScopeSweeperDo;
+  await sweeper.noteScope(tenant, scope).catch((err: unknown) => console.error('sweeper enroll failed', err));
 }
 
 /** The isolate's memo for the directory a per-request host was built over (`hostFor`). */
@@ -1287,36 +1320,33 @@ app.post('/api/members/revoke-invite', async (c) => {
 });
 
 /**
- * Remove an active member: mark the roster row revoked AND revoke their kernel role
- * (`unassignRole`) so access is actually cut — the projection alone would not. The
- * op authorizes (manage-members) and returns the principal + role to unassign; the
- * owner cannot be removed. Their identity link is left, so the team still appears in
- * their own switcher but resolves to no permissions (fully hiding it needs a kernel
- * `unlinkIdentity` — a follow-up).
+ * Remove a member. The op revokes the roster row and asks the membership executor (#1184) to
+ * take the role away; it runs inline, so the answer says what
+ * happened: 204 done, 202 `{ pending: true }` when the backstop owns it, 409 refused. The
+ * login is severed either way, since the removal itself is committed.
  */
 app.post('/api/members/remove', async (c) => {
-  const host = hostFor(c.env);
+  const host = hostFor(c.env, { membership: true });
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const { memberId } = z.object({ memberId: z.string().min(1) }).parse(await c.req.json());
   const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const removed = (await scope.invoke('dashboard/remove-member', { memberId })) as { principal: string; roleKey: string } | null;
-  if (removed) {
-    const principal = principalId.parse(removed.principal);
-    // Cut access (revoke the role) AND sever their login from the team, so it also
-    // disappears from their own switcher rather than lingering as a dead entry.
-    await host.admin.unassignRole(DASHBOARD_CP_ACTOR, {
-      principalId: principal,
-      roleKey: removed.roleKey,
-      node: { tenantId: node.tenantId, scopeId: null },
-    });
-    await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
-    // And the shared plane's mirrored link, so their CLI push loses the
-    // workspace too (best-effort — see mirrorBuilderIdentity).
-    await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(principal).catch(() => {});
-    forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
-  }
-  return c.body(null, 204);
+  await enrollTeamScope(c.env, node.tenantId, node.scopeId);
+  const outcomes: ExecutorOutcome[] = [];
+  const removed = (await scope.invoke('dashboard/remove-member', { memberId }, {
+    onExecutorOutcomes: (o) => outcomes.push(...o),
+  })) as { principal: string; roleKey: string } | null;
+  if (!removed) return c.body(null, 204);
+  const principal = principalId.parse(removed.principal);
+  // Sever their login from the team, so it also disappears from their own switcher.
+  await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
+  // And the shared plane's mirrored link, so their CLI push loses the
+  // workspace too (best-effort — see mirrorBuilderIdentity).
+  await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(principal).catch(() => {});
+  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
+  const verdict = effectVerdict(outcomes, 'remove', principal);
+  if (verdict.kind === 'refused') throw new HTTPException(409, { message: `the removal was refused: ${verdict.reason}` });
+  return verdict.kind === 'done' ? c.body(null, 204) : c.json({ pending: true }, 202);
 });
 
 /**
@@ -1348,9 +1378,11 @@ app.get('/api/invites/preview', async (c) => {
 /**
  * Accept an invitation. The recipient is logged in (verified email), presents the
  * signed token. We mint their principal, accept in-scope (the engine re-hashes their
- * email — the real gate), then effect access: assign the invited role at the tenant
- * node and link their identity so future logins resolve into this team. Idempotent:
- * an already-member just switches; a re-used/settled invitation fails at the engine.
+ * email — the real gate), and the membership executor effects access inline after the
+ * commit (#1184): 200 joined, 202 accepted with access still pending on the retry backstop,
+ * 409 refused (the sender no longer holds what the invite grants). The identity link is
+ * written unless refused, so future logins resolve into this team. Idempotent: an
+ * already-member just switches; a re-used/settled invitation fails at the engine.
  */
 app.post('/api/invites/accept', async (c) => {
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
@@ -1372,7 +1404,7 @@ app.post('/api/invites/accept', async (c) => {
   const t = tenantId.parse(claim.tenantId);
   const s = scopeId.parse(claim.scopeId);
 
-  const host = hostFor(c.env);
+  const host = hostFor(c.env, { membership: true });
   await ensureIdentityPool(host, STAFF, resolveMemoFor(c.env.CONTROL_PLANE));
   // Already in this team? Nothing to accept — just switch to it (idempotent link click).
   if (await host.admin.resolveIdentity(t, PROVIDER, user.id)) {
@@ -1382,19 +1414,31 @@ app.post('/api/invites/accept', async (c) => {
 
   const principal = principalId.parse(ulid());
   const scope = await host.getScope(principal, t, s);
-  // The engine verifies the hash of the recipient's VERIFIED email; a mismatch throws.
-  const { roleKey } = (await scope.invoke('dashboard/accept-invite', {
-    invitationId: claim.invitationId,
-    identifier: email,
-  })) as { roleKey: string };
-
-  // Effect access: the role at the tenant node (§5.1 was enforced when it was sent),
-  // and the identity link so future logins land in this team.
-  await host.admin.assignRole(DASHBOARD_CP_ACTOR, {
-    principalId: principal,
-    roleKey,
-    node: { tenantId: t, scopeId: null },
-  });
+  // Enrolled BEFORE the accept, so a request that dies between the commit and its inline
+  // executor still leaves the scope where the backstop will find the delivery.
+  await enrollTeamScope(c.env, t, s);
+  // The engine verifies the hash of the recipient's VERIFIED email; a mismatch throws. The
+  // membership executor runs inline after the commit (#1184): it re-checks that whoever
+  // sent the invite still holds the role's permissions, then assigns it at the tenant node.
+  const outcomes: ExecutorOutcome[] = [];
+  await scope.invoke(
+    'dashboard/accept-invite',
+    { invitationId: claim.invitationId, identifier: email },
+    { onExecutorOutcomes: (o) => outcomes.push(...o) },
+  );
+  const verdict = effectVerdict(outcomes, 'add', principal);
+  if (verdict.kind === 'refused') {
+    // Never applied, and never will be: link no identity. The roster shows the row as refused
+    // with the reason, read off the executor's journal (`list-members`), for an admin; the
+    // invitee is told what to do.
+    throw new HTTPException(409, {
+      message:
+        'this invite can no longer be applied, most often because whoever sent it no longer has the access it grants. ' +
+        'Ask a team admin to invite you again.',
+    });
+  }
+  // Joined, or pending on the backstop: either way this login now belongs to the team, so
+  // the role lands on the person who will next sign in.
   await host.admin.linkIdentity(STAFF, {
     provider: PROVIDER,
     externalId: user.id,
@@ -1407,7 +1451,8 @@ app.post('/api/invites/accept', async (c) => {
   await mirrorBuilderIdentity(c.env, host, user.id, t);
   forgetLogin(resolveMemoFor(c.env.CONTROL_PLANE), user.id);
   setCookie(c, TEAM_COOKIE, t, teamCookieOpts(new URL(c.req.url).protocol));
-  return c.json({ teamId: t });
+  // 202: accepted, and access follows once the backstop effects it — not a success yet.
+  return verdict.kind === 'done' ? c.json({ teamId: t }) : c.json({ teamId: t, pending: true }, 202);
 });
 
 /** My apps — one page, newest first (`{ entries, nextCursor }`, keyset on the row id). */

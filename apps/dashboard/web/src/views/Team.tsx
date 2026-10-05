@@ -5,13 +5,16 @@ import type { InviteRole, Member } from '../lib/api';
 import { Ic } from '../lib/icons';
 import { Avatar } from '../components/DashShell';
 import { Page } from '../components/layout';
-import { card, MonoTag, PageTitle, Pill } from '../components/ui';
+import { card, MonoTag, PageTitle, Pill, type PillKind } from '../components/ui';
 
 const COLS = '2.4fr 1fr 1fr 1fr 140px';
-const STATUS: Record<Member['status'], { kind: 'success' | 'warning' | 'neutral'; label: string }> = {
+const STATUS: Record<Member['status'], { kind: PillKind; label: string }> = {
   active: { kind: 'success', label: 'Active' },
   invited: { kind: 'warning', label: 'Invited' },
   revoked: { kind: 'neutral', label: 'Revoked' },
+  // #1184: accepted, and the role is still being applied — or never will be.
+  joining: { kind: 'info', label: 'Joining' },
+  refused: { kind: 'danger', label: 'Not applied' },
 };
 const ROLE_OPTS: { value: InviteRole; label: string }[] = [
   { value: 'admin', label: 'Admin' },
@@ -167,6 +170,9 @@ export function Team({
                 <span style={{ display: 'flex', flexDirection: 'column' }}>
                   <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{name} {you && <span style={{ fontSize: 11, color: 'var(--text-tertiary)', fontWeight: 400 }}>(you)</span>}</span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)' }}>{m.email || 'address not verified'}</span>
+                  {m.status === 'refused' && m.refusal && (
+                    <span style={{ fontSize: 11, color: 'var(--status-danger-fg)' }}>{m.refusal}</span>
+                  )}
                 </span>
               </span>
               <span><MonoTag>{m.role_key}</MonoTag></span>
@@ -200,7 +206,7 @@ export function Team({
                     </button>
                   </span>
                 )}
-                {canManage && m.status === 'active' && m.role_key !== 'owner' && !you && (
+                {canManage && m.status !== 'invited' && m.role_key !== 'owner' && !you && (
                   <button
                     type="button"
                     onClick={() => onRemove(m.id)}
