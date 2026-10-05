@@ -324,7 +324,11 @@ export function assertNoReservedColumnWrite(sql: string, statefulTables?: Readon
     }
     return k;
   };
-  /** Keywords that end an assignment list when they stand at its own depth. */
+  /**
+   * Keywords that end an assignment list when they stand at its own depth. All reserved: none can
+   * be an unquoted identifier, so none can be mistaken for one. `END` is deliberately NOT here — it
+   * is a legal identifier (`SET end = 1, …`), and a trigger body's statements end at their own `;`.
+   */
   const SET_ENDS = new Set(['where', 'from', 'returning', 'order', 'limit']);
 
   /**
@@ -345,7 +349,7 @@ export function assertNoReservedColumnWrite(sql: string, statefulTables?: Readon
       const kw = t.quoted || t.punct ? undefined : t.text.toLowerCase();
       if (nesting.length === 0) {
         if (t.punct && (t.text === ';' || t.text === ')')) return;
-        if (kw === 'end' || (kw !== undefined && SET_ENDS.has(kw))) return;
+        if (kw !== undefined && SET_ENDS.has(kw)) return;
         if (t.punct && t.text === ',') {
           expectTarget = true;
           continue;
@@ -382,12 +386,17 @@ export function assertNoReservedColumnWrite(sql: string, statefulTables?: Readon
       // `replace(` is SQLite's string function, not the statement — which always reads
       // `REPLACE INTO`. Read as a statement, its argument list became a "column list".
       if (verb === 'replace' && word(i + 1) !== 'into') continue;
+      // By the grammar, not by a word list: `INSERT [OR <resolution>] INTO <table>` and
+      // `REPLACE INTO <table>`. A table may be NAMED `replace` or `ignore` — both are legal
+      // identifiers — and a loop skipping modifier words would skip it too.
       let k = i + 1;
       let replaces = verb === 'replace';
-      while (word(k) !== undefined && MODIFIERS[verb]!.has(word(k)!)) {
-        if (word(k) === 'replace') replaces = true;
-        k += 1;
+      if (verb === 'insert' && word(k) === 'or') {
+        if (word(k + 1) === 'replace') replaces = true;
+        k += 2;
       }
+      if (word(k) !== 'into') continue;
+      k += 1;
       const target = tokens[k];
       if (!target || target.punct) continue;
       k += 1; // past the target table

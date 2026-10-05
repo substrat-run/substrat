@@ -19,7 +19,12 @@ function rng(seed: number): () => number {
   };
 }
 
-const PLAIN = ['title', '"title"', '[owner]', '`owner`', '"weird, END name"', 'done'];
+/**
+ * Plain targets include every keyword the scanners key on that SQLite also accepts as an
+ * unquoted identifier (asked of SQLite itself: end, begin, replace, ignore, rename, with, temp…).
+ * The reserved ones (set, case, where, from, returning, order, limit, as, to, on) cannot be.
+ */
+const PLAIN = ['title', '"title"', '[owner]', '`owner`', '"weird, END name"', 'done', 'end', 'begin', 'replace', 'ignore', 'rename', 'with', 'temp'];
 const RESERVED = ['_substrat_trashed_at', '"_substrat_archived_at"', '[_SUBSTRAT_TRASHED_AT]', '`_substrat_archived_at`'];
 
 describe('assertNoReservedColumnWrite: generated SET lists', () => {
@@ -35,6 +40,12 @@ describe('assertNoReservedColumnWrite: generated SET lists', () => {
       '"title"',
       '_substrat_archived_at',
       "'it''s END, really'",
+      'end',
+      'begin',
+      'replace',
+      '(SELECT title AS end FROM other)',
+      '(SELECT 1 AS begin)',
+      '(SELECT ignore AS "returning" FROM other WHERE with = 1)',
     ];
     if (depth >= 3) return pick(leaves);
     switch (Math.floor(next() * 8)) {
@@ -83,6 +94,9 @@ describe('assertNoReservedColumnWrite: generated SET lists', () => {
       `INSERT INTO docs (id, title) VALUES ('x', 't') ON CONFLICT (id) DO UPDATE SET ${list} WHERE excluded.id = 'x'`,
     (list: string) => `CREATE TRIGGER tr AFTER INSERT ON other BEGIN UPDATE docs SET ${list}; END`,
     (list: string) => `UPDATE docs SET title = 1; UPDATE docs SET ${list} RETURNING id`,
+    // Keywords-as-identifiers around the list: a CTE named `end`, a table aliased `begin`.
+    (list: string) => `WITH end AS (SELECT 1 AS begin) UPDATE docs SET ${list} WHERE id IN (SELECT begin FROM end)`,
+    (list: string) => `UPDATE docs AS begin SET ${list} WHERE begin.id = 'x'`,
   ];
 
   const cases = Array.from({ length: 600 }, (_, n) => {

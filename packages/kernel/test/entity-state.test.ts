@@ -167,6 +167,31 @@ describe('addStatePlans', () => {
   });
 });
 
+describe('keywords that are legal identifiers do not switch the scanners (#2070 r5)', () => {
+  it('reads END as a column, not the end of a SET list', () => {
+    for (const sql of [
+      'UPDATE docs SET end = 1, _substrat_trashed_at = NULL',
+      'UPDATE docs SET a = end, _substrat_trashed_at = NULL',
+      'UPDATE docs SET a = CASE WHEN end THEN 1 ELSE 2 END, _substrat_trashed_at = NULL',
+      'CREATE TRIGGER t AFTER INSERT ON mine BEGIN UPDATE docs SET end = 1, _substrat_archived_at = NULL; END',
+    ]) {
+      expect(() => assertNoReservedColumnWrite(sql), sql).toThrow(/platform's column/);
+    }
+    expect(() => assertNoReservedColumnWrite('UPDATE docs SET end = 1, begin = end')).not.toThrow();
+  });
+
+  it('finds the INSERT target by the grammar, even a table named like a modifier', () => {
+    for (const table of ['replace', 'ignore', 'abort', 'rollback', 'fail']) {
+      const stateful = new Set([table]);
+      expect(() => assertNoReservedColumnWrite(`INSERT INTO ${table} VALUES (1, NULL, '2026')`, stateful), table).toThrow(
+        /cannot write/,
+      );
+      expect(() => assertNoReservedColumnWrite(`INSERT OR IGNORE INTO ${table} VALUES (1)`, stateful), table).toThrow(/cannot write/);
+      expect(() => assertNoReservedColumnWrite(`INSERT INTO ${table} (id) VALUES (1)`, stateful), table).not.toThrow();
+    }
+  });
+});
+
 describe('assertNoReservedColumnWrite on a stateful table', () => {
   const stateful = new Set(['docs']);
   const refused = [
@@ -296,6 +321,10 @@ describe('runtime DDL on a stateful table (#119, Codex r3)', () => {
     // the statements after it.
     'SELECT 1 AS begin; ALTER TABLE docs DROP COLUMN a',
     'SELECT 1 AS begin; CREATE TRIGGER t BEFORE UPDATE OF _substrat_trashed_at ON docs BEGIN SELECT RAISE(IGNORE); END',
+    // Keywords SQLite accepts as identifiers, in the positions that switch the splitter's mode.
+    'CREATE TRIGGER begin AFTER INSERT ON mine BEGIN UPDATE mine SET end = 1; END; ALTER TABLE docs RENAME TO x',
+    'SELECT end FROM mine; DROP TABLE docs',
+    'CREATE TABLE temp.docs (id TEXT)',
   ];
   for (const sql of refused) {
     it(`refuses: ${sql}`, () => expect(() => assertNoStatefulDdl(sql, stateful)).toThrow(/cannot/));
