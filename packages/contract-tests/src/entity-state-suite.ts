@@ -181,7 +181,6 @@ export function entityStateContractSuite(
 
     it('rolls the move back with an operation that throws after it', async () => {
       const id = await doc();
-      expect(errOf(as.alice.invoke('state/archive-then-throw', { id }))).toBeTruthy();
       await errOf(as.alice.invoke('state/archive-then-throw', { id }));
       expect(await as.alice.invoke('state/state', { id })).toBe('active');
       const events = await as.alice.invoke<HistoryEntry[]>('state/history', { id });
@@ -567,6 +566,9 @@ export function entityStateContractSuite(
         `CREATE TABLE temp.state_docs AS ${copy}`,
         'CREATE TEMP TRIGGER t_shadow AFTER INSERT ON state_docs BEGIN SELECT 1; END',
         'CREATE TRIGGER t_on AFTER UPDATE ON main.state_docs BEGIN SELECT 1; END',
+        // `begin` as an identifier ahead of the trigger (CodeRabbit on #2070) — on a DO, one exec
+        // runs every statement in the string.
+        'SELECT 1 AS begin; CREATE TRIGGER t_hidden BEFORE UPDATE OF _substrat_trashed_at ON state_docs BEGIN SELECT RAISE(IGNORE); END',
         // The kernel's derived objects, by their reserved prefix.
         'DROP TRIGGER _substrat_state_state_docs_moved',
         'DROP TRIGGER IF EXISTS _substrat_state_state_docs_born',
@@ -589,6 +591,23 @@ export function entityStateContractSuite(
       await as.alice.invoke('state/sql', { sql: `CREATE INDEX IF NOT EXISTS state_docs_owner_rt ON state_docs (owner)` });
       expect(await as.alice.invoke<Row[]>('state/sql', { sql: `SELECT id FROM ${t}` })).toEqual([{ id: 'a' }]);
       await as.alice.invoke('state/sql', { sql: `DROP TABLE ${t}` });
+    });
+
+    it('refuses to record a move whose update a foreign trigger swallowed', async () => {
+      // Past every guard, a trigger that turns the kernel's UPDATE into a no-op (CodeRabbit on #2070).
+      const id = await doc('swallowed');
+      await as.alice.invoke('state/trash', { id });
+      const before = await as.alice.invoke<HistoryEntry[]>('state/history', { id });
+      await raw(t1, scope, 'CREATE TRIGGER t_swallow BEFORE UPDATE OF _substrat_trashed_at ON state_docs BEGIN SELECT RAISE(IGNORE); END');
+      try {
+        const err = await errOf(as.alice.invoke('state/restore', { id }));
+        expect(String((err as Error).message)).toMatch(/changed no row/);
+        expect(await as.alice.invoke('state/state', { id })).toBe('trashed');
+        expect(await as.alice.invoke<HistoryEntry[]>('state/history', { id })).toEqual(before);
+      } finally {
+        await raw(t1, scope, 'DROP TRIGGER t_swallow');
+      }
+      expect(await as.alice.invoke('state/restore', { id })).toBe('active');
     });
 
     it('fails closed: runtime DDL that leaves a stateful table without its triggers is rolled back', async () => {

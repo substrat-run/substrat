@@ -417,7 +417,19 @@ export function createEntityStateVerbs(deps: EntityStateDeps): EntityStateVerbs 
     const authorize = [entity.entityType, entity.entityId];
     deps.sql.exec(`INSERT OR IGNORE INTO ${ENTITY_STATE_MOVES_TABLE} (entity_type, entity_id) VALUES (?, ?)`, authorize);
     try {
-      deps.sql.exec(`UPDATE ${plan.table} SET ${COLUMN[m.column]} = ? WHERE ${plan.idColumn} = ?`, [at, entity.entityId]);
+      const { changes } = deps.sql.exec(`UPDATE ${plan.table} SET ${COLUMN[m.column]} = ? WHERE ${plan.idColumn} = ?`, [
+        at,
+        entity.entityId,
+      ]);
+      // The row exists (read above), so an UPDATE that changed nothing was swallowed — a trigger's
+      // RAISE(IGNORE), say. Recording a move that did not happen is the one thing this must not do.
+      // `0`, not `!== 1`: a Durable Object's count includes the index rows the move rewrote.
+      if (changes === 0) {
+        throw substratError(
+          'internal',
+          `${m.verb}: the update of ${entity.entityType}:${entity.entityId} changed no row — nothing was recorded`,
+        );
+      }
     } finally {
       deps.sql.exec(`DELETE FROM ${ENTITY_STATE_MOVES_TABLE} WHERE entity_type = ? AND entity_id = ?`, authorize);
     }
