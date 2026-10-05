@@ -7449,17 +7449,35 @@ export function scopeHostContractSuite(
       /**
        * The documented way to DETACH one parent of a multi-parent child (#2044): relink it
        * onto a parent it already has. ticket0 takes a conversation's public thread off a
-       * widget session this way, so it is contract, not an accident of `writeEdge`.
+       * widget session this way, so it is contract, not an accident of `writeEdge`. The
+       * expiries are planted (only a restore can hold one) to pin what the verb does to
+       * them: `to` is left permanent, as every edge a verb leaves live is, and a bystander
+       * parent keeps its own.
        */
-      it('relink onto a live parent detaches `from` only: `to` untouched, other parents kept', async () => {
-        await link(item('rl-dt'), box('rb1'));
-        await link(item('rl-dt'), box('rb2'));
-        await link(item('rl-dt'), box('rb3'));
+      it('relink onto a live parent detaches `from` only: `to` left live and permanent, others untouched', async () => {
+        const FUTURE = '2999-01-01T00:00:00.000Z';
+        await plant([
+          { subject: 'item:rl-dt', object: 'box:rb1' }, // from
+          { subject: 'item:rl-dt', object: 'box:rb2', expires_at: FUTURE }, // to, already live
+          { subject: 'item:rl-dt', object: 'box:rb3', expires_at: FUTURE }, // a bystander
+        ]);
         await move(item('rl-dt'), box('rb1'), box('rb2'));
-        expect(await edges(item('rl-dt'))).toEqual([
-          { object: 'box:rb1', revoked: true },
-          { object: 'box:rb2', revoked: false },
-          { object: 'box:rb3', revoked: false },
+        const table = (await host.admin.exportScope(staff, t1, s1)).tables.find(
+          (t) => t.name === '_substrat_tuples',
+        )!;
+        const col = (name: string) => table.columns.indexOf(name);
+        const rows = table.rows
+          .filter((r) => r[col('subject')] === 'item:rl-dt')
+          .map((r) => ({
+            object: r[col('object')],
+            revoked: r[col('revoked_at')] !== null,
+            expires: r[col('expires_at')],
+          }))
+          .sort((x, y) => String(x.object).localeCompare(String(y.object)));
+        expect(rows).toEqual([
+          { object: 'box:rb1', revoked: true, expires: null },
+          { object: 'box:rb2', revoked: false, expires: null },
+          { object: 'box:rb3', revoked: false, expires: FUTURE },
         ]);
         // One move, recorded as one; the live `to` was neither revived nor re-announced.
         const events = await relinked(item('rl-dt'));
