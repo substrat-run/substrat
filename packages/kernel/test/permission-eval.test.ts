@@ -10,7 +10,9 @@ import {
 } from '@substrat-run/contracts';
 import {
   createTupleEvaluator,
+  tenantCoverage,
   type PermissionTupleReader,
+  type TenantDirectoryReader,
   type PermissionTupleRow,
   type ScopeTupleReader,
 } from '../src/permission-eval.js';
@@ -448,5 +450,67 @@ describe('a switched-off subject (#1823)', () => {
     );
     expect((await checker.check(sched, TICK, NODE)).allowed).toBe(false);
     expect((await checker.check(alice, TICK, NODE)).allowed).toBe(true);
+  });
+});
+
+describe('tenantCoverage (#1184) — `covers` at the tenant node, without yielding', () => {
+  /** The same rows as `readerFor`, with every answer in hand, as a directory unit reads them. */
+  const directoryFor = (world: World): TenantDirectoryReader => {
+    const reader = readerFor(world);
+    return {
+      now: reader.now,
+      tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
+      getRole: (tenantId, key) => reader.getRole(tenantId, key) as RoleDefinition | undefined,
+    };
+  };
+  const ROLES = { staff: staff([WO_READ, TODO_READ]), lead: { key: 'lead', permissions: [WO_WRITE], source: 'vertical' } as RoleDefinition };
+  const me = `principal:${ALICE}`;
+  const past = '2025-01-01T00:00:00.000Z';
+
+  /** Every place the two could part: the subject set, liveness, the node, relation shapes. */
+  const worlds: Record<string, World> = {
+    'nothing held': {},
+    'a tenant role': { tenant: [row(me, 'role:staff', `tenant:${T}`)] },
+    'a direct tenant grant': { tenant: [row(me, 'granted:todo:write', `tenant:${T}`)] },
+    'a role and a grant together': { tenant: [row(me, 'role:lead', `tenant:${T}`), row(me, 'granted:todo:share', `tenant:${T}`)] },
+    'a revoked role': { tenant: [row(me, 'role:staff', `tenant:${T}`, { revoked_at: past })] },
+    'an expired grant': { tenant: [row(me, 'granted:todo:write', `tenant:${T}`, { expires_at: past })] },
+    'an unexpired grant': { tenant: [row(me, 'granted:todo:write', `tenant:${T}`, { expires_at: '2027-01-01T00:00:00.000Z' })] },
+    'a role the tenant does not define': { tenant: [row(me, 'role:ghost', `tenant:${T}`)] },
+    'an org membership carrying a role': {
+      tenant: [row(me, 'member', `org:${ORG}`), row(`org:${ORG}`, 'role:lead', `tenant:${T}`)],
+    },
+    'an org membership carrying a grant': {
+      tenant: [row(me, 'member', `org:${ORG}`), row(`org:${ORG}`, 'granted:protocol:record', `tenant:${T}`)],
+    },
+    'a revoked org membership': {
+      tenant: [row(me, 'member', `org:${ORG}`, { revoked_at: past }), row(`org:${ORG}`, 'role:lead', `tenant:${T}`)],
+    },
+    'a revoked grant held by a live org': {
+      tenant: [row(me, 'member', `org:${ORG}`), row(`org:${ORG}`, 'granted:protocol:record', `tenant:${T}`, { revoked_at: past })],
+    },
+    'a grant at another tenant\'s node': { tenant: [row(me, 'granted:todo:write', 'tenant:01JZ0000000000000000000009')] },
+    'a scope-level role, which no tenant bound counts': { scope: [row(me, 'role:lead', `scope:${S}`)] },
+    'an entity-narrowed tenant row': { tenant: [row(me, 'granted:todo:write', 'todo:list-1')] },
+  };
+  const asks: PermissionKey[][] = [[], [WO_READ], [WO_WRITE], [WO_READ, TODO_READ], [TODO_WRITE, TODO_SHARE], [PROTOCOL_RECORD], [WO_WRITE, WO_READ, WO_WRITE]];
+
+  for (const [name, world] of Object.entries(worlds)) {
+    it(`agrees with covers: ${name}`, async () => {
+      const w = { ...world, roles: ROLES };
+      const checker = createTupleEvaluator(readerFor(w));
+      for (const required of asks) {
+        const expected = await checker.covers(alice, required, TENANT_NODE);
+        expect(tenantCoverage(directoryFor(w), T, ALICE, required), `${name}: ${required.join(',')}`).toEqual(expected);
+      }
+    });
+  }
+
+  it('the worlds above cover both answers — a pin that only ever saw "covered" would prove nothing', () => {
+    const answers = new Set<boolean>();
+    for (const world of Object.values(worlds)) {
+      for (const required of asks) answers.add(tenantCoverage(directoryFor({ ...world, roles: ROLES }), T, ALICE, required).covered);
+    }
+    expect([...answers].sort()).toEqual([false, true]);
   });
 });
