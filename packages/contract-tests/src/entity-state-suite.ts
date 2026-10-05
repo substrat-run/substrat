@@ -497,6 +497,25 @@ export function entityStateContractSuite(
       expect(await as.alice.invoke('state/state', { id: born })).toBe('active');
     });
 
+    it('never lets a state column change outside a kernel move, even by SQL the guard never sees', async () => {
+      const id = await doc();
+      await as.alice.invoke('state/trash', { id });
+      const before = await as.alice.invoke<HistoryEntry[]>('state/history', { id });
+      for (const sql of [
+        `UPDATE state_docs SET _substrat_trashed_at = NULL WHERE id = '${id}'`,
+        `UPDATE state_docs SET title = CASE WHEN 1 THEN 'x' ELSE title END, _substrat_trashed_at = NULL WHERE id = '${id}'`,
+        `UPDATE state_docs SET _substrat_archived_at = '2026' WHERE id = '${id}'`,
+      ]) {
+        await expect(raw(t1, scope, sql), sql).rejects.toThrow(/moves only through ctx\.archive/);
+      }
+      expect(await as.alice.invoke('state/state', { id })).toBe('trashed');
+      expect(await as.alice.invoke<HistoryEntry[]>('state/history', { id })).toEqual(before);
+      // The twins: an update that leaves the columns alone is untouched by the trigger, and the
+      // kernel's own move still passes it.
+      await raw(t1, scope, `UPDATE state_docs SET title = 'renamed raw' WHERE id = '${id}'`);
+      expect(await as.alice.invoke('state/restore', { id })).toBe('active');
+    });
+
     it('carries archived and binned rows through an export and import, and the trigger comes back after them', async () => {
       const filed = await doc('carried filed');
       const binned = await doc('carried binned');
@@ -512,6 +531,9 @@ export function entityStateContractSuite(
       await expect(
         raw(t1, fork, `INSERT INTO state_docs (id, title, owner, _substrat_trashed_at) VALUES ('${ulid()}', 't', 'o', '2026')`),
       ).rejects.toThrow(/never inserted archived or trashed/);
+      await expect(raw(t1, fork, `UPDATE state_docs SET _substrat_archived_at = NULL WHERE id = '${filed}'`)).rejects.toThrow(
+        /moves only through ctx\.archive/,
+      );
     });
 
     // -- the indexes -------------------------------------------------------------------------

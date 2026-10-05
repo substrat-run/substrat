@@ -51,13 +51,15 @@ describe('entityStateMigrations', () => {
       { version: 'state/doc:trash', sql: 'ALTER TABLE docs ADD COLUMN _substrat_trashed_at TEXT;' },
     ]);
     // Then the trigger, after the columns it names, guarding both.
-    expect(migrations[2]!.version).toBe('state/doc:born:archive+trash');
+    expect(migrations[2]!.version).toBe('state/doc:guard:archive+trash');
     expect(migrations[2]!.sql).toContain(
       'BEFORE INSERT ON docs WHEN NEW._substrat_archived_at IS NOT NULL OR NEW._substrat_trashed_at IS NOT NULL',
     );
+    expect(migrations[2]!.sql).toContain('BEFORE UPDATE OF _substrat_archived_at, _substrat_trashed_at ON docs');
+    expect(migrations[2]!.sql).toContain("FROM _substrat_state_moves WHERE entity_type = 'doc' AND entity_id = OLD.id");
     expect(entityStateMigrations('@m', [{ ...both, trashPermission: undefined }]).map((m) => m.version)).toEqual([
       'state/doc:archive',
-      'state/doc:born:archive',
+      'state/doc:guard:archive',
     ]);
   });
 

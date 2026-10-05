@@ -272,6 +272,7 @@ import {
   assertNoSecret,
   CAPABILITY_DDL,
   COPY_ORIGIN_DDL,
+  ENTITY_STATE_MOVES_DDL,
   SWITCH_FENCES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
@@ -763,6 +764,9 @@ const KERNEL_DDL = `
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
+  -- #119: the kernel's authorization for one archive/trash move, read by the derived update
+  -- trigger. Shared with the other adapter from @substrat-run/kernel; the comments are there.
+  ${ENTITY_STATE_MOVES_DDL}
 `;
 
 /**

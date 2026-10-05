@@ -102,14 +102,14 @@ describe('declaring archive/trash on an entity with rows (#119)', () => {
         'list/upnote:created_at+id:',
         'state/upnote:archive',
         'state/upnote:trash',
-        'state/upnote:born:archive+trash',
+        'state/upnote:guard:archive+trash',
         'list/upnote:created_at+id::active+archived+trashed',
       ]);
       expect(moduleMigrations(modOf(true)).map((m) => m.version)).toEqual([
         '0001-init',
         'state/upnote:archive',
         'state/upnote:trash',
-        'state/upnote:born:archive+trash',
+        'state/upnote:guard:archive+trash',
         'list/upnote:created_at+id::active+archived+trashed',
       ]);
 
@@ -131,6 +131,13 @@ describe('declaring archive/trash on an entity with rows (#119)', () => {
       expect(await ids()).toEqual(before);
       await stub.invoke('up/archive', { id: '01B' });
       expect(await ids()).toEqual(['01A', '01C']);
+      // The upgraded table carries the guard triggers too: past ctx.sql, a row neither moves
+      // nor is born archived — while the kernel's own move above went through.
+      const db = (v2 as unknown as { runtime(t: unknown, s: unknown): { db: { prepare(q: string): { run(): unknown } } } }).runtime(t, s).db;
+      expect(() => db.prepare(`UPDATE up_notes SET _substrat_archived_at = NULL WHERE id = '01B'`).run()).toThrow(/moves only through/);
+      expect(() => db.prepare(`INSERT INTO up_notes (id, created_at, _substrat_trashed_at) VALUES ('01Z', 'x', 'y')`).run()).toThrow(
+        /never inserted archived/,
+      );
     } finally {
       await v2.close();
     }

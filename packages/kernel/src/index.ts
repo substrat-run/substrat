@@ -223,6 +223,8 @@ export {
   entityStateMigrations,
   entityStatePlans,
   entityStateTriggerDdl,
+  ENTITY_STATE_MOVES_DDL,
+  ENTITY_STATE_MOVES_TABLE,
   statefulTablesOf,
   entityStateWhere,
   stateColumnsOf,

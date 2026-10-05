@@ -139,9 +139,9 @@ export function entityStateMigrations(
         sql: `ALTER TABLE ${plan.table} ADD COLUMN ${TRASHED_AT_COLUMN} TEXT;`,
       });
     }
-    // After the columns it names. Versioned by which columns it guards, so declaring a trash on
-    // an archivable entity rebuilds it to guard both.
-    out.push({ version: `state/${plan.entityType}:born:${columnNamesOf(plan).join('+')}`, sql: entityStateTriggerDdl(plan) });
+    // After the columns they name. Versioned by which columns they guard, so declaring a trash
+    // on an archivable entity rebuilds them to guard both.
+    out.push({ version: `state/${plan.entityType}:guard:${columnNamesOf(plan).join('+')}`, sql: entityStateTriggerDdl(plan) });
   }
   return out;
 }
@@ -155,29 +155,61 @@ const columnNamesOf = (plan: EntityStatePlan): string[] => [
 export const ENTITY_STATE_TRIGGER_PREFIX = '_substrat_state_';
 
 /**
- * The invariant under the column guard: **a row is never born archived or trashed.**
+ * The kernel's authorization for ONE move (#119, Codex r2): the row `ctx.archive` & co. write
+ * just before their `UPDATE` and delete just after it, in the same transaction. The update
+ * trigger below refuses any change to the columns that has no such row — so the only writer the
+ * columns admit is the one that can write a `_substrat_*` TABLE, which `ctx.sql` refuses by name
+ * (a far simpler reading than finding an assignment target in an expression).
+ *
+ * Never holds a row between operations: written and removed inside one move, and a move that
+ * throws rolls back with its operation. Shared by both adapters' `KERNEL_DDL`, like the other
+ * kernel-owned spine tables, so the two cannot part company.
+ */
+export const ENTITY_STATE_MOVES_TABLE = '_substrat_state_moves';
+export const ENTITY_STATE_MOVES_DDL = `
+  CREATE TABLE IF NOT EXISTS _substrat_state_moves (
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    PRIMARY KEY (entity_type, entity_id)
+  );
+`;
+
+/** A string literal for SQL text: the entity type is a declaration, still quoted rather than trusted. */
+const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+
+/**
+ * The invariant below the column guard, as two triggers on the entity's table.
  *
  * `ctx.sql` refuses the writes that would set the columns (`assertNoReservedColumnWrite`), but
- * that is a reading of SQL text, and a reading can miss a form. This holds below it: a
- * `BEFORE INSERT` trigger that aborts any insert carrying either column non-NULL. Every row
- * enters active, and only `ctx.archive` / `ctx.trash` — an `UPDATE` on the kernel's own handle —
- * ever move it. It does not cover an `UPDATE`, which the guard owns: an `AFTER UPDATE` check
- * could not tell the kernel's verb from a module's write.
+ * that is a reading of SQL text, and a reading can miss a form — it did, twice. These hold
+ * whatever the text says:
+ *
+ * - **born** — `BEFORE INSERT`: a row is never inserted archived or trashed. Every row enters
+ *   active.
+ * - **moved** — `BEFORE UPDATE OF` the columns: a change to either aborts unless the kernel's
+ *   authorization row for this entity exists (`ENTITY_STATE_MOVES_TABLE`), which only a move
+ *   writes. An `UPDATE` that does not name the columns does not fire it.
  *
  * Drop-then-create, like the search triggers, and re-run after a dump load: a load drops the
- * table and with it the trigger, then inserts the rows first — a restored binned row is
- * legitimately born trashed, so the trigger is put back only after them.
+ * table and with it the triggers, then inserts the rows first — a restored binned row is
+ * legitimately born trashed, so the triggers are put back only after them.
  */
 export function entityStateTriggerDdl(plan: EntityStatePlan): string {
-  const name = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_born`;
-  const when = [
-    ...(plan.archivePermission ? [`NEW.${ARCHIVED_AT_COLUMN} IS NOT NULL`] : []),
-    ...(plan.trashPermission ? [`NEW.${TRASHED_AT_COLUMN} IS NOT NULL`] : []),
-  ].join(' OR ');
+  const born = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_born`;
+  const moved = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_moved`;
+  const columns = [
+    ...(plan.archivePermission ? [ARCHIVED_AT_COLUMN] : []),
+    ...(plan.trashPermission ? [TRASHED_AT_COLUMN] : []),
+  ];
   return [
-    `DROP TRIGGER IF EXISTS ${name};`,
-    `CREATE TRIGGER ${name} BEFORE INSERT ON ${plan.table} WHEN ${when} BEGIN`,
+    `DROP TRIGGER IF EXISTS ${born};`,
+    `CREATE TRIGGER ${born} BEFORE INSERT ON ${plan.table} WHEN ${columns.map((c) => `NEW.${c} IS NOT NULL`).join(' OR ')} BEGIN`,
     `  SELECT RAISE(ABORT, 'a row is never inserted archived or trashed - ctx.archive and ctx.trash move it (#119)');`,
+    `END;`,
+    `DROP TRIGGER IF EXISTS ${moved};`,
+    `CREATE TRIGGER ${moved} BEFORE UPDATE OF ${columns.join(', ')} ON ${plan.table}`,
+    `WHEN NOT EXISTS (SELECT 1 FROM ${ENTITY_STATE_MOVES_TABLE} WHERE entity_type = ${literal(plan.entityType)} AND entity_id = OLD.${plan.idColumn}) BEGIN`,
+    `  SELECT RAISE(ABORT, 'archive and trash state moves only through ctx.archive, ctx.trash and ctx.restore (#119)');`,
     `END;`,
   ].join('\n');
 }
@@ -381,7 +413,14 @@ export function createEntityStateVerbs(deps: EntityStateDeps): EntityStateVerbs 
       );
     }
     const at = m.set ? deps.now : null;
-    deps.sql.exec(`UPDATE ${plan.table} SET ${COLUMN[m.column]} = ? WHERE ${plan.idColumn} = ?`, [at, entity.entityId]);
+    // The authorization the update trigger asks for, held for exactly this one statement.
+    const authorize = [entity.entityType, entity.entityId];
+    deps.sql.exec(`INSERT OR IGNORE INTO ${ENTITY_STATE_MOVES_TABLE} (entity_type, entity_id) VALUES (?, ?)`, authorize);
+    try {
+      deps.sql.exec(`UPDATE ${plan.table} SET ${COLUMN[m.column]} = ? WHERE ${plan.idColumn} = ?`, [at, entity.entityId]);
+    } finally {
+      deps.sql.exec(`DELETE FROM ${ENTITY_STATE_MOVES_TABLE} WHERE entity_type = ? AND entity_id = ?`, authorize);
+    }
     const to = stateOf({ ...row, [m.column]: at });
     const payload = entityStateChangedPayload.parse({ entity, from, to }); // strips extra keys
     deps.emit({ type: m.type, schemaVersion: 1, entity: payload.entity, piiClass: 'none', payload });
