@@ -11,6 +11,8 @@ import {
 import {
   ancestorsWithin,
   createTupleEvaluator,
+  joinedMembershipExpiry,
+  liveOrgMembership,
   reachesWithin,
   tenantCoverage,
   type PermissionTupleReader,
@@ -514,6 +516,40 @@ describe('tenantCoverage (#1184) — `covers` at the tenant node, without yieldi
       for (const required of asks) answers.add(tenantCoverage(directoryFor({ ...world, roles: ROLES }), T, ALICE, required).covered);
     }
     expect([...answers].sort()).toEqual([false, true]);
+  });
+});
+
+describe('the org bound (#2047) — a live membership, and the expiry a join inherits', () => {
+  const directory = (tenant: PermissionTupleRow[]): TenantDirectoryReader => {
+    const reader = readerFor({ tenant });
+    return {
+      now: reader.now,
+      tenantTuples: (tenantId, subject, prefix) => reader.tenantTuples(tenantId, subject, prefix) as PermissionTupleRow[],
+      getRole: () => undefined,
+    };
+  };
+  const me = `principal:${ALICE}`;
+  const past = '2025-01-01T00:00:00.000Z';
+  const later = '2027-01-01T00:00:00.000Z';
+
+  it('is a member only through a live membership of that very org', () => {
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`)]), T, ALICE, ORG)).toBeDefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { expires_at: later })]), T, ALICE, ORG)).toBeDefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { revoked_at: past })]), T, ALICE, ORG)).toBeUndefined();
+    expect(liveOrgMembership(directory([row(me, 'member', `org:${ORG}`, { expires_at: past })]), T, ALICE, ORG)).toBeUndefined();
+    expect(liveOrgMembership(directory([row(me, 'member', 'org:01JZ00000000000000000000B2')]), T, ALICE, ORG)).toBeUndefined();
+    // Holding what the org holds is not membership of it.
+    expect(liveOrgMembership(directory([row(me, 'granted:todo:write', `tenant:${T}`), row(`org:${ORG}`, 'granted:todo:write', `tenant:${T}`)]), T, ALICE, ORG)).toBeUndefined();
+  });
+
+  it('a join expires no later than the inviter, and never earlier than what the joiner already holds', () => {
+    const at = (expires_at: string | null) => ({ expires_at });
+    expect(joinedMembershipExpiry(at(null), undefined)).toBeNull();
+    expect(joinedMembershipExpiry(at(later), undefined)).toBe(later);
+    expect(joinedMembershipExpiry(at(later), at(null))).toBeNull();
+    expect(joinedMembershipExpiry(at(null), at(later))).toBeNull();
+    expect(joinedMembershipExpiry(at(later), at('2026-06-01T00:00:00.000Z'))).toBe(later);
+    expect(joinedMembershipExpiry(at('2026-06-01T00:00:00.000Z'), at(later))).toBe(later);
   });
 });
 

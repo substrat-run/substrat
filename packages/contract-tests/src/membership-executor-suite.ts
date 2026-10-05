@@ -25,12 +25,16 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
  * The membership executor (#1184, K-22 §4.2) on every adapter: an accepted invite assigns the
- * invited TENANT role — and joins no org — with the admin trail correlated, a redelivery changes
- * nothing, a rolled-back accept effects nothing, and an invite for authority its sender does not
+ * invited TENANT role — and, by default, joins no org — with the admin trail correlated, a
+ * redelivery changes nothing, a rolled-back accept effects nothing, and an invite for authority its sender does not
  * hold — or no longer holds, demoted or removed, before the add or while it is held in front of
  * its directory unit — is refused for good, where both the accepting call and an admin can see
  * it. Every tenant-level removal, staff's and no-op ones included, fences a pending add. Both
  * delivery paths are held: the inline tail of the accept, and `drainDue` as backstop.
+ *
+ * Mounted with `orgs: 'join'` (#2047), an add also joins the org and a removal leaves it, bounded
+ * inside the same unit by the inviter's or remover's own live membership of that org: a scope-level
+ * org grant reaches nobody through a non-member, and a join expires no later than the inviter's.
  *
  * The fixture's checker must be a REAL one: the bound is a permission-set comparison, and an
  * allow-all checker would cover everything and prove nothing.
@@ -230,7 +234,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
     it('an add confers no org membership — whatever the org it names holds, at the tenant or in a scope', async () => {
       // The org grants invitefix:b tenant-wide AND in one scope; bob holds only invitefix:a.
       // Joining it would confer what bob cannot, and the scope grant lives where no directory
-      // unit can bound it — so the executor joins nobody to any org.
+      // unit can bound it — so the executor, mounted role-only, joins nobody to any org.
       const strong = orgId.parse(ulid());
       await w.host.admin.createOrg(staff, { id: strong, tenantId: w.t, slug: `strong-${strong.slice(-6).toLowerCase()}`, name: 'Strong' });
       await w.host.admin.grantToOrg(staff, strong, INVITEFIX_B, tenantNode(w));

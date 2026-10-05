@@ -199,7 +199,8 @@ describe('POST /api/invites/accept — the membership executor answers the accep
 
     const rae = (await principalOf(t, 'sub-rae'))!.principal;
     expect(await canRead(t, rae)).toBe(true);
-    // The role only: the executor joins no org, and the team org was never what granted access.
+    // The role only: the dashboard mounts the executor role-only (no `orgs: 'join'`), and the
+    // team org was never what granted access.
     expect(await host.admin.listMembers(staff, t.tenant, t.org)).toEqual([]);
     // The executor's row: the dashboard's actor executed it, for the owner who invited.
     const rows = (await host.admin.auditLog(staff, { tenantId: t.tenant, limit: 500 })).filter(
