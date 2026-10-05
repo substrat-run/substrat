@@ -44,6 +44,7 @@ const textOf = (o: ExtractionOutcome): string => {
   return o.text;
 };
 
+const MIB = 1024 * 1024;
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 /** Bytes 0–255 as written, for content that is not UTF-8. */
 const bin = (s: string): Uint8Array => {
@@ -408,9 +409,9 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     // 96 references to a 1 MiB stream held ~100 MiB of ArrayBuffers before any budget looked
     // (Codex #2062 r3): the join was sized by the references, not by what was decoded.
     const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents [${'5 0 R '.repeat(400)}] >>`;
-    const file = build([CATALOG, PAGES, page, HELVETICA, stream('', `BT /F1 9 Tf (once) Tj ET ${' '.repeat(MEMORY_MIB)}`)]).bytes;
-    expect(file.length).toBeLessThan(2 * MEMORY_MIB);
-    expect(await peakMemory(file)).toBeLessThan(96 * MEMORY_MIB);
+    const file = build([CATALOG, PAGES, page, HELVETICA, stream('', `BT /F1 9 Tf (once) Tj ET ${' '.repeat(MIB)}`)]).bytes;
+    expect(file.length).toBeLessThan(2 * MIB);
+    expect(await peakMemory(file)).toBeLessThan(96 * MIB);
     expect(await run(file)).toMatchObject({ status: 'empty' });
   });
 
@@ -419,12 +420,9 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     // the heap by ~500 MiB from a 1.5 KiB file (Codex #2062 r3). The twin: codes still map.
     const base = `0041${'0020'.repeat(255)}`; // 'A' and 255 spaces: 512 bytes
     const cmap = `begincmap 1 begincodespacerange <0000> <FFFF> endcodespacerange 2 beginbfrange <0000> <FFFF> <${base}> <0100> <01FF> <${base}> endbfrange endcmap`;
-    const file = onePage('BT /F1 9 Tf <00000002> Tj ET', {
-      font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
-      extra: [stream('', cmap)],
-    }).bytes;
+    const file = cmapFont(cmap, '00000002');
     expect(file.length).toBeLessThan(4 * 1024);
-    expect(await peakMemory(file)).toBeLessThan(32 * MEMORY_MIB);
+    expect(await peakMemory(file)).toBeLessThan(32 * MIB);
     // Code 0 maps to the base ('A', then spaces); code 2 counts its last unit up by two ('"').
     expect(textOf(await run(file))).toBe('A A "');
   });
@@ -434,7 +432,7 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     // what a parsed object is charged. Uncharged, all 2 000 copies were parsed and kept. The
     // bound is the peak, not the clock: parsing to the budget is ~5 M tokens, which takes time.
     const file = sharedObject(`[${'1 '.repeat(100 * 1024)}]`);
-    expect(await peakMemory(file)).toBeLessThan(PEAK_MIB * MEMORY_MIB);
+    expect(await peakMemory(file)).toBeLessThan(PEAK_MIB * MIB);
     expect(await run(file)).toMatchObject({ status: 'empty' });
   }, 30_000);
 
@@ -446,7 +444,7 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     };
     const baseline = await charged(onePage('BT /F1 9 Tf (x) Tj ET').bytes);
     // A cached stream: its decoded bytes.
-    expect(await charged(onePage(`BT /F1 9 Tf (x) Tj ET${' '.repeat(MEMORY_MIB)}`).bytes) - baseline).toBeGreaterThanOrEqual(MEMORY_MIB);
+    expect(await charged(onePage(`BT /F1 9 Tf (x) Tj ET${' '.repeat(MIB)}`).bytes) - baseline).toBeGreaterThanOrEqual(MIB);
     // Cross-reference entries: a fixed cost each, however little they point at.
     const many = build(Array.from({ length: 2_000 }, (_, i) => (i === 0 ? CATALOG : i === 1 ? PAGES : i === 2 ? PAGE : i === 3 ? HELVETICA : i === 4 ? stream('', 'BT /F1 9 Tf (x) Tj ET') : 'null'))).bytes;
     expect(await charged(many) - baseline).toBeGreaterThanOrEqual(1_995 * 64);
@@ -672,7 +670,6 @@ const SETTLE_MS = 3_000;
  */
 const PEAK_MIB = 128;
 
-const MIB = 1024 * 1024;
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 interface Shape {
@@ -843,7 +840,6 @@ async function longestHold(body: Uint8Array, extractor: AttachmentExtractor = pd
 // A collector to call, so a peak is measured from a settled heap rather than from garbage.
 setFlagsFromString('--expose-gc');
 const collect = runInNewContext('gc') as () => void;
-const MEMORY_MIB = 1024 * 1024;
 
 /**
  * The most memory held while `body` was extracted, over a collected baseline: heap plus

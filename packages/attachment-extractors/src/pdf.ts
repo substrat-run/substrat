@@ -1275,9 +1275,8 @@ class CodeSpace {
  */
 class CodeMap {
   private readonly chars = new Map<number, string>();
-  /** `bfrange`s, by key of their first code; sorted when first looked up. */
+  /** `bfrange`s, by key of their first code; sorted once the CMap is read (`seal`). */
   private readonly ranges: { lo: number; hi: number; base: Uint8Array }[] = [];
-  private sorted = true;
   /** Codes defined so far, against `CMAP_CODES_MAX`. */
   private covered = 0;
 
@@ -1297,17 +1296,18 @@ class CodeMap {
     this.retained.take(ENTRY_COST + base.length);
     this.ranges.push({ lo: codeKey(length, from), hi: codeKey(length, from + count - 1), base: Uint8Array.from(base) });
     this.covered += count;
-    this.sorted = false;
+  }
+
+  /** Sort the ranges for lookup, once the CMap's last section is read. */
+  seal(): this {
+    this.ranges.sort((x, y) => x.lo - y.lo);
+    return this;
   }
 
   get(length: number, code: number): string | undefined {
     const key = codeKey(length, code);
     const char = this.chars.get(key);
     if (char !== undefined || this.ranges.length === 0) return char;
-    if (!this.sorted) {
-      this.ranges.sort((x, y) => x.lo - y.lo);
-      this.sorted = true;
-    }
     // The last range starting at or before the key; it maps the code if it reaches it.
     let lo = 0;
     let hi = this.ranges.length - 1;
@@ -1409,7 +1409,7 @@ async function parseCMap(data: Uint8Array, pace: Pace, retained: Retained): Prom
       operands.length = 0;
     }
   }
-  return { spaces: new CodeSpace(ranges), map };
+  return { spaces: new CodeSpace(ranges), map: map.seal() };
 }
 
 /** A CMap stream, parsed once per object number however many fonts name it. */
