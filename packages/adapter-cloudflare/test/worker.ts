@@ -10,6 +10,7 @@ import { runCrossVerticalFrom, runPlatformSweep, ulid, webCryptoSecretBox, type 
 import {
   boardImportMod,
   brokenMod,
+  causedByMod,
   contractTestModules,
   contractTestBareOps,
   crmExportMod,
@@ -212,6 +213,12 @@ export const BrokenScopeDO = defineScopeDO([brokenMod], {});
  * what those suites exercise in order to test this one.
  */
 export const LiveScopeDO = defineScopeDO([liveMod], {});
+
+/**
+ * #2055: a scope class carrying ONLY `causedByMod`, whose consumer can be held mid-handler —
+ * its own class for the reason `LiveScopeDO` has one. See `scopeCausedByContractSuite`.
+ */
+export const CausedByScopeDO = defineScopeDO([causedByMod], {});
 
 /**
  * #1705: two verticals, two deployments. A DO closes over a code-time module set, so each

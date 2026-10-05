@@ -9,6 +9,8 @@ import {
   facetRecencyContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  causedByContractSuite,
+  scopeCausedByContractSuite,
   membershipExecutorContractSuite,
   capabilityAttachmentContractSuite,
   attachmentTextContractSuite,
@@ -67,6 +69,36 @@ inertScopeContractSuite('adapter-sqlite', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,
   });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2055: an executor's event is stamped on its own admin rows only — never on a call the host
+// serves while the handler awaits.
+causedByContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-caused-by-'));
+  const host = new SqliteScopeHost({
+    dir,
+    checker: UNSAFE_allowAllChecker,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+scopeCausedByContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-scope-caused-by-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,
     cleanup: async () => {

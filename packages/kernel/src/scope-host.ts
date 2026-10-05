@@ -977,8 +977,11 @@ export type MembershipChangeResult =
  * consumers must.
  *
  * It receives `HostAdmin`, not `ctx`: it acts with platform authority, which is
- * precisely what module code must never hold. Admin writes it makes are stamped with
- * the causing event's id (`causedBy`), so the split trail joins.
+ * precisely what module code must never hold. Admin writes it makes through the `admin`
+ * it is handed are stamped with the causing event's id (`causedBy`), so the split trail
+ * joins. That `admin` is bound to this one event, never the host's own: a handler that
+ * writes through the host instead — `host.attributed(…)` — passes `{ causedBy: event.id }`
+ * itself (#2055).
  *
  * A handler that decides an event must never be effected RETURNS `refuseDelivery(reason)`
  * (#1184). The delivery is journaled terminal with the reason, never retried. A return
@@ -4603,8 +4606,13 @@ export interface ScopeHost {
    *
    * Optional so a host that predates it still satisfies the interface; a transport
    * that finds it absent writes unattributed rows, which is what every row was before.
+   *
+   * `options.causedBy` (#2055) is the event whose effect the view's writes are (K-22): an
+   * executor handler passes its own event's id, because the host stamps nothing ambiently —
+   * a field set around the handler's `await` would also stamp every other admin call the
+   * host served meanwhile. The `admin` a handler is handed already carries it.
    */
-  attributed?(onBehalfOf: OnBehalfOf): ScopeHost;
+  attributed?(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): ScopeHost;
   /**
    * Mint a capability stub for a principal. Validates the (tenantId, scopeId)
    * pair against the directory — a mismatched pair fails closed (K-3), it never

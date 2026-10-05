@@ -22,6 +22,8 @@ export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
 export { inertScopeContractSuite } from './inert-scope-suite.js';
+export { causedByContractSuite, scopeCausedByContractSuite } from './caused-by-suite.js';
+export { causedByMod } from './caused-by-module.js';
 // #1184: the membership executor — accept, redelivery, rollback, and the authority bound.
 export { membershipExecutorContractSuite } from './membership-executor-suite.js';
 export { INVITEFIX_A, membershipFixtureMod } from './membership-module.js';

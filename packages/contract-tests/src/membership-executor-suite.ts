@@ -104,7 +104,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       });
     return new Proxy(host, {
       get: (t, key) => {
-        if (key === 'attributed') return (o: Parameters<NonNullable<ScopeHost['attributed']>>[0]) => ({ admin: held(t.attributed!(o).admin) });
+        if (key === 'attributed') return (...a: Parameters<NonNullable<ScopeHost['attributed']>>) => ({ admin: held(t.attributed!(...a).admin) });
         const v = Reflect.get(t, key) as unknown;
         return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
       },
@@ -556,6 +556,28 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       release();
       expect((await accepting).map((o) => o.outcome)).toEqual(['delivered']);
       expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
+    });
+
+    it('a staff call made while an add is held carries no cause, and the add\'s own row still carries its event (#2055)', async () => {
+      // The causedBy is the event's, bound to the handler's writes. A host-wide field set around
+      // the handler's await stamped this staff removal, which has nothing to do with the event.
+      const joe = principalId.parse(ulid());
+      const kim = principalId.parse(ulid());
+      const node = tenantNode(w);
+      await w.host.admin.assignRole(staff, { principalId: kim, roleKey: 'member', node });
+      const inv = await send(w, w.alice, 'member');
+      shut();
+      const accepting = asJoiner(w, joe, 'invitefix/accept', inv);
+      await settle();
+      await w.host.admin.unassignRole(staff, { principalId: kim, roleKey: 'member', node });
+      release();
+      const outcomes = await accepting;
+      expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
+      const staffRows = await auditedFor(w, 'unassignRole', kim);
+      expect(staffRows.map((r) => r.causedBy)).toEqual([null]);
+      const rows = await causedBy(w, outcomes[0]!.eventId);
+      expect(rows.map((r) => r.action)).toEqual(['assignRole']);
+      expect(rows[0]!.onBehalfOf).toMatchObject({ principal: w.alice });
     });
 
     it('a removal and a held add released in the same tick: the revoke and its fence are one unit, so the access never survives', async () => {

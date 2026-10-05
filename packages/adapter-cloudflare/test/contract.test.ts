@@ -33,6 +33,8 @@ import {
   capabilityContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  causedByContractSuite,
+  scopeCausedByContractSuite,
   membershipExecutorContractSuite,
   billedMod,
   connectorTestFetch,
@@ -102,6 +104,29 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,
     scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #2055: an executor's event is stamped on its own admin rows only — never on a call the
+// coordinator serves while the handler awaits.
+causedByContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// …and the scope's half, in a ScopeDO class of its own: a DO closes over its module set, and
+// the held consumer must be in it (`CausedByScopeDO`, test/worker.ts).
+scopeCausedByContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.CAUSED_BY_SCOPE,
     controlPlane: env.CONTROL_PLANE,
     checker: UNSAFE_allowAllChecker,
   });

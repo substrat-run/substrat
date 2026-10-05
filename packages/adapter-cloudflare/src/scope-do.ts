@@ -338,6 +338,17 @@ import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERG
  * permission evaluation (scope tuples here, tenant tuples via ControlPlaneDO).
  */
 
+/**
+ * The delivery a consumer's or an import's context runs for (#1237, #1901, #2055): the event
+ * whatever it emits was caused by, and the id its log lines join — a unit of async work with
+ * no call around it. `ctx.log` only reads the id, never the spine: an event a consumer emits
+ * outside a call still records no invocation (#1525).
+ */
+interface ConsumerDelivery {
+  causedBy: string;
+  invocationId: string;
+}
+
 export interface ScopeDoEnv {
   /**
    * The shared directory DO — the source of tenant-level tuples + roles for a
@@ -1813,13 +1824,15 @@ export function defineScopeDO(
             const { hops: _hops, ...fact } = e;
             const event: ImportedEvent = structuredClone({ ...fact, source });
             const unit = unitOf(imp.moduleId, e.id, e.type);
-            this.causedBy = e.id;
-            this.unitInvocationId = unit.invocationId;
             try {
               await this.revision.transaction(async () => {
                 // As the producer's principal: real checks against the grants this vertical's
                 // `peers` gave it; its emits carry `{ vertical, scope }` and what they passed.
-                await imp.handler(this.importContext(tenantId, scopeId, peerSubject), event);
+                // What it emits was emitted BECAUSE of the producer's event (#1237).
+                await imp.handler(
+                  this.importContext(tenantId, scopeId, peerSubject, { causedBy: e.id, invocationId: unit.invocationId }),
+                  event,
+                );
                 this.sql.exec(
                   `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
                    VALUES (?, ?, ?, NULL)`,
@@ -1835,9 +1848,6 @@ export function defineScopeDO(
               deadLetter(e.id, imp.moduleId, new Date().toISOString(), String(err));
               result.deadLettered += 1;
               lines.write({ ...unit, outcome: 'dead-lettered', error: err });
-            } finally {
-              this.causedBy = null;
-              this.unitInvocationId = null;
             }
           }
           if (!ran) result.duplicates += 1;
@@ -1856,7 +1866,12 @@ export function defineScopeDO(
      * passes it (#1706). `principal` is a placeholder that the subject never reads, and there is
      * no operation, so the emitted rows' `operation` is NULL, as it is for any consumer.
      */
-    private importContext(tenantId: TenantId, scopeId: ScopeId, peerSubject: CheckSubject): OperationContext {
+    private importContext(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      peerSubject: CheckSubject,
+      delivery: ConsumerDelivery,
+    ): OperationContext {
       return this.operationContext(
         principalId.parse(ulid()),
         tenantId,
@@ -1871,6 +1886,7 @@ export function defineScopeDO(
         [],
         undefined,
         peerSubject,
+        delivery,
       );
     }
 
@@ -6267,35 +6283,16 @@ export function defineScopeDO(
     // -- event dispatch (port of dispatch) ------------------------------------
 
     /**
-     * #1237: the event currently being delivered, or null.
-     *
-     * The host carries a field of the same name for the admin log, and it is
-     * unreachable from here — it lives in the worker that holds the stub, while every
-     * emit runs inside this Durable Object. So the DO keeps its own, and the two are
-     * deliberately separate rather than one passed across the hop.
-     *
-     * One instance IS one scope, so this field is per-scope by construction. The
-     * SQLite twin has to say so explicitly (`ScopeRuntime.causedBy`): that host holds
-     * every scope in the process, so the same field on the host would be read by
-     * another scope's emit the moment a consumer awaits.
-     */
-    private causedBy: string | null = null;
-    /**
      * #1237: the invocation currently running in this DO, or null.
      *
-     * DO-local, like `causedBy` and for a simpler reason: a Durable Object IS one
-     * scope, so there is no other scope's call to confuse it with. It still has to be
-     * cleared, because the DO outlives the request and a value left set would stamp a
-     * later alarm-driven drain with a call it had nothing to do with.
+     * DO-local: a Durable Object IS one scope, so there is no other scope's call to
+     * confuse it with, and `invoke` sets and clears it inside its queued body, which no
+     * other emitting body interleaves with. It still has to be cleared, because the DO
+     * outlives the request and a value left set would stamp a later alarm-driven drain
+     * with a call it had nothing to do with. A consumer's own cause is not kept here: it is
+     * passed into the consumer's context (`ConsumerDelivery`, #2055).
      */
     private invocationId: string | null = null;
-    /**
-     * #1901: the id a unit of async work with no call around it logs under — a consumer a
-     * seed or an import delivered — set for its handler's duration and cleared after. Read
-     * by `ctx.log` only, never the spine: an event a consumer emits outside a call still
-     * records no invocation (#1525), while its log lines join the consumer's own line.
-     */
-    private unitInvocationId: string | null = null;
 
     private async dispatch(
       tenantId: TenantId,
@@ -6377,17 +6374,17 @@ export function defineScopeDO(
                 lines.write({ ...unit, outcome: 'dead-lettered' });
                 continue;
               }
-              // #1237: anything this consumer emits was emitted BECAUSE of this event
-              // — the step a backwards walk used to stop dead at, since a consumer
-              // emit records no operation either.
-              this.causedBy = event.id;
-              // #1901: the handler's `ctx.log` lines join this delivery's line.
-              this.unitInvocationId = unit.invocationId;
               try {
                 await this.revision.transaction(async () => {
-                  const ctx = this.operationContext(this.systemPrincipal, tenantId, scopeId, {
-                    system: mod.id,
-                  });
+                  // #1237: anything this consumer emits was emitted BECAUSE of this event —
+                  // the step a backwards walk used to stop dead at, since a consumer emit
+                  // records no operation either. #1901: its `ctx.log` lines join this
+                  // delivery's line. Both passed into the context, never set on the DO (#2055).
+                  const ctx = this.operationContext(
+                    this.systemPrincipal, tenantId, scopeId, { system: mod.id },
+                    undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined,
+                    { causedBy: event.id, invocationId: unit.invocationId },
+                  );
                   await consumer.handler(ctx, event);
                   this.sql.exec(
                     `INSERT INTO _substrat_deliveries
@@ -6415,13 +6412,6 @@ export function defineScopeDO(
                   invocationId,
                 );
                 lines.write({ ...unit, outcome: 'dead-lettered', error: err });
-              } finally {
-                this.unitInvocationId = null;
-                // Cleared on BOTH paths. Left set, the id leaks onto every later emit
-                // this DO makes — an operation's own event stamped as caused by
-                // whatever was delivered last, which is worse than recording nothing
-                // because it reads as a fact.
-                this.causedBy = null;
               }
             }
           }
@@ -6568,6 +6558,13 @@ export function defineScopeDO(
        * then a placeholder that the subject below never reads.
        */
       peerSubject?: CheckSubject,
+      /**
+       * #1237/#1901/#2055: the delivery a consumer's (or an import's) context runs for — the
+       * event its emits are caused by, and the unit its log lines join. Absent for everything
+       * else. A parameter, never a field on the DO: a field read across the handler's awaits
+       * is correct only while nothing else in the object can emit meanwhile.
+       */
+      delivery?: ConsumerDelivery,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -6717,7 +6714,7 @@ export function defineScopeDO(
           // #1237: whatever delivery is in flight, if any — read off the DO the same
           // way the version is read off its env. A fact about the surrounding
           // dispatch, never envelope data module code could set or branch on.
-          this.causedBy,
+          delivery?.causedBy ?? null,
           // #1237: a fact about the surrounding CALL, like the version above.
           this.invocationId,
           full.payload === undefined ? null : JSON.stringify(full.payload),
@@ -6738,7 +6735,7 @@ export function defineScopeDO(
           tenantId,
           scopeId,
           operation: operation ?? null,
-          invocationId: () => this.invocationId ?? this.unitInvocationId,
+          invocationId: () => this.invocationId ?? delivery?.invocationId ?? null,
           principalKind: systemActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
           // log's text is not JSON.

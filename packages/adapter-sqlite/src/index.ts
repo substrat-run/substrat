@@ -573,7 +573,7 @@ import {
   type ConnectorCallRecorder,
   unknownRoleError,
 } from '@substrat-run/kernel';
-import { attributedHost } from '@substrat-run/kernel';
+import { attributedView } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -681,35 +681,16 @@ interface ScopeRuntime {
    */
   mintEventId: UlidMint;
   /**
-   * #1237: the event this scope is currently delivering to a consumer, or null —
-   * stamped onto whatever that consumer emits.
-   *
-   * Per scope, not per host, for the same reason the mint is: `SqliteScopeHost`
-   * serves every scope in the process, and a consumer that awaits hands the loop to
-   * another scope's `ScopeActor`. A host-wide field would then be overwritten (or
-   * cleared) under the first consumer's feet, and the row it emits on resuming would
-   * carry another scope's cause — a wrong fact, which is worse than the honest NULL
-   * this column uses for "unrecorded". Within one scope nothing can interleave: the
-   * actor serializes invoke and dispatch alike.
-   */
-  causedBy: string | null;
-  /**
    * #1237: the invocation currently running in this scope, or null.
    *
-   * Per-runtime for the same reason `causedBy` is — the host serves every scope in the
-   * process, and a host-wide field would stamp one scope's events with another's
-   * invocation the moment an operation awaited. Set for the duration of one `invoke`
-   * and cleared after, so a consumer running later carries none rather than the last
-   * caller's.
+   * Per-runtime, not per host: the host serves every scope in the process, and a
+   * host-wide field would stamp one scope's events with another's invocation the moment
+   * an operation awaited. Within one scope nothing can interleave: the actor serializes
+   * invoke and dispatch alike. Set for the duration of one `invoke` and cleared after, so
+   * a consumer running later carries none rather than the last caller's. A consumer's own
+   * cause is not kept here: it is passed into the consumer's context (#2055).
    */
   invocationId: string | null;
-  /**
-   * #1901: the id a unit of async work with no call around it logs under — a consumer a
-   * seed or an import delivered — set for its handler's duration and cleared after. Read by
-   * `ctx.log` only, never the spine: an event a consumer emits outside a call still records
-   * no invocation (#1525), while its log lines join the consumer's own line.
-   */
-  unitInvocationId: string | null;
 }
 
 /** One `_substrat_attachments` row (#473), as SELECTed. */
@@ -1621,12 +1602,12 @@ export class SqliteScopeHost implements ScopeHost {
    */
   private readonly jobs = new Map<string, JobRegistration>();
   /**
-   * The event currently being effected by an executor, stamped onto any admin rows
-   * it writes. Ambient rather than threaded through every HostAdmin signature: it is
-   * set and cleared immediately around one `await`, and executors run sequentially,
-   * so there is no window where it belongs to a different event.
+   * The event an executor is effecting, stamped onto the admin rows it writes (K-22). Like
+   * `onBehalfOf`, only ever set on a VIEW (`causedByView`, or `attributed` with a
+   * `causedBy`), never on the host: a field set around the handler's `await` stamped every
+   * admin call the host served meanwhile — a staff call included — with that event (#2055).
    */
-  private causedBy: string | null = null;
+  private readonly causedBy: string | null = null;
   /**
    * #977: the person an attributed admin view's actions are taken for. Only ever set on a
    * VIEW (`attributed`, a Proxy whose `onBehalfOf` answers from the view), so a host shared across
@@ -4031,16 +4012,18 @@ export class SqliteScopeHost implements ScopeHost {
           const { hops: _hops, ...fact } = e;
           const event: ImportedEvent = structuredClone({ ...fact, source });
           const unit = unitOf(imp.moduleId, e.id, e.type);
-          // What the handler emits was emitted BECAUSE of the producer's event (#1237). The id
-          // resolves through `_substrat_imports`, which the row above has just written.
-          rt.causedBy = e.id;
-          rt.unitInvocationId = unit.invocationId;
           rt.db.exec('BEGIN IMMEDIATE');
           try {
             // As the producer's principal, admitted above: the handler's checks are real ones,
             // against the grants this vertical's `peers` gave it, and its emits carry the actor
-            // `{ vertical, scope }` and the authorization they passed (K-34).
-            await imp.handler(this.operationContext(rt, subject), event);
+            // `{ vertical, scope }` and the authorization they passed (K-34). What it emits was
+            // emitted BECAUSE of the producer's event (#1237); the id resolves through
+            // `_substrat_imports`, which the row above has just written.
+            const delivery = { causedBy: e.id, invocationId: unit.invocationId };
+            await imp.handler(
+              this.operationContext(rt, subject, undefined, undefined, undefined, undefined, [], undefined, delivery),
+              event,
+            );
             rt.db
               .prepare(
                 `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
@@ -4057,9 +4040,6 @@ export class SqliteScopeHost implements ScopeHost {
             deadLetter.run(e.id, imp.moduleId, new Date().toISOString(), String(err));
             result.deadLettered += 1;
             lines.write({ ...unit, outcome: 'dead-lettered', error: err });
-          } finally {
-            rt.causedBy = null;
-            rt.unitInvocationId = null;
           }
         }
         if (!ran) result.duplicates += 1;
@@ -5183,15 +5163,16 @@ export class SqliteScopeHost implements ScopeHost {
           lines.write({ ...unit, attempt: attempts, outcome: 'inert' });
           continue;
         }
-        this.causedBy = event.id;
+        // #2055: the handler writes through a view bound to its event, never through the host.
+        const caused = this.causedByView(event.id);
         try {
           let result: unknown;
           if (executor.kind === 'connector') {
             // `true`: dispatchExecutors is only ever reached from inside
             // `rt.actor.enqueue` (invoke's post-commit tail, or drainDue).
-            await executor.handler(this.connectorContext(rt, executor.timeoutMs, true, event.id), event);
+            await executor.handler(caused.connectorContext(rt, executor.timeoutMs, true, event.id), event);
           } else {
-            result = await executor.handler(this.admin, event, scope);
+            result = await executor.handler(caused.admin, event, scope);
           }
           // #1184: a refusal is the handler's own terminal decision — journaled with its
           // reason, never retried, and listed by `executorDeadLetters` beside an exhausted one.
@@ -5222,8 +5203,6 @@ export class SqliteScopeHost implements ScopeHost {
           else report.retrying += 1;
           outcomeOf(dead ? 'dead-lettered' : 'retrying', err);
           lines.write({ ...unit, attempt: attempts, outcome: dead ? 'dead-lettered' : 'retrying', error: err });
-        } finally {
-          this.causedBy = null;
         }
       }
     }
@@ -5578,14 +5557,10 @@ export class SqliteScopeHost implements ScopeHost {
     // Cloudflare one does; the context build is the same one `dispatchExecutors` hands
     // an in-process connector.
     const rt = this.runtime(tenantId, scopeId);
-    this.causedBy = event.id;
-    try {
-      // `false`: this path deliberately does NOT enqueue, so nothing is held and
-      // the connection's reads take an ordinary serialized turn.
-      await handler(this.connectorContext(rt, options?.timeoutMs ?? 30_000, false, event.id), event);
-    } finally {
-      this.causedBy = null;
-    }
+    // `false`: this path deliberately does NOT enqueue, so nothing is held and
+    // the connection's reads take an ordinary serialized turn. Built on a view bound to
+    // the event, so its admin rows carry it and nothing else the host serves does (#2055).
+    await handler(this.causedByView(event.id).connectorContext(rt, options?.timeoutMs ?? 30_000, false, event.id), event);
   }
 
   /**
@@ -5863,16 +5838,14 @@ export class SqliteScopeHost implements ScopeHost {
               lines.write({ ...unit, outcome: 'dead-lettered' });
               continue;
             }
-            const ctx = this.operationContext(rt, asPrincipal(this.systemPrincipal), {
-              system: mod.id,
-            });
-            // #1237: anything this consumer emits was emitted BECAUSE of this event.
-            // `dispatchExecutors` already did this for the admin log; the module
-            // consumers never did, which is exactly where a backwards walk stopped.
-            // On the runtime rather than the host — see `ScopeRuntime.causedBy`.
-            rt.causedBy = event.id;
-            // #1901: the handler's `ctx.log` lines join this delivery's line.
-            rt.unitInvocationId = unit.invocationId;
+            // #1237: anything this consumer emits was emitted BECAUSE of this event — where a
+            // backwards walk used to stop. #1901: its `ctx.log` lines join this delivery's
+            // line. Both passed into the context, never set on the runtime (#2055).
+            const ctx = this.operationContext(
+              rt, asPrincipal(this.systemPrincipal), { system: mod.id },
+              undefined, undefined, undefined, [], undefined,
+              { causedBy: event.id, invocationId: unit.invocationId },
+            );
             rt.db.exec('BEGIN IMMEDIATE');
             try {
               await consumer.handler(ctx, event);
@@ -5898,13 +5871,6 @@ export class SqliteScopeHost implements ScopeHost {
                 )
                 .run(event.id, mod.id, new Date().toISOString(), String(err), invocationId);
               lines.write({ ...unit, outcome: 'dead-lettered', error: err });
-            } finally {
-              rt.unitInvocationId = null;
-              // Cleared on BOTH paths. Left set, the id would leak onto every later
-              // emit in this scope — an operation's own event stamped as caused by
-              // whatever happened to be delivered last, which is worse than no cause
-              // at all, because it reads as a recorded fact.
-              rt.causedBy = null;
             }
           }
         }
@@ -6279,6 +6245,7 @@ export class SqliteScopeHost implements ScopeHost {
         target.vertical ?? null,
         before == null ? null : JSON.stringify(before),
         after == null ? null : JSON.stringify(after),
+        // #2055: like `onBehalfOf`, set only on a view, never on the host itself.
         this.causedBy,
         // #977: set only on an attributed view (`attributed`), never on the host itself.
         this.onBehalfOf === null ? null : JSON.stringify(this.onBehalfOf),
@@ -6315,8 +6282,13 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /** #977: this host, with every admin row it writes naming who the actor acted for. */
-  attributed(onBehalfOf: OnBehalfOf): this {
-    return attributedHost(this, onBehalfOf, this.buildAdmin);
+  attributed(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): this {
+    return attributedView(this, { onBehalfOf, causedBy: options?.causedBy }, this.buildAdmin);
+  }
+
+  /** #2055: this host, with every admin row it writes naming `eventId` as its cause. */
+  private causedByView(eventId: string): this {
+    return attributedView(this, { causedBy: eventId }, this.buildAdmin);
   }
 
   private buildAdmin(): HostAdmin {
@@ -11102,6 +11074,13 @@ export class SqliteScopeHost implements ScopeHost {
      * row's `last_used_at` are the same value — a second clock read could disagree.
      */
     at: Instant = this.clock(),
+    /**
+     * #1237/#1901/#2055: the delivery a consumer's (or an import's) context runs for — the
+     * event its emits are caused by, and the unit its log lines join. Absent for everything
+     * else. A parameter, never a field on the runtime: a field read across the handler's
+     * awaits is correct only while nothing else in the scope can emit meanwhile.
+     */
+    delivery?: { causedBy: string; invocationId: string },
   ): OperationContext {
     // For a connection, system, capability or peer-vertical subject this carries THAT id so
     // the type holds — it is not a person, and the event actor below says what it is instead.
@@ -11260,7 +11239,7 @@ export class SqliteScopeHost implements ScopeHost {
           // the runtime, not the host, because the host serves every scope at once
           // and this context outlives an `await`. A fact about the surrounding
           // dispatch, never envelope data module code could set or branch on.
-          rt.causedBy,
+          delivery?.causedBy ?? null,
           // #1237: a fact about the surrounding CALL, like the version above — never
           // envelope data module code could set or branch on.
           rt.invocationId,
@@ -11281,7 +11260,7 @@ export class SqliteScopeHost implements ScopeHost {
           tenantId: rt.tenantId,
           scopeId: rt.scopeId,
           operation: operation ?? null,
-          invocationId: () => rt.invocationId ?? rt.unitInvocationId,
+          invocationId: () => rt.invocationId ?? delivery?.invocationId ?? null,
           // A consumer runs under the system override, so it logs as `system`.
           principalKind: overrideActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
@@ -11925,9 +11904,7 @@ export class SqliteScopeHost implements ScopeHost {
       actor: new ScopeActor(),
       appliedMigrations,
       mintEventId,
-      causedBy: null,
       invocationId: null,
-      unitInvocationId: null,
     };
     this.scopes.set(key, created);
     this.scopesById.set(scopeId, created);
