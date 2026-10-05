@@ -48,6 +48,7 @@ import {
   issueExemplarOwner,
   type SubjectTextTarget,
 } from '@substrat-run/kernel';
+import { replyOf, type DoReply } from './do-reply.js';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
@@ -65,8 +66,9 @@ import type {
   TenantId,
   TenantStatus,
   VerticalResolution,
+  ErrorCode,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, substratError } from '@substrat-run/contracts';
+import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1267,6 +1269,21 @@ export function backfillBackoffMs(failures: number): number {
   return Math.min(BACKFILL_PAUSE_MS * 2 ** failures, BACKFILL_BACKOFF_MAX_MS);
 }
 
+/** The directory writes `ControlPlaneDO.reply` answers for (#113): each refuses with a typed throw. */
+export const REPLIED_METHODS = [
+  'createTenant',
+  'setTenantStatus',
+  'reapTenant',
+  'setTenantName',
+  'putTenantStore',
+  'putBlobStore',
+  'provisionScope',
+  'createOrg',
+  'registerIdentityPool',
+  'linkIdentity',
+] as const;
+export type RepliedMethod = (typeof REPLIED_METHODS)[number];
+
 export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
@@ -1779,7 +1796,7 @@ export class ControlPlaneDO extends DurableObject {
       .exec('SELECT tenant_id FROM tenants WHERE slug = ?', slug)
       .toArray()[0] as { tenant_id: string } | undefined;
     if (slugOwner) {
-      throw new Error(`tenant slug '${slug}' already taken by ${slugOwner.tenant_id} (slugs are unique)`);
+      throw substratError('conflict', `tenant slug '${slug}' already taken by ${slugOwner.tenant_id} (slugs are unique)`);
     }
     this.sql.exec(
       `INSERT INTO tenants (tenant_id, slug, name, status, created_at, provisioned_by_tenant)
@@ -1796,12 +1813,12 @@ export class ControlPlaneDO extends DurableObject {
   /** Throw if absent; else UPDATE and return the previous status. */
   setTenantStatus(tenantId: string, status: TenantStatus): string {
     const before = this.readTenant(tenantId);
-    if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+    if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
     // `reaped` is terminal and destroys data — unreachable here, only ever set by
     // reapTenant, so a plain status flip cannot forge a tombstone over live data
     // (§4.8, the tenant analogue of reapScope's archived-only gate).
     if (status === 'reaped') {
-      throw new Error(
+      throw substratError('validation_failed',
         `tenant ${tenantId} cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`,
       );
     }
@@ -1838,9 +1855,9 @@ export class ControlPlaneDO extends DurableObject {
    */
   reapTenant(tenantId: string): string {
     const before = this.readTenant(tenantId);
-    if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+    if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
     if (before.status !== 'deleting') {
-      throw new Error(
+      throw substratError('conflict',
         `tenant ${tenantId} is ${before.status}, not deleting — only a deleting tenant may be reaped`,
       );
     }
@@ -1872,7 +1889,7 @@ export class ControlPlaneDO extends DurableObject {
   /** Rename the DISPLAY name (never the slug); throw if absent; return the previous name. */
   setTenantName(tenantId: string, name: string): string {
     const before = this.readTenant(tenantId);
-    if (!before) throw new Error(`unknown tenant: ${tenantId}`);
+    if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
     this.sql.exec('UPDATE tenants SET name = ? WHERE tenant_id = ?', name, tenantId);
     return before.name;
   }
@@ -1930,10 +1947,10 @@ export class ControlPlaneDO extends DurableObject {
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', row.tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
-      throw new Error(`cannot provision tenant store under unknown tenant: ${row.tenantId}`);
+      throw substratError('not_found', `cannot provision tenant store under unknown tenant: ${row.tenantId}`);
     }
     if (tenantRow.status !== 'active') {
-      throw new Error(
+      throw substratError('conflict',
         `cannot provision tenant store under non-active tenant (status: ${tenantRow.status}): ${row.tenantId}`,
       );
     }
@@ -2020,10 +2037,10 @@ export class ControlPlaneDO extends DurableObject {
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', row.tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
-      throw new Error(`cannot provision blob store under unknown tenant: ${row.tenantId}`);
+      throw substratError('not_found', `cannot provision blob store under unknown tenant: ${row.tenantId}`);
     }
     if (tenantRow.status !== 'active') {
-      throw new Error(
+      throw substratError('conflict',
         `cannot provision blob store under non-active tenant (status: ${tenantRow.status}): ${row.tenantId}`,
       );
     }
@@ -2104,10 +2121,10 @@ export class ControlPlaneDO extends DurableObject {
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
-      throw new Error(`cannot provision scope under unknown tenant: ${tenantId}`);
+      throw substratError('conflict', `cannot provision scope under unknown tenant: ${tenantId}`);
     }
     if (tenantRow.status !== 'active') {
-      throw new Error(
+      throw substratError('conflict',
         `cannot provision scope under non-active tenant (status: ${tenantRow.status}): ${tenantId}`,
       );
     }
@@ -2127,7 +2144,7 @@ export class ControlPlaneDO extends DurableObject {
         )
         .toArray()[0] as { scope_id: string } | undefined;
       if (slugOwner) {
-        throw new Error(
+        throw substratError('conflict',
           `scope slug '${record.slug}' already taken under tenant ${tenantId} ` +
             `by ${slugOwner.scope_id} (slugs are unique within a tenant)`,
         );
@@ -2251,6 +2268,24 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
+   * A directory write, its refusal answered as DATA (#113): the typed throws in these methods
+   * would reach the coordinator flattened, so it calls them through here and rethrows the
+   * refusal with its code (`unwrapReply`). Called directly, they still throw — a coordinator
+   * from before this change does — and that caller reads the code folded into the message.
+   */
+  async reply<M extends RepliedMethod>(
+    method: M,
+    args: Parameters<ControlPlaneDO[M]>,
+  ): Promise<DoReply<Awaited<ReturnType<ControlPlaneDO[M]>>>> {
+    return replyOf(() => {
+      // An RPC argument, so held to the list rather than trusted to be one of its names.
+      if (!REPLIED_METHODS.includes(method)) throw new Error(`not a replied directory method: ${String(method)}`);
+      const run = this[method] as (...a: unknown[]) => Awaited<ReturnType<ControlPlaneDO[M]>>;
+      return run.apply(this, args);
+    });
+  }
+
+  /**
    * The getScope gate (control-plane.md §4.1/§4.2): validate the scope belongs
    * to the tenant and both records are active, or throw the fail-closed reason.
    *
@@ -2266,14 +2301,13 @@ export class ControlPlaneDO extends DurableObject {
    * The same gate, answering its refusal as DATA (#1718). An error thrown in a Durable
    * Object arrives at the coordinator flattened, its code gone, so a typed throw here
    * would still reach the caller untyped (#1714 measured it). A record crosses intact, so
-   * the coordinator throws the refusal itself, typed. `code` is set only where a code is
-   * known; the lifecycle refusals keep their bare messages. Null means access is allowed.
+   * the coordinator throws the refusal itself, typed (#113: every refusal but a failed
+   * migration carries its code). Null means access is allowed.
    */
   scopeAccessRefusal(
     tenantId: string,
     scopeId: string,
-  ): { code: 'not_found' | null; message: string } | null {
-    const refuse = (message: string) => ({ code: null, message });
+  ): { code: ErrorCode | null; message: string; reason?: string } | null {
     const row = this.sql
       .exec('SELECT tenant_id, status FROM scopes WHERE scope_id = ?', scopeId)
       .toArray()[0] as { tenant_id: string; status: string } | undefined;
@@ -2284,10 +2318,14 @@ export class ControlPlaneDO extends DurableObject {
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
-      return refuse(`scope has no tenant record: (${tenantId}, ${scopeId})`);
+      return { code: 'not_found', message: `scope has no tenant record: (${tenantId}, ${scopeId})`, reason: SCOPE_GATE_REASONS.unrecorded };
     }
     if (tenantRow.status !== 'active') {
-      return refuse(`tenant not active (status: ${tenantRow.status}): ${tenantId}`);
+      return {
+        code: 'conflict',
+        message: `tenant not active (status: ${tenantRow.status}): ${tenantId}`,
+        reason: SCOPE_GATE_REASONS.notActive,
+      };
     }
     if (row.status !== 'active') {
       // A scope stuck in provisioning because its migrations failed must say so.
@@ -2303,12 +2341,18 @@ export class ControlPlaneDO extends DurableObject {
         | { migration_failed_version: string | null; migration_error: string | null }
         | undefined;
       if (failure?.migration_failed_version) {
-        return refuse(
-          `migration failed for ${failure.migration_failed_version} — scope fails closed: ` +
+        return {
+          code: null,
+          message:
+            `migration failed for ${failure.migration_failed_version} — scope fails closed: ` +
             `${failure.migration_error ?? 'unknown error'}`,
-        );
+        };
       }
-      return refuse(`scope not active (status: ${row.status}): ${scopeId}`);
+      return {
+        code: 'conflict',
+        message: `scope not active (status: ${row.status}): ${scopeId}`,
+        reason: SCOPE_GATE_REASONS.notActive,
+      };
     }
     return null;
   }
@@ -2348,7 +2392,7 @@ export class ControlPlaneDO extends DurableObject {
     action: string,
   ):
     | { ok: true; status: string; vertical: string | null }
-    | { ok: false; code: 'not_found' | null; message: string } {
+    | { ok: false; code: ErrorCode; message: string } {
     const row = this.sql
       .exec('SELECT tenant_id, status, vertical FROM scopes WHERE scope_id = ?', scopeId)
       .toArray()[0] as { tenant_id: string; status: string; vertical: string | null } | undefined;
@@ -2358,7 +2402,7 @@ export class ControlPlaneDO extends DurableObject {
     if (!from.includes(row.status)) {
       return {
         ok: false,
-        code: null,
+        code: 'conflict',
         message:
           `illegal scope transition for ${action}: ${row.status} → ${to} ` +
           `(allowed from: ${from.join('|')})`,
@@ -3050,7 +3094,7 @@ export class ControlPlaneDO extends DurableObject {
       .exec('SELECT org_id FROM orgs WHERE tenant_id = ? AND slug = ?', tenantId, slug)
       .toArray()[0] as unknown as { org_id: string } | undefined;
     if (slugOwner) {
-      throw new Error(
+      throw substratError('conflict',
         `org slug '${slug}' already taken by ${slugOwner.org_id} (slugs are unique per tenant)`,
       );
     }
@@ -3332,7 +3376,7 @@ export class ControlPlaneDO extends DurableObject {
     const existing = this.readPool(provider);
     if (existing) {
       if (existing.topology === topology && existing.tenant_id === tenantId) return false;
-      throw new Error(
+      throw substratError('conflict',
         `identity pool '${provider}' is already registered as ${existing.topology}` +
           `${existing.tenant_id ? ` for tenant ${existing.tenant_id}` : ''}`,
       );
@@ -3863,7 +3907,7 @@ export class ControlPlaneDO extends DurableObject {
       .toArray()[0] as unknown as { principal_id: string } | undefined;
     if (existing) {
       if (existing.principal_id === principal) return false;
-      throw new Error(
+      throw substratError('conflict',
         `identity ${provider}:${externalId} in tenant ${tenantId} is already bound to ${existing.principal_id}`,
       );
     }

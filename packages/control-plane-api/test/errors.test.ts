@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AUTO_ADMISSION_NOTE, substratError } from '@substrat-run/contracts';
+import { AUTO_ADMISSION_NOTE, SCOPE_GATE_REASONS, substratError, type ErrorCode } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { mapError } from '../src/errors.js';
 
@@ -215,18 +215,119 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
 });
 
 describe('mapError — a ScopeDO refusing a projection for another tenant (#1738)', () => {
-  // As it arrives across the Durable Object hop: a plain Error, the code only in the text.
-  const refusal = new Error(
-    'Substrat.conflict: applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it',
-  );
+  const sentence =
+    'applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it';
 
-  it('answers 409, with its text intact, not a generic 500', () => {
-    const { status, body } = mapError(refusal);
+  it('answers 409 from the code the DO reply carried, with its text intact', () => {
+    const { status, body } = mapError(substratError('conflict', sentence));
     expect(status).toBe(409);
-    expect(JSON.stringify(body)).toContain('would re-point it');
+    expect(body.detail).toBe(sentence);
   });
 
-  it('the twin: an unrelated plain Error is still the generic 500', () => {
-    expect(mapError(new Error('boom')).status).toBe(500);
+  it('the flattened form a throw across the hop arrives as is no longer matched (#113)', () => {
+    // The coordinator reads the refusal from `applyProjectionReply` now; only a coordinator
+    // calling a DO from before that change could still see this, and it gets the generic 500.
+    expect(mapError(new Error(`Substrat.conflict: ${sentence}`)).status).toBe(500);
+  });
+});
+
+/**
+ * #113: the last families on `CODE_PATTERNS`, pinned by status AND code — one real sentence per
+ * throw-site wording, as the adapters write it. These are what a client of the control plane sees
+ * today, and typing the throw sites must not move a single one.
+ */
+const REMAINING: readonly [sentence: string, status: number, code: string][] = [
+  ['cannot provision scope under unknown tenant: 01T', 409, 'conflict'],
+  ['cannot provision tenant store under unknown tenant: 01T', 404, 'not_found'],
+  ['cannot provision blob store under unknown tenant: 01T', 404, 'not_found'],
+  ['cannot provision scope under non-active tenant (status: suspended): 01T', 409, 'conflict'],
+  ['cannot provision tenant store under non-active tenant (status: suspended): 01T', 409, 'conflict'],
+  ['cannot provision blob store under non-active tenant (status: deleting): 01T', 409, 'conflict'],
+  [`tenant slug 'acme' already taken by 01T (slugs are unique)`, 409, 'conflict'],
+  [`scope slug 'main' already taken under tenant 01T by 01S (slugs are unique within a tenant)`, 409, 'conflict'],
+  [`org slug 'ops' already taken by 01O (slugs are unique per tenant)`, 409, 'conflict'],
+  ['illegal scope transition for archive: reaped → archived (allowed from: active|suspended)', 409, 'conflict'],
+  ['applyProjection refused: this scope was provisioned for tenant 01A, and a projection for tenant 01B would re-point it', 409, 'conflict'],
+  ['tenant not active (status: suspended): 01T', 409, 'conflict'],
+  ['scope not active (status: archived): 01S', 409, 'conflict'],
+  [`vertical 'todo' is already registered as git`, 409, 'conflict'],
+  [`identity pool 'acme-pool' is already registered as shared for tenant 01T`, 409, 'conflict'],
+  ['promotion changes the permission surface (aaa → bbb) — acknowledge it explicitly to promote', 409, 'conflict'],
+  ['promotion changes migrations (aaa → bbb) — acknowledge it explicitly to promote', 409, 'conflict'],
+  ['unknown tenant: 01T', 404, 'not_found'],
+  ['unknown scope for tenant: (01T, 01S)', 404, 'not_found'],
+  ['unknown scope 01S in tenant 01T', 404, 'not_found'],
+  ['unknown scope for connection: 01S', 404, 'not_found'],
+  [`unknown table 'ghost'`, 404, 'not_found'],
+  ['read-only console: empty statement', 400, 'validation_failed'],
+  ['scope has no tenant record: (01T, 01S)', 404, 'not_found'],
+];
+
+describe('mapError — the last pattern families keep their status and code (#113)', () => {
+  // Every row is typed at its throw site now (both adapters, the contract suite asserts the code),
+  // so the status comes from the declaration and the pattern table is gone.
+  it.each(REMAINING)('%s → %i %s', (sentence, status, code) => {
+    const mapped = mapError(substratError(code as ErrorCode, sentence));
+    expect(mapped.status).toBe(status);
+    expect(mapped.body.code).toBe(code);
+    expect(mapped.body.detail).toBe(sentence);
+  });
+
+  it.each(REMAINING)('%s, untyped, is an unreviewed throw: the generic 500', (sentence) => {
+    // What makes the deletion real: a future untyped refusal answers `internal error` in its
+    // first test instead of being quietly matched by a row that guessed its code.
+    const mapped = mapError(new Error(sentence));
+    expect(mapped.status).toBe(500);
+    expect(mapped.body.detail).toBeUndefined();
+  });
+});
+
+describe('mapError — the scope gate keeps its own answer on the control plane (#113)', () => {
+  // A vertical's public edge answers these as the router does; the operator's surface does not.
+  it.each([
+    [substratError('conflict', 'scope not active (status: suspended): 01S', { reason: SCOPE_GATE_REASONS.notActive }), 409],
+    [substratError('not_found', 'scope has no tenant record: (01T, 01S)', { reason: SCOPE_GATE_REASONS.unrecorded }), 404],
+  ] as const)('%s → %i, naming what it is', (refusal, status) => {
+    const { status: answered, body } = mapError(refusal);
+    expect(answered).toBe(status);
+    expect(body.detail).toBe(refusal.message);
+    expect(body.reason).toBe(refusal.extensions.reason);
+  });
+});
+
+/**
+ * #113: refusals no pattern ever matched, so they answered the generic 500 — `internal error`,
+ * no detail — for a request the caller can fix. Typed at their throw sites now. The untyped
+ * twin is what each answered before.
+ */
+const WAS_500: readonly [sentence: string, status: number, code: ErrorCode][] = [
+  [`tenant 01T cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`, 400, 'validation_failed'],
+  ['tenant 01T is active, not deleting — only a deleting tenant may be reaped', 409, 'conflict'],
+  ['scope 01S is active, not archived — only an archived scope may be reaped', 409, 'conflict'],
+  [`scope 01S still resolves hostname 'app.example.com' — unbind it before reaping`, 409, 'conflict'],
+  ['scope 01S is not a fork or preview — only previews may be deleted; archive and reap a primary', 403, 'forbidden'],
+  [`hostname 'app.example.com' is already bound to another scope`, 409, 'conflict'],
+  [`unknown hostname 'ghost.example.com'`, 404, 'not_found'],
+  ['unknown org 01O in tenant 01T', 404, 'not_found'],
+  [`identity pool 'oidc:x' is not registered`, 404, 'not_found'],
+  [`identity pool 'oidc:x' is tenant-bound — enumerating tenants is only meaningful for a central pool`, 403, 'forbidden'],
+  [`identity pool 'oidc:x' is not registered — a pool must declare its topology before a login can link`, 409, 'conflict'],
+  [`identity pool 'oidc:x' is bound to tenant 01A and cannot link into 01B`, 409, 'conflict'],
+  ['module not registered on this host: @acme/none', 404, 'not_found'],
+  ['scope not migratable (status: archived): 01S', 409, 'conflict'],
+  ['scope 01S is reaped — its storage is gone and cannot be read', 409, 'conflict'],
+  ['identity oidc:x:u1 in tenant 01T is already bound to 01P', 409, 'conflict'],
+];
+
+describe('mapError — refusals that used to answer the generic 500 (#113)', () => {
+  it.each(WAS_500)('%s → %i %s', (sentence, status, code) => {
+    const mapped = mapError(substratError(code, sentence));
+    expect(mapped.status).toBe(status);
+    expect(mapped.body.code).toBe(code);
+    expect(mapped.body.detail).toBe(sentence);
+  });
+
+  it.each(WAS_500)('%s, untyped (as it was thrown before), is the generic 500', (sentence) => {
+    expect(mapError(new Error(sentence)).status).toBe(500);
   });
 });

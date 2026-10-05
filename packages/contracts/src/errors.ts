@@ -136,7 +136,8 @@ export const PROBLEM_EXTENSIONS = {
     entity: entityRef.optional(),
   }),
   forbidden: z.object({ reason: z.string().min(1).optional() }),
-  not_found: z.strictObject({}),
+  /** `reason` narrows a refusal one surface answers differently: `scope_unrecorded` (#113). */
+  not_found: z.strictObject({ reason: z.string().min(1).optional() }),
   conflict: z.object({ reason: z.string().min(1).optional() }),
   validation_failed: z.object({
     errors: z.array(validationIssue).optional(),
@@ -167,6 +168,24 @@ export const PROBLEM_EXTENSIONS = {
   unavailable: z.object({ reason: z.string().min(1).optional() }),
   internal: z.strictObject({}),
 } as const satisfies Record<ErrorCode, z.ZodType>;
+
+/**
+ * The scope gate's refusals (#113): a tenant or scope that is not active (`conflict`), and a
+ * scope with no tenant record (`not_found`). The control plane answers them as themselves, for
+ * the operator; a vertical's public edge answers both as the router does for a hostname whose
+ * scope is not serving (`NO_APPLICATION_DETAIL`), so a caller cannot tell a request that raced
+ * a suspension from one the router refused.
+ */
+export const SCOPE_GATE_REASONS = { notActive: 'scope_not_active', unrecorded: 'scope_unrecorded' } as const;
+
+/** What the router answers, with a 404, for a hostname with no serving scope behind it. */
+export const NO_APPLICATION_DETAIL = 'No application is configured for this hostname.';
+
+/** Is this a scope-gate refusal (`SCOPE_GATE_REASONS`)? Read by shape, like `errorCodeOf`. */
+export function isScopeGateRefusal(err: unknown): boolean {
+  const reason = (err as SubstratError | null)?.extensions?.reason;
+  return reason === SCOPE_GATE_REASONS.notActive || reason === SCOPE_GATE_REASONS.unrecorded;
+}
 
 /** The extensions legal on one code, as a type — what `substratError` accepts. */
 export type ExtensionsFor<C extends ErrorCode> = z.infer<(typeof PROBLEM_EXTENSIONS)[C]>;

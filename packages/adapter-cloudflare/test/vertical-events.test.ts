@@ -980,8 +980,9 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
       );
     const before = await roles();
     const e = await crm.hostFor().projectRolesLocal(u, s, [CRM_OWNER]).then(() => undefined, (x: unknown) => x);
-    // Across the Durable Object boundary the error's code survives only in its message.
-    expect(String((e as Error).message)).toContain('Substrat.conflict');
+    // The code crosses the Durable Object boundary as data (#113), and the sentence as written.
+    expect(errorCodeOf(e)).toBe('conflict');
+    expect(String((e as Error).message)).toMatch(/^applyProjection refused: /);
     expect(String((e as Error).message)).toContain(t);
     expect(String((e as Error).message)).toContain(u);
     expect(await receiptOf(s)).toBe(t);

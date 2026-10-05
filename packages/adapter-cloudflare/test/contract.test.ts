@@ -7,6 +7,8 @@ import {
   connectionId,
   errorCodeOf,
   instant,
+  SCOPE_GATE_REASONS,
+  type SubstratError,
   toProblem,
   moduleId,
   orgId,
@@ -64,6 +66,7 @@ import {
   SWITCH_HOLD_SNAPSHOT_MS,
   SWITCH_HOLDS_NAME,
 } from '../src/host.js';
+import type { DoReply } from '../src/do-reply.js';
 import { SYSTEM_DOOR_REGATES } from '../src/system-door.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
@@ -4981,5 +4984,84 @@ describe('#1856 — grantEntityLocal refuses a ref the permission graph cannot h
     await expect(probe(entity)).resolves.toMatchObject({ allowed: false });
     await host.grantEntityLocal(s, who, READ, entity);
     await expect(probe(entity)).resolves.toMatchObject({ allowed: true });
+  });
+});
+
+describe('#113 — a refusal raised inside a Durable Object keeps its code across the hop', () => {
+  const staff = platformActorId.parse(ulid());
+  const alice = principalId.parse(ulid());
+  let host: CloudflareScopeHost;
+
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(permMod);
+  });
+
+  const refusal = (p: Promise<unknown>): Promise<Error> =>
+    p.then(
+      () => {
+        throw new Error('expected a refusal');
+      },
+      (e: Error) => e,
+    );
+  /** A world of one tenant and one active scope, fresh per test. */
+  const world = async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `hop-${t.toLowerCase()}`, name: 'Hop' });
+    await host.admin.grantEntitlement(staff, t, 'perm');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    return { t, s };
+  };
+
+  it('a ControlPlaneDO write refuses with its code, and the sentence as written', async () => {
+    const { t } = await world();
+    const taken = await refusal(
+      host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: `hop-${t.toLowerCase()}`, name: 'Twin' }),
+    );
+    expect(errorCodeOf(taken)).toBe('conflict');
+    // Thrown across the hop, workerd would have written `Substrat.conflict: tenant slug …`.
+    expect(taken.message).toBe(`tenant slug 'hop-${t.toLowerCase()}' already taken by ${t} (slugs are unique)`);
+    const ghost = tenantId.parse(ulid());
+    const unknown = await refusal(host.admin.setTenantStatus(staff, ghost, 'suspended'));
+    expect(errorCodeOf(unknown)).toBe('not_found');
+    expect(unknown.message).toBe(`unknown tenant: ${ghost}`);
+  });
+
+  it('the scope gate answers a scope with no tenant record not_found, and its twin is let through', async () => {
+    const { t, s } = await world();
+    await expect(host.getScope(alice, t, s)).resolves.toBeDefined();
+    await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), async (_i, state) => {
+      state.storage.sql.exec('DELETE FROM tenants WHERE tenant_id = ?', t);
+    });
+    const orphan = await refusal(host.getScope(alice, t, s));
+    expect(errorCodeOf(orphan)).toBe('not_found');
+    expect(orphan.message).toBe(`scope has no tenant record: (${t}, ${s})`);
+    expect((orphan as SubstratError).extensions.reason).toBe(SCOPE_GATE_REASONS.unrecorded);
+  });
+
+  it('a directory method called directly still throws, for a coordinator from before the envelope', async () => {
+    const { t } = await world();
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+      setTenantName(tenantId: string, name: string): Promise<string>;
+    };
+    const ghost = tenantId.parse(ulid());
+    const legacy = await refusal(stub.setTenantName(ghost, 'Ghost'));
+    expect(legacy.message).toContain(`unknown tenant: ${ghost}`);
+    await expect(stub.setTenantName(t, 'Renamed')).resolves.toBe('Hop');
+  });
+
+  it('refuses a method name that is not on the replied list', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+      reply(method: string, args: unknown[]): Promise<DoReply<unknown>>;
+    };
+    const reply = await stub.reply('wipeDirectory', []);
+    expect(reply.failure?.message).toBe('not a replied directory method: wipeDirectory');
   });
 });

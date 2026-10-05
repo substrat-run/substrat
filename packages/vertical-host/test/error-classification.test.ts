@@ -6,9 +6,13 @@ import {
   problemTypeFor,
   substratError,
   toWireFailure,
+  NO_APPLICATION_DETAIL,
+  SCOPE_GATE_REASONS,
+  type ErrorCode,
 } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
-import { classifyError, problemFor } from '../src/errors.js';
+import { Hono } from 'hono';
+import { classifyError, problemFor, problemOf } from '../src/errors.js';
 
 /**
  * The classifier's end of #113: a throw that declared what it is outranks every guess.
@@ -145,15 +149,80 @@ describe('problemFor renders the body', () => {
 });
 
 describe('classifyError on a ScopeDO refusing a projection for another tenant (#1738)', () => {
-  const refusal = new Error(
-    'Substrat.conflict: applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it',
-  );
+  const sentence =
+    'applyProjection refused: this scope was provisioned for tenant 01AAA, and a projection for tenant 01BBB would re-point it';
 
-  it('answers 409 rather than the caller\'s 400', () => {
-    expect(classifyError(refusal)?.status).toBe(409);
+  it('answers 409 rather than the caller\'s 400, read from the code', () => {
+    expect(classifyError(substratError('conflict', sentence))?.status).toBe(409);
   });
 
-  it('the twin: an unrelated plain Error keeps no opinion', () => {
-    expect(classifyError(new Error('boom'))).toBeUndefined();
+  it('the flattened form keeps no opinion now that the pattern is gone (#113)', () => {
+    expect(classifyError(new Error(`Substrat.conflict: ${sentence}`))).toBeUndefined();
+  });
+});
+
+/**
+ * #113: the directory refusals that reach a vertical door too. The scope gate's (a tenant or
+ * scope not active, a scope with no tenant record) answer the router's neutral 404 at this public
+ * edge; the introspection read answers its own code. Untyped, all of them were the caller's 400.
+ */
+describe('a vertical door on the gate and introspection refusals (#113)', () => {
+  const gate: readonly Error[] = [
+    substratError('conflict', 'tenant not active (status: suspended): 01T', { reason: SCOPE_GATE_REASONS.notActive }),
+    substratError('conflict', 'scope not active (status: archived): 01S', { reason: SCOPE_GATE_REASONS.notActive }),
+    substratError('not_found', 'scope has no tenant record: (01T, 01S)', { reason: SCOPE_GATE_REASONS.unrecorded }),
+  ];
+
+  it.each(gate.map((e) => [e.message, e] as const))('%s → the router\'s neutral 404', (_m, refusal) => {
+    const { status, body } = problemFor(refusal);
+    expect(status).toBe(404);
+    expect(body.code).toBe('not_found');
+    expect(body.detail).toBe(NO_APPLICATION_DETAIL);
+    expect(body.reason).toBeUndefined();
+    // The same through `mountOperations`' wrapper, whose cause is the refusal.
+    const wrapped = new HTTPException(classifyError(refusal)!.status, { message: classifyError(refusal)!.message, cause: refusal });
+    expect(problemFor(wrapped).body).toEqual(body);
+  });
+
+  it('a public surface that maps its own errors cannot widen the gate either', async () => {
+    // A vertical's own `onError`, deciding a status first and rendering through `problemOf`.
+    const app = new Hono();
+    app.get('/thing', () => {
+      throw gate[0];
+    });
+    app.get('/other', () => {
+      throw new Error('seat taken');
+    });
+    app.onError((err, c) => {
+      const { status, body } = problemOf({ status: 409, message: (err as Error).message }, err, c.req.path);
+      return c.json(body, status);
+    });
+    const gated = await app.request('/thing');
+    expect(gated.status).toBe(404);
+    const body = (await gated.json()) as Record<string, unknown>;
+    expect(body.code).toBe('not_found');
+    expect(body.detail).toBe(NO_APPLICATION_DETAIL);
+    // The twin: the vertical's own decision stands for an ordinary error.
+    const ordinary = await app.request('/other');
+    expect(ordinary.status).toBe(409);
+    expect(((await ordinary.json()) as Record<string, unknown>).detail).toBe('seat taken');
+  });
+
+  it('the twin: a conflict that is not the gate keeps its own status and sentence', () => {
+    const { status, body } = problemFor(substratError('conflict', 'tenant not active (status: suspended): 01T'));
+    expect(status).toBe(409);
+    expect(body.detail).toBe('tenant not active (status: suspended): 01T');
+  });
+
+  const cases: readonly [sentence: string, code: ErrorCode, status: number][] = [
+    [`unknown table 'ghost'`, 'not_found', 404],
+    ['read-only console: empty statement', 'validation_failed', 400],
+  ];
+
+  it.each(cases)('%s → %s %i', (sentence, code, status) => {
+    const { status: answered, body } = problemFor(substratError(code, sentence));
+    expect(answered).toBe(status);
+    expect(body.code).toBe(code);
+    expect(body.detail).toBe(sentence);
   });
 });

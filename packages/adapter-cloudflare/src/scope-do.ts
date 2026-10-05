@@ -245,6 +245,7 @@ import {
   type LiveRefusal,
   type LiveSubscription,
 } from './live-reads.js';
+import { replyOf, type DoReply } from './do-reply.js';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql, doBuiltColumnsOf, doRedactionSql, doSpineSql } from './sql.js';
 import {
@@ -944,7 +945,7 @@ function concurrencyRefOf(
  * What a capability attachment verb (#1686) answers: its value, or its failure as DATA —
  * `invoke`'s envelope discipline, since a throw across the RPC keeps only its message.
  */
-export type CapabilityAttachmentReply<T> = { value: T; failure?: undefined } | { failure: WireFailure };
+export type CapabilityAttachmentReply<T> = DoReply<T>;
 
 function attachSubject(principal: PrincipalId, connectionId?: string): CheckSubject {
   return connectionId ? { kind: 'connection', id: connectionId } : { kind: 'principal', id: principal };
@@ -3414,15 +3415,13 @@ export function defineScopeDO(
       connectionId?: string,
     ): Promise<CapabilityAttachmentReply<AttachmentRecord[]>> {
       await this.ensureMigrations();
-      try {
+      return replyOf(() => {
         const ctx = this.operationContext(
           principal, tenantId, scopeId, undefined, connectionId,
           undefined, undefined, undefined, 'attachments.search',
         );
-        return { value: await this.searchAttachmentsAs(ctx, term, limit) };
-      } catch (err) {
-        return { failure: toWireFailure(err) };
-      }
+        return this.searchAttachmentsAs(ctx, term, limit);
+      });
     }
 
     /**
@@ -5084,8 +5083,22 @@ export function defineScopeDO(
       }));
     }
 
-    /** A bounded page of one table. Unknown table names throw — never queried blind. */
+    /** A bounded page of one table. Unknown table names throw — never queried blind. Kept for a
+     *  coordinator from before #113; the current one calls `introspectTableReply`. */
     introspectTable(table: string, limit: number, offset: number): ScopeTablePage {
+      try {
+        return this.tablePage(table, limit, offset);
+      } catch (e) {
+        throw toRpcError(e);
+      }
+    }
+
+    /** `introspectTable`, its refusal answered as DATA so its code survives the hop (#113). */
+    introspectTableReply(table: string, limit: number, offset: number): Promise<DoReply<ScopeTablePage>> {
+      return replyOf(() => this.tablePage(table, limit, offset));
+    }
+
+    private tablePage(table: string, limit: number, offset: number): ScopeTablePage {
       const known = new Set(
         (
           this.sql
@@ -5093,7 +5106,7 @@ export function defineScopeDO(
             .toArray() as unknown as { name: string }[]
         ).map((r) => r.name),
       );
-      if (!known.has(table)) throw new Error(`unknown table '${table}'`);
+      if (!known.has(table)) throw substratError('not_found', `unknown table '${table}'`);
       // The ceiling clamps; a bound SQLite would misread (NaN, non-finite, fractional,
       // negative) is refused instead of reaching LIMIT / OFFSET (#1632).
       const l = Math.min(assertRowLimit('limit', limit), SCOPE_TABLE_PAGE_MAX);
@@ -5115,8 +5128,22 @@ export function defineScopeDO(
      * (no sqlite3_stmt_readonly analogue), a transaction that ALWAYS rolls back — a
      * statement the gate misclassified still cannot persist a write. Rows are capped
      * at SCOPE_QUERY_ROW_MAX with `truncated` set, never an error.
+     * Kept for a coordinator from before #113; the current one calls `introspectQueryReply`.
      */
     async introspectQuery(sql: string): Promise<ScopeQueryResult> {
+      try {
+        return await this.readOnlyQuery(sql);
+      } catch (e) {
+        throw toRpcError(e);
+      }
+    }
+
+    /** `introspectQuery`, its refusal answered as DATA so its code survives the hop (#113). */
+    introspectQueryReply(sql: string): Promise<DoReply<ScopeQueryResult>> {
+      return replyOf(() => this.readOnlyQuery(sql));
+    }
+
+    private async readOnlyQuery(sql: string): Promise<ScopeQueryResult> {
       const stmt = assertReadOnlyQuery(sql);
       let result: ScopeQueryResult | undefined;
       const rollback = new Error('read-only console rollback');
@@ -5138,7 +5165,7 @@ export function defineScopeDO(
           throw rollback;
         });
       } catch (e) {
-        if (e !== rollback) throw toRpcError(e);
+        if (e !== rollback) throw e;
       }
       return result!;
     }
@@ -6801,6 +6828,11 @@ export function defineScopeDO(
           source,
         );
       });
+    }
+
+    /** `applyProjection`, its refusal answered as DATA so its code survives the hop (#113). */
+    applyProjectionReply(...args: Parameters<ScopeDO['applyProjection']>): Promise<DoReply<SwitchedOff[]>> {
+      return replyOf(() => this.applyProjection(...args));
     }
 
     /**

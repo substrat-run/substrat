@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import {
   connectionId, dataSubjectId, errorCodeOf, moduleManifest, permissionKey,
-  platformActorId, principalId, scopeId, tenantId, type ScopeId,
+  platformActorId, principalId, scopeId, SCOPE_GATE_REASONS, tenantId, type ScopeId, type SubstratError,
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
@@ -128,6 +128,31 @@ describe('unknown scope refusals', () => {
       await expect(call(s)).resolves.not.toThrow();
     } finally {
       directory?.close();
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the scope gate on a scope with no tenant record (#113)', () => {
+  it('is typed not_found, and its twin with the record in place is let through', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-no-tenant-'));
+    const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test', new Uint8Array(32).fill(7)) });
+    try {
+      const staff = platformActorId.parse(ulid());
+      const alice = principalId.parse(ulid());
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: 'orphan', name: 'Orphan' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s });
+      await host.admin.activateScope(staff, t, s);
+      await expect(host.getScope(alice, t, s)).resolves.toBeDefined();
+      (host as unknown as { directory: Database.Database }).directory.prepare('DELETE FROM tenants WHERE tenant_id = ?').run(t);
+      const refusal = await host.getScope(alice, t, s).then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(refusal)).toBe('not_found');
+      expect((refusal as Error).message).toBe(`scope has no tenant record: (${t}, ${s})`);
+      expect((refusal as SubstratError).extensions.reason).toBe(SCOPE_GATE_REASONS.unrecorded);
+    } finally {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
     }
