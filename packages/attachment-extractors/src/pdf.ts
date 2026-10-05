@@ -425,6 +425,10 @@ async function inflate(raw: Uint8Array, budget: InflateBudget, pace: Pace): Prom
   const writing = writer.write(raw).then(() => writer.close()).catch(() => {});
   const reader = ds.readable.getReader();
   const sink = new Sink(budget);
+  // Any way out but the end of the data CANCELS the reader first: the write is held by the
+  // stream's backpressure until someone reads, so awaiting it after an abort or a bound —
+  // with nobody reading — would never settle.
+  let ended = false;
   try {
     for (;;) {
       await pace.turn();
@@ -432,23 +436,18 @@ async function inflate(raw: Uint8Array, budget: InflateBudget, pace: Pace): Prom
       try {
         next = await reader.read();
       } catch {
+        ended = true; // damaged data: keep what came before it
         break;
       }
-      if (next.done) break;
+      if (next.done) {
+        ended = true;
+        break;
+      }
       pace.charge(next.value!.length);
-      let more: boolean;
-      try {
-        more = sink.add(next.value!);
-      } catch (err) {
-        await reader.cancel().catch(() => {});
-        throw err;
-      }
-      if (!more) {
-        await reader.cancel().catch(() => {});
-        break;
-      }
+      if (!sink.add(next.value!)) break;
     }
   } finally {
+    if (!ended) await reader.cancel().catch(() => {});
     await writing;
   }
   return sink.done();

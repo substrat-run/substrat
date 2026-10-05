@@ -164,8 +164,13 @@ describe('which extractor reads a file', () => {
     expect(nameFor('application/octet-stream', 'blob.bin')).toBeNull();
   });
 
-  it('has no extractor for a PDF, an image or a legacy office file — the kernel records those unsupported', () => {
-    expect(nameFor('application/pdf', 'a.pdf')).toBeNull();
+  it('reads a PDF by its type, or its extension when the type says nothing', () => {
+    expect(nameFor('application/pdf', 'a.pdf')).toBe('pdf');
+    expect(nameFor('application/octet-stream', 'Scan.PDF')).toBe('pdf');
+    expect(nameFor('image/png', 'looks-like.pdf')).toBeNull();
+  });
+
+  it('has no extractor for an image or a legacy office file — the kernel records those unsupported', () => {
     expect(nameFor('image/jpeg', 'a.jpg')).toBeNull();
     expect(nameFor('application/msword', 'a.doc')).toBeNull();
   });
@@ -178,6 +183,7 @@ describe('which extractor reads a file', () => {
       ['docx', 1234],
       ['xlsx', 1234],
       ['pptx', 1234],
+      ['pdf', 1234],
     ]);
     expect(() => assertAttachmentExtractors(list)).not.toThrow();
   });
