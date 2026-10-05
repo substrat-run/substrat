@@ -1,20 +1,39 @@
 /**
- * An independent oracle for `src/business-time.ts` (#1648, Codex round 1 on #2060).
+ * An independent oracle for `src/business-time.ts` (#1648, Codex rounds 1 and 2 on #2060).
  *
  * It shares nothing with the module under test: no offset arithmetic, no `instantOf`, no
- * day walk. It steps real time in fixed SLOTS and asks a formatter of its own what the
- * desk's wall clock reads at each one; a slot is open when that reading falls inside a
- * window of that local weekday (or of that date's exception). So whatever DST does — a
- * skipped hour, a repeated one, either hemisphere — the oracle sees it the way a person
- * watching the office clock would, and the module is right only if it agrees.
+ * day walk. It steps real time in fixed SLOTS, asks a formatter of its own what the desk's
+ * wall clock reads at each one, and groups the slots by the local date they fall on. A
+ * window is then placed on that day's own list of slots, by its own reading of the
+ * documented `'compatible'` rule for an endpoint the clock does not show exactly once:
+ *
+ *   - an endpoint inside a REPEATED hour is the FIRST slot that shows it;
+ *   - an endpoint inside a SKIPPED hour is moved forward by the length of the skip: the
+ *     slot that shows `endpoint + gap`, where the gap is how far the clock jumped;
+ *   - `24:00` is the end of the day's last slot.
+ *
+ * A slot is open when it lies between where the window opens and where it closes. So a
+ * window that closes inside the repeated hour counts the first pass of that hour up to the
+ * close and none of the second pass, and one that opens inside the skipped hour starts
+ * after it — which is what the module must agree with.
  *
  * Exact for schedules whose windows, and zones whose transitions, sit on slot boundaries:
  * every case here uses quarter-hour windows in zones that change on the hour.
  */
-import type { BusinessSchedule } from '../src/business-time.js';
+import type { BusinessSchedule, BusinessWindow } from '../src/business-time.js';
 
 export const SLOT = 15 * 60_000;
 const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+
+interface Slot {
+  readonly t: number;
+  readonly minute: number;
+}
+interface LocalDay {
+  readonly date: string;
+  readonly weekday: number;
+  readonly slots: Slot[];
+}
 
 function reader(timezone: string): (t: number) => { date: string; weekday: number; minute: number } {
   const f = new Intl.DateTimeFormat('en-CA', {
@@ -35,19 +54,58 @@ function reader(timezone: string): (t: number) => { date: string; weekday: numbe
   };
 }
 
-function isOpen(schedule: BusinessSchedule, read: ReturnType<typeof reader>, t: number): boolean {
-  const { date, weekday, minute } = read(t);
-  const windows =
-    schedule.exceptions?.find((e) => e.date === date)?.windows ?? schedule.weekly[DAYS[weekday]!] ?? [];
-  const m = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
-  return windows.some((w) => minute >= m(w.open) && minute < m(w.close));
+/** Whole local days, in order, from the one `from` falls on until the one `to` falls on. */
+function* localDays(timezone: string, from: number, to: number): Generator<LocalDay> {
+  const read = reader(timezone);
+  // Back far enough that the first day is whole: no zone is more than a day from UTC.
+  let t = Math.floor(from / SLOT) * SLOT - 2 * 86_400_000;
+  const startDate = read(from).date;
+  let day: LocalDay | null = null;
+  for (; ; t += SLOT) {
+    const r = read(t);
+    if (r.date < startDate) continue;
+    if (day && r.date !== day.date) {
+      yield day;
+      if (t > to) return;
+    }
+    if (!day || r.date !== day.date) day = { date: r.date, weekday: r.weekday, slots: [] };
+    day.slots.push({ t, minute: r.minute });
+  }
 }
 
-/** Open time in [from, to), slot by slot. `from` must sit on a slot boundary. */
+const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+
+/** Where an endpoint lands on this day's slots, as an index into them ('compatible'). */
+function place(day: LocalDay, endpoint: number): number {
+  if (endpoint === 24 * 60) return day.slots.length;
+  const first = day.slots.findIndex((s) => s.minute === endpoint);
+  if (first !== -1) return first; // shown once, or the first of two showings
+  // Not shown: skipped. Find the jump that skips it, and move forward by its length.
+  for (let i = 1; i < day.slots.length; i++) {
+    const before = day.slots[i - 1]!.minute;
+    const after = day.slots[i]!.minute;
+    if (before < endpoint && endpoint < after) {
+      const gap = after - before - SLOT / 60_000;
+      const moved = day.slots.findIndex((s) => s.minute === endpoint + gap);
+      return moved === -1 ? i : moved;
+    }
+  }
+  return day.slots.findIndex((s) => s.minute > endpoint);
+}
+
+function openSlots(schedule: BusinessSchedule, day: LocalDay): Slot[] {
+  const windows: readonly BusinessWindow[] =
+    schedule.exceptions?.find((e) => e.date === day.date)?.windows ?? schedule.weekly[DAYS[day.weekday]!] ?? [];
+  return windows.flatMap((w) => day.slots.slice(place(day, minutes(w.open)), place(day, minutes(w.close))));
+}
+
+/** Open time in [from, to), slot by slot. Both on slot boundaries. */
 export function oracleBetween(schedule: BusinessSchedule, from: string, to: string): number {
-  const read = reader(schedule.timezone);
+  const [a, b] = [Date.parse(from), Date.parse(to)];
   let total = 0;
-  for (let t = Date.parse(from); t < Date.parse(to); t += SLOT) if (isOpen(schedule, read, t)) total += SLOT;
+  for (const day of localDays(schedule.timezone, a, b)) {
+    for (const s of openSlots(schedule, day)) if (s.t >= a && s.t < b) total += SLOT;
+  }
   return total;
 }
 
@@ -56,13 +114,14 @@ export function oracleBetween(schedule: BusinessSchedule, from: string, to: stri
  * on a slot boundary and `ms` a whole number of slots, so the answer is a slot's END.
  */
 export function oracleAdd(schedule: BusinessSchedule, start: string, ms: number, until: string): string | null {
-  const read = reader(schedule.timezone);
+  const [a, end] = [Date.parse(start), Date.parse(until)];
   let remaining = ms;
-  const end = Date.parse(until);
-  for (let t = Date.parse(start); t < end; t += SLOT) {
-    if (!isOpen(schedule, read, t)) continue;
-    remaining -= SLOT;
-    if (remaining <= 0) return new Date(t + SLOT).toISOString();
+  for (const day of localDays(schedule.timezone, a, end)) {
+    for (const s of openSlots(schedule, day)) {
+      if (s.t < a || s.t >= end) continue;
+      remaining -= SLOT;
+      if (remaining <= 0) return new Date(s.t + SLOT).toISOString();
+    }
   }
   return null;
 }

@@ -287,10 +287,26 @@ describe('the open time guaranteed from every start (Codex round 2 on #2060)', (
  * (forward in October, back in April). Codex's round-1 case on #2060 is the last block.
  */
 describe('agrees with an independent wall-clock walk, across DST in both hemispheres', () => {
+  // Transition-night exceptions whose endpoints fall INSIDE the skipped or repeated hour,
+  // in each zone's own nights, so the endpoint rule is exercised on both sides.
+  const NIGHTS: Record<string, { date: string; windows: { open: string; close: string }[] }[]> = {
+    'Europe/Stockholm': [
+      { date: '2026-10-25', windows: [{ open: '01:00', close: '02:30' }] }, // close in the fold
+      { date: '2027-03-28', windows: [{ open: '02:30', close: '03:45' }] }, // open in the gap
+    ],
+    'America/New_York': [
+      { date: '2026-11-01', windows: [{ open: '01:15', close: '01:45' }] }, // both in the fold
+      { date: '2027-03-14', windows: [{ open: '02:15', close: '03:30' }] }, // open in the gap
+    ],
+    'Australia/Sydney': [
+      { date: '2026-04-05', windows: [{ open: '02:30', close: '05:00' }] }, // open in the fold
+      { date: '2026-10-04', windows: [{ open: '01:00', close: '02:45' }] }, // close in the gap
+    ],
+  };
   const across = (timezone: string): BusinessSchedule => ({
     timezone,
     weekly: { sun: [{ open: '01:00', close: '04:00' }], wed: [{ open: '09:00', close: '17:30' }] },
-    exceptions: [{ date: '2027-03-28', windows: [{ open: '01:30', close: '03:45' }] }],
+    exceptions: NIGHTS[timezone],
   });
   const from = '2026-01-01T00:00:00.000Z';
   // The oracle reads the wall clock some 35 000 times per year it covers: slow on purpose.
@@ -316,6 +332,30 @@ describe('agrees with an independent wall-clock walk, across DST in both hemisph
       }
     }, ORACLE_MS);
   }
+
+  describe("an endpoint inside the repeated or the skipped hour ('compatible', Codex round 2)", () => {
+    // Each night's open time, worked out by hand from the zone's offsets — a third opinion
+    // beside the module and the oracle, so neither can drift into agreeing with the other.
+    const cases: [string, string, string, string, number][] = [
+      // zone, the night's date, from, to (spanning the night), minutes
+      ['Europe/Stockholm', '2026-10-25', '2026-10-24T12:00:00.000Z', '2026-10-25T12:00:00.000Z', 90],
+      ['Europe/Stockholm', '2027-03-28', '2027-03-27T12:00:00.000Z', '2027-03-28T12:00:00.000Z', 15],
+      ['America/New_York', '2026-11-01', '2026-11-01T00:00:00.000Z', '2026-11-01T12:00:00.000Z', 30],
+      ['America/New_York', '2027-03-14', '2027-03-14T00:00:00.000Z', '2027-03-14T12:00:00.000Z', 15],
+      ['Australia/Sydney', '2026-04-05', '2026-04-04T10:00:00.000Z', '2026-04-05T10:00:00.000Z', 210],
+      ['Australia/Sydney', '2026-10-04', '2026-10-03T10:00:00.000Z', '2026-10-04T10:00:00.000Z', 105],
+    ];
+    for (const [timezone, night, a, b, minutes] of cases) {
+      it(`${timezone} on ${night}: ${minutes} minutes, by hand, by the module and by the oracle`, () => {
+        const s: BusinessSchedule = { timezone, weekly: {}, exceptions: NIGHTS[timezone] };
+        // `weekly: {}` alone is refused; one far-off weekday window keeps the schedule valid
+        // and outside every span here.
+        const valid = { ...s, weekly: { thu: [{ open: '12:00', close: '12:15' }] } };
+        expect(businessMsBetween(valid, a, b)).toBe(minutes * MINUTE);
+        expect(oracleBetween(valid, a, b)).toBe(minutes * MINUTE);
+      });
+    }
+  });
 
   describe("Codex's case: Stockholm, Sundays 01:00–04:00, from 2026-01-01", () => {
     const sundays: BusinessSchedule = { timezone: 'Europe/Stockholm', weekly: { sun: [{ open: '01:00', close: '04:00' }] } };
