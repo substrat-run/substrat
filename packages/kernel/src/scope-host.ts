@@ -922,27 +922,38 @@ export type ConsumerHandler = (ctx: OperationContext, event: DomainEvent) => voi
 export type ImportHandler = (ctx: OperationContext, event: ImportedEvent) => void | Promise<void>;
 
 /**
- * One membership ADD for `HostAdmin.applyMembership` (#1184): a TENANT-level role, and nothing
- * else. No org is joined — what an org confers lives partly in each scope's own store, where no
- * directory unit can bound it, so authorizing an org membership is its own capability.
+ * One membership change for `HostAdmin.applyMembership` (#1184): a TENANT-level role assigned
+ * or taken away, and nothing else. No org is joined or left — what an org confers lives partly
+ * in each scope's own store, where no directory unit can bound it, so authorizing an org
+ * membership is its own capability.
  */
-export interface MembershipChange {
+export type MembershipChange = {
   tenantId: TenantId;
   principal: PrincipalId;
-  /** The tenant-level role assigned. */
+  /** The tenant-level role assigned or taken away. */
   roleKey: string;
   /**
-   * Whose authority bounds the write (§5.1): the unit applies nothing unless this principal
-   * covers every permission `roleKey` carries, read inside the unit (`tenantCoverage`).
+   * Whose authority bounds the write (§5.1) — the inviter of an add, the remover of a removal:
+   * the unit applies nothing unless this principal covers every permission `roleKey` carries,
+   * read inside the unit (`tenantCoverage`).
    */
   boundedBy: PrincipalId;
-  /** Apply nothing when `principal`'s removal fence stands at or after this instant. */
-  unlessRemovedSince: Instant;
-}
+} & (
+  | {
+      op: 'add';
+      /** Apply nothing when `principal`'s removal fence stands at or after this instant. */
+      unlessRemovedSince: Instant;
+    }
+  | { op: 'remove' }
+);
 
-/** What the unit did: applied, or why not — fenced by a removal, or out of the bound. */
+/**
+ * What the unit did: applied, or why not — fenced by a removal (an add only), or out of the
+ * bound. A removal that applied says whether it took anything (`changed`); one that took
+ * nothing still raised the fence.
+ */
 export type MembershipChangeResult =
-  | { applied: true }
+  | { applied: true; changed?: boolean }
   | { applied: false; removedAt: string }
   | { applied: false; missing: PermissionKey[] }
   | { applied: false; unknownRole: string };
@@ -2026,13 +2037,14 @@ export interface HostAdmin {
     orgId: OrgId,
   ): Promise<void>;
   /**
-   * One membership add, applied as ONE directory unit (#1184): a single SQLite transaction or a
-   * single synchronous ControlPlaneDO method, with no await inside it. In that unit it reads
-   * `principal`'s removal fence, re-evaluates the bound — `boundedBy` must still cover every
-   * permission `roleKey` carries, against the directory as it stands (`tenantCoverage`) — and
-   * only then assigns the TENANT-level role and writes its audit row. A removal, a grant, a
-   * role redefinition or a demotion lands wholly before the unit (and refuses it) or wholly
-   * after it (and governs from then on), never between its check and its write.
+   * One membership change, applied as ONE directory unit (#1184): a single SQLite transaction or
+   * a single synchronous ControlPlaneDO method, with no await inside it. In that unit it
+   * re-evaluates the bound — `boundedBy` must still cover every permission `roleKey` carries,
+   * against the directory as it stands (`tenantCoverage`) — and only then writes. An ADD also
+   * reads `principal`'s removal fence first, then assigns the TENANT-level role and writes its
+   * audit row. A REMOVE unassigns it and raises the fence, as a tenant-level `unassignRole`
+   * does. A removal, a grant, a role redefinition or a demotion lands wholly before the unit
+   * (and governs it) or wholly after it, never between its check and its write.
    *
    * The fence is `_substrat_membership_fences`: every tenant-level `unassignRole` and every
    * `removeMember` raises it for the person, in the same unit as its revoke — a no-op included,

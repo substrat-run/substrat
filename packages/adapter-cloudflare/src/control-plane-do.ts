@@ -3081,22 +3081,27 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * A membership add as ONE DO unit (#1184) — `HostAdmin.applyMembership`. Synchronous, so no
-   * other request into this object runs between its reads and its writes: the principal's
-   * removal fence, then the bound — `boundedBy` covering every permission `roleKey` carries,
-   * against the tuples and the role as they stand now (`tenantCoverage`) — then the TENANT
-   * role and its audit row. The coordinator mints the row (id, actor, attribution, `causedBy`).
+   * A membership change as ONE DO unit (#1184) — `HostAdmin.applyMembership`. Synchronous, so
+   * no other request into this object runs between its reads and its writes: an add's removal
+   * fence, then the bound — `boundedBy` covering every permission `roleKey` carries, against the
+   * tuples and the role as they stand now (`tenantCoverage`) — then the write: the TENANT role
+   * and its audit row for an add, `revokeAndFence`'s three for a removal. The coordinator mints
+   * the row (id, actor, attribution, `causedBy`).
    */
   applyMembership(
-    change: { tenantId: string; principal: string; roleKey: string; boundedBy: string; unlessRemovedSince: string },
+    change:
+      | { op: 'add'; tenantId: string; principal: string; roleKey: string; boundedBy: string; unlessRemovedSince: string }
+      | { op: 'remove'; tenantId: string; principal: string; roleKey: string; boundedBy: string },
     row: AdminEntryInput,
   ): MembershipChangeResult {
     const { tenantId, principal, roleKey, boundedBy } = change;
     return this.ctx.storage.transactionSync((): MembershipChangeResult => {
-      const fence = this.sql.exec(MEMBERSHIP_FENCE_SINCE_SQL, tenantId, principal, change.unlessRemovedSince).toArray()[0] as
-        | { removed_at: string }
-        | undefined;
-      if (fence) return { applied: false, removedAt: fence.removed_at };
+      if (change.op === 'add') {
+        const fence = this.sql.exec(MEMBERSHIP_FENCE_SINCE_SQL, tenantId, principal, change.unlessRemovedSince).toArray()[0] as
+          | { removed_at: string }
+          | undefined;
+        if (fence) return { applied: false, removedAt: fence.removed_at };
+      }
       const role = this.getRole(tenantId, roleKey);
       if (!role) return { applied: false, unknownRole: roleKey };
       const bound = tenantCoverage(
@@ -3110,6 +3115,9 @@ export class ControlPlaneDO extends DurableObject {
         role.permissions,
       );
       if (!bound.covered) return { applied: false, missing: bound.missing };
+      if (change.op === 'remove') {
+        return { applied: true, changed: this.revokeFencing(tenantId, principal, `role:${roleKey}`, `tenant:${tenantId}`, row) };
+      }
       this.writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`, null);
       this.recordAdmin(row);
       return { applied: true };
@@ -3130,12 +3138,15 @@ export class ControlPlaneDO extends DurableObject {
     object: string,
     row: AdminEntryInput,
   ): boolean {
-    return this.ctx.storage.transactionSync(() => {
-      const changed = this.revokeTenantTuple(tenantId, `principal:${principal}`, relation, object, row.at);
-      this.sql.exec(RAISE_MEMBERSHIP_FENCE_SQL, tenantId, principal, row.at);
-      if (changed) this.recordAdmin(row);
-      return changed;
-    });
+    return this.ctx.storage.transactionSync(() => this.revokeFencing(tenantId, principal, relation, object, row));
+  }
+
+  /** `revokeAndFence`'s writes, for inside a transaction a caller already holds. */
+  private revokeFencing(tenantId: string, principal: string, relation: string, object: string, row: AdminEntryInput): boolean {
+    const changed = this.revokeTenantTuple(tenantId, `principal:${principal}`, relation, object, row.at);
+    this.sql.exec(RAISE_MEMBERSHIP_FENCE_SQL, tenantId, principal, row.at);
+    if (changed) this.recordAdmin(row);
+    return changed;
   }
 
   /** Tombstone any tenant tuple by its exact (subject, relation, object). Returns

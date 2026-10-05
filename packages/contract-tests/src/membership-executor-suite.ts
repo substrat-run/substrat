@@ -40,7 +40,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
 
   /**
    * One tenant with two scopes, the two roles, an org, and the executor mounted. `hold`, when
-   * given, holds every add's directory unit until it resolves — the gap a concurrent removal or
+   * given, holds every add's and removal's directory unit until it resolves — the gap a concurrent removal or
    * change of authority would race into. `failNextAdds` fails that many adds' units outright:
    * the transient failure the retry backstop absorbs.
    */
@@ -85,7 +85,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
 
   /**
    * `host`, except that an add's `applyMembership` fails while `w.failNextAdds` counts down,
-   * and otherwise waits for `hold` before it runs.
+   * and every unit, an add's or a removal's, otherwise waits for `hold` before it runs.
    */
   const intercepting = (host: ScopeHost, w: { failNextAdds: number }, hold?: () => Promise<void>): ScopeHost => {
     const held = (admin: HostAdmin): HostAdmin =>
@@ -93,7 +93,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
         get: (t, key) =>
           key === 'applyMembership'
             ? async (...args: Parameters<HostAdmin['applyMembership']>) => {
-                if (w.failNextAdds > 0) {
+                if (args[1].op === 'add' && w.failNextAdds > 0) {
                   w.failNextAdds -= 1;
                   throw new Error('directory unavailable');
                 }
@@ -590,6 +590,35 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       release();
       await Promise.all([accepting, removing]);
       expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
+    });
+
+    it('a remover demoted while their removal is held removes nobody', async () => {
+      const carol = principalId.parse(ulid());
+      await w.host.admin.assignRole(staff, { principalId: carol, roleKey: 'lead', node: tenantNode(w) });
+      const joe = principalId.parse(ulid());
+      expect((await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'lead'))).map((o) => o.outcome)).toEqual(['delivered']);
+      shut();
+      const removing = removeAs(w, carol, joe, 'lead');
+      await settle();
+      await w.host.admin.unassignRole(staff, { principalId: carol, roleKey: 'lead', node: tenantNode(w) });
+      release();
+      const outcomes = await removing;
+      expect(outcomes.map((o) => o.outcome)).toEqual(['refused']);
+      expect(outcomes[0]!.error).toMatch(/remover .* no longer holds invitefix:a, invitefix:b/);
+      expect(await holds(w, joe, INVITEFIX_B)).toBe(true);
+    });
+
+    it('twin: a remover who keeps their role through the hold removes', async () => {
+      const carol = principalId.parse(ulid());
+      await w.host.admin.assignRole(staff, { principalId: carol, roleKey: 'lead', node: tenantNode(w) });
+      const joe = principalId.parse(ulid());
+      expect((await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'lead'))).map((o) => o.outcome)).toEqual(['delivered']);
+      shut();
+      const removing = removeAs(w, carol, joe, 'lead');
+      await settle();
+      release();
+      expect((await removing).map((o) => o.outcome)).toEqual(['delivered']);
+      expect(await holds(w, joe, INVITEFIX_B)).toBe(false);
     });
 
     describe('the bound is asked again inside the unit — a change of authority while held is not written past', () => {

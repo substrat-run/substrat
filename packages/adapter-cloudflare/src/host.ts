@@ -274,6 +274,7 @@ import {
   type ExecutorDrainReport,
   type ExecutorHandler,
   type ExecutorOutcome,
+  type MembershipChange,
   type MembershipChangeResult,
   type ExecutorScope,
   type ExecutorRetryPolicy,
@@ -715,10 +716,7 @@ interface ControlPlaneStub {
   ): Promise<boolean>;
   listOrgs(tenantId: string): Promise<OrgRow[]>;
   /** #1184: a bounded, fenced tenant-role add, as one DO unit. */
-  applyMembership(
-    change: { tenantId: string; principal: string; roleKey: string; boundedBy: string; unlessRemovedSince: string },
-    row: AdminEntry,
-  ): Promise<MembershipChangeResult>;
+  applyMembership(change: MembershipChange, row: AdminEntry): Promise<MembershipChangeResult>;
   /**
    * #1184: a tenant-level removal — the K-21 tombstone, the removal fence and (only if it
    * changed anything) the audit row — as one DO unit. Returns whether anything changed.
@@ -6741,16 +6739,16 @@ export class CloudflareScopeHost implements ScopeHost {
         // The row is minted here, where attribution and `causedBy` live, and written by the
         // ControlPlaneDO in the same synchronous method as the fence, the bound and the tuple
         // (#1184): one DO unit, so nothing lands between the check and the write.
-        const { tenantId, principal, roleKey } = change;
+        const { tenantId, principal, roleKey, op } = change;
+        const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
         const result = await this.cp.applyMembership(
           change,
-          this.adminEntry(actor, 'assignRole', { tenantId, scopeId: null }, null, {
-            principalId: principal,
-            roleKey,
-            node: { tenantId, scopeId: null },
-          }),
+          op === 'add'
+            ? this.adminEntry(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment)
+            : this.adminEntry(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null),
         );
-        if (result.applied) await this.fanOut(tenantId); // the tenant-level tuple reaches the projections
+        // The tenant-level tuple, or its tombstone, reaches the projections.
+        if (result.applied && (op === 'add' || result.changed)) await this.fanOut(tenantId);
         return result;
       },
       removeMember: async (actor, tenantId, principal, orgId) => {

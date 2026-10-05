@@ -15,6 +15,7 @@ import {
   type ExecutorRetryPolicy,
   type ExecutorScope,
   type HostAdmin,
+  type MembershipChangeResult,
   type ScopeHost,
 } from './scope-host.js';
 
@@ -45,7 +46,8 @@ import {
  *   invitation, one join. The most a module can do is make the principal who actually invoked
  *   it look like the sender — the same delegation bound `ctx.grant` has.
  * - A REMOVE is bounded by the remover, the request's own actor (§5.1: removal takes the
- *   same bound, or a junior admin could strip a role they could not have granted).
+ *   same bound, or a junior admin could strip a role they could not have granted) — asked the
+ *   same two ways, so a remover demoted in between removes nobody.
  *
  * **Removal wins.** An add is refused when the joiner was removed after it was requested: by a
  * later `member.remove-requested` on the same membership (ordered by outbox id), or by any
@@ -153,16 +155,14 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       // One directory unit: the fence, the bound asked again, the role and its audit row. A
       // removal or a change of authority lands wholly before it or wholly after it.
       const applied = await adminFor(inviter, event).applyMembership(options.actor, {
+        op: 'add',
         tenantId: event.tenantId,
         principal: request.principal,
         roleKey: request.roleKey,
         boundedBy: inviter,
         unlessRemovedSince: instant.parse(new Date(Date.parse(event.occurredAt) - MEMBERSHIP_REMOVAL_SKEW_MS).toISOString()),
       });
-      if (applied.applied) return undefined;
-      if ('removedAt' in applied) return refuseDelivery(`${request.principal} was removed after this request was made`);
-      if ('unknownRole' in applied) return refuseDelivery(`no such role in this tenant: ${applied.unknownRole}`);
-      return refuseDelivery(`the inviter ${inviter} no longer holds ${applied.missing.join(', ')}, which '${request.roleKey}' confers`);
+      return applied.applied ? undefined : refusalOf(applied, request, 'inviter', inviter);
     },
     options.retry,
   );
@@ -174,17 +174,31 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       const decided = await authorizeRemove(event, scope);
       if ('refused' in decided) return decided.refused;
       const { request, remover } = decided;
-      // One directory unit on either adapter: the revoke, its audit row if it took anything,
-      // and the fence — raised even with nothing held, so a pending add sees this removal.
-      await adminFor(remover, event).unassignRole(options.actor, {
-        principalId: request.principal,
+      // One directory unit: the remover's bound asked again, the revoke, its audit row if it
+      // took anything, and the fence — raised even with nothing held, so a pending add sees it.
+      const applied = await adminFor(remover, event).applyMembership(options.actor, {
+        op: 'remove',
+        tenantId: event.tenantId,
+        principal: request.principal,
         roleKey: request.roleKey,
-        node: { tenantId: event.tenantId, scopeId: null },
+        boundedBy: remover,
       });
-      return undefined;
+      return applied.applied ? undefined : refusalOf(applied, request, 'remover', remover);
     },
     options.retry,
   );
+}
+
+/** Why a directory unit applied nothing, as the refusal the journal keeps. */
+function refusalOf(
+  result: Exclude<MembershipChangeResult, { applied: true }>,
+  request: { principal: PrincipalId; roleKey: string },
+  as: 'inviter' | 'remover',
+  who: PrincipalId,
+): DeliveryRefusal {
+  if ('removedAt' in result) return refuseDelivery(`${request.principal} was removed after this request was made`);
+  if ('unknownRole' in result) return refuseDelivery(`no such role in this tenant: ${result.unknownRole}`);
+  return refuseDelivery(`the ${as} ${who} no longer holds ${result.missing.join(', ')}, which '${request.roleKey}' confers`);
 }
 
 type Refused = { refused: DeliveryRefusal };

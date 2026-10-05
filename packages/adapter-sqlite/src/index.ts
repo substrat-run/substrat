@@ -6500,6 +6500,23 @@ export class SqliteScopeHost implements ScopeHost {
     // #1184: the removal fence, raised in the same transaction as a tenant-level revoke.
     const raiseFence = (tenantId: string, principal: string, at: string) =>
       this.directory.prepare(RAISE_MEMBERSHIP_FENCE_SQL).run(tenantId, principal, at);
+    // A tenant-level unassign, for inside a directory transaction (#1184): the tombstone (K-21),
+    // the removal fence — raised even when nothing was held, so an add still on its way cannot
+    // land after this — and the audit row, which K-21 writes only when something changed.
+    const revokeTenantRoleAndFence = (actor: PlatformActorId, assignment: RoleAssignment): boolean => {
+      const { tenantId } = assignment.node;
+      const now = new Date().toISOString();
+      const changed =
+        this.directory
+          .prepare(
+            `UPDATE _substrat_tenant_tuples SET revoked_at = ?
+             WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+          )
+          .run(now, tenantId, `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `tenant:${tenantId}`).changes > 0;
+      raiseFence(tenantId, assignment.principalId, now);
+      if (changed) this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null);
+      return changed;
+    };
     // The tenant-level reads the checker makes, synchronous, for the bound inside a unit.
     const directoryReader = directoryTenantReader({
       directory: this.directory,
@@ -6972,49 +6989,26 @@ export class SqliteScopeHost implements ScopeHost {
         // Tombstone (K-21), never DELETE — the checker skips revoked_at rows, so the
         // assignment stops resolving while staying visible to audit. Guarded on
         // `revoked_at IS NULL` so a repeat unassign is a silent no-op.
-        const subject = `principal:${assignment.principalId}`;
-        const relation = `role:${assignment.roleKey}`;
-        const now = new Date().toISOString();
-        let changes: number;
-        if (assignment.node.scopeId) {
-          // On the scope actor (#1678): a revoke that joined a stranger's transaction and
-          // rolled back with it left the role LIVE after the caller was told it was gone.
-          const scopeNode = assignment.node.scopeId;
-          const rt = this.runtime(assignment.node.tenantId, scopeNode);
-          changes = await rt.actor.turn(
-            () =>
-              rt.db
-                .prepare(
-                  `UPDATE _substrat_tuples SET revoked_at = ?
-                   WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-                )
-                .run(now, subject, relation, `scope:${scopeNode}`).changes,
-          );
-        } else {
-          // One directory transaction (#1184): the revoke, the removal fence — raised even
-          // when nothing was held, so an add still on its way cannot land after this — and
-          // the audit row, which K-21 writes only when something changed.
-          const { tenantId } = assignment.node;
-          this.directory.transaction(() => {
-            changes = this.directory
-              .prepare(
-                `UPDATE _substrat_tenant_tuples SET revoked_at = ?
-                 WHERE tenant_id = ? AND subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-              )
-              .run(now, tenantId, subject, relation, `tenant:${tenantId}`).changes;
-            raiseFence(tenantId, assignment.principalId, now);
-            if (changes > 0) this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId: null }, assignment, null);
-          })();
+        const scopeNode = assignment.node.scopeId;
+        if (!scopeNode) {
+          // One directory transaction (#1184): the revoke, the removal fence and the audit row.
+          this.directory.transaction(() => revokeTenantRoleAndFence(actor, assignment))();
           return;
         }
-        if (changes === 0) return; // never assigned, or already revoked — idempotent, unaudited
-        this.recordAdmin(
-          actor,
-          'unassignRole',
-          { tenantId: assignment.node.tenantId, scopeId: assignment.node.scopeId },
-          assignment,
-          null,
+        // On the scope actor (#1678): a revoke that joined a stranger's transaction and
+        // rolled back with it left the role LIVE after the caller was told it was gone.
+        const rt = this.runtime(assignment.node.tenantId, scopeNode);
+        const changes = await rt.actor.turn(
+          () =>
+            rt.db
+              .prepare(
+                `UPDATE _substrat_tuples SET revoked_at = ?
+                 WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+              )
+              .run(new Date().toISOString(), `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeNode}`).changes,
         );
+        if (changes === 0) return; // never assigned, or already revoked — idempotent, unaudited
+        this.recordAdmin(actor, 'unassignRole', { tenantId: assignment.node.tenantId, scopeId: scopeNode }, assignment, null);
       },
       grant: async (actor: PlatformActorId, raw: CapabilityGrant) => {
         // Parsed like its `grantToConnection`/`grantToSystem` siblings, not taken on
@@ -8597,19 +8591,23 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAdmin(actor, 'addMember', { tenantId }, null, { principal, orgId });
       },
       applyMembership: async (actor, change) => {
-        // ONE directory transaction, synchronous throughout (#1184): the fence, the bound and
-        // the write. Nothing else on this host lands between them, and a failure leaves none.
+        // ONE directory transaction, synchronous throughout (#1184): the fence (an add's), the
+        // bound and the write. Nothing else on this host lands between them, and a failure
+        // leaves none.
         const { tenantId, principal, roleKey, boundedBy } = change;
         const assignment = { principalId: principal, roleKey, node: { tenantId, scopeId: null } };
         return this.directory.transaction((): MembershipChangeResult => {
-          const fence = this.directory
-            .prepare(MEMBERSHIP_FENCE_SINCE_SQL)
-            .get(tenantId, principal, change.unlessRemovedSince) as { removed_at: string } | undefined;
-          if (fence) return { applied: false, removedAt: fence.removed_at };
+          if (change.op === 'add') {
+            const fence = this.directory
+              .prepare(MEMBERSHIP_FENCE_SINCE_SQL)
+              .get(tenantId, principal, change.unlessRemovedSince) as { removed_at: string } | undefined;
+            if (fence) return { applied: false, removedAt: fence.removed_at };
+          }
           const role = directoryReader.getRole(tenantId, roleKey);
           if (!role) return { applied: false, unknownRole: roleKey };
           const bound = tenantCoverage(directoryReader, tenantId, boundedBy, role.permissions);
           if (!bound.covered) return { applied: false, missing: bound.missing };
+          if (change.op === 'remove') return { applied: true, changed: revokeTenantRoleAndFence(actor, assignment) };
           writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`);
           this.recordAdmin(actor, 'assignRole', { tenantId, scopeId: null }, null, assignment);
           return { applied: true };

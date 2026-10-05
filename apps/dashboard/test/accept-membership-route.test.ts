@@ -75,7 +75,8 @@ function flakyHost(real: SqliteScopeHost): ScopeHost {
     new Proxy(admin, {
       get(t, key) {
         if (key === 'applyMembership' && failNextAdds > 0) {
-          return async () => {
+          return async (...args: Parameters<HostAdmin['applyMembership']>) => {
+            if (args[1].op !== 'add') return t.applyMembership(...args);
             failNextAdds -= 1;
             throw new Error('directory unavailable');
           };
