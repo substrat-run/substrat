@@ -5,7 +5,7 @@
  * Identity verification (10), where a secret is shown exactly once, and Usage (12),
  * where a per-token price gets a type treatment rather than a rounding.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
 import {
   api,
@@ -45,6 +45,14 @@ import {
   slaPayloadOf,
   type SlaForm,
 } from '../sla.js';
+import {
+  emptyHoursForm,
+  HOURS_DAY_LABELS,
+  HOURS_DAYS,
+  hoursFormOf,
+  hoursPayloadOf,
+  type HoursForm,
+} from '../business-hours.js';
 import { Avatar, Dot, Empty, UnitPrice, ago } from '../ui.js';
 
 export type SettingsTab =
@@ -683,6 +691,9 @@ function Desk() {
   // The three newer behaviours' boxes (#1083), for the same reason: a half-typed number is
   // not a setting, and `automationPayloadOf` turns the boxes into one only at Save.
   const [automation, setAutomation] = useState<AutomationForm>(() => automationFormOf(null));
+  // The opening-hours boxes (#1648), for the same reason again: `hoursPayloadOf` turns the
+  // text into a schedule only at Save.
+  const [hours, setHours] = useState<HoursForm>(() => emptyHoursForm());
   // Keep a failed read distinct from a behaviour that has never fired.
   const [runs, setRuns] = useState<BehaviourRun[] | null>(null);
   const [runsFailed, setRunsFailed] = useState(false);
@@ -700,6 +711,7 @@ function Desk() {
         setDesk(d);
         setSla(slaFormOf(d.settings));
         setAutomation(automationFormOf(d.settings));
+        setHours(hoursFormOf(d.settings));
       })
       .catch((e: Error) => setLoadFailed(e.message));
     loadRuns();
@@ -771,6 +783,8 @@ function Desk() {
   })(desk.abandoned_after_days);
 
   const slaError = slaErrorOf(sla);
+  const hoursResult = hoursPayloadOf(hours);
+  const hoursError = 'error' in hoursResult ? hoursResult.error : null;
   const automationError = automationErrorOf(automation);
   const fired = (behaviour: string) => runsFailed
     ? <>Last-fired status unavailable. <button type="button" onClick={loadRuns}>Retry</button></>
@@ -785,7 +799,7 @@ function Desk() {
     // Refused here rather than sent and refused there: the message is already on
     // screen against the field, and Save is disabled, so this is the last guard
     // rather than the first.
-    if (windowError || slaError || automationError) return;
+    if (windowError || slaError || automationError || 'error' in hoursResult) return;
     setSaving(true);
     setSaved(false);
     setFailed(null);
@@ -801,7 +815,14 @@ function Desk() {
         abandonedAfterDays: desk.abandoned_after_days,
         // `sla` goes whole, and `null` when every box is empty: the desk sets this key
         // whole, and null is how it hears "no service levels".
-        settings: { roundRobin, sla: slaPayloadOf(sla), ...automationPayloadOf(automation) },
+        // `businessHours` goes whole too, and `null` when every box is empty: the widget
+        // then shows the note above, exactly as it did before structured hours existed.
+        settings: {
+          roundRobin,
+          sla: slaPayloadOf(sla),
+          businessHours: hoursResult.setting,
+          ...automationPayloadOf(automation),
+        },
       });
       setSaved(true);
     } catch (e) {
@@ -839,8 +860,49 @@ function Desk() {
         />
       </Field>
       <Field
-        label="Business hours"
-        hint="Shown to a visitor under the greeting, exactly as written. Nothing schedules on it — leave it empty and the widget says nothing."
+        label="Opening hours"
+        hint="When the desk is open, in its own timezone. One box per day: 09:00–17:00, or several windows separated by commas, such as 09:00–12:00, 13:00–17:00. Leave a day empty when the desk is closed. Exceptions replace a single date, one per line: 2026-12-24 closed, or 2026-12-31 09:00–12:00. The widget shows these hours to visitors, and service levels can count only these hours. Leave every box empty to use the note below instead."
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: '100px 260px', gap: 6, alignItems: 'center' }}>
+          <span className="t-small">Timezone</span>
+          <input
+            className="input mono"
+            placeholder="Europe/Stockholm"
+            aria-label="Timezone of the opening hours"
+            value={hours.timezone}
+            onChange={(e) => setHours({ ...hours, timezone: e.target.value })}
+          />
+          {HOURS_DAYS.map((d) => (
+            <Fragment key={d}>
+              <span className="t-small">{HOURS_DAY_LABELS[d]}</span>
+              <input
+                className="input mono"
+                placeholder="closed"
+                aria-label={`Opening hours on ${HOURS_DAY_LABELS[d]}`}
+                value={hours.days[d]}
+                onChange={(e) => setHours({ ...hours, days: { ...hours.days, [d]: e.target.value } })}
+              />
+            </Fragment>
+          ))}
+          <span className="t-small">Exceptions</span>
+          <textarea
+            className="textarea mono"
+            rows={3}
+            placeholder="2026-12-24 closed"
+            aria-label="Dates whose opening hours differ, one per line"
+            value={hours.exceptions}
+            onChange={(e) => setHours({ ...hours, exceptions: e.target.value })}
+          />
+        </div>
+        {hoursError ? (
+          <div className="t-small" style={{ color: 'var(--danger-2)', marginTop: 6 }}>
+            {hoursError}
+          </div>
+        ) : null}
+      </Field>
+      <Field
+        label="Opening hours note"
+        hint="Free text, shown to a visitor under the greeting exactly as written, but only when the opening hours above are empty. Nothing schedules on it. Leave both empty and the widget says nothing about hours."
       >
         <input
           className="input"
@@ -931,6 +993,17 @@ function Desk() {
             <SlaRow key={p} priority={p} form={sla} onChange={setSla} />
           ))}
         </div>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={sla.businessClock}
+            onChange={(e) => setSla({ ...sla, businessClock: e.target.checked })}
+          />
+          <span className="t-small">
+            Count only opening hours. A four-hour target on a mail that arrives at closing time falls due four
+            opening hours later. With no opening hours set, every minute counts.
+          </span>
+        </span>
         <div className="t-small" style={{ color: 'var(--text-secondary)', marginTop: 6 }}>
           {fired('sla')}
         </div>
@@ -1117,7 +1190,9 @@ function Desk() {
         <button
           className="btn btn-primary"
           onClick={() => void save()}
-          disabled={saving || windowError !== null || slaError !== null || automationError !== null}
+          disabled={
+            saving || windowError !== null || slaError !== null || automationError !== null || hoursError !== null
+          }
         >
           {saving ? 'Saving…' : 'Save'}
         </button>

@@ -34,7 +34,9 @@
  * The third (#1653) is here for the same reason: provisioning a desk twice must leave the
  * state provisioning it once did. So is the fourth (#1648): a snooze pausing the resolution
  * target, read and written by the sweep's own schedules on a Durable Object's SQLite. So is
- * the fifth (#938): the live feed, whose frames come from the scope DO's fan-out.
+ * the fifth (#938): the live feed, whose frames come from the scope DO's fan-out. And the
+ * business-hours describe after #1648's (also #1648): the zone data `Intl` reads is the
+ * runtime's own, so the DST answers are proven where a hosted desk computes them.
  */
 import { SELF, env, fetchMock, runInDurableObject } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -56,6 +58,7 @@ import {
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
 import { classifyError } from '@substrat-run/vertical-host';
+import { addBusinessMs, businessMsBetween, instantOf } from '../../src/business-time.js';
 import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
 import { ticket0Migrations } from '../../src/migrations.generated.js';
@@ -533,6 +536,62 @@ describe('ticket0 on workerd — a snooze pauses the resolution target (#1648)',
     const sl = (await conversation(slaDesk, stillLegacy)) as SlaRow;
     expect(sl.state).toBe('snoozed');
     expect(sl.resolution_breached_at).not.toBeNull();
+  });
+});
+
+/**
+ * #1648's business hours, on the runtime a hosted desk runs. The arithmetic resolves
+ * wall-clock times through `Intl.DateTimeFormat`, and the zone data behind that is the
+ * RUNTIME's, not the package's: a workerd whose ICU lacked a zone, or resolved a DST gap
+ * differently, would put every business-time due somewhere node never did. So the DST facts
+ * `test/business-time.test.ts` pins on node are asserted again here, and a desk on the
+ * business clock stamps an arriving conversation on the DO.
+ */
+describe('ticket0 on workerd — business hours run on the runtime\'s own zone data (#1648)', () => {
+  const bhDesk = scopeId.parse(ulid());
+  const HOUR = 3_600_000;
+  const nineToFive = [{ open: '09:00', close: '17:00' }];
+  const hours = {
+    timezone: 'Europe/Stockholm',
+    weekly: { mon: nineToFive, tue: nineToFive, wed: nineToFive, thu: nineToFive, fri: nineToFive },
+  };
+
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: bhDesk, owner, entitlements })).status).toBe(201);
+    await (await host().getScope(owner, t, bhDesk)).invoke('ticket0/configure-desk', {
+      settings: { businessHours: hours, sla: { firstResponseMinutes: { normal: 240 }, clock: 'business' } },
+    });
+  });
+
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: bhDesk })).status).toBe(200);
+  });
+
+  it('resolves the DST gap, the repeated hour and a weekend across a transition as node does', () => {
+    expect(new Date(instantOf('Europe/Stockholm', Date.UTC(2026, 2, 29, 2, 30))).toISOString()).toBe('2026-03-29T01:30:00.000Z');
+    expect(new Date(instantOf('Europe/Stockholm', Date.UTC(2026, 9, 25, 2, 30))).toISOString()).toBe('2026-10-25T00:30:00.000Z');
+    expect(addBusinessMs(hours, '2026-03-27T15:00:00.000Z', 2 * HOUR)).toBe('2026-03-30T08:00:00.000Z');
+    expect(addBusinessMs(hours, '2026-10-23T14:00:00.000Z', 2 * HOUR)).toBe('2026-10-26T09:00:00.000Z');
+  });
+
+  it('an arriving conversation is stamped four business hours out, on the DO', async () => {
+    const relay = await host().getScope(await relayOf(bhDesk), t, bhDesk);
+    const arrived = await relay.invoke<{ conversation_id: string }>('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'hours@customer.example',
+      contactName: 'Hours',
+      subject: 'When are you open?',
+      bodyText: 'Asking for a friend.',
+      emailMessageId: `<hours-${(arrivals += 1)}@mail.example>`,
+    });
+    const row = await (await host().getScope(owner, t, bhDesk)).invoke<{
+      created_at: string;
+      first_response_due_at: string;
+    }>('ticket0/get-conversation', { conversationId: arrived.conversation_id });
+    // The real clock here (`clock?: never`), so the claim is the relation, not an instant:
+    // exactly four hours of opening time lie between arrival and due.
+    expect(row.first_response_due_at).toBe(addBusinessMs(hours, row.created_at, 4 * HOUR));
+    expect(businessMsBetween(hours, row.created_at, row.first_response_due_at)).toBe(4 * HOUR);
   });
 });
 

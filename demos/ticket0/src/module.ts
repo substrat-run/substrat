@@ -60,6 +60,7 @@ import {
   AUTO_CLOSE_MIN_DAYS,
   AUTO_TAG_RULES_MAX,
   autoTagRule,
+  businessHoursSchedule,
   DESK_METRICS_AGENTS,
   DESK_METRICS_MAX_DAYS,
   DESK_METRICS_WINDOW_DAYS,
@@ -94,6 +95,13 @@ import {
   type MacroAction,
   type SuspicionSignal,
 } from '../spec/model.js';
+import {
+  addBusinessMs,
+  businessMsBetween,
+  describeSchedule,
+  guaranteedBusinessMs,
+  type BusinessSchedule,
+} from './business-time.js';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
 import { ticket0Migrations } from './migrations.generated.js';
 
@@ -2841,6 +2849,87 @@ type SlaTargets = Partial<Record<Priority, number>>;
 interface SlaPolicy {
   readonly firstResponseMinutes: SlaTargets;
   readonly resolutionMinutes: SlaTargets;
+  /**
+   * The opening hours the targets count on, or null for calendar time (#1648). Set only
+   * when the desk chose the `business` clock AND holds a usable schedule; a `business`
+   * clock with no schedule to read counts calendar time, so it can still run out.
+   */
+  readonly hours: BusinessSchedule | null;
+}
+
+/**
+ * The desk's structured opening hours (#1648), or null when it has none — read with the
+ * same parse `configure-desk` wrote it through, so a value this version did not write (a
+ * later shape after a rollback, a hand edit) reads as none rather than as a guess.
+ */
+function businessHoursOf(row: DeskRow): BusinessSchedule | null {
+  const parsed = businessHoursSchedule.safeParse(storedSettings(row).businessHours);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The opening hours a visitor is shown (#1648): `describeSchedule` of the structured
+ * hours, or the free-text `business_hours` note when there are none. Structured wins
+ * outright rather than being joined to the note, because the note on most desks is the
+ * same week written by hand, and showing it twice is how the two drift apart in public.
+ */
+function displayedBusinessHours(row: DeskRow): string | null {
+  const hours = businessHoursOf(row);
+  return hours ? describeSchedule(hours) : row.business_hours;
+}
+
+/**
+ * `ms` of the desk's clock after `from`: business time on `hours`, calendar time without.
+ *
+ * Calendar time too when `addBusinessMs` has no answer: the open time is not reached
+ * within its ten-year cap, or (for a parsed schedule, only on a runtime that does not know
+ * its timezone) it refuses the schedule. `configure-desk` refuses any target the hours
+ * cannot reach inside the cap, so what lands here is the edge `slaDue` names: a re-aim
+ * counting a long `snoozed_ms` after the hours were made sparser. A promise is still kept
+ * on some clock rather than on none.
+ */
+function slaClockAdd(hours: BusinessSchedule | null, from: string, ms: number): string {
+  return (hours && addBusinessMs(hours, from, ms)) ?? shiftInstant(from, ms);
+}
+
+/** How much of [from, to) the desk's clock counts. `slaClockAdd`'s twin, same fallback. */
+function slaClockBetween(hours: BusinessSchedule | null, from: string, to: string): number {
+  return (hours && businessMsBetween(hours, from, to)) ?? Math.max(0, Date.parse(to) - Date.parse(from));
+}
+
+/**
+ * Refuse service levels on the business clock that the desk's hours cannot meet within
+ * the ten-year cap `addBusinessMs` walks (#1648), so every configured promise is counted
+ * exactly, from whatever moment a conversation arrives, and the calendar fallback stays
+ * the re-aim edge `slaDue` names. Judged on the settings as they WILL be — either half
+ * may be the one that changed: a long target on sparse hours, or sparse hours under a
+ * long target.
+ *
+ * Against `guaranteedBusinessMs`, not against a walk from now: how much open time a
+ * walk meets depends on the weekday it starts on and on which exceptions its ten years
+ * contain, so a target that fits from today can miss from Wednesday. The guaranteed
+ * figure holds from every start, and that function states why.
+ *
+ * Names the target, so the admin knows which box to change.
+ */
+function refuseUnreachableTargets(row: DeskRow): void {
+  const policy = slaPolicy(row);
+  if (!policy?.hours) return;
+  const guaranteed = guaranteedBusinessMs(policy.hours) ?? 0;
+  for (const [label, targets] of [
+    ['first-response', policy.firstResponseMinutes],
+    ['resolution', policy.resolutionMinutes],
+  ] as const) {
+    for (const priority of PRIORITIES) {
+      const minutes = targets[priority];
+      if (minutes === undefined || minutes * 60_000 <= guaranteed) continue;
+      throw substratError(
+        'validation_failed',
+        `The ${priority} ${label} target of ${minutes} minutes can't be met within ten years of these ` +
+          'opening hours. Shorten the target, add opening hours, or count calendar time instead.',
+      );
+    }
+  }
 }
 
 const PRIORITIES: readonly Priority[] = ['low', 'normal', 'urgent'];
@@ -2880,6 +2969,7 @@ function slaPolicy(row: DeskRow): SlaPolicy | null {
   const policy: SlaPolicy = {
     firstResponseMinutes: targetsOf((raw as Record<string, unknown>).firstResponseMinutes),
     resolutionMinutes: targetsOf((raw as Record<string, unknown>).resolutionMinutes),
+    hours: (raw as Record<string, unknown>).clock === 'business' ? businessHoursOf(row) : null,
   };
   const any =
     Object.keys(policy.firstResponseMinutes).length > 0 ||
@@ -2903,6 +2993,14 @@ function slaPolicy(row: DeskRow): SlaPolicy | null {
  * after a two-day snooze would re-aim its resolution from `created_at` alone and make it
  * late at once, for time it was parked on purpose. A snooze still in progress is not in
  * it yet; `endSnooze` adds it when the snooze ends, to whatever due this wrote.
+ *
+ * On the `business` clock (#1648) every one of those minutes is a business minute: the
+ * target and `snoozedMs` alike are counted inside the desk's opening hours, from
+ * `createdAt`. So a Friday-evening mail with a four-hour target falls due on Monday.
+ * `snoozedMs` is in whichever clock the desk was on when each snooze ended; a desk that
+ * switches clock between a snooze and a priority change re-aims that one conversation
+ * with the other unit. Telling them apart would need a second column, and the error is
+ * bounded by the length of the snoozes.
  */
 function slaDue(
   policy: SlaPolicy | null,
@@ -2913,7 +3011,7 @@ function slaDue(
   const at = (minutes: number | undefined, t: SlaTarget) =>
     minutes === undefined
       ? null
-      : shiftInstant(createdAt, minutes * 60_000 + (t.pausesOnSnooze ? snoozedMs : 0));
+      : slaClockAdd(policy?.hours ?? null, createdAt, minutes * 60_000 + (t.pausesOnSnooze ? snoozedMs : 0));
   return {
     firstResponse: at(policy?.firstResponseMinutes[priority], SLA_FIRST_RESPONSE),
     resolution: at(policy?.resolutionMinutes[priority], SLA_RESOLUTION),
@@ -3218,20 +3316,28 @@ function beginSnooze(ctx: OperationContext, id: string): void {
  * A row with no `snoozed_at` has nothing to give back and is left as it is: one that is
  * not snoozed, or one snoozed before the column existed, whose clock ran throughout.
  *
+ * On the `business` clock (#1648) "the time it slept" is the BUSINESS time it slept, and
+ * the due moves later by that much business time. That leaves the target exactly the
+ * business time it had left when it went to sleep, whether its due falls after the wake
+ * or inside the snooze, and leaves one re-aimed into the past exactly as late as it was.
+ * A snooze from Friday afternoon to Monday morning gives back the Friday hour and the
+ * Monday hour, not the weekend, which was never the desk's time to begin with.
+ *
  * Idempotent, and it reads the row itself, so `resolve` can call it before its own
  * writes and `moveTo` again after them without counting the snooze twice.
  */
 function endSnooze(ctx: OperationContext, id: string): void {
   const conversation = conversationOrThrow(ctx, id);
   if (conversation.snoozed_at === null) return;
-  const slept = Math.max(0, Date.parse(ctx.now()) - Date.parse(conversation.snoozed_at));
+  const hours = slaPolicy(desk(ctx))?.hours ?? null;
+  const slept = slaClockBetween(hours, conversation.snoozed_at, ctx.now());
   const paused = SLA_TARGETS.filter((t) => t.pausesOnSnooze);
   const shifts = paused.map(
     (t) => `${t.due} = CASE WHEN ${t.due} IS NOT NULL AND ${t.running} THEN ? ELSE ${t.due} END`,
   );
   const shifted = paused.map((t) => {
     const due = conversation[t.due];
-    return due === null ? null : shiftInstant(due, slept);
+    return due === null ? null : slaClockAdd(hours, due, slept);
   });
   ctx.sql.exec(
     `UPDATE ticket0_conversations
@@ -3741,6 +3847,15 @@ const operations = {
   'ticket0/configure-desk': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.deskConfigure));
     const current = desk(ctx);
+    // Merged key by key over what is stored, never replaced wholesale: a call that names
+    // `roundRobin` changes `roundRobin`, and a key this version does not know — from a
+    // later one, before a rollback — rides through. Absent keeps the column exactly as it
+    // was, null included.
+    const settings =
+      input.settings === undefined
+        ? current.settings
+        : JSON.stringify({ ...storedSettings(current), ...input.settings });
+    refuseUnreachableTargets({ ...current, settings });
     ctx.sql.exec(
       `UPDATE ticket0_desk_settings
           SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?,
@@ -3765,13 +3880,7 @@ const operations = {
         input.abandonedAfterDays === undefined
           ? current.abandoned_after_days
           : input.abandonedAfterDays,
-        // Merged key by key over what is stored, never replaced wholesale: a call that
-        // names `roundRobin` changes `roundRobin`, and a key this version does not know
-        // — from a later one, before a rollback — rides through. Absent keeps the column
-        // exactly as it was, null included.
-        input.settings === undefined
-          ? current.settings
-          : JSON.stringify({ ...storedSettings(current), ...input.settings }),
+        settings,
         ctx.now(),
         DESK,
       ],
@@ -4429,11 +4538,15 @@ const operations = {
 
   'ticket0/breaching-soon': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead));
-    if (slaPolicy(desk(ctx)) === null) {
+    const policy = slaPolicy(desk(ctx));
+    if (policy === null) {
       return { withinMinutes: input.withinMinutes, rows: [], truncated: false };
     }
     const now = ctx.now();
-    const until = new Date(Date.parse(now) + input.withinMinutes * 60_000).toISOString();
+    // The window is on the targets' own clock (#1648). On business hours, "due within an
+    // hour" at 16:50 on a Friday includes Monday 09:10: twenty minutes of the desk's time
+    // are left on it, and today is the last chance anybody has to spend them.
+    const until = slaClockAdd(policy.hours, now, input.withinMinutes * 60_000);
     const rows = SLA_TARGETS.flatMap((target) =>
       ctx.sql.query<{
         id: string; subject: string; priority: ConversationRow['priority'];
@@ -7007,11 +7120,13 @@ const operations = {
       sessionId: id,
       token,
       greeting: settings.greeting,
-      // Verbatim, and nothing here reads it. The desk stores whatever a person typed
-      // in Settings — "Mon–Fri · 09:00–18:00 · Europe/Stockholm", or a sentence — so
-      // parsing it would be inventing a grammar nobody was offered. It travels to the
-      // widget as text and is displayed as text; `null` means the desk has not said.
-      businessHours: settings.business_hours,
+      // The line derived from the desk's structured hours when it has them (#1648), and
+      // otherwise the free-text note, verbatim. Nothing reads the note: it is whatever a
+      // person typed in Settings — "Mon–Fri · 09:00–18:00 · Europe/Stockholm", or a
+      // sentence — and parsing it would be inventing a grammar nobody was offered. It
+      // stays on the row as the fallback, so a desk that never set structured hours
+      // shows exactly what it showed before. `null` means the desk has said neither.
+      businessHours: displayedBusinessHours(settings),
       verified,
       origin: input.origin,
       startedAt: now,
