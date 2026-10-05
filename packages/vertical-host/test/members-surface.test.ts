@@ -244,6 +244,23 @@ describe('/internal/members — an installed vertical’s members, managed from 
     expect(await rolesOf(m)).toEqual(['lead']);
   });
 
+  /** An open invite's role is the role its principal holds; a move would split the two, so it is refused. */
+  it('refuses to move a principal with an open invite, which stays as it was and is withdrawn by its own bound', async () => {
+    const minted = (await (await invite(owner, 'lead', 'pending@example.test')).json()) as { principal: PrincipalId; acceptUrl: string };
+    const moved = await post('/internal/members/role', { tenantId: t1, scopeId: s1, caller: owner, principal: minted.principal, from: 'lead', to: 'agent' });
+    expect(moved.status).toBe(409);
+    expect(await moved.text()).toMatch(/open invite at 'lead' — withdraw it and invite them again/);
+    expect(await rolesOf(minted.principal)).toEqual(['lead']);
+    expect((await rosterOf()).invites).toContainEqual(expect.objectContaining({ principal: minted.principal, roleKey: 'lead' }));
+    // The roster and the bound agree: an agent cannot withdraw a lead invite, the owner can.
+    expect((await post('/internal/members/remove', { tenantId: t1, scopeId: s1, caller: agent, principal: minted.principal })).status).toBe(403);
+    expect((await post('/internal/members/remove', { tenantId: t1, scopeId: s1, caller: owner, principal: minted.principal })).status).toBe(200);
+    // …and inviting again at the new role is the way to change it.
+    const again = await invite(owner, 'agent', 'pending@example.test');
+    expect(again.status).toBe(201);
+    expect((await rosterOf()).invites).toContainEqual(expect.objectContaining({ roleKey: 'agent', email: 'pending@example.test' }));
+  });
+
   it('removes a member: every role, every login, bounded by the caller', async () => {
     const m = await member('lead', 'lee');
     const refused = await post('/internal/members/remove', { tenantId: t1, scopeId: s1, caller: agent, principal: m });

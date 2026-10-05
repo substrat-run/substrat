@@ -85,7 +85,9 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   missing and writes nothing. A removal withdraws the person's open invite first, then takes
   every scope role, then unbinds every login, so an accept of the old link afterwards finds
   nothing. The owner of record answers `409`: move it with `owner-transfer`. So does a principal
-  holding a role outside the hook's `roles`, such as a service account. Omit `members` and all
+  holding a role outside the hook's `roles`, such as a service account. A role move for someone
+  whose invite is still open answers `409` too: withdraw it and invite them again at the new
+  role, so an open invite's recorded role is always the role it confers. Omit `members` and all
   four answer `501` (this app declares no member roles), which the dashboard shows as such.
 - **Flavored routes** — `provision`, `reconcile`, `configure`, `owner-seat`,
   `owner-claim`, `owner-transfer` — the package keeps the platform-secret gate, body parse and response

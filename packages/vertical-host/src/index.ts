@@ -2092,7 +2092,19 @@ export function mountPlatformSurface<Env extends object>(
     if (!surface.members.roles.includes(body.to)) {
       throw new HTTPException(400, { message: `'${body.to}' is not a role this vertical lets the dashboard assign` });
     }
-    await manageableRoles(surface, body);
+    const [, invite] = await Promise.all([
+      manageableRoles(surface, body),
+      surface.directory.getInvite(body.scopeId, body.principal),
+    ]);
+    // An open invite's recorded role is the role its principal holds — the roster shows it, and a
+    // withdrawal is bounded by it, here and at the vertical's own revoke route. The scope and the
+    // directory are two Durable Objects with no transaction across them, so a move cannot keep the
+    // row in step; it is refused instead, and keeps that invariant true (Codex #2057 r1).
+    if (invite) {
+      throw new HTTPException(409, {
+        message: `${body.principal} has an open invite at '${invite.roleKey}' — withdraw it and invite them again at the new role`,
+      });
+    }
     // One scope task: both bounds, then the tombstone and the grant together, or nothing.
     const bound = await surface.host.changeScopeRoleBounded(body.tenantId, body.scopeId, body.caller, body.principal, body.from, body.to);
     assertCovered(bound, `${body.from}' to '${body.to}`, 'move a member from');
