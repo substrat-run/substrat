@@ -237,9 +237,13 @@ is refused when the joiner was removed after it was requested.
   cleared with the tenant's other rows on a reap.
 - **The backlog.** Every accept since the invites engine shipped emitted a request nothing
   consumed, so a first drain finds a backlog. The fence is backfilled once from the admin log
-  (`MEMBERSHIP_FENCES_BACKFILL_SQL`: the latest tenant-level `unassignRole` or `removeMember`
-  per person) on the construction that creates the table, and on a restore whose dump predates
-  it. So a member removed by hand before this shipped stays refused when the backlog drains.
+  (`membershipFencesBackfillSql`: everyone a tenant-level `unassignRole` or `removeMember` ever
+  named) on the construction that creates the table, and on a restore whose dump predates it.
+  Each backfilled fence stands at the adapter's clock at that moment, never the audit row's own
+  time, which was stamped in another clock domain. So every request emitted before the backfill
+  for anyone ever removed is refused. Nothing legitimate is lost: anyone re-added before the
+  executor existed got their role by hand and still holds it. The cost: someone with a
+  historical removal who accepts a new invite within 5 minutes of the deploy must have it resent.
 
 The dashboard mounts it with its own scope sweeper as the backstop, and shows an accepted
 member as `joining` until the journal says otherwise (`readExecutorDelivery`).
