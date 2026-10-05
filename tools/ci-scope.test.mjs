@@ -1,7 +1,8 @@
 // node --test tools/ci-scope.test.mjs
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { assertPartition, assignShards, buildNames, classify, decide, lockfileScope, parseLockfile, PINNED } from './ci-scope.mjs';
+import { assertPartition, assignShards, buildNames, classify, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, unitsOf } from './ci-scope.mjs';
 
 // A lockfile in pnpm v9's shape: two workspace packages sharing one third-party
 // dependency, plus the root importer.
@@ -247,9 +248,22 @@ const workspace = [
 
 test('the shards partition the selection exactly, new packages included', () => {
   const shards = assignShards(workspace, 3);
+  const units = unitsOf(workspace).map((u) => u.name);
   assert.equal(shards.length, 3);
-  assert.deepEqual(shards.flat().sort(), workspace.map((p) => p.name).sort());
-  assert.equal(new Set(shards.flat()).size, workspace.length);
+  assert.deepEqual(shards.flat().sort(), [...units].sort());
+  assert.equal(new Set(shards.flat()).size, units.length);
+  // Every package is tested: whole, or every one of its parts.
+  assert.deepEqual([...new Set(shards.flat().map((u) => parseUnit(u).name))].sort(), workspace.map((p) => p.name).sort());
+});
+
+test('a split package is tested as its parts, on different shards', () => {
+  const shards = assignShards(workspace, 3);
+  const cf = '@x/packages-adapter-cloudflare';
+  assert.ok(!shards.flat().includes(cf), 'the whole package is never also a unit');
+  const where = PARTS['packages/adapter-cloudflare'].map((script) => shards.findIndex((s) => s.includes(`${cf}#${script}`)));
+  assert.equal(new Set(where).size, where.length);
+  assert.deepEqual(parseUnit(`${cf}#test:rest`), { name: cf, script: 'test:rest' });
+  assert.deepEqual(parseUnit(cf), { name: cf, script: 'test' });
 });
 
 test('the three longest suites land in three different shards', () => {
@@ -288,4 +302,24 @@ test('a shard builds the apps nested under the packages it tests', () => {
   assert.deepEqual(buildNames(['auth'], all), ['auth', 'auth-app']);
   assert.deepEqual(buildNames(['auth-app'], all), ['auth-app']);
   assert.deepEqual(buildNames(['shop', 'auth-server-2'], all), ['auth-server-2', 'shop', 'shop-admin']);
+});
+
+test('each split package\'s parts exist and together run its whole `test`', () => {
+  for (const [dir, scripts] of Object.entries(PARTS)) {
+    const pkg = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8'));
+    const parts = scripts.map((name) => {
+      assert.ok(pkg.scripts[name], `${dir} has no script ${name}`);
+      return pkg.scripts[name];
+    });
+    // The files one part names are exactly the files another part excludes, so a file is
+    // in one part or the other, and a new file falls into the excluding part.
+    const named = parts.flatMap((s) => [...s.matchAll(/vitest run ((?:test\/\S+\.test\.ts ?)+)/g)].flatMap((m) => m[1].trim().split(' ')));
+    const excluded = parts.flatMap((s) => [...s.matchAll(/--exclude (\S+)/g)].map((m) => m[1]));
+    assert.ok(named.length > 0, `${dir}: no part names a file`);
+    assert.deepEqual([...named].sort(), [...excluded].sort(), `${dir}: the named and excluded files differ`);
+    // Every extra vitest config `test` runs is run by a part too.
+    for (const [, config] of pkg.scripts.test.matchAll(/-c (\S+)/g)) {
+      assert.ok(parts.some((s) => s.includes(`-c ${config}`)), `${dir}: no part runs ${config}`);
+    }
+  }
 });
