@@ -167,23 +167,25 @@ describe('round trip', () => {
 });
 
 describe('bounds: an exact walk of at most ten years, and null beyond it', () => {
-  // One minute a week, Mondays at noon UTC, from a Monday: the walk covers local days
-  // 0 … EXACT_DAYS - 1, and the last Monday in that is day 3654, the 523rd.
+  // One minute a week, Mondays at noon UTC, from a TUESDAY: the walk covers local days
+  // 0 … EXACT_DAYS - 1, whose last Monday is day 3653 (the 522nd), and day EXACT_DAYS — the
+  // first day past the cap — is a Monday, so a cap one day too long would answer.
   const sparse: BusinessSchedule = { timezone: 'UTC', weekly: { mon: [{ open: '12:00', close: '12:01' }] } };
-  const start = '2026-01-05T00:00:00.000Z';
-  const lastMonday = Math.floor((EXACT_DAYS - 1) / 7) * 7;
+  const start = '2026-01-06T00:00:00.000Z';
+  const lastMonday = 3653;
 
   it('the last minute inside the cap is answered exactly; one minute more is null', () => {
-    expect(addBusinessMs(sparse, start, 523 * MINUTE)).toBe(
-      new Date(Date.UTC(2026, 0, 5, 12, 1) + lastMonday * DAY).toISOString(),
+    expect((EXACT_DAYS + 1) % 7).toBe(0); // day EXACT_DAYS is a Monday, from a Tuesday
+    expect(addBusinessMs(sparse, start, 522 * MINUTE)).toBe(
+      new Date(Date.UTC(2026, 0, 6, 12, 1) + lastMonday * DAY).toISOString(),
     );
-    expect(addBusinessMs(sparse, start, 524 * MINUTE)).toBeNull();
+    expect(addBusinessMs(sparse, start, 523 * MINUTE)).toBeNull();
   });
 
   it('between: a span ending on the last day inside the cap is counted; one ending a day later is null', () => {
     const lastDay = new Date(Date.parse(start) + (EXACT_DAYS - 1) * DAY + 23 * 3_600_000).toISOString();
-    const pastIt = new Date(Date.parse(start) + EXACT_DAYS * DAY).toISOString();
-    expect(businessMsBetween(sparse, start, lastDay)).toBe(523 * MINUTE);
+    const pastIt = new Date(Date.parse(start) + EXACT_DAYS * DAY + 13 * 3_600_000).toISOString();
+    expect(businessMsBetween(sparse, start, lastDay)).toBe(522 * MINUTE);
     expect(businessMsBetween(sparse, start, pastIt)).toBeNull();
   });
 
