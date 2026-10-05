@@ -1,11 +1,11 @@
 ---
-'@substrat-run/kernel': patch
-'@substrat-run/contracts': patch
+'@substrat-run/kernel': minor
+'@substrat-run/contracts': minor
 '@substrat-run/adapter-sqlite': patch
 '@substrat-run/adapter-cloudflare': patch
 '@substrat-run/contract-tests': patch
 '@substrat-run/vertical-host': patch
-'@substrat-run/control-plane-api': patch
+'@substrat-run/control-plane-api': minor
 ---
 
 The peer kill switch (`revokeFromPeer`) is now kept like the schedule kill switch: recorded outside the scope, put back by every carry, held through a point-in-time rewind, and able to switch off a peer whose only authority is tenant-wide.
