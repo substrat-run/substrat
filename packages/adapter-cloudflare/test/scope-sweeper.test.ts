@@ -371,7 +371,8 @@ describe('#1713 — the deployment sweep skips a scope its lifecycle holds, then
     expect(await ticksOn(held)).toBe(1);
     await sweeperStub().forgetScope(held);
     await sweeperStub().forgetScope(live);
-  });
+    // Two full sweeps plus two provisions in workerd: ~4.3 s on CI before #2029, one past 5 s after.
+  }, 15_000);
 
   it('a held tenant is skipped the same way', async () => {
     const s = await seat();
