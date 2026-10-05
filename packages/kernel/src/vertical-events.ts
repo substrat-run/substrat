@@ -29,7 +29,9 @@ import {
   substratError,
   type ConsumedEventRef,
   type ImportCursorMove,
+  type ImportBatch,
   type ImportCursorMoved,
+  type ImportResult,
   type ScopeId,
   type TenantId,
   type VerticalResolution,
@@ -345,6 +347,21 @@ export function emittedReportOf(
     total: rows.length === 0 ? 0 : Number(rows[0]!['total']),
   };
 }
+
+/**
+ * A delivery that ran nothing (#1705): the answer every consumer door starts from, and the one a
+ * refusal (a pause, a stale watermark) returns with its one field set. The watermark stays at
+ * `batch.after`.
+ */
+export const emptyImportResult = (batch: Pick<ImportBatch, 'after'>): ImportResult => ({
+  delivered: 0,
+  deadLettered: 0,
+  duplicates: 0,
+  withheld: 0,
+  cursor: batch.after,
+  stale: false,
+  paused: null,
+});
 
 /** The consumer's watermark per producer, oldest source first. */
 export const IMPORT_CURSORS_SQL =

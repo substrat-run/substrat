@@ -176,6 +176,7 @@ import {
   scheduleStateHasKind,
   VERTICAL_EVENTS_DDL,
   EXPORT_HOPS_SQL,
+  emptyImportResult,
   IMPORT_CURSORS_SQL,
   IMPORT_CURSOR_OF_SQL,
   OUTBOX_MARK_SQL,
@@ -1696,15 +1697,7 @@ export function defineScopeDO(
       const source = batch.source;
       return await this.queue.enqueue(async () => {
         const liveSince = this.liveHighWaterMark();
-        const result: ImportResult = {
-          delivered: 0,
-          deadLettered: 0,
-          duplicates: 0,
-          withheld: 0,
-          cursor: batch.after,
-          stale: false,
-          paused: null,
-        };
+        const result: ImportResult = emptyImportResult(batch);
         // #1706's door, for a delivery (`operation: null`), inside the queued body: the producer
         // is a declared peer with its switch on, or nothing runs and the edge pauses.
         let peerSubject: CheckSubject;
