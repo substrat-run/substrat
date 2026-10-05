@@ -11,7 +11,7 @@ import {
   type ExtractionSignal,
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
-import { pdfCMap, pdfDecoders, pdfExtract, pdfFontCosts, pdfLexer } from '../src/pdf.js';
+import { PDF_RETAINED_BASE, PDF_RETAINED_FACTOR, pdfCMap, pdfDecoders, pdfExtract, pdfFontCosts, pdfLexer } from '../src/pdf.js';
 import { CALL_COST, Pace, Retained } from '../src/shared.js';
 import { zip } from './zip.js';
 
@@ -574,6 +574,14 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     const file = sharedObject(`[${'1 '.repeat(100 * 1024)}]`);
     expect(await peakMemory(file)).toBeLessThan(PEAK_MIB * MIB);
     expect(await run(file)).toMatchObject({ status: 'empty' });
+  }, 30_000);
+
+  it('a CMap that defines one code past the memory budget ends the reading there, truncated', async () => {
+    const retained = new Retained(DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes * PDF_RETAINED_FACTOR + PDF_RETAINED_BASE);
+    const out = await pdfExtract(await cmapFlood(5_800), DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, retained);
+    expect(out.truncated).toBe(true);
+    // Spent: no more than one definition's charge was left when the next one was refused.
+    expect(retained.limit - retained.bytes).toBeLessThan(1024);
   }, 30_000);
 
   it('the same code defined 250 000 times inside the budget: read whole, and the last definition wins', async () => {
