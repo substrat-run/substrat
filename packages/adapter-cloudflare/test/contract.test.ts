@@ -24,12 +24,14 @@ import {
   type RoleDefinition,
   type ScopeId,
   type ScopeTable,
+  type TenantId,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_LEASE_MIN_MS, JOB_RUN_DUE_AT, JOB_ADMISSION_MISS_MAX, JOB_LEASE_TOO_SHORT_NOTE, admissionBackoffMs, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
+import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_LEASE_MIN_MS, JOB_RUN_DUE_AT, JOB_ADMISSION_MISS_MAX, JOB_LEASE_TOO_SHORT_NOTE, admissionBackoffMs, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
   attachmentTextContractSuite,
+  type AttachmentTextHostOptions,
   capabilityContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
@@ -203,7 +205,7 @@ verticalResolutionContractSuite('adapter-cloudflare', peerFixture);
 // session hash inside its queue and checks each read as `{ capability }`; the coordinator
 // holds the bytes. The per-tenant bucket is an in-memory `R2Bucket` slice and the bucket
 // manager a stub, as in `attachments.test.ts`: what is under test is the gate, not R2.
-const attachmentHostFixture = async () => {
+const attachmentHostFixture = async (options: AttachmentTextHostOptions = {}) => {
   const objs = new Map<string, { body: Uint8Array; contentType?: string }>();
   const bucket = {
     put: async (key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }) => {
@@ -228,10 +230,21 @@ const attachmentHostFixture = async () => {
     blobStores: { create: async (name) => name, remove: async () => {} },
     attachmentBuckets: () => bucket,
     // K-43: the host's parsers, passed in at the composition root.
-    attachmentExtractors: defaultAttachmentExtractors(),
+    attachmentExtractors: options.attachmentExtractors ?? defaultAttachmentExtractors(),
+    attachmentTextBounds: options.attachmentTextBounds,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
-  return { host, cleanup: async () => host.close() };
+  const forgetAttachmentText = async (_tenant: TenantId, scope: ScopeId) =>
+    // Straight to the DO's storage, as a scope from before extraction would hold it.
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
+      state.storage.sql.exec('DELETE FROM _substrat_search__attachment_text');
+      state.storage.sql.exec(
+        'DELETE FROM _substrat_job_runs WHERE module_id = ? AND job = ?',
+        ATTACHMENT_TEXT_MODULE,
+        ATTACHMENT_TEXT_JOB,
+      );
+    });
+  return { host, forgetAttachmentText, cleanup: async () => host.close() };
 };
 capabilityAttachmentContractSuite('adapter-cloudflare', attachmentHostFixture);
 

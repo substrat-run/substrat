@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
+import Database from 'better-sqlite3';
+import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   atomicContractSuite,
@@ -269,16 +270,33 @@ capabilityAttachmentContractSuite('adapter-sqlite', async () => {
 });
 
 // #1575: attachment text — extraction, the FTS5 index and the search gate on node SQLite.
-attachmentTextContractSuite('adapter-sqlite', async () => {
+attachmentTextContractSuite('adapter-sqlite', async (options = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-att-text-'));
-  const host = new SqliteScopeHost({
-    dir,
-    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
-    // K-43: the host's parsers, passed in at the composition root.
-    attachmentExtractors: defaultAttachmentExtractors(),
-  });
+  let host: SqliteScopeHost;
+  try {
+    host = new SqliteScopeHost({
+      dir,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      // K-43: the host's parsers, passed in at the composition root.
+      attachmentExtractors: options.attachmentExtractors ?? defaultAttachmentExtractors(),
+      attachmentTextBounds: options.attachmentTextBounds,
+    });
+  } catch (err) {
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
   return {
     host,
+    forgetAttachmentText: async (tenant, scope) => {
+      // A second connection to the scope's file, as a scope from before extraction would read.
+      const db = new Database(join(dir, `${tenant}__${scope}.sqlite`));
+      try {
+        db.prepare('DELETE FROM _substrat_search__attachment_text').run();
+        db.prepare('DELETE FROM _substrat_job_runs WHERE module_id = ? AND job = ?').run(ATTACHMENT_TEXT_MODULE, ATTACHMENT_TEXT_JOB);
+      } finally {
+        db.close();
+      }
+    },
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

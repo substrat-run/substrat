@@ -202,14 +202,18 @@ import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors
 new CloudflareScopeHost({ /* … */, attachmentExtractors: defaultAttachmentExtractors() });
 ```
 
-They read plain text, Markdown, CSV and other `text/*` files, HTML, DOCX, XLSX and PPTX.
-PDF is not extracted yet, and images are never OCR'd. A host given no extractor for a type
-records it as unsupported. Every attachment records how its extraction went: `pending`,
+They read plain text, Markdown, CSV and other `text/*` files, HTML, DOCX, XLSX, PPTX and PDF.
+A PDF's text layer is read; a scanned page has none and images are never OCR'd, so a scan
+records `empty`, and an encrypted PDF records `failed`, saying so. A host given no extractor
+for a type records it as unsupported. A host may tighten the extraction bounds — the input
+ceiling, the text cap and the time budget — with its `attachmentTextBounds` option, and never
+loosen them. Every attachment records how its extraction went: `pending`,
 `indexed`, `empty`, `unsupported` or `failed`, with a reason.
 Module code reads that record with `readAttachmentText(ctx, attachmentId)`, so a file that
 yielded nothing can say so rather than look like a search with no match. The job runs off
 the upload, so a file is not searchable in the same breath it lands. On a hosted vertical,
-the scope sweeper drives it when its `runJobs` option is on.
+the scope sweeper drives it when its `runJobs` option is on. Files uploaded before a scope had
+extraction are queued by the same driver, once per scope, a batch at a time.
 
 Unlike `ctx.search`, this search **does** check permission. It works out which files the
 caller may open before it looks at the term, using the same check `open` makes: the
