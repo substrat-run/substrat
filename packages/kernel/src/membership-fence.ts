@@ -1,3 +1,5 @@
+import { instant } from '@substrat-run/contracts';
+
 /**
  * The removal fence (#1184): one row per (tenant, principal), stamped with the latest moment
  * that person was removed at the tenant level. The membership executor's add reads it inside
@@ -42,35 +44,47 @@ export const MEMBERSHIP_FENCE_SINCE_SQL = `
 export const MEMBERSHIP_FENCES_TABLE = '_substrat_membership_fences';
 
 /**
- * The one-time backfill from the admin log: every tenant-level removal made before the fence
- * existed. Without it, an add requested back then and never effected — the backlog a host that
- * mounts the executor for the first time drains — would re-admit someone removed by hand since,
- * because the fence would have nothing to say about them.
+ * The one-time backfill from the admin log: everyone removed at the tenant level before the
+ * fence existed. Without it, an add requested back then and never effected — the backlog a host
+ * that mounts the executor for the first time drains — would re-admit someone removed by hand
+ * since, because the fence would have nothing to say about them.
  *
- * It reads what those removals wrote: an `unassignRole` row at the tenant node (`scope_id`
- * NULL) carries the assignment as `before.principalId`, a `removeMember` row the membership as
+ * It reads who those removals named: an `unassignRole` row at the tenant node (`scope_id` NULL)
+ * carries the assignment as `before.principalId`, a `removeMember` row the membership as
  * `before.principal`. A no-op removal wrote no row and is not recovered — nothing before the
- * fence recorded one. The latest per (tenant, principal) is taken.
+ * fence recorded one.
+ *
+ * **Every backfilled fence stands at `at`, the adapter's clock at the moment it runs — never the
+ * audit row's own time** (Codex round 4). Those rows were stamped by the wall clock, while a
+ * request still queued from back then was stamped by the host's clock, which need not agree: a
+ * host clock running ahead would put the copied time below the request's cutoff and the backlog
+ * would re-admit the person. Stamping at backfill time is conservative instead: every request
+ * emitted before it, for anyone ever removed, is refused. That takes nothing legitimate away —
+ * anyone re-added before the executor existed got their role inline, by hand, and holds it
+ * still — and an invite accepted more than `MEMBERSHIP_REMOVAL_SKEW_MS` after it is unaffected.
  *
  * `INSERT OR IGNORE`, so a fence the live path raised is never lowered by history. The adapters
  * run it on the construction that creates the table, and a directory restore runs it when the
  * dump did not carry the table, so it runs once per directory that never had it.
  */
-export const MEMBERSHIP_FENCES_BACKFILL_SQL = `
+export function membershipFencesBackfillSql(at: string): string {
+  // Interpolated, not bound: the adapters run it through `exec`. `instant` holds it to an
+  // ISO-8601 UTC timestamp, which carries no quote, or throws.
+  return `
   INSERT OR IGNORE INTO _substrat_membership_fences (tenant_id, principal, removed_at)
-  SELECT tenant_id, principal, MAX(at)
+  SELECT DISTINCT tenant_id, principal, '${instant.parse(at)}'
     FROM (
-      SELECT tenant_id, json_extract(before, '$.principalId') AS principal, at
+      SELECT tenant_id, json_extract(before, '$.principalId') AS principal
         FROM _substrat_admin_log
        WHERE action = 'unassignRole' AND tenant_id IS NOT NULL AND scope_id IS NULL
       UNION ALL
-      SELECT tenant_id, json_extract(before, '$.principal') AS principal, at
+      SELECT tenant_id, json_extract(before, '$.principal') AS principal
         FROM _substrat_admin_log
        WHERE action = 'removeMember' AND tenant_id IS NOT NULL
     )
    WHERE principal IS NOT NULL
-   GROUP BY tenant_id, principal
 `;
+}
 
 /** "Does the fence table exist yet?" — asked BEFORE the DDL, so the backfill runs once. */
 export function membershipFencesTableExists(db: { all(sql: string, ...params: string[]): unknown[] }): boolean {

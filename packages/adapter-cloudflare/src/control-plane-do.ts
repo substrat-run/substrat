@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
-  MEMBERSHIP_FENCES_BACKFILL_SQL,
+  membershipFencesBackfillSql,
   MEMBERSHIP_FENCES_DDL,
   MEMBERSHIP_FENCES_TABLE,
   membershipFencesTableExists,
@@ -1382,7 +1382,8 @@ export class ControlPlaneDO extends DurableObject {
     if (fencesAreNew) {
       this.ctx.storage.transactionSync(() => {
         for (const stmt of splitSqlStatements(MEMBERSHIP_FENCES_DDL)) this.sql.exec(stmt);
-        this.sql.exec(MEMBERSHIP_FENCES_BACKFILL_SQL);
+        // Stamped now, inside this unit (`membershipFencesBackfillSql` says why).
+        this.sql.exec(membershipFencesBackfillSql(new Date().toISOString()));
       });
     }
   }
@@ -1733,6 +1734,7 @@ export class ControlPlaneDO extends DurableObject {
       loadDirectoryDump(tables, {
         columnsOf: (name) => doBuiltColumnsOf(this.sql, name),
         exec: (sql) => this.sql.exec(sql),
+        now: () => new Date().toISOString(),
         maxColumns: DO_SQL_LIMITS.columns,
         insert: (sql, rows) => {
           for (const row of rows) this.sql.exec(sql, ...(row as unknown[]));

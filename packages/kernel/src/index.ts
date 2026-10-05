@@ -780,7 +780,7 @@ export {
   type MembershipExecutorOptions,
 } from './membership-executor.js';
 export {
-  MEMBERSHIP_FENCES_BACKFILL_SQL,
+  membershipFencesBackfillSql,
   MEMBERSHIP_FENCES_DDL,
   MEMBERSHIP_FENCES_TABLE,
   MEMBERSHIP_FENCE_SINCE_SQL,

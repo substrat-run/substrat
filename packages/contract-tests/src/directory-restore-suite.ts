@@ -289,7 +289,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
       });
     });
 
-    it('a dump from before the removal fence: the fence is backfilled from its admin log (#1184)', async () => {
+    it('a dump from before the removal fence: the fence is backfilled from its admin log, standing at the restore (#1184)', async () => {
       await using(async (dir, fresh) => {
         const P = '01JZ00000000000000000000F2';
         const Q = '01JZ00000000000000000000F3';
@@ -307,11 +307,15 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
           '_substrat_admin_log',
           (t) => ({ ...t, rows: rows.map((r) => rowOf(t.columns, r)) }),
         );
+        // The audit rows' own times are in the clock domain of whoever wrote them; the fence
+        // stands at the restoring adapter's clock instead, so it cannot sit below a request the
+        // dump's scopes still hold (Codex round 4).
+        const before = new Date().toISOString();
         await dir.restore(dump);
         await dir.settle();
-        expect(recordsOf(find(await dir.snapshot(), '_substrat_membership_fences'))).toEqual([
-          { tenant_id: 'tenant-a', principal: P, removed_at: '2026-09-02T00:00:00.000Z' },
-        ]);
+        const fences = recordsOf(find(await dir.snapshot(), '_substrat_membership_fences'));
+        expect(fences.map((f) => [f.tenant_id, f.principal])).toEqual([['tenant-a', P]]);
+        expect(String(fences[0]!.removed_at) >= before).toBe(true);
 
         // Twin: a dump that carries the table, empty, is taken as it is — never backfilled over.
         await dir.restore(withTable(dump.concat(find(fresh, '_substrat_membership_fences')), '_substrat_admin_log', (t) => t));

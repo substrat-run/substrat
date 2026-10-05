@@ -107,23 +107,6 @@ describe('membership executor — a removal outside the seam against the skew wi
     clock.set(new Date(Date.parse(removedAt) + 6 * 60_000)); // six minutes later: outside it
     expect(await invitedAndAccepted(joe)).toEqual(['delivered']);
   });
-
-  it('a directory opened from before the fence backfills it from the admin log, so a hand removal made back then still wins', async () => {
-    const joe = principalId.parse(ulid());
-    const removedAt = await removedByHand(joe);
-    // The directory as it stood before this code: no fence table, the removal only in the log.
-    await host.close();
-    const raw = new Database(join(dir, '_directory.sqlite'));
-    raw.exec('DROP TABLE _substrat_membership_fences');
-    raw.close();
-    host = new SqliteScopeHost({ dir, clock: clock.read, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
-    host.registerModule(membershipFixtureMod);
-    registerMembershipExecutor(host, { actor: staff });
-    clock.set(new Date(Date.parse(removedAt) + 60_000));
-    expect(await invitedAndAccepted(joe)).toEqual(['refused']);
-    // Twin: someone the log never removed joins on the reopened directory.
-    expect(await invitedAndAccepted(principalId.parse(ulid()))).toEqual(['delivered']);
-  });
 });
 
 describe('membership executor — the fence and the request share the host clock (#1184, Codex round 3)', () => {
@@ -204,5 +187,114 @@ describe('membership executor — the fence and the request share the host clock
   it('twin: the same held add with nobody removed lands', async () => {
     const joe = principalId.parse(ulid());
     expect(await heldAccept(joe, async () => undefined)).toEqual(['delivered']);
+  });
+});
+
+describe('membership executor — the backlog a first deploy drains, against a fast host clock (#1184, Codex round 4)', () => {
+  // Before the executor, a hand removal's audit row was stamped by the WALL clock, while a
+  // request queued back then was stamped by the HOST clock. Ten minutes apart here: twice the
+  // window, so a fence copied from the audit row would sit below the request's cutoff.
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const org = orgId.parse(ulid());
+  const alice = principalId.parse(ulid());
+  const node = { tenantId: t, scopeId: null };
+  const clock = manualClock(new Date());
+  const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
+  let dir: string;
+  let host: SqliteScopeHost;
+
+  const open = (withExecutor: boolean) => {
+    host = new SqliteScopeHost({ dir, clock: clock.read, secretBox });
+    host.registerModule(membershipFixtureMod);
+    if (withExecutor) registerMembershipExecutor(host, { actor: staff });
+  };
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-membership-backlog-'));
+    clock.set(new Date(Date.now() + 10 * 60_000));
+    open(false); // before the executor: an accept's request is emitted and nobody consumes it
+    await host.admin.createTenant(staff, { id: t, slug: `backlog-${t.slice(-10).toLowerCase()}`, name: 'Backlog' });
+    await host.admin.grantEntitlement(staff, t, 'invitefix');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'invitefix-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.defineRole(staff, t, { key: 'member', permissions: [INVITEFIX_A], source: 'vertical' });
+    await host.admin.createOrg(staff, { id: org, tenantId: t, slug: 'team', name: 'Team' });
+    await host.admin.assignRole(staff, { principalId: alice, roleKey: 'member', node });
+  });
+
+  afterEach(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** alice invites `who` and `who` accepts, on whatever host is open; the call's own outcomes. */
+  const accept = async (who: PrincipalId): Promise<ExecutorOutcome['outcome'][]> => {
+    const inv = { invitationId: ulid(), orgId: org, roleKey: 'member' };
+    await (await host.getScope(alice, t, s)).invoke('invitefix/send', inv);
+    const outcomes: ExecutorOutcome[] = [];
+    await (await host.getScope(who, t, s)).invoke('invitefix/accept', inv, { onExecutorOutcomes: (o) => outcomes.push(...o) });
+    return outcomes.filter((o) => o.entity === `membership:${who}`).map((o) => o.outcome);
+  };
+
+  /** A hand removal as the old code wrote it: an audit row stamped by the wall clock, and no fence. */
+  const legacyRemoval = (raw: Database.Database, who: PrincipalId) =>
+    raw
+      .prepare(
+        `INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, before, at)
+         VALUES (?, ?, 'unassignRole', ?, NULL, ?, ?)`,
+      )
+      .run(ulid(), staff, t, JSON.stringify({ principalId: who, roleKey: 'member', node }), new Date().toISOString());
+
+  const holds = async (who: PrincipalId) =>
+    ((await (await host.getScope(who, t, s)).invoke('invitefix/probe', { permission: INVITEFIX_A })) as { allowed: boolean }).allowed;
+
+  it('a backlog request for someone removed by hand is refused on the first drain; an unremoved twin lands; a new invite after the window lands', async () => {
+    const joe = principalId.parse(ulid());
+    const kim = principalId.parse(ulid());
+    await accept(joe); // queued, never effected
+    await accept(kim); // queued, never effected
+    // Then joe is removed by hand, the old way — after his request, by the wall clock's account.
+    await host.close();
+    const raw = new Database(join(dir, '_directory.sqlite'));
+    legacyRemoval(raw, joe);
+    raw.exec('DROP TABLE _substrat_membership_fences'); // the directory as it stood before this code
+    raw.close();
+
+    // The deploy: the executor is mounted, the fence is built and backfilled, the backlog drains.
+    open(true);
+    await host.drainDue(t, s);
+    const dead = (await host.executorDeadLetters(t, s)).map((d) => d.error);
+    expect(dead).toContainEqual(expect.stringMatching(new RegExp(`${joe} was removed after this request was made`)));
+    expect(await holds(joe)).toBe(false);
+    expect(await holds(kim)).toBe(true);
+
+    // The stated cost ends with the window: a NEW invite accepted past it lands.
+    clock.set(new Date(Date.parse(clock.read()) + 6 * 60_000));
+    expect(await accept(joe)).toEqual(['delivered']);
+  });
+
+  it('the same through a restore of a dump from before the fence: the fence stands at the restoring clock', async () => {
+    const joe = principalId.parse(ulid());
+    await accept(joe);
+    const raw = new Database(join(dir, '_directory.sqlite'));
+    legacyRemoval(raw, joe);
+    raw.close();
+    const dump = await host.admin.exportDirectory(staff);
+    await host.close();
+    open(true);
+    const restoredAt = clock.read();
+    await host.admin.restoreDirectory(staff, { ...dump, tables: dump.tables.filter((tb) => tb.name !== '_substrat_membership_fences') });
+    await host.drainDue(t, s);
+    const dead = (await host.executorDeadLetters(t, s)).map((d) => d.error);
+    expect(dead).toContainEqual(expect.stringMatching(new RegExp(`${joe} was removed after this request was made`)));
+    expect(await holds(joe)).toBe(false);
+    const fence = new Database(join(dir, '_directory.sqlite'), { readonly: true });
+    try {
+      expect(fence.prepare('SELECT removed_at FROM _substrat_membership_fences WHERE principal = ?').get(joe)).toEqual({ removed_at: restoredAt });
+    } finally {
+      fence.close();
+    }
   });
 });
