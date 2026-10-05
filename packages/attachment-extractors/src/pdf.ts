@@ -588,34 +588,43 @@ async function unpredict(data: Uint8Array, parms: PdfDict | null, pace: Pace): P
   const bpc = Math.min(Math.max(intOf(parms?.get('BitsPerComponent')) ?? 8, 1), 16);
   const columns = Math.min(Math.max(intOf(parms?.get('Columns')) ?? 1, 1), 1 << 20);
   const bpp = Math.max(1, Math.ceil((colors * bpc) / 8));
+  // The row width is the file's DECLARATION; the data is what decoding produced, already held
+  // to the stream budget. No allocation is sized by the declaration until the data shows a
+  // whole row of it: a tiny stream claiming 64 MiB rows decodes to nothing and costs nothing.
   const rowLength = Math.ceil((colors * bpc * columns) / 8);
   const rows = Math.floor(data.length / (rowLength + 1));
-  const out = new Uint8Array(rows * rowLength);
-  let prior = new Uint8Array(rowLength);
+  if (rows === 0) return new Uint8Array(0);
+  const out = new Uint8Array(rows * rowLength); // ≤ data.length
   for (let r = 0; r < rows; r += 1) {
-    if (pace.room <= 0) await pace.turn();
-    pace.charge(rowLength + 1);
     const filter = data[r * (rowLength + 1)]!;
     const row = data.subarray(r * (rowLength + 1) + 1, (r + 1) * (rowLength + 1));
     const cur = out.subarray(r * rowLength, (r + 1) * rowLength);
-    for (let i = 0; i < rowLength; i += 1) {
-      const a = i >= bpp ? cur[i - bpp]! : 0;
-      const b = prior[i]!;
-      const c = i >= bpp ? prior[i - bpp]! : 0;
-      let v = row[i]!;
-      if (filter === 1) v += a;
-      else if (filter === 2) v += b;
-      else if (filter === 3) v += (a + b) >> 1;
-      else if (filter === 4) {
-        const p = a + b - c;
-        const pa = Math.abs(p - a);
-        const pb = Math.abs(p - b);
-        const pc = Math.abs(p - c);
-        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+    // The row above; the first row's is all zeros, read as such rather than allocated.
+    const prior = r > 0 ? out.subarray((r - 1) * rowLength, r * rowLength) : null;
+    pace.charge(1);
+    // A row can be megabytes wide: paced inside it, a window at a time.
+    for (let i = 0; i < rowLength; ) {
+      if (pace.room <= 0) await pace.turn();
+      const end = Math.min(rowLength, i + pace.room);
+      pace.charge(end - i);
+      for (; i < end; i += 1) {
+        const a = i >= bpp ? cur[i - bpp]! : 0;
+        const b = prior ? prior[i]! : 0;
+        const c = prior && i >= bpp ? prior[i - bpp]! : 0;
+        let v = row[i]!;
+        if (filter === 1) v += a;
+        else if (filter === 2) v += b;
+        else if (filter === 3) v += (a + b) >> 1;
+        else if (filter === 4) {
+          const p = a + b - c;
+          const pa = Math.abs(p - a);
+          const pb = Math.abs(p - b);
+          const pc = Math.abs(p - c);
+          v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        }
+        cur[i] = v & 0xff;
       }
-      cur[i] = v & 0xff;
     }
-    prior = cur;
   }
   return out;
 }
@@ -1492,3 +1501,6 @@ export async function pdfExtract(
 
 /** The glyph-name and encoding tables, for the package's own tests. */
 export const pdfTables = { glyphText, WIN_ANSI, MAC_ROMAN, STANDARD };
+
+/** The stream decoders, for the package's own tests: each judged on what it charges and keeps. */
+export const pdfDecoders = { unpredict, asciiHex, ascii85, runLength, lzw };

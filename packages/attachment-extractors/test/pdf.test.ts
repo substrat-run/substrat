@@ -7,6 +7,23 @@ import {
   type ExtractionSignal,
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfExtractor, pdfTables } from '../src/index.js';
+import { pdfDecoders } from '../src/pdf.js';
+import { Pace } from '../src/shared.js';
+
+/** A `Pace` that counts the work charged to it: what a decoder did, not only what it returned. */
+class CountingPace extends Pace {
+  charged = 0;
+  turns = 0;
+  override charge(units: number): void {
+    this.charged += units;
+    super.charge(units);
+  }
+  override async turn(): Promise<void> {
+    if (this.room <= 0) this.turns += 1;
+    await super.turn();
+  }
+}
+const counting = () => new CountingPace({ aborted: false });
 
 /**
  * The PDF extractor, through the kernel's own enforcement (`runAttachmentExtractor`), so an
@@ -284,6 +301,29 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     const page = (size: number) => onePage(head + ' '.repeat(size - head.length)).bytes;
     expect(await runSmall(page(4096))).toMatchObject({ status: 'indexed', text: 'raw head', truncated: false });
     expect(await runSmall(page(4097))).toMatchObject({ status: 'indexed', text: 'raw head', truncated: true });
+  });
+
+  it('a predictor whose declared rows are huge allocates and walks nothing past the data — and paces inside a wide row', async () => {
+    const huge = new Map<string, unknown>([['Predictor', 12], ['Columns', 1 << 20], ['Colors', 32], ['BitsPerComponent', 16]]);
+    // 64 MiB rows declared, a few bytes of data: nothing decoded, charged or allocated.
+    const pace = counting();
+    const before = process.memoryUsage().arrayBuffers;
+    expect(await pdfDecoders.unpredict(new Uint8Array(1000), huge as never, pace)).toHaveLength(0);
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(1024 * 1024);
+    expect(pace.charged).toBe(0);
+    // The file: a tiny Flate stream with those parameters settles at once, empty.
+    const tiny = onePage(await deflate(new Uint8Array(10)), {
+      contentDict: '/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 1048576 /Colors 32 /BitsPerComponent 16 >>',
+    });
+    expect(tiny.bytes.length).toBeLessThan(1024);
+    expect(await settles(tiny.bytes, 200)).toEqual({ status: 'empty', extractor: 'pdf' });
+    // Two real 4 MiB rows: the work INSIDE a row is cut to strides, so it yields (and could be
+    // aborted) every stride, not once per row.
+    const wide = new Map<string, unknown>([['Predictor', 12], ['Columns', 1 << 20], ['Colors', 4]]);
+    const rowPace = counting();
+    const rows = new Uint8Array(2 * (4 * 1024 * 1024 + 1)).fill(2);
+    expect(await pdfDecoders.unpredict(rows, wide as never, rowPace)).toHaveLength(8 * 1024 * 1024);
+    expect(rowPace.turns).toBeGreaterThanOrEqual(30);
   });
 
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
