@@ -214,7 +214,9 @@ the `PlatformActorId` question: the actor is the hand, and the person whose auth
 the write is recorded beside it, not laundered away.
 
 Removal is the mirror: `member.remove-requested`, bounded by the remover (§5.1 consequence
-1), effected by the same executor as a tenant-level `unassignRole`. **Removal wins**: an add
+1) the same two ways, early and again inside the unit, so a remover demoted in between
+removes nobody. The unit takes the tenant role away exactly as a tenant-level `unassignRole`
+does. **Removal wins**: an add
 is refused when the joiner was removed after it was requested.
 
 - A removal through the seam is ordered by outbox id.

@@ -223,7 +223,7 @@ executing, `onBehalfOf` the inviter, `causedBy` the event.
 
 Removal goes through the same seam: a vertical emits `member.remove-requested` on
 `membership:<principal>`, and the executor takes the role away, bounded by the **remover's**
-own authority. **Removal wins.** Every tenant-level `unassignRole` and every `removeMember`,
+own authority, asked inside the unit as the inviter's is. **Removal wins.** Every tenant-level `unassignRole` and every `removeMember`,
 a staff member's or the executor's, raises the person's removal fence in the same directory
 unit as its revoke, even when there was nothing to revoke. An add is refused when a later
 `member.remove-requested` names the joiner, or when the fence stands at or after the request
