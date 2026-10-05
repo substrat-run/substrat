@@ -8,6 +8,10 @@ import {
   adminAction,
   ownerTransferInput,
   OWNER_TRANSFER_AUDIT_ERROR_MAX,
+  memberInviteInput,
+  memberRoleInput,
+  type MemberChangeAudit,
+  type PrincipalId,
   ASSET_PART_PREFIX,
   assetHash,
   channelName,
@@ -1230,6 +1234,11 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/lifecycle-flow$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/operation-series$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/owner-claim$/, pin: 'path' },
+  // An installed vertical's members (#1150): the roster, an invite, a role move, a removal.
+  { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/members$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/members$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/members\/[^/]+\/role$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/members\/[^/]+\/remove$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/query$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/reap$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/rebind-vertical$/, pin: 'path' },
@@ -4045,6 +4054,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
+  /**
+   * The address a link into an instance opens on: the scope's canonical `app` hostname,
+   * preferring one the platform has activated but not requiring it — a platform hostname is
+   * bound `pending` and activated a step later, and that step can fail while the app is fully
+   * reachable (#294). `failed` is the one state that never routes, so only it is skipped. The
+   * platform owns the hostname directory, so the origin is never taken from a body.
+   */
+  const instanceOrigin = async (admin: HostAdmin, actor: PlatformActorId, scopeId: ScopeId): Promise<string | null> => {
+    const bound = (await admin.listHostnames(actor, { scopeId })).filter((h) => h.status !== 'failed');
+    const pick = (hs: typeof bound) =>
+      hs.find((h) => h.surface === 'app' && h.canonical) ?? hs.find((h) => h.surface === 'app') ?? hs[0];
+    const host = pick(bound.filter((h) => h.status === 'active')) ?? pick(bound);
+    return host ? `https://${host.hostname}` : null;
+  };
+
   app.post('/tenants/:tenantId/scopes/:scopeId/owner-claim', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -4057,26 +4081,141 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const vertical = await verticalForScope(c, scope);
     if (!vertical) return c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501);
-    // The address the link opens on: the scope's canonical `app` hostname, preferring one
-    // the platform has activated but not requiring it — a platform hostname is bound
-    // `pending` and activated a step later, and that step can fail while the app is fully
-    // reachable (#294). `failed` is the one state that never routes, so only it is skipped.
-    const bound = (await c.var.admin.listHostnames(actor, { scopeId })).filter((h) => h.status !== 'failed');
-    const pick = (hs: typeof bound) =>
-      hs.find((h) => h.surface === 'app' && h.canonical) ?? hs.find((h) => h.surface === 'app') ?? hs[0];
-    const host = pick(bound.filter((h) => h.status === 'active')) ?? pick(bound);
-    if (!host) {
+    const origin = await instanceOrigin(c.var.admin, actor, scopeId);
+    if (!origin) {
       return c.json(
         { error: `scope ${scopeId} has no hostname bound — a claim link needs an address to open on` },
         409,
       );
     }
     try {
-      return c.json(await vertical.mintOwnerClaim({ tenantId, scopeId, origin: `https://${host.hostname}`, actor }), 201);
+      return c.json(await vertical.mintOwnerClaim({ tenantId, scopeId, origin, actor }), 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       throw e;
     }
+  });
+
+  // An installed vertical's MEMBERS (#1150) — the dashboard's Members section. The roster and
+  // every change live in the VERTICAL (its scope's role tuples, its identity directory), so each
+  // route makes the same K-3 cross-check as the owner seat and then asks the deployment that
+  // holds the scope. One scope per call: no walk across scopes (#1581).
+  //
+  // **Who is acting is the credential's person, and only that.** Every change is bounded in the
+  // vertical by the K-21 set comparison at the vertical's scope, asked about a principal — and
+  // the one principal this plane can vouch for is the `onBehalfOf` the dashboard's tenant token
+  // carries (#977), which only the staff mint writes. A builder session, a staff token or a
+  // tenant token minted for nobody names no person, so the writes refuse it rather than
+  // borrowing an authority it does not have. Being a tenant (dashboard) admin confers nothing in
+  // the vertical's scope: what the person holds THERE is what bounds them.
+  //
+  // Every change is audited intent-first then outcome (`manageScopeMember`), like the hand-over.
+  const memberPerson = (p: Principal): PrincipalId | null =>
+    p.kind === 'tenant' && p.onBehalfOf ? p.onBehalfOf.principal : null;
+
+  /** The scope, its vertical and the acting person, or the answer that refuses the request. */
+  const memberTarget = async (c: Context<{ Variables: Vars }>) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const principal = c.get('principal');
+    const actor = c.get('actor');
+    // K-3: another tenant's pair, or no such scope, reads the same — absent.
+    const scope = outsideTenant(principal, tenantId) ? null : await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return { refusal: c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404) } as const;
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return { refusal: c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501) } as const;
+    return { tenantId, scopeId, actor, vertical, person: memberPerson(principal) } as const;
+  };
+
+  /** Run one audited member change: intent, the vertical's call, then the outcome row. */
+  const auditedMemberChange = async <T,>(
+    c: Context<{ Variables: Vars }>,
+    entry: Omit<MemberChangeAudit, 'phase' | 'operationId' | 'error'>,
+    run: () => Promise<T>,
+    applied: (result: T) => Partial<MemberChangeAudit>,
+  ): Promise<{ ok: true; result: T } | { ok: false; response: Response }> => {
+    const actor = c.get('actor');
+    const base = { ...entry, operationId: ulid() };
+    await c.var.admin.recordMemberChange(actor, { ...base, phase: 'intent' });
+    let result: T;
+    try {
+      result = await run();
+    } catch (e) {
+      const status = e instanceof ControlPlaneError ? e.status : 500;
+      const error = (e instanceof Error ? e.message : String(e)).slice(0, OWNER_TRANSFER_AUDIT_ERROR_MAX);
+      await c.var.admin
+        .recordMemberChange(actor, { ...base, phase: status < 500 ? 'refused' : 'failed', error })
+        .catch(() => undefined);
+      if (e instanceof ControlPlaneError) {
+        return { ok: false, response: c.json({ error: e.message }, e.status as ContentfulStatusCode) };
+      }
+      throw e;
+    }
+    await c.var.admin.recordMemberChange(actor, { ...base, phase: 'applied', ...applied(result) });
+    return { ok: true, result };
+  };
+
+  const NO_PERSON = 'a member change needs the signed-in person it is made for — this credential names nobody';
+
+  app.get('/tenants/:tenantId/scopes/:scopeId/members', async (c) => {
+    const target = await memberTarget(c);
+    if ('refusal' in target) return target.refusal;
+    try {
+      return c.json(await target.vertical.listMembers(target.tenantId, target.scopeId));
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      throw e;
+    }
+  });
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/members', async (c) => {
+    const target = await memberTarget(c);
+    if ('refusal' in target) return target.refusal;
+    if (!target.person) return c.json({ error: NO_PERSON }, 403);
+    const body = memberInviteInput.parse(await c.req.json());
+    const origin = await instanceOrigin(c.var.admin, target.actor, target.scopeId);
+    if (!origin) {
+      return c.json({ error: `scope ${target.scopeId} has no hostname bound — an invite link needs an address to open on` }, 409);
+    }
+    const { tenantId, scopeId, person } = target;
+    const done = await auditedMemberChange(
+      c,
+      { tenantId, scopeId, change: 'invite', caller: person, roleKey: body.roleKey },
+      () => target.vertical.inviteMember({ tenantId, scopeId, caller: person, origin, roleKey: body.roleKey, email: body.email ?? null }),
+      (link) => ({ principal: link.principal }),
+    );
+    return done.ok ? c.json(done.result, 201) : done.response;
+  });
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/members/:principal/role', async (c) => {
+    const target = await memberTarget(c);
+    if ('refusal' in target) return target.refusal;
+    if (!target.person) return c.json({ error: NO_PERSON }, 403);
+    const member = principalIdSchema.parse(c.req.param('principal'));
+    const body = memberRoleInput.parse(await c.req.json());
+    const { tenantId, scopeId, person } = target;
+    const done = await auditedMemberChange(
+      c,
+      { tenantId, scopeId, change: 'role', caller: person, principal: member, from: body.from, to: body.to },
+      () => target.vertical.changeMemberRole({ tenantId, scopeId, caller: person, principal: member, from: body.from, to: body.to }),
+      () => ({}),
+    );
+    return done.ok ? c.json({ principal: member, from: body.from, to: body.to }) : done.response;
+  });
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/members/:principal/remove', async (c) => {
+    const target = await memberTarget(c);
+    if ('refusal' in target) return target.refusal;
+    if (!target.person) return c.json({ error: NO_PERSON }, 403);
+    const member = principalIdSchema.parse(c.req.param('principal'));
+    const { tenantId, scopeId, person } = target;
+    const done = await auditedMemberChange(
+      c,
+      { tenantId, scopeId, change: 'remove', caller: person, principal: member },
+      () => target.vertical.removeMember({ tenantId, scopeId, caller: person, principal: member }),
+      (removal) => ({ revoked: removal.revoked }),
+    );
+    return done.ok ? c.json(done.result) : done.response;
   });
 
   // The owner HAND-OVER (#1665). The move runs in the VERTICAL, behind `/internal/owner-transfer`

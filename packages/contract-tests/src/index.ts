@@ -6,8 +6,9 @@ export { impersonationContractSuite } from './impersonation-suite.js';
 export { capabilityContractSuite } from './capability-suite.js';
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
 export { attachmentTextContractSuite } from './attachment-text-suite.js';
-export { ATTACHMENT_TEXT_FIXTURES, DOCX_LINES } from './attachment-text-fixtures.js';
-export type { AttachmentTextFixture } from './attachment-text-fixtures.js';
+export type { AttachmentTextHostFixture, AttachmentTextHostOptions } from './attachment-text-suite.js';
+export { ATTACHMENT_TEXT_FIXTURES, DOCX_LINES, hostilePdfs } from './attachment-text-fixtures.js';
+export type { AttachmentTextFixture, HostilePdf } from './attachment-text-fixtures.js';
 export { capabilityExpiryContractSuite } from './capability-expiry-suite.js';
 export type { CapabilityExpiryFixture } from './capability-expiry-suite.js';
 export { searchContractSuite } from './search-suite.js';
@@ -22,6 +23,8 @@ export { listContractSuite } from './list-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
 export { inertScopeContractSuite } from './inert-scope-suite.js';
+export { causedByContractSuite, scopeCausedByContractSuite } from './caused-by-suite.js';
+export { causedByMod } from './caused-by-module.js';
 // #1184: the membership executor — accept, redelivery, rollback, and the authority bound.
 export { membershipExecutorContractSuite } from './membership-executor-suite.js';
 export { findingsContractSuite } from './findings-suite.js';

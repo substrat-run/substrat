@@ -209,6 +209,11 @@ export interface WidgetSession {
   timezone: string | null;
 }
 
+/** `ticket0_public_threads` — declared in spec/model.ts. */
+export interface PublicThread {
+  id: string;
+}
+
 /** `ticket0_widget_openings` — declared in spec/model.ts. */
 export interface WidgetOpening {
   id: string;
@@ -418,7 +423,7 @@ export interface Ticket0Client {
    *
    * `PATCH /desk` — `ticket0/configure-desk`
    */
-  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null; settings?: { roundRobin?: boolean; sla?: { firstResponseMinutes?: { low?: number; normal?: number; urgent?: number }; resolutionMinutes?: { low?: number; normal?: number; urgent?: number } } | null; autoTag?: { rules: ({ in: "subject" | "body" | "either"; contains: string; tag: string })[] } | null; autoClose?: { afterDays: number } | null; noReplyNotify?: { afterHours: number } | null; spamFilter?: { maxLinks?: number; repeatAfter?: number } | null } }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; settings: string | null; created_at: string; updated_at: string }>;
+  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null; settings?: { roundRobin?: boolean; sla?: { firstResponseMinutes?: { low?: number; normal?: number; urgent?: number }; resolutionMinutes?: { low?: number; normal?: number; urgent?: number }; clock?: "calendar" | "business" } | null; businessHours?: { timezone: string; weekly: { mon?: { open: string; close: string }[]; tue?: { open: string; close: string }[]; wed?: { open: string; close: string }[]; thu?: { open: string; close: string }[]; fri?: { open: string; close: string }[]; sat?: { open: string; close: string }[]; sun?: { open: string; close: string }[] }; exceptions?: { date: string; windows: { open: string; close: string }[] }[] } | null; autoTag?: { rules: ({ in: "subject" | "body" | "either"; contains: string; tag: string })[] } | null; autoClose?: { afterDays: number } | null; noReplyNotify?: { afterHours: number } | null; spamFilter?: { maxLinks?: number; repeatAfter?: number } | null } }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; settings: string | null; created_at: string; updated_at: string }>;
 
   /**
    * Confirm an address from the link in its email

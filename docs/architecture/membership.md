@@ -179,12 +179,44 @@ uncorrelated rows — which is exactly when someone asks.
 
 **The executor is the kernel's, mounted once (#1184).** `registerMembershipExecutor(host,
 { actor })` in `@substrat-run/kernel` consumes `member.add-requested` and assigns the role at
-the **tenant** node, and only there. It joins no org: an org's grants can live in each scope's
-own store, where no directory unit can bound them, so authorizing org membership needs a
-capability of its own, and the request's `orgId` stays the invites engine's vocabulary. A scope-level role lives in
+the **tenant** node, and only there. By default it joins no org, and the request's `orgId`
+stays the invites engine's vocabulary. A scope-level role lives in
 the scope's store and membership in the directory, and no single operation spans the two.
 A scope role already has an atomic check-and-grant, `assignScopeRoleBounded`, which is what
 `vertical-auth`'s invite routes use.
+
+**Joining the org is opted into, and bounded by membership (#2047).** Mounted with
+`orgs: 'join'`, an add also joins the org the request names, and a removal takes the person out
+of it. Both happen in the same directory unit as the role, and they apply together or not at all.
+The bound is §5.1's, held exactly: **the inviter must be a live member of that org.** An org's
+grants live in two places, tenant-level tuples in the directory and scope-level tuples in each
+scope's own store, and no directory unit can read the second. It does not need to. Membership
+confers the same thing on every member at every node: the org's tenant grants, its scope grants,
+its entity-narrowed grants, and whatever it is granted later. So a member holds everything a
+join would confer, and a non-member does not. The comparison is equality of membership, and
+it is read inside the unit (`liveOrgMembership`), so an inviter taken out of the org while the add
+waits is refused there.
+
+- **A tenant admin who is not a member of the org cannot invite anyone into it**, however much
+  tenant authority they hold. That is by design. Authority to admit people to an org without
+  being one of its members would be a capability of its own: an org-admin grant, platform-issued
+  and bounded where it is granted. It is a possible later path, not this one.
+- **A temporary member cannot confer a permanent membership.** The joiner's membership
+  expires no later than the inviter's own: it never lapses only if the inviter's never does
+  (`joinedMembershipExpiry`). A joiner who already holds a live membership keeps the later of the
+  two expiries, so a re-invitation never cuts one short.
+- **Removal is symmetric.** The remover must be a live member of the org too (§5.1
+  consequence 1). The unit tombstones the role and the membership and raises the removal fence.
+  Each tombstone that took something writes its own audit row (`unassignRole`, `removeMember`),
+  and a no-op writes none (K-21).
+- **The fence covers both.** An add's unit reads the joiner's fence before either write, so a
+  removal landing while the add waits refuses the role and the membership alike.
+- The tenant-level role bound (`tenantCoverage`) does not consider expiry. A role assigned by
+  an inviter whose own role expires does not expire with it. That is K-21's bound as it stands, and
+  it is unchanged here.
+
+The dashboard mounts it role-only. Its team org holds no grants, its inviters are not members
+of it, and its roster is its own table.
 
 The correlation id is the event's own kernel-minted id, carried back as `causedBy` on the
 admin row. Nothing in the payload is authority, because module code wrote it:

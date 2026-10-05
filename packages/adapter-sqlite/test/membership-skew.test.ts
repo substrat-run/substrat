@@ -136,7 +136,7 @@ describe('membership executor — the fence and the request share the host clock
       });
     return new Proxy(real, {
       get: (target, key) => {
-        if (key === 'attributed') return (o: Parameters<NonNullable<ScopeHost['attributed']>>[0]) => ({ admin: held(target.attributed(o).admin) });
+        if (key === 'attributed') return (...a: Parameters<NonNullable<ScopeHost['attributed']>>) => ({ admin: held(target.attributed(...a).admin) });
         const v = Reflect.get(target, key) as unknown;
         return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
       },

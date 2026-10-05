@@ -34,6 +34,7 @@ import {
   type AppliedMigration,
   type SwitchedOff,
   type UndrainedEvents,
+  type ScopeRoleHolder,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from './platform-call.js';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
@@ -58,6 +59,13 @@ import {
   projectedIdentityLink,
   ownerSeat,
   ownerClaimLink,
+  coverage,
+  coverageRefusal,
+  type Coverage,
+  memberInviteLink,
+  memberRemoval,
+  scopeMembers,
+  type MemberInviteLink,
   platformActorId,
   type PlatformActorId,
   ownerTransferPair,
@@ -472,6 +480,54 @@ export interface VerticalScopeHost {
   revokeScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean>;
   /** Does `principal` hold a role the scope can expand? The hand-over's check on `to` (#1665). */
   hasScopeRoleLocal?(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean>;
+  /**
+   * The member verbs (#1150) — the kernel's bounded scope-role verbs, which `/internal/members*`
+   * is built on. OPTIONAL like the hand-over's: a host without them answers 501 there.
+   */
+  assignScopeRoleBounded?(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
+  ): Promise<Coverage>;
+  listScopeRoleHolders?(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]>;
+  changeScopeRoleBounded?(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
+  ): Promise<Coverage>;
+  revokeScopeRolesBounded?(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }>;
+}
+
+/**
+ * The slice of a vertical's identity directory the member routes touch (#1150) — vertical-auth's
+ * `IdentityStub` satisfies it. Structural, so this package does not depend on vertical-auth.
+ */
+export interface MemberDirectory {
+  listMemberBindings(scopeId: string): Promise<{ principal: string; logins: number; email: string | null }[]>;
+  listInvites(scopeId: string): Promise<{ principal: string; roleKey: string; email: string | null; createdAt: number }[]>;
+  getInvite(scopeId: string, principal: string): Promise<{ roleKey: string } | null>;
+  createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;
+  revokeInvite(scopeId: string, principal: string): Promise<void>;
+  unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;
+}
+
+/**
+ * What a vertical opts into to let the platform manage its members (#1150) — vertical-auth's
+ * `membersHook` builds it. `roles` are the roles a person may be invited at or moved to: the
+ * declared, human-assignable set (the same list the vertical's own invite routes take), so a
+ * service principal's role is never offered and a principal holding a role outside it is not
+ * the dashboard's to change or remove. `mint` is vertical-auth's `mintMemberInvite`, the one
+ * copy of what an invite is, which the vertical's own `POST /api/invites` runs too.
+ */
+export interface MembersHook<Env> {
+  roles: readonly string[];
+  directory: (env: Env, ref: { tenantId: TenantId; scopeId: ScopeId }) => MemberDirectory;
+  mint: (
+    steps: {
+      grant: (assignee: PrincipalId) => Promise<Coverage>;
+      record: (principal: PrincipalId, tokenHash: string) => Promise<void>;
+      rollback: (principal: PrincipalId) => Promise<unknown>;
+    },
+    input: { roleKey: string; email: string | null; origin: string },
+  ) => Promise<{ ok: true; invite: MemberInviteLink } | { ok: false; coverage: Coverage }>;
 }
 
 /**
@@ -632,6 +688,21 @@ const ownerClaimBody = z.object({
   /** The platform actor that asked (#1686) — optional, so a control plane from before it still mints. */
   actor: platformActorId.optional(),
 });
+
+/**
+ * The member routes' bodies (#1150). `caller` is the person the platform is acting for — the
+ * principal every write is bounded by. It is the platform's to name: these routes are behind
+ * the platform gate, and the control plane takes it from the token it minted, never a body.
+ */
+const memberCaller = { tenantId: tenantIdOf, scopeId: scopeIdOf, caller: principalIdOf };
+const memberInviteBody = z.object({
+  ...memberCaller,
+  origin: z.string().url(),
+  roleKey: z.string().min(1),
+  email: z.string().email().nullable(),
+}).strict();
+const memberRoleBody = z.object({ ...memberCaller, principal: principalIdOf, from: z.string().min(1), to: z.string().min(1) }).strict();
+const memberRemoveBody = z.object({ ...memberCaller, principal: principalIdOf }).strict();
 
 /** `/internal/owner-transfer` body (#1665): the address plus `ownerTransferInput`'s two principals. */
 const ownerTransferBody = ownerTransferPair
@@ -863,6 +934,11 @@ export interface PlatformSurfaceDeps<Env> {
     ref: { tenantId: TenantId; scopeId: ScopeId },
     input: { from: PrincipalId; to: PrincipalId; toHoldsRole: boolean },
   ) => Promise<z.input<typeof ownerTransferAbandon>>;
+  /**
+   * Let the platform manage this vertical's members (#1150) — the dashboard's Members section.
+   * Omit ⇒ every `/internal/members*` route answers 501: the vertical declares no member roles.
+   */
+  members?: MembersHook<Env>;
   /**
    * Vertical-specific delete-scope side effect — e.g. drop the scope from a deployment
    * sweep roster (#461) so its alarm never wakes a reaped scope. Runs after the host has
@@ -1886,6 +1962,193 @@ export function mountPlatformSurface<Env extends object>(
       throw new HTTPException(500, { message });
     }
     return c.json({ ...answer, fromRevoked } satisfies OwnerTransferResult);
+  });
+
+  // ── An installed vertical's MEMBERS (#1150), managed from the dashboard on the platform's
+  //    instruction. One scope per call, addressed by the platform after its own (tenant, scope)
+  //    check — never a walk across scopes (#1581). Every write is bounded (§5.1, K-21) by the
+  //    `caller` the platform names, at this scope's node, by the kernel's verbs that check and
+  //    write in one scope task. Being a tenant or dashboard admin confers nothing here: a caller
+  //    holding no role in this scope can read the roster and change nothing.
+  //
+  //    The owner of record is refused a removal or a role change (409): moving the owner is the
+  //    hand-over (`/internal/owner-transfer`, #1665), which seats the successor first. A
+  //    principal holding a role outside the vertical's declared member roles (a service
+  //    account, say) is refused too — it is not a person the dashboard manages. ──
+
+  /** The member verbs every member route calls, required. */
+  type MemberVerbs = Required<Pick<
+    VerticalScopeHost,
+    'assignScopeRoleBounded' | 'listScopeRoleHolders' | 'changeScopeRoleBounded' | 'revokeScopeRolesBounded' | 'revokeScopeRole'
+  >>;
+
+  /** The hook, the host's member verbs and the vertical's directory every member route needs, or a 501. */
+  const memberSurface = (env: Env, ref: { tenantId: TenantId; scopeId: ScopeId }) => {
+    const members = deps.members;
+    if (!members) throw new HTTPException(501, { message: 'this vertical declares no member roles' });
+    const host = deps.hostFor(env);
+    const verbs: (keyof MemberVerbs)[] = [
+      'assignScopeRoleBounded', 'listScopeRoleHolders', 'changeScopeRoleBounded', 'revokeScopeRolesBounded', 'revokeScopeRole',
+    ];
+    if (verbs.some((v) => typeof host[v] !== 'function')) {
+      throw new HTTPException(501, { message: 'this deployment’s scope host predates member management — update @substrat-run/adapter-cloudflare' });
+    }
+    return {
+      members,
+      host: host as VerticalScopeHost & MemberVerbs,
+      directory: members.directory(env, ref),
+      /** The owner of record, whom a removal or a role move refuses. */
+      owner: async () => (deps.resolveOwner ? await deps.resolveOwner(env, ref) : null),
+    };
+  };
+
+  /** The 403 a refused bound answers — `coverageRefusal`, the wording `mountInviteRoutes` uses. */
+  const assertCovered = (bound: unknown, roleKey: string, act: string): void => {
+    const parsed = coverage.safeParse(bound);
+    if (!parsed.success) throw new HTTPException(500, { message: 'the assignment bound did not answer with a coverage — refusing' });
+    if (!parsed.data.covered) throw new HTTPException(403, { message: coverageRefusal(parsed.data.missing, roleKey, act) });
+  };
+
+  /**
+   * The roles `principal` holds here, after refusing the owner of record and a principal holding
+   * a role the dashboard does not manage.
+   */
+  const manageableRoles = async (
+    surface: ReturnType<typeof memberSurface>,
+    body: { tenantId: TenantId; scopeId: ScopeId; principal: PrincipalId },
+  ): Promise<string[]> => {
+    const [held, owner] = await Promise.all([
+      surface.host.listScopeRoleHolders(body.tenantId, body.scopeId, body.principal).then((hs) => hs.map((h) => h.roleKey)),
+      surface.owner(),
+    ]);
+    if (owner === body.principal) {
+      throw new HTTPException(409, {
+        message: `${body.principal} is the owner of record — hand the owner seat over first, then change or remove them`,
+      });
+    }
+    const foreign = held.filter((r) => !surface.members.roles.includes(r));
+    if (foreign.length > 0) {
+      throw new HTTPException(409, {
+        message: `${body.principal} holds ${foreign.join(', ')}, which this vertical does not let the dashboard manage`,
+      });
+    }
+    return held;
+  };
+
+  app.get('/internal/members', async (c) => {
+    const ref = {
+      tenantId: tenantIdOf.parse(c.req.query('tenantId')),
+      scopeId: scopeIdOf.parse(c.req.query('scopeId')),
+    };
+    const surface = memberSurface(c.env, ref);
+    const [holders, bindings, invites, owner] = await Promise.all([
+      surface.host.listScopeRoleHolders(ref.tenantId, ref.scopeId),
+      surface.directory.listMemberBindings(ref.scopeId),
+      surface.directory.listInvites(ref.scopeId),
+      surface.owner(),
+    ]);
+    const known = new Map(bindings.map((b) => [b.principal, b]));
+    const pending = new Set(invites.map((i) => i.principal));
+    const roles = new Map<string, string[]>();
+    for (const h of holders) roles.set(h.principal, [...(roles.get(h.principal) ?? []), h.roleKey]);
+    // A principal whose only presence is an open invite is listed under `invites`, not twice.
+    const members = [...roles]
+      .filter(([principal]) => !(pending.has(principal) && (known.get(principal)?.logins ?? 0) === 0))
+      .map(([principal, held]) => ({
+        principal,
+        roles: held,
+        logins: known.get(principal)?.logins ?? 0,
+        email: known.get(principal)?.email ?? null,
+        owner: principal === owner,
+      }));
+    // An invite's `roleKey` is the role it was minted at; `roles` is what its principal holds now,
+    // read from the scope — the one every bound is asked about.
+    const open = invites.map((i) => ({ ...i, roles: roles.get(i.principal) ?? [] }));
+    return c.json(scopeMembers.parse({ roles: [...surface.members.roles], members, invites: open }));
+  });
+
+  app.post('/internal/members/invite', async (c) => {
+    const body = memberInviteBody.parse(await c.req.json());
+    const surface = memberSurface(c.env, body);
+    if (!surface.members.roles.includes(body.roleKey)) {
+      throw new HTTPException(400, { message: `'${body.roleKey}' is not a role this vertical lets a person be invited at` });
+    }
+    const minted = await surface.members.mint(
+      {
+        grant: (assignee) =>
+          surface.host.assignScopeRoleBounded(body.tenantId, body.scopeId, body.caller, assignee, body.roleKey),
+        record: (principal, tokenHash) =>
+          surface.directory.createInvite(body.scopeId, principal, body.roleKey, body.email, tokenHash),
+        rollback: (principal) => surface.host.revokeScopeRole(body.scopeId, principal, body.roleKey),
+      },
+      { roleKey: body.roleKey, email: body.email, origin: body.origin },
+    );
+    if (!minted.ok) throw new HTTPException(403, { message: coverageRefusal(minted.coverage.missing, body.roleKey, 'invite at') });
+    return c.json(memberInviteLink.parse(minted.invite), 201);
+  });
+
+  app.post('/internal/members/role', async (c) => {
+    const body = memberRoleBody.parse(await c.req.json());
+    const surface = memberSurface(c.env, body);
+    if (!surface.members.roles.includes(body.to)) {
+      throw new HTTPException(400, { message: `'${body.to}' is not a role this vertical lets the dashboard assign` });
+    }
+    const [, invite] = await Promise.all([
+      manageableRoles(surface, body),
+      surface.directory.getInvite(body.scopeId, body.principal),
+    ]);
+    // A pending invitee's role is changed by inviting again, not by moving it: the invite row
+    // records the role it was minted at, the link and its email were sent for that, and the two
+    // stores have no transaction to keep a move in step with the row. A UX guard ONLY — nothing
+    // is bounded by the row's role (every withdrawal is bounded by the roles the principal holds,
+    // in the scope task that takes them), so a move that slips in before the row exists is safe.
+    if (invite) {
+      throw new HTTPException(409, {
+        message: `${body.principal} has an open invite at '${invite.roleKey}' — withdraw it and invite them again at the new role`,
+      });
+    }
+    // One scope task: both bounds, then the tombstone and the grant together, or nothing.
+    const bound = await surface.host.changeScopeRoleBounded(body.tenantId, body.scopeId, body.caller, body.principal, body.from, body.to);
+    assertCovered(bound, `${body.from}' to '${body.to}`, 'move a member from');
+    return c.json({ principal: body.principal, from: body.from, to: body.to });
+  });
+
+  // Removal, in an order that an accept cannot get between (an accept only binds, in the
+  //    identity directory — see vertical-auth's accept route for that invariant):
+  //   1. every scope role taken in ONE scope task, bounded there by the roles the principal holds
+  //      — not an invite row's `roleKey`, which records what was minted and may be stale (Codex
+  //      #2057 r2). A refusal writes nothing, the open invite included;
+  //   2. the open invite withdrawn — from here an accept of its link finds nothing;
+  //   3. every login bound to the principal unbound — undoing an accept that landed before 2;
+  //   4. a re-read: nothing may still be bound or open, or the removal reports a failure.
+  // A failure after 1 leaves a narrowing behind, and the same call completes it.
+  app.post('/internal/members/remove', async (c) => {
+    const body = memberRemoveBody.parse(await c.req.json());
+    const surface = memberSurface(c.env, body);
+    const [held, invite] = await Promise.all([
+      manageableRoles(surface, body),
+      surface.directory.getInvite(body.scopeId, body.principal),
+    ]);
+    // Not a member: no scope role and no open invite. Removal is bounded by the roles it takes,
+    // so with none it would be bounded by nothing — and still unbind every login, letting a
+    // caller who holds nothing here sign out someone held only by entity grants.
+    if (held.length === 0 && !invite) {
+      throw new HTTPException(404, { message: `${body.principal} holds no role in this scope and has no open invite` });
+    }
+    const taken = await surface.host.revokeScopeRolesBounded(body.tenantId, body.scopeId, body.caller, body.principal);
+    assertCovered(taken.coverage, body.principal, 'remove the member');
+    if (invite) await surface.directory.revokeInvite(body.scopeId, body.principal);
+    const unbound = await surface.directory.unbindPrincipal(body.scopeId, body.principal);
+    const [bindings, open] = await Promise.all([
+      surface.directory.listMemberBindings(body.scopeId),
+      surface.directory.getInvite(body.scopeId, body.principal),
+    ]);
+    if ((bindings.find((b) => b.principal === body.principal)?.logins ?? 0) > 0 || open) {
+      throw new HTTPException(500, {
+        message: `removing ${body.principal}: a login or an open invite is still there after the removal — retry it`,
+      });
+    }
+    return c.json(memberRemoval.parse({ revoked: taken.revoked, unbound: unbound.length, inviteWithdrawn: invite !== null }));
   });
 
   // ── The guaranteed error envelope — the whole point (#510). Without this, Hono answers

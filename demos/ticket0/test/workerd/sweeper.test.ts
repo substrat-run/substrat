@@ -34,7 +34,9 @@
  * The third (#1653) is here for the same reason: provisioning a desk twice must leave the
  * state provisioning it once did. So is the fourth (#1648): a snooze pausing the resolution
  * target, read and written by the sweep's own schedules on a Durable Object's SQLite. So is
- * the fifth (#938): the live feed, whose frames come from the scope DO's fan-out.
+ * the fifth (#938): the live feed, whose frames come from the scope DO's fan-out. And the
+ * business-hours describe after #1648's (also #1648): the zone data `Intl` reads is the
+ * runtime's own, so the DST answers are proven where a hosted desk computes them.
  */
 import { SELF, env, fetchMock, runInDurableObject } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -56,6 +58,7 @@ import {
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
 import { classifyError } from '@substrat-run/vertical-host';
+import { addBusinessMs, businessMsBetween, instantOf } from '../../src/business-time.js';
 import { ticket0Manifest } from '../../src/manifest.js';
 import { MODULES } from '../../src/provision.js';
 import { ticket0Migrations } from '../../src/migrations.generated.js';
@@ -533,6 +536,62 @@ describe('ticket0 on workerd — a snooze pauses the resolution target (#1648)',
     const sl = (await conversation(slaDesk, stillLegacy)) as SlaRow;
     expect(sl.state).toBe('snoozed');
     expect(sl.resolution_breached_at).not.toBeNull();
+  });
+});
+
+/**
+ * #1648's business hours, on the runtime a hosted desk runs. The arithmetic resolves
+ * wall-clock times through `Intl.DateTimeFormat`, and the zone data behind that is the
+ * RUNTIME's, not the package's: a workerd whose ICU lacked a zone, or resolved a DST gap
+ * differently, would put every business-time due somewhere node never did. So the DST facts
+ * `test/business-time.test.ts` pins on node are asserted again here, and a desk on the
+ * business clock stamps an arriving conversation on the DO.
+ */
+describe('ticket0 on workerd — business hours run on the runtime\'s own zone data (#1648)', () => {
+  const bhDesk = scopeId.parse(ulid());
+  const HOUR = 3_600_000;
+  const nineToFive = [{ open: '09:00', close: '17:00' }];
+  const hours = {
+    timezone: 'Europe/Stockholm',
+    weekly: { mon: nineToFive, tue: nineToFive, wed: nineToFive, thu: nineToFive, fri: nineToFive },
+  };
+
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: bhDesk, owner, entitlements })).status).toBe(201);
+    await (await host().getScope(owner, t, bhDesk)).invoke('ticket0/configure-desk', {
+      settings: { businessHours: hours, sla: { firstResponseMinutes: { normal: 240 }, clock: 'business' } },
+    });
+  });
+
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: bhDesk })).status).toBe(200);
+  });
+
+  it('resolves the DST gap, the repeated hour and a weekend across a transition as node does', () => {
+    expect(new Date(instantOf('Europe/Stockholm', Date.UTC(2026, 2, 29, 2, 30))).toISOString()).toBe('2026-03-29T01:30:00.000Z');
+    expect(new Date(instantOf('Europe/Stockholm', Date.UTC(2026, 9, 25, 2, 30))).toISOString()).toBe('2026-10-25T00:30:00.000Z');
+    expect(addBusinessMs(hours, '2026-03-27T15:00:00.000Z', 2 * HOUR)).toBe('2026-03-30T08:00:00.000Z');
+    expect(addBusinessMs(hours, '2026-10-23T14:00:00.000Z', 2 * HOUR)).toBe('2026-10-26T09:00:00.000Z');
+  });
+
+  it('an arriving conversation is stamped four business hours out, on the DO', async () => {
+    const relay = await host().getScope(await relayOf(bhDesk), t, bhDesk);
+    const arrived = await relay.invoke<{ conversation_id: string }>('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'hours@customer.example',
+      contactName: 'Hours',
+      subject: 'When are you open?',
+      bodyText: 'Asking for a friend.',
+      emailMessageId: `<hours-${(arrivals += 1)}@mail.example>`,
+    });
+    const row = await (await host().getScope(owner, t, bhDesk)).invoke<{
+      created_at: string;
+      first_response_due_at: string;
+    }>('ticket0/get-conversation', { conversationId: arrived.conversation_id });
+    // The real clock here (`clock?: never`), so the claim is the relation, not an instant:
+    // exactly four hours of opening time lie between arrival and due.
+    expect(row.first_response_due_at).toBe(addBusinessMs(hours, row.created_at, 4 * HOUR));
+    expect(businessMsBetween(hours, row.created_at, row.first_response_due_at)).toBe(4 * HOUR);
   });
 });
 
@@ -1238,6 +1297,114 @@ describe("ticket0 on workerd — the widget's feed nudges a visitor about their 
     // existed: what it returned before the follow-up is what this test pins, unchanged.
     expect(before).toEqual(['Before the close.']);
     expect(await thread(session)).toEqual(['After the close.']);
+  });
+
+  /** `entity.relinked` rows one operation wrote, and an entity's live parents, in the desk's own storage. */
+  const relinksBy = async (operation: string) =>
+    runInDurableObject(scopeStub(), async (_instance, state) =>
+      Number(
+        [
+          ...state.storage.sql.exec(
+            `SELECT COUNT(*) AS n FROM _substrat_outbox WHERE type = 'entity.relinked' AND operation = ?`,
+            operation,
+          ),
+        ][0]!.n,
+      ),
+    );
+  const liveParents = async (subject: string) =>
+    runInDurableObject(scopeStub(), async (_instance, state) =>
+      [
+        ...state.storage.sql.exec(
+          `SELECT object FROM _substrat_tuples WHERE subject = ? AND relation = 'parent' AND revoked_at IS NULL ORDER BY object`,
+          subject,
+        ),
+      ].map((r) => String(r.object)),
+    );
+
+  it('moves a long thread off the session with two relinks, and each message holds two edges (#2044)', async () => {
+    const session = await visitor();
+    const first = await say(session, 'The opening line.');
+    const desk_ = await admin();
+    const replies: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      replies.push(
+        (await desk_.invoke<{ id: string }>('ticket0/post-public-reply', { conversationId: first.conversation_id, body: `Reply ${i}` })).id,
+      );
+    }
+    for (const id of [first.id, ...replies]) {
+      expect(await liveParents(`message:${id}`)).toEqual([`conversation:${first.conversation_id}`, `publicThread:${first.conversation_id}`]);
+    }
+    await desk_.invoke('ticket0/close', { conversationId: first.conversation_id });
+    const before = await relinksBy('ticket0/widget-post');
+    const next = await say(session, 'After the close.');
+    // The session's own edge and the closed thread coming off it — not one per message.
+    expect((await relinksBy('ticket0/widget-post')) - before).toBe(2);
+    expect(await liveParents(`publicThread:${first.conversation_id}`)).toEqual([`conversation:${first.conversation_id}`]);
+    expect(await liveParents(`publicThread:${next.conversation_id}`)).toEqual(
+      [`conversation:${next.conversation_id}`, `widgetSession:${session.sessionId}`].sort(),
+    );
+  });
+
+  it('a socket re-opened after a merge hears the survivor, and after a move only its own new thread (#2044)', async () => {
+    // Two widget chats from one person, merged: both sessions now sit on the survivor.
+    const loser = await visitor();
+    const lost = await say(loser, 'Asked first.');
+    const keeper = await visitor();
+    const kept = await say(keeper, 'Asked again.');
+    await runInDurableObject(scopeStub(), async (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE ticket0_conversations SET contact_id = (SELECT contact_id FROM ticket0_conversations WHERE id = ?) WHERE id = ?`,
+        lost.conversation_id,
+        kept.conversation_id,
+      );
+    });
+    const desk_ = await admin();
+    await desk_.invoke('ticket0/merge', { conversationId: lost.conversation_id, intoConversationId: kept.conversation_id });
+
+    // The loser's browser reconnects — a reload, a dropped socket — after the merge.
+    const reopened = await watch(loser);
+    const keeperFeed = await watch(keeper);
+    await desk_.invoke('ticket0/post-note', { conversationId: kept.conversation_id, body: 'Internal, after the merge.' });
+    await settle();
+    expect(reopened.frames).toEqual([]);
+    expect(keeperFeed.frames).toEqual([]);
+    await desk_.invoke('ticket0/post-public-reply', { conversationId: kept.conversation_id, body: 'One answer for both.' });
+    await settle();
+    expect(reopened.frames.length).toBeGreaterThan(0);
+    expect(keeperFeed.frames.length).toBeGreaterThan(0);
+    for (const frame of [...reopened.frames, ...keeperFeed.frames]) expect(Object.keys(frame).sort()).toEqual(['at', 'id', 'kind']);
+    // A message the merge MOVED is on the survivor's thread too: a write to it reaches the
+    // session that was always on the survivor.
+    const keeperBefore = keeperFeed.frames.length;
+    await (await service('relay')).invoke('ticket0/record-delivery', {
+      messageId: lost.id,
+      emailMessageId: `<lost-${ulid()}@mail.example>`,
+    });
+    await settle();
+    expect(keeperFeed.frames.length).toBeGreaterThan(keeperBefore);
+
+    // Merge, then a move: the survivor closes, the loser's visitor writes and moves on alone.
+    await desk_.invoke('ticket0/close', { conversationId: kept.conversation_id });
+    const moved = await say(loser, 'Something new.');
+    expect(moved.conversation_id).not.toBe(kept.conversation_id);
+    await settle();
+    const heardByLoser = reopened.frames.length;
+    const heardByKeeper = keeperFeed.frames.length;
+    // A reply on the follow-up reaches the moved session only; one on the survivor, the other only.
+    await desk_.invoke('ticket0/post-public-reply', { conversationId: moved.conversation_id, body: 'On the follow-up.' });
+    await settle();
+    expect(reopened.frames.length).toBeGreaterThan(heardByLoser);
+    expect(keeperFeed.frames).toHaveLength(heardByKeeper);
+    const loserNow = reopened.frames.length;
+    await (await service('relay')).invoke('ticket0/record-delivery', {
+      messageId: kept.id,
+      emailMessageId: `<kept-${ulid()}@mail.example>`,
+    });
+    await settle();
+    expect(reopened.frames).toHaveLength(loserNow);
+    // The twin: the session still on the survivor hears that same write.
+    expect(keeperFeed.frames.length).toBeGreaterThan(heardByKeeper);
+    expect(await thread(loser)).toEqual(['Something new.', 'On the follow-up.']);
   });
 });
 

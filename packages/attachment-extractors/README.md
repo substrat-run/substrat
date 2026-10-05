@@ -34,8 +34,9 @@ extractors" a valid configuration, not a broken one.
 | `docxExtractor` | Word documents: the body, then footnotes, endnotes, headers and footers |
 | `xlsxExtractor` | Spreadsheets: shared and inline strings, never a cell's number |
 | `pptxExtractor` | Presentations: slides in order, then speaker notes |
+| `pdfExtractor` | PDF: the text each page draws, in page order. Written for hostile input: decompression, the cross-reference chain, object counts and every kind of nesting are bounded, and an encrypted file is refused with that reason |
 
-There is no PDF extractor yet, and nothing is OCR'd.
+Nothing is OCR'd: a scanned PDF has no text layer and records `empty`.
 
 The HTML extractor **never indexes text the HTML parser keeps out of the rendered document**:
 comments, `script`, `style`, the other elements whose content a browser does not render, and

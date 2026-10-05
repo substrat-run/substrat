@@ -41,6 +41,8 @@
       // class declares a `liveTargets` entity) and its own namespace, for the same
       // isolation reason SWEEP_SCOPE has one.
       { "name": "LIVE_SCOPE", "class_name": "LiveScopeDO" },
+      // #2055: a scope class whose one module's consumer can be held mid-handler.
+      { "name": "CAUSED_BY_SCOPE", "class_name": "CausedByScopeDO" },
       // #1705: the cross-vertical suite's two deployments, one class per vertical, over a
       // directory of their own (the sweep enumerates every active scope in its directory,
       // and must not walk every other suite's).
@@ -118,6 +120,10 @@
     {
       "tag": "v11",
       "new_sqlite_classes": ["IdentityDO"]
+    },
+    {
+      "tag": "v12",
+      "new_sqlite_classes": ["CausedByScopeDO"]
     }
   ]
 }

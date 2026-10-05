@@ -214,6 +214,11 @@ export const adminAction = z.enum([
   'createFindingRule',
   'revokeFindingRule',
   'resolveStaleFinding',
+  // #1150 — an installed vertical's member invited, moved between roles or removed from the
+  // dashboard. The change happens in the vertical's own deployment, bounded there by the person
+  // named in `caller` (who is also the row's `onBehalfOf`), so the control plane writes it
+  // intent-first then outcome, like `transferOwner`.
+  'manageScopeMember',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 
@@ -423,6 +428,62 @@ export const ownerClaimLink = z.object({
 export type OwnerClaimLink = z.infer<typeof ownerClaimLink>;
 
 /**
+ * An installed vertical's MEMBERS, as the platform may see them (#1150) — read from the
+ * vertical's `/internal/members` for one scope and relayed to the dashboard. `roles` are the
+ * roles the vertical lets a person be invited at (its declared, human-assignable set, not
+ * every role it defines). A member is a principal holding a scope-level role: `logins` counts
+ * the verified subjects bound to it in the vertical's identity directory (0 = nobody signs in
+ * as it yet), `email` is the address its invite named, if any, and `owner` marks the owner
+ * of record — whom removal refuses (hand the seat over instead, #1665). `invites` are the
+ * open ones, never with a token; each carries the role it was minted at and the roles its
+ * principal holds now, which can differ, and only the second authorizes anything.
+ */
+export const scopeMember = z.object({
+  principal: principalId,
+  roles: z.array(z.string()),
+  logins: z.number().int().nonnegative(),
+  email: z.string().nullable(),
+  owner: z.boolean(),
+});
+export const scopeMemberInvite = z.object({
+  principal: principalId,
+  /** The role the invite was minted at — what its link and email were sent for. Display only. */
+  roleKey: z.string(),
+  /** The scope roles its pre-minted principal holds NOW — what every bound is asked about. */
+  roles: z.array(z.string()),
+  email: z.string().nullable(),
+  createdAt: z.number(),
+});
+export const scopeMembers = z.object({
+  roles: z.array(z.string()),
+  members: z.array(scopeMember),
+  invites: z.array(scopeMemberInvite),
+});
+export type ScopeMember = z.infer<typeof scopeMember>;
+export type ScopeMembers = z.infer<typeof scopeMembers>;
+
+/** A member invite the platform asked for (#1150): shown once, like an owner-claim link. */
+export const memberInviteLink = z.object({
+  principal: principalId,
+  roleKey: z.string(),
+  email: z.string().nullable(),
+  acceptUrl: z.string().url(),
+});
+export type MemberInviteLink = z.infer<typeof memberInviteLink>;
+
+/** The dashboard's member writes (#1150). The scope comes from the address; the caller from the token. */
+export const memberInviteInput = z.object({ email: z.string().email().optional(), roleKey: z.string().min(1) }).strict();
+export const memberRoleInput = z.object({ from: z.string().min(1), to: z.string().min(1) }).strict();
+
+/** What a removal took (#1150): the scope roles revoked, the logins unbound, whether an open invite went. */
+export const memberRemoval = z.object({
+  revoked: z.array(z.string()),
+  unbound: z.number().int().nonnegative(),
+  inviteWithdrawn: z.boolean(),
+});
+export type MemberRemoval = z.infer<typeof memberRemoval>;
+
+/**
  * An owner HAND-OVER request (#1665): the current owner of record and the member who takes
  * over. Two principals in the scope's own identity directory. The scope comes from the address.
  * One principal on both sides is refused here, before anything is reached. `abandon: true`
@@ -514,6 +575,30 @@ export const ownerTransferAudit = z.discriminatedUnion('phase', [
   ownerTransferAuditRow({ phase: z.enum(['refused', 'failed']), error: z.string().max(OWNER_TRANSFER_AUDIT_ERROR_MAX) }),
 ]);
 export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
+
+/**
+ * One row of a dashboard member change's audit (#1150), for `HostAdmin.recordMemberChange`: an
+ * `intent`, then `applied`, `refused` (the vertical's 4xx: nothing written) or `failed`, paired by
+ * `operationId`. `principal` is the member changed — on an invite's intent, not yet minted.
+ * No `id`, `at` or actor, for `ownerTransferAudit`'s reason.
+ */
+export const memberChangeAudit = z
+  .object({
+    phase: z.enum(['intent', 'applied', 'refused', 'failed']),
+    tenantId,
+    scopeId,
+    operationId: z.string().min(1),
+    change: z.enum(['invite', 'role', 'remove']),
+    caller: principalId,
+    principal: principalId.optional(),
+    roleKey: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    revoked: z.array(z.string()).optional(),
+    error: z.string().max(OWNER_TRANSFER_AUDIT_ERROR_MAX).optional(),
+  })
+  .strict();
+export type MemberChangeAudit = z.infer<typeof memberChangeAudit>;
 
 /**
  * How an identity pool relates to tenants (K-23) — the fact that decides whether the
@@ -754,6 +839,8 @@ export const orgMembership = z.object({
   principal: principalId,
   orgId,
   revokedAt: instant.nullable(),
+  /** When the membership lapses on its own (#2047), or `null` for never. */
+  expiresAt: instant.nullable().default(null),
 });
 export type OrgMembership = z.infer<typeof orgMembership>;
 

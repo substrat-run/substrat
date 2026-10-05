@@ -284,6 +284,91 @@ export function permissionContractSuite(
           expect((await probe(assignee, s1, PERM_READ)).allowed).toBe(false);
         });
       });
+
+      /**
+       * The scope's role roster and the two bounded writes over it (#1150) — what a dashboard
+       * managing an installed vertical's members reads and calls. Each write is one scope
+       * task: the bound over every role it touches, then all of its writes, or none.
+       */
+      describe('the scope role roster, and bounded change and removal', () => {
+        const fresh = () => principalId.parse(ulid());
+        const rolesOf = async (who: PrincipalId, scope: typeof s1 = s1) =>
+          (await host.listScopeRoleHolders(t1, scope)).filter((h) => h.principal === who).map((h) => h.roleKey).sort();
+        const seat = async (who: PrincipalId, roleKey: string) =>
+          expect((await host.assignScopeRoleBounded(t1, s1, alice, who, roleKey)).covered).toBe(true);
+
+        it('lists who holds which scope role, at this scope only, and drops a revoked one', async () => {
+          const x = fresh();
+          await seat(x, 'tech');
+          expect(await rolesOf(x)).toEqual(['tech']);
+          expect(await rolesOf(x, s2)).toEqual([]);
+          expect((await host.revokeScopeRolesBounded(t1, s1, alice, x)).revoked).toEqual(['tech']);
+          expect(await rolesOf(x)).toEqual([]);
+        });
+
+        it('changes a role in one write when the caller covers both', async () => {
+          const x = fresh();
+          await seat(x, 'tech');
+          expect(await host.changeScopeRoleBounded(t1, s1, alice, x, 'tech', 'admin')).toEqual({ covered: true, missing: [] });
+          expect(await rolesOf(x)).toEqual(['admin']);
+          expect((await probe(x, s1, PERM_USE)).allowed).toBe(true);
+        });
+
+        /** Escalation: bob holds `tech` only, so he can neither promote someone nor demote an admin. */
+        it('refuses a change beyond the caller, leaving the old role in place', async () => {
+          const x = fresh();
+          await seat(x, 'tech');
+          expect(await host.changeScopeRoleBounded(t1, s1, bob, x, 'tech', 'admin')).toEqual({ covered: false, missing: [PERM_USE] });
+          expect(await rolesOf(x)).toEqual(['tech']);
+          const y = fresh();
+          await seat(y, 'admin');
+          expect(await host.changeScopeRoleBounded(t1, s1, bob, y, 'admin', 'tech')).toEqual({ covered: false, missing: [PERM_USE] });
+          expect(await rolesOf(y)).toEqual(['admin']);
+          expect((await probe(y, s1, PERM_USE)).allowed).toBe(true);
+        });
+
+        it('writes nothing for an unknown target role, or a role the principal does not hold', async () => {
+          const x = fresh();
+          await seat(x, 'tech');
+          await expectRefusal(host.changeScopeRoleBounded(t1, s1, alice, x, 'tech', 'no-such-role'), 'not_found', /no such role/);
+          await expectRefusal(host.changeScopeRoleBounded(t1, s1, alice, x, 'admin', 'tech'), 'conflict', /does not hold/);
+          expect(await rolesOf(x)).toEqual(['tech']);
+        });
+
+        it('removes every scope role a principal holds, bounded by the caller over each', async () => {
+          const x = fresh();
+          await seat(x, 'tech');
+          await seat(x, 'admin');
+          // bob covers `tech` but not `admin`: nothing is taken, not even the role he covers.
+          expect(await host.revokeScopeRolesBounded(t1, s1, bob, x)).toEqual({
+            coverage: { covered: false, missing: [PERM_USE] },
+            revoked: [],
+          });
+          expect(await rolesOf(x)).toEqual(['admin', 'tech']);
+          const removed = await host.revokeScopeRolesBounded(t1, s1, alice, x);
+          expect(removed.coverage.covered).toBe(true);
+          expect([...removed.revoked].sort()).toEqual(['admin', 'tech']);
+          expect(await rolesOf(x)).toEqual([]);
+          expect((await probe(x, s1, PERM_READ)).allowed).toBe(false);
+        });
+
+        it('lets a caller remove a role they hold themselves', async () => {
+          const x = fresh();
+          await seat(x, 'tech');
+          expect((await host.revokeScopeRolesBounded(t1, s1, bob, x)).revoked).toEqual(['tech']);
+          expect((await probe(x, s1, PERM_READ)).allowed).toBe(false);
+        });
+
+        it('refuses another tenant’s scope as one that does not exist, writing nothing', async () => {
+          const x = fresh();
+          await seat(x, 'tech');
+          const other = tenantId.parse(ulid());
+          await expectRefusal(host.listScopeRoleHolders(other, s1), 'not_found', /unknown scope/);
+          await expectRefusal(host.changeScopeRoleBounded(other, s1, alice, x, 'tech', 'admin'), 'not_found', /unknown scope/);
+          await expectRefusal(host.revokeScopeRolesBounded(other, s1, alice, x), 'not_found', /unknown scope/);
+          expect(await rolesOf(x)).toEqual(['tech']);
+        });
+      });
     });
 
     // -- runtime delegation: ctx.grant / ctx.revoke ---------------------------
