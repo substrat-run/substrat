@@ -257,11 +257,11 @@ function* openTime(c: Compiled, start: number): Generator<readonly [number, numb
     }
   };
   for (let day = first; day < first + EXACT_DAYS; day++) {
-    // A closed day adds nothing, so it costs no lookup: what is held is released against a
-    // bound below its midnight (no zone is more than fourteen hours ahead of UTC), which is
-    // safe because anything ending before that ends before the midnight too.
+    // A closed day adds nothing, and costs no lookup: everything held is final. It comes
+    // from earlier days, so it ends by this day's midnight plus at most one jump, which is
+    // short of the next midnight, where the next openings can start.
     if (windowsOn(c, day).length === 0) {
-      yield* release(day * DAY - 15 * 60 * MINUTE);
+      yield* release(Infinity);
       continue;
     }
     const at = resolver(c, day);
