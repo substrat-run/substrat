@@ -168,16 +168,19 @@ const operations = {
    */
   'todo/archive-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
+    listOrThrow(ctx, input.listId); // a binned list is not found, not in the wrong state
     return { id: input.listId, state: await ctx.archive(listRef(input.listId)) };
   },
 
   'todo/unarchive-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
+    listOrThrow(ctx, input.listId); // a binned list is not found, not in the wrong state
     return { id: input.listId, state: await ctx.unarchive(listRef(input.listId)) };
   },
 
   'todo/trash-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listTrash, listRef(input.listId)));
+    listOrThrow(ctx, input.listId); // a binned list is not found, not in the wrong state
     return { id: input.listId, state: await ctx.trash(listRef(input.listId)) };
   },
 

@@ -123,6 +123,9 @@ describe('a binned list is gone to every operation but restore, the bin and the 
       ['todo/share-list', { listId: garage, email: 'dana@example.com' }],
       ['todo/list-shares', { listId: garage }],
       ['todo/revoke-share', { shareId: share }],
+      ['todo/archive-list', { listId: garage }],
+      ['todo/unarchive-list', { listId: garage }],
+      ['todo/trash-list', { listId: garage }],
     ];
     for (const [op, input] of calls) expect(await codeOf(ada.invoke(op, input)), op).toBe('not_found');
     const found = await ada.invoke<{ results: unknown[] }>('todo/search-items', { q: 'bolt' });
