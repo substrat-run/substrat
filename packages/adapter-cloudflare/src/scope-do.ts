@@ -300,6 +300,7 @@ import {
   walkEventCause,
   walkEventEffects,
   type UndrainedRead,
+  type ConsumerDelivery,
 } from '@substrat-run/kernel';
 import type {
   DrainedEvent,
@@ -337,17 +338,6 @@ import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERG
  * handlers, emits, the outbox→consumer dispatch loop, entity links, and local
  * permission evaluation (scope tuples here, tenant tuples via ControlPlaneDO).
  */
-
-/**
- * The delivery a consumer's or an import's context runs for (#1237, #1901, #2055): the event
- * whatever it emits was caused by, and the id its log lines join — a unit of async work with
- * no call around it. `ctx.log` only reads the id, never the spine: an event a consumer emits
- * outside a call still records no invocation (#1525).
- */
-interface ConsumerDelivery {
-  causedBy: string;
-  invocationId: string;
-}
 
 export interface ScopeDoEnv {
   /**
@@ -1866,6 +1856,26 @@ export function defineScopeDO(
      * passes it (#1706). `principal` is a placeholder that the subject never reads, and there is
      * no operation, so the emitted rows' `operation` is NULL, as it is for any consumer.
      */
+    /** A module consumer's context: the system override, and the delivery it runs for (#2055). */
+    private consumerContext(tenantId: TenantId, scopeId: ScopeId, moduleId: string, delivery: ConsumerDelivery): OperationContext {
+      return this.operationContext(
+        this.systemPrincipal,
+        tenantId,
+        scopeId,
+        { system: moduleId },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [],
+        undefined,
+        undefined,
+        delivery,
+      );
+    }
+
     private importContext(
       tenantId: TenantId,
       scopeId: ScopeId,
@@ -6379,12 +6389,11 @@ export function defineScopeDO(
                   // #1237: anything this consumer emits was emitted BECAUSE of this event —
                   // the step a backwards walk used to stop dead at, since a consumer emit
                   // records no operation either. #1901: its `ctx.log` lines join this
-                  // delivery's line. Both passed into the context, never set on the DO (#2055).
-                  const ctx = this.operationContext(
-                    this.systemPrincipal, tenantId, scopeId, { system: mod.id },
-                    undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined,
-                    { causedBy: event.id, invocationId: unit.invocationId },
-                  );
+                  // delivery's line.
+                  const ctx = this.consumerContext(tenantId, scopeId, mod.id, {
+                    causedBy: event.id,
+                    invocationId: unit.invocationId,
+                  });
                   await consumer.handler(ctx, event);
                   this.sql.exec(
                     `INSERT INTO _substrat_deliveries
@@ -6558,12 +6567,7 @@ export function defineScopeDO(
        * then a placeholder that the subject below never reads.
        */
       peerSubject?: CheckSubject,
-      /**
-       * #1237/#1901/#2055: the delivery a consumer's (or an import's) context runs for — the
-       * event its emits are caused by, and the unit its log lines join. Absent for everything
-       * else. A parameter, never a field on the DO: a field read across the handler's awaits
-       * is correct only while nothing else in the object can emit meanwhile.
-       */
+      /** #2055: the delivery a consumer's or an import's context runs for; absent otherwise. */
       delivery?: ConsumerDelivery,
     ): OperationContext {
       const checker = this.checker;
@@ -6711,9 +6715,9 @@ export function defineScopeDO(
           // about the deploy, so it never rides `DomainEvent` for module code to
           // branch on; it exists for the observability joins the column serves.
           this.env.SUBSTRAT_VERSION_ID ?? null,
-          // #1237: whatever delivery is in flight, if any — read off the DO the same
-          // way the version is read off its env. A fact about the surrounding
-          // dispatch, never envelope data module code could set or branch on.
+          // #1237: the delivery this context was built for, if any — passed in, never read
+          // off the DO (#2055). A fact about the surrounding dispatch, never envelope data
+          // module code could set or branch on.
           delivery?.causedBy ?? null,
           // #1237: a fact about the surrounding CALL, like the version above.
           this.invocationId,

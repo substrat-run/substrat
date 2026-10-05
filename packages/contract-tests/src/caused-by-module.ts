@@ -21,7 +21,8 @@ export interface CausedByHold {
   entered: boolean;
 }
 
-const tick = () => new Promise((r) => setTimeout(r, 5));
+/** One poll of the hold. */
+export const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
 const manifest = moduleManifest.parse({
   id: '@test/caused-by',

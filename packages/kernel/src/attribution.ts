@@ -12,6 +12,19 @@ export interface HostAttribution {
 }
 
 /**
+ * The delivery a consumer's or an import's context runs for (#1237, #1901, #2055): the event
+ * whatever it emits was caused by, and the id its log lines join — a unit of async work with
+ * no call around it. Passed into the context, never kept on the scope: a field read across
+ * the handler's awaits is right only while nothing else in the scope can emit meanwhile.
+ * `ctx.log` alone reads the id; an event a consumer emits outside a call still records no
+ * invocation (#1525).
+ */
+export interface ConsumerDelivery {
+  causedBy: string;
+  invocationId: string;
+}
+
+/**
  * A view of a host whose admin rows read `this.onBehalfOf` and `this.causedBy` (#977, #2055).
  *
  * The view is a Proxy over the host rather than a prototype child: reads of every
@@ -24,7 +37,9 @@ export interface HostAttribution {
  *
  * `buildAdmin` is the host's own, invoked with the view as `this`, so every closure
  * it makes records through the view — as does every host method called on the view.
- * A view of a view keeps what the inner one carries unless it names that key itself.
+ * It runs on the first read of the view's `admin`, not before: a view is made per
+ * executor delivery, and most never read it. A view of a view keeps what the inner one
+ * carries unless it names that key itself.
  */
 export function attributedView<H extends { admin: HostAdmin }>(
   host: H,
@@ -36,15 +51,17 @@ export function attributedView<H extends { admin: HostAdmin }>(
     get(target, prop) {
       if (prop === 'onBehalfOf' && attribution.onBehalfOf !== undefined) return attribution.onBehalfOf;
       if (prop === 'causedBy' && attribution.causedBy !== undefined) return attribution.causedBy;
-      if (prop === 'admin') return viewAdmin;
+      if (prop === 'admin') return (viewAdmin ??= buildAdmin.call(view));
       return Reflect.get(target, prop, target);
     },
   });
-  viewAdmin = buildAdmin.call(view);
   return view;
 }
 
-/** `ScopeHost.attributed` for a host whose admin rows read `this.onBehalfOf` (#977). */
+/**
+ * `ScopeHost.attributed` for a host whose admin rows read `this.onBehalfOf` (#977) —
+ * `attributedView` with the person alone, kept for a host built against it.
+ */
 export function attributedHost<H extends { admin: HostAdmin }>(
   host: H,
   onBehalfOf: OnBehalfOf,

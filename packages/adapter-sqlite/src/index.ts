@@ -572,6 +572,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
+  type ConsumerDelivery,
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
@@ -4019,11 +4020,7 @@ export class SqliteScopeHost implements ScopeHost {
             // `{ vertical, scope }` and the authorization they passed (K-34). What it emits was
             // emitted BECAUSE of the producer's event (#1237); the id resolves through
             // `_substrat_imports`, which the row above has just written.
-            const delivery = { causedBy: e.id, invocationId: unit.invocationId };
-            await imp.handler(
-              this.operationContext(rt, subject, undefined, undefined, undefined, undefined, [], undefined, delivery),
-              event,
-            );
+            await imp.handler(this.deliveryContext(rt, subject, undefined, { causedBy: e.id, invocationId: unit.invocationId }), event);
             rt.db
               .prepare(
                 `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
@@ -5839,13 +5836,11 @@ export class SqliteScopeHost implements ScopeHost {
               continue;
             }
             // #1237: anything this consumer emits was emitted BECAUSE of this event — where a
-            // backwards walk used to stop. #1901: its `ctx.log` lines join this delivery's
-            // line. Both passed into the context, never set on the runtime (#2055).
-            const ctx = this.operationContext(
-              rt, asPrincipal(this.systemPrincipal), { system: mod.id },
-              undefined, undefined, undefined, [], undefined,
-              { causedBy: event.id, invocationId: unit.invocationId },
-            );
+            // backwards walk used to stop. #1901: its `ctx.log` lines join this delivery's line.
+            const ctx = this.deliveryContext(rt, asPrincipal(this.systemPrincipal), { system: mod.id }, {
+              causedBy: event.id,
+              invocationId: unit.invocationId,
+            });
             rt.db.exec('BEGIN IMMEDIATE');
             try {
               await consumer.handler(ctx, event);
@@ -11041,6 +11036,16 @@ export class SqliteScopeHost implements ScopeHost {
    * can never disagree about who acted (#97). `overrideActor` remains for the
    * system-actor path, where the acting module is the honest answer.
    */
+  /** The context a consumer or an import runs in: no operation, and the delivery it is for (#2055). */
+  private deliveryContext(
+    rt: ScopeRuntime,
+    subject: CheckSubject,
+    overrideActor: { system: string } | undefined,
+    delivery: ConsumerDelivery,
+  ): OperationContext {
+    return this.operationContext(rt, subject, overrideActor, undefined, undefined, undefined, [], undefined, delivery);
+  }
+
   private operationContext(
     rt: ScopeRuntime,
     subject: CheckSubject,
@@ -11074,13 +11079,8 @@ export class SqliteScopeHost implements ScopeHost {
      * row's `last_used_at` are the same value — a second clock read could disagree.
      */
     at: Instant = this.clock(),
-    /**
-     * #1237/#1901/#2055: the delivery a consumer's (or an import's) context runs for — the
-     * event its emits are caused by, and the unit its log lines join. Absent for everything
-     * else. A parameter, never a field on the runtime: a field read across the handler's
-     * awaits is correct only while nothing else in the scope can emit meanwhile.
-     */
-    delivery?: { causedBy: string; invocationId: string },
+    /** #2055: the delivery a consumer's or an import's context runs for; absent otherwise. */
+    delivery?: ConsumerDelivery,
   ): OperationContext {
     // For a connection, system, capability or peer-vertical subject this carries THAT id so
     // the type holds — it is not a person, and the event actor below says what it is instead.
@@ -11235,10 +11235,9 @@ export class SqliteScopeHost implements ScopeHost {
           // about the process, so it never rides `DomainEvent` for module code to
           // branch on; it exists for the observability joins the column serves.
           this.versionId,
-          // #1237: whatever delivery is in flight FOR THIS SCOPE, if any — read off
-          // the runtime, not the host, because the host serves every scope at once
-          // and this context outlives an `await`. A fact about the surrounding
-          // dispatch, never envelope data module code could set or branch on.
+          // #1237: the delivery this context was built for, if any — passed in, never read
+          // off the runtime or the host (#2055). A fact about the surrounding dispatch,
+          // never envelope data module code could set or branch on.
           delivery?.causedBy ?? null,
           // #1237: a fact about the surrounding CALL, like the version above — never
           // envelope data module code could set or branch on.

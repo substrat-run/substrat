@@ -5,13 +5,12 @@ import {
   principalId,
   scopeId,
   tenantId,
-  type AdminLogEntry,
   type DomainEvent,
   type TenantId,
 } from '@substrat-run/contracts';
 import { ulid, type HostAdmin, type ScopeHost } from '@substrat-run/kernel';
 import { connectorMod } from './modules.js';
-import { CAUSED_BY_HOLD, causedByMod, type CausedByHold } from './caused-by-module.js';
+import { CAUSED_BY_HOLD, causedByMod, tick, type CausedByHold } from './caused-by-module.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
@@ -55,35 +54,34 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
       await admin.createOrg(staff, { id: orgId.parse(ulid()), tenantId: event.tenantId as TenantId, slug: tag, name: tag });
     };
 
-    const createdOrg = async (slug: string): Promise<AdminLogEntry | undefined> =>
-      (await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 })).find(
-        (r) => (r.after as { slug?: string } | null)?.slug === slug,
-      );
-
     const tagOf = (kind: string) => `${kind}-${ulid().slice(-8).toLowerCase()}`;
 
-    /** A staff write while the handler is held, then the release; answers the staff slug. */
-    const staffWriteWhileHeld = async (): Promise<string> => {
+    /**
+     * Start a handler with `start` (handed a fresh tag; answers the id of the event the handler
+     * runs for once it is done), make a staff write while it is held, release it, and assert both
+     * halves: the staff row carries no cause, the handler's own row carries its event.
+     */
+    const expectCausedPerCall = async (start: (tag: string) => Promise<string>, kind: string): Promise<void> => {
+      shut();
+      const tag = tagOf(kind);
+      const done = start(tag);
       await entered;
-      const slug = tagOf('staff');
-      await host.admin.createOrg(staff, { id: orgId.parse(ulid()), tenantId: t, slug, name: slug });
+      const staffSlug = tagOf('staff');
+      await host.admin.createOrg(staff, { id: orgId.parse(ulid()), tenantId: t, slug: staffSlug, name: staffSlug });
       release();
-      return slug;
+      const eventId = await done;
+      const created = await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 });
+      const causeOf = (slug: string) => created.find((r) => (r.after as { slug?: string } | null)?.slug === slug)?.causedBy;
+      expect(causeOf(staffSlug)).toBeNull();
+      expect(causeOf(tag)).toBe(eventId);
     };
 
-    /** Invoke `operation` with a fresh tag; answers the tag and the event id the executor ran for. */
-    const request = async (operation: string, kind: string) => {
-      const tag = tagOf(kind);
+    /** Invoke `operation` for `tag`; answers the event id the one executor delivered. */
+    const invoked = (operation: string) => async (tag: string): Promise<string> => {
       const outcomes: { eventId: string; outcome: string }[] = [];
-      const stub = await host.getScope(alice, t, s);
-      const done = stub.invoke(operation, { tag }, { onExecutorOutcomes: (o) => outcomes.push(...o) });
-      return {
-        tag,
-        done: done.then(() => {
-          expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
-          return outcomes[0]!.eventId;
-        }),
-      };
+      await (await host.getScope(alice, t, s)).invoke(operation, { tag }, { onExecutorOutcomes: (o) => outcomes.push(...o) });
+      expect(outcomes.map((o) => o.outcome)).toEqual(['delivered']);
+      return outcomes[0]!.eventId;
     };
 
     beforeAll(async () => {
@@ -102,32 +100,19 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
     });
 
     it('an executor: a staff write while its handler awaits carries no cause; the handler\'s own row carries its event', async () => {
-      shut();
-      const { tag, done } = await request('connector/request-effect', 'effect');
-      const staffSlug = await staffWriteWhileHeld();
-      const eventId = await done;
-      expect((await createdOrg(staffSlug))?.causedBy).toBeNull();
-      expect((await createdOrg(tag))?.causedBy).toBe(eventId);
+      await expectCausedPerCall(invoked('connector/request-effect'), 'effect');
     });
 
     it('an in-process connector: the same, through `ctx.admin`', async () => {
-      shut();
-      const { tag, done } = await request('connector/request-outbound', 'outbound');
-      const staffSlug = await staffWriteWhileHeld();
-      const eventId = await done;
-      expect((await createdOrg(staffSlug))?.causedBy).toBeNull();
-      expect((await createdOrg(tag))?.causedBy).toBe(eventId);
+      await expectCausedPerCall(invoked('connector/request-outbound'), 'outbound');
     });
 
     it('a routed connector delivery (`dispatchConnector`): the same', async () => {
-      shut();
-      const tag = tagOf('routed');
-      const event = { id: ulid(), tenantId: t, type: 'outbound.requested', payload: { tag } } as unknown as DomainEvent;
-      const dispatched = host.dispatchConnector(t, s, (ctx, e) => heldWrite(ctx.admin, e), event);
-      const staffSlug = await staffWriteWhileHeld();
-      await dispatched;
-      expect((await createdOrg(staffSlug))?.causedBy).toBeNull();
-      expect((await createdOrg(tag))?.causedBy).toBe(event.id);
+      await expectCausedPerCall(async (tag) => {
+        const event = { id: ulid(), tenantId: t, type: 'outbound.requested', payload: { tag } } as unknown as DomainEvent;
+        await host.dispatchConnector(t, s, (ctx, e) => heldWrite(ctx.admin, e), event);
+        return event.id;
+      }, 'routed');
     });
   });
 }
@@ -171,13 +156,13 @@ export function scopeCausedByContractSuite(adapterName: string, makeFixture: () 
       (globalThis as Record<string, unknown>)[CAUSED_BY_HOLD] = hold;
       const tag = ulid().slice(-8).toLowerCase();
       const starting = (await host.getScope(alice, t, s)).invoke('causedby/start', { tag });
-      while (!hold.entered) await new Promise((r) => setTimeout(r, 5));
+      while (!hold.entered) await tick();
       // Another caller, the same scope, while the consumer is suspended. Where the scope's
       // work is serialized it waits for the consumer; either way, its event is its own.
       // Not awaited before the release: on a host whose scope work is queued, reaching the
       // scope at all waits for the consumer.
       const other = host.getScope(bob, t, s).then((stub) => stub.invoke('causedby/other', { tag }));
-      await new Promise((r) => setTimeout(r, 20));
+      await tick(20);
       hold.shut = false;
       await Promise.all([starting, other]);
 
