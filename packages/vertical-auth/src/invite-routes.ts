@@ -14,27 +14,28 @@
  * act the moment somebody binds to it), and records the invite in the tenant's identity
  * directory keyed by the token's SHA-256; the plaintext token rides only in the returned
  * accept link. Accepting binds the invitee's verified subject to that pre-minted principal,
- * and the directory then resolves them as that member. Revoking removes the invite row;
- * the scope-level grant on a principal nobody was ever bound to is inert.
+ * and the directory then resolves them as that member. Revoking takes the principal's scope
+ * roles back and then removes the invite row.
  *
  * Who may invite, and at which role, are two questions (#1931). The vertical's admin gate
  * answers the first — may this caller manage members at all. The second is the kernel's
  * assignment bound (`ctx.canAssign`): a caller may confer a role only if they already hold
- * every permission it carries at this scope, and removing one takes the same bound. The
+ * every permission it carries at this scope, and withdrawing an invite takes the same bound,
+ * over the roles its principal holds now — the scope's tuples, never the row's `roleKey`. The
  * gate runs before the body is read, so it cannot know the role; the bound is applied here,
  * after the role is parsed, by the platform rather than by each vertical remembering it —
  * otherwise a vertical offering two roles lets anyone its gate admits confer the higher one.
  *
- * Deliberately NOT here: the dashboard-side members view over an installed vertical's
- * directory — that widens the platform's reach into a vertical's identity and is a
- * separate decision — and the richer invite a support desk runs (contact-bound roles,
- * staff profiles), which is a different flow rather than this one with more fields.
+ * The dashboard manages the same members through vertical-host's `/internal/members*` (#1150),
+ * minting with the same `mintMemberInvite` below. Deliberately NOT here: the richer invite a
+ * support desk runs (contact-bound roles, staff profiles), which is a different flow rather
+ * than this one with more fields.
  */
 
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { coverage, coverageRefusal, principalId, z, type Coverage, type MemberInviteLink, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
-import { isUnknownRoleError, ulid } from '@substrat-run/kernel';
+import { ulid } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
 import { claimToken, invitePath, sha256Hex } from './owner-claim-link.js';
 import { bodyOf } from './request-body.js';
@@ -69,15 +70,18 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
   /**
    * Gate the three admin routes: throw 401 for nobody, 403 for a caller who may not manage
    * members. The vertical decides what "admin" means — a role, a permission, a whoami — and
-   * returns the principal it admitted, which is who `canAssign` is then asked about.
+   * returns the principal it admitted, which is who every bound is then asked about.
    */
   requireAdmin: (c: Context<{ Bindings: E }>) => Promise<InviteCaller>;
   /**
-   * The assignment bound (#1931): may `principal` confer `roleKey` at this node? The host's
-   * `canAssign` — `ctx.canAssign`'s answer for a principal the host names. Required: a mount
-   * without it, or an answer that is not a coverage, refuses create and revoke.
+   * Take every scope role `principal` holds, bounded by `caller` over each, in ONE scope task —
+   * the host's `revokeScopeRolesBounded`. What a withdrawal is bounded by (#1150): the roles the
+   * invite's principal ACTUALLY holds, read where they are written, never the role the invite row
+   * recorded when it was minted. Required: a mount without it refuses create and revoke.
    */
-  canAssign: (env: E, node: N, principal: PrincipalId, roleKey: string) => Promise<Coverage>;
+  revokeScopeRolesBounded: (
+    env: E, node: N, caller: PrincipalId, principal: PrincipalId,
+  ) => Promise<{ coverage: Coverage; revoked: string[] }>;
   /** Check the bound and grant in one scope task. A refusal returns coverage and writes nothing. */
   assignScopeRoleBounded: (
     env: E, node: N, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
@@ -171,8 +175,8 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
 
   /** Who the gate admitted — refusing a mount wired short or a gate naming no caller. */
   const admitted = (caller: unknown): InviteCaller => {
-    if (typeof deps.canAssign !== 'function') {
-      throw new HTTPException(500, { message: 'invites are mounted without the canAssign bound — refusing to confer an unbounded role' });
+    if (typeof deps.revokeScopeRolesBounded !== 'function') {
+      throw new HTTPException(500, { message: 'invites are mounted without the bounded revoke — refusing to withdraw an unbounded role' });
     }
     if (typeof deps.assignScopeRoleBounded !== 'function') {
       throw new HTTPException(500, { message: 'invites are mounted without the bounded grant — refusing to confer an unbounded role' });
@@ -192,9 +196,6 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     }
     if (!bound.data.covered) throw uncovered(bound.data.missing, roleKey, act);
   };
-
-  const assertCanAssign = async (env: E, node: N, caller: InviteCaller, roleKey: string, act: string): Promise<void> =>
-    assertCoverage(await deps.canAssign(env, node, caller.principal, roleKey), roleKey, act);
 
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
@@ -225,21 +226,21 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     const node = await deps.nodeFor(c.req.raw, c.env);
     const caller = admitted(await deps.requireAdmin(c));
     const directory = deps.directory(c.env, node);
-    const principal = c.req.param('principal');
-    // Removal takes the same bound, on the role the STORED invite confers. No open invite:
-    // nothing to remove, answered as before.
-    const invite = await directory.getInvite(node.scopeId, principal);
-    if (invite) {
-      try {
-        await assertCanAssign(c.env, node, caller, invite.roleKey, 'revoke an invite at');
-      } catch (err) {
-        // A role the tenant no longer defines confers nothing (a role expands only through its
-        // definition), so removing an invite at it narrows nothing. Refusing would leave a
-        // claimable link nobody can withdraw, which revives if the role is ever defined again.
-        // Only that refusal, for THIS role, is let through: any other error still refuses.
-        if (!isUnknownRoleError(err, invite.roleKey)) throw err;
-      }
-      await directory.revokeInvite(node.scopeId, principal);
+    const principal = principalId.safeParse(c.req.param('principal'));
+    // No open invite: nothing to withdraw, answered as before.
+    const invite = principal.success ? await directory.getInvite(node.scopeId, principal.data) : null;
+    if (principal.success && invite) {
+      // Withdrawal takes the bound of every role the invite's principal HOLDS, asked and written in
+      // one scope task (#1150, Codex #2057 r2). Not the row's `roleKey`: that is what was minted,
+      // and the scope can have moved since — a role move landing between an invite's grant and its
+      // row would otherwise leave a lead's invite withdrawable by an agent. The grant goes with
+      // it, first: a refusal writes nothing, and the row can only go once the roles have. A role
+      // the tenant no longer defines confers nothing and is taken without a bound, so a link at
+      // one can still be withdrawn. An accept landing between the two binds a login to a
+      // principal holding nothing.
+      const taken = await deps.revokeScopeRolesBounded(c.env, node, caller.principal, principal.data);
+      assertCoverage(taken.coverage, principal.data, 'withdraw the invite of');
+      await directory.revokeInvite(node.scopeId, principal.data);
     }
     return c.body(null, 204);
   });

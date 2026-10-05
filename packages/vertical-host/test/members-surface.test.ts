@@ -72,10 +72,15 @@ describe('/internal/members — an installed vertical’s members, managed from 
     migrateOwnerSeat(over);
     return over;
   })();
+  /** When set, every invite row's insert waits on it — the window between grant and row. */
+  let recording: ((principal: string) => Promise<void>) | null = null;
   const directory = {
     listInvites: async (scope: string) => invites.listInvites(sql, scope),
     getInvite: async (scope: string, p: string) => invites.getInvite(sql, scope, p),
-    createInvite: async (scope: string, p: string, r: string, e: string | null, h: string) => invites.createInvite(sql, scope, p, r, e, h),
+    createInvite: async (scope: string, p: string, r: string, e: string | null, h: string) => {
+      await recording?.(p); // a test may hold the row's insert, between the scope grant and the row
+      invites.createInvite(sql, scope, p, r, e, h);
+    },
     revokeInvite: async (scope: string, p: string) => invites.revokeInvite(sql, scope, p),
     claimInvite: async (scope: string, sub: string, h: string) => invites.claimInvite(sql, scope, sub, h),
     listMemberBindings: async (scope: string) => invites.listMemberBindings(sql, scope),
@@ -110,14 +115,14 @@ describe('/internal/members — an installed vertical’s members, managed from 
     members: membersHook<Env, typeof directory>({ roles: ['lead', 'agent'], directory: () => directory }),
   });
   // The vertical's own accept route — `x-sub` stands in for a verified login.
+  // The vertical's own routes, over the same host and directory — `x-caller` stands in for its
+  // admin gate, which admits whoever it names; the bound is the host's.
   mountInviteRoutes<Env, { scopeId: string }>(app, {
     nodeFor: () => ({ scopeId: s1 }),
-    requireAdmin: async () => {
-      throw new Error('not reached');
-    },
-    canAssign: async () => ({ covered: true, missing: [] }),
-    assignScopeRoleBounded: async () => ({ covered: true, missing: [] }),
-    roles: [],
+    requireAdmin: async (c) => ({ principal: principalId.parse(c.req.header('x-caller')) }),
+    assignScopeRoleBounded: (_env, _node, caller, assignee, roleKey) => host.assignScopeRoleBounded(t1, s1, caller, assignee, roleKey),
+    revokeScopeRolesBounded: (_env, _node, caller, principal) => host.revokeScopeRolesBounded(t1, s1, caller, principal),
+    roles: ['lead', 'agent'],
     directory: () => directory,
     revokeScopeRole: async () => undefined,
     authProvider: async (_env, req) => ({
@@ -137,7 +142,7 @@ describe('/internal/members — an installed vertical’s members, managed from 
   const rosterOf = async () => (await roster()).json() as Promise<{
     roles: string[];
     members: { principal: string; roles: string[]; logins: number; email: string | null; owner: boolean }[];
-    invites: { principal: string; roleKey: string }[];
+    invites: { principal: string; roleKey: string; roles: string[] }[];
   }>;
   const invite = (caller: PrincipalId, roleKey: string, email: string | null = null, tenant = t1, scope = s1) =>
     post('/internal/members/invite', { tenantId: tenant, scopeId: scope, caller, origin: 'https://desk.example/', roleKey, email });
@@ -259,6 +264,58 @@ describe('/internal/members — an installed vertical’s members, managed from 
     const again = await invite(owner, 'agent', 'pending@example.test');
     expect(again.status).toBe(201);
     expect((await rosterOf()).invites).toContainEqual(expect.objectContaining({ roleKey: 'agent', email: 'pending@example.test' }));
+  });
+
+  /**
+   * The race Codex #2057 r2 reproduced, made deterministic: an invite's grant lands in the scope,
+   * and its row is held; a role move runs in that window, finds no open invite and lands; then the
+   * row is written with the role it was MINTED at. Nothing may be bounded by that row: the
+   * vertical's own withdrawal and the platform's removal both ask what the principal holds.
+   */
+  describe('a role move landing between an invite\'s grant and its row', () => {
+    const heldInvite = async () => {
+      let release!: () => void;
+      let entered!: (principal: string) => void;
+      const inWindow = new Promise<string>((r) => (entered = r));
+      recording = (principal) => {
+        entered(principal);
+        return new Promise<void>((r) => (release = r));
+      };
+      const minting = invite(owner, 'agent', 'race@example.test');
+      const principal = principalId.parse(await inWindow); // granted in the scope, no row yet
+      recording = null;
+      expect(await rolesOf(principal)).toEqual(['agent']);
+      expect(invites.getInvite(sql, s1, principal)).toBeNull();
+      const moved = await post('/internal/members/role', { tenantId: t1, scopeId: s1, caller: owner, principal, from: 'agent', to: 'lead' });
+      release();
+      const minted = (await (await minting).json()) as { principal: PrincipalId; acceptUrl: string };
+      expect(minted.principal).toBe(principal);
+      return { principal, moved };
+    };
+    const withdraw = (caller: PrincipalId, principal: string) =>
+      app.request(`/api/invites/${principal}/revoke`, { method: 'POST', headers: { 'x-caller': caller } }, ENV);
+
+    it('the move lands, the row is stale — and an agent can withdraw it neither here nor in the app', async () => {
+      const { principal, moved } = await heldInvite();
+      expect(moved.status).toBe(200);
+      expect(await rolesOf(principal)).toEqual(['lead']);
+      expect(invites.getInvite(sql, s1, principal)?.roleKey).toBe('agent');
+      // The roster shows what the principal holds beside what the invite was minted at.
+      expect((await rosterOf()).invites).toContainEqual(expect.objectContaining({ principal, roleKey: 'agent', roles: ['lead'] }));
+      const own = await withdraw(agent, principal);
+      expect(own.status).toBe(403);
+      expect(await own.text()).toMatch(/do not hold perm:use/);
+      expect((await post('/internal/members/remove', { tenantId: t1, scopeId: s1, caller: agent, principal })).status).toBe(403);
+      expect(await rolesOf(principal)).toEqual(['lead']);
+      expect(invites.getInvite(sql, s1, principal)).not.toBeNull();
+    });
+
+    it('…and the twin: the owner, who holds lead, withdraws it in the app, grant and row both', async () => {
+      const { principal } = await heldInvite();
+      expect((await withdraw(owner, principal)).status).toBe(204);
+      expect(await rolesOf(principal)).toEqual([]);
+      expect(invites.getInvite(sql, s1, principal)).toBeNull();
+    });
   });
 
   it('removes a member: every role, every login, bounded by the caller', async () => {

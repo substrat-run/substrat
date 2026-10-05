@@ -1,6 +1,6 @@
 /**
  * The platform's invite routes over a REAL CP-less host (#1931) — the path every demo vertical
- * that mounts them runs: `assignScopeRole`, `revokeScopeRole` and the new `canAssign` answered
+ * that mounts them runs: the bounded grant, `revokeScopeRole` and the bounded revoke answered
  * by the ScopeDO, the admin gate a real permission check. What the routes promise over stand-ins
  * (`packages/vertical-auth/test/invite-routes.test.ts`) is held here against the producer: an
  * admin confers, and takes back, only a role whose permissions they hold at the scope — an
@@ -37,7 +37,7 @@ class MemoryDirectory implements InviteDirectory {
   }
 }
 
-describe('invite routes over a CP-less host — the canAssign bound (#1931)', () => {
+describe('invite routes over a CP-less host — the assignment bound (#1931)', () => {
   let host: CloudflareScopeHost;
   let app: Hono<{ Bindings: Record<string, never> }>;
   let directory: MemoryDirectory;
@@ -94,12 +94,12 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
       roles: ['office-admin', 'manager', 'reader'],
       directory: () => directory,
       assignScopeRoleBounded: async (_env, node, caller, principal, roleKey) => {
-        const bound = await host.assignScopeRoleBounded(boundTenant, node.scopeId, caller, principal, roleKey);
+        const bound = await host.assignScopeRoleBounded(boundTenant, s, caller, principal, roleKey);
         if (bound.covered) grants.push(`${principal} ${roleKey}`);
         return bound;
       },
       revokeScopeRole: (_env, scope, principal, roleKey) => host.revokeScopeRole(scopeId.parse(scope), principal, roleKey),
-      canAssign: (_env, node, principal, roleKey) => host.canAssign(boundTenant, node.scopeId, principal, roleKey),
+      revokeScopeRolesBounded: (_env, _node, caller, principal) => host.revokeScopeRolesBounded(boundTenant, s, caller, principal),
       authProvider: async () => {
         throw new Error('accept is not exercised here');
       },
@@ -153,18 +153,44 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
     expect(directory.rows.size).toBe(0);
   });
 
-  it('bounds revoke by the stored invite’s role: the manager cannot revoke an office-admin invite, the owner can', async () => {
-    const { principal } = (await (await invite(owner, 'office-admin')).json()) as { principal: string };
+  it('bounds a withdrawal by the roles the principal holds: the manager cannot withdraw an office-admin invite, the owner can', async () => {
+    const { principal } = (await (await invite(owner, 'office-admin')).json()) as { principal: PrincipalId };
     const refused = await revoke(manager, principal);
     expect(refused.status).toBe(403);
     expect(directory.rows.has(principal)).toBe(true);
+    expect(await probe(principal, BILL)).toBe(true);
     expect((await revoke(owner, principal)).status).toBe(204);
+    expect(directory.rows.has(principal)).toBe(false);
+    // The grant goes with the row: a withdrawn invite leaves its principal holding nothing.
+    expect(await probe(principal, READ)).toBe(false);
+  });
+
+  /**
+   * The row's `roleKey` is what was minted and authorizes nothing (Codex #2057 r2): a role move
+   * can land after the grant and leave the row stale. The withdrawal is bounded by what the
+   * principal HOLDS, read in the scope task that takes it.
+   */
+  it('refuses a withdrawal by a stale row: minted at reader, moved to office-admin — the manager is refused', async () => {
+    const { principal } = (await (await invite(owner, 'reader')).json()) as { principal: PrincipalId };
+    expect((await host.changeScopeRoleBounded(t, s, owner, principal, 'reader', 'office-admin')).covered).toBe(true);
+    expect(directory.rows.get(principal)?.roleKey).toBe('reader');
+    expect((await revoke(manager, principal)).status).toBe(403);
+    expect(directory.rows.has(principal)).toBe(true);
+    expect(await probe(principal, BILL)).toBe(true);
+    expect((await revoke(owner, principal)).status).toBe(204);
+    expect(await probe(principal, READ)).toBe(false);
+  });
+
+  it('...and the twin: minted at office-admin, moved down to reader — the manager may withdraw it', async () => {
+    const { principal } = (await (await invite(owner, 'office-admin')).json()) as { principal: PrincipalId };
+    expect((await host.changeScopeRoleBounded(t, s, owner, principal, 'office-admin', 'reader')).covered).toBe(true);
+    expect((await revoke(manager, principal)).status).toBe(204);
     expect(directory.rows.has(principal)).toBe(false);
   });
 
   /**
-   * An invite stored at a role the tenant does not define (#1931 review): the host's `not_found`
-   * for that role confers nothing, so the revoke goes through. A `not_found` about anything else
+   * An invite stored at a role the tenant does not define (#1931 review): its principal holds
+   * nothing that role could confer, so the withdrawal goes through. A `not_found` about the scope
    * still refuses.
    */
   const seeded = async (roleKey: string) => {
@@ -186,10 +212,10 @@ describe('invite routes over a CP-less host — the canAssign bound (#1931)', ()
     expect(directory.rows.has(principal)).toBe(true);
   });
 
-  it('refuses when the bound\'s not_found is about the scope, not the role — the invite stays', async () => {
+  it('refuses when the bounded revoke\'s not_found is about the scope — the invite stays', async () => {
     const principal = await seeded('retired');
     boundTenant = tenantId.parse(ulid());
-    await expect(host.canAssign(boundTenant, s, manager, 'retired')).rejects.toThrow(/unknown scope/);
+    await expect(host.revokeScopeRolesBounded(boundTenant, s, manager, principal)).rejects.toThrow(/unknown scope/);
     expect((await revoke(manager, principal)).status).toBe(500);
     expect(directory.rows.has(principal)).toBe(true);
   });

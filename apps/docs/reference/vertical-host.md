@@ -82,9 +82,11 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   that writes): an invite through `assignScopeRoleBounded`, a role move through
   `changeScopeRoleBounded`, which takes the old role and grants the new one together or not at
   all, and a removal through `revokeScopeRolesBounded`. A refusal answers `403` naming what is
-  missing and writes nothing. A removal withdraws the person's open invite first, then takes
-  every scope role, then unbinds every login, so an accept of the old link afterwards finds
-  nothing. The owner of record answers `409`: move it with `owner-transfer`. So does a principal
+  missing and writes nothing. Every bound is over the roles the person holds in the scope,
+  never an invite row's recorded role. A removal takes every scope role first (a refusal
+  writes nothing), then withdraws the open invite, then unbinds every login, so an accept of
+  the old link afterwards finds nothing. The roster lists each open invite with both the role
+  it was minted at and the roles its principal holds now. The owner of record answers `409`: move it with `owner-transfer`. So does a principal
   holding a role outside the hook's `roles`, such as a service account. A role move for someone
   whose invite is still open answers `409` too: withdraw it and invite them again at the new
   role, so an open invite's recorded role is always the role it confers. Omit `members` and all

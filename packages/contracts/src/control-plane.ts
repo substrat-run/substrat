@@ -428,7 +428,8 @@ export type OwnerClaimLink = z.infer<typeof ownerClaimLink>;
  * the verified subjects bound to it in the vertical's identity directory (0 = nobody signs in
  * as it yet), `email` is the address its invite named, if any, and `owner` marks the owner
  * of record — whom removal refuses (hand the seat over instead, #1665). `invites` are the
- * open ones, never with a token.
+ * open ones, never with a token; each carries the role it was minted at and the roles its
+ * principal holds now, which can differ, and only the second authorizes anything.
  */
 export const scopeMember = z.object({
   principal: principalId,
@@ -439,7 +440,10 @@ export const scopeMember = z.object({
 });
 export const scopeMemberInvite = z.object({
   principal: principalId,
+  /** The role the invite was minted at — what its link and email were sent for. Display only. */
   roleKey: z.string(),
+  /** The scope roles its pre-minted principal holds NOW — what every bound is asked about. */
+  roles: z.array(z.string()),
   email: z.string().nullable(),
   createdAt: z.number(),
 });

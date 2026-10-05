@@ -342,7 +342,8 @@ mountInviteRoutes(app, {
   assignScopeRoleBounded: (env, node, caller, assignee, roleKey) =>
     hostFor(env).assignScopeRoleBounded(node.tenantId, node.scopeId, caller, assignee, roleKey),
   revokeScopeRole: (env, scope, principal, roleKey) => hostFor(env).revokeScopeRole(scope, principal, roleKey),
-  canAssign: (env, node, principal, roleKey) => hostFor(env).canAssign(node.tenantId, node.scopeId, principal, roleKey),
+  revokeScopeRolesBounded: (env, node, caller, principal) =>
+    hostFor(env).revokeScopeRolesBounded(node.tenantId, node.scopeId, caller, principal),
   authProvider: authProviderFor,
 });
 

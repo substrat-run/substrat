@@ -1067,7 +1067,8 @@ export interface AppMembersView {
   /** The roles a person may be invited at or moved to — the app's declared member roles. */
   roles: string[];
   members: { principal: string; roles: string[]; logins: number; email: string | null; owner: boolean }[];
-  invites: { principal: string; roleKey: string; email: string | null; createdAt: number }[];
+  /** `roleKey`: the role it was minted at. `roles`: what its principal holds now. */
+  invites: { principal: string; roleKey: string; roles: string[]; email: string | null; createdAt: number }[];
 }
 
 /** A freshly minted member invite — shown once, stored nowhere. */

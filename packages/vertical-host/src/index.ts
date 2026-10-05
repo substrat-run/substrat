@@ -35,7 +35,6 @@ import {
   type SwitchedOff,
   type UndrainedEvents,
   type ScopeRoleHolder,
-  isUnknownRoleError,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from './platform-call.js';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
@@ -485,7 +484,6 @@ export interface VerticalScopeHost {
    * The member verbs (#1150) — the kernel's bounded scope-role verbs, which `/internal/members*`
    * is built on. OPTIONAL like the hand-over's: a host without them answers 501 there.
    */
-  canAssign?(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage>;
   assignScopeRoleBounded?(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage>;
@@ -1981,7 +1979,7 @@ export function mountPlatformSurface<Env extends object>(
   /** The member verbs every member route calls, required. */
   type MemberVerbs = Required<Pick<
     VerticalScopeHost,
-    'canAssign' | 'assignScopeRoleBounded' | 'listScopeRoleHolders' | 'changeScopeRoleBounded' | 'revokeScopeRolesBounded' | 'revokeScopeRole'
+    'assignScopeRoleBounded' | 'listScopeRoleHolders' | 'changeScopeRoleBounded' | 'revokeScopeRolesBounded' | 'revokeScopeRole'
   >>;
 
   /** The hook, the host's member verbs and the vertical's directory every member route needs, or a 501. */
@@ -1990,7 +1988,7 @@ export function mountPlatformSurface<Env extends object>(
     if (!members) throw new HTTPException(501, { message: 'this vertical declares no member roles' });
     const host = deps.hostFor(env);
     const verbs: (keyof MemberVerbs)[] = [
-      'canAssign', 'assignScopeRoleBounded', 'listScopeRoleHolders', 'changeScopeRoleBounded', 'revokeScopeRolesBounded', 'revokeScopeRole',
+      'assignScopeRoleBounded', 'listScopeRoleHolders', 'changeScopeRoleBounded', 'revokeScopeRolesBounded', 'revokeScopeRole',
     ];
     if (verbs.some((v) => typeof host[v] !== 'function')) {
       throw new HTTPException(501, { message: 'this deployment’s scope host predates member management — update @substrat-run/adapter-cloudflare' });
@@ -2063,7 +2061,10 @@ export function mountPlatformSurface<Env extends object>(
         email: known.get(principal)?.email ?? null,
         owner: principal === owner,
       }));
-    return c.json(scopeMembers.parse({ roles: [...surface.members.roles], members, invites }));
+    // An invite's `roleKey` is the role it was minted at; `roles` is what its principal holds now,
+    // read from the scope — the one every bound is asked about.
+    const open = invites.map((i) => ({ ...i, roles: roles.get(i.principal) ?? [] }));
+    return c.json(scopeMembers.parse({ roles: [...surface.members.roles], members, invites: open }));
   });
 
   app.post('/internal/members/invite', async (c) => {
@@ -2096,10 +2097,11 @@ export function mountPlatformSurface<Env extends object>(
       manageableRoles(surface, body),
       surface.directory.getInvite(body.scopeId, body.principal),
     ]);
-    // An open invite's recorded role is the role its principal holds — the roster shows it, and a
-    // withdrawal is bounded by it, here and at the vertical's own revoke route. The scope and the
-    // directory are two Durable Objects with no transaction across them, so a move cannot keep the
-    // row in step; it is refused instead, and keeps that invariant true (Codex #2057 r1).
+    // A pending invitee's role is changed by inviting again, not by moving it: the invite row
+    // records the role it was minted at, the link and its email were sent for that, and the two
+    // stores have no transaction to keep a move in step with the row. A UX guard ONLY — nothing
+    // is bounded by the row's role (every withdrawal is bounded by the roles the principal holds,
+    // in the scope task that takes them), so a move that slips in before the row exists is safe.
     if (invite) {
       throw new HTTPException(409, {
         message: `${body.principal} has an open invite at '${invite.roleKey}' — withdraw it and invite them again at the new role`,
@@ -2112,14 +2114,14 @@ export function mountPlatformSurface<Env extends object>(
   });
 
   // Removal, in an order that an accept cannot get between (an accept only binds, in the
-  // identity directory — see vertical-auth's accept route for that invariant):
-  //   1. the bound, asked for every role the principal holds and the one an open invite
-  //      confers — a refusal writes nothing;
+  //    identity directory — see vertical-auth's accept route for that invariant):
+  //   1. every scope role taken in ONE scope task, bounded there by the roles the principal holds
+  //      — not an invite row's `roleKey`, which records what was minted and may be stale (Codex
+  //      #2057 r2). A refusal writes nothing, the open invite included;
   //   2. the open invite withdrawn — from here an accept of its link finds nothing;
-  //   3. every scope role taken in one scope task, the bound re-asked inside it;
-  //   4. every login bound to the principal unbound — undoing an accept that landed before 2;
-  //   5. a re-read: nothing may still be bound or open, or the removal reports a failure.
-  // A failure after 2 leaves a narrowing behind, and the same call completes it.
+  //   3. every login bound to the principal unbound — undoing an accept that landed before 2;
+  //   4. a re-read: nothing may still be bound or open, or the removal reports a failure.
+  // A failure after 1 leaves a narrowing behind, and the same call completes it.
   app.post('/internal/members/remove', async (c) => {
     const body = memberRemoveBody.parse(await c.req.json());
     const surface = memberSurface(c.env, body);
@@ -2133,17 +2135,9 @@ export function mountPlatformSurface<Env extends object>(
     if (held.length === 0 && !invite) {
       throw new HTTPException(404, { message: `${body.principal} holds no role in this scope and has no open invite` });
     }
-    await Promise.all([...new Set([...held, ...(invite ? [invite.roleKey] : [])])].map(async (roleKey) => {
-      try {
-        assertCovered(await surface.host.canAssign(body.tenantId, body.scopeId, body.caller, roleKey), roleKey, 'remove a member holding');
-      } catch (err) {
-        // A role the tenant no longer defines confers nothing; taking it back is bounded by nothing.
-        if (!isUnknownRoleError(err, roleKey)) throw err;
-      }
-    }));
-    if (invite) await surface.directory.revokeInvite(body.scopeId, body.principal);
     const taken = await surface.host.revokeScopeRolesBounded(body.tenantId, body.scopeId, body.caller, body.principal);
-    assertCovered(taken.coverage, held.join(', '), 'remove a member holding');
+    assertCovered(taken.coverage, body.principal, 'remove the member');
+    if (invite) await surface.directory.revokeInvite(body.scopeId, body.principal);
     const unbound = await surface.directory.unbindPrincipal(body.scopeId, body.principal);
     const [bindings, open] = await Promise.all([
       surface.directory.listMemberBindings(body.scopeId),

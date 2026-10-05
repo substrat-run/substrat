@@ -2,7 +2,7 @@
  * The platform's invite routes over a REAL pure-SQLite host (#1931) — the twin of
  * `adapter-cloudflare/test/invite-bound.test.ts`. The grant and its take-back are the admin
  * surface's scope-level assignment here (this host has no CP-less `assignScopeRole`); the bound
- * is the host's `canAssign`, and the admin gate a real permission check. What is held: an admin
+ * is the host's bounded grant and bounded revoke, and the admin gate a real permission check. What is held: an admin
  * confers, and takes back, only a role whose permissions they hold at the scope — an
  * entity-narrowed grant counting for nothing — and a refusal writes no grant and no row.
  */
@@ -41,7 +41,7 @@ class MemoryDirectory implements InviteDirectory {
   }
 }
 
-describe('invite routes over the SQLite host — the canAssign bound (#1931)', () => {
+describe('invite routes over the SQLite host — the assignment bound (#1931)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   let app: Hono<{ Bindings: Record<string, never> }>;
@@ -114,12 +114,12 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
       roles: ['office-admin', 'manager', 'reader'],
       directory: () => directory,
       assignScopeRoleBounded: async (_env, n, caller, principal, roleKey) => {
-        const bound = await host.assignScopeRoleBounded(boundTenant, n.scopeId, caller, principal, roleKey);
+        const bound = await host.assignScopeRoleBounded(boundTenant, s, caller, principal, roleKey);
         if (bound.covered) grants.push(`${principal} ${roleKey}`);
         return bound;
       },
       revokeScopeRole: (_env, _scope, principal, roleKey) => host.admin.unassignRole(staff, { principalId: principal, roleKey, node }),
-      canAssign: (_env, n, principal, roleKey) => host.canAssign(boundTenant, n.scopeId, principal, roleKey),
+      revokeScopeRolesBounded: (_env, _node, caller, principal) => host.revokeScopeRolesBounded(boundTenant, s, caller, principal),
       authProvider: async () => {
         throw new Error('accept is not exercised here');
       },
@@ -173,18 +173,44 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
     expect(directory.rows.size).toBe(0);
   });
 
-  it('bounds revoke by the stored invite’s role: the manager cannot revoke an office-admin invite, the owner can', async () => {
-    const { principal } = (await (await invite(owner, 'office-admin')).json()) as { principal: string };
+  it('bounds a withdrawal by the roles the principal holds: the manager cannot withdraw an office-admin invite, the owner can', async () => {
+    const { principal } = (await (await invite(owner, 'office-admin')).json()) as { principal: PrincipalId };
     const refused = await revoke(manager, principal);
     expect(refused.status).toBe(403);
     expect(directory.rows.has(principal)).toBe(true);
+    expect(await probe(principal, BILL)).toBe(true);
     expect((await revoke(owner, principal)).status).toBe(204);
+    expect(directory.rows.has(principal)).toBe(false);
+    // The grant goes with the row: a withdrawn invite leaves its principal holding nothing.
+    expect(await probe(principal, READ)).toBe(false);
+  });
+
+  /**
+   * The row's `roleKey` is what was minted and authorizes nothing (Codex #2057 r2): a role move
+   * can land after the grant and leave the row stale. The withdrawal is bounded by what the
+   * principal HOLDS, read in the scope task that takes it.
+   */
+  it('refuses a withdrawal by a stale row: minted at reader, moved to office-admin — the manager is refused', async () => {
+    const { principal } = (await (await invite(owner, 'reader')).json()) as { principal: PrincipalId };
+    expect((await host.changeScopeRoleBounded(t, s, owner, principal, 'reader', 'office-admin')).covered).toBe(true);
+    expect(directory.rows.get(principal)?.roleKey).toBe('reader');
+    expect((await revoke(manager, principal)).status).toBe(403);
+    expect(directory.rows.has(principal)).toBe(true);
+    expect(await probe(principal, BILL)).toBe(true);
+    expect((await revoke(owner, principal)).status).toBe(204);
+    expect(await probe(principal, READ)).toBe(false);
+  });
+
+  it('...and the twin: minted at office-admin, moved down to reader — the manager may withdraw it', async () => {
+    const { principal } = (await (await invite(owner, 'office-admin')).json()) as { principal: PrincipalId };
+    expect((await host.changeScopeRoleBounded(t, s, owner, principal, 'office-admin', 'reader')).covered).toBe(true);
+    expect((await revoke(manager, principal)).status).toBe(204);
     expect(directory.rows.has(principal)).toBe(false);
   });
 
   /**
-   * An invite stored at a role the tenant does not define (#1931 review): the host's `not_found`
-   * for that role confers nothing, so the revoke goes through. A `not_found` about anything else
+   * An invite stored at a role the tenant does not define (#1931 review): its principal holds
+   * nothing that role could confer, so the withdrawal goes through. A `not_found` about the scope
    * still refuses.
    */
   const seeded = async (roleKey: string) => {
@@ -206,10 +232,10 @@ describe('invite routes over the SQLite host — the canAssign bound (#1931)', (
     expect(directory.rows.has(principal)).toBe(true);
   });
 
-  it('refuses when the bound\'s not_found is about the scope, not the role — the invite stays', async () => {
+  it('refuses when the bounded revoke\'s not_found is about the scope — the invite stays', async () => {
     const principal = await seeded('retired');
     boundTenant = tenantId.parse(ulid());
-    await expect(host.canAssign(boundTenant, s, manager, 'retired')).rejects.toThrow(/unknown scope/);
+    await expect(host.revokeScopeRolesBounded(boundTenant, s, manager, principal)).rejects.toThrow(/unknown scope/);
     expect((await revoke(manager, principal)).status).toBe(500);
     expect(directory.rows.has(principal)).toBe(true);
   });

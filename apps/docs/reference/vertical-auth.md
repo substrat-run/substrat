@@ -206,12 +206,15 @@ including the two OIDC ones where Better Auth stays dormant:
   import must stay free of it for a consumer that wants only an `AuthProvider`. A vertical
   supplies only what is its own: how a request resolves to a scope, what "admin" means (its
   `requireAdmin` returns the `{ principal }` it admitted), which roles a teammate may be
-  invited at, its directory, the host's `assignScopeRole`, `revokeScopeRole` and `canAssign`,
-  and its auth provider. The admin gate runs before the body is read; after it, creating an
-  invite and revoking one both apply the assignment bound — the inviter must already hold
-  every permission of the role the invite confers — and refuse `403` naming what is missing,
-  with nothing granted, recorded or removed. A mount without `canAssign`, or a gate that names
-  no caller, refuses both routes rather than running them unbounded. Every error the mount raises itself is an
+  invited at, its directory, the host's `assignScopeRoleBounded`, `revokeScopeRole` and
+  `revokeScopeRolesBounded`, and its auth provider. The admin gate runs before the body is
+  read; after it, creating an invite and revoking one both apply the assignment bound and
+  refuse `403` naming what is missing, with nothing granted, recorded or removed. Creating is
+  bounded by the role it confers. Revoking is bounded by the roles the invite's principal
+  **holds now**, asked in the scope task that takes them back, and never by the role the row
+  recorded when it was minted, which a later role move can leave stale. The grant goes with
+  the row. A mount without the bounded revoke, or a gate that names no caller, refuses both
+  routes rather than running them unbounded. Every error the mount raises itself is an
   `HTTPException` — a body that is not JSON or does not fit the route's schema is a 400
   naming the problem, never a bare `SyntaxError` or `ZodError` — so the vertical's own
   `onError` renders them with no branch for this mount; what its own deps throw passes

@@ -3262,7 +3262,9 @@ function AppMembers({ app }: { app: AppRow }) {
           {view.invites.map((i) => (
             <div key={i.principal} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', borderTop: '1px solid var(--border-subtle)', fontSize: 13 }}>
               <span style={{ flex: 1 }}>{i.email ?? 'Link with no email'}</span>
-              <span style={{ ...mono, color: 'var(--text-secondary)' }}>{i.roleKey}</span>
+              <span style={{ ...mono, color: 'var(--text-secondary)' }} title={`invited as ${i.roleKey}`}>
+                {i.roles.length > 0 ? i.roles.join(', ') : 'holds no role'}
+              </span>
               <Button size="sm" variant="secondary" disabled={busy} onClick={() => act(() => api.appRemoveMember(scope, i.principal))}>
                 Withdraw
               </Button>
