@@ -35,8 +35,8 @@
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/model-providers": "workspace:^",
-    "ai": "7.0.114",
-    "hono": "^4.13.9",
+    "ai": "7.0.127",
+    "hono": "^4.13.12",
     "workers-ai-provider": "^4.0.0"
   },
   "devDependencies": {
