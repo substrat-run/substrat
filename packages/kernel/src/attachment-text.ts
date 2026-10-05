@@ -115,9 +115,23 @@ export function isAttachmentTextRun(run: { module_id: string; job: string }): bo
 /** The backfill's job name: queues extraction for attachments that predate it. */
 export const ATTACHMENT_TEXT_BACKFILL_JOB = 'attachment-text-backfill';
 
-/** Is this run the kernel's backfill run? */
-export function isAttachmentTextBackfillRun(run: { module_id: string; job: string }): boolean {
-  return run.module_id === ATTACHMENT_TEXT_MODULE && run.job === ATTACHMENT_TEXT_BACKFILL_JOB;
+/** The kernel's own jobs, each bound by the adapter to the scope it is driving. */
+export interface KernelJobHandlers {
+  readonly [ATTACHMENT_TEXT_JOB]: JobHandler;
+  readonly [ATTACHMENT_TEXT_BACKFILL_JOB]: JobHandler;
+}
+
+/**
+ * The kernel's handler for a run, or undefined for a run that is not the kernel's — which the
+ * adapter's own registry answers. The one place a kernel job is dispatched, so a new one is
+ * a kernel change and an entry in each adapter's handler map, never a branch in its drive.
+ */
+export function kernelJobFor(
+  run: { module_id: string; job: string },
+  handlers: KernelJobHandlers,
+): { handler: JobHandler } | undefined {
+  if (run.module_id !== ATTACHMENT_TEXT_MODULE || !Object.hasOwn(handlers, run.job)) return undefined;
+  return { handler: handlers[run.job as keyof KernelJobHandlers] };
 }
 
 /** Attachments one backfill pass looks at — the bound on what a pass writes, too. */

@@ -257,7 +257,7 @@ export {
   attachmentTextBackfillJob,
   attachmentTextJob,
   enqueueAttachmentText,
-  isAttachmentTextBackfillRun,
+  kernelJobFor,
   isAttachmentTextRun,
   queueAttachmentTextBackfill,
   readAttachmentText,
@@ -269,6 +269,7 @@ export {
 export type {
   AttachmentRowShape,
   AttachmentTextBackfillBatch,
+  KernelJobHandlers,
   AttachmentSearchGate,
   AttachmentTextSource,
   AttachmentTextState,

@@ -70,16 +70,17 @@
  */
 import type { AttachmentExtractor, AttachmentExtractorInput, AttachmentExtractorResult, ExtractionSignal } from '@substrat-run/kernel';
 import {
-  DecompressionStream,
+  COLLECT_FACTOR,
   ExtractionAborted,
   ExtractionBoundExceeded,
   MalformedInput,
   Pace,
   TextDecoder,
   checkpoint,
+  inflateChunks,
   type Decoder,
   type InflateBudget,
-} from './pace.js';
+} from './shared.js';
 import { pdfExtract } from './pdf.js';
 
 export { PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfTables } from './pdf.js';
@@ -908,11 +909,8 @@ async function zipEntries(zip: Uint8Array, pace: Pace): Promise<ZipEntry[]> {
 /**
  * One entry's text: inflated under the budget, and decoded as UTF-8 as the inflater produces
  * it — a window at a time, so neither step holds the thread for more than a stride.
- *
- * The write is NOT awaited before reading: a `DecompressionStream` applies backpressure,
- * so awaiting the write of a chunk larger than its queue would wait for a reader that has
- * not started. The read loop counts what the inflater actually produces and cancels the
- * stream the moment the budget is spent.
+ * The count is of what the inflater actually produces (`inflateChunks`), and a throw past the
+ * budget cancels the stream.
  */
 async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget, pace: Pace): Promise<string> {
   if (entry.flags & 0x1) throw new MalformedInput('the archive is encrypted');
@@ -940,36 +938,14 @@ async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBu
     return text.join('');
   }
   if (entry.method !== 8) throw new MalformedInput('a zip entry uses an unsupported compression method');
-  const ds = new DecompressionStream('deflate-raw');
-  const writer = ds.writable.getWriter();
-  const writing = writer.write(raw).then(() => writer.close()).catch(() => {});
-  const reader = ds.readable.getReader();
   let total = 0;
-  try {
-    for (;;) {
-      let next: { done: boolean; value?: Uint8Array };
-      try {
-        next = await reader.read();
-      } catch {
-        throw new MalformedInput('a zip entry is not valid deflate data');
-      }
-      if (next.done) break;
-      const chunk = next.value!;
-      total += chunk.length;
-      if (total > budget.remaining) {
-        await reader.cancel().catch(() => {});
-        throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
-      }
-      try {
-        await pace.decode(decoder, chunk, text);
-      } catch (err) {
-        await reader.cancel().catch(() => {});
-        throw err;
-      }
-    }
-  } finally {
-    await writing;
-  }
+  const outcome = await inflateChunks(raw, 'deflate-raw', pace, async (chunk) => {
+    total += chunk.length;
+    if (total > budget.remaining) throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
+    await pace.decode(decoder, chunk, text);
+    return true;
+  });
+  if (outcome === 'damaged') throw new MalformedInput('a zip entry is not valid deflate data');
   budget.remaining -= total;
   text.push(decoder.decode());
   return text.join('');
@@ -1125,11 +1101,10 @@ async function ooxmlExtract(
   const pieces: string[] = [];
   // Stop reading parts once the collected text is safely past the kernel's output cap: the
   // rest could only be cut off again, and inflating it would spend the budget for nothing.
-  // Twice the cap, because the kernel's normalizing can still shrink what was collected.
   let collected = 0;
   let stoppedEarly = false;
   for (const entry of ooxmlParts(format, entries)) {
-    if (collected > maxTextBytes * 2) {
+    if (collected > maxTextBytes * COLLECT_FACTOR) {
       stoppedEarly = true;
       break;
     }

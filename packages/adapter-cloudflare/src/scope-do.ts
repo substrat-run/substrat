@@ -3556,9 +3556,9 @@ export function defineScopeDO(
      * attachments (`startAttachmentTextBackfill` reads before it writes, so a marked scope
      * writes nothing — and moves no write revision — on every drive).
      */
-    async attachmentTextBackfillStart(): Promise<boolean> {
+    async attachmentTextBackfillStart(): Promise<void> {
       await this.ensureMigrations();
-      return this.queue.enqueue(async () =>
+      await this.queue.enqueue(async () =>
         this.revision.transactionSync(() =>
           startAttachmentTextBackfill(doSpineSql(this.sql), ulid(), new Date().toISOString()),
         ),

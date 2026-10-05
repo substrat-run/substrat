@@ -149,6 +149,53 @@ export class Pace {
   }
 }
 
+/**
+ * Inflate `raw`, handing each chunk the inflater produces to `onChunk` until it returns false.
+ * Resolves `'end'` at the end of the data, `'damaged'` when the data stops being valid (what
+ * came before it was handed on), and `'stopped'` when `onChunk` asked to stop. A throw from
+ * `onChunk` or from the pace propagates.
+ *
+ * The write is NOT awaited before reading: a `DecompressionStream` applies backpressure, so
+ * awaiting the write of a chunk larger than its queue would wait for a reader that has not
+ * started. And every way out but the end CANCELS the reader before the write is awaited —
+ * with nobody reading, the held write would never settle (an abort mid-inflate hung that way).
+ */
+export async function inflateChunks(
+  raw: Uint8Array,
+  format: 'deflate' | 'deflate-raw',
+  pace: Pace,
+  onChunk: (chunk: Uint8Array) => boolean | Promise<boolean>,
+): Promise<'end' | 'damaged' | 'stopped'> {
+  const ds = new DecompressionStream(format);
+  const writer = ds.writable.getWriter();
+  const writing = writer.write(raw).then(() => writer.close()).catch(() => {});
+  const reader = ds.readable.getReader();
+  let outcome: 'end' | 'damaged' | 'stopped' = 'stopped';
+  try {
+    for (;;) {
+      await pace.turn();
+      let next: { done: boolean; value?: Uint8Array };
+      try {
+        next = await reader.read();
+      } catch {
+        return (outcome = 'damaged');
+      }
+      if (next.done) return (outcome = 'end');
+      if (!(await onChunk(next.value!))) return 'stopped';
+    }
+  } finally {
+    if (outcome !== 'end') await reader.cancel().catch(() => {});
+    await writing;
+  }
+}
+
+/**
+ * How much text a parser collects before it stops reading: twice the kernel's output cap,
+ * because the kernel's normalizing can still shrink what was collected, and anything past
+ * that could only be cut off again.
+ */
+export const COLLECT_FACTOR = 2;
+
 /** A per-file inflate budget, shared by every part or stream one extraction reads. */
 export interface InflateBudget {
   remaining: number;

@@ -336,8 +336,9 @@ import {
   assertAttachmentExtractors,
   resolveAttachmentTextBounds,
   assertJobRegistrable,
-  isAttachmentTextBackfillRun,
-  isAttachmentTextRun,
+  ATTACHMENT_TEXT_BACKFILL_JOB,
+  ATTACHMENT_TEXT_JOB,
+  kernelJobFor,
   attachmentTextBackfillJob,
   searchLimit,
   searchMatchExpression,
@@ -1454,7 +1455,7 @@ interface ScopeStubRpc {
   /** #1575: write an extraction outcome; false when the attachment was removed meanwhile. */
   attachmentTextRecord(attachmentId: string, outcome: ExtractionOutcome): Promise<boolean>;
   /** #1575: start the one-shot backfill unless the scope is marked or holds no attachments. */
-  attachmentTextBackfillStart(): Promise<boolean>;
+  attachmentTextBackfillStart(): Promise<void>;
   /** #1575: one backfill batch after `after`, in one transaction. */
   attachmentTextBackfillBatch(after: string | null): Promise<AttachmentTextBackfillBatch>;
   /** Scope-local projection (scope-local-permissions.md): replace the tenant's roles + tuples and flip to local.
@@ -2892,18 +2893,13 @@ export class CloudflareScopeHost implements ScopeHost {
     // the drive, so a scope's first request never pays for attachments that predate it.
     const stub = this.scopeStub(scopeId);
     await stub.attachmentTextBackfillStart();
-    const attachmentText = { handler: this.attachmentTextHandler(tenantId, scopeId) };
-    const backfill = {
-      handler: attachmentTextBackfillJob({ queueBatch: (after) => stub.attachmentTextBackfillBatch(after) }),
+    const kernelJobs = {
+      [ATTACHMENT_TEXT_JOB]: this.attachmentTextHandler(tenantId, scopeId),
+      [ATTACHMENT_TEXT_BACKFILL_JOB]: attachmentTextBackfillJob({ queueBatch: (after) => stub.attachmentTextBackfillBatch(after) }),
     };
     return runDueJobRuns({
       store: this.jobStore(scopeId),
-      handlerFor: (run) =>
-        isAttachmentTextRun(run)
-          ? attachmentText
-          : isAttachmentTextBackfillRun(run)
-            ? backfill
-            : this.jobs.get(`${run.module_id}/${run.job}`),
+      handlerFor: (run) => kernelJobFor(run, kernelJobs) ?? this.jobs.get(`${run.module_id}/${run.job}`),
       now: () => new Date().toISOString(),
       // #1834: the door is opened FOR this pass, so its "not now" is tied to this pass alone.
       openScope: async (run, pass) =>

@@ -478,8 +478,9 @@ import {
   attachmentRecordOfRow,
   attachmentTextJob,
   enqueueAttachmentText,
-  isAttachmentTextBackfillRun,
-  isAttachmentTextRun,
+  ATTACHMENT_TEXT_BACKFILL_JOB,
+  ATTACHMENT_TEXT_JOB,
+  kernelJobFor,
   queueAttachmentTextBackfill,
   startAttachmentTextBackfill,
   attachmentTextBackfillJob,
@@ -5558,9 +5559,9 @@ export class SqliteScopeHost implements ScopeHost {
     // deployment registers them, and none can shadow them. The backfill starts here, on
     // the drive, so a scope's first request never pays for attachments that predate it.
     await rt.actor.enqueue(() => startAttachmentTextBackfill(spineSql(rt.db), ulid(), this.clock()));
-    const attachmentText = { handler: this.attachmentTextHandler(rt) };
-    const backfill = {
-      handler: attachmentTextBackfillJob({
+    const kernelJobs = {
+      [ATTACHMENT_TEXT_JOB]: this.attachmentTextHandler(rt),
+      [ATTACHMENT_TEXT_BACKFILL_JOB]: attachmentTextBackfillJob({
         queueBatch: (after) =>
           rt.actor.enqueue(() =>
             rt.db.transaction(() => queueAttachmentTextBackfill(spineSql(rt.db), after, ulid, this.clock()))(),
@@ -5569,12 +5570,7 @@ export class SqliteScopeHost implements ScopeHost {
     };
     return runDueJobRuns({
       store: this.jobStore(rt),
-      handlerFor: (run) =>
-        isAttachmentTextRun(run)
-          ? attachmentText
-          : isAttachmentTextBackfillRun(run)
-            ? backfill
-            : this.jobs.get(`${run.module_id}/${run.job}`),
+      handlerFor: (run) => kernelJobFor(run, kernelJobs) ?? this.jobs.get(`${run.module_id}/${run.job}`),
       now: this.clock,
       openScope: (run) => this.getSystemScope(run.module_id as ModuleId, tenantId, scopeId),
       maxPasses: options?.maxPasses,

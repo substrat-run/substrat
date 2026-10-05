@@ -45,12 +45,13 @@
  */
 import { EXTRACTION_STRIDE, type ExtractionSignal } from '@substrat-run/kernel';
 import {
-  DecompressionStream,
+  COLLECT_FACTOR,
   ExtractionBoundExceeded,
   MalformedInput,
   Pace,
+  inflateChunks,
   type InflateBudget,
-} from './pace.js';
+} from './shared.js';
 
 /** Cross-reference entries one file may declare, across every section. */
 export const PDF_OBJECTS_MAX = 200_000;
@@ -101,10 +102,13 @@ interface PdfStream {
 type PdfDict = Map<string, PdfValue>;
 type PdfValue = null | boolean | number | PdfName | PdfString | PdfRef | PdfStream | PdfDict | PdfValue[];
 
-const isName = (v: PdfValue | undefined): v is PdfName => typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof Map) && v.kind === 'name';
-const isString = (v: PdfValue | undefined): v is PdfString => typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof Map) && v.kind === 'str';
-const isRef = (v: PdfValue | undefined): v is PdfRef => typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof Map) && v.kind === 'ref';
-const isStream = (v: PdfValue | undefined): v is PdfStream => typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof Map) && v.kind === 'stream';
+/** A tagged value's `kind`; undefined for a number, a boolean, null, an array or a dictionary. */
+const kindOf = (v: PdfValue | undefined): string | undefined =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof Map) ? v.kind : undefined;
+const isName = (v: PdfValue | undefined): v is PdfName => kindOf(v) === 'name';
+const isString = (v: PdfValue | undefined): v is PdfString => kindOf(v) === 'str';
+const isRef = (v: PdfValue | undefined): v is PdfRef => kindOf(v) === 'ref';
+const isStream = (v: PdfValue | undefined): v is PdfStream => kindOf(v) === 'stream';
 const isDict = (v: PdfValue | undefined): v is PdfDict => v instanceof Map;
 const nameOf = (v: PdfValue | undefined): string | null => (isName(v) ? v.name : null);
 const intOf = (v: PdfValue | undefined): number | null => (typeof v === 'number' && Number.isInteger(v) ? v : null);
@@ -123,11 +127,11 @@ const latin1 = (b: Uint8Array): string => {
 };
 
 /** The first `needle` in `buf` at or after `from`, searched a window at a time; -1 when none. */
-async function findBytes(buf: Uint8Array, needle: Uint8Array, from: number, pace: Pace, until = buf.length): Promise<number> {
+async function findBytes(buf: Uint8Array, needle: Uint8Array, from: number, pace: Pace): Promise<number> {
   const first = needle[0]!;
-  for (let at = from; at < until; ) {
+  for (let at = from; at < buf.length; ) {
     await pace.turn();
-    const end = Math.min(until, at + pace.room);
+    const end = Math.min(buf.length, at + pace.room);
     for (let i = at; i < end; i += 1) {
       if (buf[i] !== first || i + needle.length > buf.length) continue;
       let k = 1;
@@ -143,14 +147,36 @@ async function findBytes(buf: Uint8Array, needle: Uint8Array, from: number, pace
   return -1;
 }
 
-/** The last `needle` in `buf` before `before`, looking back at most `span` bytes. */
-function findLast(buf: Uint8Array, needle: Uint8Array, before: number, span: number): number {
-  for (let i = Math.min(before, buf.length) - needle.length; i >= Math.max(0, before - span); i -= 1) {
-    let k = 0;
-    while (k < needle.length && buf[i + k] === needle[k]) k += 1;
-    if (k === needle.length) return i;
+/** The last `needle` in `buf`, looking back at most `span` bytes from the end, a window at a time. */
+async function findLast(buf: Uint8Array, needle: Uint8Array, span: number, pace: Pace): Promise<number> {
+  const stop = Math.max(0, buf.length - span);
+  for (let at = buf.length - needle.length; at >= stop; ) {
+    await pace.turn();
+    const end = Math.max(stop, at - pace.room);
+    for (let i = at; i >= end; i -= 1) {
+      let k = 0;
+      while (k < needle.length && buf[i + k] === needle[k]) k += 1;
+      if (k === needle.length) {
+        pace.charge(at - i + 1);
+        return i;
+      }
+    }
+    pace.charge(at - end + 1);
+    at = end - 1;
   }
   return -1;
+}
+
+/** Chunks joined into one array; a single chunk is returned as it is. */
+function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0]!;
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
 }
 
 // -- the lexer --------------------------------------------------------------------------
@@ -174,9 +200,9 @@ class Lexer {
   pos: number;
 
   constructor(
-    readonly buf: Uint8Array,
+    private readonly buf: Uint8Array,
     start: number,
-    readonly end: number,
+    private readonly end: number,
     private readonly pace: Pace,
   ) {
     this.pos = start;
@@ -187,7 +213,7 @@ class Lexer {
   }
 
   /** Skip whitespace and comments. */
-  skipSpace(): void {
+  private skipSpace(): void {
     const from = this.pos;
     while (this.pos < this.end) {
       const c = this.buf[this.pos]!;
@@ -403,13 +429,7 @@ class Sink {
 
   done(): Decoded {
     this.budget.remaining -= this.size;
-    const data = new Uint8Array(this.size);
-    let at = 0;
-    for (const c of this.chunks) {
-      data.set(c, at);
-      at += c.length;
-    }
-    return { data, exhausted: this.exhausted };
+    return { data: concatBytes(this.chunks), exhausted: this.exhausted };
   }
 }
 
@@ -420,36 +440,11 @@ class Sink {
  */
 async function inflate(raw: Uint8Array, budget: InflateBudget, pace: Pace): Promise<Decoded> {
   const zlib = raw.length >= 2 && (raw[0]! & 0x0f) === 8 && ((raw[0]! << 8) | raw[1]!) % 31 === 0;
-  const ds = new DecompressionStream(zlib ? 'deflate' : 'deflate-raw');
-  const writer = ds.writable.getWriter();
-  const writing = writer.write(raw).then(() => writer.close()).catch(() => {});
-  const reader = ds.readable.getReader();
   const sink = new Sink(budget);
-  // Any way out but the end of the data CANCELS the reader first: the write is held by the
-  // stream's backpressure until someone reads, so awaiting it after an abort or a bound —
-  // with nobody reading — would never settle.
-  let ended = false;
-  try {
-    for (;;) {
-      await pace.turn();
-      let next: { done: boolean; value?: Uint8Array };
-      try {
-        next = await reader.read();
-      } catch {
-        ended = true; // damaged data: keep what came before it
-        break;
-      }
-      if (next.done) {
-        ended = true;
-        break;
-      }
-      pace.charge(next.value!.length);
-      if (!sink.add(next.value!)) break;
-    }
-  } finally {
-    if (!ended) await reader.cancel().catch(() => {});
-    await writing;
-  }
+  await inflateChunks(raw, zlib ? 'deflate' : 'deflate-raw', pace, (chunk) => {
+    pace.charge(chunk.length);
+    return sink.add(chunk);
+  });
   return sink.done();
 }
 
@@ -623,7 +618,20 @@ function filtersOf(dict: PdfDict): { name: string; parms: PdfDict | null }[] {
   return names.map((n, i) => ({ name: nameOf(n) ?? '', parms: isDict(parms[i]) ? parms[i] : null }));
 }
 
-const IMAGE_FILTERS = new Set(['DCTDecode', 'DCT', 'JPXDecode', 'JBIG2Decode', 'CCITTFaxDecode', 'CCF']);
+/** The filters read, by full name and abbreviation; `predicted` ones may carry a predictor. */
+interface Filter {
+  readonly run: (data: Uint8Array, parms: PdfDict | null, budget: InflateBudget, pace: Pace) => Promise<Decoded>;
+  readonly predicted: boolean;
+}
+const FLATE: Filter = { run: (d, _p, b, pace) => inflate(d, b, pace), predicted: true };
+const LZW: Filter = { run: (d, p, b, pace) => lzw(d, intOf(p?.get('EarlyChange')) !== 0, b, pace), predicted: true };
+const AHX: Filter = { run: (d, _p, b, pace) => asciiHex(d, b, pace), predicted: false };
+const A85: Filter = { run: (d, _p, b, pace) => ascii85(d, b, pace), predicted: false };
+const RL: Filter = { run: (d, _p, b, pace) => runLength(d, b, pace), predicted: false };
+const FILTERS: Record<string, Filter> = {
+  FlateDecode: FLATE, Fl: FLATE, LZWDecode: LZW, LZW, ASCIIHexDecode: AHX, AHx: AHX,
+  ASCII85Decode: A85, A85, RunLengthDecode: RL, RL,
+};
 
 // -- the document -----------------------------------------------------------------------
 
@@ -631,6 +639,15 @@ type XrefEntry = { readonly type: 1; readonly offset: number } | { readonly type
 
 /** The text read so far is enough: stop reading, and say the text was cut. */
 class Enough extends Error {}
+
+/**
+ * A file that is not damaged but refused — a loop, nested object streams, encryption. Damage
+ * earns the scan fallback a second way in; a refusal is the file's answer and never does.
+ */
+class Refusal extends MalformedInput {}
+
+const tooManyObjects = (): ExtractionBoundExceeded =>
+  new ExtractionBoundExceeded(`the PDF declares more than ${PDF_OBJECTS_MAX} objects`);
 
 class PdfDocument {
   readonly xref = new Map<number, XrefEntry>();
@@ -640,7 +657,7 @@ class PdfDocument {
   private readonly resolving = new Set<number>();
   private readonly objectStreams = new Map<number, { data: Uint8Array; offsets: Map<number, number> } | null>();
   /** Decoded form XObjects and CMaps, by object number: a form drawn on every page decodes once. */
-  readonly decodedByNum = new Map<number, Decoded | null>();
+  private readonly decodedByNum = new Map<number, Decoded | null>();
   trailer: PdfDict = new Map();
 
   constructor(
@@ -661,11 +678,14 @@ class PdfDocument {
     this.decodedByNum.clear();
   }
 
-  addEntry(num: number, entry: XrefEntry): void {
-    if (this.xref.has(num)) return; // the newest section, read first, wins
-    if (this.xref.size >= PDF_OBJECTS_MAX) {
-      throw new ExtractionBoundExceeded(`the PDF declares more than ${PDF_OBJECTS_MAX} objects`);
-    }
+  /**
+   * Record where an object is, within `PDF_OBJECTS_MAX`. Sections are read newest first, so
+   * by default the first entry for a number wins; the scan reads the file forwards, so it
+   * `replace`s — the last header for a number is the newest.
+   */
+  addEntry(num: number, entry: XrefEntry, replace = false): void {
+    if (this.xref.has(num) && !replace) return;
+    if (!this.xref.has(num) && this.xref.size >= PDF_OBJECTS_MAX) throw tooManyObjects();
     this.xref.set(num, entry);
   }
 
@@ -751,25 +771,14 @@ class PdfDocument {
     const entry = this.xref.get(container);
     // The format puts an object stream at a file offset; one said to sit in another object
     // stream is nesting, which nothing writes and this refuses rather than follows.
-    if (entry?.type === 2) throw new MalformedInput('the PDF nests object streams');
+    if (entry?.type === 2) throw new Refusal('the PDF nests object streams');
     this.objectStreams.set(container, null);
     const s = await this.object(container);
     if (!isStream(s)) return null;
     const decoded = await this.decode(s);
     if (!decoded) return null;
     if (decoded.exhausted) throw new ExtractionBoundExceeded('the PDF decodes past the extraction bound');
-    const first = intOf(s.dict.get('First')) ?? 0;
-    const count = Math.min(intOf(s.dict.get('N')) ?? 0, PDF_OBJECTS_MAX);
-    const lex = new Lexer(decoded.data, 0, Math.min(first, decoded.data.length), this.pace);
-    const offsets = new Map<number, number>();
-    for (let k = 0; k < count; k += 1) {
-      if (this.pace.room <= 0) await this.pace.turn();
-      const a = lex.next();
-      const b = lex.next();
-      if (a.t !== 'num' || b.t !== 'num') break;
-      offsets.set(a.v, first + b.v);
-    }
-    const stm = { data: decoded.data, offsets };
+    const stm = { data: decoded.data, offsets: await objectStreamOffsets(decoded.data, s.dict, this.pace) };
     this.objectStreams.set(container, stm);
     return stm;
   }
@@ -785,15 +794,11 @@ class PdfDocument {
     let result: Decoded | null = null;
     try {
       for (const { name, parms } of filtersOf(s.dict)) {
-        if (IMAGE_FILTERS.has(name)) return null;
-        let d: Decoded;
-        if (name === 'FlateDecode' || name === 'Fl') d = await inflate(data, this.budget, this.pace);
-        else if (name === 'LZWDecode' || name === 'LZW') d = await lzw(data, intOf(parms?.get('EarlyChange')) !== 0, this.budget, this.pace);
-        else if (name === 'ASCIIHexDecode' || name === 'AHx') d = await asciiHex(data, this.budget, this.pace);
-        else if (name === 'ASCII85Decode' || name === 'A85') d = await ascii85(data, this.budget, this.pace);
-        else if (name === 'RunLengthDecode' || name === 'RL') d = await runLength(data, this.budget, this.pace);
-        else return null;
-        data = name === 'FlateDecode' || name === 'Fl' || name === 'LZWDecode' || name === 'LZW' ? await unpredict(d.data, parms, this.pace) : d.data;
+        // An image filter is not text, and an unknown one is not read: either way, no data.
+        const filter = Object.hasOwn(FILTERS, name) ? FILTERS[name]! : null;
+        if (!filter) return null;
+        const d = await filter.run(data, parms, this.budget, this.pace);
+        data = filter.predicted ? await unpredict(d.data, parms, this.pace) : d.data;
         exhausted ||= d.exhausted;
         if (exhausted) break;
       }
@@ -805,7 +810,24 @@ class PdfDocument {
   }
 }
 
+/** An object stream's header: each object number it holds, and where in the data it starts. */
+async function objectStreamOffsets(data: Uint8Array, dict: PdfDict, pace: Pace): Promise<Map<number, number>> {
+  const first = intOf(dict.get('First')) ?? 0;
+  const count = Math.min(intOf(dict.get('N')) ?? 0, PDF_OBJECTS_MAX);
+  const lex = new Lexer(data, 0, Math.min(first, data.length), pace);
+  const offsets = new Map<number, number>();
+  for (let k = 0; k < count; k += 1) {
+    if (pace.room <= 0) await pace.turn();
+    const a = lex.next();
+    const b = lex.next();
+    if (a.t !== 'num' || b.t !== 'num') break;
+    offsets.set(a.v, first + b.v);
+  }
+  return offsets;
+}
+
 const ENDSTREAM = ascii('endstream');
+const NEWLINE = Uint8Array.of(10);
 const STARTXREF = ascii('startxref');
 const TRAILER = ascii('trailer');
 
@@ -817,26 +839,22 @@ const TRAILER = ascii('trailer');
  * offset met twice is a loop, refused.
  */
 async function readXref(doc: PdfDocument): Promise<void> {
-  const sx = findLast(doc.buf, STARTXREF, doc.buf.length, 2048);
+  const sx = await findLast(doc.buf, STARTXREF, 2048, doc.pace);
   if (sx < 0) throw new MalformedInput('the PDF has no startxref');
   const lex = new Lexer(doc.buf, sx + STARTXREF.length, doc.buf.length, doc.pace);
   const first = lex.next();
   if (first.t !== 'num') throw new MalformedInput('the PDF has no startxref');
   const queue: number[] = [first.v];
   const seen = new Set<number>();
-  let trailerSet = false;
   while (queue.length > 0) {
     const offset = queue.shift()!;
-    if (seen.has(offset)) throw new MalformedInput('the PDF cross-reference chain loops');
+    if (seen.has(offset)) throw new Refusal('the PDF cross-reference chain loops');
     seen.add(offset);
     if (seen.size > PDF_XREF_SECTIONS) {
       throw new ExtractionBoundExceeded(`the PDF has more than ${PDF_XREF_SECTIONS} cross-reference sections`);
     }
     const trailer = await xrefSection(doc, offset);
-    if (!trailerSet) {
-      doc.trailer = trailer;
-      trailerSet = true;
-    }
+    if (seen.size === 1) doc.trailer = trailer; // the newest section's trailer
     // The hybrid file's stream comes before its own table's `/Prev`: it is the same update.
     const stm = intOf(trailer.get('XRefStm'));
     if (stm !== null) queue.unshift(stm);
@@ -861,7 +879,7 @@ async function xrefSection(doc: PdfDocument, offset: number): Promise<PdfDict> {
         throw new MalformedInput('a PDF cross-reference table is damaged');
       }
       // Checked before the loop: a subsection that claims a billion rows is refused, not read.
-      if (b.v > PDF_OBJECTS_MAX) throw new ExtractionBoundExceeded(`the PDF declares more than ${PDF_OBJECTS_MAX} objects`);
+      if (b.v > PDF_OBJECTS_MAX) throw tooManyObjects();
       for (let i = 0; i < b.v; i += 1) {
         if (doc.pace.room <= 0) await doc.pace.turn();
         const off = lex.next();
@@ -900,7 +918,7 @@ async function xrefSection(doc: PdfDocument, offset: number): Promise<PdfDict> {
     const start = ranges[r]!;
     const count = ranges[r + 1]!;
     if (start < 0 || count < 0) throw new MalformedInput('a PDF cross-reference stream is damaged');
-    if (count > PDF_OBJECTS_MAX) throw new ExtractionBoundExceeded(`the PDF declares more than ${PDF_OBJECTS_MAX} objects`);
+    if (count > PDF_OBJECTS_MAX) throw tooManyObjects();
     for (let i = 0; i < count && at + row <= data.length; i += 1) {
       if (doc.pace.room <= 0) await doc.pace.turn();
       doc.pace.charge(row);
@@ -936,11 +954,7 @@ async function scanObjects(doc: PdfDocument): Promise<void> {
     const numEnd = k + 1;
     while (k >= 0 && buf[k]! >= 48 && buf[k]! <= 57) k -= 1;
     if (k + 1 === numEnd || (k >= 0 && isRegular(buf[k]!))) continue;
-    const num = Number(latin1(buf.subarray(k + 1, numEnd)));
-    if (!doc.xref.has(num) && doc.xref.size >= PDF_OBJECTS_MAX) {
-      throw new ExtractionBoundExceeded(`the PDF declares more than ${PDF_OBJECTS_MAX} objects`);
-    }
-    doc.xref.set(num, { type: 1, offset: k + 1 });
+    doc.addEntry(Number(latin1(buf.subarray(k + 1, numEnd))), { type: 1, offset: k + 1 }, true);
   }
   for (const [num] of doc.xref) {
     if (doc.pace.room <= 0) await doc.pace.turn();
@@ -951,15 +965,11 @@ async function scanObjects(doc: PdfDocument): Promise<void> {
     const s = (await doc.object(container)) as PdfStream;
     const decoded = await doc.decode(s).catch(onlyDamage(null));
     if (!decoded) continue;
-    const lex = new Lexer(decoded.data, 0, Math.min(intOf(s.dict.get('First')) ?? 0, decoded.data.length), doc.pace);
-    for (let i = 0; i < Math.min(intOf(s.dict.get('N')) ?? 0, PDF_OBJECTS_MAX); i += 1) {
-      const a = lex.next();
-      const b = lex.next();
-      if (a.t !== 'num' || b.t !== 'num') break;
-      if (!doc.xref.has(a.v)) doc.addEntry(a.v, { type: 2, stream: container });
+    for (const num of (await objectStreamOffsets(decoded.data, s.dict, doc.pace)).keys()) {
+      doc.addEntry(num, { type: 2, stream: container });
     }
   }
-  const t = findLast(buf, TRAILER, buf.length, buf.length);
+  const t = await findLast(buf, TRAILER, buf.length, doc.pace);
   if (t >= 0) {
     const lex = new Lexer(buf, t + TRAILER.length, buf.length, doc.pace);
     const trailer = valueFrom(lex.next(), lex, true);
@@ -1195,11 +1205,11 @@ async function fontDecoder(doc: PdfDocument, font: PdfDict): Promise<FontDecoder
     };
   }
   // A simple font: one byte per code.
-  const table: (string | null)[] = [...(subtype === 'TrueType' ? WIN_ANSI : STANDARD)];
   const enc = await doc.resolve(font.get('Encoding'));
   const encDict = isDict(enc) ? enc : null;
-  const baseName = nameOf(encDict ? encDict.get('BaseEncoding') : enc);
-  if (baseName && BASE_ENCODINGS[baseName]) table.splice(0, 256, ...BASE_ENCODINGS[baseName]!);
+  const baseName = nameOf(encDict ? encDict.get('BaseEncoding') : enc) ?? '';
+  const base = Object.hasOwn(BASE_ENCODINGS, baseName) ? BASE_ENCODINGS[baseName]! : subtype === 'TrueType' ? WIN_ANSI : STANDARD;
+  const table: (string | null)[] = [...base];
   const differences = encDict?.get('Differences');
   if (Array.isArray(differences)) {
     let code = 0;
@@ -1241,6 +1251,10 @@ interface Reading {
   readonly fonts: WeakMap<PdfDict, FontDecoder>;
   /** Form XObjects being drawn, by object number: one drawn inside itself is skipped. */
   readonly drawing: Set<number>;
+  /** Page-tree nodes on the path being walked, by object number: one met again is a loop. */
+  readonly ancestors: Set<number>;
+  /** Page-tree nodes visited so far, against `PDF_TREE_NODES_MAX`. */
+  visited: number;
 }
 
 function emit(r: Reading, s: string): void {
@@ -1359,36 +1373,31 @@ async function pageContent(doc: PdfDocument, page: PdfDict): Promise<Decoded | n
     if (!isStream(s)) continue;
     const d = await doc.decode(s);
     if (!d) continue;
-    pieces.push(d.data, Uint8Array.of(10));
+    // Parts are read as one stream, a line apart: a token never runs from one into the next.
+    if (pieces.length > 0) pieces.push(NEWLINE);
+    pieces.push(d.data);
     if ((exhausted = d.exhausted)) break;
   }
   if (pieces.length === 0) return null;
-  const total = pieces.reduce((n, p) => n + p.length, 0);
-  const data = new Uint8Array(total);
-  let at = 0;
-  for (const p of pieces) {
-    data.set(p, at);
-    at += p.length;
-  }
-  return { data, exhausted };
+  return { data: concatBytes(pieces), exhausted };
 }
 
 /** Walk the page tree in order, drawing each page: depth- and node-bounded, ancestors refused. */
-async function readPages(r: Reading, node: PdfValue, inherited: PdfDict | null, ancestors: Set<number>, depth: number, visited: { n: number }): Promise<void> {
+async function readPages(r: Reading, node: PdfValue, inherited: PdfDict | null, depth: number): Promise<void> {
   if (depth > PDF_TREE_DEPTH_MAX) throw new MalformedInput('the PDF page tree is nested too deeply');
   const num = isRef(node) ? node.num : null;
-  if (num !== null && ancestors.has(num)) throw new MalformedInput('the PDF page tree loops');
-  if ((visited.n += 1) > PDF_TREE_NODES_MAX) throw new Enough();
+  if (num !== null && r.ancestors.has(num)) throw new MalformedInput('the PDF page tree loops');
+  if ((r.visited += 1) > PDF_TREE_NODES_MAX) throw new Enough();
   const dict = await r.doc.resolveDict(node);
   if (!dict) return;
   const resources = (await r.doc.resolveDict(dict.get('Resources'))) ?? inherited;
   const kids = await r.doc.resolve(dict.get('Kids'));
   if (Array.isArray(kids)) {
-    if (num !== null) ancestors.add(num);
+    if (num !== null) r.ancestors.add(num);
     try {
-      for (const kid of kids) await readPages(r, kid, resources, ancestors, depth + 1, visited);
+      for (const kid of kids) await readPages(r, kid, resources, depth + 1);
     } finally {
-      if (num !== null) ancestors.delete(num);
+      if (num !== null) r.ancestors.delete(num);
     }
     return;
   }
@@ -1416,15 +1425,15 @@ export async function pdfExtract(
   const doc = new PdfDocument(body, { remaining: maxInflatedBytes }, pace);
   let root: PdfDict | null = null;
   const refuseEncrypted = (): void => {
-    if (doc.trailer.has('Encrypt')) throw new MalformedInput('the PDF is encrypted, and encrypted PDFs are not read');
+    if (doc.trailer.has('Encrypt')) throw new Refusal('the PDF is encrypted, and encrypted PDFs are not read');
   };
   try {
     await readXref(doc);
     refuseEncrypted();
     root = await doc.resolveDict(doc.trailer.get('Root'));
   } catch (err) {
-    // A loop, a bound or encryption is the file's answer; only DAMAGE earns a second way in.
-    if (!(err instanceof MalformedInput) || /loops|nests|encrypted/.test(err.message)) throw err;
+    // A refusal or a bound is the file's answer; only DAMAGE earns a second way in.
+    if (!(err instanceof MalformedInput) || err instanceof Refusal) throw err;
   }
   if (!root) {
     await scanObjects(doc);
@@ -1436,14 +1445,16 @@ export async function pdfExtract(
     doc,
     out: [],
     collected: 0,
-    limit: maxTextBytes * 2,
+    limit: maxTextBytes * COLLECT_FACTOR,
     interpretLeft: maxInflatedBytes * PDF_INTERPRET_FACTOR,
     fonts: new WeakMap(),
     drawing: new Set(),
+    ancestors: new Set(),
+    visited: 0,
   };
   let truncated = false;
   try {
-    await readPages(r, root.get('Pages') ?? null, null, new Set(), 0, { n: 0 });
+    await readPages(r, root.get('Pages') ?? null, null, 0);
   } catch (err) {
     if (!(err instanceof Enough)) throw err;
     truncated = true;

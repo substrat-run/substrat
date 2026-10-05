@@ -1282,9 +1282,9 @@ const join = (...parts: (string | Uint8Array)[]): Uint8Array => {
 };
 
 /** A one-page PDF drawing `content`, laid out as a plain writer would, plus where its xref sits. */
-function onePagePdf(content: Uint8Array, opts: { contentDict?: string; trailer?: string; catalog?: string } = {}) {
+function onePagePdf(content: Uint8Array, opts: { contentDict?: string; trailer?: string } = {}) {
   const objects = [
-    opts.catalog ?? '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
     '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
@@ -1327,9 +1327,7 @@ export async function hostilePdfs(): Promise<HostilePdf[]> {
     ...(detail === undefined ? {} : { detail }),
   });
   const text = utf8('BT /F1 9 Tf (hostile marmoset text) Tj ET');
-  const plain = onePagePdf(text, { trailer: '/Prev 0000000000' });
-  const latin1 = (b: Uint8Array): string => Array.from(b, (c) => String.fromCharCode(c)).join('');
-  const bytesOfLatin1 = (s: string): Uint8Array => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  const plain = onePagePdf(text);
   return [
     pdf(
       'a deflate bomb',
@@ -1339,8 +1337,8 @@ export async function hostilePdfs(): Promise<HostilePdf[]> {
     ),
     pdf(
       'a cross-reference chain that loops',
-      // The placeholder is exactly as wide as what replaces it, so no offset moves.
-      bytesOfLatin1(latin1(plain.bytes).replace('/Prev 0000000000', `/Prev ${String(plain.xrefAt).padStart(10, '0')}`)),
+      // The trailer follows the table, so naming the table's own offset in it moves nothing.
+      onePagePdf(text, { trailer: `/Prev ${plain.xrefAt}` }).bytes,
       'failed',
       'the PDF cross-reference chain loops',
     ),
@@ -1350,6 +1348,7 @@ export async function hostilePdfs(): Promise<HostilePdf[]> {
       'a billion declared objects',
       join(plain.bytes.subarray(0, plain.xrefAt), `xref\n0 1000000000\n0000000000 65535 f \ntrailer\n<< /Root 1 0 R >>\nstartxref\n${plain.xrefAt}\n%%EOF\n`),
       'failed',
+      // `PDF_OBJECTS_MAX` in @substrat-run/attachment-extractors, which this package does not import.
       'the PDF declares more than 200000 objects',
     ),
   ];
