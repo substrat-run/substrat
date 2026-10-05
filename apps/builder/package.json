@@ -27,8 +27,8 @@
     "@substrat-run/kernel": "workspace:*",
     "@substrat-run/model-providers": "workspace:*",
     "@substrat-run/oidc-rp": "workspace:*",
-    "ai": "7.0.114",
-    "hono": "^4.13.9"
+    "ai": "7.0.127",
+    "hono": "^4.13.12"
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^3.0.0",
