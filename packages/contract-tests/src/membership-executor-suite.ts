@@ -804,6 +804,18 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       expect(await memberOf(w, kim, theirs)).toBe(0);
     });
 
+    it('a request naming an org other than the one the invitation was sent for joins nobody — even one the sender is a member of', async () => {
+      // The payload is module-written: the org it names is bound to the kernel-stamped send, so a
+      // sender in X who invited to Y cannot have the request carry X and join someone to it.
+      const x = await scopeOnlyOrg();
+      const y = await scopeOnlyOrg();
+      const alice = await lead(x);
+      const joe = principalId.parse(ulid());
+      const inv = await send(w, alice, 'member', y);
+      await expectNothing(await asJoiner(w, joe, 'invitefix/accept', { ...inv, orgId: x }), joe, x, /does not match invitation/);
+      expect(await memberOf(w, joe, y)).toBe(0);
+    });
+
     it('an inviter removed from the org while the add is held: refused in the unit, and neither the role nor the membership lands', async () => {
       const org = await scopeOnlyOrg();
       const carol = await lead(org);
