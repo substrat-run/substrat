@@ -2673,8 +2673,235 @@
                                   }
                                 },
                                 "additionalProperties": false
+                              },
+                              "clock": {
+                                "type": "string",
+                                "enum": [
+                                  "calendar",
+                                  "business"
+                                ]
                               }
                             },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "businessHours": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "timezone": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "weekly": {
+                                "type": "object",
+                                "properties": {
+                                  "mon": {
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "open": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        },
+                                        "close": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        }
+                                      },
+                                      "required": [
+                                        "open",
+                                        "close"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "tue": {
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "open": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        },
+                                        "close": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        }
+                                      },
+                                      "required": [
+                                        "open",
+                                        "close"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "wed": {
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "open": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        },
+                                        "close": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        }
+                                      },
+                                      "required": [
+                                        "open",
+                                        "close"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "thu": {
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "open": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        },
+                                        "close": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        }
+                                      },
+                                      "required": [
+                                        "open",
+                                        "close"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "fri": {
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "open": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        },
+                                        "close": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        }
+                                      },
+                                      "required": [
+                                        "open",
+                                        "close"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "sat": {
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "open": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        },
+                                        "close": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        }
+                                      },
+                                      "required": [
+                                        "open",
+                                        "close"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "sun": {
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "open": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        },
+                                        "close": {
+                                          "type": "string",
+                                          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                        }
+                                      },
+                                      "required": [
+                                        "open",
+                                        "close"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "exceptions": {
+                                "maxItems": 366,
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "date": {
+                                      "type": "string"
+                                    },
+                                    "windows": {
+                                      "maxItems": 4,
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "open": {
+                                            "type": "string",
+                                            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                          },
+                                          "close": {
+                                            "type": "string",
+                                            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$|^24:00$"
+                                          }
+                                        },
+                                        "required": [
+                                          "open",
+                                          "close"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "date",
+                                    "windows"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "timezone",
+                              "weekly"
+                            ],
                             "additionalProperties": false
                           },
                           {
