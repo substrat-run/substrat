@@ -1,8 +1,8 @@
 {
   "name": "@substrat-run/router",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
-  "description": "The environment-wide router \u2014 hostname to (tenant, scope, surface), then dispatch (K-26)",
+  "description": "The environment-wide router — hostname to (tenant, scope, surface), then dispatch (K-26)",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
