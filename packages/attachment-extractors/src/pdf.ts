@@ -1959,5 +1959,13 @@ export const pdfDecoders = { unpredict, asciiHex, ascii85, runLength, lzw };
 export const pdfCMap = (data: Uint8Array, pace: Pace, retained: Retained): Promise<{ map: { get(length: number, code: number): string | undefined } }> =>
   parseCMap(data, pace, retained);
 /** What a font's decoder is charged, for the package's own tests. */
-export const pdfFontCosts = { simple: SIMPLE_FONT_COST, difference: DIFFERENCE_COST, composite: COMPOSITE_FONT_COST };
+export const pdfFontCosts = { simple: SIMPLE_FONT_COST, difference: DIFFERENCE_COST, composite: COMPOSITE_FONT_COST, decodePerByte: DECODE_COST_PER_BYTE };
+/** A CodeMap with nothing parsed into it, for the package's own tests to define and seal directly. */
+export const pdfCodeMap = (
+  retained: Retained,
+): {
+  setChar(length: number, code: number, text: string): void;
+  seal(pace: Pace): Promise<unknown>;
+  get(length: number, code: number): string | undefined;
+} => new CodeMap(retained);
 export const pdfLexer = (buf: Uint8Array, pace: Pace): { next(): unknown } => new Lexer(buf, 0, buf.length, pace);

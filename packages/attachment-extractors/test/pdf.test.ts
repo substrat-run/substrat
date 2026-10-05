@@ -29,6 +29,15 @@ class CountingPace extends Pace {
   }
 }
 const counting = () => new CountingPace({ aborted: false });
+/** A pace whose stride leaves room to decode only `width` string bytes at a time: every window edge, exercised. */
+class NarrowPace extends CountingPace {
+  constructor(private readonly width: number) {
+    super({ aborted: false });
+  }
+  override get room(): number {
+    return Math.min(super.room, this.width * pdfFontCosts.decodePerByte);
+  }
+}
 
 /**
  * The PDF extractor, through the kernel's own enforcement (`runAttachmentExtractor`), so an
@@ -625,6 +634,73 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     expect(long.charged - short.charged).toBeGreaterThanOrEqual(100_000 * 32);
     expect(long.turns - short.turns).toBeGreaterThanOrEqual(10);
   });
+
+  it('a string decoded a window at a time reads exactly as one pass — codes of one to four bytes, every edge mid-code', async () => {
+    const cmap = [
+      'begincmap',
+      '4 begincodespacerange <00> <7F> <8000> <8FFF> <900000> <90FFFF> <A0000000> <A0FFFFFF> endcodespacerange',
+      '4 beginbfchar <41> <0061> <8001> <0062> <900002> <0063> <A0000003> <0064> endbfchar',
+      'endcmap',
+    ].join('\n');
+    // Adjacent 1- and 2-byte codes, and each length beside each other: windows of one to five
+    // bytes put an edge at every offset inside every code.
+    const file = cmapFont(cmap, '41' + '8001' + '900002' + 'A0000003' + '41' + '41' + '8001' + '4141' + 'A0000003' + '900002');
+    for (const width of [0, 1, 2, 3, 4, 5]) {
+      const pace = width ? new NarrowPace(width) : counting();
+      const out = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, pace);
+      expect(out.text.trim(), `windows of ${width || 'a stride'}`).toBe('abcdaabaadc');
+    }
+  });
+
+  it('a long string in a font it cannot read gives nothing, and the text around it still reads — in windows or in one', async () => {
+    const page = '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>';
+    const file = onePage(`BT /F1 9 Tf (before) Tj /F2 9 Tf <${'0102'.repeat(20_000)}> Tj /F1 9 Tf (after) Tj ET`, {
+      page,
+      extra: ['<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H >>'],
+    }).bytes;
+    for (const pace of [counting(), new NarrowPace(1), new NarrowPace(3)]) {
+      const out = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, pace);
+      expect(out.text.trim()).toBe('beforeafter');
+    }
+  });
+
+  it('decoded in windows of any width, a string reads as it does in one pass — over random mixes of code spaces', async () => {
+    let seed = 0x1575;
+    const rand = (n: number): number => {
+      seed = (seed * 1_103_515_245 + 12_345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    const hex = (bytes: number[]) => bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+    for (let round = 0; round < 120; round += 1) {
+      // One to four ranges, each of one to four bytes, sharing first bytes so lengths compete.
+      const spaces = Array.from({ length: rand(4) + 1 }, () => {
+        const len = rand(4) + 1;
+        const first = 0x80 + rand(4);
+        const lo = [first, ...Array.from({ length: len - 1 }, () => 0)];
+        const hi = [first, ...Array.from({ length: len - 1 }, () => 0xff)];
+        return { len, lo, hi };
+      });
+      const code = (sp: { len: number; lo: number[] }) => [sp.lo[0]!, ...Array.from({ length: sp.len - 1 }, () => rand(4))];
+      const mapped = Array.from({ length: 12 }, () => code(spaces[rand(spaces.length)]!));
+      const cmap = [
+        'begincmap',
+        `${spaces.length} begincodespacerange ${spaces.map((sp) => `<${hex(sp.lo)}> <${hex(sp.hi)}>`).join(' ')} endcodespacerange`,
+        `${mapped.length} beginbfchar ${mapped.map((c, i) => `<${hex(c)}> <${(0x61 + i).toString(16).padStart(4, '0')}>`).join(' ')} endbfchar`,
+        'endcmap',
+      ].join('\n');
+      // Mapped codes, codes in a space with no mapping, and bytes in no space at all.
+      const drawn = Array.from({ length: rand(40) + 1 }, () => {
+        const pick = rand(3);
+        return pick === 0 ? mapped[rand(mapped.length)]! : pick === 1 ? code(spaces[rand(spaces.length)]!) : [rand(256)];
+      }).flat();
+      const file = cmapFont(cmap, hex(drawn));
+      const once = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, counting());
+      for (const width of [1, 2, 3, 5, 7]) {
+        const windowed = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, new NarrowPace(width));
+        expect(windowed.text, `round ${round}, windows of ${width}: <${hex(drawn)}>`).toBe(once.text);
+      }
+    }
+  }, 30_000);
 
   it('what the reader keeps is charged to the memory budget — counted, not timed', async () => {
     const charged = async (body: Uint8Array) => {
