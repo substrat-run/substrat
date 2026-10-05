@@ -462,6 +462,37 @@ describe('openings are one union across midnight', () => {
     expect(addBusinessMs(nuuk, from, 45 * MINUTE)).toBe(oracleAdd(nuuk, from, 45 * MINUTE, '2027-04-10T00:00:00.000Z'));
   });
 
+  it('Samoa skipped 2011-12-30: its windows land on the 31st’s, and a window ending at its 24:00 is empty', () => {
+    // Every day 09:00–10:00 and 23:00–24:00. UTC−10 until 2011-12-30T10:00Z, UTC+14 after.
+    const apia: BusinessSchedule = {
+      timezone: 'Pacific/Apia',
+      weekly: Object.fromEntries(
+        ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].map((d) => [
+          d,
+          [{ open: '09:00', close: '10:00' }, { open: '23:00', close: '24:00' }],
+        ]),
+      ),
+    };
+    // By hand, over 2011-12-29T00:00Z … 2011-12-31T12:00Z:
+    //   28th 23:00–24:00 (UTC−10)  → 29th 09:00Z–10:00Z
+    //   29th 09:00–10:00            → 29th 19:00Z–20:00Z
+    //   29th 23:00–24:00            → 30th 09:00Z–10:00Z (24:00 is the skipped 30th's 00:00,
+    //                                 moved a day forward to the 31st's, 10:00Z)
+    //   30th 09:00–10:00 (skipped) → a day forward, 31st 09:00–10:00 = 30th 19:00Z–20:00Z
+    //   30th 23:00–24:00 (skipped) → opens on the 31st at 23:00 (31st 09:00Z) but closes at
+    //                                 the 31st's 00:00 (30th 10:00Z): empty
+    //   31st 09:00–10:00 (UTC+14)  → 30th 19:00Z–20:00Z: the same hour as the 30th's
+    //   31st 23:00–24:00            → 31st 09:00Z–10:00Z
+    // Five hours, where counting the 30th's and the 31st's mornings apart would give six.
+    const [from, to] = ['2011-12-29T00:00:00.000Z', '2011-12-31T12:00:00.000Z'];
+    expect(businessMsBetween(apia, from, to)).toBe(5 * HOUR);
+    expect(oracleBetween(apia, from, to)).toBe(5 * HOUR);
+    expect(addBusinessMs(apia, from, 3 * HOUR)).toBe('2011-12-30T10:00:00.000Z');
+    expect(addBusinessMs(apia, from, 4 * HOUR)).toBe('2011-12-30T20:00:00.000Z');
+    expect(addBusinessMs(apia, from, 5 * HOUR)).toBe('2011-12-31T10:00:00.000Z');
+    expect(businessMsBetween(apia, from, '2011-12-30T20:00:00.000Z')).toBe(4 * HOUR);
+  });
+
   it("a window the cap's last night carries past the cap is not counted: the walk cannot see the next day", () => {
     // Start so that the walk's last day is Nuuk's spring Saturday, 2036-03-29: its 23:00–23:30
     // is skipped into Sunday, past the midnight that ends the walk, where the day after (never
@@ -478,15 +509,22 @@ describe('openings are one union across midnight', () => {
     expect(addBusinessMs(nuuk, start, counted + MINUTE)).toBeNull();
   });
 
-  const ZONES = [
-    'America/Nuuk',
-    'Europe/Stockholm',
-    'America/New_York',
-    'Australia/Sydney',
-    'Australia/Lord_Howe',
-    'Pacific/Chatham',
-    'America/Havana',
-    'Asia/Beirut',
+  // zone, years searched (inclusive), the fewest transitions those years must hold
+  const ZONES: [string, number, number, number][] = [
+    ['America/Nuuk', 2025, 2035, 20],
+    ['Europe/Stockholm', 2025, 2035, 20],
+    ['America/New_York', 2025, 2035, 20],
+    ['Australia/Sydney', 2025, 2035, 20],
+    ['Australia/Lord_Howe', 2025, 2035, 20],
+    ['Pacific/Chatham', 2025, 2035, 20],
+    ['America/Havana', 2025, 2035, 20],
+    ['Asia/Beirut', 2025, 2035, 20],
+    // The dateline moves, each skipping a whole local day (Codex round 5): Samoa's DST and
+    // its jump from UTC−10 to UTC+14 over 2011-12-30, Kiribati's Line Islands over
+    // 1994-12-31, and the Marshall Islands' Kwajalein over 1993-08-21.
+    ['Pacific/Apia', 2010, 2012, 4],
+    ['Pacific/Kiritimati', 1994, 1995, 1],
+    ['Pacific/Kwajalein', 1993, 1993, 1],
   ];
   // Every day the same: windows touching midnight on both sides, one across 02:00–03:00.
   const allWeek = (timezone: string): BusinessSchedule => {
@@ -499,12 +537,12 @@ describe('openings are one union across midnight', () => {
     return { timezone, weekly: Object.fromEntries(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].map((d) => [d, day])) };
   };
 
-  /** The instants where the zone's offset changes, 2025–2035, found with a formatter of its own. */
-  function transitions(timezone: string): number[] {
+  /** The instants where the zone's offset changes in those years, found with a formatter of its own. */
+  function transitions(timezone: string, fromYear: number, toYear: number): number[] {
     const f = new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'longOffset' });
     const offset = (t: number) => f.formatToParts(new Date(t)).find((p) => p.type === 'timeZoneName')!.value;
     const found: number[] = [];
-    for (let t = Date.UTC(2025, 0, 1, 12); t < Date.UTC(2036, 0, 1, 12); t += DAY) {
+    for (let t = Date.UTC(fromYear, 0, 1, 12); t < Date.UTC(toYear + 1, 0, 1, 12); t += DAY) {
       if (offset(t) === offset(t + DAY)) continue;
       let [lo, hi] = [t, t + DAY];
       while (hi - lo > SLOT) {
@@ -517,11 +555,11 @@ describe('openings are one union across midnight', () => {
     return found;
   }
 
-  for (const timezone of ZONES) {
-    it(`${timezone}: every transition 2025–2035 — oracle agreement, monotonic dues, add/between round trip`, () => {
+  for (const [timezone, fromYear, toYear, fewest] of ZONES) {
+    it(`${timezone}: every transition ${fromYear}–${toYear} — oracle agreement, monotonic dues, add/between round trip`, () => {
       const s = allWeek(timezone);
-      const nights = transitions(timezone);
-      expect(nights.length).toBeGreaterThanOrEqual(20);
+      const nights = transitions(timezone, fromYear, toYear);
+      expect(nights.length).toBeGreaterThanOrEqual(fewest);
       for (const at of nights) {
         const from = new Date(at - 2 * DAY).toISOString();
         const to = new Date(at + 2 * DAY).toISOString();

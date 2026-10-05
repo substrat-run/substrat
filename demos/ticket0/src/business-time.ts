@@ -127,8 +127,9 @@ function offsetAt(timezone: string, t: number): number {
 /**
  * The instant a local wall-clock time names, with `'compatible'` disambiguation.
  *
- * The two candidate offsets are the ones a day either side; a zone changes offset at most
- * once in a day. Each candidate is kept only if it round-trips. Two survivors is the
+ * The two candidate offsets are the ones a day either side, which assumes a zone changes
+ * offset at most once within any two days — true even of Samoa's day-long jump in 2011,
+ * a single change. Each candidate is kept only if it round-trips. Two survivors is the
  * repeated hour, and the earlier instant wins; none is the skipped hour, and the offset
  * from BEFORE the gap carries the time forward past it.
  */
@@ -236,10 +237,15 @@ function union(intervals: readonly (readonly [number, number])[]): [number, numb
  *   - every opening of day `d` starts at or after `M_d`, that day's local midnight as an
  *     instant: 'compatible' resolution only moves a time FORWARD, and wall time after a
  *     skipped hour lands at or after the midnight it follows;
- *   - `M_d` grows with `d`, since every local day lasts some positive real time.
+ *   - `M_d` never decreases with `d`. It need not increase: a local day can last no real
+ *     time at all. Samoa skipped 2011-12-30 whole (`Pacific/Apia` went from UTC−10 to
+ *     UTC+14), so that date's midnight and the next are one instant, and every time on it
+ *     resolves a day forward, onto the 31st's — a skipped day contributes nothing the 31st
+ *     does not, and its windows land in the union beside the 31st's.
  *
  * So before day `d` is merged in, everything already merged that ends by `M_d` can never
- * meet a later opening, and is final. Only what reaches past it is held back.
+ * meet a later opening, and is final — "by", not "before", which is what keeps a skipped
+ * day (two equal midnights) correct. Only what reaches past it is held back.
  *
  * The cap is an instant for the same reason: the walk never looks at the day after its
  * last, whose openings start at or after that day's midnight, so nothing before that
@@ -258,8 +264,9 @@ function* openTime(c: Compiled, start: number): Generator<readonly [number, numb
   };
   for (let day = first; day < first + EXACT_DAYS; day++) {
     // A closed day adds nothing, and costs no lookup: everything held is final. It comes
-    // from earlier days, so it ends by this day's midnight plus at most one jump, which is
-    // short of the next midnight, where the next openings can start.
+    // from earlier days, whose wall times lie before this day's 00:00, and a jump moves a
+    // time forward by at most a day (Samoa's 2011 jump was exactly one), so it ends by the
+    // NEXT midnight, at or after which the next openings start.
     if (windowsOn(c, day).length === 0) {
       yield* release(Infinity);
       continue;
@@ -315,8 +322,8 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
 /**
  * The most open time this schedule promises from ANY start, inside the cap (#1648, Codex
  * round 2 on #2060): a target no longer than this is reached by `addBusinessMs` from every
- * start there will ever be, so it is always counted exactly and never falls back to
- * calendar time. Null for a schedule `compile` refuses.
+ * start whose ten years keep step 4's stated assumption — every start from now on — so it
+ * is always counted exactly and never falls back to calendar time. Null for a schedule `compile` refuses.
  *
  * The proof, for a start on local day `d`:
  *
@@ -346,9 +353,13 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
  *      `d + 1`'s, so it is one of those counted. Here the code cannot measure, since no
  *      sampling of `Intl` proves a stretch free of transitions, so the bound rests on a
  *      stated assumption about the zone: it moves its clocks forward at most
- *      `FORWARD_JUMPS_PER_YEAR` times a year, by at most `FORWARD_JUMP_MAX` each time. True
- *      of every zone in the tz database's rules today (Morocco's Ramadan suspension is the
- *      busiest, at two forward and two back). Days `d … d + 7 × 522` lie inside eleven
+ *      `FORWARD_JUMPS_PER_YEAR` times a year, by at most `FORWARD_JUMP_MAX` each time, over the
+ *      ten years a walk covers. True of every zone's rules today (Morocco's Ramadan
+ *      suspension is the busiest, at two forward and two back), and so of every walk that
+ *      starts now or later, which every conversation does. It is NOT true of every date the
+ *      type accepts: the dateline moves jumped a whole day forward (`Pacific/Kwajalein`
+ *      1993, `Pacific/Kiritimati` 1994-12-31, `Pacific/Apia` 2011-12-30). A walk across one
+ *      of those is still exact; it is only this guarantee that does not cover it. Days `d … d + 7 × 522` lie inside eleven
  *      calendar years, so at most `11 × 2` forward jumps, each costing at most
  *      `min(2 × FORWARD_JUMP_MAX, 2 × the longest day's open time)`.
  *   5. The walk is clipped at the midnight that ends its last day, `d + EXACT_DAYS - 1`, which
