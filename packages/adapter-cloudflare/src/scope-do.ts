@@ -82,6 +82,13 @@ import {
   assertRowLimit,
   assertRowOffset,
   JOB_RUN_PATCH_SQL,
+  JOB_RUN_CLAIM_SQL,
+  JOB_RUN_RENEW_SQL,
+  JOB_RUN_BEGIN_SQL,
+  JOB_RUN_MISS_SQL,
+  JOB_RUN_MISS_SETTLE_SQL,
+  admissionMissOutcome,
+  JOB_LEASE_EXPIRED_NOTE,
   JOB_STEP_RECORD_SQL,
   DELIVERY_ERROR_REDACTION_SQL,
   REDACTED_DELIVERY_NOTE,
@@ -202,6 +209,7 @@ import {
   type EntityVersionRow,
   type JobRunFilter,
   type JobRunPatch,
+  type JobRunClaim,
   type JobRunRow,
   type JobDueKey,
   type JobStepRow,
@@ -4335,13 +4343,16 @@ export function defineScopeDO(
       return row;
     }
 
-    /** One run by id, whatever its status. */
-    async jobRunById(id: string): Promise<JobRunRow | null> {
-      return (
-        (this.sql.exec('SELECT * FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as unknown as
-          | JobRunRow
-          | undefined) ?? null
-      );
+    /**
+     * #2034 (#2042 review r1): the FENCE for a coordinator from before leases. Its only caller is
+     * that coordinator's drive, which re-reads a run here and then runs the pass WITHOUT claiming
+     * it, so a row handed back could run beside a claimed pass. It answers "no such run" to it,
+     * always: the old drive skips, and only a coordinator that claims ever drives. Nothing else
+     * reads a run through this method (the operator read is `jobRunList`). The coordinator ships in
+     * the same script as this class, so an old one exists only for a deploy's overlap.
+     */
+    async jobRunById(_id: string): Promise<JobRunRow | null> {
+      return null;
     }
 
     /** Insert a fresh run. The coordinator has already refused a non-queue-safe payload. */
@@ -4358,36 +4369,20 @@ export function defineScopeDO(
     }
 
     /**
-     * `running` runs whose backoff has elapsed, oldest first, after `afterId`.
-     *
-     * The cursor is what lets the coordinator page past runs it cannot drive: it
-     * skips any whose job this deployment does not register, and without a cursor
-     * those rows head every batch forever (`runDueJobRuns`). `afterId` is LAST, as
-     * every argument added to an RPC on this interface must be.
+     * Was: `running` runs whose backoff has elapsed, oldest first, after `afterId` — the due read of
+     * a coordinator from before #1834, which drove every row it returned. Now always empty (below).
      */
-    async jobRunsDue(now: string, limit: number, afterId?: string): Promise<JobRunRow[]> {
-      return this.sql
-        .exec(
-          // `afterId` bound TWICE rather than as `?2`: mixing anonymous and numbered
-          // parameters makes the anonymous ones resume from the highest index used,
-          // which is a footgun for the next person to add a clause. Spelled exactly
-          // as the pure adapter spells it.
-          `SELECT * FROM _substrat_job_runs
-            WHERE status = 'running' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-              AND (? IS NULL OR id > ?)
-            ORDER BY id LIMIT ?`,
-          now,
-          afterId ?? null,
-          afterId ?? null,
-          limit,
-        )
-        .toArray() as unknown as JobRunRow[];
+    async jobRunsDue(_now: string, _limit: number, _afterId?: string): Promise<JobRunRow[]> {
+      // #2034 (#2042 review r1): fenced, as `jobRunById` is. Its only caller is a coordinator from
+      // before #1834, which runs every row this returns without claiming it.
+      return [];
     }
 
     /**
      * #1834: the drive's ONE snapshot of due runs — keys only, in the order they became due
-     * (`JOB_RUN_DUE_AT`, then id). Spelled exactly as the pure adapter spells it. `jobRunsDue`
-     * above stays for a coordinator a deploy behind, which still pages by id.
+     * (`JOB_RUN_DUE_AT`, then id). Spelled exactly as the pure adapter spells it. A coordinator
+     * from before #2034 reads this too, but drives nothing from it: its re-read (`jobRunById`)
+     * is fenced.
      */
     async jobRunsDueKeys(now: string, max: number): Promise<JobDueKey[]> {
       return this.sql
@@ -4435,17 +4430,97 @@ export function defineScopeDO(
      * partial update that wrote three of the four would leave a run carrying the
      * last failure's error beside the new cursor, which reads as broken forever.
      */
-    async jobRunPatch(id: string, patch: JobRunPatch): Promise<void> {
-      // A compare-and-set on `running` (#1632) — see `JOB_RUN_PATCH_SQL`.
-      this.sql.exec(
-        JOB_RUN_PATCH_SQL,
+    async jobRunPatch(id: string, patch: JobRunPatch, owner?: string): Promise<boolean> {
+      // A compare-and-set on `running` (#1632) and on the pass's lease (#2034) — see
+      // `JOB_RUN_PATCH_SQL`. `owner` is LAST and optional: a coordinator from before leases
+      // sends none, and patches the unleased rows it drives.
+      return this.sql.exec(JOB_RUN_PATCH_SQL, ...this.jobPatchArgs(id, patch, owner)).rowsWritten > 0;
+    }
+
+    private jobPatchArgs(id: string, patch: JobRunPatch, owner: string | undefined) {
+      return [
         patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
-        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
+        patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id, owner ?? null,
+      ] as const;
+    }
+
+    /**
+     * #2034: the claim — `JOB_RUN_CLAIM_SQL`, and whether it took over a lease, read in ONE
+     * `transactionSync`: the single round trip is what makes it indivisible, as in
+     * `jobRunStartOrJoin`. Null = the run is no longer running and due.
+     */
+    async jobRunClaim(id: string, owner: string, leaseMs: number): Promise<JobRunClaim | null> {
+      return this.revision.transactionSync(() => {
+        // #2042 r2, r4: a takeover is charged only when the lease it takes had BEGUN its pass.
+        const before = this.sql.exec('SELECT lease_began_at FROM _substrat_job_runs WHERE id = ?', id).toArray()[0] as
+          | { lease_began_at: string | null }
+          | undefined;
+        // #2042 r4: the due test and the expiry are THIS object's clock, never the coordinator's.
+        const now = Date.now();
+        const at = new Date(now).toISOString();
+        const claimed = this.sql
+          .exec(JOB_RUN_CLAIM_SQL, owner, new Date(now + leaseMs).toISOString(), at, JOB_LEASE_EXPIRED_NOTE, id, at)
+          .toArray()[0] as unknown as JobRunRow | undefined;
+        return claimed ? { run: claimed, takeover: (before?.lease_began_at ?? null) !== null } : null;
+      });
+    }
+
+    /**
+     * #2042 r3, r4: an admission miss — `JOB_RUN_MISS_SQL` (the relative count) and
+     * `JOB_RUN_MISS_SETTLE_SQL` (the backoff or failure that count calls for) in ONE transaction,
+     * by this object's clock. Null = the claim no longer held the run, or had begun.
+     */
+    async jobRunMiss(id: string, owner: string, note: string): Promise<{ misses: number; failed: boolean } | null> {
+      return this.revision.transactionSync(() => {
+        const at = new Date(Date.now()).toISOString();
+        const counted = this.sql.exec(JOB_RUN_MISS_SQL, at, id, owner).toArray()[0] as
+          | { admission_misses: number }
+          | undefined;
+        if (!counted) return null;
+        const o = admissionMissOutcome(counted.admission_misses, at, note);
+        this.sql.exec(JOB_RUN_MISS_SETTLE_SQL, o.status, o.nextAttemptAt, o.endedAt, o.lastError, id, counted.admission_misses);
+        return { misses: counted.admission_misses, failed: o.status === 'failed' };
+      });
+    }
+
+    /**
+     * #2034 (#2042 r4): BEGIN a claimed pass — `JOB_RUN_BEGIN_SQL`, the commitment point: one
+     * compare-and-set judged by this object's clock as it runs, never by a time the coordinator
+     * computed. The coordinator invokes the handler if and only if this wrote.
+     */
+    async jobRunBegin(id: string, owner: string, marginMs: number): Promise<boolean> {
+      const now = Date.now();
+      return (
+        this.sql.exec(JOB_RUN_BEGIN_SQL, new Date(now).toISOString(), id, owner, new Date(now + marginMs).toISOString())
+          .rowsWritten > 0
       );
     }
 
-    /** One step's ledger row — a non-null `result` is what means completed. */
+    /**
+     * #2034: a step boundary — renew the pass's lease, then read the step's ledger row, in one
+     * round trip. A pass that lost its lease reads nothing and stops.
+     */
+    async jobStepBegin(
+      runId: string,
+      step: string,
+      owner: string,
+      leaseMs: number,
+    ): Promise<{ held: boolean; row: JobStepRow | null }> {
+      // #2042 r4: renewed to this object's now plus the lease.
+      const until = new Date(Date.now() + leaseMs).toISOString();
+      if (this.sql.exec(JOB_RUN_RENEW_SQL, until, runId, owner).rowsWritten === 0) return { held: false, row: null };
+      return { held: true, row: this.stepRow(runId, step) };
+    }
+
+    /**
+     * One step's ledger row — a non-null `result` is what means completed. Not called by a
+     * coordinator since #2034 (`jobStepBegin` reads it while renewing); kept for one a deploy behind.
+     */
     async jobStepRow(runId: string, step: string): Promise<JobStepRow | null> {
+      return this.stepRow(runId, step);
+    }
+
+    private stepRow(runId: string, step: string): JobStepRow | null {
       return (
         (this.sql
           .exec(
@@ -4465,9 +4540,21 @@ export function defineScopeDO(
       attempts: number,
       lastError: string | null,
       at: string,
-    ): Promise<void> {
-      // Only while the run is still `running` (#1632) — see `JOB_STEP_RECORD_SQL`.
-      this.sql.exec(JOB_STEP_RECORD_SQL, runId, step, result, attempts, lastError, at, runId);
+      owner?: string,
+      leaseMs?: number,
+    ): Promise<boolean> {
+      // Only while the run is still `running` (#1632) and the pass holds its lease (#2034),
+      // renewing the lease — to this object's now plus `leaseMs` (#2042 r4) — in the same
+      // transaction; see `JOB_STEP_RECORD_SQL`. A coordinator from before leases sends neither,
+      // holds no lease, and renews nothing.
+      return this.revision.transactionSync(() => {
+        const until = leaseMs === undefined ? null : new Date(Date.now() + leaseMs).toISOString();
+        if (until !== null && this.sql.exec(JOB_RUN_RENEW_SQL, until, runId, owner ?? null).rowsWritten === 0) {
+          return false;
+        }
+        this.sql.exec(JOB_STEP_RECORD_SQL, runId, step, result, attempts, lastError, at, runId, owner ?? null);
+        return true;
+      });
     }
 
     /**
@@ -4481,17 +4568,16 @@ export function defineScopeDO(
      * results, not to the cursor) then skips work it never did. The kernel's
      * `runJobPass` carries the full argument.
      */
-    async jobCommitPass(id: string, patch: JobRunPatch): Promise<void> {
+    async jobCommitPass(id: string, patch: JobRunPatch, owner?: string): Promise<boolean> {
       // `transactionSync` with both statements inline — NOT `await
       // this.jobRunPatch(...)` then the delete. The await is an output-gate
       // boundary, which is precisely the gap this method exists to close.
-      this.revision.transactionSync(() => {
-        this.sql.exec(
-          JOB_RUN_PATCH_SQL,
-          patch.status, patch.cursor, patch.counters, patch.attempts, patch.lastError,
-          patch.updatedAt, patch.nextAttemptAt, patch.endedAt, id,
-        );
+      return this.revision.transactionSync(() => {
+        // #2034: the ledger goes only with a patch that applied — a stale holder's commit must
+        // not empty the ledger of the pass that took the run over.
+        if (this.sql.exec(JOB_RUN_PATCH_SQL, ...this.jobPatchArgs(id, patch, owner)).rowsWritten === 0) return false;
         this.sql.exec('DELETE FROM _substrat_job_steps WHERE run_id = ?', id);
+        return true;
       });
     }
 
@@ -5316,6 +5402,12 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
+        // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN lease_owner TEXT',
+        // #2042 r2, r4: whether the holder BEGAN its pass. NULL for any lease already there: free to take over.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN lease_began_at TEXT',
+        // #2042 r3: consecutive admission misses. NULL = none, right for every run already there.
+        'ALTER TABLE _substrat_job_runs ADD COLUMN admission_misses INTEGER',
         // Executor retry state (#100). The defaults read as "terminal", which is
         // right for every row already there: each is a completed delivery or a
         // consumer dead-letter.

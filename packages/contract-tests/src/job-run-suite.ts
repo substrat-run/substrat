@@ -14,6 +14,8 @@ import {
 } from '@substrat-run/contracts';
 import {
   CANCELLED_JOB_NOTE,
+  JOB_LEASE_MIN_MS,
+  JOB_LEASE_MS,
   REDACTED_INTENT_MARKER,
   REDACTED_JOB_NOTE,
   SYSTEM_DOOR_WAIT,
@@ -74,6 +76,38 @@ export function jobRunContractSuite(
 
     /** The scope the `outlived` job erases its subject in — set by that test. */
     let shredScope: ScopeId | null = null;
+
+    /**
+     * #2034: every pass of the `leased` jobs, in order — the handler-invocation counter. A pass
+     * that finds `gate` set takes it (one pass only), says it is inside, and waits for it to open.
+     */
+    let leasedPasses: string[] = [];
+    /** #2034: the step bodies the `stepped` jobs actually ran, as `<pass>:<step>`. */
+    let stepBodies: string[] = [];
+    let gate: { inside: () => void; opened: Promise<void> } | null = null;
+    /** #2034: the next `ledgered` pass that does not wait at the gate fails after its step. */
+    let failNext = false;
+    /** Set `gate` and return its two halves: the pass inside it, and the opener. */
+    const setGate = () => {
+      let inside!: () => void;
+      let open!: () => void;
+      const reached = new Promise<void>((resolve) => (inside = resolve));
+      gate = { inside, opened: new Promise<void>((resolve) => (open = resolve)) };
+      return { reached, open };
+    };
+    const takeGate = async () => {
+      const g = gate;
+      gate = null;
+      if (g) {
+        g.inside();
+        await g.opened;
+        return true;
+      }
+      return false;
+    };
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    /** Wait past the shortest lease a job can hold, which the `brief` jobs hold. */
+    const outlastBriefLease = () => sleep(JOB_LEASE_MIN_MS + 50);
 
     /**
      * A spine envelope as a job would hold a copy of one: what #1600's predicate keys on
@@ -246,6 +280,71 @@ export function jobRunContractSuite(
         { maxAttempts: 2, baseDelayMs: 0 },
       );
 
+      // #2034: a pass that may wait at the gate, then fails or finishes as its payload says.
+      // `leased` holds the default lease; `brief` the shortest one, so the next drive can take over.
+      const leased = async (pass: JobPassContext) => {
+        const n = leasedPasses.push(pass.run.id);
+        await takeGate();
+        const { fail, done } = pass.payload as { fail?: boolean; done?: boolean };
+        if (fail) throw new Error('upstream said no');
+        return { cursor: n, done: done !== false };
+      };
+      host.registerJob(JOBS_MODULE, 'leased', leased, { maxAttempts: 3, baseDelayMs: 0 });
+      host.registerJob(JOBS_MODULE, 'brief', leased, { maxAttempts: 3, baseDelayMs: 0 }, { leaseMs: JOB_LEASE_MIN_MS });
+      // #2042 r2: one attempt only, so a takeover wrongly charged ends the run unrun.
+      host.registerJob(JOBS_MODULE, 'once', leased, { maxAttempts: 1, baseDelayMs: 0 });
+      // #2034: steps that each take longer than half the lease and, together, longer than all of it;
+      // `stepped-brief` waits at the gate between its two steps, on the shortest lease.
+      host.registerJob(
+        JOBS_MODULE,
+        'stepped',
+        async (pass: JobPassContext) => {
+          const { steps } = pass.payload as { steps: number };
+          for (let i = 0; i < steps; i += 1) {
+            await pass.step(`s${i}`, async () => {
+              stepBodies.push(`s${i}`);
+              await sleep(60);
+            });
+          }
+          return { done: true };
+        },
+        { maxAttempts: 3, baseDelayMs: 0 },
+        { leaseMs: 100 },
+      );
+      host.registerJob(
+        JOBS_MODULE,
+        'stepped-brief',
+        async (pass: JobPassContext) => {
+          const who = `p${leasedPasses.push(pass.run.id)}`;
+          await pass.step('one', () => void stepBodies.push(`${who}:one`));
+          await takeGate();
+          await pass.step('two', () => void stepBodies.push(`${who}:two`));
+          // The takeover leaves the run going, so only the lease, not `status`, can stop the stale pass.
+          return { cursor: who, done: false };
+        },
+        { maxAttempts: 3, baseDelayMs: 0 },
+        { leaseMs: JOB_LEASE_MIN_MS },
+      );
+
+      // #2034: one step, then the gate (the pass that takes it goes on to commit), or a failure
+      // that keeps the ledger. The shortest lease.
+      host.registerJob(
+        JOBS_MODULE,
+        'ledgered',
+        async (pass: JobPassContext) => {
+          const who = `p${leasedPasses.push(pass.run.id)}`;
+          await pass.step('one', () => void stepBodies.push(`${who}:one`));
+          if (await takeGate()) return { done: true };
+          if (failNext) {
+            failNext = false;
+            throw new Error('upstream said no');
+          }
+          return { done: true };
+        },
+        { maxAttempts: 3, baseDelayMs: 0 },
+        { leaseMs: JOB_LEASE_MIN_MS },
+      );
+
       await host.admin.createTenant(staff, { id: t, slug: 'jobs', name: 'Jobs' });
       await host.admin.grantEntitlement(staff, t, 'jobs');
     });
@@ -278,6 +377,204 @@ export function jobRunContractSuite(
       expect(await host.runDueJobs(t, s)).toMatchObject({ retrying: 1, deferred: 0 });
       expect(await host.runDueJobs(t, s)).toMatchObject({ failed: 1, deferred: 0 });
       expect(await runOf(s, run.id)).toMatchObject({ status: 'failed', lastError: expect.stringMatching(/not now/) });
+    });
+
+    // -- the claim and its lease (#2034) -----------------------------------------
+    //
+    // Two drives on one scope at once — a vertical's own call beside the sweeper's — each claim
+    // a run before they run it, and only the claim's winner invokes the handler.
+    describe('the claim and its lease (#2034)', () => {
+      const startLeased = async (s: ScopeId, job: string, payload: unknown) => {
+        leasedPasses = [];
+        stepBodies = [];
+        return host.startJobRun(t, s, { moduleId: JOBS_MODULE, job, payload });
+      };
+
+      it('two concurrent drives on one due run invoke its handler exactly once', async () => {
+        const s = await newScope();
+        const run = await startLeased(s, 'leased', {});
+        // The first pass waits inside the handler, so the other drive's claim lands while the
+        // run is held — whichever drive's snapshot came first.
+        const { reached, open } = setGate();
+        const both = Promise.all([host.runDueJobs(t, s), host.runDueJobs(t, s)]);
+        await reached;
+        open();
+        const [a, b] = await both;
+        expect(leasedPasses).toEqual([run.id]);
+        expect(a.attempted + b.attempted).toBe(1);
+        expect(a.completed + b.completed).toBe(1);
+        expect(await runOf(s, run.id)).toMatchObject({ status: 'done', leaseOwner: null });
+      });
+
+      it('twin: one drive runs the run, once', async () => {
+        const s = await newScope();
+        const run = await startLeased(s, 'leased', {});
+        expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
+        expect(leasedPasses).toEqual([run.id]);
+      });
+
+      it('a live lease is not stolen: a drive during the pass does nothing, and the operator read shows the holder', async () => {
+        const s = await newScope();
+        const run = await startLeased(s, 'leased', {});
+        const { reached, open } = setGate();
+        const before = Date.now();
+        const holder = host.runDueJobs(t, s);
+        await reached;
+        const held = await runOf(s, run.id);
+        expect(held?.leaseOwner).toEqual(expect.any(String));
+        expect(Date.parse(held!.nextAttemptAt!)).toBeGreaterThanOrEqual(before + JOB_LEASE_MS);
+        expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 0 });
+        open();
+        expect(await holder).toMatchObject({ attempted: 1, completed: 1 });
+        expect(leasedPasses).toEqual([run.id]);
+        expect(await runOf(s, run.id)).toMatchObject({ status: 'done', leaseOwner: null, nextAttemptAt: null });
+      });
+
+      it('an expired lease is recovered: the run runs once more, and the silent pass counts as an attempt', async () => {
+        const s = await newScope();
+        const run = await startLeased(s, 'brief', { fail: true });
+        const { reached, open } = setGate();
+        const silent = host.runDueJobs(t, s);
+        await reached;
+        await outlastBriefLease(); // its lease is over, and it has not reported
+        expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, retrying: 1 });
+        expect(leasedPasses).toEqual([run.id, run.id]);
+        // One for the pass that went silent, one for the pass that failed.
+        expect(await runOf(s, run.id)).toMatchObject({ status: 'running', attempts: 2, lastError: 'upstream said no', leaseOwner: null });
+        open();
+        // The silent pass reports at last: its failure is refused, and counted nowhere.
+        expect(await silent).toMatchObject({ superseded: 1, retrying: 0 });
+        expect(await runOf(s, run.id)).toMatchObject({ attempts: 2 });
+      });
+
+      it("a stale holder's commit is refused, and the new holder's cursor stands", async () => {
+        const s = await newScope();
+        const run = await startLeased(s, 'brief', { done: false });
+        const { reached, open } = setGate();
+        const stale = host.runDueJobs(t, s);
+        await reached;
+        await outlastBriefLease();
+        // The takeover commits cursor 2 and leaves the run going.
+        expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, advanced: 1 });
+        open();
+        // The stale pass would commit cursor 1 over it.
+        expect(await stale).toMatchObject({ superseded: 1, advanced: 0 });
+        expect(await runOf(s, run.id)).toMatchObject({ status: 'running', cursor: 2, attempts: 0, leaseOwner: null });
+      });
+
+      it('a pass that renews at every step is not taken over, though it outlasts its lease', async () => {
+        const s = await newScope();
+        // Four 60 ms steps on a 100 ms lease; a rival drive at each step boundary finds nothing due.
+        const run = await startLeased(s, 'stepped', { steps: 4 });
+        const began = Date.now();
+        const pass = host.runDueJobs(t, s);
+        const rivals: number[] = [];
+        while (stepBodies.length < 4) {
+          rivals.push((await host.runDueJobs(t, s)).attempted);
+          await sleep(20);
+        }
+        expect(await pass).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
+        expect(Date.now() - began).toBeGreaterThan(100);
+        expect(rivals.every((n) => n === 0)).toBe(true);
+        expect(stepBodies).toEqual(['s0', 's1', 's2', 's3']);
+        expect(await runOf(s, run.id)).toMatchObject({ status: 'done' });
+      });
+
+      it('a holder that lost its lease stops at its next step boundary: that step never runs', async () => {
+        const s = await newScope();
+        const run = await startLeased(s, 'stepped-brief', {});
+        const { reached, open } = setGate();
+        const stale = host.runDueJobs(t, s);
+        await reached; // its step `one` is recorded; its lease runs out between the steps
+        await outlastBriefLease();
+        expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, advanced: 1 });
+        open();
+        expect(await stale).toMatchObject({ superseded: 1 });
+        // The takeover replayed `one` from the memo and ran `two`; the stale pass ran `one` only.
+        expect(stepBodies).toEqual(['p1:one', 'p2:two']);
+        expect(await runOf(s, run.id)).toMatchObject({ status: 'running', cursor: 'p2', leaseOwner: null });
+      });
+
+      it("a stale holder's refused commit leaves the step ledger of the run's new holder alone", async () => {
+        const s = await newScope();
+        const run = await startLeased(s, 'ledgered', {});
+        const { reached, open } = setGate();
+        const stale = host.runDueJobs(t, s);
+        await reached; // its step `one` is recorded; it will commit once the gate opens
+        await outlastBriefLease();
+        // The takeover replays `one`, then fails: a failed pass keeps its ledger for the next one.
+        failNext = true;
+        expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, retrying: 1 });
+        open();
+        expect(await stale).toMatchObject({ superseded: 1 });
+        // The next pass still finds `one` committed, so its body never runs again.
+        expect(await host.runDueJobs(t, s)).toMatchObject({ completed: 1 });
+        expect(stepBodies).toEqual(['p1:one']);
+        expect(leasedPasses).toEqual([run.id, run.id, run.id]);
+      });
+
+      /**
+       * #2042 r2: a lease left behind is charged as a failed attempt only if its pass had BEGUN.
+       * Seeded through a restore, so the takeover reads exactly these rows on each adapter's SQL.
+       */
+      describe('an expired lease left behind', () => {
+        const T0 = '2026-09-01T00:00:00.000Z';
+        const seedLease = async (began: boolean) => {
+          const s = await newScope();
+          leasedPasses = [];
+          await host.restoreScope(staff, t, s, {
+            tenantId: t,
+            scopeId: s,
+            capturedAt: T0,
+            tables: [
+              {
+                name: '_substrat_job_runs',
+                ddl:
+                  'CREATE TABLE _substrat_job_runs (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, ' +
+                  'job TEXT NOT NULL, instance TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, ' +
+                  "cursor TEXT, counters TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0, " +
+                  'last_error TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+                  'next_attempt_at TEXT, ended_at TEXT, lease_owner TEXT, lease_began_at TEXT)',
+                columns: [
+                  'id', 'module_id', 'job', 'instance', 'payload', 'status', 'cursor', 'counters', 'attempts',
+                  'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at', 'lease_owner', 'lease_began_at',
+                ],
+                rows: [[
+                  'left-behind', JOBS_MODULE, 'once', 'default', '{}', 'running', null, '{}', 0,
+                  null, T0, T0, T0, null, 'a-drive-that-died', began ? T0 : null,
+                ]],
+              },
+            ],
+          });
+          return s;
+        };
+
+        it('whose pass never began is taken over for free: with maxAttempts 1 the run still runs', async () => {
+          const s = await seedLease(false);
+          expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1, failed: 0 });
+          expect(leasedPasses).toEqual(['left-behind']);
+          expect(await runOf(s, 'left-behind')).toMatchObject({ status: 'done', attempts: 0, lastError: null });
+        });
+
+        it('twin: whose pass had begun is charged, and with maxAttempts 1 the takeover ends the run', async () => {
+          const s = await seedLease(true);
+          expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, failed: 1, completed: 0 });
+          expect(leasedPasses).toEqual([]);
+          expect(await runOf(s, 'left-behind')).toMatchObject({ status: 'failed', attempts: 1, leaseOwner: null });
+        });
+      });
+
+      it("a retry is due on its own backoff, never at the lease's expiry", async () => {
+        const s = await newScope();
+        const run = await startLeased(s, 'leased', { fail: true });
+        const before = Date.now();
+        expect(await host.runDueJobs(t, s)).toMatchObject({ retrying: 1 });
+        // baseDelayMs 0: due at once, not a lease (fifteen minutes) later.
+        const after = await runOf(s, run.id);
+        expect(Date.parse(after!.nextAttemptAt!)).toBeLessThan(before + 60_000);
+        expect(after?.leaseOwner).toBeNull();
+        expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, retrying: 1 });
+      });
     });
 
     it('keeps a declared subject when coalescing and refuses a different subject', async () => {

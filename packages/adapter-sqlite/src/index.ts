@@ -306,7 +306,15 @@ import {
   issueExemplarOwner,
   type RedactionSql,
   JOB_RUN_PATCH_SQL,
+  JOB_RUN_CLAIM_SQL,
+  JOB_RUN_RENEW_SQL,
+  JOB_RUN_BEGIN_SQL,
+  JOB_RUN_MISS_SQL,
+  JOB_RUN_MISS_SETTLE_SQL,
+  admissionMissOutcome,
   JOB_STEP_RECORD_SQL,
+  JOB_LEASE_EXPIRED_NOTE,
+  assertLeaseMs,
   DELIVERY_ERROR_REDACTION_SQL,
   REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
@@ -491,6 +499,8 @@ import {
   type JobRunFilter,
   type JobRunKey,
   type JobRunPatch,
+  type JobRegistration,
+  type JobRunClaim,
   type JobRunRow,
   type JobRunStore,
   type JobStepRow,
@@ -1582,7 +1592,7 @@ export class SqliteScopeHost implements ScopeHost {
    * first two thirds, so a run picked off the table finds its handler by the
    * columns it already carries.
    */
-  private readonly jobs = new Map<string, { handler: JobHandler; retry?: ExecutorRetryPolicy }>();
+  private readonly jobs = new Map<string, JobRegistration>();
   /**
    * The event currently being effected by an executor, stamped onto any admin rows
    * it writes. Ambient rather than threaded through every HostAdmin signature: it is
@@ -5226,12 +5236,14 @@ export class SqliteScopeHost implements ScopeHost {
     name: string,
     handler: JobHandler,
     retry?: ExecutorRetryPolicy,
+    options?: { leaseMs?: number },
   ): void {
     // #1575: the kernel's own jobs are dispatched before this registry is read.
     assertJobRegistrable(moduleId, name);
+    assertLeaseMs(options?.leaseMs);
     const key = `${moduleId}/${name}`;
     if (this.jobs.has(key)) throw new Error(`job '${key}' is already registered`);
-    this.jobs.set(key, { handler, retry });
+    this.jobs.set(key, { handler, retry, leaseMs: options?.leaseMs });
   }
 
   /**
@@ -5269,12 +5281,27 @@ export class SqliteScopeHost implements ScopeHost {
           last_error, started_at, updated_at, next_attempt_at, ended_at, subject_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    // A compare-and-set on `running` (#1632): a pass that outlived an erasure must not
-    // write its cursor back over the redaction. The kernel's statement, so both adapters
-    // hold the same line.
+    // A compare-and-set on `running` (#1632) and on the pass's lease (#2034): a pass that
+    // outlived an erasure, or lost its run to a takeover, must not write back over it. The
+    // kernel's statement, so both adapters hold the same line.
     const patchRun = db.prepare(JOB_RUN_PATCH_SQL);
-    const patchArgs = (id: string, p: JobRunPatch) =>
-      [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id] as const;
+    const patchArgs = (id: string, p: JobRunPatch, owner: string) =>
+      [p.status, p.cursor, p.counters, p.attempts, p.lastError, p.updatedAt, p.nextAttemptAt, p.endedAt, id, owner] as const;
+    const beganAt = db.prepare('SELECT lease_began_at FROM _substrat_job_runs WHERE id = ?');
+    const beginRun = db.prepare(JOB_RUN_BEGIN_SQL);
+    const missRun = db.prepare(JOB_RUN_MISS_SQL);
+    const missSettle = db.prepare(JOB_RUN_MISS_SETTLE_SQL);
+    // #2042 r4: every lease time is this host's clock as the statement runs, inside its turn —
+    // never a time the drive computed, which a skew or a wait in the queue would make wrong.
+    const now = (): string => this.clock();
+    const plus = (at: string, ms: number): string => new Date(Date.parse(at) + ms).toISOString();
+    const claimRun = db.prepare(JOB_RUN_CLAIM_SQL);
+    const renewRun = db.prepare(JOB_RUN_RENEW_SQL);
+    const recordStepRow = db.prepare(JOB_STEP_RECORD_SQL);
+    const dropSteps = db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?');
+    const stepRow = db.prepare(
+      'SELECT step, result, attempts, last_error FROM _substrat_job_steps WHERE run_id = ? AND step = ?',
+    );
     // `db.transaction` on better-sqlite3 runs its body SYNCHRONOUSLY inside a real
     // SQLite transaction, so nothing — not another turn of the event loop, not
     // another caller of this host — can interleave between the read and the write.
@@ -5288,18 +5315,52 @@ export class SqliteScopeHost implements ScopeHost {
       );
       return r;
     });
-    const commitPassTx = db.transaction((id: string, p: JobRunPatch): void => {
-      patchRun.run(...patchArgs(id, p));
-      db.prepare('DELETE FROM _substrat_job_steps WHERE run_id = ?').run(id);
+    const commitPassTx = db.transaction((id: string, p: JobRunPatch, owner: string): boolean => {
+      // #2034: the ledger goes only with a patch that applied — a stale holder's commit must
+      // not empty the ledger of the pass that took the run over.
+      if (patchRun.run(...patchArgs(id, p, owner)).changes === 0) return false;
+      dropSteps.run(id);
+      return true;
     });
+    // #2034: the claim, and whether it took over a lease, read in the same transaction.
+    const claimTx = db.transaction((id: string, owner: string, leaseMs: number): JobRunClaim | null => {
+      // #2042 r2, r4: a takeover is charged only when the lease it takes had BEGUN its pass.
+      const before = beganAt.get(id) as { lease_began_at: string | null } | undefined;
+      const at = now();
+      const claimed = row(claimRun.get(owner, plus(at, leaseMs), at, JOB_LEASE_EXPIRED_NOTE, id, at));
+      return claimed && { run: claimed, takeover: (before?.lease_began_at ?? null) !== null };
+    });
+    // #2042 r3, r4: an admission miss — the relative count, then the backoff or failure it calls for.
+    const missTx = db.transaction((id: string, owner: string, note: string) => {
+      const at = now();
+      const counted = missRun.get(at, id, owner) as { admission_misses: number } | undefined;
+      if (!counted) return null;
+      const o = admissionMissOutcome(counted.admission_misses, at, note);
+      missSettle.run(o.status, o.nextAttemptAt, o.endedAt, o.lastError, id, counted.admission_misses);
+      return { misses: counted.admission_misses, failed: o.status === 'failed' };
+    });
+    const recordStepTx = db.transaction(
+      (runId: string, name: string, result: string | null, attempts: number, lastError: string | null,
+        at: string, owner: string, leaseMs: number): boolean => {
+        if (renewRun.run(plus(now(), leaseMs), runId, owner).changes === 0) return false;
+        recordStepRow.run(runId, name, result, attempts, lastError, at, runId, owner);
+        return true;
+      },
+    );
     // Every store operation takes its own short turn on the scope actor, so no
     // statement here can land inside an `invoke`'s open transaction. `turn` is the
     // one place that happens; adding a method without it reintroduces the bug.
     const turn = <T>(fn: () => T): Promise<T> => rt.actor.enqueue(fn);
     return {
       startOrJoin: (key: JobRunKey, r: JobRunRow) => turn(() => startOrJoinTx(key, r)),
-      get: (id: string) =>
-        turn(() => row(db.prepare('SELECT * FROM _substrat_job_runs WHERE id = ?').get(id))),
+      claim: (id: string, owner: string, leaseMs: number) => turn(() => claimTx(id, owner, leaseMs)),
+      // #2042 r4: BEGIN, the commitment point, judged by this host's clock as it runs.
+      begin: (id: string, owner: string, marginMs: number) =>
+        turn(() => {
+          const at = now();
+          return beginRun.run(at, id, owner, plus(at, marginMs)).changes > 0;
+        }),
+      miss: (id: string, owner: string, note: string) => turn(() => missTx(id, owner, note)),
       // #1834: the drive's one snapshot — keys only, in the order runs became due.
       dueKeys: (now: string, max: number) =>
         turn(() => db
@@ -5332,17 +5393,15 @@ export class SqliteScopeHost implements ScopeHost {
           )
           .all(...params) as JobRunRow[];
       }),
-      patch: (id: string, p: JobRunPatch) =>
+      patch: (id: string, p: JobRunPatch, owner: string) =>
+        turn(() => patchRun.run(...patchArgs(id, p, owner)).changes > 0),
+      commitPass: (id: string, p: JobRunPatch, owner: string) => turn(() => commitPassTx(id, p, owner)),
+      // #2034: a step boundary renews the lease; a pass that lost it reads nothing.
+      beginStep: (runId: string, name: string, owner: string, leaseMs: number) =>
         turn(() => {
-          patchRun.run(...patchArgs(id, p));
+          if (renewRun.run(plus(now(), leaseMs), runId, owner).changes === 0) return { held: false, row: null };
+          return { held: true, row: (stepRow.get(runId, name) as JobStepRow | undefined) ?? null };
         }),
-      commitPass: (id: string, p: JobRunPatch) => turn(() => commitPassTx(id, p)),
-      step: (runId: string, name: string) =>
-        turn(() => (db
-          .prepare(
-            'SELECT step, result, attempts, last_error FROM _substrat_job_steps WHERE run_id = ? AND step = ?',
-          )
-          .get(runId, name) as JobStepRow | undefined) ?? null),
       recordStep: (
         runId: string,
         name: string,
@@ -5350,11 +5409,12 @@ export class SqliteScopeHost implements ScopeHost {
         attempts: number,
         lastError: string | null,
         at: string,
+        owner: string,
+        leaseMs: number,
       ) =>
-        turn(() => {
-          // Only while the run is still `running` (#1632) — see `JOB_STEP_RECORD_SQL`.
-          db.prepare(JOB_STEP_RECORD_SQL).run(runId, name, result, attempts, lastError, at, runId);
-        }),
+        // Only while the run is still `running` (#1632) and this pass holds it (#2034), renewing
+        // the lease in the same transaction — see `JOB_STEP_RECORD_SQL`.
+        turn(() => recordStepTx(runId, name, result, attempts, lastError, at, owner, leaseMs)),
     };
   }
 
@@ -11700,6 +11760,13 @@ export class SqliteScopeHost implements ScopeHost {
     // executes, the table always already has `kind` in its key, never `invocation_id`.
     this.ensureColumn(db, '_substrat_schedule_state', 'invocation_id', 'invocation_id TEXT');
     this.ensureColumn(db, '_substrat_job_runs', 'subject_id', 'subject_id TEXT');
+    // #2034: the lease, on a scope DB built before it. NULL = nobody holds the run.
+    this.ensureColumn(db, '_substrat_job_runs', 'lease_owner', 'lease_owner TEXT');
+    // #2042 r2, r4: whether the holder BEGAN its pass. NULL = it has not, which is right for any lease
+    // already there: a takeover of it costs nothing.
+    this.ensureColumn(db, '_substrat_job_runs', 'lease_began_at', 'lease_began_at TEXT');
+    // #2042 r3: consecutive admission misses. NULL = none, right for every run already there.
+    this.ensureColumn(db, '_substrat_job_runs', 'admission_misses', 'admission_misses INTEGER');
     // #2009: the copy classification on a scope DB built before it (NULL reads as a copy; see
     // `COPY_ORIGIN_DDL`).
     this.ensureColumn(db, '_substrat_copy_origin', 'is_copy', 'is_copy INTEGER');
