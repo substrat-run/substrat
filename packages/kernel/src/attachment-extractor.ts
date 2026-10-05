@@ -164,7 +164,10 @@ export function assertAttachmentTextBounds(bounds: AttachmentTextBounds): void {
  * from a scope. A host under a CPU limit below the 30 s budget is the case for tightening.
  */
 export function resolveAttachmentTextBounds(given: Partial<AttachmentTextBounds> = {}): AttachmentTextBounds {
-  const bounds = { ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, ...given };
+  // A key passed as `undefined` — an option forwarded from a caller that left it out — is
+  // absent, not a bound: spreading it would replace the default with nothing.
+  const set = Object.fromEntries(Object.entries(given).filter(([, v]) => v !== undefined));
+  const bounds = { ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, ...set };
   assertAttachmentTextBounds(bounds);
   for (const key of ['maxInputBytes', 'maxTextBytes', 'timeoutMs'] as const) {
     if (bounds[key] > DEFAULT_ATTACHMENT_TEXT_BOUNDS[key]) {

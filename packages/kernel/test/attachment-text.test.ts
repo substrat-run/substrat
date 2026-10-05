@@ -737,6 +737,8 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
   it("resolves a host's bounds over the defaults — tighter only, and each a positive integer", () => {
     expect(resolveAttachmentTextBounds()).toEqual(DEFAULT_ATTACHMENT_TEXT_BOUNDS);
     expect(resolveAttachmentTextBounds({ timeoutMs: 5_000 })).toEqual({ ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, timeoutMs: 5_000 });
+    // A key forwarded as undefined is a key left out, never a bound of nothing.
+    expect(resolveAttachmentTextBounds({ timeoutMs: undefined, maxTextBytes: 64 })).toEqual({ ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, maxTextBytes: 64 });
     for (const key of ['maxInputBytes', 'maxTextBytes', 'timeoutMs'] as const) {
       // At the default is allowed; one past it is a bound no adapter can keep.
       expect(resolveAttachmentTextBounds({ [key]: DEFAULT_ATTACHMENT_TEXT_BOUNDS[key] })[key]).toBe(DEFAULT_ATTACHMENT_TEXT_BOUNDS[key]);
