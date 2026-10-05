@@ -1320,7 +1320,7 @@ app.post('/api/members/revoke-invite', async (c) => {
 
 /**
  * Remove a member. The op revokes the roster row and asks the membership executor (#1184) to
- * take the role and the org membership away; it runs inline, so the answer says what
+ * take the role away; it runs inline, so the answer says what
  * happened: 204 done, 202 `{ pending: true }` when the backstop owns it, 409 refused. The
  * login is severed either way, since the removal itself is committed.
  */

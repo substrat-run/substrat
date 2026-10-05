@@ -13,9 +13,11 @@ import {
  * The dashboard's half of a team invite after the accept commits (#1184).
  *
  * The invites engine emits `member.add-requested` in the accept's transaction. The kernel's
- * membership executor effects it: the org membership and the invited role at the TENANT node,
- * which is where every dashboard role is held. It also re-checks that the person who sent the
- * invite still holds every permission that role carries. Before this, the worker assigned the
+ * membership executor effects it: the invited role at the TENANT node, which is where every
+ * dashboard role is held — and nothing else, so the team org gains no member (it holds no
+ * grants; the roster is the module's own table). It also re-checks, inside the directory unit
+ * that assigns the role, that the person who sent the invite still holds every permission that
+ * role carries. Before this, the worker assigned the
  * role by hand after the invoke returned: nothing retried it if the request died in between,
  * and nothing re-checked the sender.
  */

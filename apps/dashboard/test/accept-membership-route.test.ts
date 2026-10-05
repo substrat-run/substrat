@@ -75,8 +75,7 @@ function flakyHost(real: SqliteScopeHost): ScopeHost {
     new Proxy(admin, {
       get(t, key) {
         if (key === 'applyMembership' && failNextAdds > 0) {
-          return async (...args: Parameters<HostAdmin['applyMembership']>) => {
-            if (args[1].op !== 'add') return t.applyMembership(...args);
+          return async () => {
             failNextAdds -= 1;
             throw new Error('directory unavailable');
           };
@@ -190,7 +189,7 @@ const mountExecutor = () => registerDashboardMembership(flakyHost(host));
 describe('POST /api/invites/accept — the membership executor answers the accept (#1184)', () => {
   beforeEach(mountExecutor);
 
-  it('200: joined inline — role, org membership and identity link, with the trail correlated', async () => {
+  it('200: joined inline — the tenant role and the identity link, with the trail correlated', async () => {
     const t = await team();
     const { token } = await invite('sub-owner', 'rae@team.test', 'member');
     const res = await accept('sub-rae', 'rae@team.test', token);
@@ -199,12 +198,13 @@ describe('POST /api/invites/accept — the membership executor answers the accep
 
     const rae = (await principalOf(t, 'sub-rae'))!.principal;
     expect(await canRead(t, rae)).toBe(true);
-    expect((await host.admin.listMembers(staff, t.tenant, t.org)).map((m) => m.principal)).toContain(rae);
-    // The executor's rows: the dashboard's actor executed them, for the owner who invited.
+    // The role only: the executor joins no org, and the team org was never what granted access.
+    expect(await host.admin.listMembers(staff, t.tenant, t.org)).toEqual([]);
+    // The executor's row: the dashboard's actor executed it, for the owner who invited.
     const rows = (await host.admin.auditLog(staff, { tenantId: t.tenant, limit: 500 })).filter(
       (r) => (r.action === 'addMember' || r.action === 'assignRole') && JSON.stringify(r.after).includes(rae),
     );
-    expect(rows.map((r) => r.action).sort()).toEqual(['addMember', 'assignRole']);
+    expect(rows.map((r) => r.action)).toEqual(['assignRole']);
     for (const r of rows) {
       expect(r.actor).toBe(DASHBOARD_CP_ACTOR);
       expect(r.causedBy).toEqual(expect.any(String));
@@ -227,11 +227,10 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     expect(res.status).toBe(409);
     expect(await res.text()).toMatch(/no longer has the access it grants/);
     expect(await principalOf(t, 'sub-ben')).toBeFalsy();
-    // On the roster as refused, with the reason; in no org.
+    // On the roster as refused, with the reason; no role.
     const ben = (await roster(t)).find((m) => m.email === 'ben@team.test');
     expect(ben?.status).toBe('refused');
     expect(ben?.refusal).toMatch(/the inviter .* no longer holds .*dashboard/);
-    expect((await host.admin.listMembers(staff, t.tenant, t.org)).map((m) => m.principal)).toEqual([ada]);
 
     // What an admin reads: a terminal refusal naming the permissions the inviter lacks.
     const dead = await host.executorDeadLetters(t.tenant, t.dashScope);
@@ -252,13 +251,13 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     expect(await principalOf(t, 'sub-ben')).toBeFalsy();
   });
 
-  it('removing a member also ends the org membership the executor added', async () => {
+  it('removing a member takes away the role the executor assigned', async () => {
     const t = await team();
     const { token } = await invite('sub-owner', 'rae@team.test', 'member');
     expect((await accept('sub-rae', 'rae@team.test', token)).status).toBe(200);
     const rae = (await principalOf(t, 'sub-rae'))!.principal;
+    expect(await canRead(t, rae)).toBe(true);
     expect((await remove(t, 'rae@team.test')).status).toBe(204);
-    expect((await host.admin.listMembers(staff, t.tenant, t.org)).map((m) => m.principal)).not.toContain(rae);
     expect(await canRead(t, rae)).toBe(false);
   });
 
@@ -306,7 +305,6 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     await new Promise((r) => setTimeout(r, 1_300)); // past the first backoff step (1s ± 20% jitter)
     await host.drainDue(t.tenant, t.dashScope);
     expect(await canRead(t, rae)).toBe(false);
-    expect((await host.admin.listMembers(staff, t.tenant, t.org)).map((m) => m.principal)).not.toContain(rae);
     const dead = await host.executorDeadLetters(t.tenant, t.dashScope);
     expect(dead.map((d) => d.error)).toContainEqual(expect.stringMatching(/was removed after this request was made/));
   });

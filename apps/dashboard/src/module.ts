@@ -1132,8 +1132,8 @@ const acceptInviteInput = z.object({
  * member yet, so there is no permission to check — the identifier hash IS the
  * authority, per the invites engine). Composes `acceptInvite` (verifies the hash,
  * transitions state, emits invites.accepted + member.add-requested) and flips the
- * roster row to active in the SAME transaction. The role assignment and org membership
- * are effected after the commit by the membership executor (#1184, `membership.ts`), the
+ * roster row to joining in the SAME transaction. The role assignment is effected after
+ * the commit by the membership executor (#1184, `membership.ts`), the
  * identity link by the worker (it needs the sub).
  */
 const acceptInviteOp: OperationHandler<z.infer<typeof acceptInviteInput>, { roleKey: string }> = async (ctx, raw) => {
@@ -1328,7 +1328,7 @@ const removeMemberInput = z.object({ memberId: z.string().min(1) });
 
 /**
  * Remove a member (#1184). The roster row is revoked here and `member.remove-requested` asks
- * the kernel's membership executor to take the role and the org membership away, after the
+ * the kernel's membership executor to take the role away, after the
  * commit and inline — the same seam the join went through, so a join still pending when the
  * person is removed can never land afterwards. §5.1's bound applies to removal as to
  * assignment: you cannot strip a role you could not have granted. The owner cannot be
