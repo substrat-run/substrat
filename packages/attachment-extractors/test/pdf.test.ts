@@ -622,6 +622,12 @@ const TIMER_SLACK_MS = 150;
 const ABORTED_ANSWER_MS = 150;
 /** How long a shape may take to settle, unaborted. */
 const SETTLE_MS = 3_000;
+/**
+ * The most memory a shape may hold at its peak, over a collected baseline: the extraction's
+ * `Retained` bound (36 MiB at the defaults), a decoding stream's transient copies (a few
+ * `PDF_STREAM_MAX`), and the garbage a young generation holds between collections.
+ */
+const PEAK_MIB = 128;
 
 const MIB = 1024 * 1024;
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -683,6 +689,66 @@ const SHAPES: readonly Shape[] = [
     const { bytes, xrefAt } = onePage('BT ET');
     return cat(bytes.subarray(0, xrefAt), `xref\n0 1000000000\ntrailer\n<< /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`);
   }),
+  // Memory: allocations that grow with references, not with bytes (#2062 r3).
+  pdfShape('a page naming one 1 MiB stream 400 times', () =>
+    build([CATALOG, PAGES,
+      `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents [${'5 0 R '.repeat(400)}] >>`,
+      HELVETICA, stream('', ' '.repeat(MIB))]).bytes),
+  pdfShape('a CMap mapping 131 072 codes onto 512-byte destinations', () =>
+    cmapFont(`begincmap 2 beginbfrange <0000> <FFFF> <${'0041'.repeat(256)}> <0100> <01FF> <${'0041'.repeat(256)}> endbfrange endcmap`, '0001')),
+  pdfShape('one 200 KiB object parsed under 2 000 numbers', async () => {
+    // An object stream whose header names every number at offset 0, and a page tree whose
+    // kids are those numbers: the same bytes, parsed and kept once per number.
+    const nums = Array.from({ length: 2_000 }, (_, i) => i + 10);
+    const header = nums.map((n) => `${n} 0`).join(' ') + ' ';
+    const objstm = stream(`/Type /ObjStm /N ${nums.length} /First ${header.length}`, header + `[${'1 '.repeat(100 * 1024)}]`);
+    const kids = `[${nums.map((n) => `${n} 0 R`).join(' ')}]`;
+    const head = bin('%PDF-1.7\n');
+    const o1 = cat('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+    const o2 = cat(`2 0 obj\n<< /Type /Pages /Kids ${kids} >>\nendobj\n`);
+    const o3 = cat('3 0 obj\n', objstm, '\nendobj\n');
+    const offs = [head.length, head.length + o1.length, head.length + o1.length + o2.length];
+    const xrefAt = offs[2]! + o3.length;
+    const rows = [
+      '0000000000 65535 f \n',
+      ...offs.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`),
+      ...Array.from({ length: 6 }, () => '0000000000 65535 f \n'),
+    ].join('');
+    // Objects 10…2009 live in object stream 3: a cross-reference stream says so.
+    const w = new Uint8Array(3 + nums.length * 7);
+    void w;
+    const xs = (() => {
+      const rowsBin: number[] = [];
+      for (let n = 0; n < 2_010; n += 1) {
+        if (n === 0) rowsBin.push(0, 0, 0, 0, 0, 0xff, 0xff);
+        else if (n <= 3) rowsBin.push(1, ...u32(offs[n - 1]!), 0, 0);
+        else if (n < 10) rowsBin.push(0, 0, 0, 0, 0, 0, 0);
+        else rowsBin.push(2, 0, 0, 0, 3, (n - 10) >> 8, (n - 10) & 0xff);
+      }
+      return stream('/Type /XRef /Size 2010 /W [1 4 2] /Root 1 0 R', Uint8Array.from(rowsBin));
+    })();
+    void rows;
+    return cat(head, o1, o2, o3, '4 0 obj\n', xs, `\nendobj\nstartxref\n${xrefAt}\n%%EOF\n`);
+  }),
+  pdfShape('500 fonts sharing one ToUnicode of 30 000 codes', () => {
+    const chars = Array.from({ length: 300 }, (_, k) =>
+      `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(k * 100 + j).toString(16).padStart(4, '0')}> <00410042>`).join(' ')} endbfchar`).join('\n');
+    const fonts = Array.from({ length: 500 }, (_, i) => `/F${i} ${i + 7} 0 R`).join(' ');
+    const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << ${fonts} >> >> /Contents 5 0 R >>`;
+    const content = Array.from({ length: 500 }, (_, i) => `BT /F${i} 9 Tf <0001> Tj ET`).join('\n');
+    const font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>';
+    return build([CATALOG, PAGES, page, HELVETICA, stream('', content), stream('', `begincmap\n${chars}\nendcmap`), ...Array.from({ length: 500 }, () => font)]).bytes;
+  }),
+  pdfShape('a form drawn 50 000 times', () =>
+    build([CATALOG, PAGES,
+      '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << /X 6 0 R >> >> /Contents 5 0 R >>',
+      HELVETICA, stream('', '/X Do '.repeat(50_000)),
+      stream('/Subtype /Form /Resources << /Font << /F1 4 0 R >> >>', `BT /F1 9 Tf (form) Tj ET ${' '.repeat(64 * 1024)}`)]).bytes),
+  pdfShape('a million pages through shared page-tree nodes', () => {
+    const kids = (n: number) => `[${`${n} 0 R `.repeat(100)}]`;
+    return build([CATALOG, `<< /Type /Pages /Kids ${kids(6)} >>`, PAGE, HELVETICA, stream('', 'BT /F1 9 Tf (fanned) Tj ET'),
+      `<< /Type /Pages /Kids ${kids(7)} >>`, `<< /Type /Pages /Kids ${kids(3)} >>`]).bytes;
+  }),
   // The other parsers, for the same rule.
   { name: 'html: a 16 MiB unclosed comment', extractor: htmlExtractor(), contentType: 'text/html', body: () => enc(`<p>x</p><!--${'-'.repeat(16 * MIB)}`) },
   { name: 'html: 2 M unclosed tags', extractor: htmlExtractor(), contentType: 'text/html', body: () => enc('<a '.repeat(2 * MIB)) },
@@ -723,6 +789,8 @@ describe('the abort-latency harness: no shape holds the thread, aborted or not',
     expect(performance.now() - t0, 'the shape did not settle in time').toBeLessThan(SETTLE_MS);
     expect('text' in outcome || 'failed' in outcome).toBe(true);
     expect(await longestHold(body, shape.extractor, shape.contentType), 'the thread was held').toBeLessThan(HOLD_MS);
+    // And never holds more memory than the bound allows, at its peak.
+    expect(await peakMemory(body, shape.extractor, shape.contentType), 'memory held at the peak').toBeLessThan(PEAK_MIB * MIB);
   }, 30_000);
 });
 

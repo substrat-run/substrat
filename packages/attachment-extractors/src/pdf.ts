@@ -92,8 +92,12 @@ const OBJ_HEADER_SPAN = 48;
 export const PDF_RETAINED_FACTOR = 2;
 /** And a base the structures need whatever the inflate budget: fonts, the cross-reference, objects. */
 export const PDF_RETAINED_BASE = 4 * 1024 * 1024;
+/** What a parsed object holds per byte it was read from: values, arrays and maps cost more than their text. */
+const OBJECT_COST_PER_BYTE = 4;
 /** The fixed cost of an entry kept in a map or list: a cross-reference entry, a CMap entry, a parsed object. */
 const ENTRY_COST = 64;
+/** What a font's decoder holds: a 256-entry table of short strings. */
+const FONT_COST = 32 * 1024;
 /** Whitespace read between a stream's declared end and its `endstream`. */
 const STREAM_END_SPAN = 64;
 
@@ -778,7 +782,10 @@ class PdfDocument {
    */
   addEntry(num: number, entry: XrefEntry, replace = false): void {
     if (this.xref.has(num) && !replace) return;
-    if (!this.xref.has(num) && this.xref.size >= PDF_OBJECTS_MAX) throw tooManyObjects();
+    if (!this.xref.has(num)) {
+      if (this.xref.size >= PDF_OBJECTS_MAX) throw tooManyObjects();
+      this.retained.take(ENTRY_COST);
+    }
     this.xref.set(num, entry);
   }
 
@@ -795,6 +802,9 @@ class PdfDocument {
   async object(num: number): Promise<PdfValue> {
     if (this.objects.has(num)) return this.objects.get(num)!;
     if (this.resolving.has(num)) return null;
+    // A parse is synchronous and up to a token's bound long: a walk that resolves object after
+    // object — kids, fonts, forms — yields between them once the stride is spent.
+    if (this.pace.room <= 0) await this.pace.turn();
     const entry = this.xref.get(num);
     if (!entry) return null;
     this.resolving.add(num);
@@ -816,7 +826,10 @@ class PdfDocument {
     const o = lex.next();
     if (n.t !== 'num' || g.t !== 'num' || o.t !== 'kw' || o.v !== 'obj') return null;
     if (expect !== null && n.v !== expect) return null;
+    const from = lex.pos;
     const v = valueFrom(lex.next(), lex, true);
+    // A parsed object is kept (`objects`): charged for what it was read from.
+    this.retained.take(ENTRY_COST + (lex.pos - from) * OBJECT_COST_PER_BYTE);
     if (!isDict(v)) return v;
     const save = lex.pos;
     const kw = lex.next();
@@ -856,7 +869,10 @@ class PdfDocument {
     const at = stm?.offsets.get(num);
     if (!stm || at === undefined) return null;
     const lex = new Lexer(stm.data, at, stm.data.length, this.pace);
-    return valueFrom(lex.next(), lex, true);
+    const v = valueFrom(lex.next(), lex, true);
+    // Kept, like any parsed object — and many numbers may name one offset, each parsed again.
+    this.retained.take(ENTRY_COST + (lex.pos - at) * OBJECT_COST_PER_BYTE);
+    return v;
   }
 
   /** An object stream's decoded data and its header of object numbers and offsets. */
@@ -872,7 +888,9 @@ class PdfDocument {
     const decoded = await this.decode(s);
     if (!decoded) return null;
     if (decoded.exhausted) throw new ExtractionBoundExceeded('the PDF decodes past the extraction bound');
-    const stm = { data: decoded.data, offsets: await objectStreamOffsets(decoded.data, s.dict, this.pace) };
+    const offsets = await objectStreamOffsets(decoded.data, s.dict, this.pace);
+    this.retained.take(offsets.size * ENTRY_COST);
+    const stm = { data: decoded.data, offsets };
     this.objectStreams.set(container, stm);
     return stm;
   }
@@ -908,7 +926,11 @@ class PdfDocument {
       result = { data, exhausted };
       return result;
     } finally {
-      if (s.num !== null) this.decodedByNum.set(s.num, result);
+      if (s.num !== null) {
+        // Cached for the rest of the extraction: held, and charged as such.
+        if (result) this.retained.take(result.data.length);
+        this.decodedByNum.set(s.num, result);
+      }
     }
   }
 }
@@ -1430,6 +1452,8 @@ function codesToText(bytes: Uint8Array, spaces: CodeSpace, fallback: number, map
 /** A font's decoder: `/ToUnicode` first, then its encoding; unreadable composite fonts give nothing. */
 async function fontDecoder(doc: PdfDocument, font: PdfDict): Promise<FontDecoder> {
   const subtype = nameOf(font.get('Subtype'));
+  // Each font's decoder is kept for the extraction (`Reading.fonts`): charged before it is built.
+  doc.retained.take(FONT_COST);
   const toUnicode = await cmapOf(doc, font.get('ToUnicode'));
   if (subtype === 'Type0') {
     const encRef = font.get('Encoding');
