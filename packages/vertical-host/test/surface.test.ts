@@ -1551,6 +1551,32 @@ describe('mountPlatformSurface — the schedule switch status read (#1674)', () 
 });
 
 /**
+ * #2045 (Codex r3): the switch fence's preflight. The platform asks it before any switch call
+ * records or moves anything, so its answer must come from the host's own capability, never from
+ * the route existing: a deployment whose host predates the fence answers 501.
+ */
+describe('mountPlatformSurface — the switch fence preflight (#2045)', () => {
+  const get = (host: VerticalScopeHost, headers: Record<string, string> = authed()) =>
+    appWith(host).request(`/internal/switch-fence?scopeId=${SCOPE}`, { method: 'GET', headers }, ENV);
+
+  it('a host that honours the fence says so', async () => {
+    const res = await get({ ...fakeHost(), switchFenced: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ fenced: true });
+  });
+
+  it('a host that predates the fence answers 501 naming the redeploy', async () => {
+    const res = await get(fakeHost());
+    expect(res.status).toBe(501);
+    expect(JSON.stringify(await res.json())).toMatch(/redeploy/);
+  });
+
+  it('sits behind the platform-secret gate like the rest of the surface', async () => {
+    expect((await get({ ...fakeHost(), switchFenced: true }, {})).status).toBe(403);
+  });
+});
+
+/**
  * The far end of the PEER kill switch's status read (#1706) — the schedule read's twin, and
  * held to the same three things: the scope id is parsed and handed over, the entries come
  * back verbatim (no admin-log join here; this deployment holds none), and a host that

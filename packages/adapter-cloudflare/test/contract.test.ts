@@ -323,6 +323,8 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
       controlPlane: env.CONTROL_PLANE,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       systemSwitchDelegation: {
+        // #2045 (Codex r3): a deployment built with the switch fence.
+        fenceSupported: async () => true,
         switch: async (a) => {
           calls.push({ ...a });
           const out = answer(a);
@@ -415,16 +417,24 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
    * grant. A deployment built before #1823 drops `tenantHeld`, switches the module's scope-level
    * grants, answers `held: true` — and its evaluator still authorizes the tenant-level grant. So
    * an OFF of a tenant-held module needs the far end's `deniesTenantGrants`, or it is refused.
+   *
+   * #2045 (Codex r3): such a deployment is refused at the fence preflight before this can arise
+   * (every build with the fence is post-#1823), so an unattested answer here means a rollback
+   * between the preflight and the move. It is NOT compensated with an opposite move, which could
+   * undo a newer call's switch: the record stays off and owed, and every re-assert refuses until
+   * the vertical is redeployed.
    */
   describe('an OFF of a tenant-held module needs the deployment to attest the tenant-grant denial', () => {
-    /** `old`: a deployment built before #1823. `onFails`: its ON throws. */
-    const far = { old: true, onFails: false, changed: true };
-    const answer = (call: Call) => {
-      if (call.to === 'on' && far.onFails) throw new Error('deployment down');
-      return { held: true, changed: far.changed, permissions: ['sched:tick'], ...(far.old ? {} : { deniesTenantGrants: true as const }) };
-    };
+    /** `old`: a deployment built before #1823. */
+    const far = { old: true, changed: true };
+    const answer = () => ({
+      held: true,
+      changed: far.changed,
+      permissions: ['sched:tick'],
+      ...(far.old ? {} : { deniesTenantGrants: true as const }),
+    });
     const tenantHeld = async () => {
-      Object.assign(far, { old: true, onFails: false, changed: true });
+      Object.assign(far, { old: true, changed: true });
       const fx = await setup(answer);
       await fx.host.admin.grantToSystem(staff, {
         moduleId: SCHED,
@@ -438,26 +448,26 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
       return { ...fx, node, position };
     };
 
-    it('an old deployment is refused, its move put back, and nothing recorded', async () => {
+    it('an unattested answer is refused with nothing put back: the record stays off, owed a re-assert', async () => {
       const { host, node, calls, audit, position } = await tenantHeld();
       const e = await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' }).then(() => null, (x: unknown) => x);
       expect(errorCodeOf(e)).toBe('precondition_failed');
-      expect(String((e as Error).message)).toMatch(/predates the kill switch's tenant-grant denial.*Redeploy the vertical.*Nothing was switched\./);
-      // The OFF landed there, so ON gives back exactly what it took.
-      expect(calls.map((c) => [c.to, c.tenantHeld])).toEqual([['off', true], ['on', true]]);
-      expect(await position()).toEqual([]);
-      expect((await rows(audit)).map((r) => r.phase)).toEqual(['intent', 'refused']);
-    });
-
-    it('an old deployment that changed nothing has nothing put back, and is refused the same', async () => {
-      const { host, node, calls, position } = await tenantHeld();
-      // A far end already off answers `changed: false`: no move of this call to undo.
-      far.changed = false;
-      await expect(host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).rejects.toThrow(
-        /Nothing was switched\./,
-      );
-      expect(calls.map((c) => c.to)).toEqual(['off']);
-      expect(await position()).toEqual([]);
+      expect(String((e as Error).message)).toMatch(/predates the kill switch's tenant-grant denial.*Redeploy the vertical/);
+      // No compensating ON: it could undo a newer call's switch.
+      expect(calls.map((c) => [c.to, c.tenantHeld])).toEqual([['off', true]]);
+      expect(await position()).toEqual(['off']);
+      expect((await rows(audit)).map((r) => [r.phase, r.recordKept, r.reassertOwed])).toEqual([
+        ['intent', undefined, undefined],
+        ['refused', true, true],
+      ]);
+      // The owed mark holds the scope's receipt back until a re-assert the deployment can attest.
+      await host.admin.markScopeProvisioned(staff, node.tenantId, node.scopeId, 'v1');
+      expect((await host.admin.getScopeRecord(staff, node.tenantId, node.scopeId))?.provisionedVersionId).toBeNull();
+      await expect(host.admin.reassertSystemSwitches(staff, node)).rejects.toThrow(/predates the kill switch's tenant-grant denial/);
+      far.old = false; // redeployed
+      await host.admin.reassertSystemSwitches(staff, node);
+      await host.admin.markScopeProvisioned(staff, node.tenantId, node.scopeId, 'v1');
+      expect((await host.admin.getScopeRecord(staff, node.tenantId, node.scopeId))?.provisionedVersionId).toBe('v1');
     });
 
     it('a deployment that attests it is recorded OFF', async () => {
@@ -465,16 +475,6 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
       far.old = false;
       await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' });
       expect(calls.map((c) => c.to)).toEqual(['off']);
-      expect(await position()).toEqual(['off']);
-    });
-
-    it('a put-back ON that fails leaves the scope off, so the record is kept off', async () => {
-      const { host, node, calls, position } = await tenantHeld();
-      far.onFails = true;
-      await expect(host.admin.revokeFromSystem(staff, { moduleId: SCHED, node, reason: 'r' })).rejects.toThrow(
-        /predates the kill switch's tenant-grant denial/,
-      );
-      expect(calls.map((c) => c.to)).toEqual(['off', 'on']);
       expect(await position()).toEqual(['off']);
     });
 
@@ -489,7 +489,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     });
 
     it('a module that is not tenant-held needs no attestation, on an old deployment too', async () => {
-      Object.assign(far, { old: true, onFails: false, changed: true });
+      Object.assign(far, { old: true, changed: true });
       const { host, t, s, calls } = await setup(answer);
       await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' });
       expect(calls.map((c) => [c.to, c.tenantHeld])).toEqual([['off', false]]);
@@ -651,6 +651,8 @@ describe('#1674 — the status read is delegated exactly like the switch, and jo
       controlPlane: env.CONTROL_PLANE,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       systemSwitchDelegation: {
+        // #2045 (Codex r3): a deployment built with the switch fence.
+        fenceSupported: async () => true,
         switch: async (a) => {
           const changed = position !== a.to;
           position = a.to;
@@ -761,6 +763,8 @@ describe('#1674 — a hosted scope is re-asserted through the delegation, after 
       controlPlane: env.CONTROL_PLANE,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       systemSwitchDelegation: {
+        // #2045 (Codex r3): a deployment built with the switch fence.
+        fenceSupported: async () => true,
         switch: async (a) => {
           deployment.switchCalls.push(a.to);
           if (deployment.fail) throw new Error('vertical unreachable during system-switch');
@@ -931,6 +935,8 @@ describe('#1742 — a staff OFF racing the stale-carry revert still ends OFF', (
       controlPlane: hooked,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       systemSwitchDelegation: {
+        // #2045 (Codex r3): a deployment built with the switch fence.
+        fenceSupported: async () => true,
         switch: async (a) => {
           deployment.calls.push(a.to);
           if (a.to === 'off' && deployment.offMovedEarlier) return { ...fencedFor(a), held: true, changed: true, permissions: [] };
@@ -1053,6 +1059,8 @@ describe('#1674 — a failed switch-record write is answered, never swallowed', 
       controlPlane: flaky,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       systemSwitchDelegation: {
+        // #2045 (Codex r3): a deployment built with the switch fence.
+        fenceSupported: async () => true,
         switch: async (a) => {
           deployment.calls++;
           await deployment.during?.();

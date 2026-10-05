@@ -160,63 +160,93 @@ export const switchSupersededMessage = (kind: SwitchKind, scopeId: string, key: 
 export const switchesTableOf = (kind: SwitchKind): string => RECORDS[kind].table;
 
 /**
- * #2045 (Codex r2): the subjects whose scope may not be where their record says — a switch call
- * whose move threw twice, so neither it nor any readback could settle the scope while an older
- * call's move may still be in flight. The record holds that call's position under the newest
- * fence, and the next re-assert moves the scope to it, in EITHER direction, then clears the mark.
- * Without a mark a re-assert keeps #1674's rule: a record never turns anything on.
+ * #2045: the subjects whose scope may not be where their record says. A WRITE-AHEAD intent
+ * (Codex r3): the switch call's record write marks its subject owed in the same directory write,
+ * BEFORE anything moves, and the mark is cleared only once the scope has confirmed a move under a
+ * fence at least the call's own (`clearSwitchOwed`). So every way a move can go wrong — it throws,
+ * its answer is lost, the RPC that would have cleared the mark fails, the caller dies — leaves the
+ * mark set, and the next re-assert moves the scope to its record, in EITHER direction, under the
+ * record's fence. Without a mark a re-assert keeps #1674's rule: a record never turns anything on.
+ *
+ * `operation_id` is the newest call that marked the subject. A confirmation under an older fence
+ * clears nothing, so a newer call's mark outlives an older call's success.
  */
 export const SWITCH_OWED_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_switch_owed (
-    tenant_id TEXT NOT NULL,
-    scope_id  TEXT NOT NULL,
+    tenant_id    TEXT NOT NULL,
+    scope_id     TEXT NOT NULL,
     -- 'system' or 'peer', and the module id or the peer's slug.
-    kind      TEXT NOT NULL,
-    subject   TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    subject      TEXT NOT NULL,
+    -- The newest switch call that marked it: a ULID, so it orders by text.
+    operation_id TEXT NOT NULL,
     PRIMARY KEY (tenant_id, scope_id, kind, subject)
   );
 `;
 
-/** #2045: mark one subject's scope as owed a re-assert to its record. Idempotent. */
-export function markSwitchOwed(db: SwitchSql, kind: SwitchKind, tenantId: string, scopeId: string, key: string): void {
-  db.run(
-    `INSERT OR IGNORE INTO _substrat_switch_owed (tenant_id, scope_id, kind, subject) VALUES (?, ?, ?, ?)`,
-    tenantId,
-    scopeId,
-    kind,
-    key,
-  );
-}
-
-/** #2045: the subjects of one kind marked owed on one scope. */
-export function switchesOwedOf(db: SwitchSql, kind: SwitchKind, tenantId: string, scopeId: string): string[] {
-  return db
-    .all(
-      `SELECT subject FROM _substrat_switch_owed WHERE tenant_id = ? AND scope_id = ? AND kind = ? ORDER BY subject`,
-      tenantId,
-      scopeId,
-      kind,
-    )
-    .map((r) => String(r.subject));
-}
-
-/** #2045: a re-assert settled these subjects' scope on their record; their marks go. */
-export function clearSwitchesOwed(
+/** #2045: mark one subject's scope owed a re-assert, by this switch call. Never moves a mark backwards. */
+export function markSwitchOwed(
   db: SwitchSql,
   kind: SwitchKind,
   tenantId: string,
   scopeId: string,
-  keys: readonly string[],
+  key: string,
+  operationId: string,
 ): void {
-  for (const key of keys) {
-    db.run(
-      `DELETE FROM _substrat_switch_owed WHERE tenant_id = ? AND scope_id = ? AND kind = ? AND subject = ?`,
-      tenantId,
-      scopeId,
-      kind,
-      key,
-    );
-  }
+  db.run(
+    `INSERT INTO _substrat_switch_owed (tenant_id, scope_id, kind, subject, operation_id) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT (tenant_id, scope_id, kind, subject) DO UPDATE SET operation_id = excluded.operation_id
+      WHERE excluded.operation_id > _substrat_switch_owed.operation_id`,
+    tenantId,
+    scopeId,
+    kind,
+    key,
+    operationId,
+  );
+}
+
+/** #2045: the subjects of one kind marked owed on one scope, each with the newest call that marked it. */
+export function switchesOwedOf(db: SwitchSql, kind: SwitchKind, tenantId: string, scopeId: string): Map<string, string> {
+  const rows = db.all(
+    `SELECT subject, operation_id FROM _substrat_switch_owed
+      WHERE tenant_id = ? AND scope_id = ? AND kind = ? ORDER BY subject`,
+    tenantId,
+    scopeId,
+    kind,
+  );
+  return new Map(rows.map((r) => [String(r.subject), String(r.operation_id)]));
+}
+
+/**
+ * #2045: the scope confirmed a move of this subject under `fence` — its mark goes, unless a newer
+ * call has marked it since (a compare-and-set on the mark's operation id).
+ */
+export function clearSwitchOwed(
+  db: SwitchSql,
+  kind: SwitchKind,
+  tenantId: string,
+  scopeId: string,
+  key: string,
+  fence: string,
+): void {
+  db.run(
+    `DELETE FROM _substrat_switch_owed
+      WHERE tenant_id = ? AND scope_id = ? AND kind = ? AND subject = ? AND operation_id <= ?`,
+    tenantId,
+    scopeId,
+    kind,
+    key,
+    fence,
+  );
+}
+
+/**
+ * #2045: does any subject on this scope still owe a re-assert? While one does, the scope's
+ * reconcile receipt is not written (the control plane's `markScopeProvisioned`), so the sweep keeps
+ * reconciling it until a re-assert has settled every mark.
+ */
+export function scopeOwesSwitch(db: SwitchSql, scopeId: string): boolean {
+  return db.all(`SELECT 1 FROM _substrat_switch_owed WHERE scope_id = ? LIMIT 1`, scopeId).length > 0;
 }
 
 /** Each kind's DDL, for a pass that creates a table with its backfill. */
@@ -764,17 +794,9 @@ export function restoreSwitchRecord(
   db: SwitchSql,
   call: RecordKey & { operationId: string },
   prior: SwitchRecordPrior,
-  /**
-   * #2045: the call's move threw, so it may have landed, and then the scope's fence is THIS call's
-   * id. The prior position goes back under this call's id rather than the prior's, so a re-assert
-   * moves the scope under a fence at least as new as anything this call wrote there. Without it, an
-   * ON undone to OFF after an unreadable move would re-assert under the older OFF's id and be
-   * refused by the ON it may have applied.
-   */
-  opts?: { keepFence?: boolean },
 ): void {
   if (prior) {
-    setRecordRow(db, call, opts?.keepFence ? { ...prior, operationId: call.operationId } : prior, call.operationId);
+    setRecordRow(db, call, prior, call.operationId);
     return;
   }
   const { table, key } = RECORDS[call.kind];

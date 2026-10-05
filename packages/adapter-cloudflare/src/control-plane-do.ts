@@ -15,8 +15,9 @@ import {
   sweepRunsIntentHasKind,
   PEER_SWITCHES_DDL,
   SWITCH_OWED_DDL,
-  clearSwitchesOwed,
+  clearSwitchOwed,
   markSwitchOwed,
+  scopeOwesSwitch,
   switchesOwedOf,
   SWITCH_KINDS,
   SYSTEM_SWITCHES_DDL,
@@ -24,6 +25,7 @@ import {
   listSystemSwitchRecords,
   recordSwitchedOff,
   recordSwitchedOn,
+  recordWriteSuperseded,
   restoreSwitchRecord,
   scopesSwitchedOffFor,
   switchFencesOf,
@@ -43,6 +45,7 @@ import {
   type SwitchKind,
   type SwitchRecordPrior,
   type SwitchRecordWrite,
+  type SwitchSql,
   type SystemSwitchRecordRow,
   MODEL_USAGE_RETENTION_DAYS,
   DO_SQL_LIMITS,
@@ -2966,6 +2969,10 @@ export class ControlPlaneDO extends DurableObject {
    * for a repair that failed, which is the one outcome that must keep being retried.
    */
   markScopeProvisioned(scopeId: string, versionId: string | null): void {
+    // #2045: a scope owed a switch re-assert keeps no receipt, so the sweep reconciles it again
+    // until its re-assert has settled every mark — including a mark written while this
+    // reconcile ran, after its re-assert had read none.
+    if (versionId !== null && scopeOwesSwitch(this.kernelSql, scopeId)) versionId = null;
     this.sql.exec(
       'UPDATE scopes SET provisioned_version_id = ? WHERE scope_id = ?',
       versionId, scopeId,
@@ -3731,21 +3738,41 @@ export class ControlPlaneDO extends DurableObject {
 
   /** OFF's write, before the scope's switch moves (#1823). Answers the row as it was. */
   recordSwitchedOff(row: SwitchRecordWrite): SwitchRecordPrior {
-    return recordSwitchedOff(this.kernelSql, row);
+    return this.writeSwitchIntent(row, recordSwitchedOff);
   }
 
-  /** ON's write, before the scope moves. Answers the row as it was, for a failed ON to restore. */
+  /** ON's write, before the scope moves. Answers the row as it was, for a call that held nothing to restore. */
   recordSwitchedOn(row: SwitchRecordWrite): SwitchRecordPrior {
-    return recordSwitchedOn(this.kernelSql, row);
+    return this.writeSwitchIntent(row, recordSwitchedOn);
+  }
+
+  /**
+   * #2045 (Codex r3): a switch call's record write is also its write-ahead intent, in ONE
+   * transaction: the record, the subject's owed mark under this call's id, and the scope's reconcile
+   * receipt cleared, so the sweep reconciles it and its re-assert settles the mark. Nothing that
+   * happens to the move after this (a throw, a lost answer, a failed clear) can leave the scope
+   * apart from its record with no mark to repair it. A write a newer call's row refuses writes
+   * nothing at all.
+   */
+  private writeSwitchIntent(
+    row: SwitchRecordWrite,
+    write: (db: SwitchSql, row: SwitchRecordWrite) => SwitchRecordPrior,
+  ): SwitchRecordPrior {
+    return this.ctx.storage.transactionSync(() => {
+      const prior = write(this.kernelSql, row);
+      if (recordWriteSuperseded(prior, row)) return prior;
+      markSwitchOwed(this.kernelSql, row.kind, row.tenantId, row.scopeId, row.key, row.operationId);
+      this.sql.exec('UPDATE scopes SET provisioned_version_id = NULL WHERE scope_id = ?', row.scopeId);
+      return prior;
+    });
   }
 
   /** Put a row back as the switch call's record write found it — the move that followed it failed. */
   restoreSwitchRecord(
     key: { kind: SwitchKind; tenantId: string; scopeId: string; key: string; operationId: string },
     prior: SwitchRecordPrior,
-    opts?: { keepFence?: boolean },
   ): void {
-    restoreSwitchRecord(this.kernelSql, key, prior, opts);
+    restoreSwitchRecord(this.kernelSql, key, prior);
   }
 
   /**
@@ -3772,19 +3799,14 @@ export class ControlPlaneDO extends DurableObject {
     return [...switchFencesOf(this.kernelSql, kind, tenantId, scopeId)];
   }
 
-  /** #2045: mark one subject's scope owed a re-assert to its record — its switch call's move threw twice. */
-  markSwitchOwed(kind: SwitchKind, tenantId: string, scopeId: string, key: string): void {
-    markSwitchOwed(this.kernelSql, kind, tenantId, scopeId, key);
-  }
-
   /** #2045: the subjects of one kind owed a re-assert on one scope. */
-  switchesOwedOf(kind: SwitchKind, tenantId: string, scopeId: string): string[] {
-    return switchesOwedOf(this.kernelSql, kind, tenantId, scopeId);
+  switchesOwedOf(kind: SwitchKind, tenantId: string, scopeId: string): [string, string][] {
+    return [...switchesOwedOf(this.kernelSql, kind, tenantId, scopeId)];
   }
 
-  /** #2045: a re-assert settled these subjects; their marks go. */
-  clearSwitchesOwed(kind: SwitchKind, tenantId: string, scopeId: string, keys: readonly string[]): void {
-    clearSwitchesOwed(this.kernelSql, kind, tenantId, scopeId, keys);
+  /** #2045: the scope confirmed a move of this subject under `fence` — `clearSwitchOwed`. */
+  clearSwitchOwed(kind: SwitchKind, tenantId: string, scopeId: string, key: string, fence: string): void {
+    clearSwitchOwed(this.kernelSql, kind, tenantId, scopeId, key, fence);
   }
 
   /** The subjects of one kind a re-assert switches back off on one scope. */

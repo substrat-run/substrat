@@ -815,6 +815,33 @@ export class VerticalClient {
   }
 
   /**
+   * The switch fence's preflight (#2045, Codex r3): does the deployment serving this scope honour
+   * a switch call's fence? Asked before any switch call records or moves anything there.
+   *
+   * `false` only on the deployment's own proof that it cannot: a **404** (built before the route)
+   * or its **501** (a host that predates the fence). Everything else — a transport failure, a
+   * refusal, an unreadable or wrong-shaped 200 — throws, so a probe that could not be answered
+   * never reads as either verdict, and the switch call fails before it has written anything.
+   */
+  async switchFence(input: { scopeId: ScopeId }): Promise<boolean> {
+    const verb = 'switch-fence';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const rule = {
+      legacy501: true,
+      lost: `whether the deployment serving scope ${input.scopeId} honours the switch fence could not be read. Nothing was switched; retry.`,
+    };
+    const answer = await this.routeAnswer(verb, rule, () =>
+      this.options.fetch(`${base}/internal/switch-fence?scopeId=${encodeURIComponent(input.scopeId)}`, {
+        method: 'GET',
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (answer === PREDATES) return false;
+    if ((answer as { fenced?: unknown } | null)?.fenced === true) return true;
+    throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape — ${rule.lost}`);
+  }
+
+  /**
    * The read half of the schedule kill switch's status (#1674): every module the
    * deployment serving this scope holds or has held system authority for, and where each
    * stands. Mirrors `systemSwitch`'s seam and its skew rule exactly (`routeAnswer`): a 404

@@ -359,6 +359,8 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       scope: env.SCOPE,
       controlPlane: env.CONTROL_PLANE,
       systemSwitchDelegation: {
+        // #2045 (Codex r3): a deployment built with the switch fence.
+        fenceSupported: async () => true,
         switch: async ({ scopeId: s, to, fence }) => {
           if (unreachable.has(s)) throw new Error('vertical unreachable during system-switch');
           // #2045: a current deployment honours the switch fence, and says so.

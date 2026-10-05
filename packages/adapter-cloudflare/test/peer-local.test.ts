@@ -223,6 +223,8 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
       ...(delegate
         ? {
             peerSwitchDelegation: {
+              // #2045 (Codex r3): a deployment built with the switch fence.
+              fenceSupported: async () => true,
               switch: async (a) => {
                 calls.push({ ...a });
                 const out = answer(a);
@@ -243,6 +245,8 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
             // Another delegation, so the host still knows it serves scopes elsewhere — a
             // control plane upgraded for the schedule switch and not yet for this one.
             systemSwitchDelegation: {
+              // #2045 (Codex r3): a deployment built with the switch fence.
+              fenceSupported: async () => true,
               switch: async () => {
                 throw new Error('the schedule switch must not be reached by a peer switch');
               },
@@ -764,6 +768,10 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
     return { modules: carry.switchedOff ?? [], peers: carry.switchedOffPeers ?? [], fences: carry.switchFences ?? {} };
   };
 
+  /** What a switch call did that matters here: its preflight, its record write and its moves. */
+  const effects = (seen: readonly string[], move: string) =>
+    seen.filter((m) => m === 'fence-probe' || m.startsWith('recordSwitched') || m.startsWith(move));
+
   /** Hold the next call matching `match` until `release`; `reached` resolves when it arrives. */
   type Gate = {
     match: (method: string, to?: string) => boolean;
@@ -788,7 +796,13 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
       const { fenced: _dropped, ...old } = out;
       return old as T;
     };
+    /** Every gated call that reached its far end, in order: the moves, the probes, the record writes. */
+    const seen: string[] = [];
+    /** Control-plane methods that throw for as long as they are listed — a directory RPC that fails. */
+    const failing = new Set<string>();
     const pass = async (method: string, to?: string) => {
+      if (failing.has(method)) throw new Error(`directory unreachable during ${method}`);
+      seen.push(to ? `${method}:${to}` : method);
       const i = gates.findIndex((g) => g.match(method, to));
       if (i < 0) return;
       const [g] = gates.splice(i, 1);
@@ -826,6 +840,11 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
           return wire(await deployment.peerSwitchLocal(a.scopeId, a.vertical, a.to, { tenantHeld: a.tenantHeld, fence }));
         },
         status: async (a) => deployment.peerGrantsStatusLocal(a.scopeId),
+        // #2045 (Codex r3): the preflight — a build from before the fence has no such route.
+        fenceSupported: async () => {
+          await pass('fence-probe');
+          return !opts.legacy;
+        },
       },
       systemSwitchDelegation: {
         switch: async (a) => {
@@ -834,6 +853,10 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
           return wire(await deployment.systemSwitchLocal(a.scopeId, a.moduleId, a.to, { tenantHeld: a.tenantHeld, fence }));
         },
         status: async (a) => deployment.systemGrantsStatusLocal(a.scopeId),
+        fenceSupported: async () => {
+          await pass('fence-probe');
+          return !opts.legacy;
+        },
       },
     });
     platform.registerModule(peerMod);
@@ -892,7 +915,15 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
         () => ({ ok: true as const, error: undefined as unknown }),
         (error: unknown) => ({ ok: false as const, error }),
       );
-    return { platform, node, kinds, gates, settle, setLegacy: (legacy: boolean) => (opts.legacy = legacy) };
+    /**
+     * The scope's reconcile receipt as a sweep would leave it: written, unless the directory still
+     * marks a subject on it owed a re-assert (#2045 Codex r3), in which case it stays unwritten.
+     */
+    const receipt = async () => {
+      await platform.admin.markScopeProvisioned(staff, t, s, 'v-receipt');
+      return (await platform.admin.getScopeRecord(staff, t, s))?.provisionedVersionId ?? null;
+    };
+    return { platform, node, kinds, gates, seen, failing, receipt, settle, setLegacy: (legacy: boolean) => (opts.legacy = legacy) };
   };
 
   it('upgrade: a scope created before the fence gains its table on the next wake, and fences from then on', async () => {
@@ -1011,22 +1042,154 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
         expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
       });
 
-      it('a deployment from before the fence (the old wire: no fence, no `fenced`) is refused, its move put back', async () => {
-        const { kinds, setLegacy, settle } = await setup({ legacy: true });
+      it('the NEWER move fails twice and the re-assert runs while the OLDER move is still held: the record and the scope end on the newer (Codex r3)', async () => {
+        const { platform, node, kinds, gates, settle, receipt } = await setup();
         const k = kinds[kind];
+        const holdA = gate((m, to) => m === k.move && to === 'off');
+        gates.push(holdA.gate);
+        const a = settle(k.switch('off', 'A'));
+        await holdA.arrived; // A has recorded OFF; its move waits — through the re-assert below
+        for (let i = 0; i < 2; i++) {
+          const failB = gate((m, to) => m === k.move && to === 'on');
+          failB.gate.throws = true;
+          gates.push(failB.gate);
+        }
+        expect(String((await settle(k.switch('on', 'B'))).error)).toMatch(/unreachable/);
+        // The scope still reads ON (A has not landed), and B is owed: no receipt.
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+        expect(await receipt()).toBeNull();
+        // The owed ON is sent even though the scope already reads ON: it carries B's fence there.
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+        expect(await receipt()).toBe('v-receipt');
+        holdA.release();
+        expect(errorCodeOf((await a).error)).toBe('conflict'); // refused at the scope by B's fence
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+      });
+
+      it('every switch call is owed until the scope confirms it: no receipt while its move is in flight, one once it lands', async () => {
+        const { kinds, gates, settle, receipt } = await setup();
+        const k = kinds[kind];
+        const hold = gate((m, to) => m === k.move && to === 'off');
+        gates.push(hold.gate);
+        const a = settle(k.switch('off'));
+        await hold.arrived;
+        expect(await receipt()).toBeNull(); // the mark was written with the record, before the move
+        hold.release();
+        expect((await a).ok).toBe(true);
+        expect(await receipt()).toBe('v-receipt'); // the confirmed move cleared it
+      });
+
+      it('a move that throws twice while every later directory call fails is still owed, and the next re-assert repairs it (Codex r3)', async () => {
+        const { platform, node, kinds, gates, failing, settle, receipt } = await setup();
+        const k = kinds[kind];
+        await k.switch('off');
+        for (let i = 0; i < 2; i++) {
+          const fail = gate((m, to) => m === k.move && to === 'on');
+          fail.gate.throws = true;
+          // From the first move on, the directory is unreachable: nothing after the record write lands.
+          fail.gate.reached = () => {
+            failing.add('recordAdmin');
+            failing.add('clearSwitchOwed');
+            failing.add('markScopeProvisioned');
+          };
+          gates.push(fail.gate);
+        }
+        expect(String((await settle(k.switch('on'))).error)).toMatch(/unreachable/);
+        failing.clear();
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'off']);
+        expect(await receipt()).toBeNull(); // the mark landed with the record, so the sweep reconciles it
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+        expect(await receipt()).toBe('v-receipt');
+      });
+
+      it('a move that lands but whose mark cannot be cleared still succeeds; the mark costs one idempotent re-assert', async () => {
+        const { platform, node, kinds, failing, settle, receipt, seen } = await setup();
+        const k = kinds[kind];
+        failing.add('clearSwitchOwed');
+        expect((await settle(k.switch('off'))).ok).toBe(true);
+        failing.clear();
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        expect(await receipt()).toBeNull();
+        seen.length = 0;
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect(seen).toContain(`${k.move}:off`);
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        expect(await receipt()).toBe('v-receipt');
+      });
+
+      it('a deployment from before the fence is refused at the preflight: nothing is recorded, moved or owed (Codex r3)', async () => {
+        const { kinds, setLegacy, settle, seen, receipt } = await setup({ legacy: true });
+        const k = kinds[kind];
+        expect(await receipt()).toBe('v-receipt');
         const off = await settle(k.switch('off'));
         expect(errorCodeOf(off.error)).toBe('precondition_failed');
-        expect(String(off.error)).toMatch(/predates the switch fence/);
+        expect(String(off.error)).toMatch(/predates the switch fence.*Nothing was switched\./);
+        expect(effects(seen, k.move)).toEqual(['fence-probe']); // no record write, no move
         expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+        expect(await receipt()).toBe('v-receipt'); // no mark, and the receipt was never cleared
         // Twin: the same deployment redeployed with the fence switches.
         setLegacy(false);
         expect((await settle(k.switch('off'))).ok).toBe(true);
         expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
-        // And an ON on the old build is refused the same way: put back off, the record still off.
+        // And an ON on the old build is refused the same way, before it moves.
         setLegacy(true);
+        seen.length = 0;
         const on = await settle(k.switch('on'));
         expect(errorCodeOf(on.error)).toBe('precondition_failed');
+        expect(effects(seen, k.move)).toEqual(['fence-probe']);
         expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+      });
+
+      it('a rollback between the preflight and the move: refused, no compensating move, the record kept and owed (Codex r3)', async () => {
+        const { platform, node, kinds, gates, setLegacy, settle, seen, receipt } = await setup();
+        const k = kinds[kind];
+        const hold = gate((m, to) => m === k.move && to === 'off');
+        gates.push(hold.gate);
+        const a = settle(k.switch('off'));
+        await hold.arrived; // the preflight passed
+        setLegacy(true); // the scope's version rolls back to a build from before the fence
+        hold.release();
+        const outcome = await a;
+        expect(errorCodeOf(outcome.error)).toBe('precondition_failed');
+        expect(seen.filter((m) => m.startsWith(k.move))).toEqual([`${k.move}:off`]); // nothing put back
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        expect(await receipt()).toBeNull();
+        // Every re-assert refuses until the redeploy, then settles the mark.
+        await expect(platform.admin.reassertSystemSwitches(staff, node)).rejects.toThrow(/predates the switch fence/);
+        setLegacy(false);
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        expect(await receipt()).toBe('v-receipt');
+      });
+
+      it('two overlapping same-direction calls, with a rollback while A’s answer is held: the record and the scope never part, and nothing is admitted (Codex r3)', async () => {
+        const { platform, node, kinds, gates, setLegacy, settle, seen, receipt } = await setup();
+        const k = kinds[kind];
+        const holdA = gate((m, to) => m === k.move && to === 'off');
+        const holdB = gate((m, to) => m === k.move && to === 'off');
+        gates.push(holdA.gate, holdB.gate);
+        const a = settle(k.switch('off', 'A'));
+        await holdA.arrived;
+        const b = settle(k.switch('off', 'B'));
+        await holdB.arrived;
+        setLegacy(true); // both passed the preflight; the deployment rolls back under them
+        holdB.release();
+        expect(errorCodeOf((await b).error)).toBe('precondition_failed');
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        holdA.release(); // A's answer arrives last, as in Codex's interleaving
+        expect(errorCodeOf((await a).error)).toBe('precondition_failed');
+        // No compensating ON from either call: the scope stays off beside the record.
+        expect(seen.filter((m) => m.startsWith(k.move))).toEqual([`${k.move}:off`, `${k.move}:off`]);
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        expect(await receipt()).toBeNull();
+        setLegacy(false);
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        expect(await receipt()).toBe('v-receipt');
       });
 
       it('a re-assert against a deployment from before the fence throws, so no receipt is recorded', async () => {

@@ -276,6 +276,8 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     // Edge health's door read, as the shared control plane makes it: over the consumer
     // deployment's `/internal/peer-grants`, with the admin log's reason joined here.
     peerSwitchDelegation: {
+      // #2045 (Codex r3): a deployment built with the switch fence.
+      fenceSupported: async () => true,
       switch: async () => {
         throw new Error('the suite switches peers on the deployments directly');
       },

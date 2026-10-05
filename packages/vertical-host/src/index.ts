@@ -378,6 +378,12 @@ export interface VerticalScopeHost {
    * before it satisfies this interface without it — and the route answers 501, which the
    * control plane reports as "redeploy", never as a switch that moved.
    */
+  /**
+   * #2045 (Codex r3): this host's switch movers honour the switch call's fence, and answer every
+   * fenced move with `fenced: true`. What `/internal/switch-fence` reports, which the platform
+   * asks before any switch call records or moves anything. Absent on a host built before it.
+   */
+  readonly switchFenced?: true;
   systemSwitchLocal?(
     scopeId: ScopeId,
     moduleId: ModuleId,
@@ -1462,6 +1468,18 @@ export function mountPlatformSurface<Env extends object>(
     return c.json(
       await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to, { tenantHeld: body.tenantHeld, fence: body.fence }),
     );
+  });
+
+  // The switch fence's preflight (#2045, Codex r3): asked by the platform BEFORE a switch call
+  // records or moves anything on a scope served here, so a deployment that cannot honour the fence
+  // is refused up front rather than compensated after its move. A deployment built before this
+  // route answers 404, and a host that predates the fence 501: both read as "redeploy". Behind the
+  // platform-secret gate above, like every `/internal` verb.
+  app.get('/internal/switch-fence', (c) => {
+    if (deps.hostFor(c.env).switchFenced !== true) {
+      return c.json({ error: 'this deployment cannot fence a kill switch (#2045) — redeploy it' }, 501);
+    }
+    return c.json({ fenced: true });
   });
 
   // The lifecycle delivery (#1713): the platform's directory holds a scope's lifecycle, and a

@@ -5,7 +5,9 @@ import {
   SYSTEM_SWITCHES_DDL,
   SWITCH_OWED_DDL,
   forgetSwitchesOf,
+  clearSwitchOwed,
   markSwitchOwed,
+  scopeOwesSwitch,
   switchesOwedOf,
   recordWriteSuperseded,
   switchFencesOf,
@@ -465,13 +467,36 @@ describe('the peer switch record (#2029)', () => {
     const { db, sql } = fresh();
     db.exec(PEER_SWITCHES_DDL);
     db.exec(SWITCH_OWED_DDL);
-    markSwitchOwed(sql, 'peer', T, S, V);
+    markSwitchOwed(sql, 'peer', T, S, V, '01A');
     const row = { tenantId: T, scopeId: S, actor: 'staff', reason: 'r', operationId: '01A', at: 'x' };
     recordSwitchedOff(sql, { kind: 'peer', key: V, ...row });
     recordSwitchedOff(sql, { kind: 'system', key: '@m/x', ...row });
     forgetSwitchesOf(sql, S);
     expect(switchedOffOf(sql, 'peer', T, S)).toEqual([]);
     expect(switchedOffOf(sql, 'system', T, S)).toEqual([]);
-    expect(switchesOwedOf(sql, 'peer', T, S)).toEqual([]);
+    expect([...switchesOwedOf(sql, 'peer', T, S)]).toEqual([]);
+    expect(scopeOwesSwitch(sql, S)).toBe(false);
+  });
+
+  it('an owed mark is cleared only by a confirmation at or past the newest call that marked it (#2045 r3)', () => {
+    const { db, sql } = fresh();
+    db.exec(SWITCH_OWED_DDL);
+    markSwitchOwed(sql, 'peer', T, S, V, '01B');
+    // An older call's mark never moves the mark backwards.
+    markSwitchOwed(sql, 'peer', T, S, V, '01A');
+    expect([...switchesOwedOf(sql, 'peer', T, S)]).toEqual([[V, '01B']]);
+    expect(scopeOwesSwitch(sql, S)).toBe(true);
+    // An older call's confirmation leaves the newer call's mark.
+    clearSwitchOwed(sql, 'peer', T, S, V, '01A');
+    expect([...switchesOwedOf(sql, 'peer', T, S)]).toEqual([[V, '01B']]);
+    // The same kind and key on another scope, or the other kind, is a mark of its own.
+    markSwitchOwed(sql, 'system', T, S, V, '01B');
+    clearSwitchOwed(sql, 'peer', T, S, V, '01B');
+    expect([...switchesOwedOf(sql, 'peer', T, S)]).toEqual([]);
+    expect([...switchesOwedOf(sql, 'system', T, S)]).toEqual([[V, '01B']]);
+    expect(scopeOwesSwitch(sql, S)).toBe(true);
+    // A newer confirmation clears.
+    clearSwitchOwed(sql, 'system', T, S, V, '01C');
+    expect(scopeOwesSwitch(sql, S)).toBe(false);
   });
 });

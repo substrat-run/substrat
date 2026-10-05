@@ -910,7 +910,24 @@ function systemSwitchDelegationFor(env: Env): SystemSwitchDelegation | undefined
       }
       return client.systemGrantsStatus({ scopeId: a.scopeId });
     },
+    fenceSupported: (a) => switchFenceOf(env, a, 'its schedule switches'),
   };
+}
+
+/**
+ * #2045 (Codex r3): the switch fence's preflight, for both kill switches — the same deployment
+ * serves both, over the same ladder the switch itself takes.
+ */
+async function switchFenceOf(env: Env, a: { tenantId: TenantId; scopeId: ScopeId }, what: string): Promise<boolean> {
+  const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId);
+  const client = rec?.vertical ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+  if (!client) {
+    throw new Error(
+      `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — cannot switch ${what}`,
+    );
+  }
+  return client.switchFence({ scopeId: a.scopeId });
 }
 
 /**
@@ -991,6 +1008,7 @@ function peerSwitchDelegationFor(env: Env): PeerSwitchDelegation | undefined {
       }
       return client.peerGrantsStatus({ scopeId: a.scopeId });
     },
+    fenceSupported: (a) => switchFenceOf(env, a, 'its peer switches'),
   };
 }
 
