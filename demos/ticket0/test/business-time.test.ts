@@ -12,6 +12,7 @@ import {
   dayNumberOf,
   describeSchedule,
   EXACT_DAYS,
+  guaranteedBusinessMs,
   instantOf,
   type BusinessSchedule,
 } from '../src/business-time.js';
@@ -217,6 +218,49 @@ describe('bounds: an exact walk of at most ten years, and null beyond it', () =>
     expect(addBusinessMs({ timezone: 'UTC', weekly: { mon: [] } }, start, HOUR)).toBeNull();
     expect(addBusinessMs({ timezone: 'Mars/Olympus', weekly: { mon: nineToFive } }, start, HOUR)).toBeNull();
     expect(businessMsBetween({ timezone: 'UTC', weekly: {} }, start, '2026-02-01T00:00:00.000Z')).toBeNull();
+  });
+});
+
+describe('the open time guaranteed from every start (Codex round 2 on #2060)', () => {
+  const tuesdays: BusinessSchedule = { timezone: 'UTC', weekly: { tue: [{ open: '12:00', close: '12:01' }] } };
+
+  it('is 522 weeks of the week, less what exceptions can take and 22 forward jumps', () => {
+    expect(guaranteedBusinessMs(tuesdays)).toBe((522 - 22) * MINUTE);
+    expect(guaranteedBusinessMs(UTC)).toBe(522 * 40 * HOUR - 22 * 2 * HOUR);
+    const withExceptions = weekdays('UTC', {
+      exceptions: [
+        { date: '2027-01-06', windows: [] }, // a Wednesday closed: −8 h
+        { date: '2027-01-07', windows: [{ open: '09:00', close: '12:00' }] }, // a half Thursday: −5 h
+        { date: '2027-01-09', windows: [{ open: '10:00', close: '14:00' }] }, // a Saturday opened: nothing
+      ],
+    });
+    expect(guaranteedBusinessMs(withExceptions)).toBe(522 * 40 * HOUR - 13 * HOUR - 22 * 2 * HOUR);
+    expect(guaranteedBusinessMs({ timezone: 'UTC', weekly: {} })).toBeNull();
+  });
+
+  it('is reached exactly from a start on every weekday, with the exceptions ahead of it', () => {
+    const closing = {
+      ...tuesdays,
+      exceptions: Array.from({ length: 30 }, (_, i) => ({
+        date: new Date(Date.UTC(2027, 0, 5) + i * 7 * DAY).toISOString().slice(0, 10), // 30 Tuesdays closed
+        windows: [],
+      })),
+    };
+    for (const schedule of [tuesdays, closing]) {
+      const guaranteed = guaranteedBusinessMs(schedule)!;
+      for (let k = 0; k < 7; k++) {
+        const start = new Date(Date.UTC(2026, 9, 5) + k * DAY + 13 * HOUR).toISOString();
+        expect(addBusinessMs(schedule, start, guaranteed)).not.toBeNull();
+      }
+    }
+  });
+
+  it("Codex's case: one minute more than the old check allowed from a Monday is null from a Wednesday", () => {
+    // 523 minutes fits from Monday 2026-10-05 (the walk meets 523 Tuesdays), not from the
+    // Wednesday after (it meets 522). The guarantee is below both.
+    expect(addBusinessMs(tuesdays, '2026-10-05T00:00:00.000Z', 523 * MINUTE)).not.toBeNull();
+    expect(addBusinessMs(tuesdays, '2026-10-07T00:00:00.000Z', 523 * MINUTE)).toBeNull();
+    expect(guaranteedBusinessMs(tuesdays)!).toBeLessThan(523 * MINUTE);
   });
 });
 

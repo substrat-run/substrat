@@ -99,6 +99,7 @@ import {
   addBusinessMs,
   businessMsBetween,
   describeSchedule,
+  guaranteedBusinessMs,
   type BusinessSchedule,
 } from './business-time.js';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
@@ -2899,23 +2900,29 @@ function slaClockBetween(hours: BusinessSchedule | null, from: string, to: strin
 /**
  * Refuse service levels on the business clock that the desk's hours cannot meet within
  * the ten-year cap `addBusinessMs` walks (#1648), so every configured promise is counted
- * exactly and the calendar fallback stays an edge. Judged on the settings as they WILL be
- * — either half may be the one that changed: a long target on sparse hours, or sparse
- * hours under a long target. Counted from now; the exceptions a desk lists are the only
- * part of the schedule that moves with the date.
+ * exactly, from whatever moment a conversation arrives, and the calendar fallback stays
+ * the re-aim edge `slaDue` names. Judged on the settings as they WILL be — either half
+ * may be the one that changed: a long target on sparse hours, or sparse hours under a
+ * long target.
+ *
+ * Against `guaranteedBusinessMs`, not against a walk from now: how much open time a
+ * walk meets depends on the weekday it starts on and on which exceptions its ten years
+ * contain, so a target that fits from today can miss from Wednesday. The guaranteed
+ * figure holds from every start, and that function states why.
  *
  * Names the target, so the admin knows which box to change.
  */
-function refuseUnreachableTargets(row: DeskRow, now: string): void {
+function refuseUnreachableTargets(row: DeskRow): void {
   const policy = slaPolicy(row);
   if (!policy?.hours) return;
+  const guaranteed = guaranteedBusinessMs(policy.hours) ?? 0;
   for (const [label, targets] of [
     ['first-response', policy.firstResponseMinutes],
     ['resolution', policy.resolutionMinutes],
   ] as const) {
     for (const priority of PRIORITIES) {
       const minutes = targets[priority];
-      if (minutes === undefined || addBusinessMs(policy.hours, now, minutes * 60_000) !== null) continue;
+      if (minutes === undefined || minutes * 60_000 <= guaranteed) continue;
       throw substratError(
         'validation_failed',
         `The ${priority} ${label} target of ${minutes} minutes can't be met within ten years of these ` +
@@ -3848,7 +3855,7 @@ const operations = {
       input.settings === undefined
         ? current.settings
         : JSON.stringify({ ...storedSettings(current), ...input.settings });
-    refuseUnreachableTargets({ ...current, settings }, ctx.now());
+    refuseUnreachableTargets({ ...current, settings });
     ctx.sql.exec(
       `UPDATE ticket0_desk_settings
           SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?,

@@ -462,3 +462,27 @@ describe('the Settings form says what the desk will do', () => {
     expect(hoursFormOf(JSON.stringify({ businessHours: null }))).toEqual(emptyHoursForm());
   });
 });
+
+describe("a saved business-clock target is met exactly from every start (Codex round 2)", () => {
+  const tuesdays = { timezone: 'UTC', weekly: { tue: [{ open: '12:00', close: '12:01' }] } };
+
+  it('523 minutes is refused even on a Monday, when it would fit from that Monday alone', async () => {
+    at('2027-06-07T00:00:00.000Z'); // Monday
+    const desk = await freshDesk({ businessHours: tuesdays });
+    await expect(
+      (await admin(desk)).invoke('ticket0/configure-desk', {
+        settings: { sla: { firstResponseMinutes: { normal: 523 }, clock: 'business' } },
+      }),
+    ).rejects.toThrow(/The normal first-response target of 523 minutes can't be met within ten years/);
+  });
+
+  it('a target saved on a Monday stamps an exact business due on a conversation arriving on Wednesday', async () => {
+    at('2027-06-14T00:00:00.000Z'); // Monday
+    const desk = await freshDesk({ businessHours: tuesdays, sla: { firstResponseMinutes: { normal: 500 }, clock: 'business' } });
+    at('2027-06-16T00:00:00.000Z'); // Wednesday: its ten years hold one Tuesday fewer
+    const id = await mail(desk);
+    // The 500th Tuesday noon minute after 2027-06-16, never 500 calendar minutes later.
+    const due = (await read(desk, id)).first_response_due_at!;
+    expect(due).toBe(new Date(Date.UTC(2027, 5, 22, 12, 1) + 499 * 7 * 86_400_000).toISOString());
+  });
+});

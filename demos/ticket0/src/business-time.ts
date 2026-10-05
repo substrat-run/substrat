@@ -243,6 +243,62 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
   return total;
 }
 
+/**
+ * The most open time this schedule promises from ANY start, inside the cap (#1648, Codex
+ * round 2 on #2060): a target no longer than this is reached by `addBusinessMs` from every
+ * start there will ever be, so it is always counted exactly and never falls back to
+ * calendar time. Null for a schedule `compile` refuses.
+ *
+ * The proof, for a start on local day `d`:
+ *
+ *   1. The walk covers days `d … d + EXACT_DAYS - 1`. Every opening on days `d + 1 …` lies
+ *      wholly after the start (it begins at or after that day's local midnight) and wholly
+ *      inside the walk, so it is counted in full. The start's own day is ignored here,
+ *      which only lowers the bound.
+ *   2. Days `d + 1 … d + 7 × FULL_WEEKS` (`FULL_WEEKS = ⌊(EXACT_DAYS - 1) / 7⌋ = 522`) are
+ *      522 runs of seven consecutive days, so each weekday appears exactly 522 times. With
+ *      no exception and no clock change, their wall-clock open time is `522 × week`.
+ *   3. An exception replaces one dated day. Wherever it falls, it can take away at most
+ *      `max(0, that weekday's open time − the exception's)` — its weekday is fixed by its
+ *      date — so all of them together take at most the sum of that over the list.
+ *   4. A clock change inside a window shortens it by at most the jump, and never by more
+ *      than the window itself. Only a FORWARD jump shortens anything; one backward makes a
+ *      window longer. Here the code cannot measure, since no sampling of `Intl` proves a
+ *      stretch free of transitions, so the bound rests on a stated assumption about the
+ *      zone: it moves its clocks forward at most `FORWARD_JUMPS_PER_YEAR` times a year, by
+ *      at most `FORWARD_JUMP_MAX` each time. True of every zone in the tz database's rules
+ *      today (Morocco's Ramadan suspension is the busiest, at two forward and two back).
+ *      522 weeks lie inside eleven calendar years, so at most `11 × 2` forward jumps, each
+ *      costing at most `min(FORWARD_JUMP_MAX, the longest window)`.
+ *
+ * So `522 × week − exceptions − 22 × min(2 h, longest window)` of open time is counted
+ * from every start, whatever weekday it falls on and whichever exceptions its ten years
+ * contain. Wall-clock arithmetic only: no walk, no clock, the same answer on any day.
+ */
+export function guaranteedBusinessMs(schedule: BusinessSchedule): number | null {
+  const c = compile(schedule);
+  if (c === null) return null;
+  const wall = (ws: readonly (readonly [number, number])[]) => ws.reduce((sum, [o, cl]) => sum + (cl - o) * MINUTE, 0);
+  const week = c.weekly.reduce((sum, ws) => sum + wall(ws), 0);
+  let exceptions = 0;
+  for (const [day, ws] of c.exceptions) {
+    exceptions += Math.max(0, wall(c.weekly[(((day + 4) % 7) + 7) % 7]!) - wall(ws));
+  }
+  const longest = Math.max(
+    ...[...c.weekly, ...c.exceptions.values()].flat().map(([o, cl]) => (cl - o) * MINUTE),
+  );
+  const jumps = FORWARD_JUMP_YEARS * FORWARD_JUMPS_PER_YEAR * Math.min(FORWARD_JUMP_MAX, longest);
+  return Math.max(0, FULL_WEEKS * week - exceptions - jumps);
+}
+
+/** Complete weeks every walk counts in full after its start's own day: ⌊3659 / 7⌋. */
+const FULL_WEEKS = Math.floor((EXACT_DAYS - 1) / 7);
+/** Calendar years 522 weeks can touch. */
+const FORWARD_JUMP_YEARS = 11;
+/** The stated assumption about a zone, in `guaranteedBusinessMs`' proof. */
+const FORWARD_JUMPS_PER_YEAR = 2;
+const FORWARD_JUMP_MAX = 2 * 60 * MINUTE;
+
 const label = (d: Weekday) => d[0]!.toUpperCase() + d.slice(1);
 /** The order a week is read in: Monday first. */
 const READING_ORDER: readonly Weekday[] = [...WEEKDAYS.slice(1), WEEKDAYS[0]];
