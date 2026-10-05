@@ -1154,27 +1154,39 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
         expect(await receipt()).toBe('v-receipt');
       });
 
-      it('a deployment from before the fence is refused at the preflight: nothing is recorded, moved or owed (Codex r3)', async () => {
-        const { kinds, setLegacy, settle, seen, receipt } = await setup({ legacy: true });
+      it('a deployment from before the fence still switches OFF, unfenced and owed; only an ON is refused at the preflight', async () => {
+        const { platform, node, kinds, setLegacy, settle, seen, receipt } = await setup({ legacy: true });
         const k = kinds[kind];
         expect(await receipt()).toBe('v-receipt');
+        // The kill switch works on a build that has not been re-pushed: that is what it is for.
         const off = await settle(k.switch('off'));
-        expect(errorCodeOf(off.error)).toBe('precondition_failed');
-        expect(String(off.error)).toMatch(/predates the switch fence.*Nothing was switched\./);
-        expect(effects(seen, k.move)).toEqual(['fence-probe']); // no record write, no move
-        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
-        expect(await receipt()).toBe('v-receipt'); // no mark, and the receipt was never cleared
-        // Twin: the same deployment redeployed with the fence switches.
-        setLegacy(false);
-        expect((await settle(k.switch('off'))).ok).toBe(true);
+        expect(off.ok).toBe(true);
+        expect(effects(seen, k.move)).toEqual(['fence-probe', expect.stringMatching(/^recordSwitchedOff/), `${k.move}:off`]);
         expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
-        // And an ON on the old build is refused the same way, before it moves.
-        setLegacy(true);
+        const action = kind === 'peer' ? 'revokeFromPeer' : 'revokeFromSystem';
+        const rows = await platform.admin.auditLog(staff, { tenantId: node.tenantId, scopeId: node.scopeId, action: [action] });
+        expect(rows.map((r) => r.after)).toContainEqual(
+          expect.objectContaining({ phase: 'applied', unfenced: true, reassertOwed: true }),
+        );
+        // Its mark stays, so the sweep keeps reconciling the scope until it is moved under a fence.
+        expect(await receipt()).toBeNull();
+        // An ON on the old build is refused before anything is recorded or moved.
         seen.length = 0;
         const on = await settle(k.switch('on'));
         expect(errorCodeOf(on.error)).toBe('precondition_failed');
+        expect(String(on.error)).toMatch(/predates the switch fence.*Nothing was switched\./);
         expect(effects(seen, k.move)).toEqual(['fence-probe']);
         expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        // Redeployed with the fence, the first re-assert moves the scope under the record's fence and settles the mark.
+        setLegacy(false);
+        seen.length = 0;
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect(seen).toContain(`${k.move}:off`);
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
+        expect(await receipt()).toBe('v-receipt');
+        // And an ON now goes through.
+        expect((await settle(k.switch('on'))).ok).toBe(true);
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
       });
 
       it('a rollback between the preflight and the move: refused, no compensating move, the record kept and owed (Codex r3)', async () => {
@@ -1191,8 +1203,9 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
         expect(seen.filter((m) => m.startsWith(k.move))).toEqual([`${k.move}:off`]); // nothing put back
         expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
         expect(await receipt()).toBeNull();
-        // Every re-assert refuses until the redeploy, then settles the mark.
-        await expect(platform.admin.reassertSystemSwitches(staff, node)).rejects.toThrow(/predates the switch fence/);
+        // A re-assert on the old build moves the OFF again, unfenced, and the mark stays until the redeploy.
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect(await receipt()).toBeNull();
         setLegacy(false);
         await platform.admin.reassertSystemSwitches(staff, node);
         expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
@@ -1225,13 +1238,33 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
         expect(await receipt()).toBe('v-receipt');
       });
 
-      it('a re-assert against a deployment from before the fence throws, so no receipt is recorded', async () => {
-        const { platform, node, kinds, setLegacy } = await setup();
+      it('a re-assert against a deployment from before the fence still puts a recorded OFF back', async () => {
+        const { platform, node, kinds, setLegacy, seen } = await setup();
         const k = kinds[kind];
         await k.switch('off');
         setLegacy(true); // the scope's version rolled back to a build from before the fence
-        await expect(platform.admin.reassertSystemSwitches(staff, node)).rejects.toThrow(/predates the switch fence/);
+        await k.lose(); // and the rollback lost the scope's OFF
+        seen.length = 0;
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect(seen).toContain(`${k.move}:off`);
         expect(await k.scope()).toBe('off');
+      });
+
+      it('a re-assert against a deployment from before the fence sends no owed ON, and throws so no receipt is recorded', async () => {
+        const { platform, node, kinds, failing, setLegacy, seen, receipt } = await setup();
+        const k = kinds[kind];
+        await k.switch('off');
+        failing.add('clearSwitchOwed'); // the ON lands, but its mark stays owed
+        await k.switch('on');
+        failing.clear();
+        setLegacy(true);
+        seen.length = 0;
+        await expect(platform.admin.reassertSystemSwitches(staff, node)).rejects.toThrow(/owed ON of .* was not sent/);
+        expect(seen.filter((m) => m.startsWith(k.move))).toEqual([]);
+        expect(await receipt()).toBeNull();
+        setLegacy(false);
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect(await receipt()).toBe('v-receipt');
       });
 
       it('a stale move is refused at the scope, and moves nothing', async () => {

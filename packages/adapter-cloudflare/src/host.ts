@@ -2190,20 +2190,26 @@ export const SWITCH_HOLD_PENDING_MAX_MS = 5 * 60_000;
  * platform needs from it (#2045 Codex r3): the switch fence (`fenced`), or for a tenant-held
  * module's OFF the evaluator that denies a tenant-level grant (`deniesTenantGrants`, #1823).
  *
- * The preflight (`switchTarget`'s `attestFence`) refuses a deployment built before the fence
- * before anything is recorded or moved, and a build with the fence is post-#1823 by construction,
- * so this fires only when the deployment changed between the preflight and the move — a rollback
- * to an old build. It is NOT compensated with an opposite move: an unfenced compensation can undo
- * a newer call's switch (Codex r3, finding 2). The call's record and its write-ahead owed mark
- * stay, the call is refused, and every re-assert of the scope throws at the preflight until the
- * vertical is redeployed, then moves the scope to its record under the record's fence.
+ * The preflight (`switchTarget`'s `attestFence`) tells a deployment built before the fence apart
+ * before anything is recorded or moved. On such a deployment only an ON is refused: the race the
+ * fence closes is an older OFF landing after a newer ON, and with every ON refused there is no
+ * newer ON to land after, so an OFF goes through unfenced (#2045 follow-up). A kill switch that
+ * cannot be pulled until every vertical is re-pushed is the outage the fence must never cause.
+ * An unfenced OFF keeps its write-ahead owed mark, so the first re-assert after the vertical is
+ * redeployed moves the scope again under the record's fence.
+ *
+ * This error fires when a deployment that attested the fence answers a move without it — a
+ * rollback to an old build between the preflight and the move — or when an ON reaches a
+ * deployment without the fence. It is NOT compensated with an opposite move: an unfenced
+ * compensation can undo a newer call's switch (Codex r3, finding 2). The call's record and its
+ * write-ahead owed mark stay, and the call is refused.
  */
 class UnattestedSwitch extends Error {}
 
 /** A fenced move answered without `fenced`: the deployment predates the fence. */
 const unfencedMessage = (scopeId: ScopeId): string =>
   `the deployment serving scope ${scopeId} predates the switch fence (#2045): it cannot refuse an older ` +
-  `switch call's move, so two overlapping calls could leave its scope and the directory's record apart. ` +
+  `switch call's OFF landing after this ON, so no switch is turned on there. Switching off still works. ` +
   `Redeploy the vertical, then retry.`;
 
 /** A tenant-held module's OFF answered without `deniesTenantGrants` (#1823). */
@@ -5545,18 +5551,15 @@ export class CloudflareScopeHost implements ScopeHost {
       // moves through here: an operator's (`switchSubjectAt`) and a re-assert's, which every carry
       // ends with.
       //
-      // #2045 (Codex r3): a delegated deployment must honour the switch fence, and that is settled
+      // #2045 (Codex r3): whether a delegated deployment honours the switch fence is settled
       // BEFORE anything moves (`attestFence`, once per target), never after the fact by putting a
-      // move back. A move answered without the attestation still throws (`UnattestedSwitch`), as
-      // defence in depth against a rollback between the preflight and the move.
+      // move back. Without the fence an ON is refused and an OFF goes through unfenced (see
+      // `UnattestedSwitch`). A move a fenced deployment answers without the attestation still
+      // throws, as defence in depth against a rollback between the preflight and the move.
       const delegation = systemDelegation ?? peerDelegation;
-      let attested: Promise<void> | undefined;
-      const attestFence = (): Promise<void> =>
-        (attested ??= delegation
-          ? delegation.fenceSupported({ tenantId, scopeId }).then((fenced) => {
-              if (!fenced) throw substratError('precondition_failed', `${unfencedMessage(scopeId)} Nothing was switched.`);
-            })
-          : Promise.resolve());
+      let attested: Promise<boolean> | undefined;
+      const attestFence = (): Promise<boolean> =>
+        (attested ??= delegation ? delegation.fenceSupported({ tenantId, scopeId }) : Promise.resolve(true));
       const move = async (
         key: string,
         to: 'on' | 'off',
@@ -5565,14 +5568,16 @@ export class CloudflareScopeHost implements ScopeHost {
         /** #2045: the switch call's fence — its operation id, or for a re-assert the record's. */
         fence: string,
       ): Promise<SwitchOutcome> => {
-        await attestFence();
+        const fenced = await attestFence();
+        if (!fenced && to === 'on') throw new UnattestedSwitch(unfencedMessage(scopeId));
         const held = tenantHeld ?? (await this.cp.tenantHeldOf(kind, tenantId, [key], at)).length > 0;
         const outcome = await (systemDelegation
           ? systemDelegation.switch({ tenantId, scopeId, moduleId: key as ModuleId, to, tenantHeld: held, fence })
           : peerDelegation
             ? peerDelegation.switch({ tenantId, scopeId, vertical: key, to, tenantHeld: held, fence })
             : this.switchInScope(kind, scopeId, key, to, at, held, fence));
-        if (outcome.fenced !== true) throw new UnattestedSwitch(unfencedMessage(scopeId));
+        // An unfenced OFF answers without `fenced`, and that is what the callers read it by.
+        if (fenced && outcome.fenced !== true) throw new UnattestedSwitch(unfencedMessage(scopeId));
         if (outcome.superseded) return outcome;
         if (kind === 'system' && to === 'off' && held && outcome.held && outcome.deniesTenantGrants !== true) {
           throw new UnattestedSwitch(undeniedMessage(scopeId, key));
@@ -5617,10 +5622,13 @@ export class CloudflareScopeHost implements ScopeHost {
       const base = { operationId, ...switchAuditSubject(kind, key, to) };
       await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason });
       const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
-      // #2045 (Codex r3): the deployment's fence is attested BEFORE anything is recorded or moved. A
-      // deployment built before it is refused here, with nothing written anywhere but the audit.
+      // #2045 (Codex r3): the deployment's fence is attested BEFORE anything is recorded or moved. An
+      // ON on a deployment built before it is refused here, with nothing written anywhere but the
+      // audit. An OFF goes on: the kill switch must work on every deployment (see `UnattestedSwitch`).
       try {
-        await attestFence();
+        if (!(await attestFence()) && to === 'on') {
+          throw substratError('precondition_failed', `${unfencedMessage(scopeId)} Nothing was switched.`);
+        }
       } catch (err) {
         await this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', error: errorOf(err) }).catch(
           () => undefined,
@@ -5696,6 +5704,10 @@ export class CloudflareScopeHost implements ScopeHost {
       // call's mark. An undo that fails twice leaves the record AND the mark this call's, and the
       // next re-assert confirms both under it. Held, a failed clear is not the call's: the mark only
       // costs the next re-assert one idempotent move under this same record.
+      //
+      // An unfenced OFF that held something (a deployment built before the fence) confirmed nothing
+      // under its fence, so its mark stays for the first re-assert after the vertical is redeployed.
+      const unfenced = outcome.held && outcome.fenced !== true;
       let recordError: string | null = null;
       let owedError: string | null = null;
       if (!outcome.held) {
@@ -5704,7 +5716,7 @@ export class CloudflareScopeHost implements ScopeHost {
           () => null,
           () => undo().then(() => null, errorOf),
         );
-      } else {
+      } else if (!unfenced) {
         owedError = await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, operationId).then(() => null, errorOf);
       }
       await this.recordAdmin(actor, action, target, null, {
@@ -5712,6 +5724,7 @@ export class CloudflareScopeHost implements ScopeHost {
         phase: outcome.held ? 'applied' : 'refused',
         changed: outcome.changed,
         permissions: outcome.permissions,
+        ...(unfenced ? { unfenced: true, reassertOwed: true } : {}),
         ...(recordError ? { recordError } : {}),
         ...(owedError ? { owedError } : {}),
       });
@@ -5886,7 +5899,7 @@ export class CloudflareScopeHost implements ScopeHost {
       opts?: SystemSwitchReassertOptions,
     ): Promise<SystemSwitchReassert[]> => {
       const { tenantId, scopeId } = node;
-      const { vertical, delegated, move } = await switchTarget(kind, tenantId, scopeId);
+      const { vertical, delegated, move, attestFence } = await switchTarget(kind, tenantId, scopeId);
       const action = reassertActionOf(kind);
       const target = { tenantId, scopeId, vertical };
       const recorded = new Map(await this.cp.switchRecordsOf(kind, tenantId, scopeId));
@@ -5912,8 +5925,20 @@ export class CloudflareScopeHost implements ScopeHost {
       // #2045 (Codex r3): a subject's mark goes only once the scope has confirmed a move under the
       // record's fence — a fenced answer that was not superseded. A throw anywhere below leaves
       // every mark not yet confirmed for the next pass.
+      // An unfenced OFF (a deployment built before the fence) confirms nothing, so its mark stays.
       const confirm = async (key: string, fence: string, outcome: SwitchOutcome): Promise<void> => {
-        if (owed.has(key) && !outcome.superseded) await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, fence);
+        if (owed.has(key) && !outcome.superseded && outcome.fenced === true) {
+          await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, fence);
+        }
+      };
+      // #2045 follow-up: on a deployment built before the fence no ON is sent (see
+      // `UnattestedSwitch`). Every OFF below still moves, and the pass refuses at its end, so a
+      // sweep records no receipt for a scope whose owed ON was not sent. Asked only when an ON is due.
+      const onWithheld: string[] = [];
+      const withholdOn = async (key: string): Promise<boolean> => {
+        if (await attestFence()) return false;
+        onWithheld.push(key);
+        return true;
       };
       const at = new Date().toISOString();
       const reverted = new Set<string>();
@@ -5925,6 +5950,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const current = new Map(await this.cp.switchRecordStatesOf(kind, tenantId, scopeId)).get(key);
         if (current?.position !== 'on') continue;
         const fence = current.fence;
+        if (await withholdOn(key)) continue;
         const outcome = await move(key, 'on', at, undefined, fence);
         reverted.add(key);
         if (outcome.changed) {
@@ -5941,15 +5967,18 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, action, target, null, { operationId: ulid(), ...row });
       }
       // #2045: every move here carries the fence of the call the record holds, so a scope a newer call
-      // has moved since refuses it; and a deployment from before the fence is refused before any move
-      // (`attestFence`), so a carry's reconcile records no receipt for it.
+      // has moved since refuses it. A deployment from before the fence takes the OFF unfenced.
       const results: SystemSwitchReassert[] = [];
       const held = new Set(tenantHeld);
       for (const key of keys) {
         const fence = fences.get(key)!; // `recordedOff` read each key with its own row's fence
         const outcome = await move(key, 'off', at, held.has(key), fence);
         if (outcome.changed) {
-          await this.recordAdmin(actor, action, target, null, { operationId: ulid(), ...reassertOffRow(kind, key, outcome.permissions) });
+          await this.recordAdmin(actor, action, target, null, {
+            operationId: ulid(),
+            ...reassertOffRow(kind, key, outcome.permissions),
+            ...(outcome.fenced === true ? {} : { unfenced: true }),
+          });
         }
         results.push(reassertEntry(kind, key, outcome));
         await confirm(key, fence, outcome);
@@ -5974,6 +6003,7 @@ export class CloudflareScopeHost implements ScopeHost {
             continue;
           }
           const fence = row.fence;
+          if (await withholdOn(key)) continue;
           const outcome = await move(key, 'on', at, undefined, fence);
           if (outcome.changed) {
             await this.recordAdmin(actor, action, target, null, { operationId: ulid(), ...reassertOnRow(kind, key, outcome.permissions) });
@@ -5981,6 +6011,13 @@ export class CloudflareScopeHost implements ScopeHost {
           }
           await confirm(key, fence, outcome);
         }
+      }
+      if (onWithheld.length) {
+        throw substratError(
+          'precondition_failed',
+          `${unfencedMessage(scopeId)} Its recorded OFF positions were applied; the owed ON of ` +
+            `${onWithheld.map((k) => `'${k}'`).join(', ')} was not sent.`,
+        );
       }
       return results;
     };
