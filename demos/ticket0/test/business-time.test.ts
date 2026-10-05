@@ -602,10 +602,13 @@ describe('openings are one union across midnight', () => {
   }
 
   for (const [timezone, fromYear, toYear, fewest] of ZONES) {
-    it(`${timezone}: every transition ${fromYear}–${toYear} — oracle, monotonic, round trip, path independence`, () => {
+    it(`${timezone}: every transition ${fromYear}–${toYear} — oracle, monotonic, round trip, path independence`, async () => {
       const nights = transitions(timezone, fromYear, toYear);
       expect(nights.length).toBeGreaterThanOrEqual(fewest);
       for (const at of nights) {
+        // Seconds of synchronous work per zone: yield between transitions, or the worker
+        // cannot answer vitest's own RPC in time and the run fails with every test green.
+        await new Promise((resolve) => setTimeout(resolve, 0));
         const s = aroundTransition(timezone, at);
         const from = new Date(at - 2 * DAY).toISOString();
         const to = new Date(at + 2 * DAY).toISOString();
