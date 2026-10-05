@@ -243,13 +243,15 @@ describe('ctx.pageTrashed walks past refused rows without handing out their posi
     expect(rest.entries.map((e) => (e as { id: string }).id)).toEqual(['d4']);
   });
 
-  it('refuses rather than lie or leak when the budget runs out on refused rows alone', async () => {
-    const { reads } = setup(ten);
-    await expect(reads(new Set(['d9']), 4).pageTrashed('doc', { limit: 5 })).rejects.toMatchObject({
-      message: expect.stringMatching(/without finding one this caller may see/),
-    });
-    // The twin: the whole bin inside the budget is answered, and the end is null.
-    expect(await reads(new Set(), 50).pageTrashed('doc', { limit: 5 })).toEqual({ entries: [], nextCursor: null });
+  it('answers a budget spent on refused rows exactly as it answers the end of the bin', async () => {
+    // Either side of the budget, for a caller who may see none of it: the same response, so
+    // nothing tells them how many rows they could not see.
+    const below = await setup(ten.slice(0, 3)).reads(new Set(), 4).pageTrashed('doc', { limit: 5 });
+    const at = await setup(ten.slice(0, 4)).reads(new Set(), 4).pageTrashed('doc', { limit: 5 });
+    const past = await setup(ten).reads(new Set(), 4).pageTrashed('doc', { limit: 5 });
+    expect(below).toEqual({ entries: [], nextCursor: null });
+    expect(at).toEqual(below);
+    expect(past).toEqual(below);
   });
 });
 
