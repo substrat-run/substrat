@@ -11,7 +11,7 @@ import {
   type ExtractionSignal,
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
-import { pdfDecoders, pdfExtract, pdfLexer } from '../src/pdf.js';
+import { pdfCMap, pdfDecoders, pdfExtract, pdfLexer } from '../src/pdf.js';
 import { CALL_COST, Pace, Retained } from '../src/shared.js';
 import { zip } from './zip.js';
 
@@ -163,6 +163,73 @@ describe('pdf: what it reads', () => {
     const font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>';
     const outcome = await run(onePage('BT /F1 9 Tf <000100020010001100120020> Tj <0021> Tj ET', { font, extra: [stream('', cmap)] }).bytes);
     expect(textOf(outcome)).toBe('HiabcÅö');
+  });
+
+  it('a later CMap definition wins every code it names — a range over a range, a code over a range, and a range over a code', async () => {
+    const map = await cmapOf(
+      'begincmap',
+      // An earlier, longer range and a later, shorter one inside it: codes the shorter one does
+      // not reach still map through the longer one.
+      '2 beginbfrange <0000> <00FF> <0041> <0010> <0012> <0061> endbfrange',
+      // A range over a code written before it, and a code over a range written before it.
+      '1 beginbfchar <0100> <005A> endbfchar',
+      '2 beginbfrange <0100> <0101> <0030> <0200> <0202> <0030> endbfrange',
+      '1 beginbfchar <0201> <0021> endbfchar',
+      'endcmap',
+    );
+    expect([0x00, 0x0f, 0x10, 0x12, 0x13, 0x20, 0xff].map((c) => map.get(2, c))).toEqual(['A', 'P', 'a', 'c', 'T', 'a', String.fromCharCode(0x140)]);
+    expect([0x100, 0x101, 0x200, 0x201, 0x202].map((c) => map.get(2, c))).toEqual(['0', '1', '0', '!', '2']);
+  });
+
+  it('a CMap\'s map agrees, code for code, with its definitions applied in order', async () => {
+    // A seeded generator: the same 300 CMaps on every run.
+    let seed = 0x2075;
+    const rand = (n: number): number => {
+      seed = (seed * 1_103_515_245 + 12_345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    const hex = (bytes: number[]) => `<${bytes.map((b) => b.toString(16).padStart(2, '0')).join('')}>`;
+    const codeHex = (len: number, code: number) => hex(len === 1 ? [code] : [code >> 8, code & 0xff]);
+    for (let round = 0; round < 300; round += 1) {
+      const sections: string[] = [];
+      // What the CMap means, written per code the way a writer reads it: each definition in turn.
+      const expected = new Map<string, string>();
+      for (let d = rand(12) + 1; d > 0; d -= 1) {
+        const len = rand(2) + 1;
+        const from = rand(40);
+        // Destinations of one to four bytes, their last byte near the top so a count carries.
+        const dst = Array.from({ length: rand(4) + 1 }, () => (rand(2) ? 0xf0 + rand(16) : rand(256)));
+        const kind = rand(3);
+        if (kind === 0) {
+          sections.push(`1 beginbfchar ${codeHex(len, from)} ${hex(dst)} endbfchar`);
+          expected.set(`${len}:${from}`, utf16(dst));
+        } else {
+          const to = from + rand(30);
+          if (kind === 1) {
+            sections.push(`1 beginbfrange ${codeHex(len, from)} ${codeHex(len, to)} ${hex(dst)} endbfrange`);
+            for (let c = from; c <= to; c += 1) {
+              const b = [...dst];
+              const last = b[b.length - 1]! + (c - from);
+              b[b.length - 1] = last & 0xff;
+              if (b.length >= 2 && last > 0xff) b[b.length - 2] = (b[b.length - 2]! + (last >> 8)) & 0xff;
+              expected.set(`${len}:${c}`, utf16(b));
+            }
+          } else {
+            const each = Array.from({ length: rand(to - from + 2) }, () => [rand(256), rand(256)]);
+            sections.push(`1 beginbfrange ${codeHex(len, from)} ${codeHex(len, to)} [${each.map(hex).join(' ')}] endbfrange`);
+            each.forEach((b, k) => {
+              if (from + k <= to) expected.set(`${len}:${from + k}`, utf16(b));
+            });
+          }
+        }
+      }
+      const map = await cmapOf('begincmap', ...sections, 'endcmap');
+      for (const len of [1, 2]) {
+        for (let code = 0; code < 80; code += 1) {
+          expect(map.get(len, code), `round ${round}, ${len}-byte code ${code}: ${sections.join(' | ')}`).toBe(expected.get(`${len}:${code}`));
+        }
+      }
+    }
   });
 
   it('gives nothing for a composite font with no ToUnicode — glyph ids are not text', async () => {
@@ -739,6 +806,12 @@ const SHAPES: readonly Shape[] = [
   // A string: as many bytes kept per parse as a dense array, at a fraction of the lexing. The
   // array, whose memory per byte is the worst, is held to the peak in its own test above.
   pdfShape('one 200 KiB string parsed under 2 000 numbers', () => sharedObject(`(${'x'.repeat(200 * 1024)})`)),
+  pdfShape('a CMap of 131 072 single codes written in descending order, each resolved against the rest', () => {
+    // Out of order, so the definitions are swept into segments rather than taken as written.
+    const sections = Array.from({ length: 1_311 }, (_, k) =>
+      `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(0x1_ffff - k * 100 - j).toString(16).padStart(6, '0')}> <0041>`).join(' ')} endbfchar`);
+    return cmapFont(`begincmap\n1 begincodespacerange <000000> <FFFFFF> endcodespacerange\n${sections.join('\n')}\nendcmap`, '01ffff');
+  }),
   pdfShape('500 fonts sharing one ToUnicode of 30 000 codes', () => {
     const chars = Array.from({ length: 300 }, (_, k) =>
       `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(k * 100 + j).toString(16).padStart(4, '0')}> <00410042>`).join(' ')} endbfchar`).join('\n');
@@ -890,6 +963,19 @@ function sharedObject(value: string): Uint8Array {
   }
   const xs = stream('/Type /XRef /Size 2010 /W [1 4 2] /Root 1 0 R', Uint8Array.from(rows));
   return cat(head, o1, o2, o3, '4 0 obj\n', xs, `\nendobj\nstartxref\n${xrefAt}\n%%EOF\n`);
+}
+
+/** A CMap's code → text map, parsed from its lines. */
+async function cmapOf(...lines: string[]): Promise<{ get(length: number, code: number): string | undefined }> {
+  return (await pdfCMap(bin(lines.join('\n')), counting(), new Retained(1 << 30))).map;
+}
+
+/** Bytes as UTF-16BE text, an odd last byte on its own — the way a CMap destination reads. */
+function utf16(b: number[]): string {
+  let s = '';
+  for (let i = 0; i + 1 < b.length; i += 2) s += String.fromCharCode((b[i]! << 8) | b[i + 1]!);
+  if (b.length % 2 === 1) s += String.fromCharCode(b[b.length - 1]!);
+  return s;
 }
 
 /** Big-endian 4 bytes. */

@@ -1266,17 +1266,42 @@ class CodeSpace {
   }
 }
 
+/** What one sealed `CodeMap` segment costs: its first and last key (float64 each) and a definition index. */
+const SEGMENT_COST = 20;
+
 /**
- * A ToUnicode mapping that holds what the CMap WROTE, not what it implies: single codes as
- * strings, and each `bfrange` as one entry — its first and last code and its base destination
- * — whose destination for a code is computed when that code is looked up (#2062 r3). Expanding
- * a range into one string per code let a 1.5 KiB file grow the heap by half a gigabyte. Each
- * entry is charged to the extraction's `Retained` before it is kept.
+ * One `bfrange` destination, split where a code's offset can reach it: `prefix` is the text of
+ * every byte the count never touches, `tail` the last one to three bytes it does (`utf16be`
+ * pairs bytes from the front, so the split falls on a pair and the two decode independently).
+ */
+interface RangeDestination {
+  readonly from: number;
+  readonly prefix: string;
+  readonly tail: Uint8Array;
+}
+
+/**
+ * A ToUnicode mapping that holds what the CMap WROTE, not what it implies: each `bfchar` code
+ * as its string, and each `bfrange` as one definition — its first and last code and its base
+ * destination — whose destination for a code is computed when that code is looked up (#2062
+ * r3). Expanding a range into one string per code let a 1.5 KiB file grow the heap by half a
+ * gigabyte. Each definition is charged to the extraction's `Retained` before it is kept.
+ *
+ * Definitions overlap, and the LATER one wins for every code it names, whichever kind either is
+ * — the precedence the map had when it held a string per code. `seal` resolves them once into
+ * disjoint segments, each naming the definition that wins it, so a lookup is one binary search.
  */
 class CodeMap {
-  private readonly chars = new Map<number, string>();
-  /** `bfrange`s, by key of their first code; sorted once the CMap is read (`seal`). */
-  private readonly ranges: { lo: number; hi: number; base: Uint8Array }[] = [];
+  /** Each definition's first and last key, in the order the CMap wrote them. */
+  private los: number[] = [];
+  private his: number[] = [];
+  /** And what it maps to: a `bfchar`'s text, or a `bfrange`'s destination. */
+  private readonly targets: (string | RangeDestination)[] = [];
+  /** The sealed segments: `segLo[i]`…`segHi[i]` map through `targets[segDef[i]]`. */
+  private segLo = new Float64Array(0);
+  private segHi = new Float64Array(0);
+  private segDef = new Int32Array(0);
+  private segments = 0;
   /** Codes defined so far, against `CMAP_CODES_MAX`. */
   private covered = 0;
 
@@ -1285,7 +1310,8 @@ class CodeMap {
   setChar(length: number, code: number, text: string): void {
     if (this.covered >= CMAP_CODES_MAX) return;
     this.retained.take(ENTRY_COST + text.length * 2);
-    this.chars.set(codeKey(length, code), text);
+    const key = codeKey(length, code);
+    this.define(key, key, text);
     this.covered += 1;
   }
 
@@ -1293,40 +1319,138 @@ class CodeMap {
   setRange(length: number, from: number, to: number, base: Uint8Array): void {
     const count = Math.min(to - from + 1, CMAP_CODES_MAX - this.covered);
     if (count <= 0 || base.length === 0) return;
-    this.retained.take(ENTRY_COST + base.length);
-    this.ranges.push({ lo: codeKey(length, from), hi: codeKey(length, from + count - 1), base: Uint8Array.from(base) });
+    this.retained.take(ENTRY_COST + base.length * 2);
+    const cut = base.length % 2 === 0 ? base.length - 2 : Math.max(0, base.length - 3);
+    const lo = codeKey(length, from);
+    this.define(lo, codeKey(length, from + count - 1), { from: lo, prefix: utf16be(base.subarray(0, cut)), tail: Uint8Array.from(base.subarray(cut)) });
     this.covered += count;
   }
 
-  /** Sort the ranges for lookup, once the CMap's last section is read. */
-  seal(): this {
-    this.ranges.sort((x, y) => x.lo - y.lo);
+  private define(lo: number, hi: number, target: string | RangeDestination): void {
+    this.los.push(lo);
+    this.his.push(hi);
+    this.targets.push(target);
+  }
+
+  /**
+   * Resolve the definitions into disjoint segments, the later definition winning each code: a
+   * sweep over every definition's first code and the one past its last, holding the definitions
+   * open there in a heap by order. A CMap that writes its definitions ascending and apart — as
+   * real ones do — is its own segment list and skips the sweep.
+   */
+  async seal(pace: Pace): Promise<this> {
+    const n = this.los.length;
+    // At most one segment between each two of a definition's 2n boundaries: charged before it is made.
+    this.retained.take(2 * n * SEGMENT_COST);
+    const segLo = new Float64Array(2 * n);
+    const segHi = new Float64Array(2 * n);
+    const segDef = new Int32Array(2 * n);
+    let count = 0;
+    let ordered = true;
+    for (let i = 1; i < n && ordered; i += 1) ordered = this.los[i]! > this.his[i - 1]!;
+    if (ordered) {
+      for (let i = 0; i < n; i += 1) {
+        segLo[i] = this.los[i]!;
+        segHi[i] = this.his[i]!;
+        segDef[i] = i;
+      }
+      count = n;
+    } else {
+      // Definitions by first code, and every boundary: a first code, or the code past a last.
+      const byLo = Int32Array.from({ length: n }, (_, i) => i).sort((a, b) => this.los[a]! - this.los[b]! || a - b);
+      const bounds = new Float64Array(2 * n);
+      for (let i = 0; i < n; i += 1) {
+        bounds[2 * i] = this.los[i]!;
+        bounds[2 * i + 1] = this.his[i]! + 1;
+      }
+      bounds.sort();
+      pace.charge(4 * n * Math.max(1, Math.log2(2 * n)));
+      // A max-heap of the open definitions by index: the latest one written wins.
+      const heap = new Int32Array(n);
+      let size = 0;
+      const push = (d: number): void => {
+        let i = size++;
+        while (i > 0 && heap[(i - 1) >> 1]! < d) {
+          heap[i] = heap[(i - 1) >> 1]!;
+          i = (i - 1) >> 1;
+        }
+        heap[i] = d;
+      };
+      const pop = (): void => {
+        const d = heap[--size]!;
+        let i = 0;
+        for (;;) {
+          let c = 2 * i + 1;
+          if (c >= size) break;
+          if (c + 1 < size && heap[c + 1]! > heap[c]!) c += 1;
+          if (heap[c]! <= d) break;
+          heap[i] = heap[c]!;
+          i = c;
+        }
+        heap[i] = d;
+      };
+      let next = 0;
+      for (let b = 0; b < 2 * n; b += 1) {
+        if (pace.room <= 0) await pace.turn();
+        pace.charge(CALL_COST);
+        const at = bounds[b]!;
+        if (b + 1 < 2 * n && bounds[b + 1] === at) continue;
+        while (next < n && this.los[byLo[next]!]! <= at) push(byLo[next++]!);
+        while (size > 0 && this.his[heap[0]!]! < at) pop();
+        if (size === 0 || b + 1 >= 2 * n) continue;
+        // Every boundary is one, so the winner here holds to the next boundary at least.
+        const d = heap[0]!;
+        const until = bounds[b + 1]! - 1;
+        if (count > 0 && segDef[count - 1] === d && segHi[count - 1] === at - 1) segHi[count - 1] = until;
+        else {
+          segLo[count] = at;
+          segHi[count] = until;
+          segDef[count] = d;
+          count += 1;
+        }
+      }
+    }
+    this.segLo = segLo;
+    this.segHi = segHi;
+    this.segDef = segDef;
+    this.segments = count;
+    // The definitions' bounds are in the segments now.
+    this.los = [];
+    this.his = [];
     return this;
   }
 
   get(length: number, code: number): string | undefined {
     const key = codeKey(length, code);
-    const char = this.chars.get(key);
-    if (char !== undefined || this.ranges.length === 0) return char;
-    // The last range starting at or before the key; it maps the code if it reaches it.
+    // The last segment starting at or before the key; it maps the code if it reaches it.
     let lo = 0;
-    let hi = this.ranges.length - 1;
+    let hi = this.segments - 1;
     let found = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (this.ranges[mid]!.lo <= key) {
+      if (this.segLo[mid]! <= key) {
         found = mid;
         lo = mid + 1;
       } else hi = mid - 1;
     }
-    const range = found < 0 ? undefined : this.ranges[found];
-    if (!range || key > range.hi) return undefined;
-    const b = Uint8Array.from(range.base);
-    const last = b[b.length - 1]! + (key - range.lo);
-    b[b.length - 1] = last & 0xff;
-    if (b.length >= 2 && last > 0xff) b[b.length - 2] = (b[b.length - 2]! + (last >> 8)) & 0xff;
-    return utf16be(b);
+    if (found < 0 || key > this.segHi[found]!) return undefined;
+    const target = this.targets[this.segDef[found]!]!;
+    return typeof target === 'string' ? target : target.prefix + countedTail(target.tail, key - target.from);
   }
+}
+
+/**
+ * A `bfrange` destination's last one to three bytes, counted up by `offset` in the last byte —
+ * carrying once into the byte before it, as the format specifies — as text, allocating nothing
+ * but the string.
+ */
+function countedTail(tail: Uint8Array, offset: number): string {
+  const last = tail[tail.length - 1]! + offset;
+  const low = last & 0xff;
+  if (tail.length === 1) return String.fromCharCode(low);
+  const carried = (tail[tail.length - 2]! + (last >> 8)) & 0xff;
+  if (tail.length === 2) return String.fromCharCode((carried << 8) | low);
+  return String.fromCharCode((tail[0]! << 8) | carried) + String.fromCharCode(low);
 }
 
 /** A CMap's code space and its code → text map (a ToUnicode CMap, or an encoding CMap's spaces). */
@@ -1409,7 +1533,7 @@ async function parseCMap(data: Uint8Array, pace: Pace, retained: Retained): Prom
       operands.length = 0;
     }
   }
-  return { spaces: new CodeSpace(ranges), map: map.seal() };
+  return { spaces: new CodeSpace(ranges), map: await map.seal(pace) };
 }
 
 /** A CMap stream, parsed once per object number however many fonts name it. */
@@ -1749,4 +1873,7 @@ export const pdfTables = { glyphText, WIN_ANSI, MAC_ROMAN, STANDARD };
 export const pdfDecoders = { unpredict, asciiHex, ascii85, runLength, lzw };
 
 /** The lexer, for the package's own tests: judged on what it charges for one token. */
+/** The CMap parser, for the package's own tests. */
+export const pdfCMap = (data: Uint8Array, pace: Pace, retained: Retained): Promise<{ map: { get(length: number, code: number): string | undefined } }> =>
+  parseCMap(data, pace, retained);
 export const pdfLexer = (buf: Uint8Array, pace: Pace): { next(): unknown } => new Lexer(buf, 0, buf.length, pace);
