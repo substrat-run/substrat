@@ -50,6 +50,9 @@ import type {
   VersionOrigin,
   OwnerSeat,
   OwnerClaimLink,
+  MemberInviteLink,
+  MemberRemoval,
+  ScopeMembers,
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
@@ -467,6 +470,34 @@ export class TenantNarrowedControlPlane {
    */
   mintOwnerClaim(scopeId: ScopeId): Promise<OwnerClaimLink> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/owner-claim`);
+  }
+
+  /**
+   * The app's MEMBERS (#1150) — who holds which of its roles, the logins bound to each, the
+   * open invites, and the roles a person may be given. Read from the vertical through the
+   * platform; 501 means the app declares no member roles the platform can manage.
+   */
+  listMembers(scopeId: ScopeId): Promise<ScopeMembers> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/members`);
+  }
+
+  /**
+   * Invite a member (#1150), as the signed-in person this client was minted for — the
+   * vertical bounds it by what THEY hold in the app. The accept link is shown once, like a
+   * claim link, and stored nowhere.
+   */
+  inviteMember(scopeId: ScopeId, input: { roleKey: string; email?: string }): Promise<MemberInviteLink> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/members`, input);
+  }
+
+  /** Move a member from one role to another, in one write, as the signed-in person (#1150). */
+  changeMemberRole(scopeId: ScopeId, principal: PrincipalId, input: { from: string; to: string }): Promise<unknown> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/members/${principal}/role`, input);
+  }
+
+  /** Remove a member — their roles, their logins, an open invite — as the signed-in person (#1150). */
+  removeMember(scopeId: ScopeId, principal: PrincipalId): Promise<MemberRemoval> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/members/${principal}/remove`);
   }
 
   /**

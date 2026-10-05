@@ -95,6 +95,12 @@ import {
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   seatScopeTuple,
+  applyScopeRoleChange,
+  changeScopeRole,
+  revokeScopeRoles,
+  scopeRoleHolders,
+  type RoleBound,
+  type ScopeRoleHolder,
   effectiveRoleGrantQuery,
   switchRecordedOff,
   switchSystemSchedules,
@@ -3947,14 +3953,50 @@ export function defineScopeDO(
       return this.queue.enqueue(async () => {
         const bound = await this.assignmentBound({ kind: 'principal', id: caller }, tenantId, scopeId, roleKey);
         if (bound?.covered) {
-          this.sql.exec(
-            `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-             VALUES (?, ?, ?, NULL)`,
-            `principal:${assignee}`, `role:${roleKey}`, `scope:${scopeId}`,
-          );
+          applyScopeRoleChange(this.switchSql(), scopeId, assignee, { revoke: [], grant: roleKey }, new Date().toISOString());
         }
         return bound;
       });
+    }
+
+    /** The scope's live scope-level role assignments, or one principal's (#1150). */
+    async scopeRoleHoldersFor(scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() => scopeRoleHolders(this.switchSql(), scopeId, new Date().toISOString(), principal));
+    }
+
+    /**
+     * The kernel's `changeScopeRole` in one serialized scope task (#1150). Its two refusals come
+     * back as values: an error thrown here crosses the RPC flattened, so the coordinator types them.
+     */
+    async changeScopeRoleBoundedFor(
+      tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
+    ): Promise<Coverage | 'not-held' | 'unknown-to'> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() =>
+        changeScopeRole(
+          this.switchSql(), scopeId, principal, from, to, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId),
+          (run) => this.revision.transactionSync(run),
+        ),
+      );
+    }
+
+    /** The kernel's `revokeScopeRoles` in one serialized scope task (#1150). */
+    async revokeScopeRolesBoundedFor(
+      tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
+    ): Promise<{ coverage: Coverage; revoked: string[] }> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() =>
+        revokeScopeRoles(
+          this.switchSql(), scopeId, principal, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId),
+          (run) => this.revision.transactionSync(run),
+        ),
+      );
+    }
+
+    /** The caller's bound per role at the scope; `null` for a role the tenant does not define. */
+    private roleBound(caller: PrincipalId, tenantId: TenantId, scopeId: ScopeId): RoleBound {
+      return (roleKey) => this.assignmentBound({ kind: 'principal', id: caller }, tenantId, scopeId, roleKey);
     }
 
     /**

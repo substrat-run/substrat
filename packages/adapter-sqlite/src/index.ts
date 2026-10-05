@@ -205,6 +205,7 @@ import {
   assertReplayableDump,
   delegatedReadRecord,
   ownerTransferAudit,
+  memberChangeAudit,
   copyMarkAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
@@ -320,6 +321,12 @@ import {
   DELIVERY_ERROR_REDACTION_SQL,
   REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
+  applyScopeRoleChange,
+  changeScopeRole,
+  revokeScopeRoles,
+  scopeRoleHolders,
+  type RoleBound,
+  type ScopeRoleHolder,
   admitPeer,
   collectPeers,
   peerSeats,
@@ -4342,14 +4349,55 @@ export class SqliteScopeHost implements ScopeHost {
     const target = principalId.parse(assignee);
     return rt.actor.turn(async () => {
       const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
-      if (bound.covered) {
-        rt.db.prepare(
-          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-           VALUES (?, ?, ?, NULL)`,
-        ).run(`principal:${target}`, `role:${roleKey}`, `scope:${scopeId}`);
-      }
+      if (bound.covered) applyScopeRoleChange(switchSqlOf(rt.db), scopeId, target, { revoke: [], grant: roleKey }, this.clock());
       return bound;
     });
+  }
+
+  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const who = principal === undefined ? undefined : principalId.parse(principal);
+    return rt.actor.enqueue(() => scopeRoleHolders(switchSqlOf(rt.db), scopeId, this.clock(), who));
+  }
+
+  async changeScopeRoleBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+    from: string,
+    to: string,
+  ): Promise<Coverage> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const target = principalId.parse(principal);
+    const answer = await rt.actor.turn(() =>
+      changeScopeRole(switchSqlOf(rt.db), scopeId, target, from, to, this.clock(), this.roleBound(caller, tenantId, scopeId), (run) => rt.db.transaction(run)()),
+    );
+    if (answer === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
+    if (answer === 'unknown-to') throw unknownRoleError(to);
+    return answer;
+  }
+
+  async revokeScopeRolesBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.turn(() =>
+      revokeScopeRoles(
+        switchSqlOf(rt.db), scopeId, principalId.parse(principal), this.clock(), this.roleBound(caller, tenantId, scopeId),
+        (run) => rt.db.transaction(run)(),
+      ),
+    );
+  }
+
+  /** The caller's bound per role at the scope, `null` for a role this tenant does not define (#1150). */
+  private roleBound(caller: PrincipalId, tenantId: TenantId, scopeId: ScopeId): RoleBound {
+    const subject = asPrincipal(principalId.parse(caller));
+    return async (roleKey) =>
+      this.roles.has(`${tenantId}/${roleKey}`) ? this.assignmentBound(subject, tenantId, scopeId, roleKey) : null;
   }
 
   /**
@@ -10203,6 +10251,11 @@ export class SqliteScopeHost implements ScopeHost {
       recordOwnerTransfer: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
+      },
+      /** #1150: one phase of a dashboard member change, written around the vertical's own. */
+      recordMemberChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
+        this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {

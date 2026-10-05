@@ -117,6 +117,7 @@ import {
   type EventCauseInput,
   delegatedReadRecord,
   ownerTransferAudit,
+  memberChangeAudit,
   copyMarkAudit,
   type EventEffectsInput,
   type EffectsTree,
@@ -412,6 +413,7 @@ import {
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
+  type ScopeRoleHolder,
   assertRowLimit,
   assertRowOffset,
   emptyImportResult,
@@ -1234,6 +1236,14 @@ interface ScopeStubRpc {
   assignScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage | null>;
+  /** #1150: the scope's role roster, and the two bounded writes over it — see `scope-do.ts`. */
+  scopeRoleHoldersFor(scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]>;
+  changeScopeRoleBoundedFor(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
+  ): Promise<Coverage | 'not-held' | 'unknown-to'>;
+  revokeScopeRolesBoundedFor(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }>;
   /** Every module this scope holds or has held system authority for, and where each
    *  stands (#1674) — the kernel's `systemGrantsStatus`, run in the scope's own storage. */
   systemGrantsStatus(): Promise<SystemGrantsEntry[]>;
@@ -4723,6 +4733,42 @@ export class CloudflareScopeHost implements ScopeHost {
     );
     if (!bound) throw unknownRoleError(roleKey);
     return coverage.parse(bound);
+  }
+
+  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]> {
+    await this.scopeRoleGate(tenantId, scopeId, 'listScopeRoleHolders');
+    return this.scopeStub(scopeId).scopeRoleHoldersFor(scopeId, principal === undefined ? undefined : principalId.parse(principal));
+  }
+
+  async changeScopeRoleBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
+  ): Promise<Coverage> {
+    await this.scopeRoleGate(tenantId, scopeId, 'changeScopeRoleBounded');
+    const target = principalId.parse(principal);
+    const bound = await this.scopeStub(scopeId).changeScopeRoleBoundedFor(
+      tenantId, scopeId, principalId.parse(caller), target, from, to,
+    );
+    if (bound === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
+    if (bound === 'unknown-to') throw unknownRoleError(to);
+    return coverage.parse(bound);
+  }
+
+  async revokeScopeRolesBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
+  ): Promise<{ coverage: Coverage; revoked: string[] }> {
+    await this.scopeRoleGate(tenantId, scopeId, 'revokeScopeRolesBounded');
+    const result = await this.scopeStub(scopeId).revokeScopeRolesBoundedFor(
+      tenantId, scopeId, principalId.parse(caller), principalId.parse(principal),
+    );
+    return { coverage: coverage.parse(result.coverage), revoked: result.revoked };
+  }
+
+  /** The (tenant, scope) gate the scope-role verbs share — `assignScopeRoleBounded`'s two checks. */
+  private async scopeRoleGate(tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<void> {
+    if (this.cpLess && !(await this.scopeStub(scopeId).servesTenant(tenantId))) {
+      throw unknownScopeForTenant(tenantId, scopeId);
+    }
+    await this.peerScopeGate(tenantId, scopeId, verb);
   }
 
   /**
@@ -8335,6 +8381,11 @@ export class CloudflareScopeHost implements ScopeHost {
       recordOwnerTransfer: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = ownerTransferAudit.parse(entry);
         await this.recordAdmin(actor, 'transferOwner', { tenantId, scopeId }, null, after);
+      },
+      /** #1150: one phase of a dashboard member change, written around the vertical's own. */
+      recordMemberChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
+        await this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {
