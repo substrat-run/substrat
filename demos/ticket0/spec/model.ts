@@ -979,12 +979,12 @@ export const ticket0Entities = defineEntities({
       cited_article_ids: z.string().nullable(),
       created_at: z.string(),
     }),
-    // A PUBLIC message also sits under each widget session on its conversation (#1853):
+    // A PUBLIC message also sits under its conversation's `publicThread` (#1853, #2044):
     // the edge is what a visitor's live feed walks, so it carries exactly what
-    // `widget-thread` would show them and never an internal note or a draft. A session's
-    // only parent is its current conversation, so this second edge reaches nothing the
-    // first does not.
-    parents: ['conversation', 'widgetSession'],
+    // `widget-thread` would show them and never an internal note or a draft. The thread
+    // hangs only under its own conversation and the sessions currently on it, so this
+    // second edge reaches nothing the first does not.
+    parents: ['conversation', 'publicThread'],
     erasable: ['body_text', 'body_html'],
     // Mail headers as they arrived: the sender's host writes both, freely (#1088).
     outsideText: ['email_message_id', 'email_in_reply_to'],
@@ -1150,6 +1150,28 @@ export const ticket0Entities = defineEntities({
     key: ['token_hash'],
     // What the browser and the edge said, as they said it (#1088).
     outsideText: CLIENT_OUTSIDE_TEXT,
+  },
+
+  /**
+   * A conversation's public thread: the node its PUBLIC messages hang under (#2044).
+   *
+   * A widget visitor's live feed is rooted at their session, and the session's subtree
+   * must be exactly what `widget-thread` shows them. Hanging each public message under
+   * each session made that O(sessions) edges per message and one `entity.relinked` per
+   * message when a session moved. Instead each public message hangs once under its
+   * conversation's thread, and the thread hangs under the conversation and under every
+   * session currently on it — so a session moving, or a merge seating one, changes one
+   * edge per session, whatever the thread's length.
+   *
+   * The id IS the conversation's id, so the ref needs no lookup. The row holds nothing
+   * else: it exists so the edge's endpoint is a model entity like every other.
+   */
+  publicThread: {
+    table: 'ticket0_public_threads',
+    fields: z.object({
+      id: z.string(),
+    }),
+    parents: ['conversation', 'widgetSession'],
   },
 
   /**
