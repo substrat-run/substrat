@@ -29,6 +29,7 @@ import {
   restoreSwitchRecord,
   scopesSwitchedOffFor,
   switchFencesOf,
+  switchRecordStatesOf,
   switchRecordsOf,
   switchedOffOf,
   switchesBackfillSqlOf,
@@ -3851,6 +3852,11 @@ export class ControlPlaneDO extends DurableObject {
   /** #2045: each record row's operation id, by subject — the fence a re-assert or carry moves with. */
   switchFencesOf(kind: SwitchKind, tenantId: string, scopeId: string): [string, string][] {
     return [...switchFencesOf(this.kernelSql, kind, tenantId, scopeId)];
+  }
+
+  /** #2045: each record row's position and fence, by subject, read together — `switchRecordStatesOf`. */
+  switchRecordStatesOf(kind: SwitchKind, tenantId: string, scopeId: string): [string, { position: 'on' | 'off'; fence: string }][] {
+    return [...switchRecordStatesOf(this.kernelSql, kind, tenantId, scopeId)];
   }
 
   /** #2045: the subjects of one kind owed a re-assert on one scope. */

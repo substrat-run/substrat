@@ -800,6 +800,8 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
     const seen: string[] = [];
     /** Control-plane methods that throw for as long as they are listed — a directory RPC that fails. */
     const failing = new Set<string>();
+    /** Run once, right AFTER the named directory read returns — a write landing between two reads. */
+    const after = new Map<string, { match: (args: unknown[]) => boolean; run: () => Promise<void> }>();
     const pass = async (method: string, to?: string) => {
       if (failing.has(method)) throw new Error(`directory unreachable during ${method}`);
       seen.push(to ? `${method}:${to}` : method);
@@ -824,7 +826,13 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
             if (typeof value !== 'function') return value;
             return async (...a: unknown[]) => {
               await pass(String(prop));
-              return target[prop as string]!(...a);
+              const out = await target[prop as string]!(...a);
+              const hook = after.get(String(prop));
+              if (hook?.match(a)) {
+                after.delete(String(prop));
+                await hook.run();
+              }
+              return out;
             };
           },
         });
@@ -923,7 +931,7 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
       await platform.admin.markScopeProvisioned(staff, t, s, 'v-receipt');
       return (await platform.admin.getScopeRecord(staff, t, s))?.provisionedVersionId ?? null;
     };
-    return { platform, node, kinds, gates, seen, failing, receipt, settle, setLegacy: (legacy: boolean) => (opts.legacy = legacy) };
+    return { platform, node, kinds, gates, seen, failing, after, receipt, settle, setLegacy: (legacy: boolean) => (opts.legacy = legacy) };
   };
 
   it('upgrade: a scope created before the fence gains its table on the next wake, and fences from then on', async () => {
@@ -1067,6 +1075,31 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
         expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
         await platform.admin.reassertSystemSwitches(staff, node);
         expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+      });
+
+      it('an ON landing right after a re-assert reads the record: the OFF it sends carries the OFF\'s own fence, and the scope refuses it (CodeRabbit)', async () => {
+        // Position and fence are one read. Read apart, the ON landing between them paired the OFF
+        // position with the ON's fence, which the scope holds, so the stale OFF applied there and
+        // left the scope off under a record of on.
+        const { platform, node, kinds, after } = await setup();
+        const k = kinds[kind];
+        await k.switch('off', 'A');
+        const landOn = { match: (a: unknown[]) => a[0] === kind, run: async () => void (await k.switch('on', 'B')) };
+        for (const read of ['switchRecordStatesOf', 'switchedOffOf']) after.set(read, landOn);
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect(after.size).toBe(1); // the ON landed, after the re-assert's first read of the record
+        expect([await k.recorded(), await k.scope()]).toEqual(['on', 'on']);
+      });
+
+      it('twin: with no ON in between, the same re-assert keeps the scope off under the OFF\'s fence', async () => {
+        const { platform, node, kinds, seen } = await setup();
+        const k = kinds[kind];
+        await k.switch('off', 'A');
+        await k.lose();
+        seen.length = 0;
+        await platform.admin.reassertSystemSwitches(staff, node);
+        expect(seen).toContain(`${k.move}:off`);
+        expect([await k.recorded(), await k.scope()]).toEqual(['off', 'off']);
       });
 
       it('every switch call is owed until the scope confirms it: no receipt while its move is in flight, one once it lands', async () => {
