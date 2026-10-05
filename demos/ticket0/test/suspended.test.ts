@@ -1274,6 +1274,12 @@ describe('events carry no outside text', () => {
       await (await as(desk.customer)).invoke('ticket0/submit-csat', {
         conversationId: rated.conversation_id, score: 5, comment: plant('csat.comment'),
       });
+      // A canned answer (#1087), written personal and then given to the desk, so the
+      // created, shared and (below) deleted events all pass by the scan.
+      const canned = (await admin.invoke('ticket0/create-saved-reply', {
+        title: plant('savedReply.title'), body: plant('savedReply.body'), personal: true,
+      })) as { id: string };
+      await admin.invoke('ticket0/share-saved-reply', { savedReplyId: canned.id });
 
       const file = join(dir, `${desk.tenant}__${desk.scope}.sqlite`);
       const read = <T,>(fn: (db: Database.Database) => T): T => {
@@ -1299,6 +1305,7 @@ describe('events carry no outside text', () => {
       await admin.invoke('ticket0/discard', { conversationId: junk.conversation_id });
       await admin.invoke('ticket0/suspend', { conversationId: posted.conversation_id });
       await admin.invoke('ticket0/discard', { conversationId: posted.conversation_id });
+      await admin.invoke('ticket0/delete-saved-reply', { savedReplyId: canned.id });
 
       const sentinels = [...planted.values()];
       const leaks = (events: { type: string; payload: string | null }[]) =>
