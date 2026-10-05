@@ -81,8 +81,6 @@ export const PDF_INTERPRET_FACTOR = 4;
 const TOKEN_MAX = EXTRACTION_STRIDE;
 /** Operands one content-stream operator may collect before the stack is dropped as garbage. */
 const OPERANDS_MAX = 256;
-/** Codes a CMap may map, across every range in it. */
-const CMAP_CODES_MAX = 1 << 17;
 /** Code-space ranges one CMap may declare; a real one declares a handful. */
 const CMAP_SPACES_MAX = 256;
 /** The longest destination string a CMap maps a code to: the format's own limit, 512 bytes. */
@@ -1310,28 +1308,22 @@ class CodeMap {
   private segHi = new Float64Array(0);
   private segDef = new Int32Array(0);
   private segments = 0;
-  /** Codes defined so far, against `CMAP_CODES_MAX`. */
-  private covered = 0;
 
   constructor(private readonly retained: Retained) {}
 
   setChar(length: number, code: number, text: string): void {
-    if (this.covered >= CMAP_CODES_MAX) return;
     this.retained.take(ENTRY_COST + text.length * 2);
     const key = codeKey(length, code);
     this.define(key, key, text);
-    this.covered += 1;
   }
 
   /** Codes `from`…`to`, mapped to `base` counting up in its last byte, as the format specifies. */
   setRange(length: number, from: number, to: number, base: Uint8Array): void {
-    const count = Math.min(to - from + 1, CMAP_CODES_MAX - this.covered);
-    if (count <= 0 || base.length === 0) return;
+    if (to < from || base.length === 0) return;
     this.retained.take(ENTRY_COST + base.length * 2);
     const cut = base.length % 2 === 0 ? base.length - 2 : Math.max(0, base.length - 3);
     const lo = codeKey(length, from);
-    this.define(lo, codeKey(length, from + count - 1), { from: lo, prefix: utf16be(base.subarray(0, cut)), tail: Uint8Array.from(base.subarray(cut)) });
-    this.covered += count;
+    this.define(lo, codeKey(length, to), { from: lo, prefix: utf16be(base.subarray(0, cut)), tail: Uint8Array.from(base.subarray(cut)) });
   }
 
   private define(lo: number, hi: number, target: string | RangeDestination): void {
@@ -1355,24 +1347,28 @@ class CodeMap {
     const segDef = new Int32Array(2 * n);
     let count = 0;
     let ordered = true;
-    for (let i = 1; i < n && ordered; i += 1) ordered = this.los[i]! > this.his[i - 1]!;
+    for (let i = 1; i < n && ordered; i += 1) {
+      if (pace.room <= 0) await pace.turn();
+      pace.charge(CALL_COST);
+      ordered = this.los[i]! > this.his[i - 1]!;
+    }
     if (ordered) {
       for (let i = 0; i < n; i += 1) {
+        if (pace.room <= 0) await pace.turn();
+        pace.charge(CALL_COST);
         segLo[i] = this.los[i]!;
         segHi[i] = this.his[i]!;
         segDef[i] = i;
       }
       count = n;
     } else {
-      // Definitions by first code, and every boundary: a first code, or the code past a last.
-      const byLo = Int32Array.from({ length: n }, (_, i) => i).sort((a, b) => this.los[a]! - this.los[b]! || a - b);
-      const bounds = new Float64Array(2 * n);
-      for (let i = 0; i < n; i += 1) {
-        bounds[2 * i] = this.los[i]!;
-        bounds[2 * i + 1] = this.his[i]! + 1;
-      }
-      bounds.sort();
-      pace.charge(4 * n * Math.max(1, Math.log2(2 * n)));
+      // What the sweep holds while it runs: two orders, a merge buffer and the heap.
+      const working = 4 * n * 4;
+      this.retained.take(working);
+      // The definitions by first code, and by the code past their last — each stable, so a tie
+      // keeps the order written.
+      const byLo = await pacedOrder(this.los, n, pace);
+      const byEnd = await pacedOrder(this.his, n, pace);
       // A max-heap of the open definitions by index: the latest one written wins.
       const heap = new Int32Array(n);
       let size = 0;
@@ -1397,26 +1393,32 @@ class CodeMap {
         }
         heap[i] = d;
       };
-      let next = 0;
-      for (let b = 0; b < 2 * n; b += 1) {
+      // Every boundary in order: a definition's first code, or the code past its last.
+      let nextLo = 0;
+      let nextEnd = 0;
+      const boundary = (): number =>
+        Math.min(nextLo < n ? this.los[byLo[nextLo]!]! : Infinity, nextEnd < n ? this.his[byEnd[nextEnd]!]! + 1 : Infinity);
+      for (let at = boundary(); at !== Infinity; ) {
         if (pace.room <= 0) await pace.turn();
         pace.charge(CALL_COST);
-        const at = bounds[b]!;
-        if (b + 1 < 2 * n && bounds[b + 1] === at) continue;
-        while (next < n && this.los[byLo[next]!]! <= at) push(byLo[next++]!);
+        while (nextLo < n && this.los[byLo[nextLo]!]! === at) push(byLo[nextLo++]!);
+        while (nextEnd < n && this.his[byEnd[nextEnd]!]! + 1 === at) nextEnd += 1;
         while (size > 0 && this.his[heap[0]!]! < at) pop();
-        if (size === 0 || b + 1 >= 2 * n) continue;
-        // Every boundary is one, so the winner here holds to the next boundary at least.
-        const d = heap[0]!;
-        const until = bounds[b + 1]! - 1;
-        if (count > 0 && segDef[count - 1] === d && segHi[count - 1] === at - 1) segHi[count - 1] = until;
-        else {
-          segLo[count] = at;
-          segHi[count] = until;
-          segDef[count] = d;
-          count += 1;
+        const following = boundary();
+        if (size > 0) {
+          // The winner here is open until the next boundary at least: its own end is one.
+          const d = heap[0]!;
+          if (count > 0 && segDef[count - 1] === d && segHi[count - 1] === at - 1) segHi[count - 1] = following - 1;
+          else {
+            segLo[count] = at;
+            segHi[count] = following - 1;
+            segDef[count] = d;
+            count += 1;
+          }
         }
+        at = following;
       }
+      this.retained.give(working);
     }
     this.segLo = segLo;
     this.segHi = segHi;
@@ -1461,6 +1463,31 @@ function countedTail(tail: Uint8Array, offset: number): string {
   return String.fromCharCode((tail[0]! << 8) | carried) + String.fromCharCode(low);
 }
 
+/**
+ * The indices `0…n-1` ordered by `keys`, stably: a bottom-up merge sort that charges every
+ * element it moves to `pace` and yields between strides, so ordering a CMap of any size the
+ * memory budget admits never holds the thread.
+ */
+async function pacedOrder(keys: readonly number[], n: number, pace: Pace): Promise<Int32Array> {
+  let from = Int32Array.from({ length: n }, (_, i) => i);
+  let to = new Int32Array(n);
+  for (let width = 1; width < n; width *= 2) {
+    for (let start = 0; start < n; start += 2 * width) {
+      const mid = Math.min(start + width, n);
+      const end = Math.min(start + 2 * width, n);
+      let a = start;
+      let b = mid;
+      for (let k = start; k < end; k += 1) {
+        if (pace.room <= 0) await pace.turn();
+        pace.charge(CALL_COST);
+        to[k] = b >= end || (a < mid && keys[from[a]!]! <= keys[from[b]!]!) ? from[a++]! : from[b++]!;
+      }
+    }
+    [from, to] = [to, from];
+  }
+  return from;
+}
+
 /** A CMap's code space and its code → text map (a ToUnicode CMap, or an encoding CMap's spaces). */
 interface CMap {
   readonly spaces: CodeSpace;
@@ -1479,8 +1506,9 @@ const utf16be = (b: Uint8Array): string => {
 const bytesToInt = (b: Uint8Array): number => b.reduce((v, x) => v * 256 + x, 0);
 
 /**
- * A CMap stream's `codespacerange`, `bfchar` and `bfrange` sections, bounded by `CMAP_CODES_MAX`
- * and charged to `retained` — parsed once per stream (`PdfDocument.cmaps`).
+ * A CMap stream's `codespacerange`, `bfchar` and `bfrange` sections, every definition charged
+ * to `retained` before it is kept — parsed once per stream (`PdfDocument.cmaps`). However many
+ * definitions name one code, the last one written wins it.
  */
 async function parseCMap(data: Uint8Array, pace: Pace, retained: Retained): Promise<CMap> {
   const lex = new Lexer(data, 0, data.length, pace);

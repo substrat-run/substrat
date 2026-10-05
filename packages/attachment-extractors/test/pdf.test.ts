@@ -181,6 +181,17 @@ describe('pdf: what it reads', () => {
     expect([0x100, 0x101, 0x200, 0x201, 0x202].map((c) => map.get(2, c))).toEqual(['0', '1', '0', '!', '2']);
   });
 
+  it('however many definitions name a code, the last one written wins it — at, and past, what a code count once capped', async () => {
+    // 131 072 definitions of one code, then one more: the later wins. A count of codes defined
+    // used to stop at 131 072 and keep the earlier mapping (Codex #2075 r1).
+    const repeated = Array.from({ length: 1_310 }, () => `100 beginbfchar ${'<0001> <0041> '.repeat(100)}endbfchar`);
+    const many = await cmapOf('begincmap', ...repeated, '72 beginbfchar', '<0001> <0041> '.repeat(72), 'endbfchar', '1 beginbfchar <0001> <0042> endbfchar', 'endcmap');
+    expect(many.get(2, 1)).toBe('B');
+    // Two ranges of 65 536 codes fill that count exactly; a code over one of them still wins.
+    const full = await cmapOf('begincmap', '2 beginbfrange <0000> <FFFF> <0041> <010000> <01FFFF> <0041> endbfrange', '1 beginbfchar <0007> <005A> endbfchar', 'endcmap');
+    expect([full.get(2, 7), full.get(2, 8), full.get(3, 0x10007)]).toEqual(['Z', 'I', 'H']);
+  });
+
   it('a CMap\'s map agrees, code for code, with its definitions applied in order', async () => {
     // A seeded generator: the same 300 CMaps on every run.
     let seed = 0x2075;
@@ -194,9 +205,11 @@ describe('pdf: what it reads', () => {
       const sections: string[] = [];
       // What the CMap means, written per code the way a writer reads it: each definition in turn.
       const expected = new Map<string, string>();
-      for (let d = rand(12) + 1; d > 0; d -= 1) {
+      // Every fourth CMap names a handful of codes over and over: many definitions of each.
+      const crowded = round % 4 === 3;
+      for (let d = crowded ? rand(60) + 20 : rand(12) + 1; d > 0; d -= 1) {
         const len = rand(2) + 1;
-        const from = rand(40);
+        const from = crowded ? rand(4) : rand(40);
         // Destinations of one to four bytes, their last byte near the top so a count carries.
         const dst = Array.from({ length: rand(4) + 1 }, () => (rand(2) ? 0xf0 + rand(16) : rand(256)));
         const kind = rand(3);
@@ -884,6 +897,15 @@ const SHAPES: readonly Shape[] = [
     const sections = Array.from({ length: 1_311 }, (_, k) =>
       `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(0x1_ffff - k * 100 - j).toString(16).padStart(6, '0')}> <0041>`).join(' ')} endbfchar`);
     return cmapFont(`begincmap\n1 begincodespacerange <000000> <FFFFFF> endcodespacerange\n${sections.join('\n')}\nendcmap`, '01ffff');
+  }),
+  pdfShape('a CMap defining one code until the memory budget is spent', async () => {
+    // 580 000 definitions in under 8 MiB decoded: the budget, not a count, ends them.
+    const section = `100 beginbfchar ${'<0001> <0041> '.repeat(100)}endbfchar\n`;
+    const cmap = enc(`begincmap\n${section.repeat(5_800)}endcmap`);
+    return onePage('BT /F1 9 Tf <0001> Tj ET', {
+      font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
+      extra: [stream('/Filter /FlateDecode', await deflate(cmap))],
+    }).bytes;
   }),
   pdfShape('500 fonts sharing one ToUnicode of 30 000 codes', () => {
     const chars = Array.from({ length: 300 }, (_, k) =>
