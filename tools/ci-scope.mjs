@@ -362,6 +362,18 @@ export function buildNames(names, all) {
   return [...new Set([...names, ...nested])].sort();
 }
 
+/**
+ * `names` plus the workspace members whose directory encloses one of them — the inverse
+ * of buildNames' nesting, and undeclared for the same reason. A demo's suites assert
+ * against its built `app/`, so a change that lands only inside the app has to test the
+ * demo too; pnpm's selector follows declared edges and would select the app alone.
+ */
+export function enclosingNames(names, all) {
+  const dirs = all.filter((p) => names.includes(p.name)).map((p) => p.dir);
+  const enclosing = all.filter((p) => dirs.some((d) => d.startsWith(`${p.dir}/`))).map((p) => p.name);
+  return [...new Set([...names, ...enclosing])].sort();
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
@@ -430,7 +442,12 @@ function main(argv) {
       files: event === 'pull_request' ? git('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean) : [],
       lockfile: () => lockfileScope(git('show', `${base}:${LOCKFILE}`), git('show', `HEAD:${LOCKFILE}`)),
       all,
-      selectChanged: (extra) => workspace([`...[${base}]`, ...extra.map((n) => `...${n}`)]),
+      selectChanged: (extra) => {
+        const changed = workspace([`...[${base}]`, ...extra.map((n) => `...${n}`)]);
+        const names = changed.map((p) => p.name);
+        const more = enclosingNames(names, all).filter((n) => !names.includes(n));
+        return more.length === 0 ? changed : workspace([`...[${base}]`, ...[...extra, ...more].map((n) => `...${n}`)]);
+      },
     });
   }
 

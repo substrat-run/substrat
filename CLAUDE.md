@@ -102,6 +102,15 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   named `test` aggregates the verdict. That scoping is what #878's
   template gate rides on, so neither side is the other's mistake: don't "fix" the workflow
   into the root scripts, and don't teach a local agent to run the unfiltered sweep.
+- `pnpm test:affected` — the local answer to "what does my change need tested": the
+  packages the working tree changed against the merge-base with `origin/main` (untracked
+  files included), plus everything that depends on them, plus the demo around a changed
+  `app/` — built and tested with the same preloads `pnpm test`
+  adds. It imports `tools/ci-scope.mjs`'s rules, so it widens to the full `pnpm test` on
+  the same changes the PR's CI does (anything under `tools/`, the catalog, the root
+  importer), and `--dry-run` prints the selection. It maps files to packages by
+  directory rather than through pnpm's `...[ref]` selector, which selects nothing inside a
+  linked worktree. A push to `main` still runs everything in CI.
 - `node tools/boundary-lint.mjs` — the layer rules below, enforced mechanically (runs in CI)
 - `pnpm lint:cycles` — the declared workspace graph, checked for dependency cycles (the
   package edges, not source-level imports). Runs BEFORE
