@@ -41,12 +41,19 @@ describe('entityStatePlans: refuses', () => {
 
 describe('entityStateMigrations', () => {
   it('adds one column per declared state, each its own version, run once', () => {
-    expect(entityStateMigrations('@m', [both])).toEqual([
+    const migrations = entityStateMigrations('@m', [both]);
+    expect(migrations.slice(0, 2)).toEqual([
       { version: 'state/doc:archive', sql: 'ALTER TABLE docs ADD COLUMN _substrat_archived_at TEXT;' },
       { version: 'state/doc:trash', sql: 'ALTER TABLE docs ADD COLUMN _substrat_trashed_at TEXT;' },
     ]);
+    // Then the trigger, after the columns it names, guarding both.
+    expect(migrations[2]!.version).toBe('state/doc:born:archive+trash');
+    expect(migrations[2]!.sql).toContain(
+      'BEFORE INSERT ON docs WHEN NEW._substrat_archived_at IS NOT NULL OR NEW._substrat_trashed_at IS NOT NULL',
+    );
     expect(entityStateMigrations('@m', [{ ...both, trashPermission: undefined }]).map((m) => m.version)).toEqual([
       'state/doc:archive',
+      'state/doc:born:archive',
     ]);
   });
 
@@ -60,7 +67,7 @@ describe('entityStateMigrations', () => {
       },
       migrations: [{ version: '0001', sql: 'CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)' }],
     }).map((m) => m.version.split(/[/:]/)[0]);
-    expect(versions).toEqual(['0001', 'search', 'state', 'state', 'list']);
+    expect(versions).toEqual(['0001', 'search', 'state', 'state', 'state', 'list']);
   });
 });
 
@@ -148,4 +155,38 @@ describe('addStatePlans', () => {
     addStatePlans(plans, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
     expect(plans.get('doc')).toMatchObject({ archivePermission: 'doc:archive', trashPermission: 'doc:trash' });
   });
+});
+
+describe('assertNoReservedColumnWrite on a stateful table', () => {
+  const stateful = new Set(['docs']);
+  const refused = [
+    "INSERT INTO docs VALUES ('x', 't', '2026', NULL)",
+    "INSERT INTO DOCS VALUES ('x', 't', NULL, '2026')",
+    "INSERT INTO main.docs VALUES ('x', 't', NULL, NULL)",
+    "INSERT INTO docs SELECT id, title, archived, trashed FROM other",
+    "INSERT OR IGNORE INTO docs VALUES ('x', 't', NULL, NULL)",
+    "REPLACE INTO docs (id, title) VALUES ('x', 't')",
+    "INSERT OR REPLACE INTO docs (id, title) VALUES ('x', 't')",
+    "REPLACE INTO docs VALUES ('x', 't', NULL, NULL)",
+  ];
+  for (const sql of refused) {
+    it(`refuses: ${sql}`, () => {
+      expect(() => assertNoReservedColumnWrite(sql, stateful)).toThrow(/cannot write/);
+      // …and only because the table is stateful: the same text into another table passes.
+      expect(() => assertNoReservedColumnWrite(sql.replace(/docs/i, 'other_t'), stateful)).not.toThrow();
+    });
+  }
+  const allowed = [
+    "INSERT INTO docs (id, title) VALUES ('x', 't')",
+    "INSERT INTO docs (id, title) SELECT id, title FROM other",
+    'INSERT INTO docs DEFAULT VALUES',
+    "INSERT INTO docs (id, title) VALUES ('x', 't') ON CONFLICT (id) DO UPDATE SET title = excluded.title",
+    "SELECT replace(title, 'a', 'b') FROM docs",
+    "UPDATE docs SET title = replace(title, 'a', 'b')",
+  ];
+  for (const sql of allowed) {
+    it(`allows: ${sql}`, () => {
+      expect(() => assertNoReservedColumnWrite(sql, stateful)).not.toThrow();
+    });
+  }
 });

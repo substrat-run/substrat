@@ -21,6 +21,8 @@ import {
   type HistoryEntry,
   type Page,
   type PrincipalId,
+  type ScopeId,
+  type TenantId,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub, type SearchHit } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
@@ -32,9 +34,16 @@ const TRASH = permissionKey.parse('doc:trash');
 
 type Row = Record<string, unknown>;
 
+/**
+ * Raw SQL on one scope's own database, past `ctx.sql` and its guard — the adapter's test
+ * harness supplies it. Used once: to prove the trigger under the guard holds on its own.
+ */
+export type RawScopeSql = (tenant: TenantId, scope: ScopeId, sql: string, params?: readonly unknown[]) => Promise<void>;
+
 export function entityStateContractSuite(
   adapterName: string,
   makeFixture: () => Promise<ScopeHostFixture>,
+  raw: RawScopeSql,
 ): void {
   describe(`entity archive and trash (#119): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
@@ -371,6 +380,76 @@ export function entityStateContractSuite(
       });
       const after = await as.alice.invoke<Row[]>('state/sql', { sql: 'SELECT title FROM state_docs WHERE id = ?', params: [id] });
       expect(after[0]!['title']).toBeTypeOf('string');
+    });
+
+    it('refuses every write that would set the state by position or reset it by REPLACE — and none moves it', async () => {
+      const binned = await doc();
+      await as.alice.invoke('state/trash', { id: binned });
+      const before = await as.alice.invoke<HistoryEntry[]>('state/history', { id: binned });
+      const born = ulid();
+      // Columns are (id, title, owner, _substrat_archived_at, _substrat_trashed_at).
+      for (const sql of [
+        `INSERT INTO state_docs VALUES ('${born}', 't', 'o', '2026', NULL)`,
+        `insert into STATE_DOCS values ('${born}', 't', 'o', NULL, '2026')`,
+        `INSERT INTO main.state_docs VALUES ('${born}', 't', 'o', '2026', NULL)`,
+        `INSERT INTO state_docs SELECT '${born}', 't', 'o', '2026', NULL`,
+        `INSERT OR IGNORE INTO state_docs VALUES ('${born}', 't', 'o', '2026', NULL)`,
+        // REPLACE deletes the binned row and writes it back with both columns NULL: a restore
+        // without the key and without a record.
+        `REPLACE INTO state_docs (id, title, owner) VALUES ('${binned}', 't', 'o')`,
+        `INSERT OR REPLACE INTO state_docs (id, title, owner) VALUES ('${binned}', 't', 'o')`,
+        `REPLACE INTO state_docs VALUES ('${binned}', 't', 'o', NULL, NULL)`,
+      ]) {
+        await expectGuarded(sql);
+      }
+      expect(await as.alice.invoke('state/state', { id: binned })).toBe('trashed');
+      expect(await as.alice.invoke('state/state', { id: born })).toBeNull();
+      expect(await as.alice.invoke<HistoryEntry[]>('state/history', { id: binned })).toEqual(before);
+    });
+
+    it('still lets a module write a stateful table by naming its columns, and any other table by position', async () => {
+      const named = ulid();
+      await as.alice.invoke('state/sql', { sql: `INSERT INTO state_docs (id, title, owner) VALUES ('${named}', 't', 'o')` });
+      expect(await as.alice.invoke('state/state', { id: named })).toBe('active');
+      const selected = ulid();
+      await as.alice.invoke('state/sql', {
+        sql: `INSERT INTO state_docs (id, title, owner) SELECT '${selected}', title, owner FROM state_docs WHERE id = '${named}'`,
+      });
+      expect(await as.alice.invoke('state/state', { id: selected })).toBe('active');
+      await as.alice.invoke('state/sql', { sql: `INSERT INTO state_plain VALUES ('${ulid()}', 'plain')` });
+      await as.alice.invoke('state/sql', { sql: `REPLACE INTO state_plain VALUES ('P-1', 'replaced')` });
+    });
+
+    it('never lets a row be born archived or trashed, even by SQL the guard never sees', async () => {
+      const born = ulid();
+      for (const sql of [
+        `INSERT INTO state_docs (id, title, owner, _substrat_archived_at) VALUES ('${born}', 't', 'o', '2026')`,
+        `INSERT INTO state_docs (id, title, owner, _substrat_trashed_at) VALUES ('${born}', 't', 'o', '2026')`,
+        `INSERT INTO state_notes (id, title, _substrat_archived_at) VALUES ('${born}', 't', '2026')`,
+      ]) {
+        await expect(raw(t1, scope, sql), sql).rejects.toThrow(/never inserted archived or trashed/);
+      }
+      expect(await as.alice.invoke('state/state', { id: born })).toBeNull();
+      // The twin: the same raw path inserts an active row.
+      await raw(t1, scope, `INSERT INTO state_docs (id, title, owner) VALUES ('${born}', 't', 'o')`);
+      expect(await as.alice.invoke('state/state', { id: born })).toBe('active');
+    });
+
+    it('carries archived and binned rows through an export and import, and the trigger comes back after them', async () => {
+      const filed = await doc('carried filed');
+      const binned = await doc('carried binned');
+      await as.alice.invoke('state/archive', { id: filed });
+      await as.alice.invoke('state/archive', { id: binned });
+      await as.alice.invoke('state/trash', { id: binned });
+      const fork = scopeId.parse(ulid());
+      await host.importScope(staff, { tenantId: t1, scopeId: fork, vertical: 'state-vertical' }, await host.admin.exportScope(staff, t1, scope));
+      const there = await host.getScope(alice, t1, fork);
+      expect(await there.invoke('state/state', { id: filed })).toBe('archived');
+      expect(await there.invoke('state/state', { id: binned })).toBe('trashed');
+      expect(await there.invoke('state/restore', { id: binned })).toBe('archived');
+      await expect(
+        raw(t1, fork, `INSERT INTO state_docs (id, title, owner, _substrat_trashed_at) VALUES ('${ulid()}', 't', 'o', '2026')`),
+      ).rejects.toThrow(/never inserted archived or trashed/);
     });
 
     // -- the indexes -------------------------------------------------------------------------

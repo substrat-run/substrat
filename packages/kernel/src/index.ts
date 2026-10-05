@@ -222,6 +222,8 @@ export {
   createEntityStateVerbs,
   entityStateMigrations,
   entityStatePlans,
+  entityStateTriggerDdl,
+  statefulTablesOf,
   entityStateWhere,
   stateColumnsOf,
 } from './entity-state.js';

@@ -380,17 +380,29 @@ listContractSuite('adapter-sqlite', async () => {
 
 // #119: archive and trash. The DEFAULT checker: what is pinned is that the kernel checks the
 // DECLARED key, which an allow-all checker would pass whether it was checked or not.
-entityStateContractSuite('adapter-sqlite', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'substrat-state-'));
-  const host = new SqliteScopeHost({ dir });
-  return {
-    host,
-    cleanup: async () => {
-      await host.close();
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-});
+let stateHost: SqliteScopeHost | undefined;
+entityStateContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-state-'));
+    const host = new SqliteScopeHost({ dir });
+    stateHost = host;
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  // The scope's own connection, past `ctx.sql`.
+  async (tenant, scope, sql, params = []) => {
+    const internals = stateHost as unknown as {
+      runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
+    };
+    internals.runtime(tenant, scope).db.prepare(sql).run(...params);
+  },
+);
 
 // #893: the declared `input` is parsed by the HOST, before guards and handler.
 // The DEFAULT checker: the fixture's handlers run a real `ctx.check`, and

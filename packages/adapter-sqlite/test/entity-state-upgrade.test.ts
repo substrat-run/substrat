@@ -102,12 +102,14 @@ describe('declaring archive/trash on an entity with rows (#119)', () => {
         'list/upnote:created_at+id:',
         'state/upnote:archive',
         'state/upnote:trash',
+        'state/upnote:born:archive+trash',
         'list/upnote:created_at+id::active+archived+trashed',
       ]);
       expect(moduleMigrations(modOf(true)).map((m) => m.version)).toEqual([
         '0001-init',
         'state/upnote:archive',
         'state/upnote:trash',
+        'state/upnote:born:archive+trash',
         'list/upnote:created_at+id::active+archived+trashed',
       ]);
 

@@ -96,7 +96,7 @@ function spineTargetFrom(tokens: SqlToken[], from: number, verb: string): SqlTok
  * is a fault in the module, not in the caller's permissions, and the message names
  * the table so the author sees which line to delete.
  */
-export function assertNoSpineWrite(sql: string): void {
+export function assertNoSpineWrite(sql: string, statefulTables?: ReadonlySet<string>): void {
   const tokens = tokenizeSql(sql);
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i]!;
@@ -118,7 +118,7 @@ export function assertNoSpineWrite(sql: string): void {
     );
   }
   refuseSpineReference(referencedTablesIn(tokens), 'ctx.sql');
-  assertNoReservedColumnWrite(sql);
+  assertNoReservedColumnWrite(sql, statefulTables);
 }
 
 /**
@@ -136,21 +136,41 @@ export function assertNoSpineWrite(sql: string): void {
  * - an assignment target after `SET` — `UPDATE … SET`, an upsert's `DO UPDATE SET`, and a
  *   trigger body's `UPDATE`, row-value targets `SET (a, b) = …` included;
  * - a name in an `INSERT`/`REPLACE` column list;
- * - any reserved name in an `ALTER TABLE` (add, rename or drop the column itself).
+ * - any reserved name in an `ALTER TABLE` (add, rename or drop the column itself);
+ * - into a table that CARRIES the columns (`statefulTables`, lowercased names): an `INSERT`
+ *   with no column list — `VALUES (…)` and `SELECT …` fill the columns by position, the
+ *   reserved ones included, without ever naming them — and any `REPLACE` / `INSERT OR
+ *   REPLACE`, which deletes the existing row and writes a new one with the columns NULL, so
+ *   it un-archives and un-trashes without the key. An `INSERT … (columns) SELECT` and an
+ *   upsert's `DO UPDATE SET` are judged by the rules above.
+ *
+ * Below this sits a trigger on each such table that refuses a row born archived or trashed
+ * (`entityStateMigrations`), so a form this scan misses still cannot set the state.
  *
  * The prefix is reserved whole, not the two names: the next kernel-owned column is covered
  * without anyone remembering to list it here.
  */
-export function assertNoReservedColumnWrite(sql: string): void {
+export function assertNoReservedColumnWrite(sql: string, statefulTables?: ReadonlySet<string>): void {
   // Every token is a substring of the text, so a statement that never spells the prefix names
   // no reserved column — and that is nearly every statement, which then skips the second scan.
-  if (!/_substrat/i.test(sql)) return;
+  // A positional write names no column at all, so it is looked for whenever a stateful table
+  // exists and the statement could be one.
+  const positional = statefulTables !== undefined && statefulTables.size > 0 && /\b(insert|replace)\b/i.test(sql);
+  if (!positional && !/_substrat/i.test(sql)) return;
   const tokens = tokenizeSql(sql, { punctuation: true });
   const refuse = (column: string, how: string): never => {
     throw substratError(
       'forbidden',
       `ctx.sql cannot write the platform's column '${column}' (${how}). ` +
         'Reads are fine; archive and trash go through ctx.archive / ctx.trash / ctx.restore.',
+      { reason: 'spine_write' },
+    );
+  };
+  const refuseRow = (table: string, why: string): never => {
+    throw substratError(
+      'forbidden',
+      `ctx.sql cannot write '${table}' this way: ${why}. Name the columns you write; ` +
+        'archive and trash go through ctx.archive / ctx.trash / ctx.restore.',
       { reason: 'spine_write' },
     );
   };
@@ -213,9 +233,21 @@ export function assertNoReservedColumnWrite(sql: string): void {
     }
     if (verb === 'insert' || verb === 'replace') {
       let k = i + 1;
-      while (word(k) !== undefined && MODIFIERS[verb]!.has(word(k)!)) k += 1;
-      k += 1; // the target table
+      let replaces = verb === 'replace';
+      while (word(k) !== undefined && MODIFIERS[verb]!.has(word(k)!)) {
+        if (word(k) === 'replace') replaces = true;
+        k += 1;
+      }
+      const target = tokens[k];
+      k += 1; // past the target table
       if (word(k) === 'as') k += 2; // an alias
+      const table = target && !target.punct ? (target.text.split('.').pop() ?? '').toLowerCase() : '';
+      if (statefulTables?.has(table)) {
+        if (replaces) refuseRow(target!.text, 'REPLACE deletes the row and writes it back with no archive or trash state');
+        if (!isPunct(k, '(') && word(k) !== 'default') {
+          refuseRow(target!.text, 'an INSERT with no column list fills the archive/trash columns by position');
+        }
+      }
       if (isPunct(k, '(')) {
         namesInParens(k, (name) => {
           if (namesSpineTable(name)) refuse(name, 'INSERT column');
@@ -267,14 +299,18 @@ function refuseSpineReference(referenced: readonly string[], what: string): void
  * first. `query` is guarded too: SQLite runs `INSERT … RETURNING` perfectly well
  * through a `.all()`, so guarding only `exec` would leave the door open.
  */
-export function guardSpine(inner: ScopedSql): ScopedSql {
+export function guardSpine(
+  inner: ScopedSql,
+  /** The module tables that carry archive/trash columns (#119), lowercased — see `assertNoReservedColumnWrite`. */
+  statefulTables?: ReadonlySet<string>,
+): ScopedSql {
   return {
     query: <T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[] => {
-      assertNoSpineWrite(sql);
+      assertNoSpineWrite(sql, statefulTables);
       return inner.query<T>(sql, params);
     },
     exec: (sql: string, params?: readonly SqlValue[]) => {
-      assertNoSpineWrite(sql);
+      assertNoSpineWrite(sql, statefulTables);
       return inner.exec(sql, params);
     },
   };

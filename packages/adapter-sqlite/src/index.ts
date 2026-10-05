@@ -228,6 +228,8 @@ import {
   uncheckedView,
   addStatePlans,
   entityStateMigrations,
+  entityStateTriggerDdl,
+  statefulTablesOf,
   type EntityStatePlan,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
@@ -3544,6 +3546,11 @@ export class SqliteScopeHost implements ScopeHost {
       );
       for (const plan of this.searchPlans.values()) {
         if (present.has(plan.table)) db.exec(searchIndexDdl(plan));
+      }
+      // #119: the never-born-archived trigger went with the dropped table. Put back AFTER the
+      // rows, which may legitimately arrive archived or trashed.
+      for (const plan of this.statePlans.values()) {
+        if (present.has(plan.table)) db.exec(entityStateTriggerDdl(plan));
       }
       // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
       // text of attachments the dump did not bring back, and queue extraction for those
@@ -11284,7 +11291,7 @@ export class SqliteScopeHost implements ScopeHost {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       principal,
-      sql: guardSecrets(guardSqlLimits(scopedSql(rt.db, true)), minted),
+      sql: guardSecrets(guardSqlLimits(scopedSql(rt.db, true, statefulTablesOf(statePlans))), minted),
       now: () => at,
       // #1746/#1747: the host stamps who and where; module code supplies only the template
       // and its fields. The invocation id is read per call — it is set for the duration of
@@ -12051,7 +12058,12 @@ function assertTablesWithinColumnLimit(db: Database.Database): void {
   if (wide) throw new Error(tooManyTableColumns(wide.name, wide.width));
 }
 
-function scopedSql(db: Database.Database, judgeWidth = false): ScopedSql {
+function scopedSql(
+  db: Database.Database,
+  judgeWidth = false,
+  /** #119: the module tables carrying archive/trash columns — `guardSpine` refuses positional writes to them. */
+  statefulTables?: ReadonlySet<string>,
+): ScopedSql {
   // #1811: a Durable Object refuses a result set over its column cap, `exec` of a SELECT included.
   // The driver knows the width, so it is read off the prepared statement rather than parsed out
   // of the text (a `SELECT *` is as wide as the tables under it). Module SQL only, like the
@@ -12077,7 +12089,7 @@ function scopedSql(db: Database.Database, judgeWidth = false): ScopedSql {
       if (judgeWidth && !stmt.reader && schemaVersion(db) !== before) assertTablesWithinColumnLimit(db);
       return { changes: info.changes };
     },
-  });
+  }, statefulTables);
 }
 
 const schemaVersion = (db: Database.Database): number => db.pragma('schema_version', { simple: true }) as number;

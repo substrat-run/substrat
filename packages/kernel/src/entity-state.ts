@@ -139,8 +139,47 @@ export function entityStateMigrations(
         sql: `ALTER TABLE ${plan.table} ADD COLUMN ${TRASHED_AT_COLUMN} TEXT;`,
       });
     }
+    // After the columns it names. Versioned by which columns it guards, so declaring a trash on
+    // an archivable entity rebuilds it to guard both.
+    out.push({ version: `state/${plan.entityType}:born:${columnNamesOf(plan).join('+')}`, sql: entityStateTriggerDdl(plan) });
   }
   return out;
+}
+
+const columnNamesOf = (plan: EntityStatePlan): string[] => [
+  ...(plan.archivePermission ? ['archive'] : []),
+  ...(plan.trashPermission ? ['trash'] : []),
+];
+
+/** The prefix of every trigger this module derives — kernel-owned, so the reserved one. */
+export const ENTITY_STATE_TRIGGER_PREFIX = '_substrat_state_';
+
+/**
+ * The invariant under the column guard: **a row is never born archived or trashed.**
+ *
+ * `ctx.sql` refuses the writes that would set the columns (`assertNoReservedColumnWrite`), but
+ * that is a reading of SQL text, and a reading can miss a form. This holds below it: a
+ * `BEFORE INSERT` trigger that aborts any insert carrying either column non-NULL. Every row
+ * enters active, and only `ctx.archive` / `ctx.trash` — an `UPDATE` on the kernel's own handle —
+ * ever move it. It does not cover an `UPDATE`, which the guard owns: an `AFTER UPDATE` check
+ * could not tell the kernel's verb from a module's write.
+ *
+ * Drop-then-create, like the search triggers, and re-run after a dump load: a load drops the
+ * table and with it the trigger, then inserts the rows first — a restored binned row is
+ * legitimately born trashed, so the trigger is put back only after them.
+ */
+export function entityStateTriggerDdl(plan: EntityStatePlan): string {
+  const name = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_born`;
+  const when = [
+    ...(plan.archivePermission ? [`NEW.${ARCHIVED_AT_COLUMN} IS NOT NULL`] : []),
+    ...(plan.trashPermission ? [`NEW.${TRASHED_AT_COLUMN} IS NOT NULL`] : []),
+  ].join(' OR ');
+  return [
+    `DROP TRIGGER IF EXISTS ${name};`,
+    `CREATE TRIGGER ${name} BEFORE INSERT ON ${plan.table} WHEN ${when} BEGIN`,
+    `  SELECT RAISE(ABORT, 'a row is never inserted archived or trashed - ctx.archive and ctx.trash move it (#119)');`,
+    `END;`,
+  ].join('\n');
 }
 
 /**
@@ -174,6 +213,10 @@ export function addStatePlans(
     byType.set(plan.entityType, plan);
   }
 }
+
+/** The tables whose rows carry the columns, lowercased as SQLite resolves a name — `guardSpine`'s input. */
+export const statefulTablesOf = (plans: ReadonlyMap<string, EntityStatePlan>): ReadonlySet<string> =>
+  new Set([...plans.values()].map((p) => p.table.toLowerCase()));
 
 /** The columns a plan has, for code that only needs to know which views exist. */
 export interface StateColumns {

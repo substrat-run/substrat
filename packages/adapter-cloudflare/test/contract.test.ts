@@ -5203,14 +5203,23 @@ listContractSuite('adapter-cloudflare', async () => {
 // workerd's regulator here and nowhere else. The DEFAULT tuple checker, for the pure suite's
 // reason: the kernel's check of the declared key is the property under test. `stateMod` is in
 // `contractTestModules`, so the ScopeDO carries it at code time.
-entityStateContractSuite('adapter-cloudflare', async () => {
-  const host = new CloudflareScopeHost({
-    scope: env.SCOPE,
-    controlPlane: env.CONTROL_PLANE,
-    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
-  });
-  return { host, cleanup: async () => host.close() };
-});
+entityStateContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  // The scope DO's own storage, past `ctx.sql` — the trigger proven in workerd's SQLite.
+  async (_tenant, scope, sql, params = []) => {
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
+      state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
+    });
+  },
+);
 
 // #893: the declared `input` parsed at the door, on the adapter that is actually
 // deployed. The DEFAULT tuple checker — the fixture's handlers run a real
