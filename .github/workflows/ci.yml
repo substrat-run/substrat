@@ -56,6 +56,8 @@ jobs:
       # change it should widen on, a package no shard would test) is red, not quiet.
       # Then the scope itself — its log line says what this PR covers and why.
       - run: pnpm test:ci-scope
+      # test:affected is the local half of the same rule; its own file→package mapping.
+      - run: pnpm test:test-affected
       # The override advisory check's own tests (#1601); the check itself runs in audit.yml.
       - run: pnpm test:override-advisories
       - id: scope
@@ -377,11 +379,12 @@ jobs:
   # before it is published.
   #
   # Three slices of one selection, run side by side. Serially the suites add up to
-  # about thirteen minutes, and the three longest (adapter-cloudflare, auth-server,
-  # control-plane) are pinned to different shards so they never queue behind one
-  # another; tools/ci-scope.mjs spreads the rest by recorded duration and refuses to
-  # answer unless the three slices partition the selection exactly. A shard whose
-  # slice of a scoped PR is empty installs, finds nothing to do, and passes.
+  # about twenty-two minutes, thirteen of them adapter-cloudflare's alone, so that one
+  # is tested in two parts (tools/ci-scope.mjs PARTS: its contract.test.ts, and every
+  # other file) on two shards, and auth-server is pinned to the third; ci-scope spreads
+  # the rest by recorded duration and refuses to answer unless the three slices
+  # partition the selection exactly. A shard whose slice of a scoped PR is empty
+  # installs, finds nothing to do, and passes.
   test-shard:
     name: test (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
@@ -426,9 +429,9 @@ jobs:
       - name: generated sources the suites import
         if: steps.scope.outputs.count != '0'
         env:
-          SCOPE_FILTERS: ${{ steps.scope.outputs.filters }}
+          PACKAGE_FILTERS: ${{ steps.scope.outputs.package_filters }}
         run: |
-          read -ra filters <<< "$SCOPE_FILTERS"
+          read -ra filters <<< "$PACKAGE_FILTERS"
           pnpm -r --if-present "${filters[@]}" run pretypecheck
       # Every node suite runs with a Durable Object's LIKE/GLOB pattern limit (50 bytes)
       # switched on: `better-sqlite3` cannot set `sqlite3_limit`, so the preload overrides
@@ -446,14 +449,26 @@ jobs:
       # took 57s instead of 19s, and a capability-expiry case that takes 1.3s alone went
       # past vitest's 5s timeout and failed main. A test that fails because its neighbour
       # is busy is a flake, and a flaky gate gets re-run until it is green.
+      #
+      # Whole packages first, then each part of a split package by its own script, one at
+      # a time. Guarded on an empty list: `pnpm -r … test` with no filter tests every
+      # package in the workspace, which on a shard holding only a part is the whole run.
       - name: test
         if: steps.scope.outputs.count != '0'
         env:
           SCOPE_FILTERS: ${{ steps.scope.outputs.filters }}
+          SCOPE_PARTS: ${{ steps.scope.outputs.parts }}
           NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs --require=${{ github.workspace }}/tools/vitest/sql-limits.cjs
         run: |
           read -ra filters <<< "$SCOPE_FILTERS"
-          pnpm -r --no-sort --workspace-concurrency=2 "${filters[@]}" test
+          if [ "${#filters[@]}" -gt 0 ]; then
+            pnpm -r --no-sort --workspace-concurrency=2 "${filters[@]}" test
+          fi
+          read -ra parts <<< "$SCOPE_PARTS"
+          for part in "${parts[@]}"; do
+            echo "── ${part}"
+            pnpm --filter "${part%%#*}" run "${part#*#}"
+          done
 
   # The one verdict: green only when the checks and every shard succeeded. A skipped
   # or cancelled shard is not a pass. Named `test` because that is the job name
