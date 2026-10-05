@@ -392,13 +392,16 @@ describe('applied: with every key held, the whole macro goes through', () => {
       (JSON.parse(e.authorization ?? '[]') as { permission: string }[]).map((a) => a.permission);
     expect(checked(events[1]!)).toContain('conversation:assign');
     expect(checked(events[2]!)).toContain('conversation:assign');
+    // Which canned answer did it, never what it does (v2, #1087): the two events before it
+    // already say what ran, and the macro may be somebody's personal one.
     expect(events[3]!.payload).toEqual({
       saved_reply_id: reply.id,
       conversation_id: conversation,
       message_id: applied.message_id,
-      actions: ['assign', 'set-priority'],
       also_used: [],
     });
+    // The caller, who ran it, is still told.
+    expect(applied.actions).toEqual(['assign', 'set-priority']);
 
     // The same payloads a person assigning by hand produces: the macro ran that code.
     const other = await mail(desk);

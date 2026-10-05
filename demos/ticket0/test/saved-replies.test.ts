@@ -383,6 +383,28 @@ describe('a personal reply leaves nothing of what it says on the desk’s trail'
     for (const word of ['Zebra-17', 'zebra-17']) expect(read).not.toContain(word);
   });
 
+  it('applies a personal macro without telling the desk what it does', async () => {
+    const desk = await freshDesk();
+    const conversation = await mail(desk);
+    const own = await create(desk, desk.anna, {
+      title: secret.title,
+      body: 'On it.',
+      actions: [{ type: 'set-priority', priority: 'urgent' }],
+      personal: true,
+    });
+    const applied = (await (await as(desk, desk.anna)).invoke('ticket0/apply-saved-reply', {
+      conversationId: conversation,
+      savedReplyId: own.id,
+    })) as { actions: string[] };
+    // The caller is told; the desk's trail is not.
+    expect(applied.actions).toEqual(['set-priority']);
+    const [event] = replyEvents(desk, own.id).filter((e) => e.type === 'ticket0.saved-reply-applied');
+    expect(event!.schema_version).toBe(2);
+    expect(Object.keys(event!.payload).sort()).toEqual(['also_used', 'conversation_id', 'message_id', 'saved_reply_id']);
+    // What ran is on the trail anyway, as the action's own event about the conversation.
+    expect(kit.events(desk, 'ticket0.conversation-priority-set', conversation)).toHaveLength(1);
+  });
+
   it('announces a shared reply in the same shape, so the trail is no different for the desk’s own', async () => {
     const desk = await freshDesk();
     const id = await live(desk, false);

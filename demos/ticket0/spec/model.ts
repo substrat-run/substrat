@@ -3893,9 +3893,12 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'savedReply',
       entityIdFrom: 'saved_reply_id',
       type: 'ticket0.saved-reply-applied',
-      schemaVersion: 1,
+      // v2 (#1087): `actions` left, for `saved-reply-created`'s reason: a PERSONAL macro's
+      // event reaches the whole desk and must not say what the macro does. Nothing is lost
+      // from the trail: each action that ran emitted its own event about the conversation.
+      schemaVersion: 2,
       piiClass: 'none',
-      payload: ['saved_reply_id', 'conversation_id', 'message_id', 'actions', 'also_used'],
+      payload: ['saved_reply_id', 'conversation_id', 'message_id', 'also_used'],
     },
   },
 

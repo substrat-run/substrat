@@ -6109,21 +6109,26 @@ const operations = {
       [ctx.now(), ...used],
     );
 
-    const out = {
+    const announced = {
       saved_reply_id: reply.id,
       conversation_id: conversation.id,
       message_id: message.id,
-      actions: actions.map((a) => a.type),
       also_used: alsoUsed,
     };
     ctx.emit({
       type: 'ticket0.saved-reply-applied',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: { entityType: 'savedReply', entityId: reply.id },
       piiClass: 'none',
-      payload: out,
+      // Not the action types: the caller is told what ran, the desk's trail is not, since
+      // the macro may be personal. Each action's own event already says what it did.
+      payload: announced,
     });
-    return { ...out, conversation: conversationOrThrow(ctx, conversation.id) };
+    return {
+      ...announced,
+      actions: actions.map((a) => a.type),
+      conversation: conversationOrThrow(ctx, conversation.id),
+    };
   },
 
   // --- Saved-reply folders -------------------------------------------------
