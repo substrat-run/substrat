@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   errorCodeOf,
+  PAGE_CURSOR_RESTART,
   permissionKey,
   platformActorId,
   principalId,
@@ -332,6 +333,31 @@ export function entityStateContractSuite(
         nextCursor: null,
       });
       for (const id of [...others, carolsDoc]) await as.alice.invoke('state/restore', { id });
+    });
+
+    it("refuses a cursor from one view in another — a position among the active rows means nothing in the archive", async () => {
+      const [a, b] = [await doc('cursor a', 'ocur'), await doc('cursor b', 'ocur')];
+      const [c, d] = [await doc('cursor c', 'ocur'), await doc('cursor d', 'ocur')];
+      await as.alice.invoke('state/archive', { id: c });
+      await as.alice.invoke('state/archive', { id: d });
+      const restart = async (call: Promise<unknown>) => {
+        const err = await errOf(call);
+        expect(errorCodeOf(err)).toBe('validation_failed');
+        expect(err).toMatchObject({ extensions: { reason: PAGE_CURSOR_RESTART } });
+      };
+      const filters = { owner: 'ocur' };
+      const active = await as.alice.invoke<Page<Row>>('state/page', { limit: 1, filters });
+      expect(ids(active)).toEqual([a]);
+      await restart(as.alice.invoke('state/page', { limit: 1, filters, view: 'archived', cursor: active.nextCursor }));
+      await restart(as.alice.invoke('state/page-trashed', { limit: 1, cursor: active.nextCursor }));
+      const archived = await as.alice.invoke<Page<Row>>('state/page', { limit: 1, filters, view: 'archived' });
+      expect(ids(archived)).toEqual([c]);
+      await restart(as.alice.invoke('state/page', { limit: 1, filters, cursor: archived.nextCursor }));
+      // The twins: each cursor continues the view that minted it.
+      expect(ids(await as.alice.invoke<Page<Row>>('state/page', { limit: 1, filters, cursor: active.nextCursor }))).toEqual([b]);
+      expect(
+        ids(await as.alice.invoke<Page<Row>>('state/page', { limit: 1, filters, view: 'archived', cursor: archived.nextCursor })),
+      ).toEqual([d]);
     });
 
     it('carries no total on the bin — a count would disclose rows the caller cannot see', async () => {

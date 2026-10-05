@@ -144,17 +144,17 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
           if (!(await deps.check(key, entity)).allowed) continue;
           kept.push(row);
           if (kept.length === limit) {
-            return { entries: kept as never[], nextCursor: cursorOf(row, sortColumn, plan.idColumn, order) };
+            return { entries: kept as never[], nextCursor: cursorOf(row, sortColumn, plan.idColumn, order, 'trashed') };
           }
         }
         // A short batch is the end of the bin: nothing after it, so no cursor at all.
         if (rows.length < batch) return { entries: kept as never[], nextCursor: null };
         // Internal only — never returned while it points at a refused row.
-        cursor = cursorOf(rows[rows.length - 1]!, sortColumn, plan.idColumn, order);
+        cursor = cursorOf(rows[rows.length - 1]!, sortColumn, plan.idColumn, order, 'trashed');
         if (scanned >= budget) break;
       }
       const last = kept[kept.length - 1];
-      if (last) return { entries: kept as never[], nextCursor: cursorOf(last, sortColumn, plan.idColumn, order) };
+      if (last) return { entries: kept as never[], nextCursor: cursorOf(last, sortColumn, plan.idColumn, order, 'trashed') };
       throw substratError(
         'precondition_failed',
         `ctx.pageTrashed: read ${scanned} binned '${entityType}' rows without finding one this caller may see — ` +

@@ -365,6 +365,8 @@ export interface ComposedListQuery {
   /** The column the walk ordered by — what the cursor's first part came from. */
   readonly sortColumn: string;
   readonly order: 'asc' | 'desc';
+  /** The view the walk ran over (#119) — what its cursors are minted for. */
+  readonly view: EntityStateName;
 }
 
 /**
@@ -410,6 +412,11 @@ export class CursorMismatch extends SubstratError {
  * minted exactly that legacy cursor (#2018 review).
  *
  * `id` is present exactly when the walk sorts by something other than the id itself.
+ *
+ * `view` (#119) names an archivable entity's view when it is not `active`. A position in the
+ * active rows means nothing among the archived ones: replayed there, `id > ?` silently skips
+ * every archived row before it. Absent means active, so every cursor minted before it — and
+ * every active one since — reads the same, and a change of view is a `cursor_restart`.
  */
 const cursorEnvelope = z.strictObject({
   v: z.literal(1),
@@ -417,6 +424,7 @@ const cursorEnvelope = z.strictObject({
   sort: z.string().regex(SQL_IDENTIFIER),
   value: z.string(),
   id: z.string().optional(),
+  view: z.enum(['archived', 'trashed']).optional(),
 });
 
 /** Build the cursor a row hands to the next page — the walk that minted it, and where. */
@@ -425,6 +433,8 @@ export function cursorOf(
   sortColumn: string,
   idColumn: string,
   order: 'asc' | 'desc',
+  /** The walk's view (#119). `active`, or unset, is left out of the envelope. */
+  view?: EntityStateName,
 ): string {
   const envelope: z.infer<typeof cursorEnvelope> = {
     v: 1,
@@ -432,6 +442,7 @@ export function cursorOf(
     sort: sortColumn,
     value: String(row[sortColumn] ?? ''),
     ...(sortColumn === idColumn ? {} : { id: String(row[idColumn] ?? '') }),
+    ...(view && view !== 'active' ? { view } : {}),
   };
   return toBase64url(new TextEncoder().encode(JSON.stringify(envelope)));
 }
@@ -478,9 +489,17 @@ function positionIn(
   plan: ListIndexPlan,
   sortColumn: string,
   order: 'asc' | 'desc',
+  view: EntityStateName,
 ): { value: string; id: string | undefined } {
   const envelope = envelopeOf(cursor);
   if (envelope) {
+    const minted = envelope.view ?? 'active';
+    if (minted !== view) {
+      throw new CursorMismatch(
+        `list: this cursor continues the ${minted} rows, and this request asks for the ${view} ones — ` +
+          'restart paging from the first page, without a cursor',
+      );
+    }
     if (envelope.order !== order || envelope.sort !== sortColumn) {
       throw new CursorMismatch(
         `list: this cursor continues a walk by '${envelope.sort}' ${envelope.order}, and this request ` +
@@ -494,7 +513,8 @@ function positionIn(
     return { value: envelope.value, id: envelope.id };
   }
   const legacy = legacyPositionOf(cursor, plan, sortColumn);
-  if (legacy && order === 'asc' && sortColumn === plan.sortable[0]) return legacy;
+  // Every legacy cursor predates the views, so it was minted over the active rows (#119).
+  if (legacy && order === 'asc' && sortColumn === plan.sortable[0] && view === 'active') return legacy;
   throw new CursorMismatch(
     legacy
       ? `list: this cursor predates the walk it is replayed in ('${sortColumn}' ${order}) — ` +
@@ -572,7 +592,7 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
 
   const cmp = order === 'asc' ? '>' : '<';
   if (params.cursor !== undefined && params.cursor !== '') {
-    const { value, id } = positionIn(params.cursor, plan, sortColumn, order);
+    const { value, id } = positionIn(params.cursor, plan, sortColumn, order, params.view ?? 'active');
     if (id === undefined) {
       where.push(`${sortColumn} ${cmp} ?`);
       args.push(value);
@@ -598,5 +618,6 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
     countParams,
     sortColumn,
     order,
+    view: params.view ?? 'active',
   };
 }

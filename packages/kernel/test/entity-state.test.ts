@@ -11,6 +11,8 @@ import {
   moduleMigrations,
   addStatePlans,
   createTrashedReads,
+  cursorOf,
+  listQuery,
 } from '../src/index.js';
 
 /**
@@ -246,5 +248,21 @@ describe('ctx.pageTrashed walks past refused rows without handing out their posi
     });
     // The twin: the whole bin inside the budget is answered, and the end is null.
     expect(await reads(new Set(), 50).pageTrashed('doc', { limit: 5 })).toEqual({ entries: [], nextCursor: null });
+  });
+});
+
+describe('a cursor names its view (#119)', () => {
+  const [plan] = listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]);
+  const legacy = 'beta|01ARZ3NDEKTSV4RRFFQ69G5FAV';
+
+  it('continues a legacy cursor only in the active rows it was minted over', () => {
+    expect(() => listQuery(plan!, { limit: 5, cursor: legacy })).not.toThrow();
+    expect(() => listQuery(plan!, { limit: 5, cursor: legacy, view: 'archived' })).toThrow(/predates|restart/);
+  });
+
+  it('leaves the view out of an active cursor, so one minted before #119 reads the same', () => {
+    const row = { id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', title: 'beta' };
+    expect(cursorOf(row, 'title', 'id', 'asc')).toBe(cursorOf(row, 'title', 'id', 'asc', 'active'));
+    expect(cursorOf(row, 'title', 'id', 'asc', 'archived')).not.toBe(cursorOf(row, 'title', 'id', 'asc'));
   });
 });

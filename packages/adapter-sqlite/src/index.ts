@@ -11417,7 +11417,7 @@ export class SqliteScopeHost implements ScopeHost {
         // the tie-break) rather than a field the caller could name.
         const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
         const nextCursor =
-          last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order);
+          last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order, q.view);
         const page = { entries: rows as T[], nextCursor };
         if (!params.total) return page;
         const counted = rt.db.prepare(q.countSql).all(...(q.countParams as never[])) as {
