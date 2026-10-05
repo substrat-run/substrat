@@ -191,12 +191,13 @@ describe('a business-clock target the hours cannot meet within ten years is refu
     await (await admin(desk)).invoke('ticket0/configure-desk', {
       settings: { sla: { resolutionMinutes: { urgent: 525_600 } } },
     });
-    // 523 one-minute Mondays fit in ten years from any Monday-or-earlier start; 500 does.
+    // The one-minute week guarantees 478 minutes from any start (522 weeks less 22 jumps of
+    // twice the day): 478 is accepted.
     await (await admin(desk)).invoke('ticket0/configure-desk', {
-      settings: { sla: { resolutionMinutes: { urgent: 500 }, clock: 'business' } },
+      settings: { sla: { resolutionMinutes: { urgent: 478 }, clock: 'business' } },
     });
     const saved = (await (await admin(desk)).invoke('ticket0/get-desk', {})) as { settings: string };
-    expect(JSON.parse(saved.settings).sla).toEqual({ resolutionMinutes: { urgent: 500 }, clock: 'business' });
+    expect(JSON.parse(saved.settings).sla).toEqual({ resolutionMinutes: { urgent: 478 }, clock: 'business' });
   });
 });
 
@@ -478,11 +479,11 @@ describe("a saved business-clock target is met exactly from every start (Codex r
 
   it('a target saved on a Monday stamps an exact business due on a conversation arriving on Wednesday', async () => {
     at('2027-06-14T00:00:00.000Z'); // Monday
-    const desk = await freshDesk({ businessHours: tuesdays, sla: { firstResponseMinutes: { normal: 500 }, clock: 'business' } });
+    const desk = await freshDesk({ businessHours: tuesdays, sla: { firstResponseMinutes: { normal: 478 }, clock: 'business' } });
     at('2027-06-16T00:00:00.000Z'); // Wednesday: its ten years hold one Tuesday fewer
     const id = await mail(desk);
-    // The 500th Tuesday noon minute after 2027-06-16, never 500 calendar minutes later.
+    // The 478th Tuesday noon minute after 2027-06-16, never 478 calendar minutes later.
     const due = (await read(desk, id)).first_response_due_at!;
-    expect(due).toBe(new Date(Date.UTC(2027, 5, 22, 12, 1) + 499 * 7 * 86_400_000).toISOString());
+    expect(due).toBe(new Date(Date.UTC(2027, 5, 22, 12, 1) + 477 * 7 * 86_400_000).toISOString());
   });
 });

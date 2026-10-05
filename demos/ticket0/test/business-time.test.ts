@@ -16,7 +16,7 @@ import {
   instantOf,
   type BusinessSchedule,
 } from '../src/business-time.js';
-import { oracleAdd, oracleBetween } from './business-time-oracle.js';
+import { openInstants, oracleAdd, oracleBetween, SLOT } from './business-time-oracle.js';
 
 const HOUR = 3_600_000;
 const MINUTE = 60_000;
@@ -223,8 +223,9 @@ describe('bounds: an exact walk of at most ten years, and null beyond it', () =>
     const lookups = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
     expect(addBusinessMs(always, start, 525_600 * MINUTE * 11)).toBeNull();
     // Two per steady day. A transition puts three days on the slow path (each day's check
-    // spans the day before to the day after), a few more lookups each: twenty transitions.
-    expect(lookups.mock.calls.length).toBeLessThan(2 * EXACT_DAYS + 600);
+    // spans the day before to the day after), a few more lookups for each time resolved
+    // there, its midnight included: twenty transitions.
+    expect(lookups.mock.calls.length).toBeLessThan(2 * EXACT_DAYS + 1_000);
     lookups.mockRestore();
   });
 
@@ -240,8 +241,8 @@ describe('the open time guaranteed from every start (Codex round 2 on #2060)', (
   const tuesdays: BusinessSchedule = { timezone: 'UTC', weekly: { tue: [{ open: '12:00', close: '12:01' }] } };
 
   it('is 522 weeks of the week, less what exceptions can take and 22 forward jumps', () => {
-    // Each jump costs min(twice the jump, the longest day): 1 minute here, 4 h below.
-    expect(guaranteedBusinessMs(tuesdays)).toBe((522 - 22) * MINUTE);
+    // Each jump costs min(twice the jump, twice the longest day): 2 minutes here, 4 h below.
+    expect(guaranteedBusinessMs(tuesdays)).toBe((522 - 44) * MINUTE);
     expect(guaranteedBusinessMs(UTC)).toBe(522 * 40 * HOUR - 22 * 4 * HOUR);
     const withExceptions = weekdays('UTC', {
       exceptions: [
@@ -256,7 +257,7 @@ describe('the open time guaranteed from every start (Codex round 2 on #2060)', (
       timezone: 'UTC',
       weekly: { sun: ['01:00', '02:00', '03:00', '04:00'].map((o) => ({ open: o, close: `${o.slice(0, 2)}:30` })) },
     };
-    expect(guaranteedBusinessMs(quarters)).toBe(522 * 2 * HOUR - 22 * 2 * HOUR);
+    expect(guaranteedBusinessMs(quarters)).toBe(522 * 2 * HOUR - 22 * 4 * HOUR);
     expect(guaranteedBusinessMs({ timezone: 'UTC', weekly: {} })).toBeNull();
   });
 
@@ -434,6 +435,109 @@ describe('agrees with an independent wall-clock walk, across DST in both hemisph
       expect(addBusinessMs(sundays, from, 1_606 * HOUR)).toBeNull();
     }, ORACLE_MS);
   });
+});
+
+/**
+ * One stream across midnight (Codex round 4 on #2060). A skipped hour can carry a day's
+ * window onto the next day's instants, so disjointness is a property of the whole stream,
+ * not of a local day. Checked by hand on the shape Codex found, then as a property over
+ * every transition from 2025 to 2035 in zones that between them change at 23:00 (Nuuk), at
+ * midnight (Havana, Beirut), by half an hour (Lord Howe), at 02:45 (Chatham), and in both
+ * hemispheres, against the oracle — which places windows on its own cross-midnight stream.
+ */
+describe('openings are one union across midnight', () => {
+  it("Nuuk's 23:00 → 00:00 night: Saturday 23:00–23:30 and Sunday 00:00–00:30 are the same half hour", () => {
+    const nuuk: BusinessSchedule = {
+      timezone: 'America/Nuuk',
+      weekly: { sat: [{ open: '23:00', close: '23:30' }], sun: [{ open: '00:00', close: '00:30' }] },
+    };
+    const from = '2027-03-28T00:00:00.000Z'; // Saturday 22:00 in Nuuk (UTC−2)
+    // Both windows resolve to 01:00Z–01:30Z: thirty minutes, by hand, module and oracle.
+    expect(businessMsBetween(nuuk, from, '2027-03-28T01:30:00.000Z')).toBe(30 * MINUTE);
+    expect(oracleBetween(nuuk, from, '2027-03-28T01:30:00.000Z')).toBe(30 * MINUTE);
+    expect(addBusinessMs(nuuk, from, 30 * MINUTE)).toBe('2027-03-28T01:30:00.000Z');
+    // Ten minutes more is a week later: Saturday 23:00 at UTC−1 is 2027-04-04T00:00Z.
+    expect(addBusinessMs(nuuk, from, 40 * MINUTE)).toBe('2027-04-04T00:10:00.000Z');
+    // The oracle counts whole quarter-hours: compared at 45 minutes.
+    expect(addBusinessMs(nuuk, from, 45 * MINUTE)).toBe(oracleAdd(nuuk, from, 45 * MINUTE, '2027-04-10T00:00:00.000Z'));
+  });
+
+  it("a window the cap's last night carries past the cap is not counted: the walk cannot see the next day", () => {
+    // Start so that the walk's last day is Nuuk's spring Saturday, 2036-03-29: its 23:00–23:30
+    // is skipped into Sunday, past the midnight that ends the walk, where the day after (never
+    // walked) could hold earlier open time. So the stream stops at that midnight.
+    const nuuk: BusinessSchedule = { timezone: 'America/Nuuk', weekly: { sat: [{ open: '23:00', close: '23:30' }] } };
+    const lastDay = dayNumberOf('2036-03-29');
+    const start = new Date((lastDay - (EXACT_DAYS - 1)) * DAY + 12 * HOUR).toISOString();
+    const cap = '2036-03-30T01:00:00.000Z'; // Sunday 00:00 at UTC−1, the first instant past the walk
+    const counted = businessMsBetween(nuuk, start, cap)!;
+    expect(counted % (30 * MINUTE)).toBe(0);
+    const due = addBusinessMs(nuuk, start, counted)!;
+    expect(businessMsBetween(nuuk, start, due)).toBe(counted);
+    expect(Date.parse(due)).toBeLessThan(Date.parse(cap));
+    expect(addBusinessMs(nuuk, start, counted + MINUTE)).toBeNull();
+  });
+
+  const ZONES = [
+    'America/Nuuk',
+    'Europe/Stockholm',
+    'America/New_York',
+    'Australia/Sydney',
+    'Australia/Lord_Howe',
+    'Pacific/Chatham',
+    'America/Havana',
+    'Asia/Beirut',
+  ];
+  // Every day the same: windows touching midnight on both sides, one across 02:00–03:00.
+  const allWeek = (timezone: string): BusinessSchedule => {
+    const day = [
+      { open: '00:00', close: '00:45' },
+      { open: '01:30', close: '03:15' },
+      { open: '22:45', close: '23:30' },
+      { open: '23:45', close: '24:00' },
+    ];
+    return { timezone, weekly: Object.fromEntries(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].map((d) => [d, day])) };
+  };
+
+  /** The instants where the zone's offset changes, 2025–2035, found with a formatter of its own. */
+  function transitions(timezone: string): number[] {
+    const f = new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'longOffset' });
+    const offset = (t: number) => f.formatToParts(new Date(t)).find((p) => p.type === 'timeZoneName')!.value;
+    const found: number[] = [];
+    for (let t = Date.UTC(2025, 0, 1, 12); t < Date.UTC(2036, 0, 1, 12); t += DAY) {
+      if (offset(t) === offset(t + DAY)) continue;
+      let [lo, hi] = [t, t + DAY];
+      while (hi - lo > SLOT) {
+        const mid = lo + Math.floor((hi - lo) / 2 / SLOT) * SLOT;
+        if (offset(mid) === offset(lo)) lo = mid;
+        else hi = mid;
+      }
+      found.push(hi);
+    }
+    return found;
+  }
+
+  for (const timezone of ZONES) {
+    it(`${timezone}: every transition 2025–2035 — oracle agreement, monotonic dues, add/between round trip`, () => {
+      const s = allWeek(timezone);
+      const nights = transitions(timezone);
+      expect(nights.length).toBeGreaterThanOrEqual(20);
+      for (const at of nights) {
+        const from = new Date(at - 2 * DAY).toISOString();
+        const to = new Date(at + 2 * DAY).toISOString();
+        const slots = openInstants(s, Date.parse(from), Date.parse(to));
+        expect(businessMsBetween(s, from, to)).toBe(slots.length * SLOT);
+        let previous = '';
+        for (let k = 1; k <= slots.length; k++) {
+          const due = addBusinessMs(s, from, k * SLOT)!;
+          expect(due).toBe(new Date(slots[k - 1]! + SLOT).toISOString());
+          expect(due > previous).toBe(true);
+          expect(businessMsBetween(s, from, due)).toBe(k * SLOT);
+          previous = due;
+        }
+      }
+    }, 300_000);
+  }
 });
 
 describe('the line the widget shows', () => {

@@ -174,31 +174,46 @@ function compile(schedule: BusinessSchedule): Compiled | null {
   };
 }
 
+/** The windows a local day keeps: its exception's, or its weekday's. */
+function windowsOn(c: Compiled, day: number): readonly (readonly [number, number])[] {
+  return c.exceptions.get(day) ?? c.weekly[(((day + 4) % 7) + 7) % 7]!;
+}
+
 /**
- * A local day's openings as instants, earliest first.
+ * Minutes of one local day → instants, 'compatible'.
  *
  * `instantOf` per wall-clock time costs three or four zone lookups. On a day whose offset
- * is the same from the day before to the day after — every day but the two a year around
- * a transition — each candidate it would try IS that offset and round-trips, so its answer
+ * is the same from the day before to the day after — every day but the few around a
+ * transition — each candidate it would try IS that offset and round-trips, so its answer
  * is `local - offset`, and two lookups serve the whole day.
  */
-function openings(c: Compiled, day: number): (readonly [number, number])[] {
-  const windows = c.exceptions.get(day) ?? c.weekly[(((day + 4) % 7) + 7) % 7]!;
-  if (windows.length === 0) return [];
+function resolver(c: Compiled, day: number): (minute: number) => number {
   const steady = offsetAt(c.timezone, (day - 1) * DAY);
-  const at =
-    steady === offsetAt(c.timezone, (day + 2) * DAY)
-      ? (minute: number) => day * DAY + minute * MINUTE - steady
-      : (minute: number) => instantOf(c.timezone, day * DAY + minute * MINUTE);
-  // Resolved one endpoint at a time, windows that are disjoint on the wall clock need not be
-  // disjoint in real time on the spring night: 'compatible' carries an open inside the
-  // skipped hour forward past the gap, which can take it beyond its own close just after
-  // the gap (02:30–03:15: empty), or onto the next window (02:00–02:30 becomes 03:00–03:30,
-  // over 03:00–03:15). So the day's openings are the UNION of the resolved intervals —
-  // chronological, disjoint, none empty — and open time is never counted twice or below
-  // zero. What that union can take away is step 4 of `guaranteedBusinessMs`' proof.
+  return steady === offsetAt(c.timezone, (day + 2) * DAY)
+    ? (minute) => day * DAY + minute * MINUTE - steady
+    : (minute) => instantOf(c.timezone, day * DAY + minute * MINUTE);
+}
+
+/**
+ * A local day's openings as instants: a chronological union.
+ *
+ * Resolved one endpoint at a time, windows that are disjoint on the wall clock need not be
+ * disjoint in real time on the spring night: 'compatible' carries an open inside the
+ * skipped hour forward past the gap, which can take it beyond its own close just after
+ * the gap (02:30–03:15: empty), or onto the next window (02:00–02:30 becomes 03:00–03:30,
+ * over 03:00–03:15). So the day's openings are the UNION of the resolved intervals —
+ * chronological, disjoint, none empty — and open time is never counted twice or below
+ * zero. `openTime` carries the same union across midnight. What it can take away is step
+ * 4 of `guaranteedBusinessMs`' proof.
+ */
+function openings(c: Compiled, day: number, at = resolver(c, day)): [number, number][] {
+  return union(windowsOn(c, day).map(([o, cl]) => [at(o), at(cl)] as const));
+}
+
+/** Intervals as a chronological union: sorted, disjoint, none empty. */
+function union(intervals: readonly (readonly [number, number])[]): [number, number][] {
   const merged: [number, number][] = [];
-  for (const [a, b] of windows.map(([o, cl]) => [at(o), at(cl)] as const).sort((x, y) => x[0] - y[0])) {
+  for (const [a, b] of [...intervals].sort((x, y) => x[0] - y[0])) {
     if (b <= a) continue;
     const last = merged[merged.length - 1];
     if (last && a <= last[1]) last[1] = Math.max(last[1], b);
@@ -208,15 +223,53 @@ function openings(c: Compiled, day: number): (readonly [number, number])[] {
 }
 
 /**
- * The open time from `start` onwards, in order: each opening as `[from, to)`, clipped to
- * begin no earlier than `start`, for the `EXACT_DAYS` local days starting with `start`'s.
- * Then it ends, and whatever the consumer was counting towards is past the cap.
+ * The open time from `start` onwards: ONE chronological stream of disjoint, non-empty
+ * instant intervals, each clipped to begin no earlier than `start` and to end no later
+ * than the cap — the local midnight that ends the walk's last day.
+ *
+ * The local day is not the unit of disjointness (Codex round 4 on #2060). A day's windows
+ * are resolved on that day, but a skipped hour can carry them into the next: in Nuuk the
+ * clocks go from 23:00 on Saturday to 00:00 on Sunday, so Saturday 23:00–23:30 resolves to
+ * Sunday 00:00–00:30 and lies exactly over a Sunday window there. So the days' openings
+ * are merged into one union, and two facts make a one-day lookahead enough for that:
+ *
+ *   - every opening of day `d` starts at or after `M_d`, that day's local midnight as an
+ *     instant: 'compatible' resolution only moves a time FORWARD, and wall time after a
+ *     skipped hour lands at or after the midnight it follows;
+ *   - `M_d` grows with `d`, since every local day lasts some positive real time.
+ *
+ * So before day `d` is merged in, everything already merged that ends by `M_d` can never
+ * meet a later opening, and is final. Only what reaches past it is held back.
+ *
+ * The cap is an instant for the same reason: the walk never looks at the day after its
+ * last, whose openings start at or after that day's midnight, so nothing before that
+ * midnight is missing and nothing after it is known. A window of the last day that a
+ * skipped hour carries past it is counted only up to it.
  */
 function* openTime(c: Compiled, start: number): Generator<readonly [number, number]> {
   const first = localDay(c.timezone, start);
+  const cap = instantOf(c.timezone, (first + EXACT_DAYS) * DAY);
+  let held: [number, number][] = [];
+  const release = function* (upTo: number) {
+    while (held.length > 0 && held[0]![1] <= upTo) {
+      const [a, b] = held.shift()!;
+      if (b > start) yield [Math.max(a, start), b] as const;
+    }
+  };
   for (let day = first; day < first + EXACT_DAYS; day++) {
-    for (const [open, close] of openings(c, day)) if (close > start) yield [Math.max(open, start), close];
+    // A closed day adds nothing, so it costs no lookup: what is held is released against a
+    // bound below its midnight (no zone is more than fourteen hours ahead of UTC), which is
+    // safe because anything ending before that ends before the midnight too.
+    if (windowsOn(c, day).length === 0) {
+      yield* release(day * DAY - 15 * 60 * MINUTE);
+      continue;
+    }
+    const at = resolver(c, day);
+    yield* release(at(0));
+    held = union([...held, ...openings(c, day, at)]);
   }
+  held = held.filter(([a]) => a < cap).map(([a, b]) => [a, Math.min(b, cap)]);
+  yield* release(Infinity);
 }
 
 /**
@@ -250,7 +303,7 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
   const start = Date.parse(from);
   const end = Date.parse(to);
   if (!(end > start)) return 0;
-  if (end > instantOf(c.timezone, (localDay(c.timezone, start) + EXACT_DAYS) * DAY)) return null;
+  if (end > instantOf(c.timezone, (localDay(c.timezone, start) + EXACT_DAYS) * DAY)) return null; // past the cap
   let total = 0;
   for (const [a, b] of openTime(c, start)) {
     if (a >= end) break;
@@ -278,23 +331,30 @@ export function businessMsBetween(schedule: BusinessSchedule, from: string, to: 
  *      `max(0, that weekday's open time − the exception's)` — its weekday is fixed by its
  *      date — so all of them together take at most the sum of that over the list.
  *   4. A clock change takes open time only where it moves the clock FORWARD by a jump `G`
- *      at wall time `J`. A backward jump takes none: with the earlier instant for a repeated
- *      time, wall clock maps to real time in order, so openings stay disjoint and a window
- *      across the fold only grows. Forward: wall time before `J` keeps its instants, and
- *      wall time from `J + 2G` on keeps its lengths and lands at or after `J + G` in real
- *      time, clear of everything earlier — so every opening outside wall `[J, J + 2G)`
- *      keeps its length and its place in the union, and all the open time the jump can
- *      take, whether by shortening a window, emptying one, or folding one onto the next,
- *      is wall time inside that range: at most `2G`, and never more than that day's open
- *      time. Here the code cannot measure, since no sampling of `Intl` proves a stretch free
- *      of transitions, so the bound rests on a stated assumption about the zone: it moves
- *      its clocks forward at most `FORWARD_JUMPS_PER_YEAR` times a year, by at most
- *      `FORWARD_JUMP_MAX` each time. True of every zone in the tz database's rules today
- *      (Morocco's Ramadan suspension is the busiest, at two forward and two back). 522 weeks
- *      lie inside eleven calendar years, so at most `11 × 2` forward jumps, each costing at
- *      most `min(2 × FORWARD_JUMP_MAX, the longest day's open time)`.
+ *      at wall time `J`. Read wall time as one line across midnight (date × 1440 + minute)
+ *      and real time as the stream `openTime` merges across midnight too. A backward jump
+ *      takes nothing: with the earlier instant for a repeated time, wall maps to real time
+ *      in order, so openings stay disjoint and a window across the fold only grows.
+ *      Forward: wall time before `J` keeps its instants, and wall time from `J + 2G` on
+ *      keeps its lengths and lands at or after `J + G` in real time, clear of everything
+ *      earlier — so every opening outside wall `[J, J + 2G)` keeps its length and its place
+ *      in the union, and all the open time the jump can take, whether by shortening a
+ *      window, emptying one, folding one onto the next, or carrying one past midnight onto
+ *      the next day's (Nuuk, whose clocks go from 23:00 to 00:00), is wall time inside that
+ *      range: at most `2G`, and never more than the open time of the at most two local days
+ *      the range touches. A jump on the start's own day can fold its windows onto day
+ *      `d + 1`'s, so it is one of those counted. Here the code cannot measure, since no
+ *      sampling of `Intl` proves a stretch free of transitions, so the bound rests on a
+ *      stated assumption about the zone: it moves its clocks forward at most
+ *      `FORWARD_JUMPS_PER_YEAR` times a year, by at most `FORWARD_JUMP_MAX` each time. True
+ *      of every zone in the tz database's rules today (Morocco's Ramadan suspension is the
+ *      busiest, at two forward and two back). Days `d … d + 7 × 522` lie inside eleven
+ *      calendar years, so at most `11 × 2` forward jumps, each costing at most
+ *      `min(2 × FORWARD_JUMP_MAX, 2 × the longest day's open time)`.
+ *   5. The walk is clipped at the midnight that ends its last day, `d + EXACT_DAYS - 1`, which
+ *      lies after every day counted above, so the clip takes nothing from them.
  *
- * So `522 × week − exceptions − 22 × min(4 h, the longest day's open time)` of open time is counted
+ * So `522 × week − exceptions − 22 × min(4 h, 2 × the longest day's open time)` of open time is counted
  * from every start, whatever weekday it falls on and whichever exceptions its ten years
  * contain. Wall-clock arithmetic only: no walk, no clock, the same answer on any day.
  */
@@ -308,7 +368,7 @@ export function guaranteedBusinessMs(schedule: BusinessSchedule): number | null 
     exceptions += Math.max(0, wall(c.weekly[(((day + 4) % 7) + 7) % 7]!) - wall(ws));
   }
   const longestDay = Math.max(...[...c.weekly, ...c.exceptions.values()].map(wall));
-  const jumps = FORWARD_JUMP_YEARS * FORWARD_JUMPS_PER_YEAR * Math.min(2 * FORWARD_JUMP_MAX, longestDay);
+  const jumps = FORWARD_JUMP_YEARS * FORWARD_JUMPS_PER_YEAR * Math.min(2 * FORWARD_JUMP_MAX, 2 * longestDay);
   return Math.max(0, FULL_WEEKS * week - exceptions - jumps);
 }
 
