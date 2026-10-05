@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { errorCodeOf, permissionKey } from '@substrat-run/contracts';
 import {
@@ -9,6 +10,7 @@ import {
   listIndexPlans,
   moduleMigrations,
   addStatePlans,
+  createTrashedReads,
 } from '../src/index.js';
 
 /**
@@ -189,4 +191,60 @@ describe('assertNoReservedColumnWrite on a stateful table', () => {
       expect(() => assertNoReservedColumnWrite(sql, stateful)).not.toThrow();
     });
   }
+});
+
+describe('ctx.pageTrashed walks past refused rows without handing out their positions', () => {
+  const setup = (rows: { id: string; title: string }[]) => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT, _substrat_archived_at TEXT, _substrat_trashed_at TEXT)');
+    for (const r of rows) db.prepare("INSERT INTO docs VALUES (?, ?, NULL, '2026')").run(r.id, r.title);
+    const statePlans = new Map();
+    addStatePlans(statePlans, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+    const [plan] = listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]);
+    return {
+      reads: (visible: ReadonlySet<string>, scanBudget?: number) =>
+        createTrashedReads({
+          query: (sql, params) => db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[],
+          listPlans: new Map([['doc', plan!]]),
+          searchPlans: new Map(),
+          statePlans,
+          check: async (_key, entity) =>
+            (visible.has(entity!.entityId) ? { allowed: true } : { allowed: false }) as never,
+          ...(scanBudget !== undefined ? { scanBudget } : {}),
+        }),
+    };
+  };
+  const ten = Array.from({ length: 10 }, (_, i) => ({ id: `d${i}`, title: `t${i}` }));
+
+  it('fills the page from visible rows only, and continues from the last one it returned', async () => {
+    const { reads } = setup(ten);
+    const r = reads(new Set(['d2', 'd7']));
+    const first = await r.pageTrashed('doc', { limit: 1 });
+    expect(first.entries.map((e) => (e as { id: string }).id)).toEqual(['d2']);
+    const second = await r.pageTrashed('doc', { limit: 1, cursor: first.nextCursor! });
+    expect(second.entries.map((e) => (e as { id: string }).id)).toEqual(['d7']);
+    const third = await r.pageTrashed('doc', { limit: 1, cursor: second.nextCursor! });
+    expect(third).toEqual({ entries: [], nextCursor: null });
+  });
+
+  it('within the scan budget, returns what it found and continues from it', async () => {
+    const { reads } = setup(ten);
+    // Budget 4: the first call reads d0–d3 and finds d1; the next, continued from d1, reads
+    // d2–d5 and finds d4. Each returned cursor is a visible row's.
+    const r = reads(new Set(['d1', 'd4']), 4);
+    const first = await r.pageTrashed('doc', { limit: 5 });
+    expect(first.entries.map((e) => (e as { id: string }).id)).toEqual(['d1']);
+    expect(first.nextCursor).not.toBeNull();
+    const rest = await r.pageTrashed('doc', { limit: 5, cursor: first.nextCursor! });
+    expect(rest.entries.map((e) => (e as { id: string }).id)).toEqual(['d4']);
+  });
+
+  it('refuses rather than lie or leak when the budget runs out on refused rows alone', async () => {
+    const { reads } = setup(ten);
+    await expect(reads(new Set(['d9']), 4).pageTrashed('doc', { limit: 5 })).rejects.toMatchObject({
+      message: expect.stringMatching(/without finding one this caller may see/),
+    });
+    // The twin: the whole bin inside the budget is answered, and the end is null.
+    expect(await reads(new Set(), 50).pageTrashed('doc', { limit: 5 })).toEqual({ entries: [], nextCursor: null });
+  });
 });

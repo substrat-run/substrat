@@ -305,6 +305,35 @@ export function entityStateContractSuite(
       await as.alice.invoke('state/restore', { id: carolsDoc });
     });
 
+    /** A cursor's envelope (K-44): base64url JSON naming the row it continues from. */
+    const decode = (cursor: string): { value: string; id?: string } =>
+      JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(cursor.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))));
+
+    it('hands a caller denied every binned row an empty bin and NO cursor — no position of a hidden row leaks', async () => {
+      const hidden = await doc('hidden from bob');
+      await as.alice.invoke('state/trash', { id: hidden });
+      for (const limit of [1, 2, 50]) {
+        expect(await as.bob.invoke<Page<Row>>('state/page-trashed', { limit })).toEqual({ entries: [], nextCursor: null });
+      }
+      await as.alice.invoke('state/restore', { id: hidden });
+    });
+
+    it('mints every cursor from a row the caller can see, in a bin mostly of rows they cannot', async () => {
+      const others = [await doc('aaa other'), await doc('zzz other')];
+      for (const id of [...others, carolsDoc]) await as.alice.invoke('state/trash', { id });
+      const first = await as.carol.invoke<Page<Row>>('state/page-trashed', { limit: 1 });
+      expect(ids(first)).toEqual([carolsDoc]);
+      expect(first.nextCursor).not.toBeNull();
+      const position = decode(first.nextCursor!);
+      expect(position.id).toBe(carolsDoc);
+      expect(position.value).toBe('carol owns this');
+      expect(await as.carol.invoke<Page<Row>>('state/page-trashed', { limit: 1, cursor: first.nextCursor })).toEqual({
+        entries: [],
+        nextCursor: null,
+      });
+      for (const id of [...others, carolsDoc]) await as.alice.invoke('state/restore', { id });
+    });
+
     it('carries no total on the bin — a count would disclose rows the caller cannot see', async () => {
       expect(errorCodeOf(await errOf(as.alice.invoke('state/page-trashed', { total: true })))).toBe(
         'validation_failed',

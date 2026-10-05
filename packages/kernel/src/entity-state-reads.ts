@@ -60,7 +60,16 @@ export interface TrashedReadDeps {
   searchPlans: ReadonlyMap<string, SearchIndexPlan>;
   statePlans: ReadonlyMap<string, EntityStatePlan>;
   check: StateCheck;
+  /** Rows one trashed page may read looking for visible ones — `TRASH_SCAN_BUDGET` unless a test narrows it. */
+  scanBudget?: number;
 }
+
+/**
+ * How many binned rows one `ctx.pageTrashed` call reads, at most, looking for rows the caller
+ * may see. Each costs a permission check, and a Durable Object has a CPU budget per request, so
+ * a bin full of other people's rows cannot be walked without bound inside one call.
+ */
+export const TRASH_SCAN_BUDGET = 2_000;
 
 export type TrashedReads = Pick<OperationContext, 'pageTrashed' | 'searchTrashed'>;
 
@@ -89,6 +98,17 @@ async function keepVisible<T>(
 
 export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
   return {
+    /**
+     * The bin, walked so that **no position of a row the caller may not see ever leaves the
+     * kernel.** A cursor is a row's sort value and id, so minting one from a refused row would
+     * hand the caller that row's id and timestamp — the very thing the per-row check withholds.
+     *
+     * So the walk runs internally past refused rows until it has `limit` visible ones or reaches
+     * the end, and the cursor is minted from the last VISIBLE row (null at the end). Past
+     * `TRASH_SCAN_BUDGET` rows it stops: with a visible row in hand it returns what it found,
+     * continued from that row; with none it refuses, because "empty, and here is where to go
+     * on" is the leak and "empty, and that is the end" would be a lie.
+     */
     async pageTrashed(entityType, params) {
       const { key } = stateKeyOf(deps.statePlans, 'ctx.pageTrashed', entityType, 'trash');
       const plan = deps.listPlans.get(entityType);
@@ -100,21 +120,46 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
         );
       }
       const limit = listLimitOf(params.limit);
-      const q = listQuery(plan, {
-        limit,
-        sort: params.sort,
-        order: params.order,
-        cursor: params.cursor,
-        filters: params.filters,
-        view: 'trashed',
-      });
-      const rows = deps.query(q.sql, q.params);
-      // The cursor comes from the LAST ROW READ, kept or not: a page whose every row was
-      // refused still moves the walk on, rather than ending it as though the bin were empty.
-      const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
-      const nextCursor = last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order);
-      const kept = await keepVisible(deps.check, key, entityType, rows, (row) => String(row[plan.idColumn]));
-      return { entries: kept as never[], nextCursor };
+      const budget = deps.scanBudget ?? TRASH_SCAN_BUDGET;
+      const kept: Record<string, unknown>[] = [];
+      let cursor = params.cursor;
+      let scanned = 0;
+      let sortColumn = '';
+      let order: 'asc' | 'desc' = 'asc';
+      for (;;) {
+        const batch = Math.min(limit, budget - scanned);
+        const q = listQuery(plan, {
+          limit: batch,
+          sort: params.sort,
+          order: params.order,
+          cursor,
+          filters: params.filters,
+          view: 'trashed',
+        });
+        ({ sortColumn, order } = q);
+        const rows = deps.query(q.sql, q.params);
+        for (const row of rows) {
+          scanned += 1;
+          const entity: EntityRef = { entityType, entityId: String(row[plan.idColumn]) };
+          if (!(await deps.check(key, entity)).allowed) continue;
+          kept.push(row);
+          if (kept.length === limit) {
+            return { entries: kept as never[], nextCursor: cursorOf(row, sortColumn, plan.idColumn, order) };
+          }
+        }
+        // A short batch is the end of the bin: nothing after it, so no cursor at all.
+        if (rows.length < batch) return { entries: kept as never[], nextCursor: null };
+        // Internal only — never returned while it points at a refused row.
+        cursor = cursorOf(rows[rows.length - 1]!, sortColumn, plan.idColumn, order);
+        if (scanned >= budget) break;
+      }
+      const last = kept[kept.length - 1];
+      if (last) return { entries: kept as never[], nextCursor: cursorOf(last, sortColumn, plan.idColumn, order) };
+      throw substratError(
+        'precondition_failed',
+        `ctx.pageTrashed: read ${scanned} binned '${entityType}' rows without finding one this caller may see — ` +
+          'narrow the walk with a declared filter',
+      );
     },
 
     async searchTrashed(entityType, term, options) {
