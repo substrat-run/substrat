@@ -91,3 +91,38 @@ export function combineCoverage(bounds: readonly (Coverage | null)[]): Coverage 
   const missing = [...new Set(bounds.flatMap((b) => (b && !b.covered ? b.missing : [])))].sort() as PermissionKey[];
   return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing: missing as [PermissionKey, ...PermissionKey[]] };
 }
+
+/** The caller's bound for one role at the scope, or `null` when the tenant defines no such role. */
+export type RoleBound = (roleKey: string) => Promise<Coverage | null>;
+
+/**
+ * Move `principal` from `from` to `to` (#1150) — the whole decision, for an adapter to run in
+ * ONE scope task: `from` must be held, `to` must be defined, the caller's bound over both, then
+ * the tombstone and the grant together. `not-held` and `unknown-to` wrote nothing; neither does
+ * a coverage that does not cover. The adapter turns the two refusals into its own errors.
+ */
+export async function changeScopeRole(
+  sql: SwitchSql, scopeId: string, principal: PrincipalId, from: string, to: string, now: string, bound: RoleBound,
+): Promise<Coverage | 'not-held' | 'unknown-to'> {
+  if (!scopeRoleHolders(sql, scopeId, now, principal).some((h) => h.roleKey === from)) return 'not-held';
+  const grant = await bound(to);
+  if (!grant) return 'unknown-to';
+  const covered = combineCoverage([await bound(from), grant]);
+  if (covered.covered) applyScopeRoleChange(sql, scopeId, principal, { revoke: [from], grant: to }, now);
+  return covered;
+}
+
+/**
+ * Take every scope role `principal` holds (#1150), for an adapter to run in ONE scope task: the
+ * caller's bound over each (a role the tenant no longer defines is taken without one), then all
+ * the tombstones, or none. `revoked` names what was taken.
+ */
+export async function revokeScopeRoles(
+  sql: SwitchSql, scopeId: string, principal: PrincipalId, now: string, bound: RoleBound,
+): Promise<{ coverage: Coverage; revoked: string[] }> {
+  const held = scopeRoleHolders(sql, scopeId, now, principal).map((h) => h.roleKey);
+  const covered = combineCoverage(await Promise.all(held.map(bound)));
+  if (!covered.covered) return { coverage: covered, revoked: [] };
+  applyScopeRoleChange(sql, scopeId, principal, { revoke: held, grant: null }, now);
+  return { coverage: covered, revoked: held };
+}

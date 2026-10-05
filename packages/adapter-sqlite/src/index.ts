@@ -322,8 +322,10 @@ import {
   REDACTED_DELIVERY_NOTE,
   seatScopeTuple,
   applyScopeRoleChange,
-  combineCoverage,
+  changeScopeRole,
+  revokeScopeRoles,
   scopeRoleHolders,
+  type RoleBound,
   type ScopeRoleHolder,
   admitPeer,
   collectPeers,
@@ -4347,19 +4349,15 @@ export class SqliteScopeHost implements ScopeHost {
     const target = principalId.parse(assignee);
     return rt.actor.turn(async () => {
       const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
-      if (bound.covered) {
-        rt.db.prepare(
-          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-           VALUES (?, ?, ?, NULL)`,
-        ).run(`principal:${target}`, `role:${roleKey}`, `scope:${scopeId}`);
-      }
+      if (bound.covered) applyScopeRoleChange(switchSqlOf(rt.db), scopeId, target, { revoke: [], grant: roleKey }, this.clock());
       return bound;
     });
   }
 
-  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRoleHolder[]> {
+  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]> {
     const rt = await this.openActiveScope(tenantId, scopeId);
-    return rt.actor.enqueue(() => scopeRoleHolders(switchSqlOf(rt.db), scopeId, this.clock()));
+    const who = principal === undefined ? undefined : principalId.parse(principal);
+    return rt.actor.enqueue(() => scopeRoleHolders(switchSqlOf(rt.db), scopeId, this.clock(), who));
   }
 
   async changeScopeRoleBounded(
@@ -4371,23 +4369,13 @@ export class SqliteScopeHost implements ScopeHost {
     to: string,
   ): Promise<Coverage> {
     const rt = await this.openActiveScope(tenantId, scopeId);
-    const subject = asPrincipal(principalId.parse(caller));
     const target = principalId.parse(principal);
-    return rt.actor.turn(async () => {
-      const sql = switchSqlOf(rt.db);
-      const now = this.clock();
-      if (!scopeRoleHolders(sql, scopeId, now, target).some((h) => h.roleKey === from)) {
-        throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
-      }
-      // `to` must be a role this tenant defines (it throws otherwise); `from` may be one it
-      // no longer does, which confers nothing and is taken without a bound.
-      const bound = combineCoverage([
-        await this.boundIfDefined(subject, tenantId, scopeId, from),
-        await this.assignmentBound(subject, tenantId, scopeId, to),
-      ]);
-      if (bound.covered) applyScopeRoleChange(sql, scopeId, target, { revoke: [from], grant: to }, now);
-      return bound;
-    });
+    const answer = await rt.actor.turn(() =>
+      changeScopeRole(switchSqlOf(rt.db), scopeId, target, from, to, this.clock(), this.roleBound(caller, tenantId, scopeId)),
+    );
+    if (answer === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
+    if (answer === 'unknown-to') throw unknownRoleError(to);
+    return answer;
   }
 
   async revokeScopeRolesBounded(
@@ -4397,27 +4385,16 @@ export class SqliteScopeHost implements ScopeHost {
     principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }> {
     const rt = await this.openActiveScope(tenantId, scopeId);
-    const subject = asPrincipal(principalId.parse(caller));
-    const target = principalId.parse(principal);
-    return rt.actor.turn(async () => {
-      const sql = switchSqlOf(rt.db);
-      const now = this.clock();
-      const held = scopeRoleHolders(sql, scopeId, now, target).map((h) => h.roleKey);
-      const bounds = [];
-      for (const roleKey of held) bounds.push(await this.boundIfDefined(subject, tenantId, scopeId, roleKey));
-      const bound = combineCoverage(bounds);
-      if (!bound.covered) return { coverage: bound, revoked: [] };
-      applyScopeRoleChange(sql, scopeId, target, { revoke: held, grant: null }, now);
-      return { coverage: bound, revoked: held };
-    });
+    return rt.actor.turn(() =>
+      revokeScopeRoles(switchSqlOf(rt.db), scopeId, principalId.parse(principal), this.clock(), this.roleBound(caller, tenantId, scopeId)),
+    );
   }
 
-  /** The bound for taking `roleKey` away: null when the tenant no longer defines it. */
-  private async boundIfDefined(
-    subject: CheckSubject, tenantId: TenantId, scopeId: ScopeId, roleKey: string,
-  ): Promise<Coverage | null> {
-    if (!this.roles.has(`${tenantId}/${roleKey}`)) return null;
-    return this.assignmentBound(subject, tenantId, scopeId, roleKey);
+  /** The caller's bound per role at the scope, `null` for a role this tenant does not define (#1150). */
+  private roleBound(caller: PrincipalId, tenantId: TenantId, scopeId: ScopeId): RoleBound {
+    const subject = asPrincipal(principalId.parse(caller));
+    return async (roleKey) =>
+      this.roles.has(`${tenantId}/${roleKey}`) ? this.assignmentBound(subject, tenantId, scopeId, roleKey) : null;
   }
 
   /**

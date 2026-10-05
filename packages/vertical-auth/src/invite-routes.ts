@@ -33,7 +33,7 @@
 
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { coverage, principalId, z, type Coverage, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { coverage, coverageRefusal, principalId, z, type Coverage, type MemberInviteLink, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { isUnknownRoleError, ulid } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
 import { claimToken, invitePath, sha256Hex } from './owner-claim-link.js';
@@ -105,15 +105,8 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
 
 /** The 403 a refused bound answers, in one wording for every door that confers a role. */
 export const uncovered = (missing: readonly string[], roleKey: string, act: string): HTTPException =>
-  new HTTPException(403, { message: `you cannot ${act} '${roleKey}': you do not hold ${missing.join(', ')}` });
+  new HTTPException(403, { message: coverageRefusal(missing, roleKey, act) });
 
-/** A minted member invite: the accept link carries the token, shown once and stored nowhere. */
-export interface MintedInvite {
-  principal: PrincipalId;
-  roleKey: string;
-  email: string | null;
-  acceptUrl: string;
-}
 
 /**
  * Mint one member invite (#1150) — the ONE copy of what an invite is, shared by the vertical's
@@ -136,7 +129,7 @@ export async function mintMemberInvite(
     rollback: (principal: PrincipalId) => Promise<unknown>;
   },
   input: { roleKey: string; email: string | null; origin: string },
-): Promise<{ ok: true; invite: MintedInvite } | { ok: false; coverage: Coverage }> {
+): Promise<{ ok: true; invite: MemberInviteLink } | { ok: false; coverage: Coverage }> {
   const principal = principalId.parse(ulid());
   // A long, URL-safe token; only its hash is stored. Two UUIDs = 256 bits of entropy.
   const token = claimToken();

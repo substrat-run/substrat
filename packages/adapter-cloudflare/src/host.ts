@@ -1237,10 +1237,10 @@ interface ScopeStubRpc {
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage | null>;
   /** #1150: the scope's role roster, and the two bounded writes over it — see `scope-do.ts`. */
-  scopeRoleHoldersFor(scopeId: ScopeId): Promise<ScopeRoleHolder[]>;
+  scopeRoleHoldersFor(scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]>;
   changeScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
-  ): Promise<Coverage | null | 'not-held'>;
+  ): Promise<Coverage | 'not-held' | 'unknown-to'>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -4735,9 +4735,9 @@ export class CloudflareScopeHost implements ScopeHost {
     return coverage.parse(bound);
   }
 
-  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRoleHolder[]> {
+  async listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]> {
     await this.scopeRoleGate(tenantId, scopeId, 'listScopeRoleHolders');
-    return this.scopeStub(scopeId).scopeRoleHoldersFor(scopeId);
+    return this.scopeStub(scopeId).scopeRoleHoldersFor(scopeId, principal === undefined ? undefined : principalId.parse(principal));
   }
 
   async changeScopeRoleBounded(
@@ -4749,7 +4749,7 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId, scopeId, principalId.parse(caller), target, from, to,
     );
     if (bound === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
-    if (!bound) throw unknownRoleError(to);
+    if (bound === 'unknown-to') throw unknownRoleError(to);
     return coverage.parse(bound);
   }
 

@@ -481,8 +481,6 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 }
 
-/** An outstanding invite as the directory returns it — never its token. */
-
 /** A minimal stub shape — the identity DO's callable surface (avoids leaking the full class type). */
 export type IdentityStub = {
   fetch(request: Request): Promise<Response>;

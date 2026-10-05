@@ -26,6 +26,7 @@ export const INVITE_DDL: string[] = [
 /** The whole directory an invite touches: the identity (and owner-seat) tables, then the invites. */
 export const MEMBER_DIRECTORY_DDL: readonly string[] = [...OWNER_SEAT_DDL, ...INVITE_DDL];
 
+/** An outstanding invite as the directory returns it — never its token. */
 export type InviteRow = { principal: string; roleKey: string; email: string | null; createdAt: number };
 
 /** One principal as the identity directory knows it at a scope (#1150). */

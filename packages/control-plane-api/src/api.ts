@@ -4090,11 +4090,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const principal = c.get('principal');
-    if (outsideTenant(principal, tenantId)) {
-      return { refusal: c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404) } as const;
-    }
     const actor = c.get('actor');
-    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    // K-3: another tenant's pair, or no such scope, reads the same — absent.
+    const scope = outsideTenant(principal, tenantId) ? null : await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return { refusal: c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404) } as const;
     const vertical = await verticalForScope(c, scope);
     if (!vertical) return { refusal: c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501) } as const;

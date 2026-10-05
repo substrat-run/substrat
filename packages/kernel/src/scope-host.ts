@@ -5141,10 +5141,11 @@ export interface ScopeHost {
 
   /**
    * The scope's role roster (#1150): every live scope-level role assignment, one row per
-   * (principal, role). One scope, addressed by the caller after its own (tenant, scope) check
-   * — K-3 is asserted here too — so it is a read of this scope, never a walk across scopes.
+   * (principal, role) — or one principal's, with `principal`. One scope, addressed by the caller
+   * after its own (tenant, scope) check — K-3 is asserted here too — so it is a read of this
+   * scope, never a walk across scopes.
    */
-  listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRoleHolder[]>;
+  listScopeRoleHolders(tenantId: TenantId, scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]>;
 
   /**
    * Move `principal` from scope role `from` to `to` in ONE scope task (#1150): the caller's

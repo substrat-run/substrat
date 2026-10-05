@@ -496,6 +496,14 @@ export const coverage = z.discriminatedUnion('covered', [
 export type Coverage = z.infer<typeof coverage>;
 
 /**
+ * The sentence a refused assignment bound answers with (#1931, #1150) — one wording for every
+ * door that confers or takes a role: a vertical's own invite routes and the platform's member
+ * routes.
+ */
+export const coverageRefusal = (missing: readonly string[], roleKey: string, act: string): string =>
+  `you cannot ${act} '${roleKey}': you do not hold ${missing.join(', ')}`;
+
+/**
  * The grant an allow resolved through (K-34), for stamping onto an emitted event's
  * `authorization`. Every allow proof ends with a `granted:<permission>` tuple, but a ROLE
  * expansion's has subject `role:<key>` while a capability grant's has a principal / org /
