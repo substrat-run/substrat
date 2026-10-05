@@ -24,8 +24,11 @@
  *   central directory, inflates only the parts that carry text, and keeps the text of
  *   their `t` elements. The inflate is the web-standard `DecompressionStream('deflate-raw')`,
  *   present in Node and workerd alike, so the whole format costs no dependency.
- * - **No PDF yet, and no OCR.** A host given no extractor for a type records `unsupported`
- *   with that reason — a legible outcome, never "indexed, no match".
+ * - **pdf**: the text layer its pages draw, read by `pdf.ts` — a parser written for hostile
+ *   input, whose bounds that file lists. Encrypted files are refused with that reason.
+ * - **No OCR.** A scanned page has no text layer, so it extracts to nothing, which the kernel
+ *   records `empty`; a host given no extractor for a type records `unsupported` with that
+ *   reason — legible outcomes both, never "indexed, no match".
  *
  * ## The bounds this package owns, and why
  *
@@ -34,8 +37,8 @@
  *
  * - `maxInputBytes` is declared on each extractor, so the kernel can refuse an oversized
  *   file on its RECORDED size before fetching a byte; each extractor checks it again.
- * - `maxInflatedBytes` is the zip-bomb cap: a counter on the bytes the inflater actually
- *   produces, across every part of one file. An entry's declared size is checked first as
+ * - `maxInflatedBytes` is the decompression-bomb cap: a counter on the bytes the inflater
+ *   actually produces, across every part (or every PDF stream) of one file. An entry's declared size is checked first as
  *   a cheap refusal, and never trusted, because a bomb is exactly a file that lies about it.
  *
  * A file that is not what it says, or breaks a bound, is answered `{ failed }` with a
@@ -65,33 +68,21 @@
  * that are NOT cut to a stride are copies (joining the text collected) and the name tests
  * over the zip directory, at most 20 000 names of at most 255 bytes each.
  */
+import type { AttachmentExtractor, AttachmentExtractorInput, AttachmentExtractorResult, ExtractionSignal } from '@substrat-run/kernel';
 import {
-  EXTRACTION_STRIDE,
-  type AttachmentExtractor,
-  type AttachmentExtractorInput,
-  type AttachmentExtractorResult,
-  type ExtractionSignal,
-} from '@substrat-run/kernel';
+  DecompressionStream,
+  ExtractionAborted,
+  ExtractionBoundExceeded,
+  MalformedInput,
+  Pace,
+  TextDecoder,
+  checkpoint,
+  type Decoder,
+  type InflateBudget,
+} from './pace.js';
+import { pdfExtract } from './pdf.js';
 
-interface Decoder {
-  decode(input?: Uint8Array, options?: { stream?: boolean }): string;
-}
-declare const TextDecoder: new (label?: string, options?: { fatal?: boolean; ignoreBOM?: boolean }) => Decoder;
-// Web-standard and present in Node >= 18 and workerd; declared locally because the package
-// builds without DOM typings, as the kernel declares `TextEncoder`.
-declare const DecompressionStream: new (format: 'deflate-raw') => {
-  readonly writable: {
-    getWriter(): { write(chunk: Uint8Array): Promise<void>; close(): Promise<void> };
-  };
-  readonly readable: {
-    getReader(): {
-      read(): Promise<{ done: boolean; value?: Uint8Array }>;
-      cancel(reason?: unknown): Promise<void>;
-    };
-  };
-};
-
-declare function setTimeout(fn: () => void, ms: number): unknown;
+export { PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfTables } from './pdf.js';
 
 /** The bounds that protect the parsing process (K-43). */
 export interface ExtractorBounds {
@@ -139,121 +130,6 @@ function acceptsBy(types: (type: string) => boolean, extensions: readonly string
     const ext = /\.([A-Za-z0-9]+)$/.exec(filename)?.[1]?.toLowerCase();
     return ext !== undefined && extensions.includes(ext);
   };
-}
-
-/** Raised when a bound refuses the work. Distinct so the answer can say which bound. */
-class ExtractionBoundExceeded extends Error {}
-
-/** A file that is not what its type says, or is damaged. Carries a content-free reason. */
-class MalformedInput extends Error {}
-
-/** The kernel's budget ran out and aborted the signal: the extraction stops where it is. */
-class ExtractionAborted extends Error {}
-
-const runtime = globalThis as { setImmediate?: (fn: () => void) => unknown };
-
-/**
- * One turn of the event loop, by the cheapest primitive that still lets a due timer — the
- * kernel's deadline — run before what follows. Every yield the parsers make comes through here.
- *
- * `setImmediate` where the runtime has it (Node, and workerd, which has it as a global): it goes
- * once round the loop, through the timers, without the 1 ms floor Node puts under
- * `setTimeout(…, 0)` — the floor that made pacing a large file cost more in waiting than in
- * parsing. `setTimeout(…, 0)` otherwise. Not `scheduler.yield()`: neither runtime has it, and
- * where it exists its continuation is scheduled AHEAD of other tasks, which is the opposite of
- * letting a timer in. Called through the global each time, never as a detached reference.
- */
-const nextTurn: () => Promise<void> =
-  typeof runtime.setImmediate === 'function'
-    ? () => new Promise((resolve) => void runtime.setImmediate!(resolve))
-    : () => new Promise((resolve) => setTimeout(resolve, 0));
-
-/**
- * Cooperation with the kernel's time budget (K-43): stop if the signal is aborted, and yield
- * a turn first so a timer that is due gets to abort it. Without the yield a long parse would
- * hold the thread and the timer would never run until it was over.
- */
-async function checkpoint(signal: ExtractionSignal): Promise<void> {
-  if (signal.aborted) throw new ExtractionAborted('the extraction was aborted');
-  await nextTurn();
-  if (signal.aborted) throw new ExtractionAborted('the extraction was aborted');
-}
-
-/**
- * One extraction's pacing against the kernel's budget. Work is counted in units — a character
- * scanned or decoded, a byte inflated or decoded — and no step runs more than
- * `EXTRACTION_STRIDE` of them past the last `checkpoint`, give or take the few characters a
- * search must see whole (a needle's length, an entity's span). A native search goes through `find`,
- * which cuts it to the window left before the next check, and a hand-written loop through
- * `scan`; that is what makes "stops within one stride" true of an `indexOf` across a long run
- * of text, a comment or an unclosed tag, and not only of the loop around it.
- */
-class Pace {
-  private left = EXTRACTION_STRIDE;
-
-  constructor(private readonly signal: ExtractionSignal) {}
-
-  /** Units that may still run before the next check — positive once `turn` has returned. */
-  get room(): number {
-    return this.left;
-  }
-
-  charge(units: number): void {
-    this.left -= units;
-  }
-
-  /** Stop if the signal is aborted; once a stride is spent, yield a turn and check again. */
-  async turn(): Promise<void> {
-    if (this.left > 0 && !this.signal.aborted) return;
-    await checkpoint(this.signal);
-    this.left = EXTRACTION_STRIDE;
-  }
-
-  /** `s.indexOf(needle, from)`, searched one window at a time. */
-  async find(s: string, needle: string, from: number): Promise<number> {
-    for (let at = from; at < s.length; ) {
-      await this.turn();
-      const end = Math.min(s.length, at + this.left);
-      // Each window reaches a needle's length less one into the next, so a match that
-      // straddles the edge is found whole — and found in exactly one window.
-      const k = s.slice(at, end + needle.length - 1).indexOf(needle);
-      if (k >= 0) {
-        this.charge(k + needle.length);
-        return at + k;
-      }
-      this.charge(end - at);
-      at = end;
-    }
-    return -1;
-  }
-
-  /** Visit `s` from `from`; `step(c, k)` returns true to stop at `k`. The index stopped at, or -1. */
-  async scan(s: string, from: number, step: (c: number, k: number) => boolean): Promise<number> {
-    for (let k = from; k < s.length; ) {
-      await this.turn();
-      const start = k;
-      const end = Math.min(s.length, k + this.left);
-      for (; k < end; k += 1) {
-        if (step(s.charCodeAt(k), k)) {
-          this.charge(k + 1 - start);
-          return k;
-        }
-      }
-      this.charge(end - start);
-    }
-    return -1;
-  }
-
-  /** Bytes through `decoder` a window at a time; `stream` keeps a character cut by an edge whole. */
-  async decode(decoder: Decoder, bytes: Uint8Array, out: string[]): Promise<void> {
-    for (let at = 0; at < bytes.length; ) {
-      await this.turn();
-      const end = Math.min(bytes.length, at + this.left);
-      out.push(decoder.decode(bytes.subarray(at, end), { stream: true }));
-      this.charge(end - at);
-      at = end;
-    }
-  }
 }
 
 /** Decode bytes as text: a UTF-16 BOM wins, then a declared charset, then UTF-8. */
@@ -1029,11 +905,6 @@ async function zipEntries(zip: Uint8Array, pace: Pace): Promise<ZipEntry[]> {
   return entries;
 }
 
-/** A per-file inflate budget, shared by every part one extraction reads. */
-interface InflateBudget {
-  remaining: number;
-}
-
 /**
  * One entry's text: inflated under the budget, and decoded as UTF-8 as the inflater produces
  * it — a window at a time, so neither step holds the thread for more than a stride.
@@ -1350,6 +1221,16 @@ export const xlsxExtractor = (bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS
 /** Presentations: slides in order, then their speaker notes. */
 export const pptxExtractor = (bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS) => ooxmlExtractor('pptx', PPTX, bounds);
 
+/** PDF: the text each page draws, in page order (`pdf.ts`). */
+export function pdfExtractor(bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS): AttachmentExtractor {
+  return {
+    name: 'pdf',
+    maxInputBytes: bounds.maxInputBytes,
+    accepts: acceptsBy((type) => type === 'application/pdf' || type === 'application/x-pdf', ['pdf']),
+    extract: extractWith(bounds, (input) => pdfExtract(input.body, bounds.maxInflatedBytes, input.maxTextBytes, input.signal)),
+  };
+}
+
 /**
  * Every extractor this package has, in the order a host should try them — what a host is
  * constructed with when it has no list of its own:
@@ -1357,5 +1238,12 @@ export const pptxExtractor = (bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS
  *     new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors() })
  */
 export function defaultAttachmentExtractors(bounds: ExtractorBounds = DEFAULT_EXTRACTOR_BOUNDS): AttachmentExtractor[] {
-  return [textExtractor(bounds), htmlExtractor(bounds), docxExtractor(bounds), xlsxExtractor(bounds), pptxExtractor(bounds)];
+  return [
+    textExtractor(bounds),
+    htmlExtractor(bounds),
+    docxExtractor(bounds),
+    xlsxExtractor(bounds),
+    pptxExtractor(bounds),
+    pdfExtractor(bounds),
+  ];
 }
