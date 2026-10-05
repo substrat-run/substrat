@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  errorCodeOf,
   moduleManifest,
   permissionKey,
   platformActorId,
@@ -80,6 +81,21 @@ describe('attachment surface (pure adapter)', () => {
   };
 
   const bytes = (s: string) => new TextEncoder().encode(s);
+
+  it('refuses a blob store under an unknown tenant not_found and a non-active one conflict (#113)', async () => {
+    const { host, staff, t } = await world();
+    const refusal = (tenant: string) =>
+      host
+        .provisionBlobStore(staff, { tenantId: tenantId.parse(tenant), vertical: 'docs', binding: 'OTHER' })
+        .then(() => undefined, (e: unknown) => e);
+    const unknown = await refusal(ulid());
+    expect(errorCodeOf(unknown)).toBe('not_found');
+    expect((unknown as Error).message).toMatch(/blob store under unknown tenant/);
+    await host.admin.setTenantStatus(staff, t, 'suspended');
+    const inactive = await refusal(t);
+    expect(errorCodeOf(inactive)).toBe('conflict');
+    expect((inactive as Error).message).toMatch(/blob store under non-active tenant \(status: suspended\)/);
+  });
 
   it('uploads, lists, and opens an attachment with byte fidelity', async () => {
     const { host, t, s, editor } = await world();

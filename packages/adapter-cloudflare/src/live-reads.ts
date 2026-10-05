@@ -9,7 +9,8 @@
  *
  * Nothing in this module reaches the network or the database. It is names and shapes.
  */
-import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import { substratError, type EntityRef, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { isVouchedWithin, type VouchedWithin } from '@substrat-run/kernel';
 
 /**
  * The path the coordinator fetches on the scope stub to open a subscription.
@@ -33,6 +34,79 @@ export const LIVE_SUBSCRIBE_PATH = '/_substrat/live';
 export const LIVE_PRINCIPAL_HEADER = 'x-substrat-live-principal';
 export const LIVE_TENANT_HEADER = 'x-substrat-live-tenant';
 export const LIVE_SCOPE_HEADER = 'x-substrat-live-scope';
+
+/**
+ * The `within` root a subscription is narrowed to (#1853), and whether the vertical
+ * vouched for it — `encodeLiveWithin`'s output, asserted by the coordinator exactly as
+ * the principal is. Absent means an unnarrowed feed.
+ */
+export const LIVE_WITHIN_HEADER = 'x-substrat-live-within';
+
+/** A subscription's narrowing, as it is carried on the header and kept on the socket. */
+export interface LiveWithin {
+  readonly entityType: string;
+  readonly entityId: string;
+  /**
+   * Set when the vertical vouched for the root (`vouchedWithin`): its stated reason, and
+   * the principal's own check is then NOT applied. Absent: the check is ANDed with the walk.
+   */
+  readonly vouched?: string;
+}
+
+/** Header-safe: a reason may carry any character, and a header value may not. */
+export function encodeLiveWithin(within: LiveWithin): string {
+  return encodeURIComponent(JSON.stringify(within));
+}
+
+/**
+ * Read a narrowing back — from the header, or from a socket's attachment. `undefined`
+ * for a value that is not one, so the caller can refuse it rather than open the feed
+ * wider than was asked: a malformed narrowing is never read as "no narrowing".
+ */
+export function readLiveWithin(value: unknown): LiveWithin | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const w = value as Partial<Record<keyof LiveWithin, unknown>>;
+  if (typeof w.entityType !== 'string' || w.entityType === '') return undefined;
+  if (typeof w.entityId !== 'string' || w.entityId === '') return undefined;
+  if (w.vouched !== undefined && (typeof w.vouched !== 'string' || w.vouched.trim() === '')) return undefined;
+  return {
+    entityType: w.entityType,
+    entityId: w.entityId,
+    ...(w.vouched !== undefined ? { vouched: w.vouched } : {}),
+  };
+}
+
+/**
+ * What `subscribe`'s `within` argument asks for, as the narrowing the scope keeps.
+ *
+ * Only two shapes are accepted: a value `vouchedWithin` built, and a plain `EntityRef`.
+ * Anything else throws — in particular an object that LOOKS vouched (`{ entity, because }`)
+ * but was not built by `vouchedWithin`: read as a plain ref it has no type or id, and the
+ * only other reading would drop the principal's check on the caller's say-so.
+ */
+export function liveWithinOf(within: EntityRef | VouchedWithin | undefined): LiveWithin | undefined {
+  if (within === undefined) return undefined;
+  if (isVouchedWithin(within)) {
+    return { entityType: within.entity.entityType, entityId: within.entity.entityId, vouched: within.because };
+  }
+  const plain = readLiveWithin(within);
+  if (!plain || 'vouched' in (within as object)) {
+    throw substratError(
+      'validation_failed',
+      'live reads: `within` must be an EntityRef, or a value built by vouchedWithin()',
+    );
+  }
+  return { entityType: plain.entityType, entityId: plain.entityId };
+}
+
+/** `readLiveWithin` over the header's encoding. */
+export function decodeLiveWithin(header: string): LiveWithin | undefined {
+  try {
+    return readLiveWithin(JSON.parse(decodeURIComponent(header)));
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Set on every refusal this surface returns, so a client can tell "no push here, poll"
@@ -83,6 +157,8 @@ export interface LiveSubscription {
   readonly scopeId: ScopeId;
   /** When the subscription was accepted (ISO 8601) — for the roster read, and for logs. */
   readonly since: string;
+  /** The root the feed is narrowed to (#1853). Absent on an unnarrowed one, and on every socket opened before it existed. */
+  readonly within?: LiveWithin;
 }
 
 /**
@@ -101,11 +177,16 @@ export function readSubscription(attachment: unknown): LiveSubscription | null {
   if (typeof a.tenantId !== 'string' || a.tenantId === '') return null;
   if (typeof a.scopeId !== 'string' || a.scopeId === '') return null;
   if (typeof a.since !== 'string') return null;
+  // Present but unreadable is NOT "unnarrowed": that would widen the feed past what was
+  // asked for, and a vouched one past anything the principal could read.
+  const within = a.within === undefined ? undefined : readLiveWithin(a.within);
+  if (a.within !== undefined && !within) return null;
   return {
     principal: a.principal as PrincipalId,
     tenantId: a.tenantId as TenantId,
     scopeId: a.scopeId as ScopeId,
     since: a.since,
+    ...(within ? { within } : {}),
   };
 }
 

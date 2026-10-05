@@ -23,7 +23,7 @@ import {
   testMod,
   verticalEventsContractSuite,
 } from '@substrat-run/contract-tests';
-import { crossVerticalHealth, runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
+import { crossVerticalHealth, INERT_SCOPE_REASON, runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
@@ -349,6 +349,28 @@ describe('the cross-vertical far ends refuse a scope this deployment does not se
     await expect(crm.hostFor().exportedEventsLocal(t, p, read)).resolves.toMatchObject({ paused: null, events: [] });
     expect((await board.hostFor().importStateLocal(t, c)).consumes.length).toBeGreaterThan(0);
     await expect(board.hostFor().importEventsLocal(t, c, batch)).resolves.toMatchObject({ stale: false });
+  });
+
+  // #2004 on the CP-less door: no directory to say the scope is a copy, so the scope's own
+  // classification (`is_copy`, which the platform's flagged restore sets) is what pauses it.
+  it('pauses a delivery into a copy it serves, with nothing run and the watermark unmoved (#2004)', async () => {
+    const copy = scopeId.parse(ulid());
+    await board.hostFor().restoreScopeLocal(copy, await board.hostFor().exportScopeLocal(c), {
+      sourceScopeId: c,
+      markCopy: { kind: 'preview', forkedFrom: c },
+    });
+    const cursorOf = async (s: ScopeId) => (await board.hostFor().importStateLocal(t, s)).cursors[0]?.cursor ?? null;
+    const at = await cursorOf(copy);
+    const next = { ...batch, after: at, next: eventId.parse(ulid()) };
+    await expect(board.hostFor().importEventsLocal(t, copy, next)).resolves.toMatchObject({
+      delivered: 0,
+      stale: false,
+      paused: { reason: INERT_SCOPE_REASON },
+    });
+    expect(await cursorOf(copy)).toBe(at);
+    // The twin: the scope it was copied from takes the same batch, and its watermark moves.
+    await expect(board.hostFor().importEventsLocal(t, c, next)).resolves.toMatchObject({ paused: null, stale: false });
+    expect(await cursorOf(c)).toBe(next.next);
   });
 
   it('refuses a scope it never provisioned — each of the three verbs', async () => {
@@ -958,8 +980,9 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
       );
     const before = await roles();
     const e = await crm.hostFor().projectRolesLocal(u, s, [CRM_OWNER]).then(() => undefined, (x: unknown) => x);
-    // Across the Durable Object boundary the error's code survives only in its message.
-    expect(String((e as Error).message)).toContain('Substrat.conflict');
+    // The code crosses the Durable Object boundary as data (#113), and the sentence as written.
+    expect(errorCodeOf(e)).toBe('conflict');
+    expect(String((e as Error).message)).toMatch(/^applyProjection refused: /);
     expect(String((e as Error).message)).toContain(t);
     expect(String((e as Error).message)).toContain(u);
     expect(await receiptOf(s)).toBe(t);

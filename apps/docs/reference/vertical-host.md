@@ -53,11 +53,11 @@ omit the tenant ID; handle `undefined` if the hook must support them.
 
 - **Generic routes** — `export`, `restore`, `bookmarks`, `migrations`, `rewind`, `snapshot`,
   `delete-scope`, `tables`, `tables/:table`, `query`, `history`, `facets`, `cause`,
-  `effects`, `invocation`, `dead-letters`, `lifecycle-flow`, `denials`, `denials/summary`, `capabilities`, `platform-requests`,
+  `effects`, `invocation`, `dead-letters`, `lifecycle-flow`, `operation-series`, `denials`, `denials/summary`, `capabilities`, `platform-requests`,
   `platform-requests/history`,
   `platform-requests/settle` — pure delegations to your scope host, owned entirely by the
   package. The table, query, denial and event reads (`tables`, `tables/:table`, `query`,
-  `denials`, `denials/summary`, `capabilities`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`, `lifecycle-flow`) are how the
+  `denials`, `denials/summary`, `capabilities`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`, `lifecycle-flow`, `operation-series`) are how the
   control plane answers those questions for a *hosted* vertical, whose scope it cannot
   open itself: the transport delegates the read here, then records the K-24 access row
   for it as if it had served the read (see
@@ -270,6 +270,24 @@ The route does not decide what a subscriber hears. The scope checks every frame 
 `liveTargets` read permission your module declares, on that frame's entity, so subscribing
 grants nothing. `path` moves the route; the gate moves with it. `demos/ticket0` is the worked
 reference.
+
+### Narrowing a feed to one entity
+
+`subscriber` may also return `within`, an `EntityRef`. The feed then carries only frames about
+that entity and what hangs beneath it through declared parent edges (what `ctx.link` and
+`ctx.relink` write), the same walk a permission check makes. The principal's own check still
+runs on every frame, so `within` can only take frames away. A screen watching one record
+passes it to stop hearing the rest of the scope.
+
+A subscriber with no principal of its own, such as a visitor holding a session token, can be
+given a feed the **vertical vouches for**: `within: vouchedWithin(entity, { because })`, from
+`@substrat-run/kernel`. The principal's check is then not applied. The walk from each changed
+row to `entity` is the whole filter, and each frame is a bare nudge (`{ kind: 'nudge', id, at }`)
+that names no event type and no entity. Call it only after your own code has proven the
+caller may watch `entity`, and root it at an entity whose subtree holds only what that caller
+may see. A plain object of the same shape is refused: `vouchedWithin` is the only way in.
+ticket0's widget does this (`harness/widget-surface.ts`), rooted at the visitor's session,
+under which the desk links exactly the public messages the visitor can read.
 
 ## `requestConnectUrl(request)`
 

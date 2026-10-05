@@ -52,6 +52,8 @@ export type {
   FreshnessRegistration,
   FreshnessReport,
   LiveChange,
+  LiveFrame,
+  LiveNudge,
   LiveReadSurface,
   LiveUpgradeRequest,
   OperationEntitlement,
@@ -121,6 +123,9 @@ export {
   EMITTED_REPORT_CAP,
   /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
   isUpgradeRequest,
+  isVouchedWithin,
+  vouchedWithin,
+  type VouchedWithin,
 } from './scope-host.js';
 export {
   /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
@@ -164,7 +169,7 @@ export {
 } from './permission-checker.js';
 export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
-export { createTupleEvaluator, tenantCoverage } from './permission-eval.js';
+export { ancestorsWithin, createTupleEvaluator, reachesWithin, tenantCoverage } from './permission-eval.js';
 export type {
   PermissionTupleReader,
   TenantDirectoryReader,
@@ -308,7 +313,7 @@ export type {
 export { moduleMigrations } from './module-migrations.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
-export { createUlid, ulid, ulidCeiling, ulidTime, type UlidMint } from './ulid.js';
+export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { assertNoSpineReference, assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export {
@@ -505,6 +510,7 @@ export {
   type ImpersonationRow,
 } from './impersonation.js';
 export { readLifecycleFlow } from './lifecycle-flow.js';
+export { OPERATION_SERIES_ID_SLACK_MS, operationSeriesQuery, readOperationSeries } from './operation-series.js';
 export {
   REFUSALS_DDL,
   REFUSALS_INDEX,
@@ -555,7 +561,23 @@ export {
 export {
   JOB_RUN_DDL,
   JOB_RUN_PATCH_SQL,
+  JOB_RUN_CLAIM_SQL,
+  JOB_RUN_RENEW_SQL,
+  JOB_RUN_BEGIN_SQL,
+  JOB_RUN_MISS_SQL,
+  JOB_RUN_MISS_SETTLE_SQL,
+  admissionMissOutcome,
   JOB_STEP_RECORD_SQL,
+  JOB_LEASE_MS,
+  JOB_LEASE_MIN_MS,
+  JOB_LEASE_ENTRY_MARGIN,
+  JOB_ADMISSION_MISS_MAX,
+  JOB_ADMISSION_BACKOFF_BASE_MS,
+  JOB_ADMISSION_BACKOFF_MAX_MS,
+  JOB_LEASE_TOO_SHORT_NOTE,
+  admissionBackoffMs,
+  JOB_LEASE_EXPIRED_NOTE,
+  assertLeaseMs,
   JOB_DRIVE_LIMIT,
   JOB_DRIVE_SCAN_MAX,
   JOB_RUN_LIST_LIMIT,
@@ -579,6 +601,8 @@ export type {
   JobPassOutcome,
   JobPassResult,
   JobRun,
+  JobRegistration,
+  JobRunClaim,
   JobRunFilter,
   JobRunKey,
   JobRunPatch,
@@ -740,6 +764,7 @@ export {
 export {
   VERTICAL_EVENTS_DDL,
   EXPORT_HOPS_SQL,
+  emptyImportResult,
   IMPORT_CURSORS_SQL,
   IMPORT_CURSOR_OF_SQL,
   IMPORT_CURSOR_ADVANCE_SQL,

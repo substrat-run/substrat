@@ -85,8 +85,7 @@ failure).
 
 ## Deliberately out of scope
 
-Real-time delivery — replies arrive by polling, and `widget.js` says so; the right answer is a
-WebSocket on the scope's own Durable Object, which is platform work. From the concept: SLA
-timers and escalation policies, phone/SMS/social channels, multilingual answering, routing
-beyond assignment and round-robin, satisfaction analytics beyond storing the score, knowledge
-bases in Notion or Confluence, a public help centre, billing, and any marketplace listing.
+From the concept: SLA timers and escalation policies, phone/SMS/social channels, multilingual
+answering, routing beyond assignment and round-robin, satisfaction analytics beyond storing the
+score, knowledge bases in Notion or Confluence, a public help centre, billing, and any
+marketplace listing.

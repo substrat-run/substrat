@@ -16,6 +16,24 @@ import type { SwitchSql } from './system-switch.js';
  * An unknown source (`sourceScopeId` or `destScopeId` absent) counts as a copy: a load that cannot
  * say where the dump came from cannot show it is a return. Only a control plane that predates the
  * field sends a restore with no source.
+ *
+ * Two kinds of state are decided here without a rule in the load, because the load never sees
+ * the part that holds the power (#2004):
+ *
+ * - **Staff impersonation sessions (K-42).** `_substrat_impersonations` is a DIRECTORY table on
+ *   both adapters, never a scope table, so no dump carries a session and a copy holds none. The
+ *   session's power is checked at the door, against the (tenant, scope) the session names
+ *   (`assertSessionUsable`), so a live session opened on the source is refused at every copy of
+ *   it and still honoured at the source after a return. What a copy does carry is the history:
+ *   the impersonation stamps on the rows the session wrote, as the source recorded them.
+ * - **Cross-vertical import cursors (#1705).** `_substrat_import_cursors` and `_substrat_imports`
+ *   are carried as they are, on a copy and on a return. A cursor is written in the same
+ *   transaction as the import handlers' writes, so it describes the data it sits beside, and the
+ *   journal is what dedupes a re-delivery. Reset either and the data would be handed events whose
+ *   effects it already holds. The power to consume lives in the delivery, not the cursor: the
+ *   sweep visits primary scopes only (`isPrimaryScope`), and `deliverToPeer` into a copy answers
+ *   `paused` with nothing run and the watermark unmoved. The producer keeps no record of a
+ *   consumer's position, so a copy's cursor acknowledges nothing at the source either.
  */
 export const isCopyLoad = (destScopeId: string | undefined, sourceScopeId: string | undefined): boolean =>
   destScopeId === undefined || sourceScopeId !== destScopeId;

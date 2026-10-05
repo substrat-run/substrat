@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { platformActorId, tenantId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, tenantId } from '@substrat-run/contracts';
 import { ulid, type SqlValue } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import type { D1TenantStores } from '../src/d1.js';
@@ -70,11 +70,24 @@ describe('per-tenant relational store (cloudflare host)', () => {
     expect(ledger.every((r) => r.kind === 'relational')).toBe(true);
   });
 
-  it('fails closed for an unknown tenant, before any Cloudflare call', async () => {
+  it('fails closed for an unknown tenant, before any Cloudflare call, typed not_found (#113)', async () => {
     const { host, created } = await world();
-    await expect(
-      host.provisionTenantStore(staff, { tenantId: tenantId.parse(ulid()), vertical: 'auth', binding: 'AUTH_DB' }),
-    ).rejects.toThrow(/unknown tenant/);
+    const refusal = await host
+      .provisionTenantStore(staff, { tenantId: tenantId.parse(ulid()), vertical: 'auth', binding: 'AUTH_DB' })
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(refusal)).toBe('not_found');
+    expect((refusal as Error).message).toMatch(/unknown tenant/);
+    expect(created).toHaveLength(0);
+  });
+
+  it('fails closed for a non-active tenant, typed conflict (#113)', async () => {
+    const { host, t, created } = await world();
+    await host.admin.setTenantStatus(staff, t, 'suspended');
+    const refusal = await host
+      .provisionTenantStore(staff, { tenantId: t, vertical: 'auth', binding: 'AUTH_DB' })
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(refusal)).toBe('conflict');
+    expect((refusal as Error).message).toMatch(/non-active tenant \(status: suspended\)/);
     expect(created).toHaveLength(0);
   });
 

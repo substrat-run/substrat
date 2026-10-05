@@ -115,6 +115,7 @@ export const API = apiCatalogFrom(SERVED, {
   'ticket0/widget-start': { tag: 'Widget', description: 'Anonymous, or verified by an HMAC the host site’s server computed. Opens a session, not a conversation — the first message does that.' },
   'ticket0/widget-post': { tag: 'Widget' },
   'ticket0/widget-thread': { tag: 'Widget', description: 'Public messages only — a separate read, never a flag.' },
+  'ticket0/widget-watch': { tag: 'Widget', description: 'Proves a session token before the widget’s live feed opens.' },
 
   'ticket0/my-conversations': { tag: 'Portal', description: 'A proof walk, never a filter on contact id.' },
   'ticket0/my-messages': { tag: 'Portal' },

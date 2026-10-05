@@ -1,4 +1,4 @@
-import type { AppHealthRow, AppMetricsView, AppRow, ConnectorCallsBucket, ReleaseMarker, TeamTrafficSeries, TrafficBucket } from './api';
+import type { AppHealthRow, AppMetricsView, AppRow, BusinessVolumeRow, ConnectorCallsBucket, ReleaseMarker, TeamTrafficSeries, TrafficBucket } from './api';
 import { fleetRows, type FleetRow } from './fleet-rows';
 
 /**
@@ -87,6 +87,35 @@ export function pulseConnectorRows(
       buckets,
     };
   });
+}
+
+/**
+ * The business outcomes Pulse shows by default (#1750): a move that opens a record (out of
+ * the initial state) or ends one (into a terminal state) — "conversations opened and
+ * resolved, deals closed". Every other countable move sits behind "Show all moves".
+ */
+export const isBusinessOutcome = (row: BusinessVolumeRow): boolean => row.terminal || row.fromInitial;
+
+/**
+ * A business row's name. The model carries no display names for entities or states, so the
+ * ids are the words, with their separators read as spaces: an outcome reads as the record
+ * and where it ended up ("conversation resolved"), any other move as the edge it is.
+ */
+export function businessLabel(row: BusinessVolumeRow): string {
+  const words = (id: string) => id.replace(/[-_]+/g, ' ');
+  return isBusinessOutcome(row) ? `${words(row.entityType)} ${words(row.state)}` : `${words(row.entityType)} → ${words(row.state)}`;
+}
+
+/**
+ * A business row's change against yesterday (#1750), as the column reads it: a percentage
+ * when yesterday had moves, `new` when only today did, and nothing when neither did — a
+ * percentage of zero is not a number anyone should be shown.
+ */
+export function businessChange(today: number, yesterday: number): { text: string; tone: 'up' | 'down' | 'flat' } | null {
+  if (yesterday === 0) return today === 0 ? null : { text: 'new', tone: 'up' };
+  const pct = Math.round(((today - yesterday) / yesterday) * 100);
+  if (pct === 0) return { text: '±0%', tone: 'flat' };
+  return { text: `${pct > 0 ? '+' : '−'}${Math.abs(pct)}%`, tone: pct > 0 ? 'up' : 'down' };
 }
 
 /** One sparkline, as the design draws it: a line through each bucket's middle and the area under it. */

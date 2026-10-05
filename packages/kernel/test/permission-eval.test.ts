@@ -9,7 +9,9 @@ import {
   type RoleDefinition,
 } from '@substrat-run/contracts';
 import {
+  ancestorsWithin,
   createTupleEvaluator,
+  reachesWithin,
   tenantCoverage,
   type PermissionTupleReader,
   type TenantDirectoryReader,
@@ -512,5 +514,56 @@ describe('tenantCoverage (#1184) — `covers` at the tenant node, without yieldi
       for (const required of asks) answers.add(tenantCoverage(directoryFor({ ...world, roles: ROLES }), T, ALICE, required).covered);
     }
     expect([...answers].sort()).toEqual([false, true]);
+  });
+});
+
+/**
+ * #1853: the walk reads each distinct node once, however many paths lead to it. A ticket0
+ * public message sits under its conversation AND under every widget session on it, and each
+ * session sits under the same conversation — so without the dedupe, the conversation (and
+ * everything above it) was expanded once per session: 2,001 reads for one message under
+ * 1,000 sessions. A live fan-out pays this per committed row.
+ */
+describe('the entity walk reads each distinct node once (#1853)', () => {
+  const NOW = '2026-01-01T00:00:00.000Z';
+  function messageUnder(sessions: number) {
+    const rows = [row('message:m', 'parent', 'conversation:c'), row('conversation:c', 'parent', 'contact:k')];
+    for (let i = 0; i < sessions; i++) {
+      rows.push(row('message:m', 'parent', `widgetSession:s${i}`), row(`widgetSession:s${i}`, 'parent', 'conversation:c'));
+    }
+    let reads = 0;
+    const scope = {
+      parents: (object: string) => {
+        reads += 1;
+        return rows.filter((r) => r.subject === object);
+      },
+    };
+    return { rows, scope, reads: () => reads };
+  }
+  const m = { entityType: 'message', entityId: 'm' };
+
+  it('one read per distinct node, with one session and with a thousand', async () => {
+    for (const sessions of [1, 1000]) {
+      const world = messageUnder(sessions);
+      const up = await ancestorsWithin(world.scope, m, NOW);
+      // The message, its conversation, the contact above it, and each session.
+      expect(up.size).toBe(sessions + 3);
+      // Linear in distinct nodes: no node is read twice, the conversation included.
+      expect(world.reads()).toBe(up.size);
+    }
+  });
+
+  it('answers what it answered before: every root a path reaches, and nothing else', async () => {
+    const world = messageUnder(1000);
+    const up = await ancestorsWithin(world.scope, m, NOW);
+    expect(up.has('widgetSession:s999')).toBe(true);
+    expect(up.has('contact:k')).toBe(true);
+    expect(up.has('widgetSession:s1000')).toBe(false);
+    expect(await reachesWithin(world.scope, m, { entityType: 'contact', entityId: 'k' }, NOW)).toBe(true);
+    // And a grant on the shared ancestor still decides a check through any of the paths.
+    const checker = createTupleEvaluator(
+      readerFor({ scope: [...world.rows, row(`principal:${ALICE}`, 'granted:todo:read', 'contact:k')] }),
+    );
+    expect((await checker.check(alice, TODO_READ, NODE, m)).allowed).toBe(true);
   });
 });

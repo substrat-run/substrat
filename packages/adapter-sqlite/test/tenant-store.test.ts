@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
-import { platformActorId, tenantId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -88,15 +88,29 @@ describe('per-tenant relational store (pure adapter)', () => {
     expect(authDb.ref).not.toBe(auditDb.ref);
   });
 
-  it('fails closed for an unknown tenant', async () => {
+  it('fails closed for an unknown tenant, typed not_found (#113)', async () => {
     const { host, staff } = await world();
-    await expect(
-      host.provisionTenantStore(staff, {
+    const refusal = await host
+      .provisionTenantStore(staff, {
         tenantId: tenantId.parse(ulid()),
         vertical: 'auth',
         binding: 'AUTH_DB',
-      }),
-    ).rejects.toThrow(/unknown tenant/);
+      })
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(refusal)).toBe('not_found');
+    expect((refusal as Error).message).toMatch(/unknown tenant/);
+  });
+
+  it('fails closed for a non-active tenant, typed conflict (#113)', async () => {
+    const { host, staff, a, b } = await world();
+    await host.admin.setTenantStatus(staff, a, 'suspended');
+    const refusal = await host
+      .provisionTenantStore(staff, { tenantId: a, vertical: 'auth', binding: 'AUTH_DB' })
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(refusal)).toBe('conflict');
+    expect((refusal as Error).message).toMatch(/non-active tenant \(status: suspended\)/);
+    // The twin: an active tenant beside it provisions.
+    await expect(host.provisionTenantStore(staff, { tenantId: b, vertical: 'auth', binding: 'AUTH_DB' })).resolves.toBeDefined();
   });
 
   it('exposes the ledger via admin.listTenantStores, narrowed by tenant and vertical', async () => {

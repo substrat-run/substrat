@@ -1235,7 +1235,8 @@
         "additionalProperties": false
       },
       "parents": [
-        "conversation"
+        "conversation",
+        "widgetSession"
       ],
       "erasable": [
         "body_html",

@@ -198,10 +198,20 @@ describe('the emitted document', () => {
 
   // Declared in the taxonomy so #129 and #130 add no vocabulary, but nothing raises
   // them yet — and documenting a failure that cannot occur is worse than documenting none.
-  it('does not document failures nothing can raise yet', () => {
+  it('does not document a failure this operation cannot raise', () => {
+    // No `concurrency` declared, so no `If-Match` can be sent and no 412 can come back.
     const responses = doc.paths['/api/op/callout/create-customer'].post.responses;
     expect(responses['412']).toBeUndefined();
-    expect(responses['429']).toBeUndefined();
+  });
+
+  it('documents the 429 every hosted request can meet, with the headers it backs off by (#130)', () => {
+    const responses = doc.paths['/api/op/callout/create-customer'].post.responses;
+    expect(responses['429']).toEqual({ $ref: '#/components/responses/RateLimited' });
+    expect(Object.keys(doc.components.responses.RateLimited.headers)).toEqual([
+      'Retry-After',
+      'RateLimit',
+      'RateLimit-Policy',
+    ]);
   });
 
   it('stays byte-identical across builds, so api-diff can gate it', () => {

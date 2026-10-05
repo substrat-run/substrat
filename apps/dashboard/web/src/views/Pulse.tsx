@@ -7,12 +7,14 @@ import {
   type AppMetricsView,
   type AppOverlays,
   type AppRow,
+  type BusinessVolumeRow,
+  type BusinessVolumesView,
   type ConnectorCallsView,
   type OverlayMarker,
   type ReleaseMarker,
   type TeamTrafficSeries,
 } from '../lib/api';
-import { DEV_MOCK, MOCK_APP_METRICS, MOCK_APP_OVERLAYS, MOCK_FLEET_HEALTH, MOCK_TEAM_TRAFFIC } from '../lib/mock';
+import { DEV_MOCK, MOCK_APP_METRICS, MOCK_APP_OVERLAYS, MOCK_BUSINESS_VOLUMES, MOCK_FLEET_HEALTH, MOCK_TEAM_TRAFFIC } from '../lib/mock';
 import { MOCK_PULSE_MARKERS } from '../lib/mock-pulse';
 import { navigate, obsPath, teamPath } from '../lib/router';
 import { dragWindow, type ObsQuery } from '../lib/observability-query';
@@ -24,7 +26,10 @@ import {
   AXIS_RIGHT,
   PULSE_GRID,
   bucketSpans,
+  businessChange,
+  businessLabel,
   deployPills,
+  isBusinessOutcome,
   errorBarsPath,
   metricLinePath,
   pulseAppRows,
@@ -50,8 +55,10 @@ import { AppSchedules } from './AppSchedules';
  * markers are per-app facts; the team series carries none, and drawing one app's across
  * every row would claim instants the others never had) and its Schedules and freshness.
  *
- * Connector calls come from a separate tenant-scoped read, so a slow analytics source
- * does not hold the app rows. Business volumes still await the time-bucketed facet read.
+ * Connector calls and business volumes come from their own tenant-scoped reads, so a slow
+ * analytics source or a busy outbox does not hold the app rows. A business row is a move a
+ * running version's declared lifecycle lets the outbox count exactly (#1750): today against
+ * yesterday, and its series on the same clock.
  */
 
 /** The ranges the plane answers — capped at 72h, so the design's 7 and 30 days are 3 days here. */
@@ -118,6 +125,9 @@ export function Pulse({
   const [metrics, setMetrics] = useState<AppMetricsView | null | undefined>(undefined);
   const [connectorCalls, setConnectorCalls] = useState<ConnectorCallsView | null>(null);
   const [connectorError, setConnectorError] = useState(false);
+  const [business, setBusiness] = useState<BusinessVolumesView | null>(null);
+  const [businessError, setBusinessError] = useState(false);
+  const [allMoves, setAllMoves] = useState(false);
   const prefs = useOverlayPrefs();
 
   useEffect(() => {
@@ -194,6 +204,20 @@ export function Pulse({
 
   useEffect(() => {
     let live = true;
+    setBusiness(null);
+    setBusinessError(false);
+    if (DEV_MOCK) {
+      setBusiness(scopeId ? { ...MOCK_BUSINESS_VOLUMES, rows: MOCK_BUSINESS_VOLUMES.rows.filter((r) => r.scopeId === scopeId) } : MOCK_BUSINESS_VOLUMES);
+      return;
+    }
+    api.businessVolumes({ ...(scopeId ? { scopeIds: [scopeId] } : {}), hours, ...requestWindow })
+      .then((v) => live && setBusiness(v))
+      .catch(() => live && setBusinessError(true));
+    return () => { live = false; };
+  }, [scopeId, hours, nonce, requestWindow?.since, requestWindow?.until]);
+
+  useEffect(() => {
+    let live = true;
     setHealth(undefined);
     setMetrics(undefined);
     if (DEV_MOCK) {
@@ -225,7 +249,11 @@ export function Pulse({
   const loading = health === undefined || metrics === undefined;
   const stamp = pulseStamp(window.to);
   const range = RANGES.find((r) => Number(r.value) === hours);
-  const bins = series?.bucketMinutes ? (series.bucketMinutes < 60 ? `${series.bucketMinutes} min` : `${series.bucketMinutes / 60} h`) : null;
+  const bins = series?.bucketMinutes ? binLabel(series.bucketMinutes) : null;
+  const notYet = (business?.apps ?? []).filter((a) => a.unavailable === 'not-yet-available');
+  const outcomes = (business?.rows ?? []).filter(isBusinessOutcome);
+  const businessShown = allMoves ? (business?.rows ?? []) : outcomes;
+  const hiddenMoves = (business?.rows.length ?? 0) - outcomes.length;
 
   // Drag-to-zoom on the sparkline column: any row's sparkline is a handle on the card's
   // one clock. A drag shorter than a click leaves the row's own link to work.
@@ -376,6 +404,26 @@ export function Pulse({
             <ConnectorLine key={row.provider} row={row} bucketMinutes={connectorBucketMinutes} window={window} handle={handle} />
           )) : <Note>No connector calls in this window.</Note>
         ) : <Note>{connectorError ? 'Connector calls are unavailable right now.' : 'Connector call analytics are not available on this plane.'}</Note>}
+        <SectionHead cells={['Business today', 'Today', 'Yesterday', 'Change', business ? `Moves per ${binLabel(business.bucketMinutes)}` : 'Moves per bucket', '']} />
+        {businessError ? <Note>Business volumes are unavailable right now.</Note> : business === null ? <Note>Reading business volumes…</Note> : businessShown.length ? (
+          businessShown.map((row) => (
+            <BusinessLine
+              key={`${row.scopeId}:${row.entityType}:${row.state}:${row.fromInitial}`}
+              row={row}
+              app={oneApp ? null : (apps.find((a) => a.app_scope_id === row.scopeId)?.name ?? null)}
+              bucketMinutes={business.bucketMinutes}
+              window={window}
+              handle={handle}
+            />
+          ))
+        ) : <Note>{business.rows.length ? 'No app declares a move that opens or ends a record.' : 'No app declares a lifecycle whose moves can be counted yet.'}</Note>}
+        {hiddenMoves > 0 && (
+          <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+            <Button variant="ghost" size="sm" aria-pressed={allMoves} onClick={() => setAllMoves((v) => !v)}>
+              {allMoves ? 'Show outcomes only' : `Show all moves (${hiddenMoves} more)`}
+            </Button>
+          </div>
+        )}
         {scopeId && (
           <AppSchedules
             key={`${scopeId}:${nonce}`}
@@ -394,6 +442,12 @@ export function Pulse({
       {oneApp && !!overlays?.incompleteSources?.length && <Footnote>Partial change history: {overlays.incompleteSources.join(', ')}. Older records may be omitted.</Footnote>}
       {oneApp && overlayError && <Footnote>Change overlays are unavailable. Traffic is still shown.</Footnote>}
       {oneApp && !!overlays?.unavailableSources?.length && <Footnote>Unavailable change sources: {overlays.unavailableSources.join(', ')}.</Footnote>}
+      {notYet.length > 0 && (
+        <Footnote>
+          Business volumes need a re-push of{' '}
+          {notYet.map((a) => apps.find((x) => x.app_scope_id === a.scopeId)?.name ?? a.scopeId).join(', ')}.
+        </Footnote>
+      )}
       {metrics === null && <Footnote>Per-app requests, errors and p95 could not be read.</Footnote>}
       {metrics && !metrics.available && <Footnote>Per-app requests, errors and p95 are not measured on this platform.</Footnote>}
       <Footnote>
@@ -403,6 +457,9 @@ export function Pulse({
     </Page>
   );
 }
+
+/** A bin's width as the card's headers say it. */
+const binLabel = (minutes: number) => (minutes < 60 ? `${minutes} min` : `${minutes / 60} h`);
 
 const caps: CSSProperties = { fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)' };
 const num: CSSProperties = { textAlign: 'right', paddingRight: 16, fontFamily: 'var(--font-mono)', fontSize: 13 };
@@ -571,6 +628,50 @@ function ConnectorLine({ row, bucketMinutes, window, handle }: {
         </svg>
       </span>
       <span role="cell" style={{ textAlign: 'right', fontSize: 12 }}><a href={teamPath('/integrations')} style={{ color: 'var(--text-link)' }}>Integrations →</a></span>
+    </div>
+  );
+}
+
+/** One declared move on the clock: what moved where, today against yesterday, and its series. */
+function BusinessLine({ row, app, bucketMinutes, window, handle }: {
+  row: BusinessVolumeRow;
+  /** The app's name, shown when the card covers every app. */
+  app: string | null;
+  bucketMinutes: number;
+  window: { from: string; to: string };
+  handle: Handle;
+}) {
+  const spans = bucketSpans(row.buckets, bucketMinutes, window);
+  const counts = row.buckets.map((b) => b.count);
+  const paths = sparkPaths(counts, spans, Math.max(1, ...counts) * 1.1);
+  const change = businessChange(row.today, row.yesterday);
+  const tone = change?.tone === 'up' ? 'var(--status-success-fg)' : change?.tone === 'down' ? 'var(--status-danger-fg)' : 'var(--text-secondary)';
+  return (
+    <div role="row" style={{ display: 'grid', gridTemplateColumns: PULSE_GRID, alignItems: 'center', padding: '0 16px', height: 48, borderTop: '1px solid var(--border-subtle)' }}>
+      <span role="cell" style={{ minWidth: 0 }} title={`Counted from ${row.operations.join(', ')}`}>
+        <span style={{ display: 'block', fontSize: 13.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {businessLabel(row)}
+        </span>
+        {app && <span style={{ display: 'block', fontSize: 12, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{app}</span>}
+      </span>
+      <span role="cell" style={num}>{compact(row.today)}</span>
+      <span role="cell" style={{ ...num, color: 'var(--text-secondary)' }}>{compact(row.yesterday)}</span>
+      <span role="cell" style={{ ...num, color: tone }}>{change?.text ?? '—'}</span>
+      <span
+        role="cell"
+        data-pulse-axis
+        aria-label={`${row.entityType} moved to ${row.state} per bucket: ${row.buckets.map((b) => `${b.start}: ${b.count}`).join(', ')}`}
+        {...handle}
+        style={{ position: 'relative', display: 'block', height: 32, touchAction: 'none' }}
+      >
+        <svg viewBox="0 0 480 32" preserveAspectRatio="none" aria-hidden style={{ position: 'absolute', inset: 0, width: '100%', height: 32, display: 'block' }}>
+          {paths && <path d={paths.area} fill="var(--surface-inset)" stroke="none" />}
+          {paths && <path d={paths.line} fill="none" stroke="var(--text-secondary)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />}
+        </svg>
+      </span>
+      <span role="cell" style={{ textAlign: 'right', fontSize: 12 }}>
+        <a href={teamPath(obsPath({ app: row.scopeId, view: 'map', entity: row.entityType, period: '24h' }))} style={{ color: 'var(--text-link)' }}>Process →</a>
+      </span>
     </div>
   );
 }

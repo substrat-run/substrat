@@ -331,3 +331,11 @@ budget (how many runs, how many passes per tick) before a single real walk has s
 budget should be. The first real consumer is what settles both, and there is not one yet — the
 nearest candidate shape, a file-bearing source, is itself still unproven (#1578). Until then
 the driver is called by whoever started the run.
+
+Two callers of the driver on one scope at once are safe (#2034). A vertical can drive its own
+runs beside the scope sweeper, and a second driver can join later. Each run is **claimed** before
+its pass: one compare-and-set that holds only while the run is still due, and that writes a lease
+in the same statement. Only the claim's winner invokes the handler. Each step boundary renews the
+lease. A pass that dies leaves its run due again at the lease's expiry, and the next drive takes
+it over, counting the silent pass as a failed attempt. A job states how long its pass can go
+between two steps (`registerJob`'s `leaseMs`, default fifteen minutes).

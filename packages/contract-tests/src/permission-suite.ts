@@ -1327,11 +1327,13 @@ export function permissionContractSuite(
       // succeeded and produced a tuple pointing at a phantom — granting nothing,
       // appearing in no listing, and reading in the permission diff as if access
       // had been conferred.
-      await expect(host.admin.addMember(staff, t1, kim, ghost)).rejects.toThrow(/unknown org/);
-      await expect(
+      await expectRefusal(host.admin.addMember(staff, t1, kim, ghost), 'not_found', /unknown org/);
+      await expectRefusal(
         host.admin.grantToOrg(staff, ghost, PERM_READ, { tenantId: t1, scopeId: s1 }),
-      ).rejects.toThrow(/unknown org/);
-      await expect(host.admin.listMembers(staff, t1, ghost)).rejects.toThrow(/unknown org/);
+        'not_found',
+        /unknown org/,
+      );
+      await expectRefusal(host.admin.listMembers(staff, t1, ghost), 'not_found', /unknown org/);
     });
 
     it("scopes orgs by tenant — another tenant's org reads as absent", async () => {
@@ -1364,9 +1366,11 @@ export function permissionContractSuite(
       await host.admin.createOrg(staff, { id: first, tenantId: t1, slug: 'taken', name: 'One' });
       // Fails closed rather than swallowing it: a silent no-op here would report
       // success while not creating the org the caller asked for.
-      await expect(
+      await expectRefusal(
         host.admin.createOrg(staff, { id: second, tenantId: t1, slug: 'taken', name: 'Two' }),
-      ).rejects.toThrow(/already taken/);
+        'conflict',
+        /already taken/,
+      );
       expect(await host.admin.getOrg(staff, t1, second)).toBeUndefined();
     });
 
@@ -1559,12 +1563,16 @@ export function permissionContractSuite(
         topology: 'tenant-bound',
         tenantId: t1,
       });
-      await expect(
+      await expectRefusal(
         host.admin.listIdentityMemberships(staff, 'oidc:members-bound', 'z'),
-      ).rejects.toThrow(/tenant-bound/);
-      await expect(
+        'forbidden',
+        /tenant-bound/,
+      );
+      await expectRefusal(
         host.admin.listIdentityMemberships(staff, 'oidc:members-unregistered', 'z'),
-      ).rejects.toThrow(/not registered/);
+        'not_found',
+        /not registered/,
+      );
     });
 
     it('is idempotent on an identical pool registration, and refuses a conflicting one', async () => {
@@ -1631,7 +1639,7 @@ export function permissionContractSuite(
       // ...but a genuine collision must not be swallowed. The old INSERT OR IGNORE
       // silently dropped it and left the second person resolving as the first,
       // without even an audit row to show it happened.
-      await expect(link(impostor)).rejects.toThrow(/already bound/);
+      await expectRefusal(link(impostor), 'conflict', /already bound/);
       expect((await host.admin.resolveIdentity(t1, 'oidc:collide', 'collide'))?.principal).toBe(
         first,
       );

@@ -56,6 +56,8 @@ import {
   invocationEventsInput,
   deadLettersInput,
   lifecycleFlowInput,
+  operationSeriesCount,
+  operationSeriesInput,
   type DelegatedReadMethod,
   type DelegatedReadInput,
   delegatedReadParams,
@@ -1199,6 +1201,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/configure$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/import-cursor$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/lifecycle-flow$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/operation-series$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/owner-claim$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/query$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/reap$/, pin: 'path' },
@@ -3808,6 +3811,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           colocated: () => c.var.admin.lifecycleFlow(c.get('actor'), tenantId, scopeId, input),
         },
         (r) => r.observation.events,
+      ),
+    );
+  });
+
+  // #1750: calls per (entity, operation) per bucket over the scope's outbox — Pulse's
+  // business volumes. POST, because the pairs travel in the body; delegated like every
+  // outbox read, and logged with the window and the entity types only.
+  app.post('/tenants/:tenantId/scopes/:scopeId/operation-series', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = operationSeriesInput.parse(await c.req.json());
+    const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    return c.json(
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'operationSeries', input,
+        {
+          viaVertical: (v) => v.operationSeries(scopeId, input),
+          colocated: () => c.var.admin.operationSeries(c.get('actor'), tenantId, scopeId, input),
+        },
+        operationSeriesCount,
       ),
     );
   });

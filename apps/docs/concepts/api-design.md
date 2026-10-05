@@ -448,6 +448,51 @@ Two smaller rules follow from the same reasoning:
   is ever sent, and the protection switches itself off silently in exactly the deployment
   shape where two editors are most likely.
 
+### 7c. Too many requests is a 429 you can back off by
+
+Every request to a hosted vertical is counted before it reaches the vertical, against two
+budgets:
+
+- **per credential**: a bearer token, else the browser's session cookie, else the client
+  address. 1200 requests a minute by default.
+- **per client address**: 6000 a minute by default, so that one caller rotating made-up
+  tokens is still one caller.
+
+Both budgets belong to one app install. Another tenant's traffic, or your own traffic to a
+different install, never draws on them. The defaults are set so a normal client never meets
+them; they exist for the frontend with a polling loop that never stops.
+
+Over a budget, the answer is a `429` problem with `code: "rate_limited"`. It carries:
+
+- `Retry-After`: the seconds to wait. This is the one header a client must obey.
+- `RateLimit`: which budget refused.
+- `RateLimit-Policy`: every budget the request was counted against. Successful responses
+  carry it too.
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/problem+json
+Retry-After: 60
+RateLimit: "credential";r=0;t=60
+RateLimit-Policy: "credential";q=1200;w=60, "ip";q=6000;w=60
+
+{ "type": "https://substrat.net/errors/rate-limited", "status": 429,
+  "code": "rate_limited", "retryAfter": 60, "detail": "Too many requests for this credential: …" }
+```
+
+A refusal is answered before your vertical runs, so your own CORS policy never sees it. It
+carries its own instead: it reflects the requesting origin, allows credentials, and exposes
+the three headers above, so a cross-origin page reads the 429 and its delay rather than a
+network error. That policy applies to the refusal only, whose body is the caller's own rate
+state; every other response keeps your vertical's CORS. A preflight (`OPTIONS`) is never
+counted, so it always reaches your vertical's preflight handler. The client address is counted
+first, and a request it refuses is not counted against the credential.
+
+A self-hosted vertical with no router in front mounts the same check itself:
+`app.use('*', rateLimit({ nodeOf, clientIp }))` from `@substrat-run/vertical-host`, first on
+the app. It counts in memory, so the budget holds for one process, and it holds at most
+50 000 counters (`maxKeys`), forgetting the oldest first.
+
 ### 8. Surfaces only grow
 
 Once shipped, an operation's surface evolves **additively**:
@@ -506,5 +551,6 @@ Two things follow that are worth stating, because they cut against instinct:
 | Errors | RFC 9457 problem+json, closed codes | Shipped; `about:blank` where a status is all we have |
 | Clock | `ctx.now()` | Shipped; `new Date()` in module code is a lint error |
 | Idempotent writes | `Idempotency-Key`, response replayed for 24h | Shipped; honoured on every write, `idempotency: false` to opt out |
+| Rate limits | per credential and per client address, per install; 429 + `Retry-After` | Shipped at the router; `rateLimit()` for a self-hosted node host |
 | Evolution | additive only | Convention + review |
 | API document | generated, CI-diffed | Shipped |

@@ -83,6 +83,8 @@ import {
   invocationEventsInput,
   deadLettersInput,
   lifecycleFlowInput,
+  operationSeriesShape,
+  operationSeriesWindow,
   type EntityHistoryInput,
   type EventFacetInput,
   type EventCauseInput,
@@ -94,6 +96,8 @@ import {
   type DeadLetter,
   type LifecycleFlowInput,
   type LifecycleFlowResult,
+  type OperationSeriesInput,
+  type OperationSeriesResult,
   type CauseChain,
   type EventFacetResult,
   type HistoryEntry,
@@ -289,6 +293,7 @@ export interface VerticalScopeHost {
   invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents>;
   deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>>;
   lifecycleFlowLocal(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult>;
+  operationSeriesLocal(scopeId: ScopeId, input: OperationSeriesInput): Promise<OperationSeriesResult>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -1247,6 +1252,13 @@ export function mountPlatformSurface<Env extends object>(
     return c.json(await deps.hostFor(c.env).lifecycleFlowLocal(scopeId, input));
   });
 
+  // #1750: business volumes per bucket over a scope THIS vertical holds — Pulse's
+  // business rows. POST, like the process map's read, because the pairs travel in the body.
+  app.post('/internal/operation-series', async (c) => {
+    const { scopeId, ...input } = operationSeriesShape.extend({ scopeId: scopeIdOf }).superRefine(operationSeriesWindow).parse(await c.req.json());
+    return c.json(await deps.hostFor(c.env).operationSeriesLocal(scopeId, input));
+  });
+
   app.post('/internal/query', async (c) => {
     const body = queryScopeInput.extend({ scopeId: scopeIdOf }).parse(await c.req.json());
     try {
@@ -1833,8 +1845,10 @@ export function mountPlatformSurface<Env extends object>(
         stack: err instanceof Error ? err.stack : undefined,
       });
     }
-    const { body } = problemOf(seen, err, c.req.path);
-    return c.body(JSON.stringify(body), seen.status, {
+    // The returned status, not `seen`'s: a scope-gate refusal answers the neutral 404 whatever a
+    // mapper decided (#113).
+    const { status, body } = problemOf(seen, err, c.req.path);
+    return c.body(JSON.stringify(body), status, {
       'content-type': PROBLEM_CONTENT_TYPE,
     });
   });
@@ -1855,6 +1869,7 @@ export * from './live.js';
 // platform-call check every deployed vertical mounts.
 export * from './invocation-log.js';
 export * from './routed-node.js';
+export * from './rate-limit.js';
 export * from './platform-call.js';
 export * from './scope-sweep-host.js';
 export {

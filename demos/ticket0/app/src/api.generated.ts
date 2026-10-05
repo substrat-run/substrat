@@ -1022,6 +1022,13 @@ export interface Ticket0Client {
   widgetThread(input: { sessionId: string; token: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
+   * Prove a widget session token, for the session’s live feed
+   *
+   * `GET /widget/sessions/{sessionId}/watch` — `ticket0/widget-watch`
+   */
+  widgetWatch(input: { sessionId: string; token: string }): Promise<{ sessionId: string }>;
+
+  /**
    * The entity tags this client is holding, keyed `entityType:id` (#129).
    *
    * Populated from every concurrency-checked response and sent back as
@@ -1360,6 +1367,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/widget/sessions", "POST", input, undefined),
     widgetThread: (input: Args) =>
       page(`/widget/sessions/${encodeURIComponent(String(input.sessionId))}/messages`, "GET", undefined, omit(input, ["sessionId"])),
+    widgetWatch: (input: Args) =>
+      send(`/widget/sessions/${encodeURIComponent(String(input.sessionId))}/watch`, "GET", undefined, omit(input, ["sessionId"])),
     versions,
     follow: async (next: string) => {
       // The link names the API's OWN origin, which under a dev proxy is not the origin
