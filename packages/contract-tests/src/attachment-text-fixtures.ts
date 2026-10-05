@@ -1168,7 +1168,7 @@ export const ATTACHMENT_TEXT_FIXTURES: readonly AttachmentTextFixture[] = [
     body: bytesOf(DOCX_BASE64),
     status: 'indexed',
     extractor: 'docx',
-    finds: ['consumer price', 'indexation clause', 'återbetalning'],
+    finds: ['indexation clause', 'consumer price', 'återbetalning'],
   },
   {
     name: 'xlsx',
@@ -1260,3 +1260,97 @@ export const ATTACHMENT_TEXT_FIXTURES: readonly AttachmentTextFixture[] = [
     extractor: 'docx',
   },
 ];
+
+// -- hostile PDFs -------------------------------------------------------------------------
+
+declare const CompressionStream: new (format: 'deflate') => unknown;
+declare const Blob: new (parts: Uint8Array[]) => { stream(): { pipeThrough(t: unknown): unknown } };
+declare const Response: new (body: unknown) => { arrayBuffer(): Promise<ArrayBuffer> };
+
+const zlib = async (data: Uint8Array): Promise<Uint8Array> =>
+  new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+
+const join = (...parts: (string | Uint8Array)[]): Uint8Array => {
+  const bytes = parts.map((p) => (typeof p === 'string' ? utf8(p) : p));
+  const out = new Uint8Array(bytes.reduce((n, b) => n + b.length, 0));
+  let at = 0;
+  for (const b of bytes) {
+    out.set(b, at);
+    at += b.length;
+  }
+  return out;
+};
+
+/** A one-page PDF drawing `content`, laid out as a plain writer would, plus where its xref sits. */
+function onePagePdf(content: Uint8Array, opts: { contentDict?: string; trailer?: string; catalog?: string } = {}) {
+  const objects = [
+    opts.catalog ?? '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+    join(`<< /Length ${content.length} ${opts.contentDict ?? ''} >>\nstream\n`, content, '\nendstream'),
+  ];
+  const parts: Uint8Array[] = [utf8('%PDF-1.7\n')];
+  const offsets: number[] = [];
+  let at = parts[0]!.length;
+  for (const [i, body] of objects.entries()) {
+    const obj = join(`${i + 1} 0 obj\n`, body, '\nendobj\n');
+    offsets.push(at);
+    parts.push(obj);
+    at += obj.length;
+  }
+  const rows = offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('');
+  parts.push(utf8(`xref\n0 6\n0000000000 65535 f \n${rows}trailer\n<< /Size 6 /Root 1 0 R ${opts.trailer ?? ''} >>\nstartxref\n${at}\n%%EOF\n`));
+  return { bytes: join(...parts), xrefAt: at, contentAt: offsets[4]! };
+}
+
+/** A hostile file, the outcome it must end in, and — where it fails — the reason it gives. */
+export interface HostilePdf extends AttachmentTextFixture {
+  readonly status: 'failed' | 'empty';
+  readonly detail?: string;
+}
+
+/**
+ * PDFs built to hurt the parser (#1575): each must end `failed` or `empty` within the
+ * extraction budget, with its upload untouched. Built at run time — the bomb is a few KiB
+ * deflated and 9 MiB inflated, which no fixture file should hold — through the runtime's own
+ * `CompressionStream`, so they are built the same way on node and in workerd.
+ */
+export async function hostilePdfs(): Promise<HostilePdf[]> {
+  const pdf = (name: string, body: Uint8Array, status: 'failed' | 'empty', detail?: string): HostilePdf => ({
+    name,
+    filename: `${name.replace(/\W+/g, '-')}.pdf`,
+    contentType: 'application/pdf',
+    body,
+    status,
+    extractor: 'pdf',
+    ...(detail === undefined ? {} : { detail }),
+  });
+  const text = utf8('BT /F1 9 Tf (hostile marmoset text) Tj ET');
+  const plain = onePagePdf(text, { trailer: '/Prev 0000000000' });
+  const latin1 = (b: Uint8Array): string => Array.from(b, (c) => String.fromCharCode(c)).join('');
+  const bytesOfLatin1 = (s: string): Uint8Array => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  return [
+    pdf(
+      'a deflate bomb',
+      onePagePdf(await zlib(new Uint8Array(9 * 1024 * 1024)), { contentDict: '/Filter /FlateDecode' }).bytes,
+      'failed',
+      'a PDF stream decodes past the extraction bound',
+    ),
+    pdf(
+      'a cross-reference chain that loops',
+      // The placeholder is exactly as wide as what replaces it, so no offset moves.
+      bytesOfLatin1(latin1(plain.bytes).replace('/Prev 0000000000', `/Prev ${String(plain.xrefAt).padStart(10, '0')}`)),
+      'failed',
+      'the PDF cross-reference chain loops',
+    ),
+    pdf('nesting a hundred thousand deep', onePagePdf(utf8(`BT /F1 9 Tf ${'['.repeat(100_000)} (marmoset) Tj ET`)).bytes, 'empty'),
+    pdf('a file cut off inside its content', plain.bytes.subarray(0, plain.contentAt + 40), 'empty'),
+    pdf(
+      'a billion declared objects',
+      join(plain.bytes.subarray(0, plain.xrefAt), `xref\n0 1000000000\n0000000000 65535 f \ntrailer\n<< /Root 1 0 R >>\nstartxref\n${plain.xrefAt}\n%%EOF\n`),
+      'failed',
+      'the PDF declares more than 200000 objects',
+    ),
+  ];
+}

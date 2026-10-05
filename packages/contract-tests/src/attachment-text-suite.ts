@@ -64,7 +64,7 @@ import {
 } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { permMod } from './modules.js';
-import { ATTACHMENT_TEXT_FIXTURES } from './attachment-text-fixtures.js';
+import { ATTACHMENT_TEXT_FIXTURES, hostilePdfs, type HostilePdf } from './attachment-text-fixtures.js';
 
 const PERM_READ = permissionKey.parse('perm:read');
 const PERM_USE = permissionKey.parse('perm:use');
@@ -216,6 +216,38 @@ export function attachmentTextContractSuite(
         const [hit] = await search(s, editor, 'zephyr');
         expect(hit).toEqual(uploaded.get('plain text'));
         await expect(search(s, editor, 'z')).rejects.toBeInstanceOf(SearchTermTooShort);
+      });
+    });
+
+    describe('hostile PDFs end failed or empty, promptly — and the upload stands', () => {
+      let s: ScopeId;
+      let files: HostilePdf[];
+      const uploaded = new Map<string, AttachmentRecord>();
+
+      beforeAll(async () => {
+        files = await hostilePdfs();
+        s = await newScope();
+        for (const f of files) uploaded.set(f.name, await upload(s, item('hostile'), f.filename, f.contentType, f.body));
+        const t0 = Date.now();
+        await extract(s);
+        // Every one inside the one drive's budget, not merely eventually.
+        expect(Date.now() - t0).toBeLessThan(DEFAULT_ATTACHMENT_TEXT_BOUNDS.timeoutMs);
+      }, SETUP_HEAVY_MS);
+
+      it('each is recorded with the outcome it earns, saying why where it failed', async () => {
+        for (const f of files) {
+          const state = await stateOf(s, uploaded.get(f.name)!.id);
+          expect(state, f.name).toMatchObject({ status: f.status, extractor: 'pdf', bytes: null });
+          if (f.detail !== undefined) expect(state!.detail, f.name).toBe(f.detail);
+        }
+        expect(await search(s, editor, 'marmoset')).toEqual([]);
+      });
+
+      it('each upload is whole: the bytes open as they were sent', async () => {
+        const opener = await host.attachments(editor, t, s);
+        for (const f of files) {
+          expect((await opener.open(uploaded.get(f.name)!.id))?.body.length, f.name).toBe(f.body.length);
+        }
       });
     });
 
