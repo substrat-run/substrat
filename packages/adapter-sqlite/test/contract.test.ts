@@ -33,6 +33,7 @@ import {
   idempotencyContractSuite,
   listContractSuite,
   inputParseContractSuite,
+  entityStateContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
@@ -368,6 +369,20 @@ timelineContractSuite('adapter-sqlite', async () => {
 listContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-list-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #119: archive and trash. The DEFAULT checker: what is pinned is that the kernel checks the
+// DECLARED key, which an allow-all checker would pass whether it was checked or not.
+entityStateContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-state-'));
+  const host = new SqliteScopeHost({ dir });
   return {
     host,
     cleanup: async () => {

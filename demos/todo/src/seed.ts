@@ -21,7 +21,7 @@ import {
   type RoleDefinition,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { TODO_PERM, todoManifest } from './manifest.js';
+import { OWNER_GRANTS, TODO_PERM, todoManifest } from './manifest.js';
 import { todoModule } from './module.js';
 
 export const MODULES = [todoModule];
@@ -92,22 +92,36 @@ export async function seed(host: ScopeHost): Promise<World> {
       const stub = await host.getScope(p.principal, t, s);
       await stub.invoke('todo/join', { email: p.email, displayName: p.name });
 
-      // The bootstrap grant: rights over your OWN entity, which your lists then
-      // hang off. Nobody holds these scope-wide, which is what keeps one
-      // member's lists unreachable to another.
-      for (const permission of [TODO_PERM.listManage, TODO_PERM.listContribute]) {
-        await host.admin.grant(world.staff, {
-          principalId: p.principal,
-          permission,
-          node: { tenantId: t, scopeId: s },
-          entity: { entityType: 'owner', entityId: p.principal },
-          grantedBy: p.principal,
-        });
-      }
+      await grantOwner(host, world.staff, { tenantId: t, scopeId: s }, p.principal);
     }
   }
 
   return world;
+}
+
+/**
+ * The bootstrap grant: rights over your OWN entity, which your lists then hang off. Nobody
+ * holds these scope-wide, which is what keeps one member's lists unreachable to another.
+ *
+ * The keys are `OWNER_GRANTS` — the same list `PERMISSIONS.md` shows a reviewer — so a key
+ * added there reaches every person seeded afterwards. A world seeded before a key was added
+ * does not have it: delete the demo's `.data` to reseed.
+ */
+export async function grantOwner(
+  host: ScopeHost,
+  staff: ReturnType<typeof platformActorId.parse>,
+  node: { tenantId: ReturnType<typeof tenantId.parse>; scopeId: ReturnType<typeof scopeId.parse> },
+  principal: ReturnType<typeof principalId.parse>,
+): Promise<void> {
+  for (const permission of OWNER_GRANTS) {
+    await host.admin.grant(staff, {
+      principalId: principal,
+      permission,
+      node,
+      entity: { entityType: 'owner', entityId: principal },
+      grantedBy: principal,
+    });
+  }
 }
 
 /**

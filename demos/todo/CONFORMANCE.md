@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-todo
 
-14 operations · 10 narrowed checks · 7 conformance pairs driven
+19 operations · 14 narrowed checks · 11 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,20 +37,24 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**7 pairs driven** across 7 of this package's 10 narrowed checks.
+**11 pairs driven** across 11 of this package's 14 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
 | `todo/add-item` | `list:contribute` | `list`, id from `listId` | `list` |
+| `todo/archive-list` | `list:archive` | `list`, id from `listId` | `list` |
 | `todo/delete-item` | `list:manage` | `list`, resolved in the handler | — see §3 — |
 | `todo/delete-list` | `list:manage` | `list`, id from `listId` | `list` |
 | `todo/list-items` | `list:contribute` | `list`, id from `listId` | `list` |
 | `todo/list-shares` | `list:manage` | `list`, id from `listId` | `list` |
 | `todo/rename-list` | `list:manage` | `list`, id from `listId` | `list` |
+| `todo/restore-list` | `list:trash` | `list`, id from `listId` | `list` |
 | `todo/revoke-share` | `list:manage` | `list`, resolved in the handler | — see §3 — |
 | `todo/search-list-items` | `list:contribute` | `list`, id from `listId` | `list` |
 | `todo/set-item-done` | `list:contribute` | `list`, resolved in the handler | — see §3 — |
 | `todo/share-list` | `list:manage` | `list`, id from `listId` | `list` |
+| `todo/trash-list` | `list:trash` | `list`, id from `listId` | `list` |
+| `todo/unarchive-list` | `list:archive` | `list`, id from `listId` | `list` |
 
 ## 3. Not driven, by name
 
@@ -85,7 +89,7 @@ as an assessment rather than as silence.
 | Kind | Count | Operations |
 | --- | --- | --- |
 | Node-level check | 2 | `todo/create-list`, `todo/join` |
-| Per-entity proof walk (`narrows`) | 2 | `todo/my-lists`, `todo/search-items` |
+| Per-entity proof walk (`narrows`) | 3 | `todo/my-lists`, `todo/search-items`, `todo/trashed-lists` |
 
 ## 5. Not covered by this artifact
 

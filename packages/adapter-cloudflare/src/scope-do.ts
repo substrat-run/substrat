@@ -277,6 +277,12 @@ import {
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
   createEntityEdgeVerbs,
+  createEntityStateVerbs,
+  createTrashedReads,
+  searchStateWhere,
+  uncheckedView,
+  addStatePlans,
+  type EntityStatePlan,
   exchangeCapability,
   guardSecrets,
   mintBecomeCapability,
@@ -1140,6 +1146,8 @@ export function defineScopeDO(
     private readonly searchPlans = new Map<string, SearchIndexPlan>();
     /** #811: the paged lists modules declare, by entity type. Same one-owner rule. */
     private readonly listPlans = new Map<string, ListIndexPlan>();
+    /** #119: entity type → its archive/trash plan, from every registered module. */
+    private readonly statePlans = new Map<string, EntityStatePlan>();
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     /**
@@ -1265,8 +1273,10 @@ export function defineScopeDO(
         }
         this.searchPlans.set(plan.entityType, plan);
       }
+      // #119: the archive/trash plans, refusing a second owner of one entity type.
+      addStatePlans(this.statePlans, manifest.id, manifest.entityStates, manifest.permissions);
       // #811: the list indexes `lists` declares, same placement and same reason.
-      for (const plan of listIndexPlans(manifest.id, manifest.lists)) {
+      for (const plan of listIndexPlans(manifest.id, manifest.lists, manifest.entityStates)) {
         const existing = this.listPlans.get(plan.entityType);
         if (existing) {
           throw new Error(
@@ -6573,6 +6583,7 @@ export function defineScopeDO(
       const relations = this.relations;
       const searchPlans = this.searchPlans;
       const listPlans = this.listPlans;
+      const statePlans = this.statePlans;
       const sql = this.sql;
       const mintEventId = this.mintEventId;
       /**
@@ -6814,6 +6825,8 @@ export function defineScopeDO(
             plan,
             searchMatchExpression(term, plan.tokenizer),
             searchLimit(options?.limit),
+            // #119: active rows unless the archive is asked for.
+            searchStateWhere(statePlans, entityType, options?.view),
           );
           return (sql.exec(q.sql, ...q.params).toArray() as unknown as { id: string; rank: number }[]).map(
             (row) => ({ entityType, id: row.id, rank: row.rank }),
@@ -6835,6 +6848,8 @@ export function defineScopeDO(
             order: params.order,
             cursor: params.cursor,
             filters: params.filters,
+            // #119: the bin is the checked reader's, never this one's.
+            view: uncheckedView('ctx.page', entityType, params.view),
           });
           const rows = sql.exec(q.sql, ...q.params).toArray() as unknown as Record<
             string,
@@ -6920,6 +6935,23 @@ export function defineScopeDO(
           now: at,
           emit: (event) => writeEvent(event, 'kernel'),
           assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+        }),
+        // #119: archive and trash — the pure adapter's wiring, over the raw spine seam.
+        ...createEntityStateVerbs({
+          sql: doSpineSql(sql),
+          plans: statePlans,
+          now: at,
+          check: runCheck,
+          emit: (event) => writeEvent(event, 'kernel'),
+          assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+        }),
+        ...createTrashedReads({
+          query: (q, params) =>
+            sql.exec(q, ...(params as SqlStorageValue[])).toArray() as unknown as Record<string, unknown>[],
+          listPlans,
+          searchPlans,
+          statePlans,
+          check: runCheck,
         }),
         entitlement: async (key: string): Promise<EntitlementView | null> => {
           const held = await entitlementReader().listEntitlements(tenantId);

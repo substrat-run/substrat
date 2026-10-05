@@ -205,6 +205,11 @@ export interface PageParams {
   readonly filters?: Readonly<Record<string, unknown>>;
   /** Also count the filtered set — the declaration's `total`, passed through. */
   readonly total?: boolean;
+  /**
+   * Which rows of an archivable entity (#119): `active` when unset, `archived` to read the
+   * archive. Refused for an entity that declares no archive. The bin is `ctx.pageTrashed`.
+   */
+  readonly view?: 'active' | 'archived';
 }
 
 /**
@@ -529,6 +534,54 @@ export interface OperationContext {
    * ```
    */
   relink(child: EntityRef, from: EntityRef, to: EntityRef): void;
+  /**
+   * Archive an entity (#119): hide it from active views and keep it. Only an entity whose
+   * model declares `archive: { permission }` can be archived.
+   *
+   * - **Checks the declared archive key on the entity itself** — unlike `link`, because the
+   *   key is declared beside the entity and an operation archiving under another key is the
+   *   one mistake this exists to make impossible. A denial throws `PermissionDenied`.
+   * - Only an `active` entity: anything else is `conflict` (`reason: 'invalid_transition'`);
+   *   a missing one is `not_found`.
+   * - Stamps `_substrat_archived_at` with the operation's instant and emits one kernel-authored
+   *   `entity.archived`, with the actor and the authorization chain on its envelope.
+   * - Transactional with the operation, like every other write.
+   */
+  archive(entity: EntityRef): Promise<void>;
+  /** Bring an archived entity back to active. Same key, refusals and recording as `archive`. */
+  unarchive(entity: EntityRef): Promise<void>;
+  /**
+   * Move an entity to the trash (#119) — a reversible delete. Needs `trash: { permission }`
+   * on the entity, and checks that key on it. An `active` or an `archived` entity may be
+   * trashed; the archive survives the trip, so a `restore` returns it to the archive.
+   * Emits `entity.trashed`.
+   */
+  trash(entity: EntityRef): Promise<void>;
+  /**
+   * Take an entity out of the trash, back to the state it was trashed from — `archived` if it
+   * was archived, `active` otherwise. Checks the trash key. Emits `entity.restored`, whose
+   * payload's `to` says which.
+   */
+  restore(entity: EntityRef): Promise<void>;
+  /**
+   * The state of one archivable/trashable entity — `active`, `archived` or `trashed` — or
+   * `null` when the row does not exist. What a get-by-id reads before deciding what to answer:
+   * the kernel filters the reads it composes, never a handler's own `SELECT`.
+   *
+   * Checks no permission, like every read on `ctx`. Throws `validation_failed` for an entity
+   * type that declares neither.
+   */
+  entityState(entity: EntityRef): 'active' | 'archived' | 'trashed' | null;
+  /**
+   * One page of the TRASH of a declared entity (#119) — `ctx.page` over the trashed rows,
+   * with the declared trash key checked on EACH row inside the kernel, so a handler cannot
+   * forget it. A row the caller may not see in the bin is left out, which can make a page
+   * short; the walk still ends only at a null `nextCursor`. No `total`: a count over rows the
+   * caller cannot see would disclose them.
+   */
+  pageTrashed<T>(entityType: string, params: Omit<PageParams, 'view' | 'total'>): Promise<Page<T>>;
+  /** `ctx.search` over the trash, the declared trash key checked per hit (#119). */
+  searchTrashed(entityType: string, term: string, options?: Omit<SearchOptions, 'view'>): Promise<SearchHit[]>;
   /**
    * Narrow a permission the CALLER ALREADY HOLDS onto one entity — how an app
    * expresses user-initiated sharing.

@@ -14,6 +14,7 @@ import {
   isKernelAuthoredEventType,
 } from '../src/kernel-events.js';
 import { ENTITY_LINKED, ENTITY_RELINKED } from '../src/permission.js';
+import { ENTITY_ARCHIVED, ENTITY_RESTORED, ENTITY_TRASHED, ENTITY_UNARCHIVED } from '../src/entity-state.js';
 
 const codeOf = (fn: () => void): string | undefined => {
   try {
@@ -25,7 +26,7 @@ const codeOf = (fn: () => void): string | undefined => {
 };
 
 describe('kernel-authored event types (#1864)', () => {
-  it('is exactly the seven types the kernel writes', () => {
+  it('is exactly the eleven types the kernel writes', () => {
     expect([...KERNEL_AUTHORED_EVENT_TYPES].sort()).toEqual(
       [
         ATTACHMENT_ADDED,
@@ -35,6 +36,11 @@ describe('kernel-authored event types (#1864)', () => {
         CAPABILITY_REVOKED,
         ENTITY_LINKED,
         ENTITY_RELINKED,
+        // #119: an archive or trash move is the kernel's record, never module code's.
+        ENTITY_ARCHIVED,
+        ENTITY_UNARCHIVED,
+        ENTITY_TRASHED,
+        ENTITY_RESTORED,
       ].sort(),
     );
   });
@@ -72,7 +78,7 @@ describe('kernel-authored event types (#1864)', () => {
         // a frozen array throws in strict mode; either way, nothing may have changed
       }
     }
-    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(7);
+    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(11);
     for (const type of [ENTITY_RELINKED, ENTITY_LINKED, CAPABILITY_MINTED, ATTACHMENT_ADDED]) {
       expect(codeOf(() => assertModuleEmittableType(type))).toBe('validation_failed');
       expect(isKernelAuthoredEventType(type)).toBe(true);

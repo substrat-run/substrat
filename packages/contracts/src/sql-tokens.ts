@@ -24,10 +24,18 @@ export interface SqlToken {
   readonly text: string;
   /** A quoted identifier or string literal — never read as a keyword. */
   readonly quoted: boolean;
+  /**
+   * One of `( ) , = ;`, present only when asked for (`{ punctuation: true }`). A reader that
+   * has to know WHERE in a statement a name sits — an assignment target, a column list — needs
+   * these; one that only looks for table names does not, and gets the same tokens it always did.
+   */
+  readonly punct?: true;
 }
 
+const PUNCTUATION = new Set(['(', ')', ',', '=', ';']);
+
 /** The statement text as identifier and keyword tokens, comments and whitespace dropped. */
-export function tokenizeSql(sql: string): SqlToken[] {
+export function tokenizeSql(sql: string, options?: { readonly punctuation?: boolean }): SqlToken[] {
   const tokens: SqlToken[] = [];
   const n = sql.length;
   let i = 0;
@@ -125,6 +133,7 @@ export function tokenizeSql(sql: string): SqlToken[] {
     }
     // Whitespace does not break a dotted name (`main . tbl` is one); anything else does.
     if (!/\s/.test(c)) continues = false;
+    if (options?.punctuation && PUNCTUATION.has(c)) tokens.push({ text: c, quoted: false, punct: true });
     i += 1;
   }
   return tokens;

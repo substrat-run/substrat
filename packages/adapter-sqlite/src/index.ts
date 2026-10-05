@@ -222,6 +222,13 @@ import {
   capabilityTokenHash,
   createCapabilityVerbs,
   createEntityEdgeVerbs,
+  createEntityStateVerbs,
+  createTrashedReads,
+  searchStateWhere,
+  uncheckedView,
+  addStatePlans,
+  entityStateMigrations,
+  type EntityStatePlan,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
   mintBecomeCapability,
@@ -1585,6 +1592,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly searchPlans = new Map<string, SearchIndexPlan>();
   /** #811: the paged lists modules declare, by entity type. Same one-owner rule as search. */
   private readonly listPlans = new Map<string, ListIndexPlan>();
+  /** #119: entity type → its archive/trash plan, from every registered module. */
+  private readonly statePlans = new Map<string, EntityStatePlan>();
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
   /** operation name → who binds it: the owning module, its entitlementKey and its declared
@@ -2561,14 +2570,17 @@ export class SqliteScopeHost implements ScopeHost {
     // #811: the list indexes this module's `lists` declare — same placement and
     // the same reason as the search indexes above: appended AFTER the module's
     // own migrations, so `CREATE INDEX` names a table that exists.
-    const listMigrations = listIndexMigrations(manifest.id, manifest.lists);
-    for (const m of listMigrations) {
+    // #119: the archive/trash columns, and the plans the verbs and the reads consult.
+    const stateMigrations = entityStateMigrations(manifest.id, manifest.entityStates);
+    const listMigrations = listIndexMigrations(manifest.id, manifest.lists, manifest.entityStates);
+    for (const m of [...stateMigrations, ...listMigrations]) {
       if (seen.has(m.version)) {
         throw new Error(`duplicate migration version in ${manifest.id}: ${m.version}`);
       }
       seen.add(m.version);
     }
-    for (const plan of listIndexPlans(manifest.id, manifest.lists)) {
+    addStatePlans(this.statePlans, manifest.id, manifest.entityStates, manifest.permissions);
+    for (const plan of listIndexPlans(manifest.id, manifest.lists, manifest.entityStates)) {
       const existing = this.listPlans.get(plan.entityType);
       if (existing) {
         throw new Error(
@@ -11110,6 +11122,7 @@ export class SqliteScopeHost implements ScopeHost {
     const relations = this.relations;
     const searchPlans = this.searchPlans;
     const listPlans = this.listPlans;
+    const statePlans = this.statePlans;
     // K-34: the checks that passed in THIS operation. The context is created per invoke
     // (see buildStub), so this accumulates one operation's authorizations; `emit` snapshots
     // whatever has passed up to that point. A system/override actor is unconditionally
@@ -11361,6 +11374,8 @@ export class SqliteScopeHost implements ScopeHost {
           plan,
           searchMatchExpression(term, plan.tokenizer),
           searchLimit(options?.limit),
+          // #119: active rows unless the archive is asked for.
+          searchStateWhere(statePlans, entityType, options?.view),
         );
         return (rt.db.prepare(q.sql).all(...q.params) as { id: string; rank: number }[]).map(
           (row) => ({ entityType, id: row.id, rank: row.rank }),
@@ -11383,6 +11398,8 @@ export class SqliteScopeHost implements ScopeHost {
           order: params.order,
           cursor: params.cursor,
           filters: params.filters,
+          // #119: the bin is the checked reader's, never this one's.
+          view: uncheckedView('ctx.page', entityType, params.view),
         });
         const rows = rt.db.prepare(q.sql).all(...(q.params as never[])) as Record<
           string,
@@ -11488,6 +11505,24 @@ export class SqliteScopeHost implements ScopeHost {
         now: at,
         emit: (event) => writeEvent(event, 'kernel'),
         assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+      }),
+      // #119: archive and trash, written once in the kernel. The raw seam, because the guarded
+      // `ctx.sql` refuses the very columns these write; the operation's own check, so the
+      // declared key's pass is one of its authorizations.
+      ...createEntityStateVerbs({
+        sql: spineSql(rt.db),
+        plans: statePlans,
+        now: at,
+        check: runCheck,
+        emit: (event) => writeEvent(event, 'kernel'),
+        assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+      }),
+      ...createTrashedReads({
+        query: (q, params) => rt.db.prepare(q).all(...(params as never[])) as Record<string, unknown>[],
+        listPlans,
+        searchPlans,
+        statePlans,
+        check: runCheck,
       }),
       // #304: the request-time entitlement read. The pure adapter is single-process, so the
       // directory is local — no projection needed; it reads `_substrat_entitlements` straight,

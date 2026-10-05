@@ -12,7 +12,7 @@
  */
 import { definePermissions, type PermissionKey } from '@substrat-run/contracts';
 import { TODO_PERMISSIONS } from '../spec/model.js';
-import { TODO_PERM } from './manifest.js';
+import { OWNER_GRANTS, TODO_PERM } from './manifest.js';
 import { MODULES, ROLES } from './seed.js';
 
 /**
@@ -26,7 +26,7 @@ import { MODULES, ROLES } from './seed.js';
  * that is not theirs.
  */
 export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
-  { entityType: 'owner', permissions: [TODO_PERM.listManage, TODO_PERM.listContribute] },
+  { entityType: 'owner', permissions: [...OWNER_GRANTS] },
   { entityType: 'list', permissions: [TODO_PERM.listContribute] },
 ];
 

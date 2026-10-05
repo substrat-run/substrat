@@ -1,5 +1,6 @@
 import { ATTACHMENT_ADDED, ATTACHMENT_REMOVED } from './attachments.js';
 import { CAPABILITY_EXERCISED, CAPABILITY_MINTED, CAPABILITY_REVOKED } from './capability.js';
+import { ENTITY_ARCHIVED, ENTITY_RESTORED, ENTITY_TRASHED, ENTITY_UNARCHIVED } from './entity-state.js';
 import { substratError } from './errors.js';
 import { ENTITY_LINKED, ENTITY_RELINKED } from './permission.js';
 
@@ -24,8 +25,12 @@ const KERNEL_AUTHORED: ReadonlySet<string> = new Set([
   CAPABILITY_EXERCISED,
   CAPABILITY_MINTED,
   CAPABILITY_REVOKED,
+  ENTITY_ARCHIVED,
   ENTITY_LINKED,
   ENTITY_RELINKED,
+  ENTITY_RESTORED,
+  ENTITY_TRASHED,
+  ENTITY_UNARCHIVED,
 ]);
 
 /** The reserved types, for readers: a frozen snapshot, not the set the guards consult. */

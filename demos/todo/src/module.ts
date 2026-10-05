@@ -61,11 +61,23 @@ function rankOrder(hits: readonly { id: string }[], rows: readonly ItemRow[]): I
 }
 
 /** The list, or a refusal — never a silent empty answer. */
-function listOrThrow(ctx: OperationContext, id: string): ListRow {
+/**
+ * The list, or `not_found` — and a list in the bin is not found either (#119).
+ *
+ * The kernel leaves binned lists out of the reads it composes; this is the read it does not
+ * compose, so it asks. A binned list is gone from everyone's point of view until it is
+ * restored, which is what makes the bin a delete. Only the permanent delete reaches into it.
+ */
+function listOrThrow(ctx: OperationContext, id: string, binned: 'refuse' | 'allow' = 'refuse'): ListRow {
   const row = ctx.sql.query<ListRow>('SELECT * FROM todo_lists WHERE id = ?', [id])[0];
-  if (!row) throw substratError('not_found', `list not found: ${id}`);
+  if (!row || (binned === 'refuse' && ctx.entityState(listRef(id)) === 'trashed')) {
+    throw substratError('not_found', `list not found: ${id}`);
+  }
   return row;
 }
+
+/** Where a list is now, as the archive and trash operations answer. */
+const stateOf = (ctx: OperationContext, id: string) => ({ id, state: ctx.entityState(listRef(id))! });
 
 /** The list an item sits on — every item permission is really the list's. */
 function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; list: ListRow } {
@@ -146,10 +158,44 @@ const operations = {
   // cannot see still moves the walk forward instead of stalling on it.
   'todo/my-lists': async (ctx, input) =>
     pageVisible(
-      (p) => ctx.page<ListRow>('list', p),
+      // #119: the kernel leaves archived and binned lists out unless the archive is asked for.
+      (p) => ctx.page<ListRow>('list', { ...p, view: input?.view }),
       input,
       async (list) => (await ctx.check(TODO_PERM.listContribute, listRef(list.id))).allowed,
     ),
+
+  /**
+   * The four moves (#119). Each is the permission check and one kernel verb, which checks the
+   * same declared key on the list again, refuses a move from the wrong state with a 409, and
+   * records the move as a kernel event. The list's items and shares are untouched by all four.
+   */
+  'todo/archive-list': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
+    await ctx.archive(listRef(input.listId));
+    return stateOf(ctx, input.listId);
+  },
+
+  'todo/unarchive-list': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
+    await ctx.unarchive(listRef(input.listId));
+    return stateOf(ctx, input.listId);
+  },
+
+  'todo/trash-list': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listTrash, listRef(input.listId)));
+    await ctx.trash(listRef(input.listId));
+    return stateOf(ctx, input.listId);
+  },
+
+  'todo/restore-list': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listTrash, listRef(input.listId)));
+    await ctx.restore(listRef(input.listId));
+    return stateOf(ctx, input.listId);
+  },
+
+  // The bin. `pageTrashed` checks `list:trash` on every list itself, so there is no per-row
+  // check here to forget — and no `pageVisible`, since the kernel already keeps the walk moving.
+  'todo/trashed-lists': async (ctx, input) => ctx.pageTrashed<ListRow>('list', { ...input }),
 
   'todo/rename-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
@@ -168,7 +214,8 @@ const operations = {
 
   'todo/delete-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
-    listOrThrow(ctx, input.listId);
+    // The permanent delete is the one way to empty the bin, so it reaches binned lists too.
+    listOrThrow(ctx, input.listId, 'allow');
     ctx.sql.exec('DELETE FROM todo_items WHERE list_id = ?', [input.listId]);
     ctx.sql.exec('DELETE FROM todo_shares WHERE list_id = ?', [input.listId]);
     ctx.sql.exec('DELETE FROM todo_lists WHERE id = ?', [input.listId]);
@@ -184,6 +231,7 @@ const operations = {
 
   'todo/list-items': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
+    listOrThrow(ctx, input.listId);
     // Keyset, not offset: the cursor is the last row's id and the walk is exclusive, so
     // an item added mid-walk cannot push a row onto a page the caller already read.
     // `ORDER BY id` alone — a ULID is creation-ordered, so the old `created_at, id`
@@ -218,6 +266,7 @@ const operations = {
    */
   'todo/search-list-items': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
+    listOrThrow(ctx, input.listId);
     const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
     const fetch = overfetch(limit);
     const hits = ctx.search('item', input.q, { limit: fetch });
@@ -272,7 +321,11 @@ const operations = {
       if (!row) continue;
       let allowed = reachable.get(row.list_id);
       if (allowed === undefined) {
-        allowed = (await ctx.check(TODO_PERM.listContribute, listRef(row.list_id))).allowed;
+        // #119: an item is searchable exactly when its list is in `my-lists` — reachable, and
+        // neither archived nor binned. The index is over items and knows nothing of lists.
+        allowed =
+          ctx.entityState(listRef(row.list_id)) === 'active' &&
+          (await ctx.check(TODO_PERM.listContribute, listRef(row.list_id))).allowed;
         reachable.set(row.list_id, allowed);
       }
       if (!allowed) continue;

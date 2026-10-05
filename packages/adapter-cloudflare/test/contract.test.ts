@@ -54,6 +54,7 @@ import {
   asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
+  entityStateContractSuite,
   permMod,
   inputParseContractSuite,
   spineGuardContractSuite,
@@ -5194,6 +5195,19 @@ listContractSuite('adapter-cloudflare', async () => {
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #119: archive and trash on the DO host — the derived ALTERs and the partial indexes meet
+// workerd's regulator here and nowhere else. The DEFAULT tuple checker, for the pure suite's
+// reason: the kernel's check of the declared key is the property under test. `stateMod` is in
+// `contractTestModules`, so the ScopeDO carries it at code time.
+entityStateContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
 });

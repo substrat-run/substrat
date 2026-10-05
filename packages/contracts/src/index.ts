@@ -57,6 +57,7 @@ export * from './ci.js';
 export * from './money.js';
 export * from './attachments.js';
 export * from './kernel-events.js';
+export * from './entity-state.js';
 export * from './model.js';
 export * from './operations.js';
 export * from './lifecycle.js';

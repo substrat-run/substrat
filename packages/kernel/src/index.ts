@@ -217,6 +217,20 @@ export type {
 } from './capability.js';
 export { createEntityEdgeVerbs } from './entity-edges.js';
 export type { EntityEdgeDeps, EntityEdgeVerbs } from './entity-edges.js';
+export {
+  addStatePlans,
+  createEntityStateVerbs,
+  entityStateMigrations,
+  entityStatePlans,
+  entityStateWhere,
+  keepTrashedVisible,
+  readEntityState,
+  stateColumnsOf,
+  statePlansByEntityType,
+} from './entity-state.js';
+export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
+export { createTrashedReads, searchStateWhere, uncheckedView } from './entity-state-reads.js';
+export type { TrashedReadDeps, TrashedReads } from './entity-state-reads.js';
 export { createAtomic } from './sub-transaction.js';
 export type { RunSub, AtomicMarks } from './sub-transaction.js';
 export {
@@ -315,7 +329,7 @@ export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
-export { assertNoSpineReference, assertNoSpineWrite, guardSpine } from './spine-guard.js';
+export { assertNoReservedColumnWrite, assertNoSpineReference, assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export {
   DO_SQL_LIMITS,
   tooManyResultColumns,

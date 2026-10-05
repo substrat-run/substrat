@@ -118,6 +118,118 @@ export function assertNoSpineWrite(sql: string): void {
     );
   }
   refuseSpineReference(referencedTablesIn(tokens), 'ctx.sql');
+  assertNoReservedColumnWrite(sql);
+}
+
+/**
+ * Refuse a statement that WRITES a `_substrat_*` column of a module's own table (#119).
+ *
+ * The kernel keeps state on module rows — `_substrat_archived_at`, `_substrat_trashed_at` —
+ * and a row's way into or out of the trash must be `ctx.trash`/`ctx.restore`, which check the
+ * declared key and emit the event. A module that could `UPDATE todo_lists SET
+ * _substrat_trashed_at = NULL` would restore without the key and without a record, which is
+ * the forgery the table rule above exists to stop, one level down.
+ *
+ * Judged by POSITION, so reading the columns stays allowed — in a `SELECT`, and in the `WHERE`
+ * of a write (`UPDATE … SET done = 1 WHERE _substrat_trashed_at IS NULL`). Refused:
+ *
+ * - an assignment target after `SET` — `UPDATE … SET`, an upsert's `DO UPDATE SET`, and a
+ *   trigger body's `UPDATE`, row-value targets `SET (a, b) = …` included;
+ * - a name in an `INSERT`/`REPLACE` column list;
+ * - any reserved name in an `ALTER TABLE` (add, rename or drop the column itself).
+ *
+ * The prefix is reserved whole, not the two names: the next kernel-owned column is covered
+ * without anyone remembering to list it here.
+ */
+export function assertNoReservedColumnWrite(sql: string): void {
+  const tokens = tokenizeSql(sql, { punctuation: true });
+  const refuse = (column: string, how: string): never => {
+    throw substratError(
+      'forbidden',
+      `ctx.sql cannot write the platform's column '${column}' (${how}). ` +
+        'Reads are fine; archive and trash go through ctx.archive / ctx.trash / ctx.restore.',
+      { reason: 'spine_write' },
+    );
+  };
+  const word = (k: number) => {
+    const t = tokens[k];
+    return t && !t.quoted && !t.punct ? t.text.toLowerCase() : undefined;
+  };
+  const isPunct = (k: number, c: string) => tokens[k]?.punct === true && tokens[k]!.text === c;
+  // Names inside one parenthesised group starting at `open`; returns the index after `)`.
+  const namesInParens = (open: number, onName: (text: string) => void): number => {
+    let depth = 0;
+    let k = open;
+    for (; k < tokens.length; k += 1) {
+      const t = tokens[k]!;
+      if (t.punct && t.text === '(') depth += 1;
+      else if (t.punct && t.text === ')') {
+        depth -= 1;
+        if (depth === 0) return k + 1;
+      } else if (!t.punct && depth === 1) onName(t.text);
+    }
+    return k;
+  };
+  const SET_ENDS = new Set(['where', 'from', 'returning', 'order', 'limit', 'end']);
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const verb = word(i);
+    if (verb === 'set') {
+      // Walk the assignment list. A target is the first thing after SET and after each
+      // comma at the list's own depth; everything else is an expression, which may read.
+      let depth = 0;
+      let expectTarget = true;
+      for (let k = i + 1; k < tokens.length; k += 1) {
+        const t = tokens[k]!;
+        if (t.punct) {
+          if (t.text === ';') break;
+          if (t.text === '(') {
+            if (depth === 0 && expectTarget) {
+              k = namesInParens(k, (name) => {
+                if (namesSpineTable(name)) refuse(name, 'SET target');
+              }) - 1;
+              expectTarget = false;
+              continue;
+            }
+            depth += 1;
+          } else if (t.text === ')') {
+            if (depth === 0) break; // the end of an enclosing group
+            depth -= 1;
+          } else if (t.text === ',' && depth === 0) {
+            expectTarget = true;
+          }
+          continue;
+        }
+        if (depth === 0 && !t.quoted && SET_ENDS.has(t.text.toLowerCase())) break;
+        if (expectTarget && depth === 0) {
+          if (namesSpineTable(t.text)) refuse(t.text, 'SET target');
+          expectTarget = false;
+        }
+      }
+      continue;
+    }
+    if (verb === 'insert' || verb === 'replace') {
+      let k = i + 1;
+      while (word(k) !== undefined && MODIFIERS[verb]!.has(word(k)!)) k += 1;
+      k += 1; // the target table
+      if (word(k) === 'as') k += 2; // an alias
+      if (isPunct(k, '(')) {
+        namesInParens(k, (name) => {
+          if (namesSpineTable(name)) refuse(name, 'INSERT column');
+        });
+      }
+      continue;
+    }
+    if (verb === 'alter') {
+      // ALTER TABLE <t> …: the table is judged above; here, every other name in the statement.
+      let k = i + 1;
+      while (word(k) !== undefined && MODIFIERS.alter!.has(word(k)!)) k += 1;
+      for (k += 1; k < tokens.length && !isPunct(k, ';'); k += 1) {
+        const t = tokens[k]!;
+        if (!t.punct && namesSpineTable(t.text)) refuse(t.text, 'ALTER TABLE');
+      }
+    }
+  }
 }
 
 /**

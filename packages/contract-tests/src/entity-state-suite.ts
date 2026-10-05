@@ -1,0 +1,396 @@
+/**
+ * Contract suite for entity archive and trash (#119): `ctx.archive`, `ctx.unarchive`,
+ * `ctx.trash`, `ctx.restore`, `ctx.entityState`, the views `ctx.page`/`ctx.search` compose,
+ * the permission-checked trashed readers, and `ctx.sql`'s refusal to write the columns.
+ *
+ * The REAL tuple checker on purpose: the property under test is that the kernel checks the
+ * DECLARED key, and an allow-all checker would pass a verb that checked nothing.
+ *
+ * Every refusal here has its positive twin beside it, so a test cannot pass by a verb that
+ * refuses everything.
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import {
+  errorCodeOf,
+  permissionKey,
+  platformActorId,
+  principalId,
+  scopeId,
+  tenantId,
+  type CountedPage,
+  type HistoryEntry,
+  type Page,
+  type PrincipalId,
+} from '@substrat-run/contracts';
+import { ulid, type ScopeHost, type ScopeStub, type SearchHit } from '@substrat-run/kernel';
+import type { ScopeHostFixture } from './scope-host-suite.js';
+import { stateMod } from './entity-state-module.js';
+
+const READ = permissionKey.parse('doc:read');
+const ARCHIVE = permissionKey.parse('doc:archive');
+const TRASH = permissionKey.parse('doc:trash');
+
+type Row = Record<string, unknown>;
+
+export function entityStateContractSuite(
+  adapterName: string,
+  makeFixture: () => Promise<ScopeHostFixture>,
+): void {
+  describe(`entity archive and trash (#119): ${adapterName}`, () => {
+    let fixture: ScopeHostFixture;
+    let host: ScopeHost;
+    const t1 = tenantId.parse(ulid());
+    const scope = scopeId.parse(ulid());
+    const staff = platformActorId.parse(ulid());
+    /** Every key, scope-wide. */
+    const alice: PrincipalId = principalId.parse(ulid());
+    /** Archive but NOT trash — the two keys are distinct, and this is who proves it. */
+    const bob: PrincipalId = principalId.parse(ulid());
+    /** Trash on ONE document only, entity-narrowed — whose bin holds that one and nothing else. */
+    const carol: PrincipalId = principalId.parse(ulid());
+    let as: Record<'alice' | 'bob' | 'carol', ScopeStub>;
+    const carolsDoc = `01CAROL${ulid().slice(7)}`;
+
+    /** A fresh document, so each case starts from `active` whatever ran before it. */
+    const doc = async (title = `doc ${ulid()}`, owner = 'o1'): Promise<string> => {
+      const id = ulid();
+      await as.alice.invoke('state/add', { id, title, owner });
+      return id;
+    };
+    const errOf = async (call: Promise<unknown>): Promise<unknown> =>
+      call.then(
+        () => {
+          throw new Error('expected a refusal, got an answer');
+        },
+        (e: unknown) => e,
+      );
+    const ids = (page: Page<Row>) => page.entries.map((r) => String(r['id']));
+    const activeIds = async () => ids(await as.alice.invoke<Page<Row>>('state/page', {}));
+    const archivedIds = async () => ids(await as.alice.invoke<Page<Row>>('state/page', { view: 'archived' }));
+    const trashedIds = async () => ids(await as.alice.invoke<Page<Row>>('state/page-trashed', {}));
+
+    beforeAll(async () => {
+      fixture = await makeFixture();
+      host = fixture.host;
+      host.registerModule(stateMod);
+      await host.admin.createTenant(staff, { id: t1, slug: 'state-tenant', name: 'State Tenant' });
+      await host.admin.grantEntitlement(staff, t1, 'state');
+      await host.admin.defineRole(staff, t1, { key: 'keeper', permissions: [READ, ARCHIVE, TRASH], source: 'vertical' });
+      await host.admin.defineRole(staff, t1, { key: 'filer', permissions: [READ, ARCHIVE], source: 'vertical' });
+      await host.admin.assignRole(staff, { principalId: alice, roleKey: 'keeper', node: { tenantId: t1, scopeId: null } });
+      await host.admin.assignRole(staff, { principalId: bob, roleKey: 'filer', node: { tenantId: t1, scopeId: null } });
+      await host.provisionScope(staff, { tenantId: t1, scopeId: scope, vertical: 'state-vertical' });
+      await host.admin.activateScope(staff, t1, scope);
+      await host.admin.grant(staff, {
+        principalId: carol,
+        permission: TRASH,
+        node: { tenantId: t1, scopeId: scope },
+        entity: { entityType: 'stdoc', entityId: carolsDoc },
+        grantedBy: alice,
+      });
+      as = {
+        alice: await host.getScope(alice, t1, scope),
+        bob: await host.getScope(bob, t1, scope),
+        carol: await host.getScope(carol, t1, scope),
+      };
+      await as.alice.invoke('state/add', { id: carolsDoc, title: 'carol owns this', owner: 'o3' });
+    });
+
+    afterAll(async () => {
+      await fixture.cleanup();
+    });
+
+    // -- transitions ---------------------------------------------------------------------
+
+    it('archives an active entity, and unarchives it back', async () => {
+      const id = await doc();
+      expect(await as.alice.invoke('state/archive', { id })).toBe('archived');
+      expect(await as.alice.invoke('state/state', { id })).toBe('archived');
+      expect(await as.alice.invoke('state/unarchive', { id })).toBe('active');
+    });
+
+    it('trashes an active entity, and restore brings it back ACTIVE', async () => {
+      const id = await doc();
+      expect(await as.alice.invoke('state/trash', { id })).toBe('trashed');
+      expect(await as.alice.invoke('state/restore', { id })).toBe('active');
+    });
+
+    it('trashes an ARCHIVED entity, and restore brings it back ARCHIVED — never silently active', async () => {
+      const id = await doc();
+      await as.alice.invoke('state/archive', { id });
+      expect(await as.alice.invoke('state/trash', { id })).toBe('trashed');
+      expect(await as.alice.invoke('state/restore', { id })).toBe('archived');
+      expect(await activeIds()).not.toContain(id);
+      expect(await archivedIds()).toContain(id);
+    });
+
+    it('answers null for a row that does not exist', async () => {
+      expect(await as.alice.invoke('state/state', { id: ulid() })).toBeNull();
+    });
+
+    // -- refusals ------------------------------------------------------------------------
+
+    const expectConflict = async (call: Promise<unknown>) => {
+      const err = await errOf(call);
+      expect(errorCodeOf(err)).toBe('conflict');
+      expect(err).toMatchObject({ extensions: { reason: 'invalid_transition' } });
+    };
+
+    it('refuses every move out of a state it does not start from', async () => {
+      const id = await doc();
+      await expectConflict(as.alice.invoke('state/unarchive', { id })); // active
+      await expectConflict(as.alice.invoke('state/restore', { id })); // active
+      await as.alice.invoke('state/archive', { id });
+      await expectConflict(as.alice.invoke('state/archive', { id })); // archived
+      await expectConflict(as.alice.invoke('state/restore', { id })); // archived, not trashed
+      await as.alice.invoke('state/trash', { id });
+      await expectConflict(as.alice.invoke('state/archive', { id })); // trashed: restore first
+      await expectConflict(as.alice.invoke('state/unarchive', { id })); // trashed
+      await expectConflict(as.alice.invoke('state/trash', { id })); // trashed
+      // …and the state is exactly what the last legal move left.
+      expect(await as.alice.invoke('state/state', { id })).toBe('trashed');
+    });
+
+    it('answers not_found for a row that does not exist, after the key check', async () => {
+      expect(errorCodeOf(await errOf(as.alice.invoke('state/archive', { id: ulid() })))).toBe('not_found');
+      expect(errorCodeOf(await errOf(as.alice.invoke('state/trash', { id: ulid() })))).toBe('not_found');
+    });
+
+    it('refuses a verb on an entity that declares no such state', async () => {
+      await as.alice.invoke('state/add', { entityType: 'stnote', id: 'N-trash', title: 'note' });
+      await as.alice.invoke('state/add', { entityType: 'stplain', id: 'P-1', title: 'plain' });
+      expect(errorCodeOf(await errOf(as.alice.invoke('state/trash', { entityType: 'stnote', id: 'N-trash' })))).toBe(
+        'validation_failed',
+      );
+      expect(
+        errorCodeOf(await errOf(as.alice.invoke('state/archive', { entityType: 'stplain', id: 'P-1' }))),
+      ).toBe('validation_failed');
+      // Positive twin: the note's declared archive works.
+      expect(await as.alice.invoke('state/archive', { entityType: 'stnote', id: 'N-trash' })).toBe('archived');
+    });
+
+    it('rolls the move back with an operation that throws after it', async () => {
+      const id = await doc();
+      expect(errOf(as.alice.invoke('state/archive-then-throw', { id }))).toBeTruthy();
+      await errOf(as.alice.invoke('state/archive-then-throw', { id }));
+      expect(await as.alice.invoke('state/state', { id })).toBe('active');
+      const events = await as.alice.invoke<HistoryEntry[]>('state/history', { id });
+      expect(events.map((e) => e.type)).not.toContain('entity.archived');
+    });
+
+    // -- the declared keys ---------------------------------------------------------------
+
+    it('checks the declared ARCHIVE key: a holder may archive', async () => {
+      const id = await doc();
+      expect(await as.bob.invoke('state/archive', { id })).toBe('archived');
+      expect(await as.bob.invoke('state/unarchive', { id })).toBe('active');
+    });
+
+    it('checks the declared TRASH key — archive authority is not trash authority', async () => {
+      const id = await doc();
+      expect(errorCodeOf(await errOf(as.bob.invoke('state/trash', { id })))).toBe('permission_denied');
+      await as.alice.invoke('state/trash', { id });
+      expect(errorCodeOf(await errOf(as.bob.invoke('state/restore', { id })))).toBe('permission_denied');
+      expect(await as.alice.invoke('state/state', { id })).toBe('trashed');
+    });
+
+    it('checks the key on THE entity: an entity-narrowed trash grant reaches that one row only', async () => {
+      const other = await doc();
+      expect(errorCodeOf(await errOf(as.carol.invoke('state/trash', { id: other })))).toBe('permission_denied');
+      // …and trash authority is not archive authority either.
+      expect(errorCodeOf(await errOf(as.carol.invoke('state/archive', { id: carolsDoc })))).toBe('permission_denied');
+      expect(await as.carol.invoke('state/trash', { id: carolsDoc })).toBe('trashed');
+      expect(await as.carol.invoke('state/restore', { id: carolsDoc })).toBe('active');
+    });
+
+    it('refuses before it reveals: a caller without the key learns nothing about a missing id', async () => {
+      expect(errorCodeOf(await errOf(as.carol.invoke('state/trash', { id: ulid() })))).toBe('permission_denied');
+    });
+
+    // -- recording -----------------------------------------------------------------------
+
+    it('records each move as a kernel event carrying who, when, from and to', async () => {
+      const id = await doc();
+      await as.alice.invoke('state/archive', { id });
+      await as.alice.invoke('state/trash', { id });
+      await as.alice.invoke('state/restore', { id });
+      await as.bob.invoke('state/unarchive', { id });
+      const events = (await as.alice.invoke<HistoryEntry[]>('state/history', { id })).filter((e) =>
+        e.type.startsWith('entity.'),
+      );
+      expect(events.map((e) => [e.type, e.payload])).toEqual([
+        ['entity.archived', { entity: { entityType: 'stdoc', entityId: id }, from: 'active', to: 'archived' }],
+        ['entity.trashed', { entity: { entityType: 'stdoc', entityId: id }, from: 'archived', to: 'trashed' }],
+        ['entity.restored', { entity: { entityType: 'stdoc', entityId: id }, from: 'trashed', to: 'archived' }],
+        ['entity.unarchived', { entity: { entityType: 'stdoc', entityId: id }, from: 'archived', to: 'active' }],
+      ]);
+      expect(events.map((e) => e.actor)).toEqual([alice, alice, alice, bob]);
+      expect(events.every((e) => typeof e.occurredAt === 'string')).toBe(true);
+      // The declared key is what authorized it, on the entity (K-34).
+      expect(JSON.stringify(events[3]!.authorization)).toContain('doc:archive');
+    });
+
+    // -- views ---------------------------------------------------------------------------
+
+    it('leaves archived and trashed rows out of the active page, and its count', async () => {
+      const [a, b, c] = [await doc('view a', 'ov'), await doc('view b', 'ov'), await doc('view c', 'ov')];
+      await as.alice.invoke('state/archive', { id: b });
+      await as.alice.invoke('state/trash', { id: c });
+      const page = await as.alice.invoke<CountedPage<Row>>('state/page', { filters: { owner: 'ov' }, total: true });
+      expect(ids(page)).toEqual([a]);
+      expect(page.total).toBe(1);
+      const archived = await as.alice.invoke<CountedPage<Row>>('state/page', {
+        view: 'archived',
+        filters: { owner: 'ov' },
+        total: true,
+      });
+      expect(ids(archived)).toEqual([b]);
+      expect(archived.total).toBe(1);
+      expect(await trashedIds()).toContain(c);
+      expect(await trashedIds()).not.toContain(b);
+    });
+
+    it('keeps a trashed ARCHIVED row out of the archive view — trash wins', async () => {
+      const id = await doc();
+      await as.alice.invoke('state/archive', { id });
+      await as.alice.invoke('state/trash', { id });
+      expect(await archivedIds()).not.toContain(id);
+      expect(await trashedIds()).toContain(id);
+    });
+
+    it('refuses the trashed view on the unchecked ctx.page, and a view an entity does not declare', async () => {
+      expect(errorCodeOf(await errOf(as.alice.invoke('state/page', { view: 'trashed' })))).toBe('validation_failed');
+      expect(
+        errorCodeOf(await errOf(as.alice.invoke('state/page', { entityType: 'stplain', view: 'archived' }))),
+      ).toBe('validation_failed');
+      // Positive twins: the archive-only note has an archived view, and a plain entity pages.
+      await as.alice.invoke('state/page', { entityType: 'stnote', view: 'archived' });
+      await as.alice.invoke('state/page', { entityType: 'stplain' });
+    });
+
+    it('reads the bin with the declared trash key checked on EVERY row', async () => {
+      const mine = carolsDoc;
+      const someoneElses = await doc('not carols');
+      await as.alice.invoke('state/trash', { id: mine });
+      await as.alice.invoke('state/trash', { id: someoneElses });
+      const carols = ids(await as.carol.invoke<Page<Row>>('state/page-trashed', {}));
+      expect(carols).toEqual([mine]);
+      // A key holder scope-wide sees both; a caller with no trash key sees nothing.
+      expect(await trashedIds()).toEqual(expect.arrayContaining([mine, someoneElses]));
+      expect(ids(await as.bob.invoke<Page<Row>>('state/page-trashed', {}))).toEqual([]);
+      await as.alice.invoke('state/restore', { id: mine });
+    });
+
+    it('keeps walking the bin past a page whose rows were all refused', async () => {
+      // Pages of one: carol is refused every row but her own, and the walk must reach it.
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      await as.alice.invoke('state/trash', { id: carolsDoc });
+      for (let guard = 0; guard < 200; guard++) {
+        const got = await as.carol.invoke<Page<Row>>('state/page-trashed', { limit: 1, cursor });
+        seen.push(...ids(got));
+        if (got.nextCursor === null) break;
+        cursor = got.nextCursor;
+      }
+      expect(seen).toEqual([carolsDoc]);
+      await as.alice.invoke('state/restore', { id: carolsDoc });
+    });
+
+    it('carries no total on the bin — a count would disclose rows the caller cannot see', async () => {
+      expect(errorCodeOf(await errOf(as.alice.invoke('state/page-trashed', { total: true })))).toBe(
+        'validation_failed',
+      );
+    });
+
+    it('searches the active rows by default, the archive on request, and the bin key-checked', async () => {
+      const tag = `zq${ulid().slice(-6).toLowerCase()}`;
+      const [live, filed, binned] = [
+        await doc(`${tag} live`),
+        await doc(`${tag} filed`),
+        await doc(`${tag} binned`),
+      ];
+      await as.alice.invoke('state/archive', { id: filed });
+      await as.alice.invoke('state/trash', { id: binned });
+      const found = async (op: string, extra: Record<string, unknown> = {}, who = as.alice) =>
+        (await who.invoke<SearchHit[]>(op, { term: tag, ...extra })).map((h) => h.id);
+      expect(await found('state/search')).toEqual([live]);
+      expect(await found('state/search', { view: 'archived' })).toEqual([filed]);
+      expect(await found('state/search-trashed')).toEqual([binned]);
+      expect(await found('state/search-trashed', {}, as.bob)).toEqual([]);
+      expect(errorCodeOf(await errOf(as.alice.invoke('state/search', { term: tag, view: 'trashed' })))).toBe(
+        'validation_failed',
+      );
+    });
+
+    // -- the columns are the kernel's -----------------------------------------------------
+
+    const expectGuarded = async (sql: string) => {
+      const err = await errOf(as.alice.invoke('state/sql', { sql }));
+      expect(errorCodeOf(err), sql).toBe('forbidden');
+      expect(err).toMatchObject({ extensions: { reason: 'spine_write' } });
+    };
+
+    it('refuses a module write to either column, in every position a write names one', async () => {
+      const id = await doc();
+      await as.alice.invoke('state/trash', { id });
+      await expectGuarded(`UPDATE state_docs SET _substrat_trashed_at = NULL WHERE id = '${id}'`);
+      await expectGuarded(`UPDATE state_docs SET title = 'x', _substrat_archived_at = '2026' WHERE id = '${id}'`);
+      await expectGuarded(
+        `UPDATE state_docs SET title = (SELECT title FROM state_docs WHERE id = 'x'), _substrat_trashed_at = NULL`,
+      );
+      await expectGuarded(`UPDATE state_docs SET (title, _substrat_trashed_at) = ('x', NULL)`);
+      await expectGuarded(`UPDATE state_docs SET "_substrat_trashed_at" = NULL`);
+      await expectGuarded(
+        `INSERT INTO state_docs (id, title, owner, _substrat_archived_at) VALUES ('${ulid()}', 't', 'o', '2026')`,
+      );
+      await expectGuarded(
+        `INSERT INTO state_docs (id, title, owner) VALUES ('${id}', 't', 'o')
+         ON CONFLICT (id) DO UPDATE SET _substrat_trashed_at = NULL`,
+      );
+      await expectGuarded('ALTER TABLE state_docs DROP COLUMN _substrat_trashed_at');
+      await expectGuarded('ALTER TABLE state_docs RENAME COLUMN _substrat_trashed_at TO gone');
+      // Nothing above reached the row.
+      expect(await as.alice.invoke('state/state', { id })).toBe('trashed');
+    });
+
+    it('lets a module READ the columns, in a SELECT and in the WHERE of its own write', async () => {
+      const id = await doc();
+      await as.alice.invoke('state/archive', { id });
+      const rows = await as.alice.invoke<Row[]>('state/sql', {
+        sql: 'SELECT _substrat_archived_at AS at FROM state_docs WHERE id = ?',
+        params: [id],
+      });
+      expect(typeof rows[0]!['at']).toBe('string');
+      await as.alice.invoke('state/sql', {
+        sql: `UPDATE state_docs SET title = 'renamed' WHERE id = ? AND _substrat_trashed_at IS NULL`,
+        params: [id],
+      });
+      await as.alice.invoke('state/sql', {
+        sql: `UPDATE state_docs SET title = (SELECT title FROM state_docs WHERE _substrat_archived_at IS NOT NULL LIMIT 1) WHERE id = ?`,
+        params: [id],
+      });
+      const after = await as.alice.invoke<Row[]>('state/sql', { sql: 'SELECT title FROM state_docs WHERE id = ?', params: [id] });
+      expect(after[0]!['title']).toBeTypeOf('string');
+    });
+
+    // -- the indexes -------------------------------------------------------------------------
+
+    const planOf = (view?: string, extra: Record<string, unknown> = {}) =>
+      as.alice.invoke<string[]>('state/explain', { ...(view ? { view } : {}), ...extra });
+
+    it('walks each view on its own PARTIAL index, never a table scan', async () => {
+      const active = (await planOf()).join(' | ');
+      expect(active).toMatch(/USING (COVERING )?INDEX _substrat_list_test_state_stdoc_title\b/);
+      expect(active).not.toMatch(/SCAN state_docs\b(?! USING)/);
+      expect((await planOf('archived')).join(' | ')).toMatch(/INDEX _substrat_list_test_state_stdoc_title_archived\b/);
+      expect((await planOf('trashed')).join(' | ')).toMatch(/INDEX _substrat_list_test_state_stdoc_title_trashed\b/);
+      expect((await planOf(undefined, { filters: { owner: 'o1' } })).join(' | ')).toMatch(
+        /INDEX _substrat_list_test_state_stdoc_owner_title\b/,
+      );
+      // An archive-only entity: one column, one-term predicate, still partial.
+      expect((await planOf(undefined, { entityType: 'stnote' })).join(' | ')).toMatch(
+        /INDEX _substrat_list_test_state_stnote_title\b/,
+      );
+    });
+  });
+}

@@ -76,6 +76,12 @@ export interface SearchHit {
 export interface SearchOptions {
   /** Defaults to `DEFAULT_SEARCH_LIMIT`, capped at `MAX_SEARCH_LIMIT`. */
   readonly limit?: number;
+  /**
+   * Which rows (#119): `active` when unset, so an archived or trashed row never surfaces in a
+   * picker nobody asked to show it in. `archived` asks for the archive. The bin is not here —
+   * `ctx.searchTrashed` reads it, checking the declared trash key per hit.
+   */
+  readonly view?: 'active' | 'archived';
 }
 
 /**
@@ -378,13 +384,18 @@ export function searchQuery(
   plan: SearchIndexPlan,
   match: string,
   limit: number,
+  /**
+   * A further predicate over the source row, aliased `src` — the archive/trash view (#119).
+   * Applied BEFORE the limit, so hiding rows never shortens a ranked top-N.
+   */
+  where?: string,
 ): { sql: string; params: [string, number] } {
   const idx = plan.indexTable;
   return {
     sql:
       `SELECT src.${plan.idColumn} AS id, bm25(${idx}) AS rank ` +
       `FROM ${idx} JOIN ${plan.table} src ON src.rowid = ${idx}.rowid ` +
-      `WHERE ${idx} MATCH ? ORDER BY rank LIMIT ?`,
+      `WHERE ${idx} MATCH ?${where ? ` AND ${where}` : ''} ORDER BY rank LIMIT ?`,
     params: [match, limit],
   };
 }
