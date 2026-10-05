@@ -729,4 +729,35 @@ export const ticket0Migrations: SqlMigration[] = [
 
     `,
   },
+  {
+    // widget-session-public-edges
+    version: '0024',
+    sql: `
+      -- Hand-written (#1853): a widget session's live feed walks the edges under the session, so
+      -- its subtree must be exactly what widget-thread shows the visitor.
+      --
+      -- First, one parent per session. moveSession used to LINK a session onto a follow-up and
+      -- leave it on the closed thread; 0020 cleared what merges left, not that. Keep only the edge
+      -- to the session's current conversation, so a message under a session reaches no
+      -- conversation it is not on.
+      -- boundary-lint-allow R4 migration #1853
+      UPDATE _substrat_tuples AS t
+         SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE t.relation = 'parent' AND t.revoked_at IS NULL
+         AND EXISTS (SELECT 1 FROM ticket0_widget_sessions w
+                      WHERE t.subject = 'widgetSession:' || w.id
+                        AND t.object LIKE 'conversation:%'
+                        AND t.object != 'conversation:' || w.conversation_id);
+
+      -- Then the edges themselves: every public message on a session's conversation, under that
+      -- session. Internal notes and forwards are not public and get none. OR IGNORE, because no
+      -- such edge can exist yet: the relation is new with this migration.
+      -- boundary-lint-allow R4 migration #1853
+      INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
+        SELECT 'message:' || m.id, 'parent', 'widgetSession:' || w.id
+          FROM ticket0_widget_sessions w
+          JOIN ticket0_messages m ON m.conversation_id = w.conversation_id
+         WHERE m.visibility = 'public';
+    `,
+  },
 ];

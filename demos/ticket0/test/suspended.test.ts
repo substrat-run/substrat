@@ -319,9 +319,11 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
    * queue's rule, by name; every other kind names the test that holds it.
    */
   it('refuses every operation that works a conversation, and the list is the model’s whole list', async () => {
-    // Reads of one conversation. A held conversation is the desk's to look at.
+    // Reads of one conversation. A held conversation is the desk's to look at. `widget-watch`
+    // proves the visitor's token for their live feed, as `widget-thread` does for their poll.
     const READS = ['get-conversation', 'list-messages', 'widget-session', 'get-csat', 'list-conversation-tags',
-      'render-saved-reply', 'list-turns', 'usage-summary', 'my-messages', 'widget-thread', 'list-participants'];
+      'render-saved-reply', 'list-turns', 'usage-summary', 'my-messages', 'widget-thread', 'widget-watch',
+      'list-participants'];
     // The ways out of the queue; the customer's own doors (`widget-post` and `request-human`
     // are held to it in 'keeps a held thread held…' and 'shows the visitor their own
     // words…'); and the writes that only ever narrow access or record a fact: an unfollow,

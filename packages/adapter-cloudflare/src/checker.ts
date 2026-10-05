@@ -116,7 +116,7 @@ const TUPLE_COLUMNS = 'subject, relation, object, expires_at, revoked_at';
  * storage is right here. Entity-narrowed grants and the declared `parent` edges are
  * scope-local by construction, so they sit beside the scope-level tuples.
  */
-const scopeReader = (sql: SqlStorage): ScopeTupleReader => ({
+export const scopeTupleReader = (sql: SqlStorage): ScopeTupleReader => ({
   tuples: (subject, relationPrefix) =>
     sql
       .exec(
@@ -156,7 +156,7 @@ const scopeReader = (sql: SqlStorage): ScopeTupleReader => ({
 });
 
 export function createDoTupleChecker(deps: DoCheckerDeps): PermissionChecker {
-  const scope = scopeReader(deps.scopeSql);
+  const scope = scopeTupleReader(deps.scopeSql);
 
   const reader: PermissionTupleReader = {
     now: () => new Date().toISOString(),

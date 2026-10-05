@@ -271,6 +271,24 @@ The route does not decide what a subscriber hears. The scope checks every frame 
 grants nothing. `path` moves the route; the gate moves with it. `demos/ticket0` is the worked
 reference.
 
+### Narrowing a feed to one entity
+
+`subscriber` may also return `within`, an `EntityRef`. The feed then carries only frames about
+that entity and what hangs beneath it through declared parent edges (what `ctx.link` and
+`ctx.relink` write), the same walk a permission check makes. The principal's own check still
+runs on every frame, so `within` can only take frames away. A screen watching one record
+passes it to stop hearing the rest of the scope.
+
+A subscriber with no principal of its own, such as a visitor holding a session token, can be
+given a feed the **vertical vouches for**: `within: vouchedWithin(entity, { because })`, from
+`@substrat-run/kernel`. The principal's check is then not applied. The walk from each changed
+row to `entity` is the whole filter, and each frame is a bare nudge (`{ kind: 'nudge', id, at }`)
+that names no event type and no entity. Call it only after your own code has proven the
+caller may watch `entity`, and root it at an entity whose subtree holds only what that caller
+may see. A plain object of the same shape is refused: `vouchedWithin` is the only way in.
+ticket0's widget does this (`harness/widget-surface.ts`), rooted at the visitor's session,
+under which the desk links exactly the public messages the visitor can read.
+
 ## `requestConnectUrl(request)`
 
 How a vertical starts a provider consent round **itself** (#1310), for the case the

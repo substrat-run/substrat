@@ -48,7 +48,7 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange } from '@substrat-run/kernel';
+import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange, type LiveFrame } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
@@ -1022,6 +1022,225 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
  * hand. The record never moves, so the same lockout brings the ORIGINAL owner back. That is
  * the #1665 bug, and it is what makes the first test able to fail.
  */
+/**
+ * #1853 through the deployed worker: the widget's own live feed, `GET
+ * /widget/sessions/:id/live`, reached the way an embedding page reaches it — routed, from an
+ * allowlisted origin, an upgrade carrying the session token and no login at all.
+ *
+ * The visitor has no principal, so the feed is vouched: the desk proves the token, then the
+ * scope walks from each changed row to the visitor's SESSION and nudges if it gets there.
+ * What hangs under a session is exactly what `widget-thread` shows the visitor, so every
+ * negative below sits beside the write that does nudge:
+ *
+ *   - an internal note and an assistant draft on the visitor's own conversation send
+ *     nothing, and a public reply on it does;
+ *   - another visitor's message sends nothing;
+ *   - a nudge names nothing — no event type, no entity;
+ *   - after a merge, and after a follow-up, the same open socket hears the thread the
+ *     visitor now reads, and `widget-thread` still shows them their own words.
+ */
+describe("ticket0 on workerd — the widget's feed nudges a visitor about their own thread only (#1853)", () => {
+  const tenant = tenantId.parse(ulid());
+  const desk = scopeId.parse(ulid());
+  const deskOwner = principalId.parse(ulid());
+  const DESK = 'https://desk.widget-live.test';
+  const EMBED = 'https://customer.widget-live.test';
+  const routed = { 'x-substrat-tenant': tenant, 'x-substrat-scope': desk, 'x-substrat-router': env.ROUTER_SECRET };
+  const directory = () => env.AUTH.get(env.AUTH.idFromName(tenant));
+  const scopeStub = () => env.SCOPE.get(env.SCOPE.idFromName(desk));
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 100));
+  const admin = () => host().getScope(deskOwner, tenant, desk);
+  /** One of the desk's service accounts, acting, as the worker's provision hook recorded it. */
+  async function service(role: 'widget' | 'relay') {
+    const recorded = JSON.parse((await directory().getScopeConfig(desk))['ticket0:services']!) as Record<string, string>;
+    return host().getScope(principalId.parse(recorded[role]), tenant, desk);
+  }
+
+  const open: WebSocket[] = [];
+  afterEach(() => {
+    for (const ws of open.splice(0)) ws.close(1000, 'test over');
+  });
+
+  /** A visitor opens the widget on the embedding page: the route the bubble calls. */
+  async function visitor(): Promise<{ sessionId: string; token: string }> {
+    const res = await SELF.fetch(`${DESK}/widget/sessions`, {
+      method: 'POST',
+      headers: { ...routed, origin: EMBED, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(200);
+    return (await res.json()) as { sessionId: string; token: string };
+  }
+
+  function handshake(session: { sessionId: string; token: string }, headers: Record<string, string> = {}): Promise<Response> {
+    return SELF.fetch(`${DESK}/widget/sessions/${session.sessionId}/live?token=${encodeURIComponent(session.token)}`, {
+      headers: {
+        ...routed,
+        upgrade: 'websocket',
+        connection: 'Upgrade',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        origin: EMBED,
+        ...headers,
+      },
+    });
+  }
+
+  async function watch(session: { sessionId: string; token: string }): Promise<{ frames: LiveFrame[] }> {
+    const response = await handshake(session);
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    ws.accept();
+    open.push(ws);
+    const frames: LiveFrame[] = [];
+    ws.addEventListener('message', (event) => {
+      const data = String((event as MessageEvent).data);
+      if (data !== 'pong') frames.push(JSON.parse(data) as LiveFrame);
+    });
+    return { frames };
+  }
+
+  /** Says something — the operation behind the widget's POST, without the assistant it wakes. */
+  const say = async (session: { sessionId: string; token: string }, body: string) =>
+    (await service('widget')).invoke<{ id: string; conversation_id: string }>('ticket0/widget-post', { ...session, body });
+  const thread = async (session: { sessionId: string; token: string }) =>
+    (await (await service('widget')).invoke<Page<{ body_text: string }>>('ticket0/widget-thread', session)).entries.map(
+      (m) => m.body_text,
+    );
+
+  beforeAll(async () => {
+    expect(
+      (await platform('/internal/provision', { tenantId: tenant, scopeId: desk, owner: deskOwner, entitlements })).status,
+    ).toBe(201);
+    await (await admin()).invoke('ticket0/configure-desk', { allowedOrigins: [EMBED] });
+  });
+
+  it('nudges about a public reply, and not about a note or a draft on the same thread', async () => {
+    const session = await visitor();
+    const asked = await say(session, 'Where is my parcel?');
+    const feed = await watch(session);
+    const desk_ = await admin();
+
+    await desk_.invoke('ticket0/post-note', { conversationId: asked.conversation_id, body: 'Check the courier first.' });
+    await desk_.invoke('ticket0/record-answer', {
+      conversationId: asked.conversation_id,
+      turnId: ulid(),
+      model: 'test-model',
+      body: 'A draft the desk has not approved.',
+      inputTokens: 0,
+      outputTokens: 0,
+      citedArticleIds: [],
+      outcome: 'drafted',
+    });
+    await settle();
+    // Not "no frame naming the note": no frame at all. The note's existence, and its timing,
+    // are the desk's.
+    expect(feed.frames).toEqual([]);
+
+    await desk_.invoke('ticket0/post-public-reply', { conversationId: asked.conversation_id, body: 'It left today.' });
+    await settle();
+    expect(feed.frames.length).toBeGreaterThan(0);
+    for (const frame of feed.frames) expect(Object.keys(frame).sort()).toEqual(['at', 'id', 'kind']);
+    expect(feed.frames.every((f) => f.kind === 'nudge')).toBe(true);
+  });
+
+  it("sends nothing about another visitor's thread", async () => {
+    const mine = await visitor();
+    await say(mine, 'Mine.');
+    const feed = await watch(mine);
+    const theirs = await visitor();
+    await say(theirs, 'Somebody else entirely.');
+    await settle();
+    expect(feed.frames).toEqual([]);
+    // The twin: the same visitor writing again is heard.
+    await say(mine, 'Mine, again.');
+    await settle();
+    expect(feed.frames.length).toBeGreaterThan(0);
+  });
+
+  it('opens for a session with no message yet, and hears the first one', async () => {
+    const session = await visitor();
+    const feed = await watch(session);
+    await say(session, 'First words.');
+    await settle();
+    expect(feed.frames.length).toBeGreaterThan(0);
+  });
+
+  it('refuses a wrong token, another origin and a plain GET — before any socket exists', async () => {
+    const session = await visitor();
+    const wrongToken = await handshake({ ...session, token: 'not-the-token' });
+    expect(wrongToken.status).toBe(403);
+    expect(wrongToken.webSocket).toBeNull();
+    const elsewhere = await handshake(session, { origin: 'https://elsewhere.test' });
+    expect(elsewhere.status).toBe(403);
+    expect(elsewhere.webSocket).toBeNull();
+    const plain = await SELF.fetch(`${DESK}/widget/sessions/${session.sessionId}/live?token=${session.token}`, {
+      headers: { ...routed, origin: EMBED },
+    });
+    expect(plain.status).toBe(426);
+  });
+
+  it('keeps hearing the thread after its conversation is merged away, on the socket already open', async () => {
+    const session = await visitor();
+    const asked = await say(session, 'Asked in the chat.');
+    // The same person also wrote in by mail. Merging needs one contact on both threads, which
+    // an anonymous visitor only gets by being recognised — stood in for here in SQL.
+    const relay = await service('relay');
+    const mailed = await relay.invoke<{ conversation_id: string }>('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'merged@widget-live.test',
+      subject: 'Also by mail',
+      bodyText: 'Asked by mail.',
+      emailMessageId: `<widget-live-${ulid()}@mail.example>`,
+    });
+    await runInDurableObject(scopeStub(), async (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE ticket0_conversations SET contact_id = (SELECT contact_id FROM ticket0_conversations WHERE id = ?) WHERE id = ?`,
+        asked.conversation_id,
+        mailed.conversation_id,
+      );
+    });
+    const feed = await watch(session);
+    const desk_ = await admin();
+    await desk_.invoke('ticket0/merge', { conversationId: asked.conversation_id, intoConversationId: mailed.conversation_id });
+    await settle();
+    const afterMerge = feed.frames.length;
+
+    await desk_.invoke('ticket0/post-note', { conversationId: mailed.conversation_id, body: 'Internal, on the survivor.' });
+    await settle();
+    expect(feed.frames).toHaveLength(afterMerge);
+    await desk_.invoke('ticket0/post-public-reply', { conversationId: mailed.conversation_id, body: 'Answered on the survivor.' });
+    await settle();
+    expect(feed.frames.length).toBeGreaterThan(afterMerge);
+    // And the poll the nudge triggers shows the visitor their own words, and the reply.
+    expect(await thread(session)).toEqual(expect.arrayContaining(['Asked in the chat.', 'Answered on the survivor.']));
+  });
+
+  it('moves with the session onto a follow-up, and stops hearing the closed thread', async () => {
+    const session = await visitor();
+    const first = await say(session, 'Before the close.');
+    const desk_ = await admin();
+    await desk_.invoke('ticket0/close', { conversationId: first.conversation_id });
+    const before = await thread(session);
+    const feed = await watch(session);
+    const next = await say(session, 'After the close.');
+    expect(next.conversation_id).not.toBe(first.conversation_id);
+    await settle();
+    expect(feed.frames.length).toBeGreaterThan(0);
+    const heard = feed.frames.length;
+
+    // The closed thread is no longer the visitor's: a delivery recorded on its message sends nothing.
+    const relay = await service('relay');
+    await relay.invoke('ticket0/record-delivery', { messageId: first.id, emailMessageId: `<closed-${ulid()}@mail.example>` });
+    await settle();
+    expect(feed.frames).toHaveLength(heard);
+    // `widget-thread` reads the session's CURRENT conversation, as it did before the feed
+    // existed: what it returned before the follow-up is what this test pins, unchanged.
+    expect(before).toEqual(['Before the close.']);
+    expect(await thread(session)).toEqual(['After the close.']);
+  });
+});
+
 describe('ticket0 on workerd — an owner hand-over moves the owner the lockout repair re-seats (#1665)', () => {
   const tenant = tenantId.parse(ulid());
   const A = principalId.parse(ulid());

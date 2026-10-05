@@ -322,6 +322,8 @@
   }
 
   function resetSession() {
+    // The feed was narrowed to the old session; the new one opens its own.
+    closeLive();
     session = null;
     try {
       localStorage.removeItem(STORE);
@@ -343,25 +345,20 @@
   var recovering = false;
 
   /**
-   * Polling, paced by what is actually happening.
+   * Polling, paced by what is actually happening — and, where the desk can push, a
+   * floor under the push rather than the thing that finds replies.
    *
    * A support chat is not a stock ticker: the only moment that wants a fast poll is the
    * few seconds after you send something, and a panel sitting open in a background tab
    * wants none at all. So the interval follows the state instead of being one number,
    * and a hidden tab stops entirely and catches up when it comes back.
    *
-   * This is a stopgap and worth naming as one. The desk's inbox is pushed to now, over
-   * the scope's live-read WebSocket (#938), and this panel is not, for a reason that is
-   * about who the visitor is rather than about transport. A live read filters every
-   * frame against the SUBSCRIBER's grants, and a visitor has no principal: every widget
-   * call runs as the desk's one shared widget service, confined to one conversation by
-   * the session token rather than by a grant. Subscribing as that service would hand
-   * each visitor every other visitor's changes. What would let this file subscribe is a
-   * feed narrowed to the one conversation the token names, which is platform work
-   * (#1853). Until then this is the poll.
+   * With the live feed open (below), a reply arrives as a nudge and the poll drops to
+   * `LIVE_FLOOR`: it is only there for a nudge the socket lost.
    */
   var FAST = 1500;
   var IDLE = 10000;
+  var LIVE_FLOOR = 60000;
 
   function schedule() {
     clearInterval(poll);
@@ -371,7 +368,103 @@
     // nothing to count. A hidden tab stops entirely, and a session that does not
     // exist yet has nothing to poll for.
     if (dead || document.hidden || !session) return;
-    poll = setInterval(refresh, open && waiting ? FAST : IDLE);
+    connectLive();
+    poll = setInterval(refresh, live ? LIVE_FLOOR : open && waiting ? FAST : IDLE);
+  }
+
+  /**
+   * The live feed (#1853): a WebSocket on which the desk says "your thread changed", and
+   * nothing else — no message, no id. A nudge is a reason to `refresh()`, which reads the
+   * thread through the same route the poll does, so nothing reaches the page that the
+   * poll would not have shown.
+   *
+   * It is narrowed, at the desk, to this visitor's own session: under it hang the public
+   * messages of their conversation and nothing else, so another visitor's chat, an
+   * internal note or a draft sends nothing here at all.
+   *
+   * The poll stays underneath. A socket that will not open — a dev server with no live
+   * reads, a proxy that drops upgrades, an older browser — leaves the widget polling as it
+   * always did, and retries with a backoff; one that drops is reopened.
+   */
+  var live = null;
+  var liveTrying = null;
+  var liveRetry = null;
+  var livePing = null;
+  /** A refresh a nudge asked for, not yet run: a burst of nudges is one re-read. */
+  var liveNudge = null;
+  /** Handshakes that failed in a row: what the backoff counts. */
+  var liveFails = 0;
+
+  function connectLive() {
+    if (live || liveTrying || liveRetry || dead || !session || typeof WebSocket !== 'function') return;
+    var url = new URL(API + '/widget/sessions/' + encodeURIComponent(session.sessionId) + '/live');
+    url.searchParams.set('token', session.token);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    var ws;
+    try {
+      ws = new WebSocket(url.href);
+    } catch (e) {
+      return;
+    }
+    liveTrying = ws;
+    ws.onopen = function () {
+      liveTrying = null;
+      live = ws;
+      liveFails = 0;
+      // The same keep-alive the inbox sends; the desk answers it without waking (#1860).
+      livePing = setInterval(function () {
+        try {
+          ws.send('ping');
+        } catch (e) {
+          /* closing — onclose handles it */
+        }
+      }, 45000);
+      // Whatever landed while the socket was opening, then the slow floor.
+      void refresh();
+      schedule();
+    };
+    ws.onmessage = function (e) {
+      // Still read in a hidden tab: a closed panel's unread badge counts on it, and coming
+      // back to a closed panel refreshes nothing on its own (`onVisibility`).
+      if (e.data === 'pong' || liveNudge) return;
+      liveNudge = setTimeout(function () {
+        liveNudge = null;
+        void refresh();
+      }, 200);
+    };
+    ws.onclose = function () {
+      var wasOpen = live === ws;
+      if (wasOpen) live = null;
+      if (liveTrying === ws) liveTrying = null;
+      clearInterval(livePing);
+      livePing = null;
+      if (!wasOpen) liveFails += 1;
+      liveRetry = setTimeout(function () {
+        liveRetry = null;
+        schedule();
+      }, Math.min(300000, 5000 * Math.pow(2, liveFails)));
+      // Back to the poll's own pace until the feed is back.
+      schedule();
+    };
+  }
+
+  function closeLive() {
+    var ws = live || liveTrying;
+    live = liveTrying = null;
+    clearInterval(livePing);
+    livePing = null;
+    clearTimeout(liveRetry);
+    liveRetry = null;
+    clearTimeout(liveNudge);
+    liveNudge = null;
+    liveFails = 0;
+    if (!ws) return;
+    ws.onclose = null;
+    try {
+      ws.close(1000, 'widget closing');
+    } catch (e) {
+      /* already closed */
+    }
   }
 
   function onVisibility() {
@@ -399,6 +492,7 @@
       aborter.abort();
       clearInterval(poll);
       poll = null;
+      closeLive();
       document.removeEventListener('visibilitychange', onVisibility);
       document.removeEventListener('DOMContentLoaded', attach);
       host.remove();

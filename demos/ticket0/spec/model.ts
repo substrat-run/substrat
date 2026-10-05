@@ -890,7 +890,12 @@ export const ticket0Entities = defineEntities({
       cited_article_ids: z.string().nullable(),
       created_at: z.string(),
     }),
-    parents: ['conversation'],
+    // A PUBLIC message also sits under each widget session on its conversation (#1853):
+    // the edge is what a visitor's live feed walks, so it carries exactly what
+    // `widget-thread` would show them and never an internal note or a draft. A session's
+    // only parent is its current conversation, so this second edge reaches nothing the
+    // first does not.
+    parents: ['conversation', 'widgetSession'],
     erasable: ['body_text', 'body_html'],
     // Mail headers as they arrived: the sender's host writes both, freely (#1088).
     outsideText: ['email_message_id', 'email_in_reply_to'],
@@ -4515,6 +4520,24 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     output: customerMessage,
     paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/widget/sessions/{sessionId}/messages' },
+  },
+
+  /**
+   * Redeem a session token for the root of the visitor's live feed (#1853).
+   *
+   * The widget's socket is narrowed to its own session, and the vertical vouches for that
+   * root — so the token must be proven first, by this, as every other widget call proves
+   * it. The root is the session even before its first message: the public messages that
+   * will hang under it are linked to the same id the moment the opening is bound.
+   */
+  'ticket0/widget-watch': {
+    // Not a tool: the widget service's surface — held by the desk's `widget` principal, driven by a browser.
+    mcp: false,
+    summary: 'Prove a widget session token, for the session’s live feed',
+    permission: 'conversation:widget',
+    input: z.object({ sessionId: z.string(), token: z.string() }),
+    output: z.object({ sessionId: z.string() }),
+    http: { method: 'GET', path: '/widget/sessions/{sessionId}/watch' },
   },
 
   // ─── The portal ──────────────────────────────────────────────────────────────

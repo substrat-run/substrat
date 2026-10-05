@@ -74,6 +74,22 @@ export interface LiveRouteOptions<E extends Env = any> {
 }
 
 /**
+ * The two refusals a client reads as "no push here" (#1853): `426` for a request that is not
+ * a WebSocket handshake, and `501` for a host that cannot push, each with the
+ * `LIVE_MODE_HEADER` value the client keys its fallback on. Exported so a vertical's own
+ * live route — one that cannot use `mountLiveReads`'s same-origin gate, like a widget on
+ * somebody else's page — answers in the same words.
+ */
+export function refuseNotAnUpgrade(c: Context, error = 'live reads are a WebSocket surface'): Response {
+  return c.json({ error }, 426, { [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal });
+}
+
+/** See `refuseNotAnUpgrade`. */
+export function refuseLivePoll(c: Context, error = 'live reads are not available on this host; poll instead'): Response {
+  return c.json({ error }, 501, { [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal });
+}
+
+/**
  * Whether a handshake's `Origin` is the page this vertical serves.
  *
  * Exact match against the request's own origin: scheme, host and port. The SPA and
@@ -96,22 +112,12 @@ export function mountLiveReads<E extends Env>(
   options: LiveRouteOptions<E>,
 ): void {
   app.get(options.path ?? LIVE_PATH, async (c) => {
-    if (!isUpgradeRequest(c.req.raw)) {
-      return c.json({ error: 'live reads are a WebSocket surface' }, 426, {
-        [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal,
-      });
-    }
+    if (!isUpgradeRequest(c.req.raw)) return refuseNotAnUpgrade(c);
     if (!sameOrigin(c.req.raw)) {
       return c.json({ error: 'live reads are only offered to this app’s own pages' }, 403);
     }
     const live = options.live(c);
-    if (!live) {
-      return c.json(
-        { error: 'live reads are not available on this host; poll instead' },
-        501,
-        { [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal },
-      );
-    }
+    if (!live) return refuseLivePoll(c);
     const who = await options.subscriber(c);
     if (!who) return c.json({ error: 'unauthorized' }, 401);
     return live.subscribe({ ...who, request: c.req.raw });

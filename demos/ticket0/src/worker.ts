@@ -735,8 +735,10 @@ mountWidgetSurface(app, {
   resolveDesk: async (c) => {
     const env = c.env as Env;
     const node = nodeFor(c.req.raw, env);
-    const widget = await serviceStub(env, node, 'widget');
-    if (!widget) return null; // not provisioned yet — no desk to embed
+    const principal = (await servicesOf(env, node))?.widget;
+    if (!principal) return null; // not provisioned yet — no desk to embed
+    const host = hostFor(env);
+    const widget = await host.getScope(principal, node.tenantId, node.scopeId);
     const invoke = <T,>(op: string, input: unknown) => widget.invoke(op, input) as Promise<T>;
     const declared = await invoke<{ origins: string[] }>('ticket0/widget-origins', {});
     // The rate limiter's scope. One script answers for every desk the router sends it,
@@ -746,6 +748,8 @@ mountWidgetSurface(app, {
       invoke,
       allowedOrigins: declared.origins,
       deskKey: `${node.tenantId}:${node.scopeId}`,
+      // A visitor's live feed subscribes as this desk's widget service (#1853).
+      live: { surface: host.liveReads, subscriber: { ...node, principal } },
     };
   },
   // The edge knows where the request came from; the adapter is the one place that
