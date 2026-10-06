@@ -5309,6 +5309,10 @@ entityTrashContractSuite(
       state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
     });
   },
+  // Every suite in this file shares one control-plane directory, so a full platform sweep walks
+  // all of their scopes. The preview case runs on the pure adapter, whose fixture owns its
+  // directory; the exclusion it holds is the kernel sweep's, the same code here.
+  { platformSweep: false },
 );
 
 // #893: the declared `input` parsed at the door, on the adapter that is actually

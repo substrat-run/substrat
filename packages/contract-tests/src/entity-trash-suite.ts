@@ -41,6 +41,16 @@ export function entityTrashContractSuite(
   adapterName: string,
   makeFixture: () => Promise<ScopeHostFixture>,
   raw: RawScopeSql,
+  options: {
+    /**
+     * Whether a whole `runPlatformSweep` is affordable on this fixture. It walks every active
+     * scope its directory holds, so on a directory SHARED by every suite in the file (the
+     * Cloudflare fixture's control plane) one pass takes minutes and starves the suites after
+     * it. The property it holds — a copy that is not primary never runs a schedule, the purge's
+     * included — is the kernel sweep's `isPrimaryScope` filter, the same code on both adapters.
+     */
+    platformSweep?: boolean;
+  } = {},
 ): void {
   describe(`the trash, held by the host (#119 PR 2): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
@@ -326,18 +336,27 @@ export function entityTrashContractSuite(
 
       it('a full batch leaves the schedule due; the next pass finishes the bin, and then it waits its cadence', async () => {
         const s = await freshScope();
-        const boxes: string[] = [];
-        for (let i = 0; i <= PURGE_BATCH; i++) boxes.push(await dueBox(s));
+        // One call bins the whole batch and one set-based backdate makes it due, so the case
+        // spends its time on the sweep it asserts rather than on setting it up.
+        const prefix = ulid().slice(0, 20);
+        const { ids: boxes } = (await (await stub(alice, s)).invoke('trash/bin-many', { prefix, count: PURGE_BATCH + 1 })) as {
+          ids: string[];
+        };
+        const at = new Date(Date.now() - (TBOX_PURGE_DAYS + 1) * DAY).toISOString();
+        const mine = `id >= '${prefix}' AND id < '${prefix}~'`;
+        await raw(t, s, `INSERT INTO _substrat_state_moves (entity_type, entity_id) SELECT 'tbox', id FROM trash_boxes WHERE ${mine}`);
+        await raw(t, s, `UPDATE trash_boxes SET _substrat_trashed_at = ? WHERE ${mine}`, [at]);
+        await raw(t, s, `DELETE FROM _substrat_state_moves WHERE entity_type = 'tbox'`);
+        const left = async () => (await Promise.all(boxes.map((b) => exists(s, b)))).filter(Boolean).length;
         expect((await sweep(s)).fired).toBe(1);
-        const left = (await Promise.all(boxes.map((b) => exists(s, b)))).filter(Boolean).length;
-        expect(left).toBe(1);
+        expect(await left()).toBe(1);
         await sweep(s);
-        expect((await Promise.all(boxes.map((b) => exists(s, b)))).filter(Boolean).length).toBe(0);
+        expect(await left()).toBe(0);
         // Not full this time, so the cadence row was written: a third pass is inside its window.
         const late = await dueBox(s);
         expect(await sweep(s)).toMatchObject({ fired: 0, skipped: 1 });
         expect(await exists(s, late)).toBe(true);
-      });
+      }, 60_000);
 
       it('a scope with the module switched off purges nothing, and purges once it is restored', async () => {
         const s = await freshScope();
@@ -361,7 +380,7 @@ export function entityTrashContractSuite(
         await expect(there.invoke('trash/ddl', { table: `rt_${ulid().toLowerCase()}` })).resolves.toEqual({ ok: true });
       });
 
-      it('a preview copy never purges; the primary beside it does, in the same platform sweep', async () => {
+      it.runIf(options.platformSweep !== false)('a preview copy never purges; the primary beside it does, in the same platform sweep', async () => {
         const primary = await freshScope();
         const preview = await freshScope({ kind: 'preview' });
         const onPrimary = await dueBox(primary);

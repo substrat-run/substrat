@@ -68,6 +68,12 @@ export const trashOperations = defineOperations(trashEntities, PERMISSIONS)({
     input: z.object({ id: z.string() }),
     output: ok,
   },
+  'trash/bin-many': {
+    summary: 'Add and bin many boxes in one call — the fixture for a full purge batch',
+    permission: 'box:write',
+    input: z.object({ prefix: z.string(), count: z.number().int().positive() }),
+    output: z.object({ ids: z.array(z.string()) }),
+  },
   'trash/rename-box': {
     summary: 'Rename a box — refused on a trashed one by the host',
     permission: box('box:write'),
@@ -199,6 +205,17 @@ export const trashMod: ModuleRegistration = {
       assertAllowed(await ctx.check(P('box:write')));
       ctx.sql.exec('INSERT INTO trash_keeps (id) VALUES (?)', [i.id]);
       return { ok: true };
+    }) as Handler,
+    'trash/bin-many': (async (ctx, i: { prefix: string; count: number }) => {
+      assertAllowed(await ctx.check(P('box:write')));
+      const ids: string[] = [];
+      for (let n = 0; n < i.count; n++) {
+        const id = `${i.prefix}${String(n).padStart(4, '0')}`;
+        ctx.sql.exec('INSERT INTO trash_boxes (id, name) VALUES (?, ?)', [id, id]);
+        await ctx.trash(boxRef(id));
+        ids.push(id);
+      }
+      return { ids };
     }) as Handler,
     'trash/rename-box': (async (ctx, i: { boxId: string; name: string }) => {
       assertAllowed(await ctx.check(P('box:write'), boxRef(i.boxId)));
