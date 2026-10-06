@@ -250,14 +250,19 @@ describe('the readers hold to the priority rule, whatever the ids and clocks say
   const B = principalId.parse(ulid());
   let dir: string;
   let host: SqliteScopeHost;
-  const raw = (id: string, phase: string, operationId: string, at: string, extra: object = {}) =>
+  const raw = (id: string, phase: string, operationId: string, at: string, extra: object = {}, where: { tenant?: string; scope?: string } = {}) =>
     (host as unknown as { directory: { prepare(sql: string): { run(...a: unknown[]): void } } }).directory
       .prepare('INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, vertical, before, after, at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)')
-      .run(id, staff, 'transferOwner', t, s, JSON.stringify({ phase, operationId, from: A, to: B, ...extra }), at);
+      .run(id, staff, 'transferOwner', where.tenant ?? t, where.scope ?? s, JSON.stringify({ phase, operationId, from: A, to: B, ...extra }), at);
   const entriesOf = async (operationId: string) =>
-    (await host.admin.auditLog(staff, { tenantId: t, action: 'transferOwner' })).filter(
+    (await host.admin.auditLog(staff, { action: 'transferOwner' })).filter(
       (r) => (r.after as { operationId: string }).operationId === operationId,
     );
+  const unknownFailure = (operationId: string, where: { tenant?: string; scope?: string } = {}) =>
+    ({
+      id: ulid(), operation: 'audit.transferOwner', stage: 'outcome-unknown', tenantId: where.tenant ?? t, scopeId: where.scope ?? s,
+      reference: operationId, at: '2026-10-06T12:00:00.000Z',
+    }) as OpsFailureEntry;
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-audited-priority-'));
@@ -309,9 +314,38 @@ describe('the readers hold to the priority rule, whatever the ids and clocks say
     const logError = (m: string, f: Record<string, unknown>) => logged.push([m, f]);
     const annotated = await withAuditedOutcomes(host.admin, staff, await entriesOf(operationId), logError);
     expect(annotated.map((r) => r.audited?.outcome)).toEqual(['conflicting', 'conflicting', 'conflicting', 'conflicting']);
-    expect(logged).toEqual([[OUTCOME_CONFLICT_LOG, { operation: `transferOwner:${operationId}`, outcomes: ['applied', 'refused'] }]]);
+    expect(logged).toEqual([[OUTCOME_CONFLICT_LOG, { operation: ['transferOwner', operationId, t, s], outcomes: ['applied', 'refused'] }]]);
     const failure = { id: ulid(), operation: 'audit.transferOwner', stage: 'outcome-unknown', tenantId: t, scopeId: s, reference: operationId, at: AT } as OpsFailureEntry;
     expect(await supersededUnknowns(host.admin, staff, [failure], logError)).toEqual(new Set());
+  });
+
+  it('one operation id in two tenants and two scopes is three operations: no false conflict, in the API or the digest', async () => {
+    // Ids are minted per request, so a shared one is a collision, never one operation. Each
+    // scope's rows decide its own outcome.
+    const operationId = ulid();
+    const t2 = tenantId.parse(ulid());
+    const s2 = scopeId.parse(ulid());
+    raw(ulid(), 'intent', operationId, AT);
+    raw(ulid(), 'unknown', operationId, AT, { error: 'no outcome' });
+    raw(ulid(), 'applied', operationId, AT, { outcome: 'transferred', fromRevoked: true });
+    raw(ulid(), 'intent', operationId, AT, {}, { tenant: t2 });
+    raw(ulid(), 'unknown', operationId, AT, { error: 'no outcome' }, { tenant: t2 });
+    raw(ulid(), 'refused', operationId, AT, { error: 'no' }, { tenant: t2 });
+    raw(ulid(), 'intent', operationId, AT, {}, { scope: s2 });
+    raw(ulid(), 'unknown', operationId, AT, { error: 'no outcome' }, { scope: s2 });
+    const logged: unknown[][] = [];
+    const logError = (m: string, f: Record<string, unknown>) => logged.push([m, f]);
+    const annotated = await withAuditedOutcomes(host.admin, staff, await entriesOf(operationId), logError);
+    const byScope = (tenant: string, scope: string) =>
+      annotated.filter((r) => r.tenantId === tenant && r.scopeId === scope).map((r) => [(r.after as { phase: string }).phase, r.audited?.outcome, r.audited?.superseded]);
+    expect(byScope(t, s)).toEqual([['intent', 'applied', false], ['unknown', 'applied', true], ['applied', 'applied', false]]);
+    expect(byScope(t2, s)).toEqual([['intent', 'refused', false], ['unknown', 'refused', true], ['refused', 'refused', false]]);
+    expect(byScope(t, s2)).toEqual([['intent', 'unknown', false], ['unknown', 'unknown', false]]);
+    expect(logged).toEqual([]);
+    // The digest, the same way: the two scopes a real outcome reached are resolved, the third is not.
+    const failures = [unknownFailure(operationId), unknownFailure(operationId, { tenant: t2 }), unknownFailure(operationId, { scope: s2 })];
+    expect(await supersededUnknowns(host.admin, staff, failures, logError)).toEqual(new Set([failures[0]!.id, failures[1]!.id]));
+    expect(logged).toEqual([]);
   });
 
   it('resolves a page in ONE batched read, however much unrelated history the log holds', async () => {

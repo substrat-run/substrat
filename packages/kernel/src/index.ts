@@ -538,7 +538,7 @@ export {
   AUDITED_OPERATIONS_BATCH,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
-  auditedKeyOf,
+  operationKeyOf,
   auditedOperationsSql,
   effectiveOutcomes,
   isSupersededOutcome,
@@ -552,6 +552,7 @@ export type {
   AuditedOperationSqlRow,
   AuditedPhase,
   EffectiveOutcome,
+  OperationKey,
   SettleIntentRow,
   UnknownOutcome,
 } from './audit-outcome.js';

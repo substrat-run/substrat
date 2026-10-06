@@ -25,11 +25,12 @@
 import { AUDIT_ERROR_MAX, type AdminLogEntry, type OpsFailureEntry, type PlatformActorId } from '@substrat-run/contracts';
 import {
   AUDITED_CHANGE_ACTIONS,
-  auditedKeyOf,
+  operationKeyOf,
   effectiveOutcomes,
   isSupersededOutcome,
   type AuditedOperationRef,
   type EffectiveOutcome,
+  type OperationKey,
   type HostAdmin,
 } from '@substrat-run/kernel';
 import { AUDITED_CALL_DEADLINE_MS } from './vertical-client.js';
@@ -206,11 +207,11 @@ async function resolveOperations(
   actor: PlatformActorId,
   refs: AuditedOperationRef[],
   logError: NonNullable<AuditedChangeSpec<unknown>['logError']> = consoleError,
-): Promise<Map<string, EffectiveOutcome>> {
+): Promise<Map<OperationKey, EffectiveOutcome>> {
   if (refs.length === 0) return new Map();
   const effective = effectiveOutcomes(await admin.auditedOperations(actor, refs));
   for (const [key, outcome] of effective) {
-    if (outcome.outcome === 'conflicting') logError(OUTCOME_CONFLICT_LOG, { operation: key, outcomes: outcome.real });
+    if (outcome.outcome === 'conflicting') logError(OUTCOME_CONFLICT_LOG, { operation: JSON.parse(key) as unknown, outcomes: outcome.real });
   }
   return effective;
 }
@@ -237,7 +238,7 @@ export async function withAuditedOutcomes(
   return entries.map((row) => {
     const operationId = operationIdOf(row);
     if (operationId === null) return row;
-    const outcome = effective.get(auditedKeyOf(row.action, operationId));
+    const outcome = effective.get(operationKeyOf({ action: row.action, operationId, tenantId: row.tenantId, scopeId: row.scopeId }));
     const phase = (row.after as { phase?: string }).phase ?? null;
     return {
       ...row,
@@ -258,19 +259,17 @@ export async function supersededUnknowns(
   failures: readonly OpsFailureEntry[],
   logError?: AuditedChangeSpec<unknown>['logError'],
 ): Promise<Set<string>> {
-  const unknowns = new Map<string, OpsFailureEntry>();
-  const refs: AuditedOperationRef[] = [];
+  const unknowns = new Map<string, AuditedOperationRef>();
   for (const f of failures) {
     const action = f.operation.startsWith('audit.') ? f.operation.slice('audit.'.length) : null;
     if (f.stage !== 'outcome-unknown' || !action || !f.reference) continue;
     if (!(AUDITED_CHANGE_ACTIONS as readonly string[]).includes(action)) continue;
-    unknowns.set(f.id, f);
-    refs.push({ action, operationId: f.reference, tenantId: f.tenantId, scopeId: f.scopeId });
+    unknowns.set(f.id, { action, operationId: f.reference, tenantId: f.tenantId, scopeId: f.scopeId });
   }
-  const effective = await resolveOperations(admin, actor, refs, logError);
+  const effective = await resolveOperations(admin, actor, [...unknowns.values()], logError);
   const superseded = new Set<string>();
-  for (const [id, f] of unknowns) {
-    const outcome = effective.get(auditedKeyOf(f.operation.slice('audit.'.length), f.reference!));
+  for (const [id, ref] of unknowns) {
+    const outcome = effective.get(operationKeyOf(ref));
     if (outcome && outcome.real.length === 1) superseded.add(id);
   }
   return superseded;

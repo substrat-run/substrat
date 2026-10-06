@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { ADMIN_LOG_INDEXES_SQL } from '../src/admin-log-ddl.js';
 import {
   AUDITED_OPERATIONS_BATCH,
-  auditedKeyOf,
+  operationKeyOf,
   auditedOperationsSql,
   effectiveOutcomes,
   isSupersededOutcome,
@@ -18,8 +18,12 @@ import {
  * ids and clocks need not agree, so every order below must resolve the same way.
  */
 describe('effectiveOutcomes', () => {
-  const op = (phase: string, operationId = 'op') => ({ action: 'transferOwner', operationId, phase });
-  const resolve = (...rows: ReturnType<typeof op>[]) => effectiveOutcomes(rows).get(auditedKeyOf('transferOwner', 'op'));
+  const op = (phase: string, operationId = 'op', where: { tenantId?: string; scopeId?: string } = {}) => ({
+    action: 'transferOwner', operationId, tenantId: where.tenantId ?? 't1', scopeId: where.scopeId ?? 's1', phase,
+  });
+  const key = (where: { tenantId?: string; scopeId?: string } = {}) =>
+    operationKeyOf({ action: 'transferOwner', operationId: 'op', tenantId: where.tenantId ?? 't1', scopeId: where.scopeId ?? 's1' });
+  const resolve = (...rows: ReturnType<typeof op>[]) => effectiveOutcomes(rows).get(key());
 
   it('a real outcome beats unknown in either order', () => {
     for (const real of ['applied', 'refused', 'failed']) {
@@ -46,8 +50,18 @@ describe('effectiveOutcomes', () => {
   });
 
   it('rows of another action or another operation decide nothing', () => {
-    const rows = [op('unknown'), { action: 'createTenant', operationId: 'op', phase: 'applied' }, op('applied', 'other')];
-    expect(effectiveOutcomes(rows).get(auditedKeyOf('transferOwner', 'op'))?.outcome).toBe('unknown');
+    const rows = [op('unknown'), { ...op('applied'), action: 'createTenant' }, op('applied', 'other')];
+    expect(effectiveOutcomes(rows).get(key())?.outcome).toBe('unknown');
+  });
+
+  it('one operation id in two tenants, or two scopes, is two operations — never a conflict', () => {
+    const rows = [op('applied'), op('refused', 'op', { tenantId: 't2' }), op('failed', 'op', { scopeId: 's2' })];
+    const effective = effectiveOutcomes(rows);
+    expect(effective.get(key())?.outcome).toBe('applied');
+    expect(effective.get(key({ tenantId: 't2' }))?.outcome).toBe('refused');
+    expect(effective.get(key({ scopeId: 's2' }))?.outcome).toBe('failed');
+    // The twin: two real outcomes in the SAME scope are still the invariant breaking.
+    expect(effectiveOutcomes([op('applied'), op('refused')]).get(key())?.outcome).toBe('conflicting');
   });
 });
 
