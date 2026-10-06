@@ -854,6 +854,46 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     for (const tab of tabs) expect(tab.frames).toHaveLength(1);
   });
 
+  // -- sockets that expire on a scope nobody writes to (#938, Codex round 2) -----
+
+  const soon = (ms: number) => new Date(Date.now() + ms).toISOString();
+  const later = () => soon(60_000);
+  const idle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('admits a fresh session in place of sockets that expired with no write in between', async () => {
+    const expiring: CheckedWatcher[] = [];
+    for (let i = 0; i < LIVE_SOCKETS_PER_PRINCIPAL; i++) expiring.push(await watchChecked(reader, F1, soon(300)));
+    await idle(500);
+    // No write since: only admission can have noticed that the eight ended.
+    const fresh = await watchChecked(reader, F1, later());
+    await settle();
+    expect(fresh.closedWith).toBeNull();
+    for (const old of expiring) expect(old.closedWith).toBe(1008);
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(fresh.frames).toHaveLength(1);
+  });
+
+  it('still holds the cap against sockets whose sessions are current — the twin', async () => {
+    for (let i = 0; i < LIVE_SOCKETS_PER_PRINCIPAL; i++) await watchChecked(reader, F1, later());
+    const extra = await watchChecked(reader, F1, later());
+    await settle();
+    expect(extra.closedWith).toBe(LIVE_CLOSE.tooMany);
+  });
+
+  it('closes an expired socket on an idle scope by its alarm, with no write and no new subscriber', async () => {
+    const ends = await watchChecked(reader, F1, soon(400));
+    const stays = await watchChecked(reader, F1, later());
+    const armed = await runInDurableObject(scopeDo(), (_i, state) => state.storage.getAlarm());
+    expect(armed).not.toBeNull();
+    await idle(1_500);
+    expect(ends.closedWith).toBe(1008);
+    expect(stays.closedWith).toBeNull();
+    // Re-armed for the socket still open.
+    const next = await runInDurableObject(scopeDo(), (_i, state) => state.storage.getAlarm());
+    expect(next).not.toBeNull();
+  });
+
   it(`holds a principal to ${LIVE_SOCKETS_PER_PRINCIPAL} sockets: the next is closed ${LIVE_CLOSE.tooMany} and sent nothing`, async () => {
     const tabs: CheckedWatcher[] = [];
     for (let i = 0; i < LIVE_SOCKETS_PER_PRINCIPAL; i++) tabs.push(await watchChecked(reader, F1));
@@ -1078,5 +1118,43 @@ describe('live reads: the ping keep-alive (#1860)', () => {
     await settle();
     expect(await handledCount()).toBe(before + 1);
     ws.close(1000, 'test over');
+  });
+});
+
+describe("live reads: the reaper's alarm and a scope's dump (#938)", () => {
+  it('leaves workerd’s own _cf_* tables out of an export, and a wipe-and-load past them', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.LIVE_SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    const sx = scopeIdOf.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: sx, vertical: 'live-vertical' });
+    await host.admin.activateScope(staff, t, sx);
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sx,
+      principal: writer,
+      request: upgrade(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(response.status).toBe(101);
+    response.webSocket!.accept();
+    const stub = env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(sx));
+    // The alarm is armed, and workerd keeps its table for it in the scope's SQLite.
+    const cf = await runInDurableObject(stub, (_i, state) =>
+      state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE name GLOB '_cf_*'`).toArray(),
+    );
+    expect(cf.length).toBeGreaterThan(0);
+
+    const scope = stub as unknown as {
+      exportDump(): Promise<{ name: string }[]>;
+      importDump(tables: unknown[], dest?: string): Promise<unknown>;
+    };
+    const dump = await scope.exportDump();
+    expect(dump.map((d) => d.name).filter((n) => n.startsWith('_cf_'))).toEqual([]);
+    await expect(scope.importDump(dump, sx)).resolves.not.toThrow();
+    response.webSocket!.close(1000, 'test over');
+    await host.close();
   });
 });

@@ -3017,16 +3017,11 @@ export function defineScopeDO(
        * once with `4429`, rather than refused with a status, because a browser never sees
        * a failed handshake's status — only a close code, which the client reads as "poll
        * and stop asking". Not hibernated, so it never joins the roster the fan-out walks.
+       *
+       * Counted over the sockets still live: one whose session has ended is closed here
+       * first, so sockets that expired on an idle scope never hold a fresh session out.
        */
-      const held = this.ctx.getWebSockets().filter((ws) => {
-        let s: LiveSubscription | null = null;
-        try {
-          s = readSubscription(ws.deserializeAttachment());
-        } catch {
-          s = null;
-        }
-        return s?.principal === subscriber.principal;
-      }).length;
+      const held = this.reapExpiredLive().filter((s) => s.principal === subscriber.principal).length;
       if (held >= LIVE_SOCKETS_PER_PRINCIPAL) {
         server.accept();
         server.close(LIVE_CLOSE.tooMany, 'too many live subscriptions for this principal; poll instead');
@@ -3045,7 +3040,66 @@ export function defineScopeDO(
         ...(within ? { within } : {}),
         ...(expiresAt ? { expiresAt } : {}),
       } satisfies LiveSubscription);
+      if (expiresAt) await this.armLiveExpiry();
       return new Response(null, { status: 101, webSocket: client });
+    }
+
+    /**
+     * Close every live socket whose session has ended (`1008`), and return the
+     * subscriptions still open (#938). Reads only the sockets' own attachments, never the
+     * database, so it is as cheap on a scope nobody writes to as on a busy one.
+     */
+    private reapExpiredLive(now = new Date().toISOString()): LiveSubscription[] {
+      const live: LiveSubscription[] = [];
+      for (const ws of this.ctx.getWebSockets()) {
+        let s: LiveSubscription | null = null;
+        try {
+          s = readSubscription(ws.deserializeAttachment());
+        } catch {
+          s = null;
+        }
+        if (!s) continue;
+        if (s.expiresAt !== undefined && s.expiresAt <= now) {
+          try {
+            ws.close(LIVE_CLOSE.revoked, 'the session that opened this subscription has ended');
+          } catch {
+            // Already gone.
+          }
+          continue;
+        }
+        live.push(s);
+      }
+      return live;
+    }
+
+    /**
+     * Arm the scope's alarm for the earliest session end among its live sockets (#938), so
+     * an expired socket is closed on a scope nobody writes to — the fan-out closes them
+     * too, but only on a pass, and an idle scope has none.
+     *
+     * Only ever moved EARLIER: an alarm already set before that instant is kept, and the
+     * handler re-arms for whatever is next. Re-arming on a close is not needed: an alarm
+     * that finds the socket already gone simply arms for the next one, or for nothing.
+     *
+     * The live reaper is this DO's only alarm use. A second one must share `alarm()` and
+     * this "earliest wins" rule, not call `setAlarm` on its own. The alarm makes workerd
+     * keep a `_cf_METADATA` table in the scope's SQLite; every table walk here skips
+     * `_cf_*` for that reason (`exportDump`, `importDump`, `introspectTables`).
+     */
+    private async armLiveExpiry(): Promise<void> {
+      let earliest: string | undefined;
+      for (const s of this.reapExpiredLive()) {
+        if (s.expiresAt !== undefined && (earliest === undefined || s.expiresAt < earliest)) earliest = s.expiresAt;
+      }
+      if (earliest === undefined) return;
+      const at = Date.parse(earliest);
+      const current = await this.ctx.storage.getAlarm();
+      if (current === null || current > at) await this.ctx.storage.setAlarm(at);
+    }
+
+    /** The live reaper's alarm (#938): close what has expired, then arm for what is next. */
+    async alarm(): Promise<void> {
+      await this.armLiveExpiry();
     }
 
     /** The context a live subscriber's checks run in: its own principal, under `live.subscribe`. */
@@ -5546,7 +5600,7 @@ export function defineScopeDO(
     introspectTables(): ScopeTable[] {
       const names = (
         this.sql
-          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
+          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB '_cf_*' ORDER BY name`)
           .toArray() as unknown as { name: string }[]
       ).map((r) => r.name);
       return names.map((name) => ({
@@ -5577,7 +5631,7 @@ export function defineScopeDO(
       const known = new Set(
         (
           this.sql
-            .exec(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB '_cf_*'`)
             .toArray() as unknown as { name: string }[]
         ).map((r) => r.name),
       );
@@ -5709,7 +5763,7 @@ export function defineScopeDO(
         this.sql
           .exec(
             `SELECT name, sql FROM sqlite_master
-              WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL
+              WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND sql IS NOT NULL
               ORDER BY name`,
           )
           .toArray() as unknown as { name: string; sql: string }[]
@@ -6021,7 +6075,9 @@ export function defineScopeDO(
           this.sql.exec('PRAGMA defer_foreign_keys = ON');
           // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
           const existing = this.sql
-            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
+            // Nor workerd's own `_cf_*` (the live reaper's alarm keeps `_cf_METADATA`), which
+            // it refuses to drop.
+            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'`)
             .toArray() as unknown as { name: string }[];
           // Search index tables are left alone here and rebuilt below (#827): dropping a
           // shadow table directly is an error, and `sqlite_master` order would reach one

@@ -328,7 +328,9 @@ see, because the walk is the row filter.
 `AuthSubject.expiresAt` from `@substrat-run/vertical-auth` carries it: a session cookie's or a
 bearer's `exp`. A handshake at or past it is refused, and the scope closes the socket (`1008`)
 on its first pass at or past it, before sending anything, whatever the caller's grants still
-say. Without it, a socket lives until one end closes it.
+say. A scope nobody writes to has no passes, so the scope also sets an alarm for the earliest
+expiry among its sockets and closes them then. Without `expiresAt`, a socket lives until one
+end closes it.
 
 ### How many sockets
 
