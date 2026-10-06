@@ -109,13 +109,16 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   platform's scheduled pass closes an intent that still has no outcome an hour later. It
   writes an `unknown` row, saying the log cannot tell whether the change happened, and an
   ops-failure row that the staff failure digest reports, both in one transaction, and only if
-  no outcome exists by then. A real outcome that lands later is still recorded, and the
-  latest outcome row of an operation is its result. Every reader holds to that.
+  no outcome exists by then. A real outcome that lands later is still recorded. Every reader
+  resolves an operation by priority, never by row order or timestamp: a real outcome
+  (`applied`, `refused`, `failed`) beats `unknown`, and two real outcomes for one operation
+  read `conflicting` and are logged, never guessed past.
   `GET /admin-log` returns the rows as written, and gives each row of these two actions an
   `audited` field: its `operationId`, the `outcome` the operation stands at (`pending` until
-  it has one), and `superseded` on an outcome row a later row replaced. The console shows
-  the same reading. The failure digest leaves out an `unknown` whose operation has since
-  recorded a real outcome.
+  it has one), and `superseded` on an `unknown` a real outcome beat. Each page is resolved
+  with one batched read of its own operations through an index on the operation id. The
+  console shows the same reading. The failure digest leaves out an `unknown` whose operation
+  has since recorded one real outcome.
   The answer's `fromRevoked` is about the instance's own owner seat only. `false` means `from`
   held none there; if `from` holds the owner role at the tenant level, that grant is untouched
   and still applies, and it is taken back through the tenant's role assignments.
