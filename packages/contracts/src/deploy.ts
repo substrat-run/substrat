@@ -530,9 +530,42 @@ export type PermissionRegistryEntry = z.infer<typeof permissionRegistryEntry>;
 /** An entity-narrowed grant SHAPE — which keys a per-entity grant carries (§4 of
  *  PERMISSIONS.md). The grants themselves are per-principal, runtime, scope-local; only
  *  their declared shapes are a code fact and belong in the manifest. */
+/** A table or column a declaration names, interpolated into SQL — the kernel's `SQL_IDENTIFIER`. */
+const sqlIdentifier = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+
 export const entityGrantShape = z.object({
   entityType: z.string().min(1),
   permissions: z.array(permissionKey),
+  /**
+   * #2071: a shape a person is GIVEN on their own record when they arrive (meridian's
+   * `EMPLOYEE_SELF`, todo's owner grant), granted with `grantEntityShape`. Only these are
+   * reconciled: a key the shape gains later reaches every holder at the next provision or
+   * reconcile. A shape without it is SHARING, reached through `ctx.grant` (todo's `list`), and is
+   * never reconciled. Topping it up would hand every person something was fully shared with the
+   * keys the shape gains. Omitted rather than `false` when unset, so a registry that declares no
+   * bootstrap shape keeps the permission digest it had.
+   */
+  bootstrap: z.literal(true).optional(),
+  /**
+   * #2071: how a bootstrap shape's HOLDER is found from the data, for the one-time backfill that
+   * marks people granted before markers existed. Provenance only, never which keys someone holds:
+   * someone `ctx.grant`ed every key of a one-key shape holds the whole shape and is still a
+   * sharee. Read only on a `bootstrap` shape.
+   *
+   * - `'self'`: the entity id IS the principal id. Todo's `owner:<principal>`.
+   * - `{ table, idColumn, principalColumn }`: the vertical's own table row for the entity names
+   *   its principal. Meridian's `hr_employees.principal_ref`.
+   *
+   * A person counts only when they also hold a row, live or tombstoned, for some key of the
+   * shape on that entity: evidence they were given it. Absent: no backfill, so only people given
+   * the shape with `grantEntityShape` from then on are holders.
+   */
+  holder: z
+    .union([
+      z.literal('self'),
+      z.object({ table: sqlIdentifier, idColumn: sqlIdentifier, principalColumn: sqlIdentifier }),
+    ])
+    .optional(),
 });
 export type EntityGrantShape = z.infer<typeof entityGrantShape>;
 
@@ -741,7 +774,12 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
 
   const entityGrants = [...(input.entityGrants ?? [])]
     .sort((a, b) => cmp(a.entityType, b.entityType))
-    .map((g) => ({ entityType: g.entityType, permissions: sortKeys(g.permissions) }));
+    .map((g) => ({
+      entityType: g.entityType,
+      permissions: sortKeys(g.permissions),
+      ...(g.bootstrap ? { bootstrap: true as const } : {}),
+      ...(g.holder ? { holder: g.holder } : {}),
+    }));
 
   // #1705: the edges. Keyed so two modules declaring the same flow collapse into one row
   // with both named. A flow is one fact however many modules state it. The version and

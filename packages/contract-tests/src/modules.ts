@@ -1760,6 +1760,28 @@ export const permMod: ModuleRegistration = {
     'perm/can-assign': (async (ctx, input) => {
       return ctx.canAssign((input as { roleKey: string }).roleKey);
     }) as OperationHandler<never, unknown>,
+    // #2071: a principal's `granted:` rows, tombstones included — what a revoke LEAVES, which
+    // the checker's answer alone cannot show (a deleted row and a tombstone both deny).
+    'perm/grant-rows': (async (ctx, input) =>
+      ctx.sql
+        .query<{ relation: string; object: string; revoked_at: string | null; expires_at: string | null }>(
+          `SELECT relation, object, revoked_at, expires_at FROM _substrat_tuples
+            WHERE subject = ? AND substr(relation, 1, 8) = 'granted:' ORDER BY relation, object`,
+          [`principal:${(input as { principal: string }).principal}`],
+        )
+        .map((r) => ({ relation: r.relation, object: r.object, revokedAt: r.revoked_at, expiresAt: r.expires_at }))) as OperationHandler<
+      never,
+      unknown
+    >,
+    // #2071: the kernel's `entity.grants-topped-up` events on one entity, oldest first.
+    'perm/topped-up': (async (ctx, input) =>
+      ctx.sql
+        .query<{ payload: string; actor: string; operation: string | null; authorization: string | null }>(
+          `SELECT payload, actor, operation, authorization FROM _substrat_outbox
+            WHERE type = 'entity.grants-topped-up' AND entity_type = ? AND entity_id = ? ORDER BY id`,
+          [(input as EntityRef).entityType, (input as EntityRef).entityId],
+        )
+        .map((r) => ({ ...r, payload: JSON.parse(r.payload), actor: JSON.parse(r.actor) }))) as OperationHandler<never, unknown>,
     'perm/unshare': (async (ctx, input) => {
       const i = input as { principal: string; permission: string; entity: EntityRef };
       await ctx.revoke(
@@ -2998,7 +3020,12 @@ export const liveModManifest = moduleManifest.parse({
   liveTargets: [{ entityType: 'note', readPermission: 'live:read' }],
   // #1853: a note can sit in a folder — sometimes in two — and move between them, which
   // is what a feed narrowed `within` a folder walks.
-  entityRelations: [{ entityType: 'note', parentType: 'folder' }],
+  // #938: a folder sits in a cabinet, so a `checkedWithin(folder)` subscriber's grant on
+  // the cabinet reaches its root, and moving the folder takes the root out of that reach.
+  entityRelations: [
+    { entityType: 'note', parentType: 'folder' },
+    { entityType: 'folder', parentType: 'cabinet' },
+  ],
   entitlementKey: 'live',
 });
 
@@ -3044,12 +3071,12 @@ const liveTouchLedgerOp: OperationHandler<{ ledgerId: string }, { ledgerId: stri
  * and un-narrowing are things an app does on a person's behalf, not things a platform
  * actor reaches in.
  */
-const liveUnshareOp: OperationHandler<{ principal: string; noteId: string }, void> = async (
-  ctx,
-  input,
-) => {
+const liveUnshareOp: OperationHandler<
+  { principal: string; noteId: string; entityType?: 'note' | 'cabinet' },
+  void
+> = async (ctx, input) => {
   await ctx.revoke(principalId.parse(input.principal), permissionKey.parse('live:read'), {
-    entityType: 'note',
+    entityType: input.entityType ?? 'note',
     entityId: input.noteId,
   });
 };
@@ -3070,6 +3097,36 @@ const liveMoveOp: OperationHandler<{ noteId: string; from: string; to: string },
   );
 };
 
+/** Touch several notes in one operation (#938): one pass, several rows. */
+const liveTouchEachOp: OperationHandler<{ noteIds: string[] }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  for (const noteId of input.noteIds) {
+    ctx.emit({
+      type: 'live.note-touched',
+      schemaVersion: 1,
+      entity: { entityType: 'note', entityId: noteId },
+      piiClass: 'none',
+      payload: {},
+    });
+  }
+};
+
+/** Put a folder in a cabinet (#938). */
+const liveShelveOp: OperationHandler<{ folderId: string; cabinetId: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  ctx.link({ entityType: 'folder', entityId: input.folderId }, { entityType: 'cabinet', entityId: input.cabinetId });
+};
+
+/** Move a folder to another cabinet (#938): a `checkedWithin(folder)` root moving out of a grant's reach. */
+const liveReshelveOp: OperationHandler<{ folderId: string; from: string; to: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  ctx.relink(
+    { entityType: 'folder', entityId: input.folderId },
+    { entityType: 'cabinet', entityId: input.from },
+    { entityType: 'cabinet', entityId: input.to },
+  );
+};
+
 export const liveMod: ModuleRegistration = {
   manifest: liveModManifest,
   migrations: [],
@@ -3079,6 +3136,9 @@ export const liveMod: ModuleRegistration = {
     'live/unshare': liveUnshareOp as OperationHandler<never, unknown>,
     'live/file': liveFileOp as OperationHandler<never, unknown>,
     'live/move': liveMoveOp as OperationHandler<never, unknown>,
+    'live/touch-each': liveTouchEachOp as OperationHandler<never, unknown>,
+    'live/shelve': liveShelveOp as OperationHandler<never, unknown>,
+    'live/reshelve': liveReshelveOp as OperationHandler<never, unknown>,
   },
 };
 
@@ -3143,6 +3203,47 @@ export const spineParentMod: ModuleRegistration = {
       sql: 'CREATE TABLE lists (id TEXT PRIMARY KEY);\nCREATE TABLE notes (t TEXT REFERENCES/**/"_Substrat_Tuples"(subject));',
     },
   ],
+  operations: {},
+};
+
+/**
+ * #2066: migrations that reach for the migration journal — one drops its digest fence, one writes
+ * the journal itself. Each would make the digest check say whatever it wrote, so both must be
+ * refused before any of their SQL runs, on every adapter. Hosted apart, like `brokenMod`, and each
+ * migration's first statement is harmless so a refusal that let part of it run leaves `jt` behind.
+ */
+export const journalFenceDropMod: ModuleRegistration = {
+  manifest: foreignKeyModManifest('@test/journal-fence-drop'),
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE jt (id TEXT PRIMARY KEY);\nDROP TRIGGER "_Substrat_Migrations_Digest_Required";' },
+  ],
+  operations: {},
+};
+
+export const journalWriteMod: ModuleRegistration = {
+  manifest: foreignKeyModManifest('@test/journal-write'),
+  migrations: [
+    { version: '0001-init', sql: "CREATE TABLE jt (id TEXT PRIMARY KEY);\nDELETE FROM main._substrat_migrations WHERE module_id = 'x';" },
+  ],
+  operations: {},
+};
+
+/**
+ * #2066 r3: authored migrations that reach for the rest of the spine — one shadows
+ * `_substrat_tuples` with a same-named TEMP table (every unqualified kernel read would then see
+ * the empty one), one drops the outbox. Refused before any of their SQL runs, like the two above.
+ */
+export const spineShadowMod: ModuleRegistration = {
+  manifest: foreignKeyModManifest('@test/spine-shadow'),
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE jt (id TEXT PRIMARY KEY);\nCREATE TEMP TABLE "_Substrat_Tuples" (subject TEXT);' },
+  ],
+  operations: {},
+};
+
+export const spineDropMod: ModuleRegistration = {
+  manifest: foreignKeyModManifest('@test/spine-drop'),
+  migrations: [{ version: '0001-init', sql: 'CREATE TABLE jt (id TEXT PRIMARY KEY);\nDROP TABLE main._substrat_outbox;' }],
   operations: {},
 };
 

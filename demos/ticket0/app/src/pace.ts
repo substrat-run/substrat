@@ -26,6 +26,12 @@ export interface Pace {
 export const PACE = {
   inbox: { everyMs: 10_000, connectedMs: LIVE_FLOOR_MS },
   conversation: { everyMs: 5_000, connectedMs: LIVE_FLOOR_MS },
+  /**
+   * The portal's one conversation (#938). It used to load once and never again, so a
+   * reply reached a customer only when they reloaded. The inbox's pace without a socket:
+   * a customer waits on a person, not on a draft landing.
+   */
+  portal: { everyMs: 10_000, connectedMs: LIVE_FLOOR_MS },
 } as const satisfies Record<string, Pace>;
 
 /**

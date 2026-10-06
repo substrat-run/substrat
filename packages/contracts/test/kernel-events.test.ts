@@ -13,7 +13,7 @@ import {
   assertModuleEmittableType,
   isKernelAuthoredEventType,
 } from '../src/kernel-events.js';
-import { ENTITY_LINKED, ENTITY_RELINKED } from '../src/permission.js';
+import { ENTITY_GRANTS_TOPPED_UP, ENTITY_LINKED, ENTITY_RELINKED } from '../src/permission.js';
 import { ENTITY_ARCHIVED, ENTITY_RESTORED, ENTITY_TRASHED, ENTITY_UNARCHIVED } from '../src/entity-state.js';
 
 const codeOf = (fn: () => void): string | undefined => {
@@ -26,7 +26,7 @@ const codeOf = (fn: () => void): string | undefined => {
 };
 
 describe('kernel-authored event types (#1864)', () => {
-  it('is exactly the eleven types the kernel writes', () => {
+  it('is exactly the twelve types the kernel writes', () => {
     expect([...KERNEL_AUTHORED_EVENT_TYPES].sort()).toEqual(
       [
         ATTACHMENT_ADDED,
@@ -41,6 +41,8 @@ describe('kernel-authored event types (#1864)', () => {
         ENTITY_UNARCHIVED,
         ENTITY_TRASHED,
         ENTITY_RESTORED,
+        // #2071: a declared shape's top-up is the kernel's record of a grant nobody's operation made.
+        ENTITY_GRANTS_TOPPED_UP,
       ].sort(),
     );
   });
@@ -78,7 +80,7 @@ describe('kernel-authored event types (#1864)', () => {
         // a frozen array throws in strict mode; either way, nothing may have changed
       }
     }
-    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(11);
+    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(12);
     for (const type of [ENTITY_RELINKED, ENTITY_LINKED, CAPABILITY_MINTED, ATTACHMENT_ADDED]) {
       expect(codeOf(() => assertModuleEmittableType(type))).toBe('validation_failed');
       expect(isKernelAuthoredEventType(type)).toBe(true);

@@ -20,6 +20,7 @@ export { moduleLogContractSuite } from './module-log-suite.js';
 export { asyncLogContractSuite, type AsyncLogFixture } from './async-log-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
+export { migrationDigestContractSuite } from './migration-digest-suite.js';
 export { entityStateContractSuite } from './entity-state-suite.js';
 export { stateMod } from './entity-state-module.js';
 export { subjectErasureContractSuite, type RawScopeQuery } from './subject-erasure-suite.js';
@@ -97,6 +98,10 @@ export {
   parseMod,
   parseModManifest,
   spineParentMod,
+  journalFenceDropMod,
+  journalWriteMod,
+  spineDropMod,
+  spineShadowMod,
   ownParentMod,
   PRE_GUARD_REFUSALS_DDL,
 } from './modules.js';

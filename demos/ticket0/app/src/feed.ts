@@ -17,11 +17,23 @@ export interface LiveChange {
   entityId: string;
 }
 
+/**
+ * What a root-scoped feed is sent (the kernel's `LiveNudge`): something under the root
+ * changed, naming nothing. The portal's feed carries only these (`harness/portal-live.ts`).
+ */
+export interface LiveNudge {
+  kind: 'nudge';
+}
+
+/** Any frame a feed hands its listeners. */
+export type LiveFrame = LiveChange | LiveNudge;
+
 /** What the feed needs of a WebSocket. The browser's satisfies it. */
 export interface SocketLike {
   onopen: (() => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
-  onclose: (() => void) | null;
+  /** `code` is the close code, when the runtime reports one. */
+  onclose: ((event?: { code?: number }) => void) | null;
   send(data: string): void;
   close(code?: number, reason?: string): void;
 }
@@ -39,10 +51,17 @@ export interface FeedDeps {
 }
 
 export interface FeedListener {
-  frame(change: LiveChange): void;
+  frame(frame: LiveFrame): void;
   /** The feed opened or closed. */
   state(open: boolean): void;
 }
+
+/**
+ * The close code a scope sends when this principal already holds as many live sockets as
+ * it may (the kernel's `LIVE_CLOSE.tooMany`, restated because the browser bundle does not
+ * depend on the kernel). Not a reason to retry: the feed stops trying and the screen polls.
+ */
+export const CLOSE_TOO_MANY = 4429;
 
 export const FEED_TIMING = {
   /** Connections in a row that did not hold before the feed stops trying for a while. */
@@ -90,8 +109,36 @@ export interface Feed {
 }
 
 /**
+ * Every feed a page made, so a session ending ends all of them at once: the desk's and
+ * each portal conversation's. A feed tracked after `end` is ended at once — signing back
+ * in is a page load, which makes a new set.
+ */
+export interface FeedSet {
+  track(feed: Feed): Feed;
+  end(): void;
+}
+
+export function feedSet(): FeedSet {
+  const feeds = new Set<Feed>();
+  let ended = false;
+  return {
+    track(feed) {
+      if (ended) feed.end();
+      else feeds.add(feed);
+      return feed;
+    },
+    end() {
+      ended = true;
+      for (const feed of feeds) feed.end();
+      feeds.clear();
+    },
+  };
+}
+
+/**
  * The client's fetch, ending `feed` on the first 401 it sees. Any read answering 401
  * means the session this feed was opened for is gone, whichever screen noticed first.
+ * Pass the page's `FeedSet` to end every feed it made.
  */
 export function endingOnUnauthorized<F extends (...args: never[]) => Promise<Response>>(
   fetchImpl: F,
@@ -160,18 +207,24 @@ export function createFeed(deps: FeedDeps): Feed {
     };
     ws.onmessage = (event) => {
       if (event.data === 'pong') return;
-      let change: LiveChange;
+      let frame: LiveFrame;
       try {
-        change = JSON.parse(String(event.data)) as LiveChange;
+        frame = JSON.parse(String(event.data)) as LiveFrame;
       } catch {
         return;
       }
-      if (change.kind !== 'change') return;
-      for (const l of listeners) l.frame(change);
+      if (frame?.kind !== 'change' && frame?.kind !== 'nudge') return;
+      for (const l of listeners) l.frame(frame);
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       const held = openedAt !== null && deps.now() - openedAt >= FEED_TIMING.stableMs;
       teardown();
+      // Too many sockets for this principal: the scope said poll. Asking again would only
+      // be told the same, so this feed stops for the life of the page.
+      if (event?.code === CLOSE_TOO_MANY) {
+        ended = true;
+        return;
+      }
       failures = held ? 0 : failures + 1;
       scheduleRetry();
     };

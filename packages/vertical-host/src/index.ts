@@ -158,6 +158,8 @@ import {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
+  entityGrantShape,
+  type EntityGrantShape,
 } from '@substrat-run/contracts';
 
 /**
@@ -193,6 +195,9 @@ export interface VerticalScopeHost {
     tenantHeldPeers?: string[];
     /** #2045: each recorded-off subject's fence, by tuple subject. A host built before it ignores it. */
     switchFences?: Record<string, string>;
+    /** #2071: the declared entity-grant shapes, each holder topped up to the shape as it is now.
+     *  A host built before it ignores the field, and the next host that reads it catches up. */
+    entityGrants?: readonly EntityGrantShape[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
@@ -588,6 +593,14 @@ const reconcileBody = z.object({
   tenantHeldPeers: z.array(verticalSlugOf).optional(),
   /** #2045: each recorded-off subject's fence, by tuple subject. */
   switchFences: z.record(z.string().min(1), z.string().min(1)).optional(),
+  /**
+   * #2071: the declared entity-grant shapes of the version this reconcile reaches, as the
+   * platform reads them from that version's REVIEWED registry. The only source the reconcile
+   * tops holders up from — a vertical names no shapes of its own here, so a shape its code
+   * declares `bootstrap` while the reviewed registry does not is never acted on. Absent ⇒ no
+   * reconcile of shapes.
+   */
+  entityGrants: z.array(entityGrantShape).optional(),
 });
 
 /**
@@ -1784,6 +1797,8 @@ export function mountPlatformSurface<Env extends object>(
       switchedOffPeers: body.switchedOffPeers,
       tenantHeldPeers: body.tenantHeldPeers,
       switchFences: body.switchFences,
+      // #2071: from the platform's body — the reviewed registry — never from this vertical's code.
+      entityGrants: body.entityGrants,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this
