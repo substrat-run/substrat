@@ -870,9 +870,9 @@ export interface PlatformSurfaceDeps<Env> {
    * The vertical's declared entity-grant shapes (`ENTITY_GRANTS`, #2071) — the same list its
    * `PERMISSIONS.md` renders. Every provision and reconcile tops each holder up to the shape as
    * it is now, so a key a release adds reaches the people who already held the shape. Holders
-   * are the people given it with `grantEntityShapeLocal`. Only those shapes: a SHARING shape,
-   * reached through `ctx.grant`, must not be listed, or everyone fully shared something would
-   * be marked a holder and receive what the shape gains. Optional: a vertical with none omits it.
+   * are the people given it with `grantEntityShapeLocal`. Pass the whole `ENTITY_GRANTS`: only a
+   * shape declared `bootstrap: true` is reconciled, and a sharing one is skipped. Optional: a
+   * vertical with none omits it.
    */
   entityGrants?: readonly EntityGrantShape[];
 

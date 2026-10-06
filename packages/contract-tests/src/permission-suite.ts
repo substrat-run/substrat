@@ -14,6 +14,7 @@ import {
   type OrgId,
   type PrincipalId,
   delegatedReadParams,
+  errorCodeOf,
   moduleManifest,
   PERMISSION_KEY_MAX_LENGTH,
 } from '@substrat-run/contracts';
@@ -497,7 +498,7 @@ export function permissionContractSuite(
       const shapeTo = (who: PrincipalId, id: string, permissions = OLD) =>
         host.admin.grantEntityShape(staff, { principalId: who, node, entity: desk(id), permissions, grantedBy: alice });
       const reconcile = (permissions: PermissionKey[] = GROWN, batch?: number) =>
-        host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'desk', permissions }], batch ? { batch } : undefined);
+        host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'desk', permissions, bootstrap: true }], batch === undefined ? undefined : { batch });
       const can = async (who: PrincipalId, permission: PermissionKey, id: string) =>
         (await probe(who, s4, permission, desk(id))).allowed;
       const toppedUp = async (id: string) =>
@@ -581,6 +582,37 @@ export function permissionContractSuite(
         expect(await can(kim, PERM_USE, 'd9')).toBe(false);
         await shapeTo(kim, 'd9', GROWN);
         expect(await can(kim, PERM_USE, 'd9')).toBe(true);
+      });
+
+      it('the backfill marks a person on their OWN record only — a one-key grant delegated on another’s is not', async () => {
+        const seat = (id: string): EntityRef => ({ entityType: 'seat', entityId: id });
+        const shape = (permissions: PermissionKey[]) => [{ entityType: 'seat', permissions, bootstrap: true as const, holder: 'self' as const }];
+        const lena = principalId.parse(ulid());
+        const max = principalId.parse(ulid());
+        // Both granted before markers existed: lena on her own seat, max on lena's (a delegation).
+        for (const who of [lena, max]) {
+          await host.admin.grant(staff, { principalId: who, permission: PERM_READ, node, entity: seat(lena), grantedBy: alice });
+        }
+        await host.admin.reconcileEntityGrantShapes(staff, node, shape([PERM_READ]));
+        await host.admin.reconcileEntityGrantShapes(staff, node, shape([PERM_READ, PERM_USE]));
+        expect((await probe(lena, s4, PERM_USE, seat(lena))).allowed).toBe(true);
+        expect((await probe(max, s4, PERM_USE, seat(lena))).allowed).toBe(false);
+      });
+
+      it.each([0, -1, 1.5, 5001])('refuses batch %s with validation_failed, before touching the scope', async (batch) => {
+        const err = await reconcile(GROWN, batch).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(errorCodeOf(err)).toBe('validation_failed');
+      });
+
+      it('a sharing shape (no `bootstrap`) passed in is never reconciled, even for a marked holder', async () => {
+        await shapeTo(kim, 's1', OLD);
+        expect(await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'desk', permissions: GROWN }])).toEqual({
+          toppedUp: 0,
+        });
+        expect(await can(kim, PERM_USE, 's1')).toBe(false);
       });
     });
 

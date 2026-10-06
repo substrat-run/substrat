@@ -447,7 +447,7 @@ export {
 } from './findings.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { delegatedGrantSql, delegatedRevokeSql } from './entity-grant.js';
-export { SHAPE_TOP_UP_BATCH, grantEntityShapeIn, topUpEntityGrantShapes } from './entity-grant-shape.js';
+export { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes } from './entity-grant-shape.js';
 export type { ShapePass } from './entity-grant-shape.js';
 export { applyScopeRoleChange, changeScopeRole, combineCoverage, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';

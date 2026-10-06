@@ -338,7 +338,7 @@ describe('a declared entity-grant shape over a CP-less host (#2071)', () => {
       owner,
       roles: [{ key: 'office-admin', permissions: [READ, USE], source: 'vertical' }],
       ownerRoleKey: 'office-admin',
-      ...(permissions ? { entityGrants: [{ entityType: 'employee', permissions }] } : {}),
+      ...(permissions ? { entityGrants: [{ entityType: 'employee', permissions, bootstrap: true as const }] } : {}),
     });
   const can = async (perm: typeof READ): Promise<boolean> =>
     (await (await host.getScope(employee, t, s)).invoke<{ allowed: boolean }>('perm/probe', { permission: perm, entity: record }))

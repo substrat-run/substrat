@@ -1902,17 +1902,20 @@ export interface HostAdmin {
    * Top every holder of each declared shape up to the shape as it is now (#2071): a key the
    * shape gained is granted to each person holding the shape's marker on an entity of that
    * type. Never a key revoked from that person there (its K-21 tombstone stays), and never a
-   * removal: a key dropped from the shape is left in place. The first run for an entity type
-   * on a scope also marks the people who already hold every key of the current shape.
+   * removal: a key dropped from the shape is left in place. Until it is done on a scope, a
+   * shape that declares a `holder` is also backfilled: each person its holder relationship names
+   * as the owner of an entity (`'self'`, or the vertical's own column) is marked if they hold a
+   * key of the shape there. Never inferred from key sets, so a grant delegated on someone else's
+   * record is never marked. Without a `holder`, there is no backfill.
    *
-   * Pass only the shapes the vertical gives with {@link grantEntityShape} — a person's own
-   * record. Never a SHARING shape, reached through `ctx.grant` (todo's `list`): its first run
-   * would mark every person something was fully shared with as a holder, and a key the shape
-   * gained later would then reach them without anyone sharing it.
+   * Only shapes declared `bootstrap: true` are reconciled — those given with
+   * {@link grantEntityShape} on a person's own record. A SHARING shape, reached through
+   * `ctx.grant` (todo's `list`), is skipped whole, so a vertical passes its whole `ENTITY_GRANTS`:
+   * reconciling one would mark every person something was fully shared with as a holder.
    *
-   * Bounded: `batch` holders (default 500) per scope transaction, repeated until a pass finds
-   * nobody, so it is safe on a large scope and finishes on a re-run if interrupted. Each
-   * (person, entity) topped up is an `entity.grants-topped-up` event on the entity. Audited
+   * Bounded: `batch` rows of work (default 500, an integer from 1 to 5000, or `validation_failed`)
+   * per scope transaction, backfill included, repeated until a pass finishes — so it is safe
+   * on a large scope, and finishes on a re-run if interrupted. Each (person, entity) topped up is an `entity.grants-topped-up` event on the entity. Audited
    * as `reconcileEntityGrantShapes` when it changed anything. Returns how many it topped up.
    */
   reconcileEntityGrantShapes(

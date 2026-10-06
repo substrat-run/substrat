@@ -443,7 +443,7 @@ import {
   type FindingChange,
   type FindingPruneReport,
   memberAddedAudit,
-  SHAPE_TOP_UP_BATCH,
+  shapeTopUpBatch,
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
 import {
@@ -1393,13 +1393,13 @@ interface ScopeStubRpc {
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
   /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
   grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
-  /** One bounded pass of the shape reconcile with its events (#2071); returns how many it topped up. */
+  /** One bounded pass of the shape reconcile with its events (#2071). */
   topUpEntityGrantShapes(
     tenantId: string,
     scopeId: string,
     shapes: readonly EntityGrantShape[],
     limit: number,
-  ): Promise<number>;
+  ): Promise<{ toppedUp: number; done: boolean }>;
   /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
   writeTuple(
     subject: string,
@@ -9887,9 +9887,8 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantHeldPeers?: readonly string[];
     /** #2045: each recorded-off subject's fence, by tuple subject. */
     switchFences?: Readonly<Record<string, string>>;
-    /** #2071: the vertical's declared entity-grant shapes it gives with `grantEntityShapeLocal`
-     *  (never a sharing shape reached through `ctx.grant` — see `HostAdmin.reconcileEntityGrantShapes`).
-     *  Each holder is topped up to the shape as it is now, after the seat, in bounded passes: a
+    /** #2071: the vertical's declared entity-grant shapes, its whole `ENTITY_GRANTS`. Only a shape
+     *  declared `bootstrap: true` is reconciled; a sharing one is skipped. Each holder is topped up to the shape as it is now, after the seat, in bounded passes: a
      *  key the shape gained reaches the people who already held it. Never a revoked key, never a
      *  removal. Absent ⇒ no reconcile. */
     entityGrants?: readonly EntityGrantShape[];
@@ -10125,22 +10124,24 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * Top every holder of each declared shape up to the shape as it is now (#2071), in bounded
-   * passes — `batch` holders per scope transaction (default `SHAPE_TOP_UP_BATCH`), repeated until
-   * a pass finds fewer. Never re-grants a revoked key, never removes one. Returns how many
-   * (person, entity) it topped up.
+   * passes — at most `batch` rows of work per scope transaction (default 500, at most 5000;
+   * anything else is `validation_failed`), repeated until a pass finishes. Never re-grants a revoked
+   * key, never removes one. Returns how many (person, entity) it topped up.
    */
   async topUpEntityGrantShapesLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
     shapes: readonly EntityGrantShape[],
-    batch: number = SHAPE_TOP_UP_BATCH,
+    batch?: number,
   ): Promise<number> {
+    const limit = shapeTopUpBatch(batch);
     if (shapes.length === 0) return 0;
     const stub = this.scopeStub(scopeId);
     let toppedUp = 0;
-    for (let pass = batch; pass === batch; ) {
-      pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, batch);
-      toppedUp += pass;
+    for (let done = false; !done; ) {
+      const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, limit);
+      toppedUp += pass.toppedUp;
+      done = pass.done;
     }
     return toppedUp;
   }

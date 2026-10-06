@@ -623,7 +623,7 @@ import {
   delegatedGrantSql,
   delegatedRevokeSql,
   grantEntityShapeIn,
-  SHAPE_TOP_UP_BATCH,
+  shapeTopUpBatch,
   topUpEntityGrantShapes,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
@@ -7231,15 +7231,15 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAdmin(actor, 'grantEntityShape', { tenantId, scopeId }, null, grant);
       },
       reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
+        const limit = shapeTopUpBatch(opts?.batch);
         const { tenantId, scopeId } = node;
         this.assertScope(tenantId, scopeId);
         const rt = this.runtime(tenantId, scopeId);
-        const limit = opts?.batch ?? SHAPE_TOP_UP_BATCH;
         let toppedUp = 0;
-        // #2071: one bounded transaction per pass, so a large scope never holds one long. A pass
-        // that topped up fewer than `limit` found everyone.
-        for (let pass = limit; pass === limit; ) {
-          pass = await rt.actor.turn(() =>
+        // #2071: one bounded transaction per pass, so a large scope never holds one long; a pass
+        // that did not use its whole budget found everything.
+        for (let done = false; !done; ) {
+          const pass = await rt.actor.turn(() =>
             rt.db.transaction(() =>
               topUpEntityGrantShapes(switchSqlOf(rt.db), {
                 tenantId,
@@ -7252,7 +7252,8 @@ export class SqliteScopeHost implements ScopeHost {
               }),
             )(),
           );
-          toppedUp += pass;
+          toppedUp += pass.toppedUp;
+          done = pass.done;
         }
         if (toppedUp > 0) {
           this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, toppedUp });

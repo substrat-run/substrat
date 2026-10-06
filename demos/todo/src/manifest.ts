@@ -46,12 +46,24 @@ export const OWNER_GRANTS = [
 ] as const;
 
 /**
- * The owner grant as a declared SHAPE (#2071): what `grantOwner` gives, what every boot tops
- * owners up to, and the `owner` row of `ENTITY_GRANTS`. Only this shape is reconciled. The
- * `list` row of `ENTITY_GRANTS` is SHARING, reached through `ctx.grant`, so a person holding it
- * is a sharee, never a holder to top up.
+ * The keys reachable OUTSIDE the role table — the shapes, not the grants
+ * themselves, which are per-principal ULIDs minted at runtime.
+ *
+ * Both entries are the interesting half of this app. `owner` is the bootstrap: a
+ * person holds these on their own entity, and their lists inherit through the
+ * declared parent edge. Declared `bootstrap`, so a key added to it reaches every
+ * owner at the next reconcile (#2071); `holder: 'self'` because a person's owner entity id
+ * IS their principal id. `list` is sharing: `ctx.grant` narrows
+ * `list:contribute` onto ONE list for ONE person, which is the only way anybody
+ * reaches a list that is not theirs — and is never reconciled.
+ *
+ * Here rather than in `provision.ts`, which re-exports it, so the seed can read it
+ * without importing provisioning (which imports the seed).
  */
-export const OWNER_SHAPE: EntityGrantShape = { entityType: 'owner', permissions: [...OWNER_GRANTS] };
+export const ENTITY_GRANTS: EntityGrantShape[] = [
+  { entityType: 'owner', permissions: [...OWNER_GRANTS], bootstrap: true, holder: 'self' },
+  { entityType: 'list', permissions: [TODO_PERM.listContribute] },
+];
 
 export const todoManifest = moduleManifest.parse({
   id: '@substrat-run/demo-todo',

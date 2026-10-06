@@ -284,7 +284,8 @@ mountPlatformSurface<Env>(app, {
   hostFor,
   roles: ROLES,
   ownerRoleKey: 'hr-admin',
-  // #2071: every provision and reconcile tops each employee up to EMPLOYEE_SELF as it is now,
+  // #2071: every provision and reconcile tops each employee up to EMPLOYEE_SELF (declared
+  // `bootstrap`) as it is now,
   // so a key added to it reaches the employees linked before the release that added it.
   entityGrants: ENTITY_GRANTS,
   onProvision: async (env, b) => {
