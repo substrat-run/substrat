@@ -15,6 +15,7 @@ import type {
   AppScope,
   ConnectionActivityView,
   ConnectionProbeView,
+  ConnectionView,
 } from './api';
 
 /** Per-vertical display metadata — the "kind" label and its layer-accent colour. */
@@ -150,6 +151,39 @@ const SCRIVE_FIELDS = [
   { key: 'tokenSecret', label: 'Token credentials secret', secret: true },
 ];
 
+const FORTNOX_FIELDS = [
+  { key: 'clientId', label: 'Client ID', secret: false },
+  { key: 'clientSecret', label: 'Client secret', secret: true },
+  { key: 'tenantId', label: 'Tenant ID (DatabaseNumber)', secret: false },
+];
+
+/** A bureau's fleet (#1267): one Fortnox connection per client company, newest first. */
+const FORTNOX_FLEET: ConnectionView[] = [
+  { ref: '7310001', label: 'Gamma Bygg AB', hoursAgo: 2, status: 'active' as const },
+  { ref: '7310002', label: 'Beta Fastigheter AB', hoursAgo: 30, status: 'error' as const },
+  { ref: '7310003', label: 'Alfa Redovisning AB', hoursAgo: 200, status: 'active' as const },
+].map((c, i) => ({
+  id: `01MOCKFORTNOX${String(3 - i).padStart(13, '0')}`,
+  label: c.label,
+  status: c.status,
+  externalAccountRef: c.ref,
+  expiresAt: null,
+  lastOkAt: c.status === 'active' ? new Date(Date.now() - 3600_000).toISOString() : null,
+  lastError: c.status === 'error' ? 'HTTP 403 from fortnox: the integration is no longer activated for this company' : null,
+  lastErrorAt: c.status === 'error' ? new Date(Date.now() - 1800_000).toISOString() : null,
+  createdAt: new Date(Date.now() - c.hoursAgo * 3600_000).toISOString(),
+}));
+
+const FORTNOX = {
+  provider: 'fortnox',
+  name: 'Fortnox',
+  description: 'Swedish accounting — reads a company’s bookkeeping as SIE4.',
+  monogram: 'Fx',
+  fields: FORTNOX_FIELDS,
+  connectFlow: 'redirect' as const,
+  multiAccount: true,
+};
+
 export const MOCK_APP_INTEGRATIONS: AppIntegrationsView = {
   providers: [
     {
@@ -159,9 +193,12 @@ export const MOCK_APP_INTEGRATIONS: AppIntegrationsView = {
       monogram: 'Sc',
       fields: SCRIVE_FIELDS,
       connectFlow: null,
+      multiAccount: false,
       required: true,
       connection: null,
+      connections: [],
     },
+    { ...FORTNOX, required: true, connection: FORTNOX_FLEET[0]!, connections: FORTNOX_FLEET },
   ],
 };
 
@@ -201,6 +238,16 @@ export const MOCK_ACCOUNT_INTEGRATIONS: AccountIntegrationsView = {
         { scopeId: 'mock-scope-1', name: 'Acme HR', vertical: 'callout', connected: true },
         { scopeId: 'mock-scope-2', name: 'Acme Legal', vertical: 'meridian', connected: false },
       ],
+    },
+    {
+      ...FORTNOX,
+      connections: FORTNOX_FLEET.map((c) => ({
+        ...c,
+        vertical: 'meridian',
+        apps: [{ scopeId: 'mock-scope-2', name: 'Acme Legal' }],
+        sweepRuns: [],
+      })),
+      connectTargets: [{ scopeId: 'mock-scope-2', name: 'Acme Legal', vertical: 'meridian', connected: true }],
     },
   ],
 };
