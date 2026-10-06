@@ -150,8 +150,5 @@ describe('the operation-id reads', () => {
     insert(d, 'transferOwner', 'tenantless', 'applied', null, null);
     expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('tenantless', { tenantId: null, scopeId: null })))).toBeTruthy();
     expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('tenantless')))).toBeUndefined();
-    // SQLite's `json_array` and `operationKeyOf` write the same text, nulls and quoting included.
-    const sqlKey = (d.prepare("SELECT json_array('transferOwner', 'o\"p', NULL, 's1') AS k").get() as { k: string }).k;
-    expect(sqlKey).toBe(settleOutcomeParamsOf(ref('o"p', { tenantId: null }))[1]);
   });
 });

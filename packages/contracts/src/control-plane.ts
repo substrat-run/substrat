@@ -570,6 +570,36 @@ export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
  * it is the later row, and the one to read.
  * No `id`, `at` or actor: the adapter stamps the first two and the request supplies the third.
  */
+/**
+ * Whether `s` is well-formed UTF-16: every high surrogate followed by a low one, and no low one
+ * on its own. A lone surrogate is a string JavaScript holds and nothing else does: SQLite's JSON
+ * functions, a JSON encoder and a UTF-8 store each write it differently, so an id holding one is
+ * not the same id once it has crossed a store.
+ */
+export function isWellFormedText(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      i++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * The id pairing an audited change's admin-log rows (#2064): its intent and its outcome. The
+ * routes mint a ULID. The contract holds any id to being non-empty and well-formed text, because
+ * the id is matched in SQL and in memory, and only well-formed text reads the same in both.
+ */
+export const auditOperationId = z
+  .string()
+  .min(1)
+  .refine(isWellFormedText, { message: 'an audit operation id must be well-formed text (no lone surrogate)' });
+
 /** How much error text a `refused`/`failed`/`unknown` audit row keeps (#2064: one cap for every
  *  intent-then-outcome audit): the append-only log is no place for a vertical's whole response,
  *  and the caller got that in full already. */
@@ -582,7 +612,7 @@ const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
       ...phase,
       tenantId,
       scopeId,
-      operationId: z.string().min(1),
+      operationId: auditOperationId,
       from: principalId,
       to: principalId,
       /** Present on every row of an abandon, so the log tells one from a hand-over. */
@@ -608,7 +638,7 @@ export const memberChangeAudit = z
     phase: z.enum(['intent', 'applied', 'refused', 'failed', 'unknown']),
     tenantId,
     scopeId,
-    operationId: z.string().min(1),
+    operationId: auditOperationId,
     change: z.enum(['invite', 'role', 'remove']),
     caller: principalId,
     principal: principalId.optional(),
@@ -1258,7 +1288,7 @@ export const adminLogEntry = z.object({
    */
   audited: z
     .object({
-      operationId: z.string(),
+      operationId: auditOperationId,
       /** The operation's effective outcome; `pending` while it has none. */
       outcome: z.enum(['pending', 'applied', 'refused', 'failed', 'unknown', 'conflicting']),
       /** True on an `unknown` row that a real outcome of the same operation beat. */

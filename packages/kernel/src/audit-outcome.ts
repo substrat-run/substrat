@@ -42,25 +42,30 @@ export const SETTLE_INTENT_SQL =
  * `(action, id)`, which reads the whole history of the action.
  */
 /**
- * Whether the operation already has an outcome. Bound with `settleOutcomeParamsOf`: the
- * operation id, which reaches the index, and the operation's FULL key, which decides. A row
- * matches only when its own `json_array(action, operationId, tenant_id, scope_id)` is that key,
- * in the grammar `operationKeyOf` writes (a compact JSON array, so a null tenant or scope compares
- * as `null`), so an outcome of the same id in another tenant or scope is not this operation's.
- * Never by row order: the intent, a real outcome and a settle's `unknown` are stamped by different
- * writers whose ids and clocks need not agree.
+ * Whether the operation already has an outcome: a non-intent row of the SAME operation, its whole
+ * identity compared column by column. The operation id reaches `_substrat_admin_log_operation`.
+ * The action, tenant and scope are compared with `IS`, so a null tenant or scope matches only
+ * null and never acts as a wildcard, and written `+column` so that none of them can drive an index
+ * choice away from the operation id (`(tenant_id, id)` would read the tenant's whole log). No
+ * value is serialized to compare, so nothing depends on two encoders agreeing. Never by row
+ * order: the intent, a real outcome and a settle's `unknown` are stamped by different writers
+ * whose ids and clocks need not agree.
  */
 export const SETTLE_OUTCOME_SQL = `SELECT 1 AS present FROM _substrat_admin_log
   WHERE json_extract(after, '$.operationId') = ?
     AND json_extract(after, '$.operationId') IS NOT NULL
-    AND json_array(action, json_extract(after, '$.operationId'), tenant_id, scope_id) = ?
+    AND +action IS ?
+    AND +tenant_id IS ?
+    AND +scope_id IS ?
     AND json_extract(after, '$.phase') <> 'intent'
   LIMIT 1`;
 
-/** `SETTLE_OUTCOME_SQL`'s parameters for one operation: its id, then its `operationKeyOf` key. */
-export const settleOutcomeParamsOf = (operation: AuditedOperationRef): [string, OperationKey] => [
+/** `SETTLE_OUTCOME_SQL`'s parameters for one operation, every part of its identity in order. */
+export const settleOutcomeParamsOf = (operation: AuditedOperationRef): [string, string, string | null, string | null] => [
   operation.operationId,
-  operationKeyOf(operation),
+  operation.action,
+  operation.tenantId,
+  operation.scopeId,
 ];
 
 /** How many operation ids one batched read binds: well under a Durable Object's 100 parameters. */

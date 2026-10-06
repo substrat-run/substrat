@@ -2107,6 +2107,12 @@ export function permissionContractSuite(
       await host.admin.recordOwnerTransfer(staff, { ...answered, operationId: own, tenantId: t1, scopeId: s1 });
       expect(await settleOwn()).toBe(false);
       expect(await failuresOf(own)).toEqual([]);
+
+      // An id that is not well-formed text never reaches the log: matched in SQL and in memory,
+      // it would not read the same in both. Its well-formed twin is the case above.
+      await expect(
+        host.admin.recordOwnerTransfer(staff, { tenantId: t1, scopeId: s1, operationId: 'op\uD800', from, to, phase: 'intent' }),
+      ).rejects.toThrow(/well-formed/);
     });
 
     it('reads exactly the audited operations asked about, in batches a Durable Object can bind (#2064)', async () => {
