@@ -21,6 +21,24 @@
  * the surrounding whitespace and the terminating `;` removed. Text that holds no token but
  * whitespace and comments is no statement. An unterminated string or comment ends the input as
  * one last statement, for SQLite to refuse when it runs.
+ *
+ * **Source.** `sqlite3_complete()` in `src/complete.c` of the SQLite source tree — the build
+ * without SQLITE_OMIT_TRIGGER, whose table carries the trigger states. It was ported from that
+ * function's documented token classes and transition table, not machine-translated, and it is held
+ * to SQLite by behaviour rather than by a version stamp: `SPLIT_CASES` runs differentially against
+ * the SQLite better-sqlite3 bundles (3.53.4 at the time of writing) and statement by statement in
+ * workerd's (3.47.0). If SQLite ever changes what completes a statement, those tests are where it
+ * shows.
+ *
+ * **Why this is not built on `tokenizeSql` (contracts), and should not be "unified" with it.**
+ * The two answer different questions. `tokenizeSql` finds the NAMES a statement touches, for the
+ * spine guard and the dump checks: it folds string literals and quoted identifiers into one
+ * "quoted" class, merges dotted names, drops whitespace and most punctuation, and carries no source
+ * offsets. Where a statement ENDS is a different grammar — SQLite's own, with its trigger nesting —
+ * and it needs offsets into the original text so nothing is ever spliced. Re-deriving that rule
+ * over a tokenizer built for the other job is how the hand-rolled splitter this replaced came to
+ * cut `CASE … END;`, split a quoted `;` and glue `CREATE/*c*\/TABLE`. One splitter, and it is
+ * SQLite's rule.
  */
 
 const TK_SEMI = 0;
