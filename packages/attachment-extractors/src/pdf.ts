@@ -22,6 +22,11 @@
  *   `PDF_TREE_DEPTH_MAX` deep and never through one of its own ancestors, a form XObject at
  *   most `PDF_FORM_DEPTH_MAX` deep and never inside itself. Every walk is a loop with a depth
  *   counter or a recursion with one: none follows what the file says without counting.
+ * - **Memory** (`Retained`): what the extraction keeps — cached decoded streams, a page's
+ *   joined content, parsed objects, cross-reference entries, CMap entries, font decoders — is
+ *   charged before it is allocated, at most `PDF_RETAINED_FACTOR` × the inflate budget plus
+ *   `PDF_RETAINED_BASE`. Every other allocation is bounded by a named constant: a token, a
+ *   stream (`PDF_STREAM_MAX`), the text collected, the operand stack.
  * - **Work**: a token or a direct object larger than `EXTRACTION_STRIDE` is refused, so the
  *   synchronous lexer never runs more than a stride between two checks of the signal, and
  *   every loop over the file — the lexer's, the byte searches, the decoders, the content
@@ -47,6 +52,8 @@ import { EXTRACTION_STRIDE, type ExtractionSignal } from '@substrat-run/kernel';
 import {
   CALL_COST,
   COLLECT_FACTOR,
+  Retained,
+  RetainedBoundExceeded,
   ExtractionBoundExceeded,
   MalformedInput,
   Pace,
@@ -74,14 +81,34 @@ export const PDF_INTERPRET_FACTOR = 4;
 const TOKEN_MAX = EXTRACTION_STRIDE;
 /** Operands one content-stream operator may collect before the stack is dropped as garbage. */
 const OPERANDS_MAX = 256;
-/** Codes a CMap may map, across every range in it. */
-const CMAP_CODES_MAX = 1 << 17;
 /** Code-space ranges one CMap may declare; a real one declares a handful. */
 const CMAP_SPACES_MAX = 256;
 /** The longest destination string a CMap maps a code to: the format's own limit, 512 bytes. */
 const CMAP_DST_MAX = 512;
 /** How far back from `obj` the scan looks for `N G `: two numbers and the space around them. */
 const OBJ_HEADER_SPAN = 48;
+/**
+ * What one PDF extraction may hold at once, as a multiple of its inflate budget (`Retained`):
+ * the decoded streams themselves (at most one inflate budget), and as much again for what is
+ * built from them — parsed objects, the cross-reference, CMaps, fonts, joined page content.
+ */
+export const PDF_RETAINED_FACTOR = 2;
+/** And a base the structures need whatever the inflate budget: fonts, the cross-reference, objects. */
+export const PDF_RETAINED_BASE = 4 * 1024 * 1024;
+/** What a parsed object holds per byte it was read from: values, arrays and maps cost more than their text. */
+const OBJECT_COST_PER_BYTE = 4;
+/** The fixed cost of an entry kept in a map or list: a cross-reference entry, a CMap entry, a parsed object. */
+const ENTRY_COST = 64;
+/**
+ * What a font's decoder holds, measured rather than guessed: 20 000 decoders built the way
+ * `fontDecoder` builds them and kept alive, over a collected heap (`node --expose-gc`,
+ * `heapUsed` before and after, divided by the count). A simple font held 2 233 bytes (its
+ * copied 256-entry table and its closure); each `/Differences` entry another ~78, its fresh
+ * glyph string included; a composite font's closure 248. Rounded up.
+ */
+const SIMPLE_FONT_COST = 2_560;
+const DIFFERENCE_COST = 64;
+const COMPOSITE_FONT_COST = 256;
 /** Whitespace read between a stream's declared end and its `endstream`. */
 const STREAM_END_SPAN = 64;
 
@@ -735,12 +762,15 @@ class PdfDocument {
   private readonly objectStreams = new Map<number, { data: Uint8Array; offsets: Map<number, number> } | null>();
   /** Decoded form XObjects and CMaps, by object number: a form drawn on every page decodes once. */
   private readonly decodedByNum = new Map<number, Decoded | null>();
+  /** Parsed CMaps, by stream object number: a ToUnicode shared by a thousand fonts parses once. */
+  readonly cmaps = new Map<number, CMap | null>();
   trailer: PdfDict = new Map();
 
   constructor(
     readonly buf: Uint8Array,
     readonly budget: InflateBudget,
     readonly pace: Pace,
+    readonly retained: Retained,
   ) {}
 
   /**
@@ -753,6 +783,7 @@ class PdfDocument {
     this.objects.clear();
     this.objectStreams.clear();
     this.decodedByNum.clear();
+    this.cmaps.clear();
   }
 
   /**
@@ -762,7 +793,10 @@ class PdfDocument {
    */
   addEntry(num: number, entry: XrefEntry, replace = false): void {
     if (this.xref.has(num) && !replace) return;
-    if (!this.xref.has(num) && this.xref.size >= PDF_OBJECTS_MAX) throw tooManyObjects();
+    if (!this.xref.has(num)) {
+      if (this.xref.size >= PDF_OBJECTS_MAX) throw tooManyObjects();
+      this.retained.take(ENTRY_COST);
+    }
     this.xref.set(num, entry);
   }
 
@@ -779,6 +813,9 @@ class PdfDocument {
   async object(num: number): Promise<PdfValue> {
     if (this.objects.has(num)) return this.objects.get(num)!;
     if (this.resolving.has(num)) return null;
+    // A parse is synchronous and up to a token's bound long: a walk that resolves object after
+    // object — kids, fonts, forms — yields between them once the stride is spent.
+    if (this.pace.room <= 0) await this.pace.turn();
     const entry = this.xref.get(num);
     if (!entry) return null;
     this.resolving.add(num);
@@ -800,7 +837,10 @@ class PdfDocument {
     const o = lex.next();
     if (n.t !== 'num' || g.t !== 'num' || o.t !== 'kw' || o.v !== 'obj') return null;
     if (expect !== null && n.v !== expect) return null;
+    const from = lex.pos;
     const v = valueFrom(lex.next(), lex, true);
+    // A parsed object is kept (`objects`): charged for what it was read from.
+    this.retained.take(ENTRY_COST + (lex.pos - from) * OBJECT_COST_PER_BYTE);
     if (!isDict(v)) return v;
     const save = lex.pos;
     const kw = lex.next();
@@ -840,7 +880,10 @@ class PdfDocument {
     const at = stm?.offsets.get(num);
     if (!stm || at === undefined) return null;
     const lex = new Lexer(stm.data, at, stm.data.length, this.pace);
-    return valueFrom(lex.next(), lex, true);
+    const v = valueFrom(lex.next(), lex, true);
+    // Kept, like any parsed object — and many numbers may name one offset, each parsed again.
+    this.retained.take(ENTRY_COST + (lex.pos - at) * OBJECT_COST_PER_BYTE);
+    return v;
   }
 
   /** An object stream's decoded data and its header of object numbers and offsets. */
@@ -856,7 +899,9 @@ class PdfDocument {
     const decoded = await this.decode(s);
     if (!decoded) return null;
     if (decoded.exhausted) throw new ExtractionBoundExceeded('the PDF decodes past the extraction bound');
-    const stm = { data: decoded.data, offsets: await objectStreamOffsets(decoded.data, s.dict, this.pace) };
+    const offsets = await objectStreamOffsets(decoded.data, s.dict, this.pace);
+    this.retained.take(offsets.size * ENTRY_COST);
+    const stm = { data: decoded.data, offsets };
     this.objectStreams.set(container, stm);
     return stm;
   }
@@ -892,7 +937,11 @@ class PdfDocument {
       result = { data, exhausted };
       return result;
     } finally {
-      if (s.num !== null) this.decodedByNum.set(s.num, result);
+      if (s.num !== null) {
+        // Cached for the rest of the extraction: held, and charged as such.
+        if (result) this.retained.take(result.data.length);
+        this.decodedByNum.set(s.num, result);
+      }
     }
   }
 }
@@ -1081,10 +1130,24 @@ async function scanObjects(doc: PdfDocument): Promise<void> {
 
 // -- fonts --------------------------------------------------------------------------------
 
-/** How one font's string bytes become text. */
+/**
+ * How one font's string bytes become text: the codes starting in `from`…`until`, whole — the
+ * last may run past `until` — and where the next code starts, so a long string is decoded a
+ * window at a time and never cut inside a code.
+ */
 interface FontDecoder {
-  decode(bytes: Uint8Array): string;
+  decode(bytes: Uint8Array, from: number, until: number): { text: string; next: number };
 }
+
+/** A decoder for a font this cannot read: nothing, for every code. */
+const SILENT: FontDecoder = { decode: (bytes) => ({ text: '', next: bytes.length }) };
+
+/**
+ * What decoding one string byte is charged: a code's place in the code space and its mapping
+ * are each a binary search — over a CMap's segments, which the memory budget admits by the
+ * hundred thousand — not the constant a byte scan is.
+ */
+const DECODE_COST_PER_BYTE = 32;
 
 const ACCENTS: Record<string, string> = {
   acute: '́', grave: '̀', circumflex: '̂', dieresis: '̈', tilde: '̃', ring: '̊',
@@ -1223,10 +1286,242 @@ class CodeSpace {
   }
 }
 
+/** What one sealed `CodeMap` segment costs: its first and last key (float64 each) and a definition index. */
+const SEGMENT_COST = 20;
+
+/**
+ * One `bfrange` destination, split where a code's offset can reach it: `prefix` is the text of
+ * every byte the count never touches, `tail` the last one to three bytes it does (`utf16be`
+ * pairs bytes from the front, so the split falls on a pair and the two decode independently).
+ */
+interface RangeDestination {
+  readonly from: number;
+  readonly prefix: string;
+  readonly tail: Uint8Array;
+}
+
+/**
+ * A ToUnicode mapping that holds what the CMap WROTE, not what it implies: each `bfchar` code
+ * as its string, and each `bfrange` as one definition — its first and last code and its base
+ * destination — whose destination for a code is computed when that code is looked up (#2062
+ * r3). Expanding a range into one string per code let a 1.5 KiB file grow the heap by half a
+ * gigabyte. Each definition is charged to the extraction's `Retained` before it is kept.
+ *
+ * Definitions overlap, and the LATER one wins for every code it names, whichever kind either is
+ * — the precedence the map had when it held a string per code. `seal` resolves them once into
+ * disjoint segments, each naming the definition that wins it, so a lookup is one binary search.
+ */
+class CodeMap {
+  /** Each definition's first and last key, in the order the CMap wrote them. */
+  private los: number[] = [];
+  private his: number[] = [];
+  /** And what it maps to: a `bfchar`'s text, or a `bfrange`'s destination. */
+  private readonly targets: (string | RangeDestination)[] = [];
+  /** The sealed segments: `segLo[i]`…`segHi[i]` map through `targets[segDef[i]]`. */
+  private segLo = new Float64Array(0);
+  private segHi = new Float64Array(0);
+  private segDef = new Int32Array(0);
+  private segments = 0;
+
+  constructor(private readonly retained: Retained) {}
+
+  setChar(length: number, code: number, text: string): void {
+    this.retained.take(ENTRY_COST + text.length * 2);
+    const key = codeKey(length, code);
+    this.define(key, key, text);
+  }
+
+  /** Codes `from`…`to`, mapped to `base` counting up in its last byte, as the format specifies. */
+  setRange(length: number, from: number, to: number, base: Uint8Array): void {
+    if (to < from || base.length === 0) return;
+    this.retained.take(ENTRY_COST + base.length * 2);
+    const cut = base.length % 2 === 0 ? base.length - 2 : Math.max(0, base.length - 3);
+    const lo = codeKey(length, from);
+    this.define(lo, codeKey(length, to), { from: lo, prefix: utf16be(base.subarray(0, cut)), tail: Uint8Array.from(base.subarray(cut)) });
+  }
+
+  private define(lo: number, hi: number, target: string | RangeDestination): void {
+    this.los.push(lo);
+    this.his.push(hi);
+    this.targets.push(target);
+  }
+
+  /**
+   * Resolve the definitions into disjoint segments, the later definition winning each code: a
+   * sweep over every definition's first code and the one past its last, holding the definitions
+   * open there in a heap by order. A CMap that writes its definitions ascending and apart — as
+   * real ones do — is its own segment list and skips the sweep.
+   */
+  async seal(pace: Pace): Promise<this> {
+    const n = this.los.length;
+    // At most one segment between each two of a definition's 2n boundaries: charged before it is made.
+    this.retained.take(2 * n * SEGMENT_COST);
+    const segLo = new Float64Array(2 * n);
+    const segHi = new Float64Array(2 * n);
+    const segDef = new Int32Array(2 * n);
+    let count = 0;
+    let ordered = true;
+    for (let i = 1; i < n && ordered; i += 1) {
+      if (pace.room <= 0) await pace.turn();
+      pace.charge(CALL_COST);
+      ordered = this.los[i]! > this.his[i - 1]!;
+    }
+    if (ordered) {
+      for (let i = 0; i < n; i += 1) {
+        if (pace.room <= 0) await pace.turn();
+        pace.charge(CALL_COST);
+        segLo[i] = this.los[i]!;
+        segHi[i] = this.his[i]!;
+        segDef[i] = i;
+      }
+      count = n;
+    } else {
+      // What the sweep holds while it runs: two orders, a merge buffer and the heap.
+      const working = 4 * n * 4;
+      this.retained.take(working);
+      // The definitions by first code, and by the code past their last — each stable, so a tie
+      // keeps the order written.
+      const byLo = await pacedOrder(this.los, n, pace);
+      const byEnd = await pacedOrder(this.his, n, pace);
+      // A max-heap of the open definitions by index: the latest one written wins.
+      const heap = new Int32Array(n);
+      let size = 0;
+      const push = (d: number): void => {
+        let i = size++;
+        while (i > 0 && heap[(i - 1) >> 1]! < d) {
+          heap[i] = heap[(i - 1) >> 1]!;
+          i = (i - 1) >> 1;
+        }
+        heap[i] = d;
+      };
+      const pop = (): void => {
+        const d = heap[--size]!;
+        let i = 0;
+        for (;;) {
+          let c = 2 * i + 1;
+          if (c >= size) break;
+          if (c + 1 < size && heap[c + 1]! > heap[c]!) c += 1;
+          if (heap[c]! <= d) break;
+          heap[i] = heap[c]!;
+          i = c;
+        }
+        heap[i] = d;
+      };
+      // Every boundary in order: a definition's first code, or the code past its last.
+      let nextLo = 0;
+      let nextEnd = 0;
+      const boundary = (): number =>
+        Math.min(nextLo < n ? this.los[byLo[nextLo]!]! : Infinity, nextEnd < n ? this.his[byEnd[nextEnd]!]! + 1 : Infinity);
+      // A heap step sifts through every level: charged as that many steps.
+      const sift = (): number => CALL_COST * (32 - Math.clz32(size + 1));
+      for (let at = boundary(); at !== Infinity; ) {
+        if (pace.room <= 0) await pace.turn();
+        pace.charge(CALL_COST);
+        // Any number of definitions may open, end or expire at one boundary — one code named
+        // 250 000 times opens them all here — so each is paced on its own, not the boundary once.
+        while (nextLo < n && this.los[byLo[nextLo]!]! === at) {
+          if (pace.room <= 0) await pace.turn();
+          pace.charge(sift());
+          push(byLo[nextLo++]!);
+        }
+        while (nextEnd < n && this.his[byEnd[nextEnd]!]! + 1 === at) {
+          if (pace.room <= 0) await pace.turn();
+          pace.charge(CALL_COST);
+          nextEnd += 1;
+        }
+        while (size > 0 && this.his[heap[0]!]! < at) {
+          if (pace.room <= 0) await pace.turn();
+          pace.charge(sift());
+          pop();
+        }
+        const following = boundary();
+        if (size > 0) {
+          // The winner here is open until the next boundary at least: its own end is one.
+          const d = heap[0]!;
+          if (count > 0 && segDef[count - 1] === d && segHi[count - 1] === at - 1) segHi[count - 1] = following - 1;
+          else {
+            segLo[count] = at;
+            segHi[count] = following - 1;
+            segDef[count] = d;
+            count += 1;
+          }
+        }
+        at = following;
+      }
+      this.retained.give(working);
+    }
+    this.segLo = segLo;
+    this.segHi = segHi;
+    this.segDef = segDef;
+    this.segments = count;
+    // The definitions' bounds are in the segments now.
+    this.los = [];
+    this.his = [];
+    return this;
+  }
+
+  get(length: number, code: number): string | undefined {
+    const key = codeKey(length, code);
+    // The last segment starting at or before the key; it maps the code if it reaches it.
+    let lo = 0;
+    let hi = this.segments - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.segLo[mid]! <= key) {
+        found = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    if (found < 0 || key > this.segHi[found]!) return undefined;
+    const target = this.targets[this.segDef[found]!]!;
+    return typeof target === 'string' ? target : target.prefix + countedTail(target.tail, key - target.from);
+  }
+}
+
+/**
+ * A `bfrange` destination's last one to three bytes, counted up by `offset` in the last byte —
+ * carrying once into the byte before it, as the format specifies — as text, allocating nothing
+ * but the string.
+ */
+function countedTail(tail: Uint8Array, offset: number): string {
+  const last = tail[tail.length - 1]! + offset;
+  const low = last & 0xff;
+  if (tail.length === 1) return String.fromCharCode(low);
+  const carried = (tail[tail.length - 2]! + (last >> 8)) & 0xff;
+  if (tail.length === 2) return String.fromCharCode((carried << 8) | low);
+  return String.fromCharCode((tail[0]! << 8) | carried) + String.fromCharCode(low);
+}
+
+/**
+ * The indices `0…n-1` ordered by `keys`, stably: a bottom-up merge sort that charges every
+ * element it moves to `pace` and yields between strides, so ordering a CMap of any size the
+ * memory budget admits never holds the thread.
+ */
+async function pacedOrder(keys: readonly number[], n: number, pace: Pace): Promise<Int32Array> {
+  let from = Int32Array.from({ length: n }, (_, i) => i);
+  let to = new Int32Array(n);
+  for (let width = 1; width < n; width *= 2) {
+    for (let start = 0; start < n; start += 2 * width) {
+      const mid = Math.min(start + width, n);
+      const end = Math.min(start + 2 * width, n);
+      let a = start;
+      let b = mid;
+      for (let k = start; k < end; k += 1) {
+        if (pace.room <= 0) await pace.turn();
+        pace.charge(CALL_COST);
+        to[k] = b >= end || (a < mid && keys[from[a]!]! <= keys[from[b]!]!) ? from[a++]! : from[b++]!;
+      }
+    }
+    [from, to] = [to, from];
+  }
+  return from;
+}
+
 /** A CMap's code space and its code → text map (a ToUnicode CMap, or an encoding CMap's spaces). */
 interface CMap {
   readonly spaces: CodeSpace;
-  readonly map: Map<number, string>;
+  readonly map: CodeMap;
 }
 
 const codeKey = (length: number, code: number): number => length * 0x1_0000_0000 + code;
@@ -1240,15 +1535,16 @@ const utf16be = (b: Uint8Array): string => {
 };
 const bytesToInt = (b: Uint8Array): number => b.reduce((v, x) => v * 256 + x, 0);
 
-/** A CMap stream's `codespacerange`, `bfchar` and `bfrange` sections, bounded by `CMAP_CODES_MAX`. */
-async function parseCMap(data: Uint8Array, pace: Pace): Promise<CMap> {
+/**
+ * A CMap stream's `codespacerange`, `bfchar` and `bfrange` sections, every definition charged
+ * to `retained` before it is kept — parsed once per stream (`PdfDocument.cmaps`). However many
+ * definitions name one code, the last one written wins it.
+ */
+async function parseCMap(data: Uint8Array, pace: Pace, retained: Retained): Promise<CMap> {
   const lex = new Lexer(data, 0, data.length, pace);
   const ranges: [number, number, number][] = [];
-  const map = new Map<number, string>();
+  const map = new CodeMap(retained);
   const operands: PdfValue[] = [];
-  const put = (length: number, code: number, text: string): void => {
-    if (map.size < CMAP_CODES_MAX) map.set(codeKey(length, code), text);
-  };
   for (;;) {
     if (pace.room <= 0) await pace.turn();
     const tok = lex.next();
@@ -1275,7 +1571,7 @@ async function parseCMap(data: Uint8Array, pace: Pace): Promise<CMap> {
         const src = operands[i];
         const dst = operands[i + 1];
         if (isString(src) && isString(dst) && src.bytes.length <= 4 && dst.bytes.length <= CMAP_DST_MAX) {
-          put(src.bytes.length, bytesToInt(src.bytes), utf16be(dst.bytes));
+          map.setChar(src.bytes.length, bytesToInt(src.bytes), utf16be(dst.bytes));
         }
       }
       operands.length = 0;
@@ -1285,41 +1581,50 @@ async function parseCMap(data: Uint8Array, pace: Pace): Promise<CMap> {
         const hi = operands[i + 1];
         const dst = operands[i + 2];
         if (!isString(lo) || !isString(hi) || lo.bytes.length > 4) continue;
-        // A destination past the format's 512 bytes is not one; each code below copies it.
-        if (isString(dst) && dst.bytes.length > CMAP_DST_MAX) continue;
         const from = bytesToInt(lo.bytes);
         const to = Math.min(bytesToInt(hi.bytes.subarray(0, 4)), from + 0xffff);
-        for (let code = from; code <= to && map.size < CMAP_CODES_MAX; code += 1) {
-          if (pace.room <= 0) await pace.turn();
-          pace.charge(1);
-          if (Array.isArray(dst)) {
-            const d = dst[code - from];
-            if (isString(d) && d.bytes.length <= CMAP_DST_MAX) put(lo.bytes.length, code, utf16be(d.bytes));
-          } else if (isString(dst) && dst.bytes.length >= 1) {
-            // The last byte counts up across the range, as the format specifies.
-            pace.charge(dst.bytes.length);
-            const b = Uint8Array.from(dst.bytes);
-            const last = b[b.length - 1]! + (code - from);
-            b[b.length - 1] = last & 0xff;
-            if (b.length >= 2 && last > 0xff) b[b.length - 2] = (b[b.length - 2]! + (last >> 8)) & 0xff;
-            put(lo.bytes.length, code, utf16be(b));
+        if (isString(dst)) {
+          // One entry for the whole range; a destination past the format's 512 bytes is not one.
+          if (dst.bytes.length <= CMAP_DST_MAX) map.setRange(lo.bytes.length, from, to, dst.bytes);
+        } else if (Array.isArray(dst)) {
+          // An array names each code's destination itself: as many entries as it holds.
+          for (let k = 0; k < dst.length && from + k <= to; k += 1) {
+            if (pace.room <= 0) await pace.turn();
+            pace.charge(1);
+            const d = dst[k];
+            if (isString(d) && d.bytes.length <= CMAP_DST_MAX) map.setChar(lo.bytes.length, from + k, utf16be(d.bytes));
           }
         }
       }
       operands.length = 0;
     }
   }
-  return { spaces: new CodeSpace(ranges), map };
+  return { spaces: new CodeSpace(ranges), map: await map.seal(pace) };
+}
+
+/** A CMap stream, parsed once per object number however many fonts name it. */
+async function cmapOf(doc: PdfDocument, ref: PdfValue | undefined): Promise<CMap | null> {
+  const num = isRef(ref) ? ref.num : null;
+  if (num !== null && doc.cmaps.has(num)) return doc.cmaps.get(num)!;
+  const s = await doc.resolve(ref);
+  let cmap: CMap | null = null;
+  if (isStream(s)) {
+    const decoded = await doc.decode(s);
+    if (decoded) cmap = await parseCMap(decoded.data, doc.pace, doc.retained);
+  }
+  if (num !== null) doc.cmaps.set(num, cmap);
+  return cmap;
 }
 
 /**
- * A string's text through a code space and a code → text map: each code the shortest length
- * whose bytes fall in the space (or `fallback` bytes), placed by at most four binary searches.
- * The work is a constant per byte of the string — which the lexer has already charged.
+ * A string's text through a code space and a code → text map, for the codes starting in
+ * `from`…`until`: each code the shortest length whose bytes fall in the space (or `fallback`
+ * bytes), placed by at most four binary searches, and mapped by one more.
  */
-function codesToText(bytes: Uint8Array, spaces: CodeSpace, fallback: number, map: Map<number, string>): string {
+function codesToText(bytes: Uint8Array, from: number, until: number, spaces: CodeSpace, fallback: number, map: CodeMap): { text: string; next: number } {
   let s = '';
-  for (let i = 0; i < bytes.length; ) {
+  let i = from;
+  while (i < until) {
     let length = 0;
     let code = 0;
     for (let n = 1; n <= 4 && i + n <= bytes.length; n += 1) {
@@ -1334,53 +1639,54 @@ function codesToText(bytes: Uint8Array, spaces: CodeSpace, fallback: number, map
       code = 0;
       for (let n = 0; n < length; n += 1) code = code * 256 + bytes[i + n]!;
     }
-    s += map.get(codeKey(length, code)) ?? '';
+    s += map.get(length, code) ?? '';
     i += length;
   }
-  return s;
+  return { text: s, next: i };
 }
 
 /** A font's decoder: `/ToUnicode` first, then its encoding; unreadable composite fonts give nothing. */
 async function fontDecoder(doc: PdfDocument, font: PdfDict): Promise<FontDecoder> {
   const subtype = nameOf(font.get('Subtype'));
-  let toUnicode: CMap | null = null;
-  const tu = await doc.resolve(font.get('ToUnicode'));
-  if (isStream(tu)) {
-    const decoded = await doc.decode(tu);
-    if (decoded) toUnicode = await parseCMap(decoded.data, doc.pace);
-  }
+  // Each font's decoder is kept for the extraction (`Reading.fonts`): charged before it is built,
+  // for what it holds. A CMap it reads is charged as that CMap is parsed, once however many fonts share it.
+  const toUnicode = await cmapOf(doc, font.get('ToUnicode'));
   if (subtype === 'Type0') {
-    const enc = await doc.resolve(font.get('Encoding'));
+    doc.retained.take(COMPOSITE_FONT_COST);
+    const encRef = font.get('Encoding');
     let spaces = IDENTITY_SPACE;
-    if (isStream(enc)) {
-      const decoded = await doc.decode(enc);
-      const cmap = decoded ? await parseCMap(decoded.data, doc.pace) : null;
-      if (cmap && !cmap.spaces.empty) spaces = cmap.spaces;
-    } else if (toUnicode && !toUnicode.spaces.empty) spaces = toUnicode.spaces;
-    return { decode: (bytes) => (toUnicode ? codesToText(bytes, spaces, 2, toUnicode.map) : '') };
+    const encoding = isName(encRef) ? null : await cmapOf(doc, encRef);
+    if (encoding && !encoding.spaces.empty) spaces = encoding.spaces;
+    else if (!encoding && toUnicode && !toUnicode.spaces.empty) spaces = toUnicode.spaces;
+    return toUnicode ? { decode: (bytes, from, until) => codesToText(bytes, from, until, spaces, 2, toUnicode.map) } : SILENT;
   }
   // A simple font: one byte per code.
   const enc = await doc.resolve(font.get('Encoding'));
   const encDict = isDict(enc) ? enc : null;
   const baseName = nameOf(encDict ? encDict.get('BaseEncoding') : enc) ?? '';
   const base = Object.hasOwn(BASE_ENCODINGS, baseName) ? BASE_ENCODINGS[baseName]! : subtype === 'TrueType' ? WIN_ANSI : STANDARD;
+  doc.retained.take(SIMPLE_FONT_COST);
   const table: (string | null)[] = [...base];
   const differences = encDict?.get('Differences');
   if (Array.isArray(differences)) {
     let code = 0;
     for (const d of differences) {
       if (typeof d === 'number') code = d;
-      else if (isName(d) && code >= 0 && code < 256) table[code++] = glyphText(d.name);
+      else if (isName(d) && code >= 0 && code < 256) {
+        const text = glyphText(d.name);
+        doc.retained.take(DIFFERENCE_COST + text.length * 2);
+        table[code++] = text;
+      }
     }
   }
   return {
-    decode: (bytes) => {
+    decode: (bytes, from, until) => {
       let s = '';
-      for (let i = 0; i < bytes.length; i += 1) {
-        const mapped = toUnicode?.map.get(codeKey(1, bytes[i]!));
+      for (let i = from; i < until; i += 1) {
+        const mapped = toUnicode?.map.get(1, bytes[i]!);
         s += mapped ?? table[bytes[i]!] ?? '';
       }
-      return s;
+      return { text: s, next: until };
     },
   };
 }
@@ -1437,11 +1743,19 @@ async function interpret(r: Reading, content: Uint8Array, resources: PdfDict | n
   let font: FontDecoder | null = null;
   const fontsDict = await doc.resolveDict(resources?.get('Font'));
   const xobjects = await doc.resolveDict(resources?.get('XObject'));
-  const show = (v: PdfValue | undefined): void => {
+  // A string up to a token long, each byte a lookup: decoded a window at a time, charged as
+  // the work it is, so the thread is never held for the whole string at once.
+  const show = async (v: PdfValue | undefined): Promise<void> => {
     if (!isString(v) || !font) return;
-    // Decoding is a constant per byte (`codesToText`), charged as the work it is.
-    pace.charge(v.bytes.length);
-    emit(r, font.decode(v.bytes));
+    const { bytes } = v;
+    for (let at = 0; at < bytes.length; ) {
+      if (pace.room <= 0) await pace.turn();
+      const until = Math.min(bytes.length, at + Math.max(1, Math.floor(pace.room / DECODE_COST_PER_BYTE)));
+      const { text, next } = font.decode(bytes, at, until);
+      pace.charge((next - at) * DECODE_COST_PER_BYTE);
+      emit(r, text);
+      at = next;
+    }
   };
   for (;;) {
     if (pace.room <= 0) await pace.turn();
@@ -1473,21 +1787,21 @@ async function interpret(r: Reading, content: Uint8Array, resources: PdfDict | n
         font = r.fonts.get(fontDict) ?? null;
         if (!font) {
           // A font this cannot read draws nothing; the rest of the page still reads.
-          font = await fontDecoder(doc, fontDict).catch(onlyDamage<FontDecoder>({ decode: () => '' }));
+          font = await fontDecoder(doc, fontDict).catch(onlyDamage<FontDecoder>(SILENT));
           r.fonts.set(fontDict, font);
         }
       }
-    } else if (op === 'Tj') show(operands[operands.length - 1]);
+    } else if (op === 'Tj') await show(operands[operands.length - 1]);
     else if (op === "'" || op === '"') {
       emit(r, '\n');
-      show(operands[operands.length - 1]);
+      await show(operands[operands.length - 1]);
     } else if (op === 'TJ') {
       const arr = operands[operands.length - 1];
       if (Array.isArray(arr)) {
         for (const item of arr) {
           // A wide negative adjustment is the gap a writer leaves for a space.
           if (typeof item === 'number' && item < -150) emit(r, ' ');
-          else show(item);
+          else await show(item);
         }
       }
     } else if (op === 'Td' || op === 'TD') {
@@ -1521,7 +1835,7 @@ async function interpret(r: Reading, content: Uint8Array, resources: PdfDict | n
 }
 
 /** A page's content: one stream or an array of them, read as one. */
-async function pageContent(doc: PdfDocument, page: PdfDict): Promise<Decoded | null> {
+async function pageContent(doc: PdfDocument, page: PdfDict): Promise<(Decoded & { readonly held: number }) | null> {
   const c = await doc.resolve(page.get('Contents'));
   const parts = Array.isArray(c) ? c : [c];
   const pieces: Uint8Array[] = [];
@@ -1537,7 +1851,12 @@ async function pageContent(doc: PdfDocument, page: PdfDict): Promise<Decoded | n
     if ((exhausted = d.exhausted)) break;
   }
   if (pieces.length === 0) return null;
-  return { data: concatBytes(pieces), exhausted };
+  if (pieces.length === 1) return { data: pieces[0]!, exhausted, held: 0 };
+  // Joining is a new allocation of every part's size — a part named twice is joined twice —
+  // so it is charged before it is made, and given back once the page is read (#2062 r3).
+  const held = pieces.reduce((n, p) => n + p.length, 0);
+  doc.retained.take(held);
+  return { data: concatBytes(pieces), exhausted, held };
 }
 
 /** Walk the page tree in order, drawing each page: depth- and node-bounded, ancestors refused. */
@@ -1562,7 +1881,11 @@ async function readPages(r: Reading, node: PdfValue, inherited: PdfDict | null, 
   const content = await pageContent(r.doc, dict).catch(onlyDamage(null));
   if (!content) return;
   // A damaged page keeps the text read before the damage; the next page still reads.
-  await interpret(r, content.data, resources, 0).catch(onlyDamage(undefined));
+  try {
+    await interpret(r, content.data, resources, 0).catch(onlyDamage(undefined));
+  } finally {
+    r.doc.retained.give(content.held);
+  }
   emit(r, '\n\n');
   if (content.exhausted) throw new Enough();
 }
@@ -1577,10 +1900,13 @@ export async function pdfExtract(
   maxInflatedBytes: number,
   maxTextBytes: number,
   signal: ExtractionSignal,
+  /** The memory budget; the package's own tests pass one to read what was charged. */
+  retained: Retained = new Retained(maxInflatedBytes * PDF_RETAINED_FACTOR + PDF_RETAINED_BASE),
+  /** The work budget; the package's own tests pass one to count what was charged. */
+  pace: Pace = new Pace(signal),
 ): Promise<{ text: string; truncated: boolean }> {
   if (latin1(body.subarray(0, 1024)).indexOf('%PDF-') < 0) throw new MalformedInput('not a PDF file');
-  const pace = new Pace(signal);
-  const doc = new PdfDocument(body, { remaining: maxInflatedBytes }, pace);
+  const doc = new PdfDocument(body, { remaining: maxInflatedBytes }, pace, retained);
   let root: PdfDict | null = null;
   const refuseEncrypted = (): void => {
     if (doc.trailer.has('Encrypt')) throw new Refusal('the PDF is encrypted, and encrypted PDFs are not read');
@@ -1614,7 +1940,9 @@ export async function pdfExtract(
   try {
     await readPages(r, root.get('Pages') ?? null, null, 0);
   } catch (err) {
-    if (!(err instanceof Enough)) throw err;
+    // A spent memory bound while reading pages ends the reading as the text budget does: what
+    // was read is kept, marked cut. Before the pages, it fails the file (`extractWith`).
+    if (!(err instanceof Enough) && !(err instanceof RetainedBoundExceeded)) throw err;
     truncated = true;
   }
   return { text: r.out.join(''), truncated };
@@ -1627,4 +1955,17 @@ export const pdfTables = { glyphText, WIN_ANSI, MAC_ROMAN, STANDARD };
 export const pdfDecoders = { unpredict, asciiHex, ascii85, runLength, lzw };
 
 /** The lexer, for the package's own tests: judged on what it charges for one token. */
+/** The CMap parser, for the package's own tests. */
+export const pdfCMap = (data: Uint8Array, pace: Pace, retained: Retained): Promise<{ map: { get(length: number, code: number): string | undefined } }> =>
+  parseCMap(data, pace, retained);
+/** What a font's decoder is charged, for the package's own tests. */
+export const pdfFontCosts = { simple: SIMPLE_FONT_COST, difference: DIFFERENCE_COST, composite: COMPOSITE_FONT_COST, decodePerByte: DECODE_COST_PER_BYTE };
+/** A CodeMap with nothing parsed into it, for the package's own tests to define and seal directly. */
+export const pdfCodeMap = (
+  retained: Retained,
+): {
+  setChar(length: number, code: number, text: string): void;
+  seal(pace: Pace): Promise<unknown>;
+  get(length: number, code: number): string | undefined;
+} => new CodeMap(retained);
 export const pdfLexer = (buf: Uint8Array, pace: Pace): { next(): unknown } => new Lexer(buf, 0, buf.length, pace);

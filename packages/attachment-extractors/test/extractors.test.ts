@@ -524,7 +524,10 @@ describe("the kernel's abort: a bundled parser stops promptly on a large VALID f
     expect(aborted).toEqual({ failed: 'the extraction was aborted' });
     expect(abortedMs).toBeLessThan(10 + 150);
     expect(abortedMs).toBeLessThan(fullMs);
-  });
+    // The bound is `abortedMs` above. The test's own clock also pays for building a 24 MB file
+    // and parsing it to the end once, which is the yardstick, not the thing under test: on a
+    // loaded machine that alone outlasts the default five seconds.
+  }, 30_000);
 
   it('html: the same, mid-scan; and an already-aborted signal stops before any work', async () => {
     const page = enc(`<p>${'word <b>bold</b> '.repeat(400_000)}</p>`);

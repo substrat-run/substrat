@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
@@ -9,8 +11,8 @@ import {
   type ExtractionSignal,
 } from '@substrat-run/kernel';
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
-import { pdfDecoders, pdfLexer } from '../src/pdf.js';
-import { CALL_COST, Pace } from '../src/shared.js';
+import { PDF_RETAINED_BASE, PDF_RETAINED_FACTOR, pdfCMap, pdfCodeMap, pdfDecoders, pdfExtract, pdfFontCosts, pdfLexer } from '../src/pdf.js';
+import { CALL_COST, Pace, Retained } from '../src/shared.js';
 import { zip } from './zip.js';
 
 /** A `Pace` that counts the work charged to it: what a decoder did, not only what it returned. */
@@ -27,6 +29,15 @@ class CountingPace extends Pace {
   }
 }
 const counting = () => new CountingPace({ aborted: false });
+/** A pace whose stride leaves room to decode only `width` string bytes at a time: every window edge, exercised. */
+class NarrowPace extends CountingPace {
+  constructor(private readonly width: number) {
+    super({ aborted: false });
+  }
+  override get room(): number {
+    return Math.min(super.room, this.width * pdfFontCosts.decodePerByte);
+  }
+}
 
 /**
  * The PDF extractor, through the kernel's own enforcement (`runAttachmentExtractor`), so an
@@ -42,9 +53,15 @@ const textOf = (o: ExtractionOutcome): string => {
   return o.text;
 };
 
+const MIB = 1024 * 1024;
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 /** Bytes 0–255 as written, for content that is not UTF-8. */
-const bin = (s: string): Uint8Array => Uint8Array.from(s, (c) => c.charCodeAt(0));
+const bin = (s: string): Uint8Array => {
+  // A plain loop: the test inputs run to tens of MiB, where `Uint8Array.from` with a callback crawls.
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i += 1) out[i] = s.charCodeAt(i);
+  return out;
+};
 const cat = (...parts: (string | Uint8Array)[]): Uint8Array => {
   const bytes = parts.map((p) => (typeof p === 'string' ? bin(p) : p));
   const out = new Uint8Array(bytes.reduce((n, b) => n + b.length, 0));
@@ -157,6 +174,86 @@ describe('pdf: what it reads', () => {
     expect(textOf(outcome)).toBe('HiabcÅö');
   });
 
+  it('a later CMap definition wins every code it names — a range over a range, a code over a range, and a range over a code', async () => {
+    const map = await cmapOf(
+      'begincmap',
+      // An earlier, longer range and a later, shorter one inside it: codes the shorter one does
+      // not reach still map through the longer one.
+      '2 beginbfrange <0000> <00FF> <0041> <0010> <0012> <0061> endbfrange',
+      // A range over a code written before it, and a code over a range written before it.
+      '1 beginbfchar <0100> <005A> endbfchar',
+      '2 beginbfrange <0100> <0101> <0030> <0200> <0202> <0030> endbfrange',
+      '1 beginbfchar <0201> <0021> endbfchar',
+      'endcmap',
+    );
+    expect([0x00, 0x0f, 0x10, 0x12, 0x13, 0x20, 0xff].map((c) => map.get(2, c))).toEqual(['A', 'P', 'a', 'c', 'T', 'a', String.fromCharCode(0x140)]);
+    expect([0x100, 0x101, 0x200, 0x201, 0x202].map((c) => map.get(2, c))).toEqual(['0', '1', '0', '!', '2']);
+  });
+
+  it('however many definitions name a code, the last one written wins it — at, and past, what a code count once capped', async () => {
+    // 131 072 definitions of one code, then one more: the later wins. A count of codes defined
+    // used to stop at 131 072 and keep the earlier mapping (Codex #2075 r1).
+    const repeated = Array.from({ length: 1_310 }, () => `100 beginbfchar ${'<0001> <0041> '.repeat(100)}endbfchar`);
+    const many = await cmapOf('begincmap', ...repeated, '72 beginbfchar', '<0001> <0041> '.repeat(72), 'endbfchar', '1 beginbfchar <0001> <0042> endbfchar', 'endcmap');
+    expect(many.get(2, 1)).toBe('B');
+    // Two ranges of 65 536 codes fill that count exactly; a code over one of them still wins.
+    const full = await cmapOf('begincmap', '2 beginbfrange <0000> <FFFF> <0041> <010000> <01FFFF> <0041> endbfrange', '1 beginbfchar <0007> <005A> endbfchar', 'endcmap');
+    expect([full.get(2, 7), full.get(2, 8), full.get(3, 0x10007)]).toEqual(['Z', 'I', 'H']);
+  });
+
+  it('a CMap\'s map agrees, code for code, with its definitions applied in order', async () => {
+    // A seeded generator: the same 300 CMaps on every run.
+    let seed = 0x2075;
+    const rand = (n: number): number => {
+      seed = (seed * 1_103_515_245 + 12_345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    const hex = (bytes: number[]) => `<${bytes.map((b) => b.toString(16).padStart(2, '0')).join('')}>`;
+    const codeHex = (len: number, code: number) => hex(len === 1 ? [code] : [code >> 8, code & 0xff]);
+    for (let round = 0; round < 300; round += 1) {
+      const sections: string[] = [];
+      // What the CMap means, written per code the way a writer reads it: each definition in turn.
+      const expected = new Map<string, string>();
+      // Every fourth CMap names a handful of codes over and over: many definitions of each.
+      const crowded = round % 4 === 3;
+      for (let d = crowded ? rand(60) + 20 : rand(12) + 1; d > 0; d -= 1) {
+        const len = rand(2) + 1;
+        const from = crowded ? rand(4) : rand(40);
+        // Destinations of one to four bytes, their last byte near the top so a count carries.
+        const dst = Array.from({ length: rand(4) + 1 }, () => (rand(2) ? 0xf0 + rand(16) : rand(256)));
+        const kind = rand(3);
+        if (kind === 0) {
+          sections.push(`1 beginbfchar ${codeHex(len, from)} ${hex(dst)} endbfchar`);
+          expected.set(`${len}:${from}`, utf16(dst));
+        } else {
+          const to = from + rand(30);
+          if (kind === 1) {
+            sections.push(`1 beginbfrange ${codeHex(len, from)} ${codeHex(len, to)} ${hex(dst)} endbfrange`);
+            for (let c = from; c <= to; c += 1) {
+              const b = [...dst];
+              const last = b[b.length - 1]! + (c - from);
+              b[b.length - 1] = last & 0xff;
+              if (b.length >= 2 && last > 0xff) b[b.length - 2] = (b[b.length - 2]! + (last >> 8)) & 0xff;
+              expected.set(`${len}:${c}`, utf16(b));
+            }
+          } else {
+            const each = Array.from({ length: rand(to - from + 2) }, () => [rand(256), rand(256)]);
+            sections.push(`1 beginbfrange ${codeHex(len, from)} ${codeHex(len, to)} [${each.map(hex).join(' ')}] endbfrange`);
+            each.forEach((b, k) => {
+              if (from + k <= to) expected.set(`${len}:${from + k}`, utf16(b));
+            });
+          }
+        }
+      }
+      const map = await cmapOf('begincmap', ...sections, 'endcmap');
+      for (const len of [1, 2]) {
+        for (let code = 0; code < 80; code += 1) {
+          expect(map.get(len, code), `round ${round}, ${len}-byte code ${code}: ${sections.join(' | ')}`).toBe(expected.get(`${len}:${code}`));
+        }
+      }
+    }
+  });
+
   it('gives nothing for a composite font with no ToUnicode — glyph ids are not text', async () => {
     const font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H >>';
     expect(await run(onePage('BT /F1 9 Tf <00410042> Tj ET', { font }).bytes)).toEqual({ status: 'empty', extractor: 'pdf' });
@@ -267,6 +364,66 @@ describe('pdf: what it reads', () => {
   });
 });
 
+describe('pdf: valid documents the budgets never cut — at the default bounds', () => {
+  // The twin of the hostile files: each bound is sized so a real document reads whole. A file
+  // here that came back truncated would be a bound charging what nothing holds.
+  const whole = async (file: Uint8Array, words: string[]) => {
+    const outcome = await run(file);
+    expect(outcome).toMatchObject({ status: 'indexed', truncated: false });
+    expect(textOf(outcome).split(/\s+/).filter(Boolean)).toEqual(words);
+  };
+
+  it('2 000 simple fonts on one page, each drawing its own word', async () => {
+    const n = 2_000;
+    const fonts = Array.from({ length: n }, (_, i) => `/F${i} ${i + 5} 0 R`).join(' ');
+    const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << ${fonts} >> >> /Contents 4 0 R >>`;
+    const content = Array.from({ length: n }, (_, i) => `BT /F${i} 9 Tf 0 ${-i} Td (w${i}) Tj ET`).join('\n');
+    // Half of them re-encode a few codes, as subset fonts do.
+    const font = (i: number) =>
+      `<< /Type /Font /Subtype /Type1 /BaseFont /Sub${i} /Encoding ${i % 2 ? '/WinAnsiEncoding' : '<< /BaseEncoding /WinAnsiEncoding /Differences [65 /A /B /C] >>'} >>`;
+    await whole(build([CATALOG, PAGES, page, stream('', content), ...Array.from({ length: n }, (_, i) => font(i))]).bytes, Array.from({ length: n }, (_, i) => `w${i}`));
+  }, 30_000);
+
+  it('1 000 pages sharing one resource dictionary and one font', async () => {
+    const n = 1_000;
+    // 1 catalog, 2 the page tree, 3… the pages, then the resources, the font and each page's content.
+    const resources = n + 3;
+    const kids = Array.from({ length: n }, (_, i) => `${i + 3} 0 R`).join(' ');
+    const pages = Array.from({ length: n }, (_, i) => `<< /Type /Page /Parent 2 0 R /Resources ${resources} 0 R /Contents ${resources + 2 + i} 0 R >>`);
+    const contents = Array.from({ length: n }, (_, i) => stream('', `BT /F1 9 Tf (page${i}) Tj ET`));
+    const file = build([CATALOG, `<< /Type /Pages /Kids [${kids}] /Count ${n} >>`, ...pages, `<< /Font << /F1 ${resources + 1} 0 R >> >>`, HELVETICA, ...contents]).bytes;
+    await whole(file, Array.from({ length: n }, (_, i) => `page${i}`));
+  }, 30_000);
+
+  it('a CJK font: a ToUnicode of 20 000 codes and a range, every code drawn', async () => {
+    const n = 20_000;
+    const code = (i: number) => (i + 1).toString(16).padStart(4, '0');
+    const sections = Array.from({ length: n / 100 }, (_, k) =>
+      `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${code(k * 100 + j)}> <${(0x4e00 + k * 100 + j).toString(16)}>`).join(' ')} endbfchar`);
+    const cmap = `begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n${sections.join('\n')}\n1 beginbfrange <F000> <F0FF> <3041> endbfrange\nendcmap`;
+    const drawn = `<${Array.from({ length: n }, (_, i) => code(i)).join('')}> Tj <F000F001F002> Tj`;
+    const built = onePage(`BT /F1 9 Tf ${drawn} ET`, {
+      font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
+      extra: [stream('', cmap)],
+    }).bytes;
+    const expected = String.fromCharCode(...Array.from({ length: n }, (_, i) => 0x4e00 + i)) + '\u3041\u3042\u3043';
+    const outcome = await run(built);
+    expect(outcome).toMatchObject({ status: 'indexed', truncated: false });
+    expect(textOf(outcome).replace(/\s+/g, '')).toBe(expected);
+  }, 30_000);
+
+  it('a few pages of text among 24 MiB of images', async () => {
+    // Images are drawn, never decoded: their bytes count against the file's size, not its memory.
+    const image = (i: number) => stream(`/Type /XObject /Subtype /Image /Width 2048 /Height 1024 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`, new Uint8Array(6 * MIB).fill(0x30 + i));
+    const xobjects = Array.from({ length: 4 }, (_, i) => `/Im${i} ${i + 6} 0 R`).join(' ');
+    const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << ${xobjects} >> >> /Contents 5 0 R >>`;
+    const content = Array.from({ length: 4 }, (_, i) => `q 400 0 0 200 0 ${i * 200} cm /Im${i} Do Q BT /F1 9 Tf (figure${i}) Tj ET`).join('\n');
+    const file = build([CATALOG, PAGES, page, HELVETICA, stream('', content), ...Array.from({ length: 4 }, (_, i) => image(i))]).bytes;
+    expect(file.length).toBeGreaterThan(24 * MIB);
+    await whole(file, ['figure0', 'figure1', 'figure2', 'figure3']);
+  }, 30_000);
+});
+
 describe('pdf: hostile files end failed or empty, promptly, and never throw', () => {
   it('a deflate bomb: one stream decoding past the per-stream bound fails the file', async () => {
     const bomb = await deflate(new Uint8Array(PDF_STREAM_MAX + 1024));
@@ -332,7 +489,7 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
   it('every byte-at-a-time decoder stops as the budget is spent — it never materialises its output first', async () => {
     const BUDGET = 1024;
     const content = new Uint8Array(1024 * 1024).fill(0x41);
-    const hex = bin(Array.from(content, (b) => b.toString(16)).join('') + '>');
+    const hex = bin(`${'41'.repeat(content.length)}>`); // the content's bytes, 0x41 each
     // Each would decode a MiB; each input is a MiB or more of work if read to the end.
     const cases: [string, (pace: Pace, budget: { remaining: number }) => Promise<{ data: Uint8Array; exhausted: boolean }>][] = [
       ['ASCIIHex', (pace, budget) => pdfDecoders.asciiHex(hex, budget, pace)],
@@ -379,7 +536,9 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
   it('the lexer reads at most a token\'s bound of any comment, however long its line', () => {
     // A comment ran to its line's end before the bound was checked: 32 MiB read for nothing.
     const pace = counting();
-    expect(() => pdfLexer(cat('%', 'c'.repeat(32 * 1024 * 1024)), pace).next()).toThrow(/longer than the extraction reads/);
+    const comment = new Uint8Array(32 * 1024 * 1024).fill(0x63);
+    comment[0] = 0x25; // `%`
+    expect(() => pdfLexer(comment, pace).next()).toThrow(/longer than the extraction reads/);
     expect(pace.charged).toBeLessThan(EXTRACTION_STRIDE + 16);
   });
 
@@ -393,6 +552,221 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     const dashes = '-'.repeat(20_000);
     for (let p = 0, i = 0; i < 10_000; i += 1) p = (await finds.find(dashes, '--', p)) + 1;
     expect(finds.charged).toBeGreaterThanOrEqual(10_000 * CALL_COST);
+  });
+
+  it('a page that names one stream four hundred times joins nothing past the memory bound', async () => {
+    // 96 references to a 1 MiB stream held ~100 MiB of ArrayBuffers before any budget looked
+    // (Codex #2062 r3): the join was sized by the references, not by what was decoded.
+    const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents [${'5 0 R '.repeat(400)}] >>`;
+    const file = build([CATALOG, PAGES, page, HELVETICA, stream('', `BT /F1 9 Tf (once) Tj ET ${' '.repeat(MIB)}`)]).bytes;
+    expect(file.length).toBeLessThan(2 * MIB);
+    expect(await peakMemory(file)).toBeLessThan(96 * MIB);
+    expect(await run(file)).toMatchObject({ status: 'empty' });
+  });
+
+  it('a CMap range is held as one entry, its destinations computed on lookup — never a string per code', async () => {
+    // Two permitted ranges of 65 536 codes onto 512-byte destinations: a string per code grew
+    // the heap by ~500 MiB from a 1.5 KiB file (Codex #2062 r3). The twin: codes still map.
+    const base = `0041${'0020'.repeat(255)}`; // 'A' and 255 spaces: 512 bytes
+    const cmap = `begincmap 1 begincodespacerange <0000> <FFFF> endcodespacerange 2 beginbfrange <0000> <FFFF> <${base}> <0100> <01FF> <${base}> endbfrange endcmap`;
+    const file = cmapFont(cmap, '00000002');
+    expect(file.length).toBeLessThan(4 * 1024);
+    expect(await peakMemory(file)).toBeLessThan(32 * MIB);
+    // Code 0 maps to the base ('A', then spaces); code 2 counts its last unit up by two ('"').
+    expect(textOf(await run(file))).toBe('A A "');
+  });
+
+  it('one object parsed under 2 000 numbers is kept at most as often as the memory bound allows', async () => {
+    // An array of 100 K numbers: the value whose memory per byte read is the worst, against
+    // what a parsed object is charged. Uncharged, all 2 000 copies were parsed and kept. The
+    // bound is the peak, not the clock: parsing to the budget is ~5 M tokens, which takes time.
+    const file = sharedObject(`[${'1 '.repeat(100 * 1024)}]`);
+    expect(await peakMemory(file)).toBeLessThan(PEAK_MIB * MIB);
+    expect(await run(file)).toMatchObject({ status: 'empty' });
+  }, 30_000);
+
+  it('a CMap that defines one code past the memory budget ends the reading there, truncated', async () => {
+    const retained = new Retained(DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes * PDF_RETAINED_FACTOR + PDF_RETAINED_BASE);
+    const out = await pdfExtract(await cmapFlood(5_800), DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, retained);
+    expect(out.truncated).toBe(true);
+    // Spent: no more than one definition's charge was left when the next one was refused.
+    expect(retained.limit - retained.bytes).toBeLessThan(1024);
+  }, 30_000);
+
+  it('the same code defined 250 000 times inside the budget: read whole, and the last definition wins', async () => {
+    const outcome = await run(await cmapFlood(2_500));
+    expect(outcome).toMatchObject({ status: 'indexed', truncated: false });
+    expect(textOf(outcome)).toBe('B');
+  }, 30_000);
+
+  it('sealing a CMap charges every heap step, however many definitions open at one code — counted, not timed', async () => {
+    // One code named 250 000 times opens every definition at a single boundary; 250 000 codes
+    // written descending open one each. Parsing and ordering cost the same; the difference is
+    // the heap, which a charge per boundary (Codex #2075 r2) did not see at all.
+    const n = 250_000;
+    const sealed = async (code: (i: number) => number) => {
+      const lines = Array.from({ length: n / 100 }, (_, k) =>
+        `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${code(k * 100 + j).toString(16).padStart(6, '0')}> <0041>`).join(' ')} endbfchar`);
+      const pace = counting();
+      await pdfCMap(bin(`begincmap\n${lines.join('\n')}\nendcmap`), pace, new Retained(1 << 30));
+      return pace.charged;
+    };
+    const crowded = await sealed(() => 1);
+    const apart = await sealed((i) => 0xffffff - i);
+    // A heap of up to n: at least 16 levels for most of the pushes.
+    expect(crowded - apart).toBeGreaterThan((n / 2) * 16 * CALL_COST);
+  }, 30_000);
+
+  it('a string drawn through a CMap is charged a lookup per byte, so a long one is decoded a window at a time — counted, not timed', async () => {
+    // Each byte is a code placed and mapped by binary searches; a token-long string of them,
+    // charged as a byte scan, held the thread ~15–30 ms through a large CMap (Codex #2075 r2).
+    const cmap = `begincmap 1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfrange <0000> <FFFF> <0041> endbfrange endcmap`;
+    const charged = async (codes: number) => {
+      const pace = counting();
+      const file = cmapFont(cmap, '0001'.repeat(codes));
+      const out = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, pace);
+      expect(out.text.trim()).toBe('B'.repeat(codes));
+      return pace;
+    };
+    const short = await charged(1);
+    const long = await charged(50_000);
+    // 100 000 bytes more drawn, each decoded as a lookup (the lexing of their hex comes on top).
+    expect(long.charged - short.charged).toBeGreaterThanOrEqual(100_000 * 32);
+    expect(long.turns - short.turns).toBeGreaterThanOrEqual(10);
+  });
+
+  it('a string decoded a window at a time reads exactly as one pass — codes of one to four bytes, every edge mid-code', async () => {
+    const cmap = [
+      'begincmap',
+      '4 begincodespacerange <00> <7F> <8000> <8FFF> <900000> <90FFFF> <A0000000> <A0FFFFFF> endcodespacerange',
+      '4 beginbfchar <41> <0061> <8001> <0062> <900002> <0063> <A0000003> <0064> endbfchar',
+      'endcmap',
+    ].join('\n');
+    // Adjacent 1- and 2-byte codes, and each length beside each other: windows of one to five
+    // bytes put an edge at every offset inside every code.
+    const file = cmapFont(cmap, '41' + '8001' + '900002' + 'A0000003' + '41' + '41' + '8001' + '4141' + 'A0000003' + '900002');
+    for (const width of [0, 1, 2, 3, 4, 5]) {
+      const pace = width ? new NarrowPace(width) : counting();
+      const out = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, pace);
+      expect(out.text.trim(), `windows of ${width || 'a stride'}`).toBe('abcdaabaadc');
+    }
+  });
+
+  it('a long string in a font it cannot read gives nothing, and the text around it still reads — in windows or in one', async () => {
+    const page = '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>';
+    const file = onePage(`BT /F1 9 Tf (before) Tj /F2 9 Tf <${'0102'.repeat(20_000)}> Tj /F1 9 Tf (after) Tj ET`, {
+      page,
+      extra: ['<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H >>'],
+    }).bytes;
+    for (const pace of [counting(), new NarrowPace(1), new NarrowPace(3)]) {
+      const out = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, pace);
+      expect(out.text.trim()).toBe('beforeafter');
+    }
+  });
+
+  it('decoded in windows of any width, a string reads as it does in one pass — over random mixes of code spaces', async () => {
+    let seed = 0x1575;
+    const rand = (n: number): number => {
+      seed = (seed * 1_103_515_245 + 12_345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    const hex = (bytes: number[]) => bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
+    for (let round = 0; round < 120; round += 1) {
+      // One to four ranges, each of one to four bytes, sharing first bytes so lengths compete.
+      const spaces = Array.from({ length: rand(4) + 1 }, () => {
+        const len = rand(4) + 1;
+        const first = 0x80 + rand(4);
+        const lo = [first, ...Array.from({ length: len - 1 }, () => 0)];
+        const hi = [first, ...Array.from({ length: len - 1 }, () => 0xff)];
+        return { len, lo, hi };
+      });
+      const code = (sp: { len: number; lo: number[] }) => [sp.lo[0]!, ...Array.from({ length: sp.len - 1 }, () => rand(4))];
+      const mapped = Array.from({ length: 12 }, () => code(spaces[rand(spaces.length)]!));
+      const cmap = [
+        'begincmap',
+        `${spaces.length} begincodespacerange ${spaces.map((sp) => `<${hex(sp.lo)}> <${hex(sp.hi)}>`).join(' ')} endcodespacerange`,
+        `${mapped.length} beginbfchar ${mapped.map((c, i) => `<${hex(c)}> <${(0x61 + i).toString(16).padStart(4, '0')}>`).join(' ')} endbfchar`,
+        'endcmap',
+      ].join('\n');
+      // Mapped codes, codes in a space with no mapping, and bytes in no space at all.
+      const drawn = Array.from({ length: rand(40) + 1 }, () => {
+        const pick = rand(3);
+        return pick === 0 ? mapped[rand(mapped.length)]! : pick === 1 ? code(spaces[rand(spaces.length)]!) : [rand(256)];
+      }).flat();
+      const file = cmapFont(cmap, hex(drawn));
+      const once = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, counting());
+      for (const width of [1, 2, 3, 5, 7]) {
+        const windowed = await pdfExtract(file, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, undefined, new NarrowPace(width));
+        expect(windowed.text, `round ${round}, windows of ${width}: <${hex(drawn)}>`).toBe(once.text);
+      }
+    }
+  }, 30_000);
+
+  it('sealing charges every push, every end and every pop — the whole account, exactly', async () => {
+    // One code defined n times: n pushes into a growing heap at its first code, then n ends and
+    // n pops from a shrinking one at the code past it. Every step of the sweep is in this sum,
+    // so leaving out the end charge, or a pop's, is a different number.
+    const n = 1_000;
+    const map = pdfCodeMap(new Retained(1 << 30));
+    for (let i = 0; i < n; i += 1) map.setChar(2, 1, 'A');
+    const pace = counting();
+    await map.seal(pace);
+    const levels = (size: number) => 32 - Math.clz32(size + 1); // a sift through a heap of `size`
+    let pushes = 0;
+    let pops = 0;
+    for (let size = 0; size < n; size += 1) pushes += levels(size);
+    for (let size = n; size > 0; size -= 1) pops += levels(size);
+    const passes = Math.ceil(Math.log2(n));
+    const account = {
+      ordered: 1, // the first pair is out of order: one check
+      orders: 2 * n * passes, // two stable merge sorts, every element moved each pass
+      boundaries: 2, // the code, and the code past it
+      pushes,
+      ends: n,
+      pops,
+    };
+    expect(pace.charged).toBe(CALL_COST * Object.values(account).reduce((a, b) => a + b, 0));
+    expect(map.get(2, 1)).toBe('A');
+  });
+
+  it('what the reader keeps is charged to the memory budget — counted, not timed', async () => {
+    const charged = async (body: Uint8Array) => {
+      const retained = new Retained(1 << 30);
+      await pdfExtract(body, DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes, 512 * 1024, { aborted: false }, retained);
+      return retained.bytes;
+    };
+    const baseline = await charged(onePage('BT /F1 9 Tf (x) Tj ET').bytes);
+    // A cached stream: its decoded bytes.
+    expect(await charged(onePage(`BT /F1 9 Tf (x) Tj ET${' '.repeat(MIB)}`).bytes) - baseline).toBeGreaterThanOrEqual(MIB);
+    // Cross-reference entries: a fixed cost each, however little they point at.
+    const many = build(Array.from({ length: 2_000 }, (_, i) => (i === 0 ? CATALOG : i === 1 ? PAGES : i === 2 ? PAGE : i === 3 ? HELVETICA : i === 4 ? stream('', 'BT /F1 9 Tf (x) Tj ET') : 'null'))).bytes;
+    expect(await charged(many) - baseline).toBeGreaterThanOrEqual(1_995 * 64);
+    // Fonts: each one used holds a decoder — and a ToUnicode several fonts share is parsed once.
+    const fonts = (n: number) => {
+      const names = Array.from({ length: n }, (_, i) => `/F${i} ${i + 7} 0 R`).join(' ');
+      const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << ${names} >> >> /Contents 5 0 R >>`;
+      const content = Array.from({ length: n }, (_, i) => `BT /F${i} 9 Tf <0001> Tj ET`).join('\n');
+      const cmap = `begincmap ${Array.from({ length: 50 }, (_, k) => `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(k * 100 + j).toString(16).padStart(4, '0')}> <0041>`).join(' ')} endbfchar`).join(' ')} endcmap`;
+      const font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>';
+      return build([CATALOG, PAGES, page, HELVETICA, stream('', content), stream('', cmap), ...Array.from({ length: n }, () => font)]).bytes;
+    };
+    const one = await charged(fonts(1));
+    const forty = await charged(fonts(40));
+    // A decoder per font, charged what a composite decoder holds; and the 5 000-code CMap (over
+    // 300 KiB of definitions and segments) once, not 40 times — a font's own objects aside.
+    expect(forty - one).toBeGreaterThanOrEqual(39 * pdfFontCosts.composite);
+    expect(forty - one).toBeLessThan(39 * (pdfFontCosts.composite + 2 * 1024));
+    // A simple font: its table and closure, and each /Differences entry it adds.
+    const simple = (differences: string) =>
+      onePage('BT /F1 9 Tf (x) Tj ET', { font: `<< /Type /Font /Subtype /Type1 /BaseFont /X /Encoding << /Differences [${differences}] >> >>` }).bytes;
+    const plain = await charged(simple(''));
+    const named = await charged(simple(`32 ${'/a '.repeat(100)}`));
+    expect(named - plain).toBeGreaterThanOrEqual(100 * pdfFontCosts.difference);
+    const second = onePage('BT /F1 9 Tf (x) Tj /F2 9 Tf (y) Tj ET', {
+      page: '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>',
+      extra: [HELVETICA],
+    }).bytes;
+    expect(await charged(second) - baseline).toBeGreaterThanOrEqual(pdfFontCosts.simple);
   });
 
   it('a cross-reference chain that loops — on itself, through a second section, and through /XRefStm', async () => {
@@ -595,8 +969,13 @@ const TIMER_SLACK_MS = 150;
 const ABORTED_ANSWER_MS = 150;
 /** How long a shape may take to settle, unaborted. */
 const SETTLE_MS = 3_000;
+/**
+ * The most memory a shape may hold at its peak, over a collected baseline: the extraction's
+ * `Retained` bound (36 MiB at the defaults), a decoding stream's transient copies (a few
+ * `PDF_STREAM_MAX`), and the garbage a young generation holds between collections.
+ */
+const PEAK_MIB = 128;
 
-const MIB = 1024 * 1024;
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 interface Shape {
@@ -656,6 +1035,45 @@ const SHAPES: readonly Shape[] = [
     const { bytes, xrefAt } = onePage('BT ET');
     return cat(bytes.subarray(0, xrefAt), `xref\n0 1000000000\ntrailer\n<< /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`);
   }),
+  // Memory: allocations that grow with references, not with bytes (#2062 r3).
+  pdfShape('a page naming one 1 MiB stream 400 times', () =>
+    build([CATALOG, PAGES,
+      `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /Contents [${'5 0 R '.repeat(400)}] >>`,
+      HELVETICA, stream('', ' '.repeat(MIB))]).bytes),
+  pdfShape('a CMap mapping 131 072 codes onto 512-byte destinations', () =>
+    cmapFont(`begincmap 2 beginbfrange <0000> <FFFF> <${'0041'.repeat(256)}> <0100> <01FF> <${'0041'.repeat(256)}> endbfrange endcmap`, '0001')),
+  // A string: as many bytes kept per parse as a dense array, at a fraction of the lexing. The
+  // array, whose memory per byte is the worst, is held to the peak in its own test above.
+  pdfShape('one 200 KiB string parsed under 2 000 numbers', () => sharedObject(`(${'x'.repeat(200 * 1024)})`)),
+  pdfShape('a CMap of 131 072 single codes written in descending order, each resolved against the rest', () => {
+    // Out of order, so the definitions are swept into segments rather than taken as written.
+    const sections = Array.from({ length: 1_311 }, (_, k) =>
+      `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(0x1_ffff - k * 100 - j).toString(16).padStart(6, '0')}> <0041>`).join(' ')} endbfchar`);
+    return cmapFont(`begincmap\n1 begincodespacerange <000000> <FFFFFF> endcodespacerange\n${sections.join('\n')}\nendcmap`, '01ffff');
+  }),
+  // 580 000 definitions in under 8 MiB decoded: the budget, not a count, ends them as they are parsed.
+  pdfShape('a CMap defining one code until the memory budget is spent', () => cmapFlood(5_800)),
+  // 250 000, inside the budget: they all reach `seal`, which opens every one at a single boundary.
+  pdfShape('a CMap defining one code 250 000 times, inside the memory budget', () => cmapFlood(2_500)),
+  pdfShape('500 fonts sharing one ToUnicode of 30 000 codes', () => {
+    const chars = Array.from({ length: 300 }, (_, k) =>
+      `100 beginbfchar ${Array.from({ length: 100 }, (_, j) => `<${(k * 100 + j).toString(16).padStart(4, '0')}> <00410042>`).join(' ')} endbfchar`).join('\n');
+    const fonts = Array.from({ length: 500 }, (_, i) => `/F${i} ${i + 7} 0 R`).join(' ');
+    const page = `<< /Type /Page /Parent 2 0 R /Resources << /Font << ${fonts} >> >> /Contents 5 0 R >>`;
+    const content = Array.from({ length: 500 }, (_, i) => `BT /F${i} 9 Tf <0001> Tj ET`).join('\n');
+    const font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>';
+    return build([CATALOG, PAGES, page, HELVETICA, stream('', content), stream('', `begincmap\n${chars}\nendcmap`), ...Array.from({ length: 500 }, () => font)]).bytes;
+  }),
+  pdfShape('a form drawn 50 000 times', () =>
+    build([CATALOG, PAGES,
+      '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> /XObject << /X 6 0 R >> >> /Contents 5 0 R >>',
+      HELVETICA, stream('', '/X Do '.repeat(50_000)),
+      stream('/Subtype /Form /Resources << /Font << /F1 4 0 R >> >>', `BT /F1 9 Tf (form) Tj ET ${' '.repeat(64 * 1024)}`)]).bytes),
+  pdfShape('a million pages through shared page-tree nodes', () => {
+    const kids = (n: number) => `[${`${n} 0 R `.repeat(100)}]`;
+    return build([CATALOG, `<< /Type /Pages /Kids ${kids(6)} >>`, PAGE, HELVETICA, stream('', 'BT /F1 9 Tf (fanned) Tj ET'),
+      `<< /Type /Pages /Kids ${kids(7)} >>`, `<< /Type /Pages /Kids ${kids(3)} >>`]).bytes;
+  }),
   // The other parsers, for the same rule.
   { name: 'html: a 16 MiB unclosed comment', extractor: htmlExtractor(), contentType: 'text/html', body: () => enc(`<p>x</p><!--${'-'.repeat(16 * MIB)}`) },
   { name: 'html: 2 M unclosed tags', extractor: htmlExtractor(), contentType: 'text/html', body: () => enc('<a '.repeat(2 * MIB)) },
@@ -696,6 +1114,8 @@ describe('the abort-latency harness: no shape holds the thread, aborted or not',
     expect(performance.now() - t0, 'the shape did not settle in time').toBeLessThan(SETTLE_MS);
     expect('text' in outcome || 'failed' in outcome).toBe(true);
     expect(await longestHold(body, shape.extractor, shape.contentType), 'the thread was held').toBeLessThan(HOLD_MS);
+    // And never holds more memory than the bound allows, at its peak.
+    expect(await peakMemory(body, shape.extractor, shape.contentType), 'memory held at the peak').toBeLessThan(PEAK_MIB * MIB);
   }, 30_000);
 });
 
@@ -731,6 +1151,87 @@ async function longestHold(body: Uint8Array, extractor: AttachmentExtractor = pd
     clearInterval(tick);
   }
   return Math.max(worst, performance.now() - last);
+}
+
+// A collector to call, so a peak is measured from a settled heap rather than from garbage.
+setFlagsFromString('--expose-gc');
+const collect = runInNewContext('gc') as () => void;
+
+/**
+ * The most memory held while `body` was extracted, over a collected baseline: heap plus
+ * external (ArrayBuffers), sampled every millisecond beside the extraction, start to finish.
+ */
+async function peakMemory(body: Uint8Array, extractor: AttachmentExtractor = pdf, contentType = 'application/pdf'): Promise<number> {
+  const held = () => {
+    const m = process.memoryUsage();
+    return m.heapUsed + m.external;
+  };
+  collect();
+  const base = held();
+  let peak = base;
+  const tick = setInterval(() => {
+    peak = Math.max(peak, held());
+  }, 1);
+  try {
+    await extractor.extract({ body, contentType, filename: 'f', maxTextBytes: 512 * 1024, signal: { aborted: false } });
+    peak = Math.max(peak, held());
+  } finally {
+    clearInterval(tick);
+  }
+  return peak - base;
+}
+
+/**
+ * An object stream whose header names 2 000 object numbers at the same offset, and a page tree
+ * whose kids are those numbers: `value`'s bytes, parsed and kept once per number.
+ */
+function sharedObject(value: string): Uint8Array {
+  const nums = Array.from({ length: 2_000 }, (_, i) => i + 10);
+  const header = nums.map((n) => `${n} 0`).join(' ') + ' ';
+  const objstm = stream(`/Type /ObjStm /N ${nums.length} /First ${header.length}`, header + value);
+  const kids = `[${nums.map((n) => `${n} 0 R`).join(' ')}]`;
+  const head = bin('%PDF-1.7\n');
+  const o1 = cat('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  const o2 = cat(`2 0 obj\n<< /Type /Pages /Kids ${kids} >>\nendobj\n`);
+  const o3 = cat('3 0 obj\n', objstm, '\nendobj\n');
+  const offs = [head.length, head.length + o1.length, head.length + o1.length + o2.length];
+  const xrefAt = offs[2]! + o3.length;
+  // Objects 10…2009 live in object stream 3: a cross-reference stream says so.
+  const rows: number[] = [];
+  for (let n = 0; n < 2_010; n += 1) {
+    if (n === 0) rows.push(0, 0, 0, 0, 0, 0xff, 0xff);
+    else if (n <= 3) rows.push(1, ...u32(offs[n - 1]!), 0, 0);
+    else if (n < 10) rows.push(0, 0, 0, 0, 0, 0, 0);
+    else rows.push(2, 0, 0, 0, 3, (n - 10) >> 8, (n - 10) & 0xff);
+  }
+  const xs = stream('/Type /XRef /Size 2010 /W [1 4 2] /Root 1 0 R', Uint8Array.from(rows));
+  return cat(head, o1, o2, o3, '4 0 obj\n', xs, `\nendobj\nstartxref\n${xrefAt}\n%%EOF\n`);
+}
+
+/** A CMap's code → text map, parsed from its lines. */
+async function cmapOf(...lines: string[]): Promise<{ get(length: number, code: number): string | undefined }> {
+  return (await pdfCMap(bin(lines.join('\n')), counting(), new Retained(1 << 30))).map;
+}
+
+/** Bytes as UTF-16BE text, an odd last byte on its own — the way a CMap destination reads. */
+function utf16(b: number[]): string {
+  let s = '';
+  for (let i = 0; i + 1 < b.length; i += 2) s += String.fromCharCode((b[i]! << 8) | b[i + 1]!);
+  if (b.length % 2 === 1) s += String.fromCharCode(b[b.length - 1]!);
+  return s;
+}
+
+/**
+ * A Type0 font whose ToUnicode names code 1 `sections` × 100 times as `A`, then once more as
+ * `B`, drawing code 1: a Flate stream, so the CMap's size is not the file's.
+ */
+async function cmapFlood(sections: number): Promise<Uint8Array> {
+  const section = `100 beginbfchar ${'<0001> <0041> '.repeat(100)}endbfchar\n`;
+  const cmap = enc(`begincmap\n${section.repeat(sections)}1 beginbfchar <0001> <0042> endbfchar\nendcmap`);
+  return onePage('BT /F1 9 Tf <0001> Tj ET', {
+    font: '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>',
+    extra: [stream('/Filter /FlateDecode', await deflate(cmap))],
+  }).bytes;
 }
 
 /** Big-endian 4 bytes. */
@@ -769,23 +1270,28 @@ function lzwEncode(data: Uint8Array): Uint8Array {
       acc &= (1 << bits) - 1;
     }
   };
-  const dict = new Map<string, number>();
-  for (let i = 0; i < 256; i += 1) dict.set(String.fromCharCode(i), i);
+  // The dictionary as a trie — (prefix code, next byte) → code — so a long run of one byte,
+  // whose entries grow to a thousand bytes, costs a lookup per byte rather than a string each.
+  const dict = new Map<number, number>();
   let next = 258;
   put(256);
-  let w = '';
+  let w = -1;
   for (const b of data) {
-    const wc = w + String.fromCharCode(b);
-    if (dict.has(wc)) {
-      w = wc;
+    if (w < 0) {
+      w = b;
       continue;
     }
-    put(dict.get(w)!);
-    dict.set(wc, next++);
+    const found = dict.get(w * 256 + b);
+    if (found !== undefined) {
+      w = found;
+      continue;
+    }
+    put(w);
+    dict.set(w * 256 + b, next++);
     if (next + 1 >= 1 << width && width < 12) width += 1;
-    w = String.fromCharCode(b);
+    w = b;
   }
-  if (w) put(dict.get(w)!);
+  if (w >= 0) put(w);
   put(257);
   if (bits > 0) out.push((acc << (8 - bits)) & 0xff);
   return Uint8Array.from(out);
