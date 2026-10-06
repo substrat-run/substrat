@@ -7,7 +7,7 @@
  * under test is the operating system's and not this process's bookkeeping.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -123,6 +123,38 @@ describe('one process owns a host directory (#119)', () => {
     expect(errorCodeOf(refusalOf(() => new SqliteScopeHost({ dir })))).toBe('conflict');
     other.proc.kill('SIGKILL');
     await exited(other.proc);
+    const host = new SqliteScopeHost({ dir });
+    await host.close();
+  }, 30_000);
+
+  it('a constructor that throws on an option holds nothing: another process claims the directory at once', async () => {
+    const dir = freshDir();
+    const throwing = {
+      dir,
+      get checker(): never {
+        throw new Error('checker getter threw');
+      },
+    };
+    expect(() => new SqliteScopeHost(throwing as never)).toThrow(/checker getter threw/);
+    const other = child(dir);
+    expect(await other.send('open')).toBe('opened 1');
+    expect(await other.send('close')).toBe('closed 0');
+    const host = new SqliteScopeHost({ dir });
+    await host.close();
+  }, 30_000);
+
+  it('a constructor that throws AFTER the claim releases it: another process meets the real error, not host_dir_in_use', async () => {
+    const dir = freshDir();
+    // A directory database that is not a database: the open fails after the directory is claimed.
+    writeFileSync(join(dir, '_directory.sqlite'), 'not a database, '.repeat(512));
+    expect(() => new SqliteScopeHost({ dir })).toThrow(/not a database|malformed/i);
+    const other = child(dir);
+    const answer = await other.send('open');
+    expect(answer).toMatch(/^refused /);
+    expect(answer).not.toMatch(/host_dir_in_use/);
+    // The other process's own failed open released its claim too: with the file put right, this
+    // process opens.
+    rmSync(join(dir, '_directory.sqlite'));
     const host = new SqliteScopeHost({ dir });
     await host.close();
   }, 30_000);

@@ -1819,9 +1819,16 @@ export class SqliteScopeHost implements ScopeHost {
     this.versionId = options.versionId ?? null;
     this.logSink = options.logSink ?? consoleLogSink;
     this.invocationLineSink = options.invocationLineSink ?? consoleInvocationLineSink;
+    // Every option is read above and here, BEFORE the directory is claimed: an option that throws
+    // (a getter, a bad value) then fails the constructor with nothing yet held.
+    const customChecker = options.checker;
     this.dir = options.dir;
     mkdirSync(this.dir, { recursive: true });
-    this.owner = claimHostDir(this.dir);
+    // #119: from the claim to the end of the constructor is ONE guard. A constructor that throws
+    // leaves no host for anyone to close, so whatever it opened must be released here, and the
+    // only way to keep that true as lines are added is that every line after the claim is inside
+    // this `try`. Do not add work after it; add it inside, before `this.owner`.
+    const owner = claimHostDir(this.dir);
     let directory: Database.Database | undefined;
     try {
       directory = new Database(join(this.dir, '_directory.sqlite'));
@@ -1829,24 +1836,25 @@ export class SqliteScopeHost implements ScopeHost {
       this.directory.pragma('journal_mode = WAL');
       this.ensureDirectorySchema();
       this.loadRoles();
+      this.checker =
+        customChecker ??
+        createTupleChecker({
+          directory: this.directory,
+          scopeDb: (scopeId) => this.scopesById.get(scopeId)?.db,
+          getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
+          // #956: the evaluator judges `expires_at` against the host's clock, so a
+          // scripted one can actually expire a grant. A caller-supplied `checker`
+          // keeps its own time source — this only binds the built-in one.
+          clock: () => this.clock(),
+        });
+      this.admin = this.buildAdmin();
+      this.owner = owner;
     } catch (err) {
       // A host that never finished opening owns nothing: the next one may open the directory.
       directory?.close();
-      this.owner.release();
+      owner.release();
       throw err;
     }
-    this.checker =
-      options.checker ??
-      createTupleChecker({
-        directory: this.directory,
-        scopeDb: (scopeId) => this.scopesById.get(scopeId)?.db,
-        getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
-        // #956: the evaluator judges `expires_at` against the host's clock, so a
-        // scripted one can actually expire a grant. A caller-supplied `checker`
-        // keeps its own time source — this only binds the built-in one.
-        clock: () => this.clock(),
-      });
-    this.admin = this.buildAdmin();
   }
 
   /**
