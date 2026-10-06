@@ -274,10 +274,10 @@ type PermissionRefCheck<O, PermKey extends string> = {
  * What `trashed` may say on this operation: `'admits' | 'purges'` where the leading check is
  * `{ entity: E, idFrom }` and `E` declares `trash`, and nothing anywhere else.
  */
-type TrashedShape<O, Entities> = O extends { permission: { entity: infer E; idFrom: string } }
+type TrashedShape<O, Entities> = O extends { permission: { entity: infer E; idFrom: infer F } }
   ? E extends keyof Entities
     ? Entities[E] extends { trash: object }
-      ? 'admits' | 'purges'
+      ? 'admits' | (Exclude<InputKeys<O>, F> extends never ? 'purges' : never)
       : never
     : never
   : never;
@@ -1211,13 +1211,11 @@ function assertTrashedDeclarations(
       throw new Error(`model: '${other}' and '${name}' both declare \`trashed: 'purges'\` for '${target.entity}' — one permanent delete per entity`);
     }
     purges.set(target.entity, name);
-    const required = Object.entries(decl.input?.shape ?? {})
-      .filter(([, schema]) => !isOptionalSchema(schema))
-      .map(([field]) => field);
-    if (required.some((field) => field !== target.idFrom)) {
+    const extra = Object.keys(decl.input?.shape ?? {}).filter((field) => field !== target.idFrom);
+    if (extra.length > 0) {
       throw new Error(
-        `model: '${name}' declares \`trashed: 'purges'\` but its input requires ${required.map((f) => `\`${f}\``).join(', ')} — ` +
-          `a purge horizon passes the id (\`${target.idFrom}\`) and nothing else`,
+        `model: '${name}' declares \`trashed: 'purges'\` but its input also takes ${extra.map((f) => `\`${f}\``).join(', ')} — ` +
+          `a purge's input is the id (\`${target.idFrom}\`) and nothing else, optional fields included`,
       );
     }
   }

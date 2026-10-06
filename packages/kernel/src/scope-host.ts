@@ -1760,6 +1760,11 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * nothing, and it reads as coverage. A bound operation with no entry is
    * allowed and means what it always meant — nothing was declared to parse.
    *
+   * **It also carries the declared surface (#119).** `operationInputsOf` records, beside the
+   * schemas, every declared operation and the entity each addresses by id. The host DERIVES its
+   * trash refusal from that — nothing else is handed over — and a module with a trashable entity
+   * must pass a map built this way, with every operation it binds declared in it.
+   *
    * Typed structurally rather than as `z.ZodType` so the kernel keeps its single
    * dependency and no zod version is pinned by the scope-host contract. The
    * shape is the whole surface the host uses: throw to refuse, return the value

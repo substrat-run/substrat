@@ -114,30 +114,42 @@ describe('purges', () => {
     expect(() => define({ 'x/one': del, 'x/two': del })).toThrow(/one permanent delete per entity/);
   });
 
-  it('takes the id and nothing else — the sweep has nothing else to pass', () => {
+  it('takes the id and nothing else — not even an optional field, so a purge reaches only its entity', () => {
     expect(() =>
       define({
         'x/del': {
           summary: 's',
           permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' },
+          // @ts-expect-error a required second field is not a purge's input
           trashed: 'purges',
           input: z.object({ boxId: z.string(), reason: z.string() }),
           output: ok,
         },
       }),
-    ).toThrow(/passes the id/);
-    // Twin: an OPTIONAL extra field is fine.
+    ).toThrow(/and nothing else/);
     expect(() =>
       define({
         'x/del': {
           summary: 's',
           permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' },
+          // @ts-expect-error nor is an optional second id — it would let the purge reach another entity
           trashed: 'purges',
-          input: z.object({ boxId: z.string(), reason: z.string().optional() }),
+          input: z.object({ boxId: z.string(), otherBoxId: z.string().optional() }),
           output: ok,
         },
       }),
-    ).not.toThrow();
+    ).toThrow(/and nothing else/);
+    // Twin: the same input under 'admits' compiles and loads.
+    define({
+      'x/del': {
+        summary: 's',
+        permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' },
+        // 'admits' is still fine — only a purge is held to the id alone.
+        trashed: 'admits',
+        input: z.object({ boxId: z.string(), otherBoxId: z.string().optional() }),
+        output: ok,
+      },
+    });
   });
 });
 

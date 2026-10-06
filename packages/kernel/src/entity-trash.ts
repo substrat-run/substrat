@@ -253,12 +253,17 @@ export function purgeReportOf(
  * keeps. Refuses, never skips — each of these is a binned entity reachable while the module
  * believes it is not:
  *
- * - a module declaring a trashable entity must hand over `operationTargets`, or every one of
- *   its operations would reach the bin unrefused;
- * - a target naming an operation nothing binds, or opting in on an entity that declares no
- *   trash here;
- * - a purge horizon without exactly the schedule `purgeSchedulesOf` derives for it, or a purge
- *   schedule that does not run the entity's `trashed: 'purges'` operation.
+ * The targets are DERIVED, never handed over: `operationInputsOf(ops)` records the declared
+ * surface beside the schemas (`DECLARED_SURFACE`), and the host reads each operation's target off
+ * the same declaration it parses with. A module with a trashable entity must therefore
+ * - pass `operationInputs` built by `operationInputsOf`, so there is a declared surface to read;
+ * - declare every operation it binds there — an undeclared one could address a binned entity and
+ *   the host could not see which;
+ * - declare a `trashed: 'purges'` operation whose parsed input is the id and nothing else.
+ *
+ * Also refused: an opt-in on an entity that declares no trash here, a purge horizon without
+ * exactly the schedule `purgeSchedulesOf` derives for it, and a purge schedule that does not run
+ * the entity's `trashed: 'purges'` operation.
  */
 export function registerTrashTargets(
   moduleId: string,
@@ -268,17 +273,35 @@ export function registerTrashTargets(
   schedules: readonly ScheduleSpec[] | undefined,
 ): Map<string, OperationTarget> {
   const trashable = new Map((entityStates ?? []).filter((d) => d.trashPermission).map((d) => [d.entityType, d]));
-  if (trashable.size > 0 && targets === undefined) {
-    throw new Error(
-      `${moduleId} declares trashable entities (${[...trashable.keys()].sort().join(', ')}) but no ` +
-        '`operationTargets` — the host could not refuse an operation on a binned one.\n' +
-        '  Remedy: `operationTargets: operationTargetsOf(ops)` beside `operationInputs`.',
-    );
+  const surface = declaredSurfaceOf(operationInputs);
+  if (trashable.size > 0) {
+    const where = `${moduleId} declares trashable entities (${[...trashable.keys()].sort().join(', ')})`;
+    if (!surface) {
+      throw new Error(
+        `${where} but its \`operationInputs\` were not built by \`operationInputsOf\` — the host could not see which ` +
+          'operations address a binned one.\n  Remedy: `operationInputs: operationInputsOf(ops)`.',
+      );
+    }
+    const undeclared = [...ownOps].filter((name) => !surface.operations.includes(name)).sort();
+    if (undeclared.length > 0) {
+      throw new Error(
+        `${where} and binds operation(s) its declarations do not name: ${undeclared.join(', ')} — the host could not ` +
+          'tell which entity they reach, so it could not refuse them on a binned one. Declare them.',
+      );
+    }
   }
   const out = new Map<string, OperationTarget>();
-  for (const [name, target] of Object.entries(targets ?? {})) {
-    if (!ownOps.has(name)) {
-      throw new Error(`${moduleId} declares operationTargets for unbound operation '${name}' — a refusal on nothing reads as one that is there`);
+  for (const [name, target] of Object.entries(surface?.targets ?? {})) {
+    if (!ownOps.has(name)) continue; // declared and not bound here: nothing to refuse
+    if (target.trashed === 'purges') {
+      const shape = (operationInputs?.[name] as { shape?: Record<string, unknown> } | undefined)?.shape;
+      const fields = Object.keys(shape ?? {});
+      if (fields.length !== 1 || fields[0] !== target.idFrom) {
+        throw new Error(
+          `${moduleId}: '${name}' purges '${target.entity}', and its parsed input takes ${fields.map((f) => `'${f}'`).join(', ') || 'nothing'} — ` +
+            `a purge's input is '${target.idFrom}' and nothing else, so it reaches only the entity it is run for`,
+        );
+      }
     }
     if (target.trashed && !trashable.has(target.entity)) {
       throw new Error(`${moduleId}: '${name}' declares \`trashed: '${target.trashed}'\` over '${target.entity}', which declares no trash here`);

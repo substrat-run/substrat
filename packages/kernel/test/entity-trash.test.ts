@@ -36,11 +36,23 @@ describe('registerTrashTargets', () => {
     expect(registerTrashTargets('m', own, undefined, [], undefined).size).toBe(0);
   });
 
-  it('refuses a target on an unbound operation, and an opt-in over an entity with no trash', () => {
-    expect(() => registerTrashTargets('m', own, { 'b/ghost': purgeTarget }, [decl], [])).toThrow(/unbound/);
-    expect(() =>
-      registerTrashTargets('m', own, { 'b/rename': { ...purgeTarget, entity: 'shelf', trashed: 'admits' } }, [decl], []),
-    ).toThrow(/declares no trash/);
+  it('refuses a bound operation the declarations do not name — an omitted target', () => {
+    expect(() => registerTrashTargets('m', new Set([...own, 'b/sneak']), inputs, [decl], [])).toThrow(/b\/sneak/);
+  });
+
+  it('refuses an opt-in over an entity with no trash here', () => {
+    const shelf = operationInputsOf({
+      'b/rename': { permission: { key: 'box:read', entity: 'shelf', idFrom: 'boxId' }, trashed: 'admits', input: z.object({ boxId: z.string() }) },
+    });
+    expect(() => registerTrashTargets('m', new Set(['b/rename']), shelf, [decl], [])).toThrow(/declares no trash/);
+  });
+
+  it("refuses a purge whose parsed input takes anything but the id — an optional field included", () => {
+    const wider = operationInputsOf({
+      ...declared,
+      'b/delete': { ...declared['b/delete'], input: z.object({ boxId: z.string(), otherBoxId: z.string().optional() }) },
+    });
+    expect(() => registerTrashTargets('m', own, wider, [decl], [])).toThrow(/nothing else/);
   });
 
   it('ties a horizon to exactly one purge schedule running the purging operation', () => {
