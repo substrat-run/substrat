@@ -55,6 +55,7 @@ import {
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
 import type { OperationContext, ScopedSql, SqlMigration } from './scope-host.js';
+import type { DerivedObject } from './derived-object.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
 
 /** A resolved declaration: everything the DDL, the reads and the verbs need. */
@@ -151,10 +152,6 @@ export const entityStateGuardVersion = (plan: EntityStatePlan): string => {
   return `state/${plan.entityType}:guard:${[...(archive ? ['archive'] : []), ...(trash ? ['trash'] : [])].join('+')}`;
 };
 
-/** The two guard triggers `entityStateTriggerDdl` creates on the plan's table. */
-export const entityStateTriggerObjects = (plan: EntityStatePlan): { name: string; type: 'trigger' }[] =>
-  ['born', 'moved'].map((s) => ({ name: `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_${s}`, type: 'trigger' }));
-
 /** The prefix of every trigger this module derives — kernel-owned, so the reserved one. */
 export const ENTITY_STATE_TRIGGER_PREFIX = '_substrat_state_';
 
@@ -199,19 +196,30 @@ const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
  * legitimately born trashed, so the triggers are put back only after them.
  */
 export function entityStateTriggerDdl(plan: EntityStatePlan): string {
-  const [born, moved] = entityStateTriggerObjects(plan).map((o) => o.name);
+  return entityStateTriggerObjects(plan)
+    .flatMap((t) => [`DROP TRIGGER IF EXISTS ${t.name};`, `${t.sql};`])
+    .join('\n');
+}
+
+/** The two guard triggers `entityStateTriggerDdl` creates, each with its CREATE statement. */
+export function entityStateTriggerObjects(plan: EntityStatePlan): DerivedObject[] {
+  const born = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_born`;
+  const moved = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_moved`;
   const columns = stateColumnVersionsOf(plan).map((c) => c.column);
+  const trigger = (name: string, lines: string[]): DerivedObject => ({ name, type: 'trigger', table: plan.table, sql: lines.join('\n') });
   return [
-    `DROP TRIGGER IF EXISTS ${born};`,
-    `CREATE TRIGGER ${born} BEFORE INSERT ON ${plan.table} WHEN ${columns.map((c) => `NEW.${c} IS NOT NULL`).join(' OR ')} BEGIN`,
-    `  SELECT RAISE(ABORT, 'a row is never inserted archived or trashed - ctx.archive and ctx.trash move it (#119)');`,
-    `END;`,
-    `DROP TRIGGER IF EXISTS ${moved};`,
-    `CREATE TRIGGER ${moved} BEFORE UPDATE OF ${columns.join(', ')} ON ${plan.table}`,
-    `WHEN NOT EXISTS (SELECT 1 FROM ${ENTITY_STATE_MOVES_TABLE} WHERE entity_type = ${literal(plan.entityType)} AND entity_id = OLD.${plan.idColumn}) BEGIN`,
-    `  SELECT RAISE(ABORT, 'archive and trash state moves only through ctx.archive, ctx.trash and ctx.restore (#119)');`,
-    `END;`,
-  ].join('\n');
+    trigger(born, [
+      `CREATE TRIGGER ${born} BEFORE INSERT ON ${plan.table} WHEN ${columns.map((c) => `NEW.${c} IS NOT NULL`).join(' OR ')} BEGIN`,
+      `  SELECT RAISE(ABORT, 'a row is never inserted archived or trashed - ctx.archive and ctx.trash move it (#119)');`,
+      `END`,
+    ]),
+    trigger(moved, [
+      `CREATE TRIGGER ${moved} BEFORE UPDATE OF ${columns.join(', ')} ON ${plan.table}`,
+      `WHEN NOT EXISTS (SELECT 1 FROM ${ENTITY_STATE_MOVES_TABLE} WHERE entity_type = ${literal(plan.entityType)} AND entity_id = OLD.${plan.idColumn}) BEGIN`,
+      `  SELECT RAISE(ABORT, 'archive and trash state moves only through ctx.archive, ctx.trash and ctx.restore (#119)');`,
+      `END`,
+    ]),
+  ];
 }
 
 /**

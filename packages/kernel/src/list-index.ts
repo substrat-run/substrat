@@ -45,6 +45,7 @@ import { PAGE_CURSOR_RESTART, SubstratError, ULID_PATTERN, z } from '@substrat-r
 import { fromBase64url, toBase64url } from './base64url.js';
 import type { EntityStateDeclaration, EntityStateName } from '@substrat-run/contracts';
 import { entityStatePlans, entityStateWhere, stateColumnsOf, viewsOf, type StateColumns } from './entity-state.js';
+import type { DerivedObject } from './derived-object.js';
 import type { SqlMigration } from './scope-host.js';
 import { SQL_IDENTIFIER, assertSqlIdentifier } from './sql-identifier.js';
 
@@ -269,15 +270,19 @@ export function listIndexColumns(
  * old ones. An index is derived data; nothing is lost by dropping it.
  */
 export function listIndexDdl(plan: ListIndexPlan): string {
-  const lines: string[] = [];
-  for (const idx of listIndexColumns(plan)) {
-    lines.push(`DROP INDEX IF EXISTS ${idx.name};`);
-    lines.push(
-      `CREATE INDEX ${idx.name} ON ${plan.table} (${idx.columns.join(', ')})` +
-        `${idx.where ? ` WHERE ${idx.where}` : ''};`,
-    );
-  }
-  return lines.join('\n');
+  return listIndexObjects(plan)
+    .flatMap((idx) => [`DROP INDEX IF EXISTS ${idx.name};`, `${idx.sql};`])
+    .join('\n');
+}
+
+/** The plan's indexes, each with its CREATE statement — what `listIndexDdl` runs. */
+export function listIndexObjects(plan: ListIndexPlan): DerivedObject[] {
+  return listIndexColumns(plan).map((idx) => ({
+    name: idx.name,
+    type: 'index',
+    table: plan.table,
+    sql: `CREATE INDEX ${idx.name} ON ${plan.table} (${idx.columns.join(', ')})${idx.where ? ` WHERE ${idx.where}` : ''}`,
+  }));
 }
 
 /**

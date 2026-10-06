@@ -16,8 +16,11 @@
  *   rewritten or deleted afterwards — what subject erasure does — leaves the index;
  * - an authored rebuild of a table that declares no state runs as it always did.
  *
- * Each case provisions a scope of its own, makes it forget ONE rebuild, and runs the pass
- * again: what a redeploy that added that rebuild to a live scope does.
+ * Each case provisions a scope of its own. Most make it forget ONE rebuild and run the pass
+ * again: what a redeploy that added that rebuild to a live scope does. The rest change the
+ * schema by hand with every migration journaled — a scope stripped before the pass checked, or
+ * left with a derived object that has the right name and the wrong definition — and run
+ * `migrateScope`, which repairs with nothing pending.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
@@ -93,6 +96,23 @@ export function entityStateMigrationContractSuite(
       );
     const columnsOf = async (s: ScopeId, table: string) =>
       (await raw.sql(t, s, `SELECT name FROM pragma_table_info('${table}')`)).map((r) => String(r['name']));
+    /** Every kernel-prefixed object in the scope, name → its CREATE statement. */
+    const definitions = async (s: ScopeId) =>
+      Object.fromEntries(
+        (await raw.sql(t, s, `SELECT name, sql FROM sqlite_master WHERE name LIKE '\\_substrat\\_%' ESCAPE '\\' AND sql IS NOT NULL`))
+          .filter((r) => /^_substrat_(state|list|search)_/.test(String(r['name'])))
+          .map((r) => [String(r['name']), String(r['sql'])]),
+      );
+    /** Statements on the scope's own handle, one at a time — past `ctx.sql`, the journal untouched. */
+    const rawAll = async (s: ScopeId, statements: string[]) => {
+      for (const statement of statements) await raw.sql(t, s, statement);
+    };
+    /** A rebuilt-by-hand table, as a migration journaled before #2090 would have left it. */
+    const rebuild = (table: string, select = '*') => [
+      `CREATE TABLE ${table}_new AS SELECT ${select} FROM ${table}`,
+      `DROP TABLE ${table}`,
+      `ALTER TABLE ${table}_new RENAME TO ${table}`,
+    ];
 
     it('puts back the guard triggers and list indexes a rebuild dropped, and the guard holds after it', async () => {
       const { s, stub, binned } = await scopeWith('rbnote');
@@ -188,6 +208,98 @@ export function entityStateMigrationContractSuite(
       expect(await stub.invoke('rb/search', { term: 'secret' })).toEqual([]);
       expect(await stub.invoke('rb/search', { term: 'private' })).toEqual([]);
       expect(await stub.invoke('rb/search', { term: 'gamma' })).toEqual([rewritten]);
+    });
+
+    // -- scopes already stripped, every migration journaled (Codex r1 on #2091) -----------------
+
+    it('repairs a scope a journaled rebuild already stripped — with nothing pending, on the next pass', async () => {
+      const { s, stub, binned } = await scopeWith('rbnote');
+      const said = ulid();
+      await stub.invoke('rb/add', { entityType: 'rbsearch', id: said, title: 'alpha secret' });
+      const before = await definitions(s);
+      await rawAll(s, [...rebuild('rb_notes'), ...rebuild('rb_search')]);
+      expect(Object.keys(await definitions(s))).not.toContain('_substrat_state_rb_notes_born');
+
+      expect(await host.migrateScope(t, s)).toMatchObject({ status: 'noop' });
+      expect(await definitions(s)).toEqual(before);
+      await expect(raw.sql(t, s, `UPDATE rb_notes SET _substrat_trashed_at = NULL WHERE id = '${binned}'`)).rejects.toThrow(
+        /moves only through ctx\.archive/,
+      );
+      await stub.invoke('rb/retitle', { id: said, title: 'gamma redacted' });
+      expect(await stub.invoke('rb/search', { term: 'secret' })).toEqual([]);
+      expect(await stub.invoke('rb/search', { term: 'gamma' })).toEqual([said]);
+    });
+
+    it('re-creates a derived object present by name but not as the kernel defines it', async () => {
+      const { s, stub, binned } = await scopeWith('rbnote');
+      const said = ulid();
+      await stub.invoke('rb/add', { entityType: 'rbsearch', id: said, title: 'alpha secret' });
+      const before = await definitions(s);
+      await rawAll(s, [
+        // A search update trigger that keeps nothing in step: erased text would stay found.
+        'DROP TRIGGER _substrat_search_test_rebuild_rbsearch_au',
+        'CREATE TRIGGER _substrat_search_test_rebuild_rbsearch_au AFTER UPDATE ON rb_search BEGIN SELECT 1; END',
+        // A guard that never fires.
+        'DROP TRIGGER _substrat_state_rb_notes_moved',
+        'CREATE TRIGGER _substrat_state_rb_notes_moved BEFORE UPDATE OF _substrat_trashed_at ON rb_notes WHEN 0 BEGIN SELECT 1; END',
+        // A list index on the wrong columns, and one with the wrong partial predicate.
+        'DROP INDEX _substrat_list_test_rebuild_rbnote_title',
+        'CREATE INDEX _substrat_list_test_rebuild_rbnote_title ON rb_notes (id)',
+        'DROP INDEX _substrat_list_test_rebuild_rbnote_title_archived',
+        'CREATE INDEX _substrat_list_test_rebuild_rbnote_title_archived ON rb_notes (title, id) WHERE _substrat_archived_at IS NULL',
+      ]);
+      expect(await definitions(s)).not.toEqual(before);
+
+      expect(await host.migrateScope(t, s)).toMatchObject({ status: 'noop' });
+      expect(await definitions(s)).toEqual(before);
+      await expect(raw.sql(t, s, `UPDATE rb_notes SET _substrat_trashed_at = NULL WHERE id = '${binned}'`)).rejects.toThrow(
+        /moves only through ctx\.archive/,
+      );
+      await stub.invoke('rb/retitle', { id: said, title: 'gamma redacted' });
+      expect(await stub.invoke('rb/search', { term: 'secret' })).toEqual([]);
+    });
+
+    it('fails closed on the next pass when a journaled state column is already gone — nothing is served', async () => {
+      const { s, binned } = await scopeWith('rbcut');
+      await rawAll(s, rebuild('rb_cut', 'id, title'));
+
+      const outcome = await host.migrateScope(t, s);
+      expect(outcome).toMatchObject({ status: 'failed', failure: { version: `${MODULE}@state/rbcut:trash` } });
+      expect(outcome.status === 'failed' && outcome.failure.error).toMatch(
+        /an applied migration left 'rb_cut' without _substrat_trashed_at/,
+      );
+      await expect(
+        host.getScope(keeper, t, s).then((stub) => stub.invoke('rb/state', { entityType: 'rbcut', id: binned })),
+      ).rejects.toThrow(/without _substrat_trashed_at/);
+    });
+
+    it('refuses a restore whose journal owes a table a state column the dump does not carry — the load rolls back whole', async () => {
+      const { s, stub, binned } = await scopeWith('rbcut');
+      const before = await definitions(s);
+      const dump = await host.admin.exportScope(staff, t, s);
+      const malformed = {
+        ...dump,
+        tables: dump.tables.map((table) => {
+          if (table.name !== 'rb_cut') return table;
+          const keep = table.columns.map((c, i) => (c === '_substrat_trashed_at' ? -1 : i)).filter((i) => i >= 0);
+          return {
+            ...table,
+            ddl: `CREATE TABLE rb_cut (${keep.map((i) => `${table.columns[i]} TEXT`).join(', ')})`,
+            columns: keep.map((i) => table.columns[i]!),
+            rows: table.rows.map((row) => keep.map((i) => row[i])),
+          };
+        }),
+      };
+      await expect(host.restoreScope(staff, t, s, malformed)).rejects.toThrow(
+        /the restored dump left 'rb_cut' without _substrat_trashed_at/,
+      );
+      // Nothing of the load committed: the column, the binned row and the guard are all as they were.
+      expect(await columnsOf(s, 'rb_cut')).toContain('_substrat_trashed_at');
+      expect(await definitions(s)).toEqual(before);
+      expect(await stub.invoke('rb/state', { entityType: 'rbcut', id: binned })).toBe('trashed');
+      // The twin: the same dump, unaltered, restores.
+      await host.restoreScope(staff, t, s, dump);
+      expect(await stub.invoke('rb/state', { entityType: 'rbcut', id: binned })).toBe('trashed');
     });
 
     it('twin: a rebuild of a table that declares no state runs as before, and its list index comes back too', async () => {

@@ -239,7 +239,13 @@ export {
   stateColumnsOf,
 } from './entity-state.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
-export { afterMigration, assertEntityStateColumns, assertEntityStateIntact, rederiveObjects } from './derived-objects.js';
+export {
+  afterMigration,
+  assertEntityStateColumns,
+  assertEntityStateIntact,
+  repairDerivedObjects,
+  StateColumnLost,
+} from './derived-objects.js';
 export type { DerivedPlans } from './derived-objects.js';
 export { TRASH_SCAN_BUDGET, createTrashedReads, searchStateWhere, uncheckedView } from './entity-state-reads.js';
 export type { TrashedReadDeps, TrashedReads } from './entity-state-reads.js';

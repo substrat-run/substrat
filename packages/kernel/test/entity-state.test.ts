@@ -13,7 +13,8 @@ import {
   createTrashedReads,
   assertEntityStateColumns,
   assertEntityStateIntact,
-  rederiveObjects,
+  repairDerivedObjects,
+  StateColumnLost,
   assertNoStatefulDdl,
   changesSchema,
   cursorOf,
@@ -399,7 +400,7 @@ describe('assertEntityStateIntact', () => {
   }
 });
 
-describe('rederiveObjects / assertEntityStateColumns (#2090)', () => {
+describe('repairDerivedObjects / assertEntityStateColumns (#2090)', () => {
   const build = derivedFixture;
   const rebuild = 'CREATE TABLE d2 AS SELECT * FROM docs; DROP TABLE docs; ALTER TABLE d2 RENAME TO docs;';
 
@@ -409,7 +410,7 @@ describe('rederiveObjects / assertEntityStateColumns (#2090)', () => {
     expect(before).toHaveLength(5);
     db.exec(rebuild);
     expect(derived()).toEqual([]);
-    rederiveObjects(sql, (ddl) => db.exec(ddl), plans);
+    repairDerivedObjects(sql, (ddl) => db.exec(ddl), plans, { after: 'migration x' });
     expect(derived()).toEqual(before);
     expect(() => assertEntityStateIntact(sql, plans)).not.toThrow();
   });
@@ -420,20 +421,56 @@ describe('rederiveObjects / assertEntityStateColumns (#2090)', () => {
     for (const name of derived()) db.exec(`DROP ${name.startsWith('_substrat_state_') ? 'TRIGGER' : 'INDEX'} ${name}`);
     db.exec('ALTER TABLE docs DROP COLUMN _substrat_trashed_at');
     expect(() => assertEntityStateColumns(sql, plans, 'migration x')).not.toThrow();
-    rederiveObjects(sql, () => {
-      throw new Error('nothing is owed');
-    }, plans);
+    repairDerivedObjects(
+      sql,
+      () => {
+        throw new Error('nothing is owed');
+      },
+      plans,
+      { after: 'migration x' },
+    );
     // The journaled column is owed, and its loss fails closed.
     db.exec('ALTER TABLE docs DROP COLUMN _substrat_archived_at');
     expect(() => assertEntityStateColumns(sql, plans, 'migration x')).toThrow(/migration x left 'docs' without _substrat_archived_at/);
   });
 
-  it('derives nothing onto a table missing a state column it is owed', () => {
+  it('derives nothing onto a table missing a state column it is owed, and names the migration that added it', () => {
     const { db, sql, plans } = build();
     db.exec('CREATE TABLE d2 AS SELECT id, title, _substrat_archived_at FROM docs; DROP TABLE docs; ALTER TABLE d2 RENAME TO docs;');
     const ran: string[] = [];
-    rederiveObjects(sql, (ddl) => ran.push(ddl), plans);
+    const err = (() => {
+      try {
+        repairDerivedObjects(sql, (ddl) => ran.push(ddl), plans, { after: 'migration x' });
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(StateColumnLost);
+    expect((err as StateColumnLost).migration).toBe('@m@state/doc:trash');
+    expect(String((err as Error).message)).toMatch(/migration x left 'docs' without _substrat_trashed_at/);
     expect(ran).toEqual([]);
     expect(() => assertEntityStateColumns(sql, plans, 'migration x')).toThrow(/without _substrat_trashed_at/);
+  });
+
+  it('skips a table a restored dump did not carry, and still refuses one it carried without its column', () => {
+    const { db, sql, plans } = build();
+    db.exec('DROP TABLE docs');
+    expect(() => repairDerivedObjects(sql, () => undefined, plans, { after: 'the dump', absentTable: 'skip' })).not.toThrow();
+    expect(() => repairDerivedObjects(sql, () => undefined, plans, { after: 'the dump' })).toThrow(/without its table/);
+    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT, _substrat_archived_at TEXT)');
+    expect(() => repairDerivedObjects(sql, () => undefined, plans, { after: 'the dump', absentTable: 'skip' })).toThrow(
+      /the dump left 'docs' without _substrat_trashed_at/,
+    );
+  });
+
+  it('judges a derived object by its definition: a same-named index on other columns is re-created, a matching one is not', () => {
+    const { db, sql, plans } = build();
+    const ran: string[] = [];
+    repairDerivedObjects(sql, (ddl) => ran.push(ddl), plans, { after: 'x' });
+    expect(ran).toEqual([]);
+    db.exec('DROP INDEX _substrat_list_m_doc_title_archived; CREATE INDEX _substrat_list_m_doc_title_archived ON docs (id)');
+    repairDerivedObjects(sql, (ddl) => ran.push(ddl), plans, { after: 'x' });
+    expect(ran).toHaveLength(1);
+    expect(ran[0]).toMatch(/CREATE INDEX _substrat_list_m_doc_title_archived ON docs \(title, id\) WHERE/);
   });
 });
