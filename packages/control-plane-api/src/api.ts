@@ -4128,15 +4128,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * Answer for one `auditedChange` (#2064): the vertical's refusal or failure with its own status
-   * (a non-`ControlPlaneError` throw rethrown), a change whose outcome row is missing as a `500`
-   * saying it DID happen, under the operation id its intent row carries, or `ok`.
+   * Answer for one `auditedChange` (#2064). A refusal or failure answers with the vertical's own
+   * status (a non-`ControlPlaneError` throw is rethrown). A change that went through answers
+   * `ok`, with its `operationId`, whether or not its outcome row could be written. When it could
+   * not, the answer also carries `auditWarning`, which says so. That is a success on purpose:
+   * the change happened, so no client should read a retryable error and make it twice (a second
+   * invite, a second hand-over). The missing row is logged, and the scheduled settle closes it.
    */
   const auditedAnswer = <T,>(
     c: Context<{ Variables: Vars }>,
     done: AuditedChange<T>,
     what: string,
-    ok: (result: T) => Response,
+    ok: (result: T, audit: { operationId: string; auditWarning?: string }) => Response,
   ): Response => {
     const { operationId } = done;
     if ('error' in done) {
@@ -4146,16 +4149,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw done.error;
     }
     if ('unrecorded' in done) {
-      return c.json(
-        {
-          error: `${what} completed, but its outcome could not be written to the admin log: ${done.unrecorded}`,
-          operationId,
-          ...((done.result ?? {}) as object),
-        },
-        500,
-      );
+      return ok(done.result, {
+        operationId,
+        auditWarning: `${what} completed, but its outcome could not be written to the admin log: ${done.unrecorded}`,
+      });
     }
-    return ok(done.result);
+    return ok(done.result, { operationId });
   };
 
   /** Run one audited member change: intent, the vertical's call, then the outcome row. */
@@ -4211,7 +4210,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       () => target.vertical.inviteMember({ tenantId, scopeId, caller: person, origin, roleKey: body.roleKey, email: body.email ?? null }),
       (link) => ({ principal: link.principal }),
     );
-    return auditedAnswer(c, done, 'the invite', (link) => c.json(link, 201));
+    return auditedAnswer(c, done, 'the invite', (link, audit) => c.json({ ...link, ...audit }, 201));
   });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/members/:principal/role', async (c) => {
@@ -4227,7 +4226,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       () => target.vertical.changeMemberRole({ tenantId, scopeId, caller: person, principal: member, from: body.from, to: body.to }),
       () => ({}),
     );
-    return auditedAnswer(c, done, 'the role change', () => c.json({ principal: member, from: body.from, to: body.to }));
+    return auditedAnswer(c, done, 'the role change', (_, audit) => c.json({ principal: member, from: body.from, to: body.to, ...audit }));
   });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/members/:principal/remove', async (c) => {
@@ -4242,7 +4241,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       () => target.vertical.removeMember({ tenantId, scopeId, caller: person, principal: member }),
       (removal) => ({ revoked: removal.revoked }),
     );
-    return auditedAnswer(c, done, 'the removal', (removal) => c.json(removal));
+    return auditedAnswer(c, done, 'the removal', (removal, audit) => c.json({ ...removal, ...audit }));
   });
 
   // The owner HAND-OVER (#1665). The move runs in the VERTICAL, behind `/internal/owner-transfer`
@@ -4286,9 +4285,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             : { ...base, ...row },
         ),
     });
-    // A missing outcome row is said exactly that way, so nobody retries a hand-over believing it
-    // failed, under the operation whose intent row stands alone.
-    return auditedAnswer(c, done, 'the hand-over', (moved) => c.json({ operationId, ...moved }));
+    // A missing outcome row is said in `auditWarning` on a success, so nobody retries a hand-over
+    // believing it failed, under the operation whose intent row stands alone.
+    return auditedAnswer(c, done, 'the hand-over', (moved, audit) => c.json({ ...audit, ...moved }));
   });
 
   // Deliver per-instance CONFIG to the scope's own storage (vertical-auth-detach.md

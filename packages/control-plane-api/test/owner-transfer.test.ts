@@ -272,22 +272,25 @@ describe('the owner hand-over route (#1665)', () => {
     expect((await send(route(s), asStaff, abandon)).status).toBe(200);
   });
 
-  it('a hand-over whose OUTCOME row cannot be written says it completed, with its operationId', async () => {
+  it('a hand-over whose OUTCOME row cannot be written answers success, with an audit warning and its operationId (#2064)', async () => {
     const s = await newScope();
     const original = host.admin.recordOwnerTransfer;
     host.admin.recordOwnerTransfer = async (actor, entry) => {
       if (entry.phase === 'applied') throw new Error('admin log unavailable');
       return original.call(host.admin, actor, entry);
     };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let res: Response;
     try {
       res = await send(route(s), asStaff);
     } finally {
       host.admin.recordOwnerTransfer = original;
+      logged.mockRestore();
     }
-    expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: string; operationId: string; owner: string };
-    expect(body.error).toMatch(/hand-over completed, but its outcome could not be written/);
+    // A success: the owner HAS moved, so nothing should retry it as a failure.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { auditWarning: string; operationId: string; owner: string };
+    expect(body.auditWarning).toMatch(/hand-over completed, but its outcome could not be written/);
     expect(body.owner).toBe(B);
     expect(asked).toHaveLength(1);
     // The intent row stands, under the operation id the caller was told.

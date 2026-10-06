@@ -172,6 +172,36 @@ function denialParams(scopeId: ScopeId, filter?: DenialFilter): URLSearchParams 
  * returns only a table count.
  */
 
+/**
+ * How long an AUDITED vertical call may run (#2064): the owner hand-over and the member changes.
+ * The control plane writes an `intent` row before such a call and its outcome after, and the
+ * scheduled settle calls an intent with no outcome `unknown` once its grace window has passed.
+ * This bound is what keeps a live call from being settled: `settleUnrecordedOutcomes` refuses a
+ * grace window that does not exceed it. A call past it is answered 504 and audited `failed`,
+ * which means what `failed` always means: it may have stopped part-way.
+ */
+export const AUDITED_CALL_DEADLINE_MS = 60_000;
+
+/**
+ * Race `send` against `ms`: on expiry the request is aborted (a fetch that honours its signal
+ * stops) and the caller is answered 504 whether or not the fetch ever settles.
+ */
+async function withDeadline(verb: string, ms: number, send: (signal: AbortSignal) => Promise<Response>): Promise<Response> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new ControlPlaneError(504, `the vertical did not answer ${verb} within ${ms / 1000} s; it may have stopped part-way`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([send(controller.signal), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface VerticalClientOptions {
   /**
    * How to reach the vertical. A Worker service binding's `fetch` when deployed —
@@ -586,21 +616,21 @@ export class VerticalClient {
   async inviteMember(input: {
     tenantId: TenantId; scopeId: ScopeId; caller: PrincipalId; origin: string; roleKey: string; email: string | null;
   }): Promise<MemberInviteLink> {
-    return memberInviteLink.parse(await this.postInternal<unknown>('/internal/members/invite', input, 'members-invite'));
+    return memberInviteLink.parse(await this.postInternal<unknown>('/internal/members/invite', input, 'members-invite', AUDITED_CALL_DEADLINE_MS));
   }
 
   /** Move a member from one role to another in one scope task, bounded by `caller` (#1150). */
   async changeMemberRole(input: {
     tenantId: TenantId; scopeId: ScopeId; caller: PrincipalId; principal: PrincipalId; from: string; to: string;
   }): Promise<void> {
-    await this.postInternal<unknown>('/internal/members/role', input, 'members-role');
+    await this.postInternal<unknown>('/internal/members/role', input, 'members-role', AUDITED_CALL_DEADLINE_MS);
   }
 
   /** Remove a member — every scope role, every login, an open invite — bounded by `caller` (#1150). */
   async removeMember(input: {
     tenantId: TenantId; scopeId: ScopeId; caller: PrincipalId; principal: PrincipalId;
   }): Promise<MemberRemoval> {
-    return memberRemoval.parse(await this.postInternal<unknown>('/internal/members/remove', input, 'members-remove'));
+    return memberRemoval.parse(await this.postInternal<unknown>('/internal/members/remove', input, 'members-remove', AUDITED_CALL_DEADLINE_MS));
   }
 
   /**
@@ -615,7 +645,7 @@ export class VerticalClient {
     to: PrincipalId;
     abandon?: true;
   }): Promise<OwnerTransferResult> {
-    return ownerTransferResult.parse(await this.postInternal<unknown>('/internal/owner-transfer', input, 'owner-transfer'));
+    return ownerTransferResult.parse(await this.postInternal<unknown>('/internal/owner-transfer', input, 'owner-transfer', AUDITED_CALL_DEADLINE_MS));
   }
 
   /**
@@ -1785,18 +1815,22 @@ export class VerticalClient {
     );
   }
 
-  private async postInternal<T>(path: string, body: unknown, verb: string): Promise<T> {
+  /** `deadlineMs` bounds the call (#2064): past it the request is aborted and answered 504. */
+  private async postInternal<T>(path: string, body: unknown, verb: string, deadlineMs?: number): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const res = await this.reach(verb, () =>
-      this.options.fetch(`${base}${path}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
-        },
-        body: JSON.stringify(body),
-      }),
-    );
+    const send = (signal?: AbortSignal) =>
+      this.reach(verb, () =>
+        this.options.fetch(`${base}${path}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
+          },
+          body: JSON.stringify(body),
+          ...(signal ? { signal } : {}),
+        }),
+      );
+    const res = deadlineMs === undefined ? await send() : await withDeadline(verb, deadlineMs, send);
     if (!res.ok) throw await this.refusal(verb, res);
     return this.parseInternal<T>(verb, path, res);
   }

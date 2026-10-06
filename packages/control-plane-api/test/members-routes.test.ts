@@ -110,7 +110,8 @@ describe('/tenants/:t/scopes/:s/members — the plane names the scope and the pe
     expect(await invited.json()).toMatchObject({ principal: member, acceptUrl: 'https://acme-desk.global.substrat.run/?invite=t' });
     expect((await post(`/tenants/${tA}/scopes/${sA}/members/${member}/role`, asAnn, { from: 'agent', to: 'lead' })).status).toBe(200);
     const removed = await post(`/tenants/${tA}/scopes/${sA}/members/${member}/remove`, asAnn);
-    expect(await removed.json()).toEqual({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false });
+    // Each answer carries the operation id its admin rows are paired by (#2064).
+    expect(await removed.json()).toEqual({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false, operationId: expect.any(String) });
     expect(asked).toEqual([
       { verb: 'inviteMember', input: { tenantId: tA, scopeId: sA, caller: ann, origin: 'https://acme-desk.global.substrat.run', roleKey: 'agent', email: 'kim@example.test' } },
       { verb: 'changeMemberRole', input: { tenantId: tA, scopeId: sA, caller: ann, principal: member, from: 'agent', to: 'lead' } },
@@ -208,16 +209,22 @@ describe('/tenants/:t/scopes/:s/members — the plane names the scope and the pe
     expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent'], [sweep, 'unknown']]);
   });
 
-  it('a change whose `applied` row cannot be written says it completed, with its operation id and result', async () => {
+  it('a change whose `applied` row cannot be written answers success with an audit warning — the invite keeps its link (#2064)', async () => {
     const asAnn = await mint(tA, ann);
-    const { res, logged } = await withUnwritable('applied', () => post(`/tenants/${tA}/scopes/${sA}/members/${member}/remove`, asAnn));
-    expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: string; operationId: string; revoked: string[] };
-    expect(body.error).toMatch(/the removal completed, but its outcome could not be written/);
-    expect(body.revoked).toEqual(['agent']);
-    expect(logged).toEqual([
-      [UNRECORDED_OUTCOME_LOG, { flow: 'member-change', operationId: body.operationId, phase: 'applied', auditError: 'admin log unavailable' }],
-    ]);
-    expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent']]);
+    for (const [path, body, status] of [
+      [`/tenants/${tA}/scopes/${sA}/members`, { roleKey: 'agent' }, 201],
+      [`/tenants/${tA}/scopes/${sA}/members/${member}/role`, { from: 'agent', to: 'lead' }, 200],
+      [`/tenants/${tA}/scopes/${sA}/members/${member}/remove`, {}, 200],
+    ] as const) {
+      const { res, logged } = await withUnwritable('applied', () => post(path, asAnn, body));
+      expect(res.status).toBe(status);
+      const answer = (await res.json()) as { auditWarning: string; operationId: string; acceptUrl?: string; revoked?: string[]; to?: string };
+      expect(answer.auditWarning).toMatch(/completed, but its outcome could not be written/);
+      if (status === 201) expect(answer.acceptUrl).toBe('https://acme-desk.global.substrat.run/?invite=t');
+      expect(logged).toEqual([
+        [UNRECORDED_OUTCOME_LOG, { flow: 'member-change', operationId: answer.operationId, phase: 'applied', auditError: 'admin log unavailable' }],
+      ]);
+      expect(await memberRows(answer.operationId)).toEqual([[serviceActor, 'intent']]);
+    }
   });
 });

@@ -41,7 +41,7 @@ export type {
 // The console's staff surface (#971). Browser-safe, so it is ALSO a subpath of its own
 // (`./browser`): a bundler resolving the root entry would pull the whole server.
 export * from './browser.js';
-export { VerticalClient } from './vertical-client.js';
+export { VerticalClient, AUDITED_CALL_DEADLINE_MS } from './vertical-client.js';
 export { versionReachedAt } from './scope-deployment.js';
 // #1705 PR 2: the cross-vertical phase's reach for a control plane whose scopes live elsewhere.
 export { hostedCrossVerticalReach } from './cross-vertical.js';
@@ -134,6 +134,7 @@ export {
 export {
   auditedChange,
   settleUnrecordedOutcomes,
+  SETTLE_GRACE_MS,
   UNRECORDED_OUTCOME_LOG,
 } from './audited-change.js';
 export type { AuditedChange, AuditedChangeSpec, AuditedRow, SettleAdmin, SettleOptions, SettleResult } from './audited-change.js';

@@ -22,15 +22,9 @@
  * switches audit the same way inside the adapters, which cannot import this package; they are
  * not covered here.)
  */
-import {
-  AUDIT_ERROR_MAX,
-  type AdminAction,
-  type AdminLogEntry,
-  type MemberChangeAudit,
-  type OwnerTransferAudit,
-  type PlatformActorId,
-} from '@substrat-run/contracts';
-import type { HostAdmin, OpsFailureInput } from '@substrat-run/kernel';
+import { AUDIT_ERROR_MAX, type AdminLogEntry, type PlatformActorId } from '@substrat-run/contracts';
+import { AUDITED_CHANGE_ACTIONS, type HostAdmin } from '@substrat-run/kernel';
+import { AUDITED_CALL_DEADLINE_MS } from './vertical-client.js';
 
 /** One row of an audited change, before the flow adds its own fields. */
 export type AuditedRow<T> =
@@ -96,19 +90,16 @@ export async function auditedChange<T>(spec: AuditedChangeSpec<T>): Promise<Audi
   return { operationId, result };
 }
 
-/** The admin actions written through `auditedChange`. */
-const AUDITED_CHANGE_ACTIONS = ['transferOwner', 'manageScopeMember'] as const satisfies readonly AdminAction[];
-type AuditedAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
-
-export type SettleAdmin = Pick<HostAdmin, 'auditLog' | 'recordOwnerTransfer' | 'recordMemberChange' | 'recordOpsFailure'>;
+export type SettleAdmin = Pick<HostAdmin, 'auditLog' | 'settleUnrecordedOutcome'>;
 
 export interface SettleOptions {
   admin: SettleAdmin;
   actor: PlatformActorId;
   now?: Date;
   /**
-   * How old an intent must be before its missing outcome is called unknown. Well past the
-   * longest a request can still be running, so the sweep never races a live call.
+   * How old an intent must be before its missing outcome is called unknown. It must exceed
+   * `AUDITED_CALL_DEADLINE_MS`, the longest the vertical call between the two rows may run, so a
+   * live request is never settled; `settleUnrecordedOutcomes` refuses a window that does not.
    */
   graceMs?: number;
   /**
@@ -117,46 +108,53 @@ export interface SettleOptions {
    * never pruned.
    */
   lookbackMs?: number;
-  logError?: AuditedChangeSpec<unknown>['logError'];
 }
 
 export interface SettleResult {
   /** Intents this pass closed with an `unknown` row. */
-  settled: { action: AuditedAction; operationId: string; tenantId: string | null; scopeId: string | null }[];
+  settled: { action: string; operationId: string; tenantId: string | null; scopeId: string | null }[];
   /** Per-intent write failures: the intent stays open, and the next pass tries again. */
   errors: { operationId: string; error: string }[];
 }
 
-const SETTLE_GRACE_MS = 60 * 60 * 1000;
+/** An hour: sixty times the deadline on the call it waits out. */
+export const SETTLE_GRACE_MS = 60 * 60 * 1000;
 const SETTLE_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 const PAGE = 500;
 
+if (SETTLE_GRACE_MS <= AUDITED_CALL_DEADLINE_MS) {
+  throw new Error('SETTLE_GRACE_MS must exceed AUDITED_CALL_DEADLINE_MS, or a live call could be settled');
+}
+
 /**
- * Close every audited change whose intent has no outcome row (#2064). For each one older than
- * the grace window, write an `unknown` outcome naming why, and an ops-failure row so the staff
- * digest reports it: the log can no longer say whether the change happened, and someone should
- * look in the vertical. Idempotent: a settled intent has an outcome and is skipped next pass.
+ * Close every audited change whose intent has no outcome row (#2064). Each intent older than
+ * the grace window and still without an outcome is handed to `HostAdmin.settleUnrecordedOutcome`,
+ * which writes the `unknown` row and its ops-failure row in ONE transaction, and only if no
+ * outcome exists by then. The scan here only nominates. The host's check is the one that holds,
+ * so two concurrent passes, or an outcome landing between the scan and the settle, still leave
+ * one outcome row. A real outcome written later supersedes `unknown` (kernel `audit-outcome.ts`).
  */
 export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<SettleResult> {
   const { admin, actor } = opts;
-  const logError = opts.logError ?? consoleError;
   const now = (opts.now ?? new Date()).getTime();
   const graceMs = opts.graceMs ?? SETTLE_GRACE_MS;
+  if (graceMs <= AUDITED_CALL_DEADLINE_MS) {
+    throw new Error(`a settle grace of ${graceMs} ms does not exceed the ${AUDITED_CALL_DEADLINE_MS} ms call deadline`);
+  }
   const cutoff = new Date(now - graceMs).toISOString();
   const since = new Date(now - (opts.lookbackMs ?? SETTLE_LOOKBACK_MS)).toISOString();
 
-  type IntentPayload = Record<string, unknown> & { phase: 'intent'; operationId: string };
-  const intents = new Map<string, { row: AdminLogEntry; after: IntentPayload }>();
+  const intents = new Map<string, AdminLogEntry>();
   const closed = new Set<string>();
   for (let cursor: string | undefined; ; ) {
     const page = await admin.auditLog(actor, { action: [...AUDITED_CHANGE_ACTIONS], since, limit: PAGE, cursor });
     for (const row of page) {
-      const after = row.after as IntentPayload | null;
+      const after = row.after as { phase?: unknown; operationId?: unknown } | null;
       if (typeof after?.operationId !== 'string') continue;
       // Keyed by action too: the two flows mint their operation ids independently.
       const key = `${row.action}:${after.operationId}`;
       if (after.phase === 'intent') {
-        if (row.at < cutoff) intents.set(key, { row, after });
+        if (row.at < cutoff) intents.set(key, row);
       } else {
         closed.add(key);
       }
@@ -167,36 +165,17 @@ export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<Set
 
   const result: SettleResult = { settled: [], errors: [] };
   const minutes = Math.round(graceMs / 60_000);
-  for (const [key, { row: intent, after }] of intents) {
+  for (const [key, intent] of intents) {
     if (closed.has(key)) continue;
-    const action = intent.action as AuditedAction;
-    const { phase: _intent, ...fields } = after;
+    const operationId = (intent.after as { operationId: string }).operationId;
     const error = `no outcome was recorded within ${minutes} minutes of the intent (${intent.at}); whether the change happened is not known to this log`;
-    // The intent's own fields, re-parsed strictly by the same recorder the flow wrote it with.
-    const entry = { ...fields, tenantId: intent.tenantId, scopeId: intent.scopeId, phase: 'unknown' as const, error };
     try {
-      await (action === 'transferOwner'
-        ? admin.recordOwnerTransfer(actor, entry as OwnerTransferAudit)
-        : admin.recordMemberChange(actor, entry as MemberChangeAudit));
+      if (await admin.settleUnrecordedOutcome(actor, { intentId: intent.id, error })) {
+        result.settled.push({ action: intent.action, operationId, tenantId: intent.tenantId, scopeId: intent.scopeId });
+      }
     } catch (e) {
-      result.errors.push({ operationId: fields.operationId, error: messageOf(e) });
-      continue;
+      result.errors.push({ operationId, error: messageOf(e) });
     }
-    result.settled.push({ action, operationId: fields.operationId, tenantId: intent.tenantId, scopeId: intent.scopeId });
-    const failure: OpsFailureInput = {
-      actor,
-      operation: `audit.${action}`,
-      stage: 'outcome-unknown',
-      tenantId: intent.tenantId,
-      scopeId: intent.scopeId,
-      vertical: intent.vertical,
-      message: `operation ${fields.operationId}: ${error}`,
-    };
-    // The `unknown` row is the record; this only routes it to the digest, so its failure is
-    // logged and never undoes the settle.
-    await admin.recordOpsFailure(failure).catch((e: unknown) => {
-      logError(UNRECORDED_OUTCOME_LOG, { flow: action, operationId: fields.operationId, phase: 'unknown', opsFailureError: messageOf(e) });
-    });
   }
   return result;
 }

@@ -1835,6 +1835,53 @@ export function permissionContractSuite(
       expect(settled?.after).toEqual({ phase: 'unknown', error: 'no outcome was recorded', operationId, from, to });
     });
 
+    it('settles an intent with no outcome ONCE, with its ops-failure row in the same unit (#2064)', async () => {
+      // Held on both adapters: the settle's check-then-write is one transaction on each, which is
+      // the whole reason two racing sweeps cannot both write `unknown`.
+      const from = principalId.parse(ulid());
+      const to = principalId.parse(ulid());
+      const opsOf = async (operationId: string) =>
+        (await host.admin.auditLog(staff, { tenantId: t1, action: 'transferOwner' }))
+          .filter((r) => (r.after as { operationId?: string }).operationId === operationId)
+          .map((r) => (r.after as { phase: string }).phase);
+      const intentOf = async (operationId: string) => {
+        await host.admin.recordOwnerTransfer(staff, { tenantId: t1, scopeId: s1, operationId, from, to, phase: 'intent' });
+        return (await host.admin.auditLog(staff, { tenantId: t1, action: 'transferOwner', order: 'desc', limit: 1 }))[0]!.id;
+      };
+
+      // Two settles racing on one orphan: exactly one writes, and one ops-failure row is left.
+      const orphan = ulid();
+      const intentId = await intentOf(orphan);
+      const raced = await Promise.all([
+        host.admin.settleUnrecordedOutcome(staff, { intentId, error: 'no outcome was recorded' }),
+        host.admin.settleUnrecordedOutcome(staff, { intentId, error: 'no outcome was recorded' }),
+      ]);
+      expect(raced.sort()).toEqual([false, true]);
+      expect(await opsOf(orphan)).toEqual(['intent', 'unknown']);
+      const settled = (await host.admin.auditLog(staff, { tenantId: t1, action: 'transferOwner', order: 'desc', limit: 1 }))[0]!;
+      expect(settled.after).toEqual({ phase: 'unknown', error: 'no outcome was recorded', operationId: orphan, from, to });
+      const failures = (await host.admin.listOpsFailures(staff, { tenantId: t1, operation: 'audit.transferOwner' }))
+        .filter((f) => f.message.includes(orphan));
+      expect(failures.map((f) => [f.stage, f.scopeId])).toEqual([['outcome-unknown', s1]]);
+
+      // A real outcome that lands later is still recorded, as the later row, and supersedes it.
+      await host.admin.recordOwnerTransfer(staff, { tenantId: t1, scopeId: s1, operationId: orphan, from, to, phase: 'refused', error: 'late' });
+      expect(await opsOf(orphan)).toEqual(['intent', 'unknown', 'refused']);
+      expect(await host.admin.settleUnrecordedOutcome(staff, { intentId, error: 'again' })).toBe(false);
+
+      // An intent whose outcome landed first is not settled — the twin of the orphan above.
+      const answered = ulid();
+      const answeredId = await intentOf(answered);
+      await host.admin.recordOwnerTransfer(staff, { tenantId: t1, scopeId: s1, operationId: answered, from, to, phase: 'applied', outcome: 'transferred', fromRevoked: true });
+      expect(await host.admin.settleUnrecordedOutcome(staff, { intentId: answeredId, error: 'no outcome' })).toBe(false);
+      expect(await opsOf(answered)).toEqual(['intent', 'applied']);
+
+      // Only an audited-change intent can be settled: an outcome row's id, or no row, is not_found.
+      const outcomeId = (await host.admin.auditLog(staff, { tenantId: t1, action: 'transferOwner', order: 'desc', limit: 1 }))[0]!.id;
+      await expect(host.admin.settleUnrecordedOutcome(staff, { intentId: outcomeId, error: 'x' })).rejects.toThrow(/no audited-change intent/);
+      await expect(host.admin.settleUnrecordedOutcome(staff, { intentId: ulid(), error: 'x' })).rejects.toThrow(/no audited-change intent/);
+    });
+
     it('audits reading the audit trail, and reading the access log itself', async () => {
       const nosy = platformActorId.parse(ulid());
       await host.admin.auditLog(nosy, { tenantId: t1 });

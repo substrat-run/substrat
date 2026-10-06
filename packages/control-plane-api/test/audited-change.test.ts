@@ -5,7 +5,16 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ControlPlaneError, UNRECORDED_OUTCOME_LOG, auditedChange, settleUnrecordedOutcomes, type AuditedRow } from '../src/index.js';
+import {
+  AUDITED_CALL_DEADLINE_MS,
+  ControlPlaneError,
+  SETTLE_GRACE_MS,
+  UNRECORDED_OUTCOME_LOG,
+  VerticalClient,
+  auditedChange,
+  settleUnrecordedOutcomes,
+  type AuditedRow,
+} from '../src/index.js';
 
 /**
  * The intent → call → outcome audit both cross-store flows share (#2064). The helper is pinned
@@ -160,14 +169,14 @@ describe('settleUnrecordedOutcomes (#2064)', () => {
     expect((await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) })).settled.map((x) => x.operationId)).toEqual([fresh]);
   });
 
-  it('an intent older than the lookback is not read; a write that fails leaves the intent open for the next pass', async () => {
+  it('an intent older than the lookback is not read; a settle that fails leaves the intent open for the next pass', async () => {
     const old = ulid();
     await host.admin.recordOwnerTransfer(staff, { tenantId: t, scopeId: s, operationId: old, from: A, to: B, phase: 'intent' });
     expect(
       (await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(9 * 24 * HOUR) })).settled,
     ).toEqual([]);
 
-    vi.spyOn(host.admin, 'recordOwnerTransfer').mockRejectedValueOnce(new Error('log down'));
+    vi.spyOn(host.admin, 'settleUnrecordedOutcome').mockRejectedValueOnce(new Error('log down'));
     const pass = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) });
     expect(pass.settled).toEqual([]);
     expect(pass.errors).toEqual([{ operationId: old, error: 'log down' }]);
@@ -175,5 +184,91 @@ describe('settleUnrecordedOutcomes (#2064)', () => {
     // With the log back, the next pass closes it.
     const next = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) });
     expect(next.settled.map((x) => x.operationId)).toEqual([old]);
+  });
+
+  it('two passes racing settle an orphan once', async () => {
+    const op = ulid();
+    await host.admin.recordOwnerTransfer(staff, { tenantId: t, scopeId: s, operationId: op, from: A, to: B, phase: 'intent' });
+    const pass = () => settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) });
+    const [one, two] = await Promise.all([pass(), pass()]);
+    expect([...one.settled, ...two.settled].map((x) => x.operationId)).toEqual([op]);
+    expect((await rowsOf('transferOwner', op)).map((r) => r.phase)).toEqual(['intent', 'unknown']);
+  });
+
+  it('an outcome that lands between the scan and the settle wins: no `unknown` is written', async () => {
+    const op = ulid();
+    await host.admin.recordOwnerTransfer(staff, { tenantId: t, scopeId: s, operationId: op, from: A, to: B, phase: 'intent' });
+    const scan = host.admin.auditLog.bind(host.admin);
+    // The scan reads the orphan, and THEN the request's own outcome lands, before the settle.
+    const late = vi.spyOn(host.admin, 'auditLog').mockImplementationOnce(async (actor, filter) => {
+      const page = await scan(actor, filter);
+      await host.admin.recordOwnerTransfer(staff, { tenantId: t, scopeId: s, operationId: op, from: A, to: B, phase: 'applied', outcome: 'transferred', fromRevoked: true });
+      return page;
+    });
+    const pass = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) });
+    late.mockRestore();
+    expect(pass).toEqual({ settled: [], errors: [] });
+    expect((await rowsOf('transferOwner', op)).map((r) => r.phase)).toEqual(['intent', 'applied']);
+  });
+
+  it('a settle whose ops-failure row cannot be written writes no `unknown` either — one unit', async () => {
+    const op = ulid();
+    await host.admin.recordOwnerTransfer(staff, { tenantId: t, scopeId: s, operationId: op, from: A, to: B, phase: 'intent' });
+    // The directory's ops ledger refuses inserts for the length of one pass.
+    const db = (host as unknown as { directory: { exec(sql: string): void } }).directory;
+    db.exec(`CREATE TRIGGER ledger_down BEFORE INSERT ON _substrat_ops_failures BEGIN SELECT RAISE(ABORT, 'ops ledger down'); END`);
+    const pass = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) });
+    db.exec('DROP TRIGGER ledger_down');
+    expect(pass.errors).toEqual([{ operationId: op, error: expect.stringMatching(/ops ledger down/) }]);
+    expect((await rowsOf('transferOwner', op)).map((r) => r.phase)).toEqual(['intent']);
+    // The next pass writes both.
+    expect((await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) })).settled.map((x) => x.operationId)).toEqual([op]);
+    expect((await rowsOf('transferOwner', op)).map((r) => r.phase)).toEqual(['intent', 'unknown']);
+    expect((await host.admin.listOpsFailures(staff, { tenantId: t })).filter((f) => f.message.includes(op))).toHaveLength(1);
+  });
+
+  it('refuses a grace window that does not exceed the audited call deadline', async () => {
+    await expect(settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, graceMs: AUDITED_CALL_DEADLINE_MS })).rejects.toThrow(/does not exceed/);
+    expect(SETTLE_GRACE_MS).toBeGreaterThan(AUDITED_CALL_DEADLINE_MS);
+  });
+});
+
+/**
+ * The deadline that makes the grace window safe: an audited call that does not answer in
+ * `AUDITED_CALL_DEADLINE_MS` is aborted and answered 504, which the routes audit `failed`.
+ */
+describe('the audited call deadline (#2064)', () => {
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const A = principalId.parse(ulid());
+  const B = principalId.parse(ulid());
+
+  it('a vertical that never answers is aborted at the deadline and answered 504; one that answers in time is not', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const hanging = new VerticalClient({
+        platformSecret: 'secret',
+        fetch: ((_url: string, init?: RequestInit) => {
+          signal = init?.signal ?? undefined;
+          return new Promise<Response>(() => undefined);
+        }) as typeof fetch,
+      });
+      const call = hanging.transferOwner({ tenantId: t, scopeId: s, from: A, to: B });
+      const settled = expect(call).rejects.toMatchObject({ status: 504 });
+      await vi.advanceTimersByTimeAsync(AUDITED_CALL_DEADLINE_MS - 1);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await settled;
+      expect(signal?.aborted).toBe(true);
+
+      const prompt = new VerticalClient({
+        platformSecret: 'secret',
+        fetch: (async () => Response.json({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false })) as unknown as typeof fetch,
+      });
+      expect(await prompt.removeMember({ tenantId: t, scopeId: s, caller: A, principal: B })).toEqual({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
