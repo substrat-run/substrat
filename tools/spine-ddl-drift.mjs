@@ -81,7 +81,9 @@ const PAIRS = [
       {
         label: 'adapter-sqlite applyDirectorySchema',
         file: SQLITE,
-        anchor: /applyDirectorySchema\(\): void \{\s*this\.directory\.exec\(`/,
+        // #2068: the directory DDL runs statement by statement, comment-blanked
+        // (`execSqlStatements(this.directory, …)`); the text read here is the same literal.
+        anchor: /applyDirectorySchema\(\): void \{\s*(?:this\.directory\.exec\(|execSqlStatements\(this\.directory, )`/,
         additions: [{ kind: 'ensureColumn', receiver: 'this.directory' }],
       },
       {
