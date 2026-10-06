@@ -323,8 +323,9 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   `_substrat_*` **column**, as it does a `_substrat_*` table. The **host** refuses an operation
   addressed by `permission: { entity, idFrom }` on a trashed entity (`not_found`, after the
   declared key, so a caller without it cannot probe the bin) unless it declares
-  `trashed: 'admits'` or `'purges'`; a module with a trashable entity must pass
-  `operationTargets: operationTargetsOf(ops)` or it does not register. An operation whose check
+  `trashed: 'admits'` or `'purges'`, reading each operation's target off the declarations
+  `operationInputsOf(ops)` hands it — a module with a trashable entity that binds an undeclared
+  operation does not register. An operation whose check
   is `resolved` still asks `ctx.entityState(ref)` itself, and `lint:model` warns about each.
   `ctx.link` refuses a trashed parent. `trash: { permission, purgeAfterDays }` derives a purge
   schedule (`schedules: purgeSchedulesOf(ops, entities)`) running the entity's
