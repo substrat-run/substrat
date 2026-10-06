@@ -373,6 +373,44 @@ describe('the owner hand-over route (#1665)', () => {
     }
   });
 
+  it('the admin log resolves each operation to its latest outcome: intent → unknown → applied (#2064)', async () => {
+    const s = await newScope();
+    // The hand-over's applied row is lost, the settle calls it unknown, then the real row lands.
+    const original = host.admin.recordOwnerTransfer;
+    host.admin.recordOwnerTransfer = async (actor, entry) => {
+      if (entry.phase === 'applied') throw new Error('admin log unavailable');
+      return original.call(host.admin, actor, entry);
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await send(route(s), asStaff);
+    host.admin.recordOwnerTransfer = original;
+    logged.mockRestore();
+    const { operationId } = (await res.json()) as { operationId: string };
+    const sweep = platformActorId.parse(ulid());
+    await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: new Date(Date.now() + 2 * 3600_000) });
+
+    type Row = { after: { phase: string }; audited?: { operationId: string; outcome: string; superseded: boolean } };
+    const read = async (query = '') => {
+      const log = await app.request(`/admin-log?tenantId=${t}&scopeId=${s}&action=transferOwner${query}`, { headers: asStaff });
+      expect(log.status).toBe(200);
+      return ((await log.json()) as { entries: Row[] }).entries.map((e) => [e.after.phase, e.audited]);
+    };
+    expect(await read()).toEqual([
+      ['intent', { operationId, outcome: 'unknown', superseded: false }],
+      ['unknown', { operationId, outcome: 'unknown', superseded: false }],
+    ]);
+
+    await host.admin.recordOwnerTransfer(staff, { tenantId: t, scopeId: scopeId.parse(s), operationId, from: A, to: B, phase: 'applied', outcome: 'transferred', fromRevoked: true });
+    // The raw history stays; each row says the operation now stands at `applied`.
+    expect(await read()).toEqual([
+      ['intent', { operationId, outcome: 'applied', superseded: false }],
+      ['unknown', { operationId, outcome: 'applied', superseded: true }],
+      ['applied', { operationId, outcome: 'applied', superseded: false }],
+    ]);
+    // A page holding only the intent still resolves it, from rows outside the page.
+    expect(await read('&limit=1&order=asc')).toEqual([['intent', { operationId, outcome: 'applied', superseded: false }]]);
+  });
+
   it('a scope no vertical serves has no owner seat to hand over — 501, and nothing is recorded', async () => {
     const s = await newScope(null);
     expect((await send(route(s), asStaff)).status).toBe(501);

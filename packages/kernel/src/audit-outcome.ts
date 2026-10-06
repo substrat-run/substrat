@@ -89,7 +89,44 @@ export function unknownOutcomeOf(row: SettleIntentRow | undefined, intentId: str
       tenantId: row.tenant_id as OpsFailureInput['tenantId'],
       scopeId: row.scope_id as OpsFailureInput['scopeId'],
       vertical: row.vertical,
+      // The operation id is the row's handle: the digest reads the admin log by it, to drop an
+      // `unknown` that a real outcome has since superseded.
+      reference: operationId,
       message: `operation ${operationId}: ${error}`,
     },
   };
+}
+
+/** The phases an audited change's rows carry. `pending` is an operation with no outcome yet. */
+export type AuditedPhase = 'intent' | 'applied' | 'refused' | 'failed' | 'unknown';
+
+/** One operation's key: the two flows mint their operation ids independently. */
+export const auditedKeyOf = (action: string, operationId: string): string => `${action}:${operationId}`;
+
+/** The outcome an operation stands at: its LATEST outcome row, by id. */
+export interface EffectiveOutcome {
+  phase: Exclude<AuditedPhase, 'intent'>;
+  /** The id of the outcome row that decides it. */
+  id: string;
+  at: string;
+}
+
+/**
+ * Each audited operation's effective outcome among `rows`, keyed by `auditedKeyOf`: the latest
+ * outcome row wins (#2064), so a real outcome recorded after a settle's `unknown` is the result.
+ * Rows of other actions, and intents, decide nothing.
+ */
+export function effectiveOutcomes(
+  rows: readonly { id: string; action: string; at: string; after: unknown }[],
+): Map<string, EffectiveOutcome> {
+  const out = new Map<string, EffectiveOutcome>();
+  for (const row of rows) {
+    if (!isAudited(row.action)) continue;
+    const after = row.after as { phase?: unknown; operationId?: unknown } | null;
+    if (typeof after?.operationId !== 'string' || after.phase === 'intent' || typeof after.phase !== 'string') continue;
+    const key = auditedKeyOf(row.action, after.operationId);
+    const seen = out.get(key);
+    if (!seen || row.id > seen.id) out.set(key, { phase: after.phase as EffectiveOutcome['phase'], id: row.id, at: row.at });
+  }
+  return out;
 }

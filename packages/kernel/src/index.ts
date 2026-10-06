@@ -536,9 +536,11 @@ export {
   AUDITED_CHANGE_ACTIONS,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
+  auditedKeyOf,
+  effectiveOutcomes,
   unknownOutcomeOf,
 } from './audit-outcome.js';
-export type { AuditedChangeAction, SettleIntentRow, UnknownOutcome } from './audit-outcome.js';
+export type { AuditedChangeAction, AuditedPhase, EffectiveOutcome, SettleIntentRow, UnknownOutcome } from './audit-outcome.js';
 export {
   VERSION_MIGRATIONS_DDL,
   splitManifestMigrations,

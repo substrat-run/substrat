@@ -1,6 +1,7 @@
 import type { OpsFailureEntry, PlatformActorId } from '@substrat-run/contracts';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import type { HostAdmin, PlatformSweepReport } from '@substrat-run/kernel';
+import { supersededUnknowns } from '@substrat-run/control-plane-api';
 
 /**
  * The staff failure digest (#1416, first slice) — the one thing in the observability
@@ -58,7 +59,7 @@ const DIGEST_ROW_CAP = 50;
 const WATERMARK_ROWS = 25;
 
 /** The ledger a digest reads, and the one it writes its own failures to. */
-export type FailureDigestAdmin = Pick<HostAdmin, 'listOpsFailures' | 'listSweepRuns' | 'recordOpsFailure'>;
+export type FailureDigestAdmin = Pick<HostAdmin, 'listOpsFailures' | 'listSweepRuns' | 'recordOpsFailure' | 'auditLog'>;
 
 export interface FailureDigestOptions {
   admin: FailureDigestAdmin;
@@ -130,6 +131,12 @@ export async function sendFailureDigest(opts: FailureDigestOptions): Promise<Fai
     await recordOwnFailure(opts, 'read', error);
     return { status: 'failed', since, error };
   }
+
+  // #2064: an audited change the settle called `unknown` and whose real outcome has landed since
+  // is resolved: the latest outcome row wins, so there is nothing left to look into. A read that
+  // fails here keeps every row: reporting one resolved change is better than hiding an open one.
+  const superseded = await supersededUnknowns(opts.admin, opts.actor, failures).catch(() => new Set<string>());
+  failures = failures.filter((f) => !superseded.has(f.id));
 
   if (failures.length === 0 && opts.reportErrors.length === 0) {
     return { status: 'skipped', reason: 'nothing-to-report' };

@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { MockEmailTransport } from '@substrat-run/adapter-email';
-import { instant, platformActorId, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
+import { instant, platformActorId, principalId, scopeId, tenantId, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
 import { ulid, type OpsFailureInput, type SweepRunInput } from '@substrat-run/kernel';
 import {
   SWEEP_INTERVAL_MS,
@@ -86,6 +86,7 @@ function stubAdmin(seed: { failures?: OpsFailureEntry[]; sweepRuns?: SweepRunEnt
     recordOpsFailure: async (entry) => {
       calls.recorded.push(entry);
     },
+    auditLog: async () => [],
   };
   return { admin, calls };
 }
@@ -289,6 +290,39 @@ describe('sendFailureDigest', () => {
       expect(out.status).toBe('sent');
       expect(transport.sent).toHaveLength(1);
       expect(transport.last!.text).toContain(marker);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+describe('the digest and a settled `unknown` (#2064)', () => {
+  it('mails an `unknown` outcome, and drops it once a real outcome has superseded it — on the real ledger', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    try {
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      const operationId = ulid();
+      const base = { tenantId: t, scopeId: s, operationId, from: principalId.parse(ulid()), to: principalId.parse(ulid()) };
+      const since = new Date(Date.now() - 1_000).toISOString();
+      await host.admin.recordOwnerTransfer(ACTOR, { ...base, phase: 'intent' });
+      const [intent] = await host.admin.auditLog(ACTOR, { tenantId: t, action: 'transferOwner', order: 'desc', limit: 1 });
+      expect(await host.admin.settleUnrecordedOutcome(ACTOR, { intentId: intent!.id, error: 'no outcome was recorded' })).toBe(true);
+      // A marker of our own, so each digest has something to send in shared storage.
+      const digest = async () => {
+        await host.admin.recordOpsFailure({ actor: ACTOR, operation: 'deploy.upload', message: `marker-${ulid()}` });
+        const transport = new MockEmailTransport();
+        const out = await sendFailureDigest({ admin: host.admin, actor: ACTOR, transport, from: FROM, recipients: 'ops@example.com', since, reportErrors: [] });
+        expect(out.status).toBe('sent');
+        return transport.last!.text;
+      };
+
+      // Unresolved: the digest names the operation.
+      expect(await digest()).toContain(operationId);
+      // The request's real outcome lands after all; the latest outcome row wins, so the next
+      // digest has nothing left to say about it.
+      await host.admin.recordOwnerTransfer(ACTOR, { ...base, phase: 'applied', outcome: 'transferred', fromRevoked: true });
+      expect(await digest()).not.toContain(operationId);
     } finally {
       await host.close();
     }

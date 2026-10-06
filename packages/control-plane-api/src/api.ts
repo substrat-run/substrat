@@ -131,7 +131,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
-import { auditedChange, type AuditedChange } from './audited-change.js';
+import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
 import {
   BIND_EXPORT_BREAK_REFUSAL,
   CARRIED_AWAY_KEY,
@@ -8897,9 +8897,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       order: c.req.query('order'),
     });
     const entries = await c.var.admin.auditLog(c.get('actor'), filter as Parameters<typeof c.var.admin.auditLog>[1]);
+    // #2064: each audited change's row says the outcome its operation stands at — the latest
+    // outcome row wins — beside the raw row, which is returned as written.
+    const resolved = await withAuditedOutcomes(c.var.admin, c.get('actor'), entries);
     // The cursor IS the last entry's id (ULID order is chronological), so the
     // page carries its own continuation and the console never assembles one.
-    return c.json(pageOf(entries, filter.limit, (e) => e.id));
+    return c.json(pageOf(resolved, filter.limit, (e) => e.id));
   });
 
   // The recorded operational failures (#559) — the console's failures view, and the

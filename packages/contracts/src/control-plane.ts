@@ -1247,6 +1247,21 @@ export const adminLogEntry = z.object({
    */
   onBehalfOf: onBehalfOf.nullable().optional(),
   at: instant,
+  /**
+   * #2064: on a row of an audited change (`transferOwner`, `manageScopeMember`), the outcome its
+   * operation stands at, resolved by the admin-log read surface and never stored. The raw rows
+   * stay as written. This says how to read them: the LATEST outcome row of an operation is its
+   * result, so a real outcome recorded after a settle's `unknown` supersedes it.
+   */
+  audited: z
+    .object({
+      operationId: z.string(),
+      /** The operation's effective outcome; `pending` while it has none. */
+      outcome: z.enum(['pending', 'applied', 'refused', 'failed', 'unknown']),
+      /** True on an outcome row that a later outcome row of the same operation replaced. */
+      superseded: z.boolean(),
+    })
+    .optional(),
 });
 export type AdminLogEntry = z.infer<typeof adminLogEntry>;
 

@@ -134,6 +134,8 @@ export {
 export {
   auditedChange,
   settleUnrecordedOutcomes,
+  supersededUnknowns,
+  withAuditedOutcomes,
   SETTLE_GRACE_MS,
   UNRECORDED_OUTCOME_LOG,
 } from './audited-change.js';

@@ -4657,7 +4657,7 @@ export class ControlPlaneDO extends DurableObject {
         version: null,
         status: null,
         message: failure.message.slice(0, 2000),
-        reference: null,
+        reference: failure.reference ?? null,
         origin: null,
         code: null,
         fingerprint: opsFailureFingerprint(failure),
