@@ -1072,7 +1072,17 @@ export interface AppMembersView {
 }
 
 /** A freshly minted member invite — shown once, stored nowhere. */
-export interface MemberInviteView {
+/**
+ * What every member change answers beside its result (#2064). `auditWarning` means the change
+ * WENT THROUGH but the platform could not write its admin-log outcome: show it as a warning on a
+ * success, never as an error to retry.
+ */
+export interface AuditedAnswerView {
+  operationId?: string;
+  auditWarning?: string;
+}
+
+export interface MemberInviteView extends AuditedAnswerView {
   principal: string;
   roleKey: string;
   email: string | null;
@@ -1823,13 +1833,13 @@ export const api = {
       body: JSON.stringify(input),
     }),
   appChangeMemberRole: (scopeId: string, principal: string, input: { from: string; to: string }) =>
-    call<unknown>(`/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/role`, {
+    call<AuditedAnswerView>(`/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/role`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
     }),
   appRemoveMember: (scopeId: string, principal: string) =>
-    call<{ revoked: string[]; unbound: number; inviteWithdrawn: boolean }>(
+    call<{ revoked: string[]; unbound: number; inviteWithdrawn: boolean } & AuditedAnswerView>(
       `/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/remove`,
       { method: 'POST' },
     ),

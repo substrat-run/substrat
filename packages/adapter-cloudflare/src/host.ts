@@ -269,6 +269,8 @@ import {
   type AuditLogFilter,
   type OpsFailureFilter,
   type OpsFailureInput,
+  type AuditedOperationRef,
+  type AuditedOperationRow,
   type IssueFilter,
   type TelemetryPruneReport,
   type AppliedMigration,
@@ -974,6 +976,8 @@ interface ControlPlaneStub {
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
   recordOpsFailure(row: OpsFailureRow): Promise<void>;
+  settleUnrecordedOutcome(input: { actor: string; intentId: string; error: string }): Promise<boolean>;
+  auditedOperations(refs: AuditedOperationRef[]): Promise<AuditedOperationRow[]>;
   /** #1632: subject erasure's directory half — `redactSubjectDirectoryText`. */
   redactSubjectText(target: SubjectTextTarget): Promise<void>;
   listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
@@ -8500,6 +8504,15 @@ export class CloudflareScopeHost implements ScopeHost {
         const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
         await this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
+      /** #2064: an audited operation's rows, by the operation-id index, in bounded batches. */
+      auditedOperations: async (actor, refs) => {
+        const rows = await this.cp.auditedOperations([...refs]);
+        await this.recordAccess(actor, 'auditedOperations', {}, { operations: refs.length }, rows.length);
+        return rows;
+      },
+      /** #2064: settle an intent with no outcome — one unit in the directory DO. */
+      settleUnrecordedOutcome: (actor, input) =>
+        this.cp.settleUnrecordedOutcome({ actor, intentId: input.intentId, error: input.error }),
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {
         const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);

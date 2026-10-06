@@ -57,6 +57,7 @@ import type {
   OwnerSeat,
   OwnerClaimLink,
   MemberInviteLink,
+  AuditedAnswer,
   MemberRemoval,
   ScopeMembers,
 } from '@substrat-run/contracts';
@@ -492,17 +493,25 @@ export class TenantNarrowedControlPlane {
    * vertical bounds it by what THEY hold in the app. The accept link is shown once, like a
    * claim link, and stored nowhere.
    */
-  inviteMember(scopeId: ScopeId, input: { roleKey: string; email?: string }): Promise<MemberInviteLink> {
+  inviteMember(scopeId: ScopeId, input: { roleKey: string; email?: string }): Promise<MemberInviteLink & AuditedAnswer> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/members`, input);
   }
 
-  /** Move a member from one role to another, in one write, as the signed-in person (#1150). */
-  changeMemberRole(scopeId: ScopeId, principal: PrincipalId, input: { from: string; to: string }): Promise<unknown> {
+  /**
+   * Move a member from one role to another, in one write, as the signed-in person (#1150). Every
+   * member change answers `AuditedAnswer` beside its result (#2064): an `auditWarning` is a change
+   * that WENT THROUGH, relayed as the success it is.
+   */
+  changeMemberRole(
+    scopeId: ScopeId,
+    principal: PrincipalId,
+    input: { from: string; to: string },
+  ): Promise<{ principal: PrincipalId; from: string; to: string } & AuditedAnswer> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/members/${principal}/role`, input);
   }
 
   /** Remove a member — their roles, their logins, an open invite — as the signed-in person (#1150). */
-  removeMember(scopeId: ScopeId, principal: PrincipalId): Promise<MemberRemoval> {
+  removeMember(scopeId: ScopeId, principal: PrincipalId): Promise<MemberRemoval & AuditedAnswer> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/members/${principal}/remove`);
   }
 

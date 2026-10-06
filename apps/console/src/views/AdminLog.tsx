@@ -16,6 +16,34 @@ export interface AdminLogProps {
   tenants: Map<TenantId, Tenant>;
 }
 
+/**
+ * #2064: an audited change's row (`transferOwner`, `manageScopeMember`), read as the API resolves
+ * it. The latest outcome row of an operation is its result. An intent shows where its operation
+ * stands, and an outcome a later row replaced shows what replaced it. The row itself, opened
+ * below, is the raw history.
+ */
+export function AuditedOutcome({ entry }: { entry: AdminLogEntry }) {
+  const audited = entry.audited;
+  if (!audited) return null;
+  const phase = (entry.after as { phase?: string } | null)?.phase ?? '';
+  const muted = { color: 'var(--text-tertiary)' };
+  const label =
+    phase === 'intent' ? (
+      <>→ {audited.outcome}</>
+    ) : audited.superseded ? (
+      <span style={muted}>
+        <s>{phase}</s> · superseded by {audited.outcome}
+      </span>
+    ) : (
+      <>{phase}</>
+    );
+  return (
+    <span title={`operation ${audited.operationId}`} style={{ marginLeft: 8, fontSize: 11.5, color: 'var(--text-secondary)' }}>
+      {label}
+    </span>
+  );
+}
+
 export function AdminLog({ api, tenants }: AdminLogProps) {
   const [entries, setEntries] = useState<AdminLogEntry[]>([]);
   // Null IS exhausted now (pagination.ts): a short page answers `nextCursor: null`,
@@ -144,7 +172,10 @@ export function AdminLog({ api, tenants }: AdminLogProps) {
                   <td style={td}>
                     <ActorCell actor={e.actor} />
                   </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{e.action}</td>
+                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                    {e.action}
+                    <AuditedOutcome entry={e} />
+                  </td>
                   <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
                     {/* A null tenant is not missing data — it is a platform-level
                         action that targets no tenant (K-23), like registering a

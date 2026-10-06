@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { adminLogEntry, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   firstBuilderAuth,
@@ -19,6 +19,10 @@ import {
   UNSAFE_devPlatformActorAuth,
   ControlPlaneError,
   VerticalClient,
+  settleUnrecordedOutcomes,
+  UNRECORDED_OUTCOME_LOG,
+  AUDITED_CALL_DEADLINE_MS,
+  MALFORMED_OPERATION_ID_LOG,
 } from '../src/index.js';
 
 /**
@@ -270,26 +274,174 @@ describe('the owner hand-over route (#1665)', () => {
     expect((await send(route(s), asStaff, abandon)).status).toBe(200);
   });
 
-  it('a hand-over whose OUTCOME row cannot be written says it completed, with its operationId', async () => {
+  it('a hand-over whose OUTCOME row cannot be written answers success, with an audit warning and its operationId (#2064)', async () => {
     const s = await newScope();
     const original = host.admin.recordOwnerTransfer;
     host.admin.recordOwnerTransfer = async (actor, entry) => {
       if (entry.phase === 'applied') throw new Error('admin log unavailable');
       return original.call(host.admin, actor, entry);
     };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let res: Response;
     try {
       res = await send(route(s), asStaff);
     } finally {
       host.admin.recordOwnerTransfer = original;
+      logged.mockRestore();
     }
-    expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: string; operationId: string; owner: string };
-    expect(body.error).toMatch(/hand-over completed, but its outcome could not be written/);
+    // A success: the owner HAS moved, so nothing should retry it as a failure.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { auditWarning: string; operationId: string; owner: string };
+    expect(body.auditWarning).toMatch(/hand-over completed, but its outcome could not be written/);
     expect(body.owner).toBe(B);
     expect(asked).toHaveLength(1);
     // The intent row stands, under the operation id the caller was told.
     expect((await rows(s)).map((r) => [r.operationId, r.phase])).toEqual([[body.operationId, 'intent']]);
+  });
+
+  it("a refusal whose `refused` row cannot be written still answers the vertical's 409 — logged, and closed by the sweep (#2064)", async () => {
+    const s = await newScope();
+    answer = async () => {
+      throw new ControlPlaneError(409, 'claim it first');
+    };
+    const record = host.admin.recordOwnerTransfer;
+    const unwritable = vi.spyOn(host.admin, 'recordOwnerTransfer').mockImplementation(async (actor, entry) => {
+      if (entry.phase === 'refused') throw new Error('admin log unavailable');
+      return record.call(host.admin, actor, entry);
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await send(route(s), asStaff);
+    const calls = logged.mock.calls.slice();
+    unwritable.mockRestore();
+    logged.mockRestore();
+    expect(res.status).toBe(409);
+    const { operationId } = (await res.json()) as { operationId: string };
+    expect(calls).toEqual([
+      [UNRECORDED_OUTCOME_LOG, { flow: 'owner-transfer', operationId, phase: 'refused', auditError: 'admin log unavailable' }],
+    ]);
+    expect((await rows(s)).map((r) => r.phase)).toEqual(['intent']);
+    // The scheduled pass closes the intent; the refusal itself is not recoverable from the log.
+    const sweep = platformActorId.parse(ulid());
+    const settled = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: new Date(Date.now() + 2 * 3600_000) });
+    expect(settled.settled.map((x) => x.operationId)).toContain(operationId);
+    expect((await rows(s)).map((r) => [r.actor, r.phase])).toEqual([
+      [staff, 'intent'],
+      [sweep, 'unknown'],
+    ]);
+  });
+
+  it('a vertical that answers in time but STALLS its body — an answer or a refusal — is cut off at the deadline, audited `failed` (#2064)', async () => {
+    for (const status of [200, 409]) {
+      const s = await newScope();
+      let streamAborted = false;
+      // A real client, so the deadline under test is the one the route runs behind. Its fetch
+      // answers headers at once and never finishes the body, and errors the body stream when
+      // its signal aborts, as a real fetch does.
+      const client = new VerticalClient({
+        platformSecret: 'secret',
+        fetch: (async (_url: string, init?: RequestInit) => {
+          const signal = init!.signal!;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              signal.addEventListener('abort', () => {
+                streamAborted = true;
+                controller.error(signal.reason);
+              });
+            },
+          });
+          return new Response(body, { status, headers: { 'content-type': 'application/json' } });
+        }) as unknown as typeof fetch,
+      });
+      answer = () => client.transferOwner({ tenantId: t, scopeId: scopeId.parse(s), from: A, to: B });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const pending = send(route(s), asStaff);
+        await vi.advanceTimersByTimeAsync(AUDITED_CALL_DEADLINE_MS - 1);
+        expect(streamAborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        const res = await pending;
+        expect(res.status).toBe(504);
+        expect(streamAborted).toBe(true);
+        const body = (await res.json()) as { error: string; operationId: string };
+        expect(body.error).toMatch(/did not answer owner-transfer within 60 s/);
+        expect((await rows(s)).map((r) => [r.operationId, r.phase])).toEqual([
+          [body.operationId, 'intent'],
+          [body.operationId, 'failed'],
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it('the admin log resolves each operation to its latest outcome: intent → unknown → applied (#2064)', async () => {
+    const s = await newScope();
+    // The hand-over's applied row is lost, the settle calls it unknown, then the real row lands.
+    const original = host.admin.recordOwnerTransfer;
+    host.admin.recordOwnerTransfer = async (actor, entry) => {
+      if (entry.phase === 'applied') throw new Error('admin log unavailable');
+      return original.call(host.admin, actor, entry);
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await send(route(s), asStaff);
+    host.admin.recordOwnerTransfer = original;
+    logged.mockRestore();
+    const { operationId } = (await res.json()) as { operationId: string };
+    const sweep = platformActorId.parse(ulid());
+    await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: new Date(Date.now() + 2 * 3600_000) });
+
+    type Row = { after: { phase: string }; audited?: { operationId: string; outcome: string; superseded: boolean } };
+    const read = async (query = '') => {
+      const log = await app.request(`/admin-log?tenantId=${t}&scopeId=${s}&action=transferOwner${query}`, { headers: asStaff });
+      expect(log.status).toBe(200);
+      return ((await log.json()) as { entries: Row[] }).entries.map((e) => [e.after.phase, e.audited]);
+    };
+    expect(await read()).toEqual([
+      ['intent', { operationId, outcome: 'unknown', superseded: false }],
+      ['unknown', { operationId, outcome: 'unknown', superseded: false }],
+    ]);
+
+    await host.admin.recordOwnerTransfer(staff, { tenantId: t, scopeId: scopeId.parse(s), operationId, from: A, to: B, phase: 'applied', outcome: 'transferred', fromRevoked: true });
+    // The raw history stays; each row says the operation now stands at `applied`.
+    expect(await read()).toEqual([
+      ['intent', { operationId, outcome: 'applied', superseded: false }],
+      ['unknown', { operationId, outcome: 'applied', superseded: true }],
+      ['applied', { operationId, outcome: 'applied', superseded: false }],
+    ]);
+    // A page holding only the intent still resolves it, from rows outside the page.
+    expect(await read('&limit=1&order=asc')).toEqual([['intent', { operationId, outcome: 'applied', superseded: false }]]);
+  });
+
+  it('a legacy row whose operation id the contract now refuses is returned raw, and the page still parses (#2064)', async () => {
+    const s = await newScope();
+    // Rows written before the contract held ids to well-formed text, seeded as they were stored.
+    const seed = (operationId: string, phase: string, extra: object = {}) =>
+      (host as unknown as { directory: { prepare(sql: string): { run(...a: unknown[]): void } } }).directory
+        .prepare('INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, vertical, before, after, at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)')
+        .run(ulid(), staff, 'transferOwner', t, s, JSON.stringify({ phase, operationId, from: A, to: B, ...extra }), new Date().toISOString());
+    const twin = ulid();
+    for (const id of ['op\uD800', twin]) {
+      seed(id, 'intent');
+      seed(id, 'applied', { outcome: 'transferred', fromRevoked: true });
+    }
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await app.request(`/admin-log?tenantId=${t}&scopeId=${s}&action=transferOwner`, { headers: asStaff });
+    const calls = logged.mock.calls.slice();
+    logged.mockRestore();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: unknown[] };
+    // Every entry parses against the schema the API exports — the legacy rows included.
+    const entries = body.entries.map((e) => adminLogEntry.parse(e));
+    const legacy = entries.filter((e) => (e.after as { operationId: string }).operationId === 'op\uD800');
+    expect(legacy).toHaveLength(2);
+    expect(legacy.every((e) => e.audited === undefined)).toBe(true);
+    // The twin is enriched as any well-formed operation is.
+    expect(entries.filter((e) => e.audited?.operationId === twin).map((e) => e.audited)).toEqual([
+      { operationId: twin, outcome: 'applied', superseded: false },
+      { operationId: twin, outcome: 'applied', superseded: false },
+    ]);
+    // Counted and logged once, by row id; nothing thrown.
+    expect(calls).toEqual([[MALFORMED_OPERATION_ID_LOG, { reader: 'admin-log', count: 2, rows: legacy.map((e) => e.id) }]]);
   });
 
   it('a scope no vertical serves has no owner seat to hand over — 501, and nothing is recorded', async () => {

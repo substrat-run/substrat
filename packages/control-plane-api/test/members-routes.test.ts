@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,8 @@ import {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
+  settleUnrecordedOutcomes,
+  UNRECORDED_OUTCOME_LOG,
   type VerticalClient,
 } from '../src/index.js';
 
@@ -108,7 +110,8 @@ describe('/tenants/:t/scopes/:s/members — the plane names the scope and the pe
     expect(await invited.json()).toMatchObject({ principal: member, acceptUrl: 'https://acme-desk.global.substrat.run/?invite=t' });
     expect((await post(`/tenants/${tA}/scopes/${sA}/members/${member}/role`, asAnn, { from: 'agent', to: 'lead' })).status).toBe(200);
     const removed = await post(`/tenants/${tA}/scopes/${sA}/members/${member}/remove`, asAnn);
-    expect(await removed.json()).toEqual({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false });
+    // Each answer carries the operation id its admin rows are paired by (#2064).
+    expect(await removed.json()).toEqual({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false, operationId: expect.any(String) });
     expect(asked).toEqual([
       { verb: 'inviteMember', input: { tenantId: tA, scopeId: sA, caller: ann, origin: 'https://acme-desk.global.substrat.run', roleKey: 'agent', email: 'kim@example.test' } },
       { verb: 'changeMemberRole', input: { tenantId: tA, scopeId: sA, caller: ann, principal: member, from: 'agent', to: 'lead' } },
@@ -159,5 +162,69 @@ describe('/tenants/:t/scopes/:s/members — the plane names the scope and the pe
       .map((r) => r.after as { phase: string; roleKey?: string; error?: string })
       .filter((a) => a.roleKey === 'lead');
     expect(last.map((a) => a.phase).sort()).toEqual(['intent', 'refused']);
+  });
+  /**
+   * Runs `fn` with `recordMemberChange` throwing on `phase`, and console.error captured. A
+   * person's token writes through an attributed view (#977) with an admin of its own, so the
+   * failure is injected into each view the request makes.
+   */
+  const withUnwritable = async (phase: string, fn: () => Promise<Response>) => {
+    const attributed = host.attributed;
+    host.attributed = (...args: Parameters<SqliteScopeHost['attributed']>) => {
+      const view = attributed.apply(host, args);
+      const record = view.admin.recordMemberChange;
+      view.admin.recordMemberChange = async (actor, entry) => {
+        if (entry.phase === phase) throw new Error('admin log unavailable');
+        return record(actor, entry);
+      };
+      return view;
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const res = await fn();
+      return { res, logged: logged.mock.calls.slice() };
+    } finally {
+      host.attributed = attributed;
+      logged.mockRestore();
+    }
+  };
+  const memberRows = async (operationId: string) =>
+    (await host.admin.auditLog(staff, { tenantId: tA, action: 'manageScopeMember' }))
+      .filter((r) => (r.after as { operationId: string }).operationId === operationId)
+      .map((r) => [r.actor, (r.after as { phase: string }).phase]);
+
+  it("a refusal whose `refused` row cannot be written still answers the vertical's 403 — logged, and closed by the sweep (#2064)", async () => {
+    const asAnn = await mint(tA, ann);
+    refuseNext = new ControlPlaneError(403, 'you do not hold perm:use');
+    const { res, logged } = await withUnwritable('refused', () => post(`/tenants/${tA}/scopes/${sA}/members`, asAnn, { roleKey: 'lead' }));
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; operationId: string };
+    expect(body.error).toMatch(/do not hold perm:use/);
+    expect(logged).toEqual([
+      [UNRECORDED_OUTCOME_LOG, { flow: 'member-change', operationId: body.operationId, phase: 'refused', auditError: 'admin log unavailable' }],
+    ]);
+    expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent']]);
+    const sweep = platformActorId.parse(ulid());
+    await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: new Date(Date.now() + 2 * 3600_000) });
+    expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent'], [sweep, 'unknown']]);
+  });
+
+  it('a change whose `applied` row cannot be written answers success with an audit warning — the invite keeps its link (#2064)', async () => {
+    const asAnn = await mint(tA, ann);
+    for (const [path, body, status] of [
+      [`/tenants/${tA}/scopes/${sA}/members`, { roleKey: 'agent' }, 201],
+      [`/tenants/${tA}/scopes/${sA}/members/${member}/role`, { from: 'agent', to: 'lead' }, 200],
+      [`/tenants/${tA}/scopes/${sA}/members/${member}/remove`, {}, 200],
+    ] as const) {
+      const { res, logged } = await withUnwritable('applied', () => post(path, asAnn, body));
+      expect(res.status).toBe(status);
+      const answer = (await res.json()) as { auditWarning: string; operationId: string; acceptUrl?: string; revoked?: string[]; to?: string };
+      expect(answer.auditWarning).toMatch(/completed, but its outcome could not be written/);
+      if (status === 201) expect(answer.acceptUrl).toBe('https://acme-desk.global.substrat.run/?invite=t');
+      expect(logged).toEqual([
+        [UNRECORDED_OUTCOME_LOG, { flow: 'member-change', operationId: answer.operationId, phase: 'applied', auditError: 'admin log unavailable' }],
+      ]);
+      expect(await memberRows(answer.operationId)).toEqual([[serviceActor, 'intent']]);
+    }
   });
 });

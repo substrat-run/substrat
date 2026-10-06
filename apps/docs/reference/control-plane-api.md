@@ -81,7 +81,7 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   credential naming nobody (a builder, staff, or a tenant token minted without a person) is
   refused `403` on the three writes; the roster still reads. Each write leaves two
   `manageScopeMember` rows on the admin log, the intent and then `applied`, `refused` or
-  `failed`. The vertical's own status (`403` past the person's authority, `409` for the owner
+  `failed`, paired by the `operationId` a refusal also answers with. The vertical's own status (`403` past the person's authority, `409` for the owner
   of record, `501` for an app that declares no member roles) is forwarded unchanged.
   A third, `POST …/owner-transfer` with `{ from, to }`, hands the owner seat to another member
   of the instance. It is **staff-only**: a tenant credential or a builder is refused `403`.
@@ -99,6 +99,27 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
   an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`
   hand-over may have stopped part-way, and sending the same request again completes it.
+  **When an outcome row cannot be written** (on either route), the answer still reflects what
+  the vertical did. A refusal or failure keeps the vertical's own status, and the missing row
+  is logged as `audit-outcome-unrecorded` with the `operationId`. A change that went through
+  is answered as the success it is (`200`, or `201` for an invite, with the result: an invite
+  keeps its accept link), carrying `auditWarning` beside the `operationId` every answer
+  carries. A client shows the warning and does not offer the change again. The call to the
+  vertical has a 60 s deadline: past it the route answers `504`, audited `failed`. The
+  platform's scheduled pass closes an intent that still has no outcome an hour later. It
+  writes an `unknown` row, saying the log cannot tell whether the change happened, and an
+  ops-failure row that the staff failure digest reports, both in one transaction, and only if
+  no outcome exists by then. A real outcome that lands later is still recorded. Every reader
+  resolves an operation by priority, never by row order or timestamp: a real outcome
+  (`applied`, `refused`, `failed`) beats `unknown`, and two real outcomes for one operation
+  read `conflicting` and are logged, never guessed past. An operation is its action, its
+  `operationId`, its tenant and its scope.
+  `GET /admin-log` returns the rows as written, and gives each row of these two actions an
+  `audited` field: its `operationId`, the `outcome` the operation stands at (`pending` until
+  it has one), and `superseded` on an `unknown` a real outcome beat. Each page is resolved
+  with one batched read of its own operations through an index on the operation id. The
+  console shows the same reading. The failure digest leaves out an `unknown` whose operation
+  has since recorded one real outcome.
   The answer's `fromRevoked` is about the instance's own owner seat only. `false` means `from`
   held none there; if `from` holds the owner role at the tenant level, that grant is untouched
   and still applies, and it is taken back through the tenant's role assignments.

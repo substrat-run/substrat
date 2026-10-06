@@ -586,6 +586,31 @@ export type {
   SystemSwitchRecordFilter,
   SystemSwitchRecordRow,
 } from './system-switch-record.js';
+export { ADMIN_LOG_INDEX_DDL, ADMIN_LOG_INDEXES_SQL } from './admin-log-ddl.js';
+export {
+  AUDITED_CHANGE_ACTIONS,
+  AUDITED_OPERATIONS_BATCH,
+  SETTLE_INTENT_SQL,
+  SETTLE_OUTCOME_SQL,
+  settleOutcomeParamsOf,
+  operationKeyOf,
+  auditedOperationsSql,
+  effectiveOutcomes,
+  isSupersededOutcome,
+  readAuditedOperations,
+  unknownOutcomeOf,
+} from './audit-outcome.js';
+export type {
+  AuditedChangeAction,
+  AuditedOperationRef,
+  AuditedOperationRow,
+  AuditedOperationSqlRow,
+  AuditedPhase,
+  EffectiveOutcome,
+  OperationKey,
+  SettleIntentRow,
+  UnknownOutcome,
+} from './audit-outcome.js';
 export {
   VERSION_MIGRATIONS_DDL,
   splitManifestMigrations,
