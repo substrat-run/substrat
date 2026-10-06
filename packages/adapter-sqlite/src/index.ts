@@ -233,10 +233,11 @@ import {
   uncheckedView,
   addStatePlans,
   entityStateMigrations,
-  entityStateTriggerDdl,
   statefulTablesOf,
+  assertEntityStateColumns,
   assertEntityStateIntact,
-  stateListIndexNames,
+  rederiveObjects,
+  type DerivedPlans,
   type EntityStatePlan,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
@@ -488,7 +489,6 @@ import {
   type RunSub,
   NotSearchable,
   NotListable,
-  listIndexDdl,
   listIndexMigrations,
   listIndexPlans,
   listQuery,
@@ -497,7 +497,6 @@ import {
   type ListIndexPlan,
   type PageParams,
   isSearchIndexTable,
-  searchIndexDdl,
   searchIndexMigrations,
   searchIndexPlans,
   searchLimit,
@@ -3561,31 +3560,12 @@ export class SqliteScopeHost implements ScopeHost {
         const stmt = db.prepare(insert);
         for (const row of t.rows) stmt.run(...(row as unknown[]));
       }
-      // Rebuild the derived search indexes over the rows just loaded (#827). The DDL
-      // drops and recreates, so this also repairs an index the dump left stale, and
-      // the triggers it recreates are what keep the restored scope in step from here.
-      // Skipped for a plan whose content table this dump did not carry — a restore
-      // must not invent a table for an index to point at.
-      const present = new Set(
-        (
-          db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as {
-            name: string;
-          }[]
-        ).map((r) => r.name),
-      );
-      for (const plan of this.searchPlans.values()) {
-        if (present.has(plan.table)) db.exec(searchIndexDdl(plan));
-      }
-      // #119: the guard triggers went with the dropped table. Put back AFTER the rows, which
-      // may legitimately arrive archived or trashed.
-      for (const plan of this.statePlans.values()) {
-        if (present.has(plan.table)) db.exec(entityStateTriggerDdl(plan));
-      }
-      // #811 / #119: the derived list indexes went with it too, and a load never put them back —
-      // an archivable entity's partial indexes are part of what the kernel checks after DDL.
-      for (const plan of this.listPlans.values()) {
-        if (present.has(plan.table)) db.exec(listIndexDdl(plan));
-      }
+      // #827 / #119 / #811: the search triggers, the archive/trash guard triggers and the derived
+      // list indexes went with the dropped tables, and the search index points at rows that are
+      // gone. Put back, and the search index rebuilt, AFTER the rows — which may legitimately
+      // arrive archived or trashed — as the dump's own journal says they were derived (#2090).
+      // A plan whose table this dump did not carry is skipped: a restore must not invent one.
+      rederiveObjects(spineSql(db), (ddl) => db.exec(ddl), this.derivedPlans());
       // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
       // text of attachments the dump did not bring back, and queue extraction for those
       // it brought back without text — the bytes decide what that run finds.
@@ -11465,7 +11445,7 @@ export class SqliteScopeHost implements ScopeHost {
             statefulTablesOf(statePlans),
             // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
             statePlans.size
-              ? () => assertEntityStateIntact(spineSql(rt.db), statePlans, stateListIndexNames(listPlans.values()))
+              ? () => assertEntityStateIntact(spineSql(rt.db), { state: statePlans, lists: listPlans, search: searchPlans })
               : undefined,
           ),
         ),
@@ -11782,6 +11762,26 @@ export class SqliteScopeHost implements ScopeHost {
     return ctxRef;
   }
 
+  /** Every registered module's derivation plans — what `rederiveObjects` and its checks read. */
+  private derivedPlans(): DerivedPlans {
+    return { state: this.statePlans, lists: this.listPlans, search: this.searchPlans };
+  }
+
+  /**
+   * #2090: a migration runs on the scope's own handle, so neither `ctx.sql`'s after-DDL check
+   * nor the derived migrations (journaled, so never re-run) see what it did to a table.
+   * Inside the migration's own transaction: its state columns must still be there, or it rolls
+   * back — and after the LAST of the pass, the triggers and indexes a create-copy-rename rebuild
+   * dropped are put back (the search index rebuilt), in the same transaction. Only after the last: a rebuild
+   * split over two migrations copies its rows in the second, and a guard put back in between
+   * would refuse the archived ones.
+   */
+  private afterMigration(db: Database.Database, key: string, last: boolean): void {
+    const sql = spineSql(db);
+    assertEntityStateColumns(sql, this.derivedPlans(), `migration ${key}`);
+    if (last) rederiveObjects(sql, (ddl) => db.exec(ddl), this.derivedPlans());
+  }
+
   private async applyPendingMigrations(rt: ScopeRuntime): Promise<void> {
     const pending: { moduleId: string; migration: SqlMigration }[] = [];
     for (const mod of this.modules.values()) {
@@ -11799,7 +11799,7 @@ export class SqliteScopeHost implements ScopeHost {
     let failure: { version: string; error: string } | undefined;
     try {
       await rt.actor.enqueue(() => {
-        for (const { moduleId, migration } of pending) {
+        for (const [i, { moduleId, migration }] of pending.entries()) {
           const key = `${moduleId}@${migration.version}`;
           if (rt.appliedMigrations.has(key)) continue;
           rt.db.exec('BEGIN IMMEDIATE');
@@ -11815,6 +11815,7 @@ export class SqliteScopeHost implements ScopeHost {
               assertNoSpineReference(migration.sql, `migration ${key}`);
               rt.db.exec(migration.sql);
               assertTablesWithinColumnLimit(rt.db);
+              this.afterMigration(rt.db, key, i === pending.length - 1);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
               rt.db
                 .prepare(

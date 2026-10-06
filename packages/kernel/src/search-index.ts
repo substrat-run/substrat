@@ -279,11 +279,18 @@ export function searchIndexMigrations(
   moduleId: string,
   searchables: readonly SearchableDeclaration[] | undefined,
 ): SqlMigration[] {
-  return searchIndexPlans(moduleId, searchables).map((plan) => ({
-    version: `search/${plan.entityType}:${plan.tokenizer}:${plan.fields.join('+')}`,
-    sql: searchIndexDdl(plan),
-  }));
+  return searchIndexPlans(moduleId, searchables).map((plan) => ({ version: searchIndexVersion(plan), sql: searchIndexDdl(plan) }));
 }
+
+/** One plan's migration version — the declaration itself, as above. */
+export const searchIndexVersion = (plan: SearchIndexPlan): string =>
+  `search/${plan.entityType}:${plan.tokenizer}:${plan.fields.join('+')}`;
+
+/** The objects `searchIndexDdl` creates: the FTS table and the three triggers keeping it in step. */
+export const searchIndexObjects = (plan: SearchIndexPlan): { name: string; type: 'table' | 'trigger' }[] => [
+  { name: plan.indexTable, type: 'table' },
+  ...['ai', 'ad', 'au'].map((s) => ({ name: `${plan.indexTable}_${s}`, type: 'trigger' as const })),
+];
 
 /**
  * Index the plans by entity type for a whole scope, refusing an ambiguity.

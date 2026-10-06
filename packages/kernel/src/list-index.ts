@@ -299,14 +299,19 @@ export function listIndexMigrations(
   entityStates?: readonly EntityStateDeclaration[],
 ): SqlMigration[] {
   return listIndexPlans(moduleId, lists, entityStates).map((plan) => ({
-    // The views are part of the declaration the DDL depends on (#119): declaring a trash
-    // makes every index partial, so the version moves and the indexes are rebuilt.
-    version:
-      `list/${plan.entityType}:${plan.sortable.join('+')}:${plan.filterable.join('+')}` +
-      (plan.states ? `:${viewsOf(plan.states).join('+')}` : ''),
+    version: listIndexVersion(plan),
     sql: listIndexDdl(plan),
   }));
 }
+
+/**
+ * One plan's migration version. The views are part of the declaration the DDL depends on
+ * (#119): declaring a trash makes every index partial, so the version moves and the indexes
+ * are rebuilt.
+ */
+export const listIndexVersion = (plan: ListIndexPlan): string =>
+  `list/${plan.entityType}:${plan.sortable.join('+')}:${plan.filterable.join('+')}` +
+  (plan.states ? `:${viewsOf(plan.states).join('+')}` : '');
 
 /**
  * Index the plans by entity type for a whole scope, refusing an ambiguity — the
@@ -620,14 +625,4 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
     order,
     view: params.view ?? 'active',
   };
-}
-
-/** The derived list indexes on each stateful table (#119), by table — what `assertEntityStateIntact` checks. */
-export function stateListIndexNames(plans: Iterable<ListIndexPlan>): Map<string, string[]> {
-  const out = new Map<string, string[]>();
-  for (const plan of plans) {
-    if (!plan.states) continue;
-    out.set(plan.table, [...(out.get(plan.table) ?? []), ...listIndexColumns(plan).map((i) => i.name)]);
-  }
-  return out;
 }

@@ -39,6 +39,7 @@ import {
   listContractSuite,
   inputParseContractSuite,
   entityStateContractSuite,
+  entityStateMigrationContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
@@ -486,6 +487,46 @@ entityStateContractSuite(
       runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
     };
     internals.runtime(tenant, scope).db.prepare(sql).run(...params);
+  },
+);
+
+// #2090: an authored rebuild of a stateful table, on the pure host's migration pass.
+let rebuildHost: SqliteScopeHost | undefined;
+const rebuildRuntime = (tenant: unknown, scope: unknown) =>
+  (
+    rebuildHost as unknown as {
+      runtime(t: unknown, s: unknown): {
+        db: { prepare(q: string): { reader: boolean; all(...a: unknown[]): unknown[]; run(...a: unknown[]): unknown } };
+        appliedMigrations: Set<string>;
+      };
+    }
+  ).runtime(tenant, scope);
+entityStateMigrationContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-rebuild-'));
+    const host = new SqliteScopeHost({ dir });
+    rebuildHost = host;
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  {
+    sql: async (tenant, scope, sql) => {
+      const stmt = rebuildRuntime(tenant, scope).db.prepare(sql);
+      if (stmt.reader) return stmt.all() as Record<string, unknown>[];
+      stmt.run();
+      return [];
+    },
+    forget: async (tenant, scope, moduleId, version) => {
+      const rt = rebuildRuntime(tenant, scope);
+      rt.db.prepare('DELETE FROM _substrat_migrations WHERE module_id = ? AND version = ?').run(moduleId, version);
+      rt.appliedMigrations.delete(`${moduleId}@${version}`);
+    },
   },
 );
 

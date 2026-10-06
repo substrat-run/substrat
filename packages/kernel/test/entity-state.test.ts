@@ -11,10 +11,11 @@ import {
   moduleMigrations,
   addStatePlans,
   createTrashedReads,
+  assertEntityStateColumns,
   assertEntityStateIntact,
+  rederiveObjects,
   assertNoStatefulDdl,
   changesSchema,
-  stateListIndexNames,
   cursorOf,
   listQuery,
 } from '../src/index.js';
@@ -353,15 +354,26 @@ describe('assertEntityStateIntact', () => {
   const build = () => {
     const db = new DatabaseSync(':memory:');
     db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
+    // The journal is what says which derived objects the table is owed (#2090).
+    db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
     for (const m of moduleMigrations({
       manifest: { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [both] },
-    }))
+    })) {
       db.exec(m.sql);
+      db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
+    }
     const sql = { query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[], exec: () => ({ changes: 0 }) };
-    const plans = new Map();
-    addStatePlans(plans, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
-    const indexes = stateListIndexNames(listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]));
-    return { db, check: () => assertEntityStateIntact(sql as never, plans, indexes) };
+    const state = new Map();
+    addStatePlans(state, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+    const lists = new Map(
+      listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]).map((p) => [p.entityType, p]),
+    );
+    return {
+      db,
+      sql: sql as never,
+      plans: { state, lists, search: new Map() },
+      check: () => assertEntityStateIntact(sql as never, { state, lists, search: new Map() }),
+    };
   };
   it('passes a table carrying everything the kernel derived', () => expect(() => build().check()).not.toThrow());
   for (const [what, ddl] of [
@@ -374,7 +386,7 @@ describe('assertEntityStateIntact', () => {
       const { db, check } = build();
       if (what === 'column') {
         // SQLite will not drop a column a trigger or partial index names, so those go first.
-        for (const { name, type } of db.prepare(`SELECT name, type FROM sqlite_master WHERE name LIKE '\\_substrat\\_%' ESCAPE '\\'`).all() as { name: string; type: string }[]) {
+        for (const { name, type } of db.prepare(`SELECT name, type FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\'`).all() as { name: string; type: string }[]) {
           db.exec(`DROP ${type.toUpperCase()} ${name}`);
         }
       }
@@ -382,4 +394,61 @@ describe('assertEntityStateIntact', () => {
       expect(check).toThrow(/without/);
     });
   }
+});
+
+describe('rederiveObjects / assertEntityStateColumns (#2090)', () => {
+  const build = (journaled: (version: string) => boolean = () => true) => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
+    db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
+    const decl = { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [both] };
+    for (const m of moduleMigrations({ manifest: decl })) {
+      db.exec(m.sql);
+      if (journaled(m.version)) db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
+    }
+    const sql = { query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[], exec: () => ({ changes: 0 }) };
+    const state = new Map();
+    addStatePlans(state, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+    const lists = new Map(listIndexPlans('@m', decl.lists, [both]).map((p) => [p.entityType, p]));
+    const derived = () =>
+      (db.prepare(`SELECT name FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\' ORDER BY name`).all() as { name: string }[]).map(
+        (r) => r.name,
+      );
+    return { db, sql: sql as never, plans: { state, lists, search: new Map() }, derived };
+  };
+  const rebuild = 'CREATE TABLE d2 AS SELECT * FROM docs; DROP TABLE docs; ALTER TABLE d2 RENAME TO docs;';
+
+  it('puts back what a create-copy-rename rebuild dropped', () => {
+    const { db, sql, plans, derived } = build();
+    const before = derived();
+    expect(before).toHaveLength(5);
+    db.exec(rebuild);
+    expect(derived()).toEqual([]);
+    rederiveObjects(sql, (ddl) => db.exec(ddl), plans);
+    expect(derived()).toEqual(before);
+    expect(() => assertEntityStateIntact(sql, plans)).not.toThrow();
+  });
+
+  it('owes a table only what its journal says was derived', () => {
+    // The trash column and everything after it have not run yet: mid-upgrade, not broken.
+    const { db, sql, plans, derived } = build((v) => v === 'state/doc:archive');
+    for (const name of derived()) db.exec(`DROP ${name.startsWith('_substrat_state_') ? 'TRIGGER' : 'INDEX'} ${name}`);
+    db.exec('ALTER TABLE docs DROP COLUMN _substrat_trashed_at');
+    expect(() => assertEntityStateColumns(sql, plans, 'migration x')).not.toThrow();
+    rederiveObjects(sql, () => {
+      throw new Error('nothing is owed');
+    }, plans);
+    // The journaled column is owed, and its loss fails closed.
+    db.exec('ALTER TABLE docs DROP COLUMN _substrat_archived_at');
+    expect(() => assertEntityStateColumns(sql, plans, 'migration x')).toThrow(/migration x left 'docs' without _substrat_archived_at/);
+  });
+
+  it('derives nothing onto a table missing a state column it is owed', () => {
+    const { db, sql, plans } = build();
+    db.exec('CREATE TABLE d2 AS SELECT id, title, _substrat_archived_at FROM docs; DROP TABLE docs; ALTER TABLE d2 RENAME TO docs;');
+    const ran: string[] = [];
+    rederiveObjects(sql, (ddl) => ran.push(ddl), plans);
+    expect(ran).toEqual([]);
+    expect(() => assertEntityStateColumns(sql, plans, 'migration x')).toThrow(/without _substrat_trashed_at/);
+  });
 });

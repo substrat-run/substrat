@@ -27,7 +27,7 @@ import {
   substratError,
 } from '@substrat-run/contracts';
 import { membershipFixtureMod } from './membership-module.js';
-import { stateMod } from './entity-state-module.js';
+import { rebuildMod, stateMod } from './entity-state-module.js';
 import {
   assertAllowed,
   readAttachmentText,
@@ -2921,6 +2921,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // #119: the archive/trash suite's module. Inert for every other suite — nothing else reads
   // its tables or invokes a `state/*` operation.
   stateMod,
+  // #2090: the authored-rebuild suite's module. Inert for every other suite — its rebuilds run
+  // before the derived state migrations on a fresh scope, and nothing else reads `rb_*`.
+  rebuildMod,
   parseMod,
   concurrencyMod,
   idempotencyMod,

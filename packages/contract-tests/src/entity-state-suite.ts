@@ -615,7 +615,7 @@ export function entityStateContractSuite(
       await raw(t1, scope, 'DROP TRIGGER _substrat_state_state_docs_born');
       const t = `rt_${ulid().toLowerCase()}`;
       const err = await errOf(as.alice.invoke('state/sql', { sql: `CREATE TABLE ${t} (id TEXT)` }));
-      expect(String((err as Error).message)).toMatch(/without its born trigger/);
+      expect(String((err as Error).message)).toMatch(/runtime DDL left 'state_docs' without its trigger _substrat_state_state_docs_born/);
       expect(await as.alice.invoke<Row[]>('state/sql', { sql: `SELECT name FROM sqlite_master WHERE name = '${t}'` })).toEqual([]);
       // Put it back exactly as the kernel derives it, and the same DDL runs.
       await raw(

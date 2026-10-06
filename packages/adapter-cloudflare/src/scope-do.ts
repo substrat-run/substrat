@@ -140,10 +140,8 @@ import {
   type RunSub,
   NotSearchable,
   isSearchIndexTable,
-  searchIndexDdl,
   searchIndexPlans,
   NotListable,
-  listIndexDdl,
   listIndexPlans,
   moduleMigrations,
   listQuery,
@@ -293,10 +291,11 @@ import {
   searchStateWhere,
   uncheckedView,
   addStatePlans,
-  entityStateTriggerDdl,
   statefulTablesOf,
+  assertEntityStateColumns,
   assertEntityStateIntact,
-  stateListIndexNames,
+  rederiveObjects,
+  type DerivedPlans,
   type EntityStatePlan,
   exchangeCapability,
   guardSecrets,
@@ -4890,6 +4889,31 @@ export function defineScopeDO(
       return this.migrationPromise;
     }
 
+    /** Every registered module's derivation plans — what `rederiveObjects` and its checks read. */
+    private derivedPlans(): DerivedPlans {
+      return { state: this.statePlans, lists: this.listPlans, search: this.searchPlans };
+    }
+
+    /** A multi-statement script on this DO's own handle, one statement per exec. */
+    private runScript(ddl: string): void {
+      for (const stmt of splitSqlStatements(ddl)) this.sql.exec(stmt);
+    }
+
+    /**
+     * #2090: a migration runs on this DO's own handle, so neither `ctx.sql`'s after-DDL check
+     * nor the derived migrations (journaled, so never re-run) see what it did to a
+     * table. Inside the migration's own transaction: its state columns must still be there, or
+     * it rolls back — and after the LAST of the pass, the triggers and indexes a create-copy-rename
+     * rebuild dropped are put back (the search index rebuilt), in the same transaction. Only after
+     * the last: a rebuild split over two migrations copies its rows in the second, and a guard
+     * put back in between would refuse the archived ones. The pure host's `afterMigration`.
+     */
+    private afterMigration(key: string, last: boolean): void {
+      const sql = doSpineSql(this.sql);
+      assertEntityStateColumns(sql, this.derivedPlans(), `migration ${key}`);
+      if (last) rederiveObjects(sql, (ddl) => this.runScript(ddl), this.derivedPlans());
+    }
+
     /** Resolves true if this call applied at least one migration. */
     private async applyPendingMigrations(): Promise<boolean> {
       const pending: { moduleId: string; migration: SqlMigration }[] = [];
@@ -4929,7 +4953,7 @@ export function defineScopeDO(
             // (#278) remains the fallback rewind point.
           }
         }
-        for (const { moduleId, migration } of pending) {
+        for (const [i, { moduleId, migration }] of pending.entries()) {
           const key = `${moduleId}@${migration.version}`;
           if (this.applied.has(key)) continue;
           try {
@@ -4954,6 +4978,7 @@ export function defineScopeDO(
                   for (const stmt of splitSqlStatements(migration.sql)) {
                     this.sql.exec(stmt);
                   }
+                  this.afterMigration(key, i === pending.length - 1);
                 } finally {
                   this.revisionSuspended = false;
                 }
@@ -5996,35 +6021,12 @@ export function defineScopeDO(
         }
       });
       this.carriedAwayCopy = this.metaValue(CARRIED_AWAY_KEY) !== null;
-      // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
-      // create, so it also repairs an index a dump left stale, and the triggers it
-      // recreates are what keep the restored scope in step from here. Skipped for a plan
-      // whose content table this dump did not carry — a restore must not invent a table
-      // for an index to point at.
-      const present = new Set(
-        (
-          this.sql
-            .exec(`SELECT name FROM sqlite_master WHERE type = 'table'`)
-            .toArray() as unknown as { name: string }[]
-        ).map((r) => r.name),
-      );
-      for (const plan of this.searchPlans.values()) {
-        if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
-      }
-      // #119: the never-born-archived trigger went with the dropped table. Put back AFTER the
-      // rows, which may legitimately arrive archived or trashed.
-      for (const plan of this.statePlans.values()) {
-        if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
-      }
-      // #811 / #119: the derived list indexes went with the dropped table too, and a load never
-      // put them back — an archivable entity's partial indexes are part of what the kernel
-      // checks after DDL.
-      for (const plan of this.listPlans.values()) {
-        if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(listIndexDdl(plan))) this.sql.exec(stmt);
-      }
+      // #827 / #119 / #811: the search triggers, the archive/trash guard triggers and the derived
+      // list indexes went with the dropped tables, and the search index points at rows that are
+      // gone. Put back, and the search index rebuilt, AFTER the rows — which may legitimately
+      // arrive archived or trashed — as the dump's own journal says they were derived (#2090).
+      // A plan whose table this dump did not carry is skipped: a restore must not invent one.
+      rederiveObjects(doSpineSql(this.sql), (ddl) => this.runScript(ddl), this.derivedPlans());
       // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
       // as on a wake. A copy's own events then sort above every copied one, which is what
       // `emittedHere()` relies on. A dump whose top id is no ULID leaves the floor where it was.
@@ -6838,7 +6840,7 @@ export function defineScopeDO(
             statefulTablesOf(statePlans),
             // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
             statePlans.size
-              ? () => assertEntityStateIntact(doSpineSql(sql), statePlans, stateListIndexNames(listPlans.values()))
+              ? () => assertEntityStateIntact(doSpineSql(sql), { state: statePlans, lists: listPlans, search: searchPlans })
               : undefined,
           ),
           minted,

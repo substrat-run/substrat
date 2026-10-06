@@ -127,29 +127,27 @@ export function entityStateMigrations(
 ): SqlMigration[] {
   const out: SqlMigration[] = [];
   for (const plan of entityStatePlans(moduleId, declarations)) {
-    if (plan.archivePermission) {
-      out.push({
-        version: `state/${plan.entityType}:archive`,
-        sql: `ALTER TABLE ${plan.table} ADD COLUMN ${ARCHIVED_AT_COLUMN} TEXT;`,
-      });
+    for (const { version, column } of stateColumnVersionsOf(plan)) {
+      out.push({ version, sql: `ALTER TABLE ${plan.table} ADD COLUMN ${column} TEXT;` });
     }
-    if (plan.trashPermission) {
-      out.push({
-        version: `state/${plan.entityType}:trash`,
-        sql: `ALTER TABLE ${plan.table} ADD COLUMN ${TRASHED_AT_COLUMN} TEXT;`,
-      });
-    }
-    // After the columns they name. Versioned by which columns they guard, so declaring a trash
-    // on an archivable entity rebuilds them to guard both.
-    out.push({ version: `state/${plan.entityType}:guard:${columnNamesOf(plan).join('+')}`, sql: entityStateTriggerDdl(plan) });
+    // After the columns they name.
+    out.push({ version: entityStateGuardVersion(plan), sql: entityStateTriggerDdl(plan) });
   }
   return out;
 }
 
-const columnNamesOf = (plan: EntityStatePlan): string[] => [
-  ...(plan.archivePermission ? ['archive'] : []),
-  ...(plan.trashPermission ? ['trash'] : []),
+/** The column migrations' versions, and the column each adds — what the journal says a table holds. */
+export const stateColumnVersionsOf = (plan: EntityStatePlan): { version: string; column: string }[] => [
+  ...(plan.archivePermission ? [{ version: `state/${plan.entityType}:archive`, column: ARCHIVED_AT_COLUMN }] : []),
+  ...(plan.trashPermission ? [{ version: `state/${plan.entityType}:trash`, column: TRASHED_AT_COLUMN }] : []),
 ];
+
+/**
+ * The guard triggers' version. By which columns they guard, so declaring a trash on an
+ * archivable entity rebuilds them to guard both.
+ */
+export const entityStateGuardVersion = (plan: EntityStatePlan): string =>
+  `state/${plan.entityType}:guard:${[...(plan.archivePermission ? ['archive'] : []), ...(plan.trashPermission ? ['trash'] : [])].join('+')}`;
 
 /** The prefix of every trigger this module derives — kernel-owned, so the reserved one. */
 export const ENTITY_STATE_TRIGGER_PREFIX = '_substrat_state_';
@@ -456,51 +454,4 @@ export function createEntityStateVerbs(deps: EntityStateDeps): EntityStateVerbs 
       return row ? stateOf(row) : null;
     },
   };
-}
-
-/**
- * After runtime DDL (#119, Codex r3): does every stateful table still carry what the kernel
- * derived for it? The guard refuses the DDL known to take it away; this is the check that does not
- * depend on having known. Read from `main`'s own catalogue, so a same-named temp object cannot
- * stand in for the real table. Throws — the operation and its DDL roll back — rather than
- * re-deriving: a schema the kernel did not expect is not one to repair silently.
- *
- * `indexes` names the derived list indexes each stateful table must keep, by table.
- */
-export function assertEntityStateIntact(
-  sql: ScopedSql,
-  plans: ReadonlyMap<string, EntityStatePlan>,
-  indexes: ReadonlyMap<string, readonly string[]> = new Map(),
-): void {
-  for (const plan of plans.values()) {
-    const fail = (what: string): never => {
-      throw substratError(
-        'internal',
-        `runtime DDL left '${plan.table}' without ${what} — its archive/trash guarantees depend on it; nothing was changed`,
-      );
-    };
-    const objects = new Map(
-      sql
-        .query<{ type: string; name: string }>(
-          `SELECT type, name FROM main.sqlite_master WHERE tbl_name = ? COLLATE NOCASE`,
-          [plan.table],
-        )
-        .map((r) => [r.name.toLowerCase(), r.type]),
-    );
-    if (objects.get(plan.table.toLowerCase()) !== 'table') fail('its table');
-    const columns = new Set(
-      sql
-        .query<{ name: string }>(`SELECT name FROM pragma_table_info(?, 'main')`, [plan.table])
-        .map((r) => r.name.toLowerCase()),
-    );
-    if (plan.archivePermission && !columns.has(ARCHIVED_AT_COLUMN)) fail(ARCHIVED_AT_COLUMN);
-    if (plan.trashPermission && !columns.has(TRASHED_AT_COLUMN)) fail(TRASHED_AT_COLUMN);
-    for (const suffix of ['born', 'moved']) {
-      const trigger = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_${suffix}`.toLowerCase();
-      if (objects.get(trigger) !== 'trigger') fail(`its ${suffix} trigger`);
-    }
-    for (const index of indexes.get(plan.table) ?? []) {
-      if (objects.get(index.toLowerCase()) !== 'index') fail(`its list index ${index}`);
-    }
-  }
 }

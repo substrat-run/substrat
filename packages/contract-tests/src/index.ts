@@ -21,6 +21,7 @@ export { asyncLogContractSuite, type AsyncLogFixture } from './async-log-suite.j
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { entityStateContractSuite } from './entity-state-suite.js';
+export { entityStateMigrationContractSuite, type RawScopeAccess } from './entity-state-migration-suite.js';
 export { stateMod } from './entity-state-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
