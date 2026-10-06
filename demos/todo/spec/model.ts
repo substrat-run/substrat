@@ -212,8 +212,8 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
     // #811. The underlying walk IS kernel-composed — `created_at` with the id
     // tie-break is exactly the `ORDER BY created_at, id` this shipped with — but
     // visibility is decided by a per-row proof walk on top of it, so the handler
-    // over-fetches with `pageVisible`. Pages may come back short; the walk ends at
-    // the absent `Link`.
+    // walks with `pageVisible`, whose cursor is only ever a visible list's (#2073).
+    // A short page is the end of the walk.
     paged: { over: { entity: 'list', sortable: ['created_at', 'name'] } },
     http: { method: 'GET', path: '/lists' },
   },

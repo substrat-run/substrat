@@ -397,10 +397,10 @@ function entityOfRow(d: RowDecoder, row: ScopeRow): EntityRef {
  * A caller who can only justify SOME entities must not use this read and filter
  * afterwards without saying so: post-filtering with `ctx.check(perm, entry.entity)`
  * per row is legitimate, but it changes the page size (a page of 20 can come back
- * with 3) and the cursor must then advance by the last row EXAMINED, not the last
- * row returned — see callout's `portal-orders` for that shape. A walk that only
- * visits what the caller may read is a different read with a different cost, and
- * is deliberately not this one.
+ * with 3), and the cursor of a refused row is that row's position — so walk it
+ * with `pageVisible`, which never returns one (#2073), as callout's `portal-orders`
+ * does. A walk that only visits what the caller may read is a different read with
+ * a different cost, and is deliberately not this one.
  */
 export function readScopeTimeline(
   ctx: TimelineReader,

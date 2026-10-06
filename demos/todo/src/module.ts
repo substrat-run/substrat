@@ -159,9 +159,9 @@ const operations = {
    * description of who may see what, and the one that gets forgotten.
    */
   // #811. The walk is the kernel's; the per-row proof check is this vertical's,
-  // and `pageVisible` is what keeps the two honest — it filters the batch and
-  // advances the cursor by the last row EXAMINED, so a page of rows the caller
-  // cannot see still moves the walk forward instead of stalling on it.
+  // and `pageVisible` is what keeps the two honest — it walks on past rows the
+  // caller cannot see until the page is full, and mints the cursor from the last
+  // row it RETURNS, so no position of a list they cannot see reaches them (#2073).
   'todo/my-lists': async (ctx, input) =>
     pageVisible(
       // #119: the kernel leaves archived and binned lists out unless the archive is asked for.

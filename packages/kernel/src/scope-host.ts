@@ -219,6 +219,11 @@ export interface PageParams {
    * archive. Refused for an entity that declares no archive. The bin is `ctx.pageTrashed`.
    */
   readonly view?: Exclude<EntityStateName, 'trashed'>;
+  /**
+   * Also return each row's own cursor, as `rowCursors` (#2073) — asked for by `pageVisible`,
+   * which may stop partway through a page. Off by default, so an ordinary page is unchanged.
+   */
+  readonly rowCursors?: boolean;
 }
 
 /**
@@ -446,9 +451,9 @@ export interface OperationContext {
    *
    * **This does not check permission** — nothing on `ctx` does, and a paged read
    * is not an exception. The operation's own `assertAllowed` still comes first.
-   * A read that filters per ROW after the fact (a portal walk) cannot use this at
-   * all: a page of 20 filtered down to 3 is not a page, and the honest shape is an
-   * over-fetch loop the handler owns.
+   * A read that filters per ROW after the fact (a portal walk) cannot hand this
+   * page on as it is: a page of 20 filtered down to 3 is not a page, and its cursor
+   * may be a refused row's. It walks this read with `pageVisible` instead (#2073).
    *
    * Throws `NotListable` for an entity no operation declared `paged.over` on,
    * `SortNotDeclared` for a `?sort=` outside the vocabulary, and
@@ -1069,9 +1074,9 @@ export type MembershipChangeResult =
  * It receives `HostAdmin`, not `ctx`: it acts with platform authority, which is
  * precisely what module code must never hold. Admin writes it makes through the `admin`
  * it is handed are stamped with the causing event's id (`causedBy`), so the split trail
- * joins. That `admin` is bound to this one event, never the host's own: a handler that
- * writes through the host instead — `host.attributed(…)` — passes `{ causedBy: event.id }`
- * itself (#2055).
+ * joins. That `admin` is bound to this one event, never the host's own (#2055). A handler
+ * that writes for a person attributes from it — `admin.attributed(onBehalfOf)` — which keeps
+ * the event (#2069); a view of the HOST knows nothing of the event.
  *
  * A handler that decides an event must never be effected RETURNS `refuseDelivery(reason)`
  * (#1184). The delivery is journaled terminal with the reason, never retried. A return
@@ -1862,6 +1867,16 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
  * stay sync — they are code-time bookkeeping, not control-plane state.)
  */
 export interface HostAdmin {
+  /**
+   * This same admin, with every row written through it also naming `onBehalfOf` (#977, #2069),
+   * and keeping whatever this one already carries — for the `admin` an executor handler is
+   * handed, the event (`causedBy`). A handler that writes for a person attributes from that
+   * `admin`, so the cause comes along by construction and there is no option to forget.
+   *
+   * Optional so an admin that predates it still satisfies the interface; a caller that finds it
+   * absent writes through the admin it holds, unattributed to a person.
+   */
+  attributed?(onBehalfOf: OnBehalfOf): HostAdmin;
   defineRole(actor: PlatformActorId, tenantId: TenantId, role: RoleDefinition): Promise<void>;
   /**
    * Every role the directory holds, ordered by (tenantId, key).
@@ -4820,10 +4835,19 @@ export interface ScopeHost {
    * Optional so a host that predates it still satisfies the interface; a transport
    * that finds it absent writes unattributed rows, which is what every row was before.
    *
-   * `options.causedBy` (#2055) is the event whose effect the view's writes are (K-22): an
-   * executor handler passes its own event's id, because the host stamps nothing ambiently —
-   * a field set around the handler's `await` would also stamp every other admin call the
-   * host served meanwhile. The `admin` a handler is handed already carries it.
+   * A view of the host knows nothing of any event: an executor handler attributes from the
+   * `admin` it is handed instead (`HostAdmin.attributed`), which keeps its `causedBy`.
+   */
+  attributed?(onBehalfOf: OnBehalfOf): ScopeHost;
+  /**
+   * The same view, its rows also naming `options.causedBy` as the event they are the effect
+   * of (K-22, #2055).
+   *
+   * @deprecated since #2069: an executor handler attributes from the `admin` it is handed —
+   * `admin.attributed(onBehalfOf)` — which carries its event by construction. This form needs
+   * the event passed again, and a handler that forgets writes `causedBy` NULL with nothing
+   * failing. It stays because it shipped, and because it is how the membership executor still
+   * attributes on a host whose handed admin predates `HostAdmin.attributed`.
    */
   attributed?(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): ScopeHost;
   /**
