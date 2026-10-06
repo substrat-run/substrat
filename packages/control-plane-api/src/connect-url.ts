@@ -80,7 +80,7 @@ const DEFAULT_TTL_SECONDS = 900;
  * mid-issuance is still this tenant's, and refusing would make the connect flow depend on
  * certificate timing rather than on ownership.
  */
-async function assertReturnUrlBelongsToScope(
+export async function assertReturnUrlBelongsToScope(
   host: ScopeHost,
   actor: PlatformActorId,
   input: { tenantId: TenantId; scopeId: ScopeId; returnUrl: string },

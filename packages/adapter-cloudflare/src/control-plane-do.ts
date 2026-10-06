@@ -20,6 +20,14 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  CONNECT_LINKS_DDL,
+  consumeConnectLinkRow,
+  insertConnectLink as insertConnectLinkRow,
+  listConnectLinks as listConnectLinkRows,
+  readConnectLink as readConnectLinkRow,
+  restoreConnectLinkRow,
+  revokeConnectLinkRow,
+  type ConnectLinkKeyRow,
   createFindingRule,
   findingOfOpsFailure,
   findingOfSweepRun,
@@ -120,6 +128,7 @@ import type {
 } from '@substrat-run/contracts';
 import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import type { FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
+import type { ConnectLink, ConnectLinkConsume } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1023,6 +1032,9 @@ const DIRECTORY_DDL = `
     updated_at    TEXT NOT NULL,
     PRIMARY KEY (connection_id, state_key)
   );
+  -- A vertical's mailed connect links (connections.md §3.5.4) — kernel-owned DDL, so
+  -- both adapters build the same table.
+  ${CONNECT_LINKS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_identities (
     provider     TEXT NOT NULL,
     external_id  TEXT NOT NULL,
@@ -3893,6 +3905,36 @@ export class ControlPlaneDO extends DurableObject {
       id,
     );
     return true;
+  }
+
+  // -- a vertical's mailed connect links (connections.md §3.5.4) ------------------
+  // The kernel's statements (`connect-links.ts`), shared with the pure adapter. Each
+  // runs inside this single-threaded object with no await between its read and its
+  // write, which is what makes consume's single-use hold across racing callbacks here;
+  // the UPDATE's own WHERE holds it again regardless. `now` is the coordinator's.
+
+  insertConnectLink(row: Parameters<typeof insertConnectLinkRow>[1]): ConnectLink {
+    return insertConnectLinkRow(doRedactionSql(this.sql), row);
+  }
+
+  readConnectLink(key: ConnectLinkKeyRow): ConnectLink | undefined {
+    return readConnectLinkRow(doRedactionSql(this.sql), key);
+  }
+
+  listConnectLinks(filter: Parameters<typeof listConnectLinkRows>[1], now: string): ConnectLink[] {
+    return listConnectLinkRows(doRedactionSql(this.sql), filter, now);
+  }
+
+  revokeConnectLink(key: ConnectLinkKeyRow): { link: ConnectLink; changed: boolean } | undefined {
+    return revokeConnectLinkRow(doRedactionSql(this.sql), key);
+  }
+
+  consumeConnectLink(input: Parameters<typeof consumeConnectLinkRow>[1], now: string): ConnectLinkConsume {
+    return consumeConnectLinkRow(doRedactionSql(this.sql), input, now);
+  }
+
+  restoreConnectLink(key: ConnectLinkKeyRow, now: string): ConnectLink | undefined {
+    return restoreConnectLinkRow(doRedactionSql(this.sql), key, now);
   }
 
   /**

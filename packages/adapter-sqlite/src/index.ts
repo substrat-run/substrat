@@ -69,6 +69,10 @@ import {
   subjectRef,
   requestFingerprint,
   createConnectionInput,
+  connectLinkFilter,
+  connectLinkKey,
+  consumeConnectLinkInput,
+  mintConnectLinkInput,
   projectedConnectionGrant,
   projectedConnectionKey,
   moduleManifest,
@@ -116,6 +120,10 @@ import {
   type ConnectionId,
   type ConnectionSecret,
   type CreateConnectionInput,
+  type ConnectLinkFilter,
+  type ConnectLinkKey,
+  type ConsumeConnectLinkInput,
+  type MintConnectLinkInput,
   type ModuleId,
   type ScheduleSpec,
   type SystemGrant,
@@ -275,6 +283,13 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  CONNECT_LINKS_DDL,
+  consumeConnectLinkRow,
+  insertConnectLink,
+  listConnectLinks as listConnectLinkRows,
+  readConnectLink,
+  restoreConnectLinkRow,
+  revokeConnectLinkRow,
   createFindingRule,
   findingOfOpsFailure,
   findingOfSweepRun,
@@ -2154,6 +2169,9 @@ export class SqliteScopeHost implements ScopeHost {
         updated_at    TEXT NOT NULL,
         PRIMARY KEY (connection_id, state_key)
       );
+      -- A vertical's mailed connect links (connections.md §3.5.4) — kernel-owned DDL, so
+      -- both adapters build the same table.
+      ${CONNECT_LINKS_DDL}
       CREATE TABLE IF NOT EXISTS _substrat_identities (
         provider     TEXT NOT NULL,
         external_id  TEXT NOT NULL,
@@ -10305,6 +10323,94 @@ export class SqliteScopeHost implements ScopeHost {
           { status: row.status },
           { id, provider: row.provider, status: 'revoked', revokedAt: now },
         );
+      },
+
+      // -- a vertical's mailed connect links (connections.md §3.5.4) --------------
+      // The statements are the kernel's (`connect-links.ts`), shared with the hosted
+      // adapter; what is here is the clock, the parse at the edge, and the audit row.
+
+      mintConnectLink: async (actor: PlatformActorId, raw: MintConnectLinkInput) => {
+        const input = mintConnectLinkInput.parse(raw);
+        const link = insertConnectLink(redactionSqlOf(this.directory), {
+          id: ulid(),
+          tenantId: input.tenantId,
+          scopeId: input.scopeId,
+          vertical: input.vertical,
+          provider: input.provider,
+          createdBy: input.createdBy,
+          subjectRef: input.subjectRef ?? null,
+          returnUrl: input.returnUrl ?? null,
+          createdAt: this.clock(),
+          expiresAt: input.expiresAt,
+        });
+        this.recordAdmin(
+          actor,
+          'mintConnectLink',
+          { tenantId: input.tenantId, scopeId: input.scopeId, vertical: input.vertical },
+          null,
+          { id: link.id, provider: link.provider, createdBy: link.createdBy, expiresAt: link.expiresAt },
+        );
+        return link;
+      },
+
+      getConnectLink: async (actor: PlatformActorId, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        const link = readConnectLink(redactionSqlOf(this.directory), key);
+        this.recordAccess(actor, 'getConnectLink', key, { id: key.id }, link ? 1 : 0);
+        return link;
+      },
+
+      listConnectLinks: async (actor: PlatformActorId, raw: ConnectLinkFilter) => {
+        const filter = connectLinkFilter.parse(raw);
+        const links = listConnectLinkRows(redactionSqlOf(this.directory), filter, this.clock());
+        this.recordAccess(actor, 'listConnectLinks', filter, filter, links.length);
+        return links;
+      },
+
+      revokeConnectLink: async (actor: PlatformActorId, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        const result = revokeConnectLinkRow(redactionSqlOf(this.directory), key);
+        if (!result) return undefined;
+        // Idempotent, and a no-op is not audited.
+        if (result.changed) {
+          this.recordAdmin(
+            actor,
+            'revokeConnectLink',
+            { tenantId: key.tenantId, scopeId: key.scopeId, vertical: result.link.vertical },
+            { status: 'outstanding' },
+            { id: key.id, provider: result.link.provider, status: 'revoked' },
+          );
+        }
+        return result.link;
+      },
+
+      consumeConnectLink: async (actor: PlatformActorId, raw: ConsumeConnectLinkInput) => {
+        const input = consumeConnectLinkInput.parse(raw);
+        const result = consumeConnectLinkRow(redactionSqlOf(this.directory), input, this.clock());
+        if (result.ok) {
+          this.recordAdmin(
+            actor,
+            'consumeConnectLink',
+            { tenantId: input.tenantId, scopeId: input.scopeId, vertical: result.link.vertical },
+            { status: 'outstanding' },
+            { id: input.id, provider: input.provider, status: 'used', accountRef: result.link.accountRef },
+          );
+        }
+        return result;
+      },
+
+      restoreConnectLink: async (actor: PlatformActorId, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        const link = restoreConnectLinkRow(redactionSqlOf(this.directory), key, this.clock());
+        if (!link) return false;
+        this.recordAdmin(
+          actor,
+          'restoreConnectLink',
+          { tenantId: key.tenantId, scopeId: key.scopeId, vertical: link.vertical },
+          { status: 'used' },
+          { id: key.id, provider: link.provider, status: 'outstanding' },
+        );
+        return true;
       },
 
       openConnection: async (

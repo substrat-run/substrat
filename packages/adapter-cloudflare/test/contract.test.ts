@@ -35,6 +35,7 @@ import {
   capabilityContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  connectLinkContractSuite,
   causedByContractSuite,
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
@@ -111,6 +112,17 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// connections.md §3.5.4: a vertical's mailed connect link — the kernel's statements, run inside
+// the ControlPlaneDO, which is where the hosted single-use guarantee has to hold.
+connectLinkContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
     checker: UNSAFE_allowAllChecker,

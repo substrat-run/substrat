@@ -84,6 +84,10 @@ import {
   meterReading,
   subjectRef,
   createConnectionInput,
+  connectLinkFilter,
+  connectLinkKey,
+  consumeConnectLinkInput,
+  mintConnectLinkInput,
   projectedConnectionGrant,
   projectedConnectionKey,
   moduleManifest,
@@ -96,6 +100,12 @@ import {
   tenant as tenantSchema,
   tenantRole,
   type AdminAction,
+  type ConnectLink,
+  type ConnectLinkConsume,
+  type ConnectLinkFilter,
+  type ConnectLinkKey,
+  type ConsumeConnectLinkInput,
+  type MintConnectLinkInput,
   type Instant,
   type BeginImpersonationInput,
   type ImpersonationFilter,
@@ -446,6 +456,7 @@ import {
   type FindingPruneReport,
   memberAddedAudit,
   shapeTopUpBatch,
+  type ConnectLinkKeyRow,
 } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import {
@@ -857,6 +868,30 @@ interface ControlPlaneStub {
     at: string,
   ): Promise<void>;
   revokeConnection(id: string, at: string): Promise<boolean>;
+  // connections.md §3.5.4 — a vertical's mailed connect links; the kernel's statements.
+  insertConnectLink(row: {
+    id: string;
+    tenantId: string;
+    scopeId: string;
+    vertical: string;
+    provider: string;
+    createdBy: string;
+    subjectRef: string | null;
+    returnUrl: string | null;
+    createdAt: string;
+    expiresAt: string;
+  }): Promise<ConnectLink>;
+  readConnectLink(key: ConnectLinkKeyRow): Promise<ConnectLink | undefined>;
+  listConnectLinks(
+    filter: { tenantId: string; scopeId?: string; provider?: string; outstandingOnly?: boolean },
+    now: string,
+  ): Promise<ConnectLink[]>;
+  revokeConnectLink(key: ConnectLinkKeyRow): Promise<{ link: ConnectLink; changed: boolean } | undefined>;
+  consumeConnectLink(
+    input: ConnectLinkKeyRow & { provider: string; accountRef?: string; accountLabel?: string },
+    now: string,
+  ): Promise<ConnectLinkConsume>;
+  restoreConnectLink(key: ConnectLinkKeyRow, now: string): Promise<ConnectLink | undefined>;
   recordConnectionGrant(row: {
     connectionId: string;
     tenantId: string;
@@ -8361,6 +8396,95 @@ export class CloudflareScopeHost implements ScopeHost {
           { status: row.status },
           { id, provider: row.provider, status: 'revoked', revokedAt: now },
         );
+      },
+
+      // -- a vertical's mailed connect links (connections.md §3.5.4) --------------
+      // Parsed here, run in the ControlPlaneDO as the kernel's statements (shared with
+      // the pure adapter), audited here. The DO has no clock of its own on this path —
+      // `now` is the coordinator's, the same wall clock every other directory write uses.
+
+      mintConnectLink: async (actor, raw: MintConnectLinkInput) => {
+        const input = mintConnectLinkInput.parse(raw);
+        const link = await this.cp.insertConnectLink({
+          id: ulid(),
+          tenantId: input.tenantId,
+          scopeId: input.scopeId,
+          vertical: input.vertical,
+          provider: input.provider,
+          createdBy: input.createdBy,
+          subjectRef: input.subjectRef ?? null,
+          returnUrl: input.returnUrl ?? null,
+          createdAt: new Date().toISOString(),
+          expiresAt: input.expiresAt,
+        });
+        await this.recordAdmin(
+          actor,
+          'mintConnectLink',
+          { tenantId: input.tenantId, scopeId: input.scopeId, vertical: input.vertical },
+          null,
+          { id: link.id, provider: link.provider, createdBy: link.createdBy, expiresAt: link.expiresAt },
+        );
+        return link;
+      },
+
+      getConnectLink: async (actor, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        const link = await this.cp.readConnectLink(key);
+        await this.recordAccess(actor, 'getConnectLink', key, { id: key.id }, link ? 1 : 0);
+        return link;
+      },
+
+      listConnectLinks: async (actor, raw: ConnectLinkFilter) => {
+        const filter = connectLinkFilter.parse(raw);
+        const links = await this.cp.listConnectLinks(filter, new Date().toISOString());
+        await this.recordAccess(actor, 'listConnectLinks', filter, filter, links.length);
+        return links;
+      },
+
+      revokeConnectLink: async (actor, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        const result = await this.cp.revokeConnectLink(key);
+        if (!result) return undefined;
+        // Idempotent, and a no-op is not audited.
+        if (result.changed) {
+          await this.recordAdmin(
+            actor,
+            'revokeConnectLink',
+            { tenantId: key.tenantId, scopeId: key.scopeId, vertical: result.link.vertical },
+            { status: 'outstanding' },
+            { id: key.id, provider: result.link.provider, status: 'revoked' },
+          );
+        }
+        return result.link;
+      },
+
+      consumeConnectLink: async (actor, raw: ConsumeConnectLinkInput) => {
+        const input = consumeConnectLinkInput.parse(raw);
+        const result = await this.cp.consumeConnectLink(input, new Date().toISOString());
+        if (result.ok) {
+          await this.recordAdmin(
+            actor,
+            'consumeConnectLink',
+            { tenantId: input.tenantId, scopeId: input.scopeId, vertical: result.link.vertical },
+            { status: 'outstanding' },
+            { id: input.id, provider: input.provider, status: 'used', accountRef: result.link.accountRef },
+          );
+        }
+        return result;
+      },
+
+      restoreConnectLink: async (actor, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        const link = await this.cp.restoreConnectLink(key, new Date().toISOString());
+        if (!link) return false;
+        await this.recordAdmin(
+          actor,
+          'restoreConnectLink',
+          { tenantId: key.tenantId, scopeId: key.scopeId, vertical: link.vertical },
+          { status: 'used' },
+          { id: key.id, provider: link.provider, status: 'outstanding' },
+        );
+        return true;
       },
 
       openConnection: async (

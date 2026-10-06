@@ -18,6 +18,8 @@ import { tenantRole } from './permission.js';
 import { erasedEntityCount, erasureHookCount, unreachedEntity } from './subject-erasure.js';
 import { hostnameBinding } from './routing.js';
 import {
+  connectLinkId,
+  connectLinkStatus,
   connection,
   connectionId,
   connectionProbe,
@@ -143,6 +145,13 @@ export const adminAction = z.enum([
   'createConnection',
   'updateConnectionSecret', // OAuth refresh — logged as an event, never with the token
   'revokeConnection',
+  // connections.md §3.5.4 — a vertical's mailed connect link. Every move is logged, consume
+  // and restore included: restore clears the row's `used_at`, so without these rows the
+  // directory would forget that a link was ever spent.
+  'mintConnectLink',
+  'revokeConnectLink',
+  'consumeConnectLink',
+  'restoreConnectLink',
   // #97 — a connection may hold a permission, so granting one is a mutation the
   // log has to be able to name.
   'grantToConnection',
@@ -1462,6 +1471,89 @@ export const connectUrlRelayResult = z.object({
   vertical: z.string().min(1),
 });
 export type ConnectUrlRelayResult = z.infer<typeof connectUrlRelayResult>;
+
+/** A mailed connect link's default life: a week, the same as the dashboard's own link. */
+export const CONNECT_LINK_DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
+/** …and its ceiling. A month, past which a stale link in someone's inbox is a liability. */
+export const CONNECT_LINK_MAX_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * The body a hosted vertical POSTs to `/internal/connections/connect-links`
+ * (connections.md §3.5.4) — a SHAREABLE connect link, as opposed to the in-session URL above.
+ *
+ * Its own request, not a wider `ttlSeconds` on `connectUrlRelayRequest`, because the two are
+ * different authorities. The connect URL is clicked within minutes by the person who pressed
+ * the button, and is safe with no row. A link is mailed to a client company's provider
+ * administrator and opened days later — so it gets a platform-held row that makes it
+ * single-use and revocable, and widening the URL's clamp instead would have handed out
+ * week-long replayable rounds with neither.
+ */
+export const connectLinkRelayRequest = z.object({
+  tenantId,
+  scopeId,
+  provider: connectionProvider,
+  /** The tenant principal whose permission-checked act authorized the link (§3.5.1). */
+  createdBy: z.string().min(1),
+  /** As `connectUrlRelayRequest.returnUrl`: https, on a hostname bound to this scope. */
+  returnUrl: z.string().url().optional(),
+  /** As `connectUrlRelayRequest.subjectRef`, and stored on the link so a list can show it. */
+  subjectRef: z.string().min(1).max(256).optional(),
+  /** Seconds the link stays openable. Default 7 days, at most 30; a longer value is refused. */
+  ttlSeconds: z.number().int().positive().max(CONNECT_LINK_MAX_TTL_SECONDS).optional(),
+});
+export type ConnectLinkRelayRequest = z.infer<typeof connectLinkRelayRequest>;
+
+/**
+ * A link as its VERTICAL may see it: everything it needs to show "sent, used by Testbolaget
+ * AB, or still waiting", and nothing it did not already know or should not hold — no tenant,
+ * scope or return URL echoed back, and never the signed state (that is in `url`, once).
+ */
+export const connectLinkView = z.object({
+  id: connectLinkId,
+  provider: connectionProvider,
+  status: connectLinkStatus,
+  createdBy: z.string().min(1),
+  subjectRef: z.string().nullable(),
+  createdAt: instant,
+  expiresAt: instant,
+  usedAt: instant.nullable(),
+  accountRef: z.string().nullable(),
+  accountLabel: z.string().nullable(),
+});
+export type ConnectLinkView = z.infer<typeof connectLinkView>;
+
+/** What the mint answers. The URL carries the signed state; mail it, do not store it. */
+export const connectLinkRelayResult = z.object({
+  url: z.string().url(),
+  link: connectLinkView,
+  /** The vertical the platform re-derived, so a caller can assert it got what it meant. */
+  vertical: z.string().min(1),
+});
+export type ConnectLinkRelayResult = z.infer<typeof connectLinkRelayResult>;
+
+/** `/internal/connections/connect-links/list` — this scope's links, and no other scope's. */
+export const connectLinkListRelayRequest = z.object({
+  tenantId,
+  scopeId,
+  provider: connectionProvider.optional(),
+  /** Outstanding and unexpired only. Omitted: every link the scope minted, newest first. */
+  outstanding: z.boolean().optional(),
+});
+export type ConnectLinkListRelayRequest = z.infer<typeof connectLinkListRelayRequest>;
+
+export const connectLinkListRelayResult = z.object({ links: z.array(connectLinkView) });
+export type ConnectLinkListRelayResult = z.infer<typeof connectLinkListRelayResult>;
+
+/**
+ * `/internal/connections/connect-links/revoke`. Idempotent: a revoked link answers revoked
+ * again, and a used one answers used (a spent link has nothing left to revoke — disconnect
+ * the connection instead). A link of another scope is a 404, exactly as an absent one.
+ */
+export const connectLinkRevokeRelayRequest = z.object({ tenantId, scopeId, linkId: connectLinkId });
+export type ConnectLinkRevokeRelayRequest = z.infer<typeof connectLinkRevokeRelayRequest>;
+
+export const connectLinkRevokeRelayResult = z.object({ link: connectLinkView });
+export type ConnectLinkRevokeRelayResult = z.infer<typeof connectLinkRevokeRelayResult>;
 
 /**
  * A whole tenant, exported (#36) — GDPR Art. 20 portability, and the escrow handover.

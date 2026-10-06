@@ -35,8 +35,10 @@ and a connector is small because they exist:
    [Permissions](/concepts/permissions) for how a connection becomes a subject. The hub is
    not the only way in: a vertical whose users have no dashboard account starts a
    provider's consent round itself with
-   [`requestConnectUrl`](/reference/vertical-host#requestconnecturl-request), and the
-   connection still lands in this store, stamped with the principal whose permission
+   [`requestConnectUrl`](/reference/vertical-host#requestconnecturl-request) — or mints a
+   single-use, revocable link to mail to whoever must approve with
+   [`mintConnectLink`](/reference/vertical-host#mintconnectlink-request-listconnectlinks-request-revokeconnectlink-request) —
+   and the connection still lands in this store, stamped with the principal whose permission
    check authorized it.
 
 2. **The connector runtime.** `registerConnector(id, eventType, handler)` binds a handler to an

@@ -28,6 +28,8 @@ export { erasureOtherMod, erasureSquatterMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
 export { inertScopeContractSuite } from './inert-scope-suite.js';
+// connections.md §3.5.4: a vertical's mailed connect link — single-use, revocable, expiring.
+export { connectLinkContractSuite } from './connect-link-suite.js';
 export { causedByContractSuite, scopeCausedByContractSuite } from './caused-by-suite.js';
 export { causedByMod } from './caused-by-module.js';
 // #1184: the membership executor — accept, redelivery, rollback, and the authority bound.

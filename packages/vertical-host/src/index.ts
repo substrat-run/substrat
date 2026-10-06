@@ -2213,6 +2213,13 @@ export function mountPlatformSurface<Env extends object>(
 export * from './operations-routes.js';
 export { requestConnectUrl, ConnectUrlRequestError } from './connect-url.js';
 export type { ConnectUrlRequest } from './connect-url.js';
+export { mintConnectLink, listConnectLinks, revokeConnectLink, ConnectLinkRequestError } from './connect-link.js';
+export type {
+  ConnectLinkRelayAccess,
+  ConnectLinkRequest,
+  ConnectLinkListRequest,
+  ConnectLinkRevokeRequest,
+} from './connect-link.js';
 export * from './mcp.js';
 export { externalInput, externalJson, externalResult } from './wire.js';
 export * from './public-surface.js';

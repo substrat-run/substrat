@@ -14,6 +14,7 @@ import {
   ASSET_PART_PREFIX,
   assetHash,
   channelName,
+  connectLinkId,
   connectionActivity,
   connectionActivitySource,
   connectionCredential,
@@ -1184,6 +1185,13 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/activity$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/credential$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/verify$/, pin: 'path' },
+  // A vertical's mailed connect links (connections.md §3.5.4): the consent landing's liveness
+  // read, the callback's spend and its undo, and the integrations card's list and revoke.
+  { method: 'GET', re: /\/tenants\/[^/]+\/connect-links$/, pin: 'path' },
+  { method: 'GET', re: /\/tenants\/[^/]+\/connect-links\/[^/]+$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+\/connect-links\/[^/]+\/consume$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+\/connect-links\/[^/]+\/restore$/, pin: 'path' },
+  { method: 'DELETE', re: /\/tenants\/[^/]+\/connect-links\/[^/]+$/, pin: 'path' },
   // Members: identity links mirrored from the dashboard, orgs, role assignments.
   { method: 'GET', re: /\/tenants\/[^/]+\/identities$/, pin: 'path' },
   { method: 'PUT', re: /\/tenants\/[^/]+\/identities$/, pin: 'path' },
@@ -2240,6 +2248,90 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!row) return c.json({ error: 'unknown connection' }, 404);
     if (row.status !== 'revoked') await c.var.admin.revokeConnection(c.get('actor'), row.id);
     return c.body(null, 204);
+  });
+
+  // -- a vertical's mailed connect links, tenant-scoped (connections.md §3.5.4) ---------
+  //
+  // The dashboard's half of a link a VERTICAL minted (`/internal/connections/connect-links`):
+  // its consent landing asks whether the row still stands, its callback spends the row
+  // before storing and restores it if the store fails, and its integrations card lists and
+  // revokes them. The tenant is the path's; the scope is named on every call and is half
+  // the store's key, so another scope's link — or another tenant's — reads as absent (K-3).
+  // Not in BUILDER_ROUTES: a builder has no business spending a tenant's consent round.
+  const connectLinkScope = z.object({ scopeId: scopeIdSchema });
+
+  app.get('/tenants/:tenantId/connect-links', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const q = connectLinkScope
+      .extend({ provider: connectionProvider.optional(), outstanding: z.literal('1').optional() })
+      .parse({
+        scopeId: c.req.query('scopeId'),
+        provider: c.req.query('provider') || undefined,
+        outstanding: c.req.query('outstanding') || undefined,
+      });
+    return c.json(
+      await c.var.admin.listConnectLinks(c.get('actor'), {
+        tenantId,
+        scopeId: q.scopeId,
+        ...(q.provider ? { provider: q.provider } : {}),
+        ...(q.outstanding ? { outstandingOnly: true } : {}),
+      }),
+    );
+  });
+
+  app.get('/tenants/:tenantId/connect-links/:linkId', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const { scopeId } = connectLinkScope.parse({ scopeId: c.req.query('scopeId') });
+    const link = await c.var.admin.getConnectLink(c.get('actor'), {
+      tenantId,
+      scopeId,
+      id: connectLinkId.parse(c.req.param('linkId')),
+    });
+    return link ? c.json(link) : c.json({ error: 'unknown connect link' }, 404);
+  });
+
+  // The callback's spend. A refusal is a 200 carrying the typed reason, not an error status:
+  // "already used" is the answer to the question asked, and the callback renders each one.
+  app.post('/tenants/:tenantId/connect-links/:linkId/consume', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const body = connectLinkScope
+      .extend({
+        provider: connectionProvider,
+        accountRef: z.string().max(256).optional(),
+        accountLabel: z.string().max(256).optional(),
+      })
+      .parse(await c.req.json());
+    return c.json(
+      await c.var.admin.consumeConnectLink(c.get('actor'), {
+        ...body,
+        tenantId,
+        id: connectLinkId.parse(c.req.param('linkId')),
+      }),
+    );
+  });
+
+  app.post('/tenants/:tenantId/connect-links/:linkId/restore', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const { scopeId } = connectLinkScope.parse(await c.req.json());
+    const restored = await c.var.admin.restoreConnectLink(c.get('actor'), {
+      tenantId,
+      scopeId,
+      id: connectLinkId.parse(c.req.param('linkId')),
+    });
+    return c.json({ restored });
+  });
+
+  // Idempotent, as the store is: a revoked or spent link answers 204 again. 404 only for a
+  // link this scope never held.
+  app.delete('/tenants/:tenantId/connect-links/:linkId', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const { scopeId } = connectLinkScope.parse({ scopeId: c.req.query('scopeId') });
+    const link = await c.var.admin.revokeConnectLink(c.get('actor'), {
+      tenantId,
+      scopeId,
+      id: connectLinkId.parse(c.req.param('linkId')),
+    });
+    return link ? c.body(null, 204) : c.json({ error: 'unknown connect link' }, 404);
   });
 
   /**

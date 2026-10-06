@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, memberInviteInput, memberRoleInput, importCursorMove, findingKind, findingRuleInput, findingStatus, findingStatusInput, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, memberInviteInput, memberRoleInput, importCursorMove, findingKind, findingRuleInput, findingStatus, findingStatusInput, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -63,7 +63,19 @@ import { b64urlToBytes } from './b64.js';
 import { cachedTelemetry, telemetryKey, type TelemetryStore } from './telemetry-cache.js';
 import { PROVIDER, ensureIdentityPool, forgetLogin, forgetTenant, loginMemberships, rememberNode, resolveAccountNode, resolveMemoFor, resolveNode, teamsOf, type ResolveMemo } from './account.js';
 import { signClaim, verifyClaim, INVITE_TOKEN_PURPOSE, GITHUB_STATE_PURPOSE, CONNECT_LINK_PURPOSE } from './signed-token.js';
-import { resolveConnectRound, connectionScopeOf, connectReturn, type ConnectLinkClaim } from './connect-round.js';
+import {
+  resolveConnectRound,
+  connectionScopeOf,
+  connectReturn,
+  linkRefusalAtLanding,
+  linkSenderOf,
+  platformLinkRow,
+  settleConsent,
+  type ConnectLinkClaim,
+  type ConnectRound,
+  type LinkRefusal,
+  type RoundLinkRow,
+} from './connect-round.js';
 import { completeFortnoxConsent, fortnoxConsentUrl, FortnoxApiError } from '@substrat-run/connector-fortnox';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 
@@ -3718,29 +3730,81 @@ const connectPage = (title: string, lines: string[], status: 200 | 400 | 403 | 4
     { status, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
   );
 
-/** The refusal screens for a link that no longer works, one per consume reason. */
-const connectLinkRefusal = (reason: Exclude<ConnectLinkConsume, { ok: true }>['reason']): Response => {
+/**
+ * The refusal screens for a link that no longer works, one per consume reason — and per
+ * SENDER. A dashboard link came from a Substrat administrator; a vertical's mailed link
+ * (connections.md §3.5.4) came from a bureau to its client company, whose reader has no
+ * Substrat administrator to ask, so that copy sends them back to whoever sent the link.
+ */
+const connectLinkRefusal = (reason: LinkRefusal, sender: 'dashboard' | 'sender' = 'dashboard'): Response => {
+  const askForNew =
+    sender === 'sender' ? 'Ask whoever sent you the link for a new one.' : 'Ask your Substrat administrator for a new link.';
   switch (reason) {
     case 'used':
       return connectPage('This connect link was already used', [
         'A Fortnox company has already been connected through this link.',
-        'If another company should be connected too, ask your Substrat administrator for a new link.',
+        sender === 'sender'
+          ? 'If another company should be connected too, ask whoever sent you the link for a new one.'
+          : 'If another company should be connected too, ask your Substrat administrator for a new link.',
       ], 409);
     case 'revoked':
       return connectPage('This connect link was revoked', [
-        'A Substrat administrator withdrew this link before it was used.',
+        sender === 'sender'
+          ? 'Whoever sent you this link withdrew it before it was used.'
+          : 'A Substrat administrator withdrew this link before it was used.',
         'Nothing was connected. Ask them for a new link if the connection is still wanted.',
       ], 403);
     case 'expired':
-      return connectPage('This connect link has expired', [
-        'Nothing was connected. Ask your Substrat administrator for a new link.',
-      ], 403);
+      return connectPage('This connect link has expired', [`Nothing was connected. ${askForNew}`], 403);
     default:
-      return connectPage('This connect link is not valid', [
-        'Nothing was connected. Ask your Substrat administrator for a new link.',
-      ], 403);
+      return connectPage('This connect link is not valid', [`Nothing was connected. ${askForNew}`], 403);
   }
 };
+
+/**
+ * The row behind a round (connect-round.ts `RoundLinkRow`): a dashboard link's lives in the
+ * minting tenant's own dashboard scope and is asked as the minting admin — so it dies when
+ * they lose access; a vertical's mailed link lives in the platform's directory and is asked
+ * through the control plane as the principal the vertical named. `null` for an in-session
+ * platform round, which has none.
+ */
+function roundLinkRow(env: Env, round: ConnectRound): RoundLinkRow | null {
+  if (round.kind === 'platform') {
+    const claim = round.claim;
+    let cp: ReturnType<typeof controlPlaneFor> | undefined;
+    return platformLinkRow(
+      round,
+      () => (cp ??= controlPlaneFor(env, tenantId.parse(claim.tenantId), principalId.parse(claim.principal))),
+      Date.now,
+    );
+  }
+  const claim = round.claim;
+  let scope: ReturnType<ScopeHost['getScope']> | undefined;
+  const dash = () =>
+    (scope ??= hostFor(env).getScope(
+      principalId.parse(claim.principal), tenantId.parse(claim.tenantId), scopeId.parse(claim.scopeId),
+    ));
+  return {
+    check: async () => {
+      const rows = (await (await dash()).invoke('dashboard/list-connect-links', {
+        appScopeId: claim.appScopeId,
+        provider: claim.provider,
+      })) as ConnectLinkRow[];
+      return rows.some((r) => r.id === claim.linkId) ? null : 'unknown';
+    },
+    consume: async (account) => {
+      const result = (await (await dash()).invoke('dashboard/consume-connect-link', {
+        linkId: claim.linkId,
+        provider: claim.provider,
+        ...account,
+      })) as ConnectLinkConsume;
+      return result.ok ? null : result.reason;
+    },
+    restore: async () =>
+      ((await (await dash()).invoke('dashboard/restore-connect-link', { linkId: claim.linkId })) as { restored: boolean })
+        .restored,
+  };
+}
 
 /**
  * Mint a connect link for this app: the URL behind BOTH the Connect button (the UI
@@ -3804,7 +3868,35 @@ app.get('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) => 
     appScopeId: appRow.app_scope_id,
     provider: spec.provider,
   })) as ConnectLinkRow[];
-  return c.json({ links: rows.map(connectLinkView) });
+  // The links the APP itself minted and mailed (connections.md §3.5.4) belong on this card
+  // too: a tenant admin must be able to see and kill a link a bureau's staff sent out, and
+  // they live in the platform's directory rather than here. Marked `source: 'app'`. A plane
+  // that cannot answer leaves the dashboard's own links listed, and says so in the log.
+  let appLinks: ReturnType<typeof connectLinkView>[] = [];
+  try {
+    appLinks = (
+      await controlPlaneFor(c.env, node.tenantId, node.principal).listConnectLinks(scopeId.parse(appRow.app_scope_id), {
+        provider: spec.provider,
+        outstanding: true,
+      })
+    ).map((l) => ({
+      id: l.id,
+      provider: l.provider,
+      appScopeId: appRow.app_scope_id,
+      status: l.status,
+      createdBy: l.createdBy,
+      createdAt: l.createdAt,
+      expiresAt: l.expiresAt,
+    }));
+  } catch (e) {
+    console.error('app connect-link list failed', e);
+  }
+  return c.json({
+    links: [
+      ...rows.map((r) => ({ ...connectLinkView(r), source: 'dashboard' as const })),
+      ...appLinks.map((l) => ({ ...l, source: 'app' as const })),
+    ],
+  });
 });
 
 /** Revoke an outstanding link — the signature it rides becomes worthless. Idempotent. */
@@ -3819,8 +3911,19 @@ app.delete('/api/apps/:scopeId/integrations/:provider/connect-links/:linkId', as
   const result = (await dash.invoke('dashboard/revoke-connect-link', { linkId: c.req.param('linkId') })) as
     | { status: string }
     | null;
-  if (!result) throw new HTTPException(404, { message: 'unknown link' });
-  return c.body(null, 204);
+  if (result) return c.body(null, 204);
+  // Not one of the dashboard's own: it may be a link the app minted (§3.5.4), held by the
+  // platform under this app's scope — which is the only scope this route lets it name, so an
+  // id from another app, or another tenant, is a 404 there as it is here.
+  const appScope = scopeId.safeParse(c.req.param('scopeId'));
+  const linkId = connectLinkId.safeParse(c.req.param('linkId'));
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  if (appScope.success && linkId.success && apps.some((a) => a.app_scope_id === appScope.data)) {
+    if (await controlPlaneFor(c.env, node.tenantId, node.principal).revokeConnectLink(appScope.data, linkId.data)) {
+      return c.body(null, 204);
+    }
+  }
+  throw new HTTPException(404, { message: 'unknown link' });
 });
 
 /**
@@ -3845,30 +3948,19 @@ app.get('/api/integrations/:provider/connect', async (c) => {
       'This deployment holds no Fortnox integration credentials. Nothing was connected.',
     ], 503);
   }
-  // A LINK round's row must still stand — a revoked or spent link refuses HERE, before
-  // Fortnox ever shows a consent screen for it. A platform round has no row to ask: its
-  // signature and its few minutes of life are the whole of its liveness, so there is
-  // nothing to check and nothing to spend by looking.
-  if (round.kind === 'link') {
-    const claim = round.claim;
-    const host = hostFor(c.env);
-    let live = false;
-    try {
-      const dash = await host.getScope(
-        principalId.parse(claim.principal), tenantId.parse(claim.tenantId), scopeId.parse(claim.scopeId),
-      );
-      const rows = (await dash.invoke('dashboard/list-connect-links', {
-        appScopeId: claim.appScopeId,
-        provider: spec.provider,
-      })) as ConnectLinkRow[];
-      live = rows.some((r) => r.id === claim.linkId);
-    } catch (e) {
-      // The minting admin lost access (or the scope is gone) — their links die with it.
-      // Logged because a platform fault lands here too, wearing the same refusal.
-      console.error('connect-link liveness check failed', e);
-      live = false;
-    }
-    if (!live) return connectLinkRefusal('unknown');
+  // A round backed by a row — a dashboard link, or a vertical's mailed link — must still
+  // stand: a revoked or spent link refuses HERE, before Fortnox ever shows a consent screen
+  // for it. Asked, never spent. An in-session platform round has no row to ask: its
+  // signature and its few minutes of life are the whole of its liveness. A dashboard link
+  // whose minting admin lost access (or whose scope is gone) dies with that access — the
+  // check fails, and fails closed.
+  const refused = await linkRefusalAtLanding(roundLinkRow(c.env, round));
+  if (refused) {
+    // A vertical that named a return renders its own copy from `?error=`, as for every
+    // other refusal of its rounds.
+    const back = connectReturn(round, { error: `link_${refused}` });
+    if (back) return c.redirect(back);
+    return connectLinkRefusal(refused, linkSenderOf(round));
   }
   const origin = new URL(c.req.url).origin;
   return c.redirect(
@@ -3966,81 +4058,65 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
     ], 400);
   }
 
-  // Consume BEFORE storing: of two racing callbacks, exactly one gets past this line.
-  // (Consume-first also keeps a revoked link from ever reaching the store below.)
+  // Consume BEFORE storing, restore if the store fails (`settleConsent`): of two racing
+  // callbacks for one link exactly one gets past the spend, and a revoked link never
+  // reaches the store. That holds for a dashboard link and a vertical's mailed link alike —
+  // only where the row lives differs (`roundLinkRow`).
   //
-  // A platform round has no row, so there is nothing to consume and nothing to race for:
-  // two callbacks would carry the same consent code, and the second one is already dead at
-  // Fortnox. What a replay could do instead is re-consent the SAME company — which the
-  // store's account leg turns into a rotation of that one connection rather than a
-  // duplicate (#1267), so the harm the row was guarding against does not exist here.
-  let dash;
-  if (round.kind === 'link') {
-    const linkClaim = round.claim;
-    let consume: ConnectLinkConsume;
-    try {
-      dash = await hostFor(c.env).getScope(
-        principalId.parse(linkClaim.principal), tenantId.parse(linkClaim.tenantId), scopeId.parse(linkClaim.scopeId),
-      );
-      consume = (await dash.invoke('dashboard/consume-connect-link', {
-        linkId: linkClaim.linkId,
-        provider: 'fortnox',
-        accountRef: completion.secret.tenantId,
-        accountLabel: completion.company.CompanyName || undefined,
-      })) as ConnectLinkConsume;
-    } catch (e) {
-      console.error('fortnox connect-link consume failed', e);
-      return connectLinkRefusal('unknown');
-    }
-    if (!consume.ok) return connectLinkRefusal(consume.reason);
-  }
-
+  // An in-session platform round has no row, so there is nothing to consume and nothing to
+  // race for: two callbacks would carry the same consent code, and the second one is already
+  // dead at Fortnox. What a replay could do instead is re-consent the SAME company — which
+  // the store's account leg turns into a rotation of that one connection rather than a
+  // duplicate (#1267), so the harm the row was guarding against does not exist there.
+  const sender = linkSenderOf(round);
   const label = completion.company.CompanyName
     ? `Fortnox — ${completion.company.CompanyName}`
     : 'Fortnox';
-  try {
-    // #977: the round's own principal — who authorized it — is the person the row names.
-    await controlPlaneFor(c.env, tenantId.parse(claim.tenantId), principalId.parse(claim.principal)).upsertConnection({
-      // A link round names the app it was minted for; a platform round names the scope
-      // whose own operation authorized it. Either way the control plane re-derives the
-      // VERTICAL from this scope rather than trusting the state — so a forged or replayed
-      // claim still cannot land a credential anywhere but that scope's own vertical.
-      scopeId: scopeId.parse(connectionScopeOf(round)),
-      provider: 'fortnox',
-      label,
-      // The DatabaseNumber keys the connection (the plane's fourth upsert leg): a
-      // bureau consenting 200 client companies gets 200 connections, and re-consenting
-      // the SAME company still rotates its one row in place.
-      externalAccountRef: completion.secret.tenantId,
-      secret: completion.secret as unknown as Record<string, string>,
-      grants: [],
-      createdBy: claim.principal,
-    });
-  } catch (e) {
-    // Un-spend the link (best effort): the consent's code is gone either way, but the
-    // LINK still stands, so opening it again starts a fresh consent round with no new
-    // link needed. Only this callback holds the 'used' row, so the single-use guard
-    // above is not weakened. A platform round spent nothing, so there is nothing to
-    // restore — its retry is the vertical minting another URL, which costs one click.
-    let restored = false;
-    if (round.kind === 'link' && dash) {
-      try {
-        restored = ((await dash.invoke('dashboard/restore-connect-link', { linkId: round.claim.linkId })) as { restored: boolean }).restored;
-      } catch (restoreErr) {
-        // The refusal copy below falls back to asking for a new link.
-        console.error('fortnox connect-link restore failed', restoreErr);
-      }
-    }
-    console.error('fortnox connection store failed', e);
-    const detail = e instanceof ControlPlaneError ? e.message : 'storing the credential failed';
+  const settled = await settleConsent(
+    roundLinkRow(c.env, round),
+    {
+      accountRef: completion.secret.tenantId,
+      ...(completion.company.CompanyName ? { accountLabel: completion.company.CompanyName } : {}),
+    },
+    async () => {
+      // #977: the round's own principal — who authorized it — is the person the row names.
+      await controlPlaneFor(c.env, tenantId.parse(claim.tenantId), principalId.parse(claim.principal)).upsertConnection({
+        // A link round names the app it was minted for; a platform round names the scope
+        // whose own operation authorized it. Either way the control plane re-derives the
+        // VERTICAL from this scope rather than trusting the state — so a forged or replayed
+        // claim still cannot land a credential anywhere but that scope's own vertical.
+        scopeId: scopeId.parse(connectionScopeOf(round)),
+        provider: 'fortnox',
+        label,
+        // The DatabaseNumber keys the connection (the plane's fourth upsert leg): a
+        // bureau consenting 200 client companies gets 200 connections, and re-consenting
+        // the SAME company still rotates its one row in place.
+        externalAccountRef: completion.secret.tenantId,
+        secret: completion.secret as unknown as Record<string, string>,
+        grants: [],
+        createdBy: claim.principal,
+      });
+    },
+  );
+  if (!settled.ok && settled.at === 'consume') {
+    return bounce(`link_${settled.reason}`) ?? connectLinkRefusal(settled.reason, sender);
+  }
+  if (!settled.ok) {
+    // The link was un-spent if it could be (best effort): the consent's code is gone either
+    // way, but the LINK still stands, so opening it again starts a fresh consent round. An
+    // in-session round spent nothing — its retry is the vertical minting another URL.
+    console.error('fortnox connection store failed', settled.error);
+    const detail = settled.error instanceof ControlPlaneError ? settled.error.message : 'storing the credential failed';
     const back = connectReturn(round, { error: 'store_failed' });
     if (back) return c.redirect(back);
     return connectPage('The credential could not be stored', [
       escapeHtml(detail),
       'The Fortnox consent went through, but no connection was saved.' +
-        (restored
+        (settled.restored
           ? ' The connect link is still usable — open it again to retry.'
-          : ' Ask your Substrat administrator for a new link and try again.'),
+          : sender === 'sender'
+            ? ' Ask whoever sent you the link for a new one and try again.'
+            : ' Ask your Substrat administrator for a new link and try again.'),
     ], 503);
   }
 
@@ -4063,7 +4139,9 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
       ` (org.nr ${escapeHtml(completion.company.OrganizationNumber || '—')},` +
       ` database ${escapeHtml(completion.secret.tenantId)}) is now connected to Substrat.` +
       ` ${completion.financialYears} financial year${completion.financialYears === 1 ? '' : 's'} readable.`,
-    'If this is not the company you meant to connect, tell your Substrat administrator — they can disconnect it from the dashboard.',
+    sender === 'sender'
+      ? 'If this is not the company you meant to connect, tell whoever sent you the link — they can disconnect it.'
+      : 'If this is not the company you meant to connect, tell your Substrat administrator — they can disconnect it from the dashboard.',
     'You can close this tab.',
   ]);
 });

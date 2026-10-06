@@ -19,6 +19,12 @@ import type {
   CapabilityPage,
   MintedCapability,
   ListPage,
+  ConnectLink,
+  ConnectLinkConsume,
+  ConnectLinkFilter,
+  ConnectLinkKey,
+  ConsumeConnectLinkInput,
+  MintConnectLinkInput,
   Connection,
   ConnectionFilter,
   ConnectionId,
@@ -3726,6 +3732,38 @@ export interface HostAdmin {
    * constraint ignores revoked rows.
    */
   revokeConnection(actor: PlatformActorId, id: ConnectionId): Promise<void>;
+
+  /**
+   * A vertical's MAILED connect link (connections.md §3.5.4) — the row that makes a consent
+   * round single-use and revocable when it lives days rather than minutes. Beside the
+   * connections because it is their front door: the round it starts ends in
+   * `createConnection` (or a rotation) for the same tenant and scope.
+   *
+   * Every verb below is keyed by (tenant, scope): a link of another scope or tenant is
+   * `undefined` / `unknown`, never a refusal that admits it exists. Expiry is judged against
+   * the host's own clock. Mint, revoke, consume and restore are each audited — metadata
+   * only, though nothing here is secret: the credential does not exist until a round is
+   * consumed, and it never touches this row.
+   */
+  mintConnectLink(actor: PlatformActorId, input: MintConnectLinkInput): Promise<ConnectLink>;
+  getConnectLink(actor: PlatformActorId, key: ConnectLinkKey): Promise<ConnectLink | undefined>;
+  /** Newest first. `outstandingOnly`: outstanding AND unexpired — the links that still open. */
+  listConnectLinks(actor: PlatformActorId, filter: ConnectLinkFilter): Promise<ConnectLink[]>;
+  /**
+   * Outstanding → revoked. Idempotent: a revoked or used link is answered as it stands and
+   * nothing is written. `undefined` when the scope holds no such link.
+   */
+  revokeConnectLink(actor: PlatformActorId, key: ConnectLinkKey): Promise<ConnectLink | undefined>;
+  /**
+   * Outstanding and unexpired → used, recording what the consent attached. Atomic: of two
+   * concurrent consumes exactly one answers `ok`. Otherwise the typed reason.
+   */
+  consumeConnectLink(actor: PlatformActorId, input: ConsumeConnectLinkInput): Promise<ConnectLinkConsume>;
+  /**
+   * Used → outstanding, the best-effort undo after the credential store failed. Only a
+   * used, unexpired link moves; `false` for anything else, a revoked link included.
+   */
+  restoreConnectLink(actor: PlatformActorId, key: ConnectLinkKey): Promise<boolean>;
 
   /**
    * Open the credential for one (tenant, vertical, provider[, account]) — the

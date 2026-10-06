@@ -10,6 +10,7 @@ import {
   facetRecencyContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  connectLinkContractSuite,
   causedByContractSuite,
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
@@ -76,6 +77,19 @@ inertScopeContractSuite('adapter-sqlite', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,
   });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// connections.md §3.5.4: a vertical's mailed connect link, in the directory.
+connectLinkContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-connect-links-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,
     cleanup: async () => {
