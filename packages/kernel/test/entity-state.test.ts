@@ -13,6 +13,7 @@ import {
   createTrashedReads,
   assertEntityStateColumns,
   afterRuntimeDdl,
+  derivesAnything,
   repairDerivedObjects,
   StateColumnLost,
   assertNoStatefulDdl,
@@ -388,6 +389,13 @@ const derivedFixture = (journaled: (version: string) => boolean = () => true) =>
 };
 
 describe('afterRuntimeDdl', () => {
+  it('is wanted on any scope that derives anything — a search index alone included', () => {
+    const none = { state: new Map(), lists: new Map(), search: new Map() };
+    expect(derivesAnything(none)).toBe(false);
+    expect(derivesAnything({ ...none, search: new Map([['doc', {} as never]]) })).toBe(true);
+    expect(derivesAnything({ ...none, lists: new Map([['doc', {} as never]]) })).toBe(true);
+    expect(derivesAnything({ ...none, state: new Map([['doc', {} as never]]) })).toBe(true);
+  });
   const build = () => derivedFixture();
   it('changes nothing on a table carrying everything the kernel derived', () => {
     const { definitions, check } = build();
