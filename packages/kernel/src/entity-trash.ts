@@ -268,12 +268,12 @@ export function purgeReportOf(
  * believes it is not:
  *
  * The targets are DERIVED, never handed over: `operationInputsOf(ops)` records the declared
- * surface beside the schemas (`DECLARED_SURFACE`), and the host reads each operation's target off
- * the same declaration it parses with. A module with a trashable entity must therefore
+ * surface of the frozen map it returns (`declaredSurfaceOf`, which nothing else can write), and the
+ * host reads each operation's target off the same declaration it parses with. A module with a trashable entity must therefore
  * - pass `operationInputs` built by `operationInputsOf`, so there is a declared surface to read;
  * - declare every operation it binds there — an undeclared one could address a binned entity and
  *   the host could not see which;
- * - declare a `trashed: 'purges'` operation whose parsed input is the id and nothing else.
+ * - declare a `trashed: 'purges'` operation whose input is a strict object holding the id and nothing else.
  *
  * Also refused: an opt-in on an entity that declares no trash here, a purge horizon without
  * exactly the schedule `purgeSchedulesOf` derives for it, and a purge schedule that does not run
