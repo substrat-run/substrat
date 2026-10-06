@@ -2987,7 +2987,7 @@ export function defineScopeDO(
       // A checked root (#938) is gated here as well as on every pass: a subscriber who may
       // not watch it gets no socket at all, so its client meets a refusal rather than a
       // feed that would close on the first thing it had to say.
-      if (within?.checked !== undefined && !(await this.mayWatchRoot(subscriber, within))) {
+      if (within?.checked !== undefined && !(await this.mayWatchRoot(() => this.liveContext(subscriber), within))) {
         return new Response('live reads: the subscriber may not watch this root', {
           status: 403,
           headers: { [LIVE_MODE_HEADER]: 'forbidden' satisfies LiveRefusal },
@@ -3011,31 +3011,30 @@ export function defineScopeDO(
       return new Response(null, { status: 101, webSocket: client });
     }
 
+    /** The context a live subscriber's checks run in: its own principal, under `live.subscribe`. */
+    private liveContext(subscriber: { principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId }): OperationContext {
+      return this.operationContext(
+        subscriber.principal,
+        subscriber.tenantId,
+        subscriber.scopeId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'live.subscribe',
+      );
+    }
+
     /**
      * May this subscriber watch its `checkedWithin` root (#938)? Its own `ctx.check` of the
      * stated key on the root, the same walk a read of the root would make. A check that
      * throws is a refusal: an outage in the permission path must not become a feed.
      */
-    private async mayWatchRoot(
-      subscriber: { principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId },
-      within: LiveWithin,
-      context?: () => OperationContext,
-    ): Promise<boolean> {
+    private async mayWatchRoot(context: () => OperationContext, within: LiveWithin): Promise<boolean> {
       try {
-        const ctx =
-          context?.() ??
-          this.operationContext(
-            subscriber.principal,
-            subscriber.tenantId,
-            subscriber.scopeId,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            'live.subscribe',
-          );
-        const decision = await ctx.check(within.checked as PermissionKey, {
+        // Built inside the try: a context that cannot be built is a refusal too.
+        const decision = await context().check(within.checked as PermissionKey, {
           entityType: within.entityType,
           entityId: within.entityId,
         });
@@ -3265,19 +3264,8 @@ export function defineScopeDO(
         // The operation name is carried anyway, for the events a fan-out cannot emit
         // but a future reader of this context might.
         let ctx: OperationContext | undefined;
-        const { principal } = subscription;
-        const context = () =>
-          (ctx ??= this.operationContext(
-            principal,
-            tenantId,
-            scopeId,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            'live.subscribe',
-          ));
+        const subscriber = subscription;
+        const context = () => (ctx ??= this.liveContext(subscriber));
         /**
          * A checked root's gate (#938), asked at most once per socket per pass and only once
          * a row beneath the root is about to be announced, so an idle subscription costs no
@@ -3292,7 +3280,7 @@ export function defineScopeDO(
           // is out whatever the principal holds.
           if (within && !(await reaches(row, within))) continue;
           if (within?.checked !== undefined) {
-            rootAllowed ??= await this.mayWatchRoot(subscription, within, context);
+            rootAllowed ??= await this.mayWatchRoot(context, within);
             if (!rootAllowed) {
               try {
                 ws.close(1008, 'the subscriber may no longer watch this root');

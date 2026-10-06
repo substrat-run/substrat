@@ -5,7 +5,7 @@
  * rendering path in this file at all, and that is deliberate: the surface that must
  * never show one is the surface that should not know how.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { View } from '../App.js';
 import { Brand } from '../App.js';
 import { api, type Conversation, type Session } from '../api.js';
@@ -164,8 +164,7 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
   // Kept current (#938): this conversation's own feed nudges when a public message on it
   // changes (`harness/portal-live.ts`), and the poll is the floor under it. Not ended on
   // unmount: the feed closes its socket once nobody has listened for a few seconds.
-  const feed = useMemo(() => portalFeed(id), [id]);
-  useLiveReload(() => void load(), PACE.portal, undefined, feed);
+  useLiveReload(() => void load(), PACE.portal, { feed: portalFeed(id) });
 
   // Only before anything is shown: a poll that fails later must not replace the thread.
   if (error && !conv) return <Empty title="Could not open this conversation" note={error} />;

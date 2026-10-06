@@ -1071,15 +1071,18 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
 
   // -- the portal's feed: one conversation, as its customer may see it (#938) --------
 
+  const portalHandshake = async (sub: string, conversationId: string) =>
+    handshake(
+      { origin: ORIGIN, authorization: `Bearer ${await bearerFor(sub)}` },
+      `/api/conversations/${conversationId}/live`,
+    );
+
   /** A customer's socket on one conversation's portal feed, its frames, and how the scope closed it. */
   async function subscribePortal(
     sub: string,
     conversationId: string,
   ): Promise<{ frames: LiveFrame[]; closedWith: number | null }> {
-    const response = await handshake(
-      { origin: ORIGIN, authorization: `Bearer ${await bearerFor(sub)}` },
-      `/api/conversations/${conversationId}/live`,
-    );
+    const response = await portalHandshake(sub, conversationId);
     expect(response.status).toBe(101);
     const ws = response.webSocket!;
     ws.accept();
@@ -1094,12 +1097,6 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     });
     return feed;
   }
-
-  const portalHandshake = async (sub: string, conversationId: string) =>
-    handshake(
-      { origin: ORIGIN, authorization: `Bearer ${await bearerFor(sub)}` },
-      `/api/conversations/${conversationId}/live`,
-    );
 
   const reply = async (conversationId: string, body: string) =>
     (await host().getScope(deskOwner, tenant, desk)).invoke<{ id: string }>('ticket0/post-public-reply', {

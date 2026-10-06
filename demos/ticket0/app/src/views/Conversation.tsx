@@ -165,7 +165,7 @@ export function ConversationView({
   useLiveReload(
     () => void load(),
     PACE.conversation,
-    (frame) => frame.kind !== 'change' || frame.entityType !== 'conversation' || frame.entityId === id,
+    { hears: (frame) => frame.kind !== 'change' || frame.entityType !== 'conversation' || frame.entityId === id },
   );
 
   const act = async (fn: () => Promise<unknown>) => {

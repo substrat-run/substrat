@@ -65,13 +65,23 @@ export function browserFeed(path: string): Feed {
 /** The tab's one desk feed (`/api/live`), shared by every staff screen. */
 export const liveFeed = browserFeed('/api/live');
 
+const portalFeeds = new Map<string, Feed>();
+
 /**
  * The portal's feed for one conversation (`harness/portal-live.ts`): nudges only, about
- * the public messages a customer may read. One per open conversation, ended when the
- * view lets it go.
+ * the public messages a customer may read. One per conversation for the life of the tab,
+ * as the desk feed is one, so coming back to a conversation within the feed's linger
+ * finds its socket still open rather than opening a second one. A feed nobody listens to
+ * holds no socket.
  */
-export const portalFeed = (conversationId: string): Feed =>
-  browserFeed(`/api/conversations/${encodeURIComponent(conversationId)}/live`);
+export function portalFeed(conversationId: string): Feed {
+  let feed = portalFeeds.get(conversationId);
+  if (!feed) {
+    feed = browserFeed(`/api/conversations/${encodeURIComponent(conversationId)}/live`);
+    portalFeeds.set(conversationId, feed);
+  }
+  return feed;
+}
 
 /**
  * Re-run `reload` when something this screen shows may have changed.
@@ -79,7 +89,7 @@ export const portalFeed = (conversationId: string): Feed =>
  * `hears` narrows which frames count. The default is all of them, which suits a list.
  * A screen about one thing passes a filter, since every frame is a re-read. Both
  * triggers call the same `reload`, so a caller writes its read once. `feed` is the desk's
- * unless the screen holds one of its own (the portal's conversation view).
+ * unless the screen has one of its own (the portal's conversation view).
  *
  * `reload` returns `false` when it declined to read (the inbox does mid-append). A
  * refresh a push or a return to the tab asked for then stays pending and is retried,
@@ -89,8 +99,7 @@ export const portalFeed = (conversationId: string): Feed =>
 export function useLiveReload(
   reload: () => boolean | void,
   pace: Pace,
-  hears: (frame: LiveFrame) => boolean = () => true,
-  feed: Feed = liveFeed,
+  { hears = () => true, feed = liveFeed }: { hears?: (frame: LiveFrame) => boolean; feed?: Feed } = {},
 ): void {
   // Kept in refs so a caller does not have to memoise its callbacks to avoid
   // restarting the timer (or reconnecting) on every render.

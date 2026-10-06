@@ -5745,6 +5745,16 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
 declare const vouchedBrand: unique symbol;
 const VOUCHED = Symbol('substrat.live.vouched-within');
 
+/** A frozen value carrying `mark`, non-enumerable, so a spread copy or a literal never does. */
+function branded<T>(value: object, mark: symbol): T {
+  Object.defineProperty(value, mark, { value: true, enumerable: false });
+  return Object.freeze(value) as unknown as T;
+}
+
+function hasBrand(value: unknown, mark: symbol): boolean {
+  return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[mark] === true;
+}
+
 /**
  * A `within` root the VERTICAL vouches the subscriber may watch, in place of the
  * principal's own grants (#1853). Built only by `vouchedWithin`.
@@ -5777,14 +5787,12 @@ export function vouchedWithin(entity: EntityRef, opts: { because: string }): Vou
   if (!opts?.because?.trim()) {
     throw substratError('validation_failed', 'vouchedWithin needs a reason: what the vertical checked');
   }
-  const value = { entity: { entityType: entity.entityType, entityId: entity.entityId }, because: opts.because };
-  Object.defineProperty(value, VOUCHED, { value: true, enumerable: false });
-  return Object.freeze(value) as unknown as VouchedWithin;
+  return branded({ entity: { entityType: entity.entityType, entityId: entity.entityId }, because: opts.because }, VOUCHED);
 }
 
 /** Was this value built by `vouchedWithin`? A host asks before it drops the principal's check. */
 export function isVouchedWithin(value: unknown): value is VouchedWithin {
-  return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[VOUCHED] === true;
+  return hasBrand(value, VOUCHED);
 }
 
 /** The brand only `checkedWithin` can apply. */
@@ -5837,14 +5845,12 @@ export function checkedWithin(entity: EntityRef, permission: string): CheckedWit
   }
   const key = permissionKey.safeParse(permission);
   if (!key.success) throw substratError('validation_failed', 'checkedWithin needs a permission key');
-  const value = { entity: { entityType: entity.entityType, entityId: entity.entityId }, permission: key.data };
-  Object.defineProperty(value, CHECKED, { value: true, enumerable: false });
-  return Object.freeze(value) as unknown as CheckedWithin;
+  return branded({ entity: { entityType: entity.entityType, entityId: entity.entityId }, permission: key.data }, CHECKED);
 }
 
 /** Was this value built by `checkedWithin`? */
 export function isCheckedWithin(value: unknown): value is CheckedWithin {
-  return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[CHECKED] === true;
+  return hasBrand(value, CHECKED);
 }
 
 /**
