@@ -224,8 +224,8 @@ export const handlebarOperations = defineOperations(
     output: workOrder,
     // Handler-composed. A per-row permission walk cannot be a kernel `WHERE` —
     // visibility is decided by the proof walk, not by a column — so this pages by
-    // over-fetching (`pageVisible`) and the cursor advances by the last row
-    // EXAMINED. Its pages may come back short; the walk ends at the absent Link.
+    // walking past refused rows (`pageVisible`); the cursor is only ever a visible
+    // repair's (#2073), and a short page is the end of the walk.
     paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/portal/repairs' },
   },

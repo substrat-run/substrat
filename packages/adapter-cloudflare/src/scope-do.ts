@@ -52,6 +52,8 @@ import {
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
   listLimitOf,
+  pageOf,
+  countedPageOf,
   requestFingerprint,
   substratError,
   errorCodeOf,
@@ -7298,15 +7300,14 @@ export function defineScopeDO(
             string,
             unknown
           >[];
-          const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
-          const nextCursor =
-            last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order, q.view);
-          const page = { entries: rows as T[], nextCursor };
-          if (!params.total) return page;
+          // `pageOf`'s rule, and each row's own cursor when asked (#2073).
+          const mint = (row: T) =>
+            cursorOf(row as Record<string, unknown>, q.sortColumn, plan.idColumn, q.order, q.view);
+          if (!params.total) return pageOf(rows as T[], limit, mint, params.rowCursors);
           const counted = sql
             .exec(q.countSql, ...q.countParams)
             .toArray() as unknown as { n: number }[];
-          return { ...page, total: counted[0]?.n ?? 0 };
+          return countedPageOf(rows as T[], limit, mint, counted[0]?.n ?? 0, params.rowCursors);
         },
         /**
          * Delegate a permission this caller holds onto one entity — see the

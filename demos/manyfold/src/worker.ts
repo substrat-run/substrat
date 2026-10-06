@@ -25,6 +25,7 @@ import {
   readRoutedNode,
   RouterAssertionError,
   invocationLog,
+  externalJson,
 } from '@substrat-run/vertical-host';
 import type { ScopeStub } from '@substrat-run/kernel';
 import {
@@ -246,7 +247,7 @@ const requestSiteBody = z.object({ slug: z.string().min(1), name: z.string().min
 app.post('/api/sites', async (c) => {
   const scope = await stub(c);
   const result = await scope.invoke('manyfold/request-site', requestSiteBody.parse(await c.req.json()));
-  return c.json(result as Record<string, unknown>, 202);
+  return externalJson(c, result, 202);
 });
 
 // Archive a site by slug. Runs `manyfold/archive-site` as the caller (its `content:manage-sites`
@@ -260,7 +261,7 @@ app.post('/api/sites/:slug/archive', async (c) => {
   const scope = await stub(c);
   const result = await scope.invoke('manyfold/archive-site', { scopeId: target });
   await id.forgetSite(target);
-  return c.json(result as Record<string, unknown>, 202);
+  return externalJson(c, result, 202);
 });
 
 // The platform's entire /internal/* contract — provision, reconcile, introspection, the

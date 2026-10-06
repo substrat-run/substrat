@@ -364,8 +364,8 @@ export const calloutOperations = defineOperations(
     output: workOrder,
     // Handler-composed. Visibility here is decided by a per-row proof walk, not
     // by a column, so there is no `WHERE` the kernel could compose. It pages by
-    // over-fetching (`pageVisible`): pages may come back short, and the walk ends
-    // at the absent `Link` rather than at the first short page.
+    // walking past refused rows (`pageVisible`); the cursor is only ever a visible
+    // order's (#2073), and a short page is the end of the walk.
     paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/portal/orders' },
   },

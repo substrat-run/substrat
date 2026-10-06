@@ -6,8 +6,11 @@
  * need the view predicate from there — one direction of import, not a cycle.
  */
 import {
-  listLimitOf,
+  pageOf,
+  pageVisible,
   substratError,
+  VISIBLE_SCAN_BUDGET,
+  type Page,
   type EntityRef,
   type EntityStateName,
   type PermissionKey,
@@ -64,12 +67,8 @@ export interface TrashedReadDeps {
   scanBudget?: number;
 }
 
-/**
- * How many binned rows one `ctx.pageTrashed` call reads, at most, looking for rows the caller
- * may see. Each costs a permission check, and a Durable Object has a CPU budget per request, so
- * a bin full of other people's rows cannot be walked without bound inside one call.
- */
-export const TRASH_SCAN_BUDGET = 2_000;
+/** How many binned rows one `ctx.pageTrashed` call reads, at most — `VISIBLE_SCAN_BUDGET`. */
+export const TRASH_SCAN_BUDGET = VISIBLE_SCAN_BUDGET;
 
 export type TrashedReads = Pick<OperationContext, 'pageTrashed' | 'searchTrashed'>;
 
@@ -100,22 +99,11 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
   return {
     /**
      * The bin, walked so that **no position of a row the caller may not see ever leaves the
-     * kernel.** A cursor is a row's sort value and id, so minting one from a refused row would
-     * hand the caller that row's id and timestamp — the very thing the per-row check withholds.
-     *
-     * So the walk runs internally past refused rows until it has `limit` visible ones or reaches
-     * the end, and the cursor is minted from the last VISIBLE row of a FULL page. Past
-     * `TRASH_SCAN_BUDGET` rows it stops, and a page that stops short of `limit` — at the end or
-     * at the budget — answers the same way either way: the visible rows it found, and no cursor.
-     * A cursor on a short page would say "the budget ran out", which is the bin's size again.
-     *
-     * That answer can be wrong: a page that stops at the budget truncates the walk silently, and
-     * a caller whose rows sit more than the budget past the previous one's never sees them. It is chosen over the alternatives on purpose. A cursor
-     * would carry a hidden row's position (the leak above), and a refusal — or a count in a
-     * message — tells the caller the bin holds more than the budget of rows they cannot see,
-     * which is its own disclosure. Only a sealed (authenticated, opaque) continuation can carry
-     * the walk on without saying where it is, and a hosted scope holds no key to seal one with
-     * (K-45). Until then the walk ends early, silently, and K-45 says so.
+     * kernel.** The walk is `pageVisible`'s (#2073), with the declared trash key as its per-row
+     * check: the cursor only from the last visible row of a full page, at most
+     * `TRASH_SCAN_BUDGET` rows read, and a short page — at the end of the bin or at the budget —
+     * answered the same way, with no cursor. A budget stop on a sparse page therefore ends the
+     * walk silently; K-45 says so, and #2074 is the sealed continuation that would not.
      */
     async pageTrashed(entityType, params) {
       const { key } = stateKeyOf(deps.statePlans, 'ctx.pageTrashed', entityType, 'trash');
@@ -127,43 +115,27 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
           'ctx.pageTrashed: a trashed page carries no total — a count over rows the caller may not see would disclose them',
         );
       }
-      const limit = listLimitOf(params.limit);
-      const budget = deps.scanBudget ?? TRASH_SCAN_BUDGET;
-      const kept: Record<string, unknown>[] = [];
-      let cursor = params.cursor;
-      let scanned = 0;
-      let sortColumn = '';
-      let order: 'asc' | 'desc' = 'asc';
-      for (;;) {
-        const batch = Math.min(limit, budget - scanned);
-        const q = listQuery(plan, {
-          limit: batch,
-          sort: params.sort,
-          order: params.order,
-          cursor,
-          filters: params.filters,
-          view: 'trashed',
-        });
-        ({ sortColumn, order } = q);
-        const rows = deps.query(q.sql, q.params);
-        for (const row of rows) {
-          scanned += 1;
-          const entity: EntityRef = { entityType, entityId: String(row[plan.idColumn]) };
-          if (!(await deps.check(key, entity)).allowed) continue;
-          kept.push(row);
-          if (kept.length === limit) {
-            return { entries: kept as never[], nextCursor: cursorOf(row, sortColumn, plan.idColumn, order, 'trashed') };
-          }
-        }
-        // A short batch is the end of the bin: nothing after it, so no cursor at all.
-        if (rows.length < batch) return { entries: kept as never[], nextCursor: null };
-        // Internal only — never returned while it points at a refused row.
-        cursor = cursorOf(rows[rows.length - 1]!, sortColumn, plan.idColumn, order, 'trashed');
-        if (scanned >= budget) break;
-      }
-      // Fewer than `limit` visible rows, and the budget spent: answered exactly as the end of the
-      // bin is — whatever was found, and no cursor — deliberately; see above.
-      return { entries: kept as never[], nextCursor: null };
+      return pageVisible(
+        ({ limit, cursor, rowCursors }) => {
+          const q = listQuery(plan, {
+            limit,
+            sort: params.sort,
+            order: params.order,
+            cursor,
+            filters: params.filters,
+            view: 'trashed',
+          });
+          return pageOf(
+            deps.query(q.sql, q.params),
+            limit,
+            (row) => cursorOf(row, q.sortColumn, plan.idColumn, q.order, 'trashed'),
+            rowCursors,
+          );
+        },
+        params,
+        async (row) => (await deps.check(key, { entityType, entityId: String(row[plan.idColumn]) })).allowed,
+        { scanBudget: deps.scanBudget ?? TRASH_SCAN_BUDGET },
+      ) as Promise<Page<never>>;
     },
 
     async searchTrashed(entityType, term, options) {

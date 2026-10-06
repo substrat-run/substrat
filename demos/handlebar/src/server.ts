@@ -13,7 +13,7 @@ import {
   type TimelineEntry,
 } from '@substrat-run/contracts';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
-import { mountOperations, problemResponse } from '@substrat-run/vertical-host';
+import { externalJson, mountOperations, problemResponse } from '@substrat-run/vertical-host';
 import {
   handlebarInvoicingRoutes,
   handlebarOperations,
@@ -120,10 +120,11 @@ app.get('/api/repairs/:id/timeline', async (c) => {
   });
   const link = nextPageLink(c.req.url, page.nextCursor);
   if (link) c.header(PAGE_LINK_HEADER, link);
-  return c.json(page.entries);
+  return externalJson(c, page.entries);
 });
 app.get('/api/repairs/:id/protocols', async (c) =>
-  c.json(
+  externalJson(
+    c,
     await (await stub(c)).invoke('protocol/list-for-entity', {
       entityType: 'workorder',
       entityId: c.req.param('id'),
