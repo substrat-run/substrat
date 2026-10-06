@@ -110,7 +110,12 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   writes an `unknown` row, saying the log cannot tell whether the change happened, and an
   ops-failure row that the staff failure digest reports, both in one transaction, and only if
   no outcome exists by then. A real outcome that lands later is still recorded, and the
-  latest outcome row of an operation is its result.
+  latest outcome row of an operation is its result. Every reader holds to that.
+  `GET /admin-log` returns the rows as written, and gives each row of these two actions an
+  `audited` field: its `operationId`, the `outcome` the operation stands at (`pending` until
+  it has one), and `superseded` on an outcome row a later row replaced. The console shows
+  the same reading. The failure digest leaves out an `unknown` whose operation has since
+  recorded a real outcome.
   The answer's `fromRevoked` is about the instance's own owner seat only. `false` means `from`
   held none there; if `from` holds the owner role at the tenant level, that grant is untouched
   and still applies, and it is taken back through the tenant's role assignments.
