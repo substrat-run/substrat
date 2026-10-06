@@ -233,3 +233,34 @@ export const erasureMisdeclaredMod: ModuleRegistration = {
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE er_misdeclared_own (id TEXT PRIMARY KEY);' }],
 };
+
+/**
+ * A module whose migration says `CREATE TABLE IF NOT EXISTS er_other` — `@test/erasure-other`'s
+ * table, which already exists — and whose model then declares an erasure on it. The migration
+ * text reads as a creation, so registration lets it through; the scope records nothing for it,
+ * and the erasure refuses. Not in `contractTestModules`: on every scope it would refuse every
+ * other suite's erasure. `adapter-sqlite/test/erasure-ownership.test.ts` mounts it alone.
+ */
+export const erasureSquatterMod: ModuleRegistration = {
+  manifest: moduleManifest.parse({
+    id: '@test/erasure-squatter',
+    version: '1.0.0',
+    kernelContract: '^0.0.1',
+    permissions: [],
+    events: { emits: [], consumes: [] },
+    migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+    entitlementKey: 'erasure-squatter',
+    ...manifestEntities(
+      defineEntities({
+        other: {
+          table: 'er_other',
+          fields: z.object({ id: z.string(), secret: z.string().nullable() }),
+          erasable: ['secret'],
+          erasure: { subjects: ['id'] },
+        },
+      }),
+      {},
+    ),
+  }),
+  migrations: [{ version: '0001', sql: 'CREATE TABLE IF NOT EXISTS er_other (id TEXT PRIMARY KEY, secret TEXT);' }],
+};

@@ -287,6 +287,9 @@ import {
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   SWITCH_FENCES_DDL,
+  TABLE_OWNERS_DDL,
+  moduleTableNames,
+  recordMigrationOwnership,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
@@ -623,6 +626,7 @@ const KERNEL_DDL = `
     pending TEXT NOT NULL
   );
   ${SWITCH_FENCES_DDL}
+  ${TABLE_OWNERS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -4957,6 +4961,8 @@ export function defineScopeDO(
                 assertNoSpineReference(migration.sql, `migration ${key}`);
                 // #1722: not counted per statement, so `total_changes()` measures the migration
                 // alone. The journal row below is a write, and advances the revision once.
+                // #2068: which tables this migration actually made, from the schema either side of it.
+                const tablesBefore = moduleTableNames(doSpineSql(this.sql));
                 this.revisionSuspended = true;
                 try {
                   for (const stmt of splitSqlStatements(migration.sql)) {
@@ -4966,6 +4972,14 @@ export function defineScopeDO(
                   this.revisionSuspended = false;
                 }
                 const after = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
+                // After the count: `rows_changed` is the migration's own, never the kernel's bookkeeping.
+                recordMigrationOwnership(
+                  doSpineSql(this.sql),
+                  moduleId,
+                  migration.sql,
+                  tablesBefore,
+                  new Date().toISOString(),
+                );
                 this.sql.exec(
                   'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)',
                   moduleId,
@@ -6375,6 +6389,8 @@ export function defineScopeDO(
         statefulTables: statefulTablesOf(this.statePlans),
         subjectId,
         at,
+        migrationSqlOf: (moduleId, version) =>
+          this.modules.get(moduleId)?.migrations.find((m) => m.version === version)?.sql,
       });
       const doomed = (
         this.sql

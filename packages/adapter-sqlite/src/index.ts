@@ -372,6 +372,9 @@ import {
   PEER_SWITCHES_DDL,
   SWITCH_OWED_DDL,
   SWITCH_FENCES_DDL,
+  TABLE_OWNERS_DDL,
+  moduleTableNames,
+  recordMigrationOwnership,
   recordWriteSuperseded,
   switchFencesOf,
   switchSupersededMessage,
@@ -1021,6 +1024,7 @@ const KERNEL_DDL = `
     PRIMARY KEY (module_id, version)
   );
   ${SWITCH_FENCES_DDL}
+  ${TABLE_OWNERS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -9472,6 +9476,8 @@ export class SqliteScopeHost implements ScopeHost {
             statefulTables: statefulTablesOf(this.statePlans),
             subjectId,
             at,
+            migrationSqlOf: (moduleId, version) =>
+              this.modules.get(moduleId)?.migrations.find((m) => m.version === version)?.sql,
           }),
           redacted: db
             .prepare(
@@ -11843,9 +11849,13 @@ export class SqliteScopeHost implements ScopeHost {
               // #1898: a migration runs on the scope's own handle, not `ctx.sql`, so the
               // spine guard's REFERENCES rule is applied here.
               assertNoSpineReference(migration.sql, `migration ${key}`);
+              // #2068: which tables this migration actually made, from the schema either side of it.
+              const tablesBefore = moduleTableNames(spineSql(rt.db));
               rt.db.exec(migration.sql);
               assertTablesWithinColumnLimit(rt.db);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+              // After the count: `rows_changed` is the migration's own, never the kernel's bookkeeping.
+              recordMigrationOwnership(spineSql(rt.db), moduleId, migration.sql, tablesBefore, this.clock());
               rt.db
                 .prepare(
                   'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)',

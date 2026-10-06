@@ -8,6 +8,7 @@ import {
   tablesCreatedBy,
   type ModuleRegistration,
   type ScopedSql,
+  type SqlValue,
 } from '../src/index.js';
 
 /**
@@ -44,6 +45,20 @@ const registration = (
   migrations: [{ version: '0001', sql: ddl }],
   ...(hook ? { onSubjectErased: hook } : {}),
 });
+
+/**
+ * Run the erasure over a fake handle as a scope that records every table as `@test/m`'s: the
+ * ownership check is `table-ownership.test.ts`'s subject, on a real SQLite; here it must pass.
+ */
+const erase = (input: Omit<Parameters<typeof eraseSubjectFromModules>[0], 'migrationSqlOf'>) => {
+  const inner = input.sql;
+  const sql: ScopedSql = {
+    query: <T>(q: string, p?: readonly SqlValue[]) =>
+      q.includes('_substrat_table_owners') ? ([{ module_id: '@test/m' }] as T[]) : inner.query<T>(q, p),
+    exec: (q: string, p?: readonly SqlValue[]) => inner.exec(q, p),
+  };
+  return eraseSubjectFromModules({ ...input, sql, migrationSqlOf: () => undefined });
+};
 
 describe('moduleErasurePlan (#2068)', () => {
   it('is absent for a module with nothing erasable and no hook', () => {
@@ -184,7 +199,7 @@ describe('the hook capability and the temp schema (#2068)', () => {
       kept = ctx.sql;
     }))!;
     const { sql, writes } = bare();
-    eraseSubjectFromModules({ sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' });
+    erase({ sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' });
     expect(() => kept!.exec('UPDATE ratings SET comment = NULL')).toThrow(/used after the hook returned/);
     expect(writes).toEqual([]);
   });
@@ -195,19 +210,19 @@ describe('the hook capability and the temp schema (#2068)', () => {
       kept = ctx.sql;
       throw new Error('boom');
     }))!;
-    expect(() => eraseSubjectFromModules({ sql: bare().sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).toThrow(/boom/);
+    expect(() => erase({ sql: bare().sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).toThrow(/boom/);
     expect(() => kept!.query('SELECT * FROM ratings')).toThrow(/used after the hook returned/);
   });
 
   it('refuses the erasure when a TEMP object shadows a table it would touch', () => {
     const plan = moduleErasurePlan(registration(erasure('blank')))!;
     const { sql, writes } = bare(['NOTES']);
-    expect(() => eraseSubjectFromModules({ sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).toThrow(
+    expect(() => erase({ sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).toThrow(
       /TEMP object 'NOTES' shadows/,
     );
     expect(writes).toEqual([]);
     // Its twin: an unrelated temp object is no reason to refuse.
-    expect(() => eraseSubjectFromModules({ sql: bare(['scratch']).sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).not.toThrow();
+    expect(() => erase({ sql: bare(['scratch']).sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).not.toThrow();
   });
 });
 
@@ -239,7 +254,7 @@ describe('the SQLite floor for FTS5 secure-delete (#2068)', () => {
     },
   ];
   const run = (sql: ScopedSql) =>
-    eraseSubjectFromModules({ sql, plans: [plan], searchPlans, subjectId: 'S', at: '2026-10-06T00:00:00.000Z' });
+    erase({ sql, plans: [plan], searchPlans, subjectId: 'S', at: '2026-10-06T00:00:00.000Z' });
 
   it(`refuses an erasure over a search index on a SQLite without secure-delete (< ${SECURE_DELETE_MIN_SQLITE}), before writing anything`, () => {
     const { sql, writes } = handle(false);

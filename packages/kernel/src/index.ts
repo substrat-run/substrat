@@ -437,6 +437,14 @@ export {
   SECURE_DELETE_MIN_SQLITE,
   tablesCreatedBy,
 } from './module-erasure.js';
+export {
+  TABLE_OWNERS_DDL,
+  assertTablesOwned,
+  backfillOwnershipFromJournal,
+  migrationDdl,
+  moduleTableNames,
+  recordMigrationOwnership,
+} from './table-ownership.js';
 export type {
   ModuleErasureCounts,
   ModuleErasurePlan,

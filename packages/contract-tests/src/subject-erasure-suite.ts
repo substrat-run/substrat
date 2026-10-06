@@ -105,6 +105,38 @@ export function subjectErasureContractSuite(
       expect(() => host.registerModule(erasureMisdeclaredMod)).toThrow(/'er_other', which its own migrations do not create/);
     });
 
+    it('records which module created each table, from what its migrations actually did', async () => {
+      const owners = (await raw(
+        t1,
+        s1,
+        "SELECT table_name, module_id, source FROM _substrat_table_owners WHERE table_name IN ('er_notes', 'er_other') ORDER BY table_name",
+      )) as { table_name: string; module_id: string; source: string }[];
+      expect(owners).toEqual([
+        { table_name: 'er_notes', module_id: '@test/erasure', source: 'migration' },
+        { table_name: 'er_other', module_id: '@test/erasure-other', source: 'migration' },
+      ]);
+      // A view is not a table anyone owns.
+      expect(await raw(t1, s1, "SELECT 1 FROM _substrat_table_owners WHERE table_name = 'er_view'")).toEqual([]);
+    });
+
+    it('backfills ownership from the migration journal for a scope migrated before it was recorded', async () => {
+      // As a scope that ran its migrations before #2068 has it: no ownership rows at all.
+      await raw(t1, s1, 'DELETE FROM _substrat_table_owners RETURNING table_name');
+      const who = subject();
+      await seed(who);
+      const receipt = await host.admin.shredSubject(staff, t1, s1, who);
+      expect(rowsFor(receipt, 'erperson')).toBe(1);
+      const owners = (await raw(
+        t1,
+        s1,
+        "SELECT table_name, module_id, source FROM _substrat_table_owners WHERE table_name IN ('er_people', 'er_ratings') ORDER BY table_name",
+      )) as { table_name: string; module_id: string; source: string }[];
+      expect(owners).toEqual([
+        { table_name: 'er_people', module_id: '@test/erasure', source: 'journal' },
+        { table_name: 'er_ratings', module_id: '@test/erasure', source: 'journal' },
+      ]);
+    });
+
     it('blanks every declared erasable column on every row a subject column names, and only those', async () => {
       const who = subject();
       const { other, note, edited, decoy } = await seed(who);

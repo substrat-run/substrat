@@ -37,7 +37,6 @@ import {
   substratError,
   subjectErasureDeclaration,
   tokenizeSql,
-  type SqlToken,
   type ErasedEntityCount,
   type ErasureHookCount,
   type SubjectErasureDeclaration,
@@ -47,6 +46,7 @@ import type { ModuleRegistration, ScopedSql, SqlValue } from './scope-host.js';
 import type { SearchIndexPlan } from './search-index.js';
 import { guardSpine } from './spine-guard.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
+import { assertTablesOwned, migrationDdl } from './table-ownership.js';
 
 /** What a module's `onSubjectErased` hook is handed — and all it is handed. */
 export interface SubjectErasureContext {
@@ -89,57 +89,20 @@ export interface ModuleErasureCounts {
 }
 
 /**
- * The tables a module's own migrations create, lowercased — the ownership an erasure is held
- * to (#2068). Read from the DDL the kernel itself applies for the module, so it is a fact about
- * the module rather than a claim in its manifest: `CREATE [VIRTUAL] TABLE` adds a name,
- * `ALTER TABLE … RENAME TO` moves it, `DROP TABLE` removes it, in migration order. A TEMP table
- * is nobody's. Two modules cannot both create one table — the second migration would fail — so
- * a name in this set belongs to this module and no other.
+ * The tables a module's own migration TEXT creates, lowercased — read at registration, where no
+ * scope exists yet, as early feedback only: it can refuse a module whose erasure names a table it
+ * plainly never creates, and it never grants anything. `CREATE TABLE IF NOT EXISTS` on another
+ * module's table reads as a creation here and creates nothing in a scope, which is why the
+ * authority is the ownership each scope RECORDS as its migrations run (`table-ownership.ts`),
+ * checked by the erasure itself before it writes.
  */
 export function tablesCreatedBy(migrations: readonly { readonly sql: string }[]): Set<string> {
   const owned = new Set<string>();
-  const nameOf = (text: string): string | undefined => {
-    const parts = text.toLowerCase().split('.');
-    if (parts.length === 1) return parts[0];
-    return parts.length === 2 && parts[0] === 'main' ? parts[1] : undefined;
-  };
   for (const migration of migrations) {
-    let words: SqlToken[] = [];
-    const statements: SqlToken[][] = [];
-    for (const token of tokenizeSql(migration.sql, { punctuation: true })) {
-      if (token.punct && token.text === ';') {
-        statements.push(words);
-        words = [];
-      } else if (!token.punct) {
-        words.push(token);
-      }
-    }
-    statements.push(words);
-    for (const st of statements) {
-      const w = (i: number): string => (st[i] && !st[i]!.quoted ? st[i]!.text.toLowerCase() : '');
-      let k = 1;
-      if (w(0) === 'create') {
-        const temp = w(k) === 'temp' || w(k) === 'temporary';
-        if (temp) k += 1;
-        if (w(k) === 'virtual') k += 1;
-        if (w(k) !== 'table') continue;
-        k += 1;
-        if (w(k) === 'if' && w(k + 1) === 'not' && w(k + 2) === 'exists') k += 3;
-        const name = st[k] && nameOf(st[k]!.text);
-        if (name && !temp) owned.add(name);
-      } else if (w(0) === 'alter' && w(1) === 'table') {
-        const from = st[2] && nameOf(st[2].text);
-        const rename = st.findIndex((t, i) => i > 2 && !t.quoted && t.text.toLowerCase() === 'rename');
-        if (from && rename > 0 && w(rename + 1) === 'to') {
-          const to = st[rename + 2] && nameOf(st[rename + 2]!.text);
-          if (owned.delete(from) && to) owned.add(to);
-        }
-      } else if (w(0) === 'drop' && w(1) === 'table') {
-        k = w(2) === 'if' && w(3) === 'exists' ? 4 : 2;
-        const name = st[k] && nameOf(st[k]!.text);
-        if (name) owned.delete(name);
-      }
-    }
+    const ddl = migrationDdl(migration.sql);
+    for (const t of ddl.creates) owned.add(t);
+    for (const r of ddl.renames) if (owned.delete(r.from)) owned.add(r.to);
+    for (const t of ddl.drops) owned.delete(t);
   }
   return owned;
 }
@@ -388,9 +351,14 @@ export function eraseSubjectFromModules(input: {
   readonly statefulTables?: ReadonlySet<string>;
   readonly subjectId: string;
   readonly at: string;
+  /** A registered module's migration text, for backfilling a scope migrated before ownership was recorded. */
+  readonly migrationSqlOf: (moduleId: string, version: string) => string | undefined;
 }): ModuleErasureCounts {
   const { sql, plans, subjectId, at } = input;
   const out: ModuleErasureCounts = { verticalRows: [], hookRows: [], unreachedEntities: [] };
+  // Before anything is written: every table this erasure would touch must be recorded, in THIS
+  // scope, as created by the erasing module's own migrations.
+  for (const plan of plans) assertTablesOwned(sql, plan.moduleId, plan.ownTables, input.migrationSqlOf, at);
   if (plans.some((p) => p.ownTables.size > 0)) {
     assertNoTempShadow(sql, new Set(plans.flatMap((p) => [...p.ownTables])));
   }
