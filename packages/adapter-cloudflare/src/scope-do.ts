@@ -7385,7 +7385,7 @@ export function defineScopeDO(
 
     /**
      * Whether a check here reads the directory over RPC (#938, Codex #2077 r5): the same
-     * choice `controlPlaneReader` makes per call, asked once by a live fan-out pass.
+     * choice `controlPlaneReader` makes per call, asked each time a live fan-out pass opens an epoch.
      */
     private permissionSourceIsRemote(): boolean {
       return this.permissionSource() !== 'local' && Boolean(this.env.CONTROL_PLANE);
