@@ -1218,7 +1218,24 @@ function assertTrashedDeclarations(
           `a purge's input is the id (\`${target.idFrom}\`) and nothing else, optional fields included`,
       );
     }
+    if (!isStrictObjectSchema(decl.input)) {
+      throw new Error(
+        `model: '${name}' declares \`trashed: 'purges'\` but its input is not a strict object — a passthrough or ` +
+          'default object would let the call carry, or quietly drop, fields beside the id.\n' +
+          `  Remedy: \`input: z.strictObject({ ${target.idFrom}: … })\`.`,
+      );
+    }
   }
+}
+
+/**
+ * Whether `schema` is a zod object that REFUSES unknown keys (`z.strictObject`, `.strict()`) —
+ * what a `trashed: 'purges'` operation's input must be (#119), so that the parsed input is the id
+ * and nothing else: a passthrough object keeps an extra field, and a default one drops it silently.
+ */
+export function isStrictObjectSchema(schema: unknown): boolean {
+  const def = (schema as { _zod?: { def?: { type?: unknown; catchall?: { _zod?: { def?: { type?: unknown } } } } } } | undefined)?._zod?.def;
+  return def?.type === 'object' && def.catchall?._zod?.def?.type === 'never';
 }
 
 /**

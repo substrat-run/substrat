@@ -105,7 +105,8 @@ export const trashOperations = defineOperations(trashEntities, PERMISSIONS)({
     summary: 'Delete a box and its things for good — the purge horizon runs this',
     permission: box('box:delete'),
     trashed: 'purges',
-    input: boxId,
+    // Strict: a purge's parsed input is the id and nothing else, which registration requires.
+    input: z.strictObject({ boxId: z.string() }),
     output: z.object({ ok: z.boolean(), boxId: z.string() }),
     emits: { entity: 'tbox', entityIdFrom: 'boxId', type: 'trashbox.deleted', schemaVersion: 1, piiClass: 'none' },
   },

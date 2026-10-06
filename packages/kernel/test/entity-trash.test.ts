@@ -39,7 +39,7 @@ const purgeSchedule: ScheduleSpec = {
 const own = new Set(['b/delete', 'b/rename']);
 /** Declarations as a module's operation surface carries them; the host reads targets off these. */
 const declared = {
-  'b/delete': { permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' }, trashed: 'purges', input: z.object({ boxId: z.string() }) },
+  'b/delete': { permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' }, trashed: 'purges', input: z.strictObject({ boxId: z.string() }) },
   'b/rename': { permission: { key: 'box:read', entity: 'box', idFrom: 'boxId' }, input: z.object({ boxId: z.string(), name: z.string() }) },
 };
 const inputs = operationInputsOf(declared);
@@ -68,9 +68,24 @@ describe('registerTrashTargets', () => {
   it("refuses a purge whose parsed input takes anything but the id — an optional field included", () => {
     const wider = operationInputsOf({
       ...declared,
-      'b/delete': { ...declared['b/delete'], input: z.object({ boxId: z.string(), otherBoxId: z.string().optional() }) },
+      'b/delete': { ...declared['b/delete'], input: z.strictObject({ boxId: z.string(), otherBoxId: z.string().optional() }) },
     });
     expect(() => registerTrashTargets('m', own, wider, [decl], [])).toThrow(/nothing else/);
+  });
+
+  it('refuses a purge whose input is not strict — a passthrough object keeps an extra id through the parse', () => {
+    const loose = z.looseObject({ boxId: z.string() });
+    // The hole itself: one declared field, and the parse still hands the handler a second id.
+    expect(loose.parse({ boxId: 'a', otherBoxId: 'b' })).toEqual({ boxId: 'a', otherBoxId: 'b' });
+    for (const input of [loose, z.object({ boxId: z.string() }).passthrough(), z.object({ boxId: z.string() }), z.object({ boxId: z.string() }).catchall(z.string())]) {
+      const surface = operationInputsOf({ ...declared, 'b/delete': { ...declared['b/delete'], input } });
+      expect(() => registerTrashTargets('m', own, surface, [decl], [])).toThrow(/strict/);
+    }
+    // Twin: strict, by either spelling.
+    for (const input of [z.strictObject({ boxId: z.string() }), z.object({ boxId: z.string() }).strict()]) {
+      const surface = operationInputsOf({ ...declared, 'b/delete': { ...declared['b/delete'], input } });
+      expect(registerTrashTargets('m', own, surface, [decl], []).get('b/delete')).toEqual(purgeTarget);
+    }
   });
 
   it('reads a surface nothing can edit: the record, its targets and the map are frozen', () => {
@@ -159,6 +174,17 @@ describe('refuseTrashedTarget under the purge sweep', () => {
   });
   it('refuses the sweep on an operation that is not the purge', async () => {
     expect(await refusal('due', { ...purgeTarget, trashed: 'admits' })).toEqual(['internal', null]);
+  });
+  it('holds a purge to its parsed input: the id and nothing else, in the sweep or out of it', async () => {
+    const run = (input: unknown, sweep?: typeof now) =>
+      refuseTrashedTarget(deps, 'b/delete', purgeTarget, input, sweep).then(() => 'admitted', (e: unknown) => errorCodeOf(e));
+    for (const sweep of [now, undefined]) {
+      expect(await run({ boxId: 'due', otherBoxId: 'young' }, sweep)).toBe('validation_failed');
+      expect(await run({ otherBoxId: 'due' }, sweep)).toBe('validation_failed');
+      expect(await run(undefined, sweep)).toBe('validation_failed');
+      // Twin: exactly the id.
+      expect(await run({ boxId: 'due' }, sweep)).toBe('admitted');
+    }
   });
 });
 

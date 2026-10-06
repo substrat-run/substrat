@@ -300,7 +300,8 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
     permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
     // The permanent delete: it empties the bin, and it is what the 30-day horizon runs.
     trashed: 'purges',
-    input: z.object({ listId: z.string() }),
+    // Strict: a purge's parsed input is the id and nothing else (#119).
+    input: z.strictObject({ listId: z.string() }),
     output: z.object({ id: z.string(), deleted: z.boolean() }),
     http: { method: 'DELETE', path: '/lists/{listId}' },
     emits: {

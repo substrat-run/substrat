@@ -28,6 +28,8 @@ const entities = defineEntities({
 const PERMS = ['box:read', 'box:trash', 'box:delete'] as const;
 const ok = z.object({ ok: z.boolean() });
 const byBox = z.object({ boxId: z.string() });
+/** A purge's input: the id, strict. */
+const purgeInput = z.strictObject({ boxId: z.string() });
 const define = defineOperations(entities, PERMS);
 
 const ops = define({
@@ -43,7 +45,7 @@ const ops = define({
     summary: 's',
     permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' },
     trashed: 'purges',
-    input: byBox,
+    input: purgeInput,
     output: ok,
   },
   'b/touch': {
@@ -110,7 +112,7 @@ describe('the compile-time rule', () => {
 
 describe('purges', () => {
   it('is one operation per entity', () => {
-    const del = { summary: 's', permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' }, trashed: 'purges', input: byBox, output: ok } as const;
+    const del = { summary: 's', permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' }, trashed: 'purges', input: purgeInput, output: ok } as const;
     expect(() => define({ 'x/one': del, 'x/two': del })).toThrow(/one permanent delete per entity/);
   });
 
@@ -150,6 +152,17 @@ describe('purges', () => {
         output: ok,
       },
     });
+  });
+
+  it('takes a STRICT object — a passthrough one keeps an extra id through the parse, a default one drops it silently', () => {
+    const purge = (input: z.ZodObject) =>
+      define({ 'x/del': { summary: 's', permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' }, trashed: 'purges', input, output: ok } });
+    for (const input of [z.looseObject({ boxId: z.string() }), z.object({ boxId: z.string() }).passthrough(), z.object({ boxId: z.string() })]) {
+      expect(() => purge(input)).toThrow(/strict/);
+    }
+    // Twin: strict, by either spelling.
+    purge(z.strictObject({ boxId: z.string() }));
+    purge(z.object({ boxId: z.string() }).strict());
   });
 });
 

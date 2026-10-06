@@ -16,6 +16,7 @@ import {
   declaredSurfaceOf,
   errorCodeOf,
   moduleId,
+  operationInputsOf,
   permissionKey,
   platformActorId,
   principalId,
@@ -25,11 +26,12 @@ import {
   type PrincipalId,
   type ScopeId,
   type TenantId,
+  z,
 } from '@substrat-run/contracts';
 import { PURGE_BATCH, runPlatformSweep, ulid, type FetchLike, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import type { RawScopeSql } from './entity-state-suite.js';
-import { EXPLODING_BOX, TBOX_PURGE_DAYS, TRASH_MODULE_ID, trashMod } from './entity-trash-module.js';
+import { EXPLODING_BOX, TBOX_PURGE_DAYS, TRASH_MODULE_ID, trashMod, trashOperations } from './entity-trash-module.js';
 
 const KEYS = ['box:read', 'box:write', 'box:archive', 'box:trash', 'box:delete'].map((k) => permissionKey.parse(k));
 const READ = permissionKey.parse('box:read');
@@ -487,6 +489,14 @@ export function entityTrashContractSuite(
         expect(() => {
           (declaredSurfaceOf(trashMod.operationInputs) as { targets: unknown }).targets = {};
         }).toThrow(TypeError);
+      });
+
+      it('refuses a purge whose input is not strict — a passthrough object would keep an extra id', () => {
+        const loose = operationInputsOf({
+          ...trashOperations,
+          'trash/delete-box': { ...trashOperations['trash/delete-box'], input: z.looseObject({ boxId: z.string() }) },
+        });
+        expect(variant((m) => ({ ...m, operationInputs: loose }))).toThrow(/strict/);
       });
 
       it('refuses a horizon with no purge schedule', () => {

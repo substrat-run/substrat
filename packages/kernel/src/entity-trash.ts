@@ -24,6 +24,7 @@ import {
   TRASHED_AT_COLUMN,
   declaredSurfaceOf,
   errorCodeOf,
+  isStrictObjectSchema,
   substratError,
   type EntityRef,
   type EntityStateDeclaration,
@@ -87,6 +88,9 @@ export async function refuseTrashedTarget(
   if (purge && target?.trashed !== 'purges') {
     throw substratError('internal', `${operation} is not a purge — only a \`trashed: 'purges'\` operation is run by the purge sweep`);
   }
+  // A purge reaches one entity, whoever runs it: its PARSED input is the id and nothing else.
+  // Registration requires a strict schema; this holds the parse result to it as well.
+  if (target?.trashed === 'purges') assertPurgeInput(operation, target, input);
   // An operation that opted in reaches the bin as it is; only a purge re-checks its cutoff.
   if (!target || (target.trashed && !purge)) return;
   const plan = deps.plans.get(target.entity);
@@ -110,6 +114,15 @@ export async function refuseTrashedTarget(
   if (!row || row.trashed_at === null) return;
   assertAllowed(await deps.check(target.key as Parameters<StateCheck>[0], { entityType: target.entity, entityId: id }));
   throw substratError('not_found', `${target.entity} not found: ${id}`);
+}
+
+/** The parsed input of a `trashed: 'purges'` operation: a plain object holding exactly its id. */
+function assertPurgeInput(operation: string, target: OperationTarget, input: unknown): void {
+  const keys = typeof input === 'object' && input !== null && !Array.isArray(input) ? Object.keys(input) : undefined;
+  if (keys?.length === 1 && keys[0] === target.idFrom) return;
+  throw substratError('validation_failed', `${operation} purges one ${target.entity}: its input is '${target.idFrom}' and nothing else`, {
+    errors: [{ path: '', message: `expected exactly { ${target.idFrom} }` }],
+  });
 }
 
 /**
@@ -302,6 +315,14 @@ export function registerTrashTargets(
         throw new Error(
           `${moduleId}: '${name}' purges '${target.entity}', and its parsed input takes ${fields.map((f) => `'${f}'`).join(', ') || 'nothing'} — ` +
             `a purge's input is '${target.idFrom}' and nothing else, so it reaches only the entity it is run for`,
+        );
+      }
+      // The shape alone is not the parsed result: a passthrough object keeps whatever else the
+      // call carried. Strict, so an extra field is refused rather than kept or dropped.
+      if (!isStrictObjectSchema(schema)) {
+        throw new Error(
+          `${moduleId}: '${name}' purges '${target.entity}', and its input is not a strict object — a passthrough one ` +
+            `keeps fields beside '${target.idFrom}'.\n  Remedy: \`input: z.strictObject({ ${target.idFrom}: … })\`.`,
         );
       }
     }
