@@ -115,6 +115,12 @@ overrides:
   # `pnpm.auditConfig.ignoreGhsas`, one id, reason in the PR.
   hono: 4.13.8
   better-sqlite3: 13.0.3
+  # vitest 3 depends on tinypool ^1.1.1, and every 1.x is inside
+  # GHSA-5gmw-xhrv-c9v3 / GHSA-85c8-ppgw-ccpr (critical, prototype-pollution
+  # gadget to RCE); the first fix is 2.1.2 and no 1.x is coming. vitest 3 runs on
+  # 2.x unchanged. Drop this line with the vitest 4 migration (the catalog note
+  # above) — vitest 4 no longer depends on tinypool.
+  tinypool: 2.2.0
 
 # On why `strictPeerDependencies` is NOT set here, which is a measured decision
 # rather than an omission.
