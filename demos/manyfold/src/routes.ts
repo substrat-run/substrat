@@ -1,7 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ScopeStub } from '@substrat-run/kernel';
-import { problemResponse } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, problemResponse } from '@substrat-run/vertical-host';
 import { API } from './api.js';
 
 /**
@@ -44,6 +44,7 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
     const full = name in API ? name : ALLOWED.has(name) ? `manyfold/${name}` : null;
     if (!full) throw new HTTPException(404, { message: `unknown operation: ${name}` });
     const body = await c.req.text();
-    return c.json((await (await resolveStub(c)).invoke(full, body ? JSON.parse(body) : undefined)) ?? null);
+    // Through the platform's one door (#2073), in and out.
+    return externalJson(c, (await (await resolveStub(c)).invoke(full, externalInput(body ? JSON.parse(body) : undefined))) ?? null);
   });
 }

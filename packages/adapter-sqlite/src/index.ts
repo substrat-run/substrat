@@ -203,6 +203,8 @@ import {
   callsOfManifestJson,
   outboundOfManifestJson,
   listLimitOf,
+  pageOf,
+  countedPageOf,
   SCOPE_GATE_REASONS,
   substratError,
   assertReplayableDump,
@@ -11657,18 +11659,16 @@ export class SqliteScopeHost implements ScopeHost {
           string,
           unknown
         >[];
-        // A FULL page may have more; a short one is the end of the walk. Same rule
-        // as `pageOf`, applied here because the cursor is a COLUMN's value (plus
-        // the tie-break) rather than a field the caller could name.
-        const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
-        const nextCursor =
-          last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order, q.view);
-        const page = { entries: rows as T[], nextCursor };
-        if (!params.total) return page;
+        // `pageOf`'s rule — a FULL page may have more, a short one is the end — with the
+        // cursor minted from the row's COLUMN (plus the tie-break), and each row's own
+        // cursor when asked (#2073: `pageVisible` may stop at a visible row mid-page).
+        const mint = (row: T) =>
+          cursorOf(row as Record<string, unknown>, q.sortColumn, plan.idColumn, q.order, q.view);
+        if (!params.total) return pageOf(rows as T[], limit, mint, params.rowCursors);
         const counted = rt.db.prepare(q.countSql).all(...(q.countParams as never[])) as {
           n: number;
         }[];
-        return { ...page, total: counted[0]?.n ?? 0 };
+        return countedPageOf(rows as T[], limit, mint, counted[0]?.n ?? 0, params.rowCursors);
       },
       /**
        * Narrow a permission this caller already holds onto one entity (#K-sharing).

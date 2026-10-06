@@ -201,6 +201,15 @@ describe('calling a tool', () => {
     expect(body.result.structuredContent).toEqual({ result: [1, 2] });
   });
 
+  // #2073: a page's rowCursors are an in-process answer; a handler that filtered its entries
+  // after the read would otherwise hand the model the positions of the rows it dropped.
+  it("never hands the model a page's rowCursors", async () => {
+    const { app } = harness({ invoke: () => ({ entries: [{ id: 'a' }], nextCursor: null, rowCursors: ['a', 'hidden'] }) });
+    const { body } = await rpc(app, 'tools/call', { name: 'todo_my-lists', arguments: {} });
+    expect(body.result.structuredContent).toEqual({ entries: [{ id: 'a' }], nextCursor: null });
+    expect(body.result.content[0].text).not.toContain('hidden');
+  });
+
   it('invokes with no argument at all when the operation declares no input', async () => {
     const { app, calls } = harness();
     await rpc(app, 'tools/call', { name: 'todo_my-lists', arguments: {} });
