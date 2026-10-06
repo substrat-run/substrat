@@ -150,8 +150,8 @@ export interface EntityDef<Names extends string = string> {
 }
 
 /** An entity's `erasure` declaration, as authored. */
-export type EntityErasureDef =
-  | { readonly subjects: readonly string[]; readonly mode?: 'blank' | 'delete' }
+export type EntityErasureDef<F extends string = string> =
+  | { readonly subjects: readonly F[]; readonly mode?: 'blank' | 'delete' }
   | { readonly mode: 'custom' };
 
 /**
@@ -216,9 +216,7 @@ export function defineEntities<
       key?: readonly EntityFields<T[K]>[];
       erasable?: readonly EntityFields<T[K]>[];
       outsideText?: readonly EntityFields<T[K]>[];
-      erasure?:
-        | { readonly subjects: readonly EntityFields<T[K]>[]; readonly mode?: 'blank' | 'delete' }
-        | { readonly mode: 'custom' };
+      erasure?: EntityErasureDef<EntityFields<T[K]>>;
       // Keys are CURRENT field names — the thing being renamed TO. The values
       // are historical and name nothing that still exists, so they stay strings.
       //
@@ -766,12 +764,19 @@ function emittedErasure(e: EntityErasureDef): NonNullable<EmittedEntity['erasure
  * Probed against the field's own schema, so the answer is the one the row's writers live by.
  */
 function blankFor(entity: string, field: string, schema: z.ZodType): null | '' {
-  if (schema.safeParse(null).success) return null;
-  if (schema.safeParse('').success) return '';
+  const blank = blankOf(schema);
+  if (blank !== undefined) return blank;
   throw new Error(
     `model: ${entity}.${field} is erasable, admits neither NULL nor '', and so cannot be blanked — ` +
       "make it nullable, or declare `erasure: { subjects, mode: 'delete' }`",
   );
+}
+
+/** NULL when the field admits it, else `''` when it admits that, else undefined. */
+function blankOf(schema: z.ZodType): null | '' | undefined {
+  if (schema.safeParse(null).success) return null;
+  if (schema.safeParse('').success) return '';
+  return undefined;
 }
 
 /**
@@ -793,14 +798,16 @@ export function subjectErasureOf(entities: Record<string, EntityDef>): SubjectEr
     const entity = entities[name];
     if (!entity) continue;
     const erasable = entity.erasable ?? [];
-    if (entity.erasure && erasable.length === 0) {
-      throw new Error(`model: ${name} declares an \`erasure\` but no \`erasable\` fields — it would reach nothing`);
+    if (erasable.length === 0) {
+      if (entity.erasure) {
+        throw new Error(`model: ${name} declares an \`erasure\` but no \`erasable\` fields — it would reach nothing`);
+      }
+      continue;
     }
-    if (erasable.length === 0) continue;
     const shape = entity.fields.shape as Record<string, z.ZodType>;
-    const declared = entity.erasure;
-    const mode = !declared ? 'unreached' : 'subjects' in declared ? (declared.mode ?? 'blank') : 'custom';
-    const subjects = declared && 'subjects' in declared ? [...declared.subjects].sort() : undefined;
+    const emitted = entity.erasure && emittedErasure(entity.erasure);
+    const mode = emitted?.mode ?? 'unreached';
+    const subjects = emitted?.subjects;
     for (const col of subjects ?? []) {
       if (!(col in shape)) throw new Error(`model: ${name}.erasure.subjects names '${col}', which is not a field`);
     }
@@ -809,21 +816,22 @@ export function subjectErasureOf(entities: Record<string, EntityDef>): SubjectEr
       const schema = shape[f];
       if (!schema) throw new Error(`model: ${name}.erasable names '${f}', which is not a field`);
       // Only a blank writes the value, so only a blank is refused for having none to write.
-      return { name: f, blank: mode === 'blank' ? blankFor(name, f, schema) : schema.safeParse(null).success ? null : ('' as const) };
+      return { name: f, blank: mode === 'blank' ? blankFor(name, f, schema) : blankOf(schema) === null ? null : ('' as const) };
     });
     if (mode === 'blank') {
       const pk = new Set(primaryKeyOf(name, entity));
       const key = new Set(entity.key ?? []);
       for (const f of fields) {
-        if (pk.has(f.name) || (f.blank === '' && key.has(f.name))) {
+        const inPk = pk.has(f.name);
+        if (inPk || (f.blank === '' && key.has(f.name))) {
           throw new Error(
-            `model: ${name}.${f.name} is erasable and part of the ${pk.has(f.name) ? 'primary key' : '`key`'}, so a ` +
+            `model: ${name}.${f.name} is erasable and part of the ${inPk ? 'primary key' : '`key`'}, so a ` +
               "blank would collide with the next one — declare `erasure: { subjects, mode: 'delete' }`",
           );
         }
       }
     }
-    out.push({ entityType: name, table: entity.table, mode, ...(subjects ? { subjects } : {}), fields });
+    out.push({ entityType: name, table: entity.table, mode, ...(subjects ? { subjects: [...subjects] } : {}), fields });
   }
   if (out.length === 0) return undefined;
   const tables = [...new Set(Object.values(entities).map((e) => e.table))].sort();

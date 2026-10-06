@@ -45,6 +45,7 @@ import {
 import type { ModuleRegistration, ScopedSql, SqlValue } from './scope-host.js';
 import type { SearchIndexPlan } from './search-index.js';
 import { guardSpine } from './spine-guard.js';
+import { assertSqlIdentifier } from './sql-identifier.js';
 
 /** What a module's `onSubjectErased` hook is handed — and all it is handed. */
 export interface SubjectErasureContext {
@@ -170,19 +171,15 @@ function scopeTables(sql: ScopedSql): string[] {
 }
 
 /**
- * The rows the statement just run changed, as SQLite counts them: `changes()`, which counts
- * the statement's own rows and never a trigger's. Read rather than taken from the handle's
- * exec result because the two adapters disagree there — a Durable Object's `rowsWritten`
- * counts every index and FTS trigger write too — and a receipt must say the same number
- * whichever host erased.
+ * What the statement just run changed, as SQLite counts it: `changes()` is that statement's own
+ * rows and never a trigger's; `total_changes()` is the connection's running count, compared and
+ * never reported. Read rather than taken from the handle's exec result because the two adapters
+ * disagree there — a Durable Object's `rowsWritten` counts every index and FTS trigger write
+ * too — and a receipt must say the same number whichever host erased.
  */
-function changedRows(sql: ScopedSql): number {
-  return sql.query<{ n: number }>('SELECT changes() AS n')[0]?.n ?? 0;
-}
-
-/** The connection's running write count — compared, never reported (it counts trigger writes). */
-function totalChanges(sql: ScopedSql): number {
-  return sql.query<{ n: number }>('SELECT total_changes() AS n')[0]?.n ?? 0;
+function changeCounts(sql: ScopedSql): { changes: number; total: number } {
+  const row = sql.query<{ c: number; t: number }>('SELECT changes() AS c, total_changes() AS t')[0];
+  return { changes: row?.c ?? 0, total: row?.t ?? 0 };
 }
 
 /**
@@ -214,12 +211,8 @@ function enableSecureDelete(sql: ScopedSql, idx: string): void {
   }
 }
 
-/** A table name the kernel interpolates — re-checked here, never trusted from a manifest. */
-const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
-function ident(name: string): string {
-  if (!IDENT.test(name)) throw substratError('internal', `erasure: '${name}' is not a plain SQL identifier`);
-  return name;
-}
+/** A name the kernel interpolates — re-checked here, never trusted from a manifest. */
+const ident = (name: string): string => assertSqlIdentifier('erasure', 'an identifier', name, 'a module erasure');
 
 /**
  * Run the module half of one erasure: every declared entity, then every hook, with FTS5's
@@ -243,7 +236,6 @@ export function eraseSubjectFromModules(input: {
 }): ModuleErasureCounts {
   const { sql, plans, subjectId, at } = input;
   const out: ModuleErasureCounts = { verticalRows: [], hookRows: [], unreachedEntities: [] };
-  let tables: string[] | undefined;
 
   // FTS5 keeps a deleted row's terms in the older index segments until they merge, so an
   // erased word stays in the database file after search stops finding it. `secure-delete`
@@ -257,14 +249,16 @@ export function eraseSubjectFromModules(input: {
   const indexesOf = new Map<string, string[]>();
   for (const p of input.searchPlans) {
     const key = p.table.toLowerCase();
-    indexesOf.set(key, [...(indexesOf.get(key) ?? []), ident(p.indexTable)]);
+    const list = indexesOf.get(key) ?? [];
+    list.push(ident(p.indexTable));
+    indexesOf.set(key, list);
   }
-  const secured: string[] = [];
+  const secured = new Set<string>();
   const secure = (table: string): void => {
     for (const idx of indexesOf.get(table.toLowerCase()) ?? []) {
-      if (secured.includes(idx)) continue;
+      if (secured.has(idx)) continue;
       enableSecureDelete(sql, idx);
-      secured.push(idx);
+      secured.add(idx);
     }
   };
 
@@ -280,51 +274,52 @@ export function eraseSubjectFromModules(input: {
       const match = `(${subjects.map((s) => `${s} = ?`).join(' OR ')})`;
       const subjectParams = subjects.map(() => subjectId);
       // Only rows still holding something: a re-run changes nothing and counts zero.
+      const cols = entity.fields.map((f) => ident(f.name));
       const blanks = entity.fields.map((f) => f.blank);
-      const where =
-        entity.mode === 'delete'
-          ? { sql: match, params: subjectParams }
-          : {
-              sql: `${match} AND (${entity.fields.map((f) => `${ident(f.name)} IS NOT ?`).join(' OR ')})`,
-              params: [...subjectParams, ...blanks],
-            };
+      const isDelete = entity.mode === 'delete';
+      const filter = isDelete ? match : `${match} AND (${cols.map((c) => `${c} IS NOT ?`).join(' OR ')})`;
+      const params = isDelete ? subjectParams : [...subjectParams, ...blanks];
+      // The probe exists only to switch an index's secure-delete on lazily; a table no index
+      // covers goes straight to its write.
+      const indexed = indexesOf.has(table.toLowerCase());
       let rows = 0;
-      if (sql.query(`SELECT 1 FROM ${table} WHERE ${where.sql} LIMIT 1`, where.params).length > 0) {
+      if (!indexed || sql.query(`SELECT 1 FROM ${table} WHERE ${filter} LIMIT 1`, params).length > 0) {
         secure(table);
-        if (entity.mode === 'delete') {
-          sql.exec(`DELETE FROM ${table} WHERE ${where.sql}`, where.params);
+        if (isDelete) {
+          sql.exec(`DELETE FROM ${table} WHERE ${filter}`, params);
         } else {
-          const sets = entity.fields.map((f) => `${ident(f.name)} = ?`).join(', ');
-          sql.exec(`UPDATE ${table} SET ${sets} WHERE ${where.sql}`, [...blanks, ...where.params]);
+          sql.exec(`UPDATE ${table} SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE ${filter}`, [...blanks, ...params]);
         }
-        rows = changedRows(sql);
+        rows = changeCounts(sql).changes;
       }
       out.verticalRows.push({ module: plan.moduleId, entityType: entity.entityType, mode: entity.mode, rows });
     }
   }
 
+  const guarded = guardSpine(sql, input.statefulTables);
+  let tables: string[] | undefined;
   for (const plan of plans) {
     if (!plan.hook) continue;
     tables ??= scopeTables(sql);
     const own = new Set(plan.declaration.tables.map((t) => t.toLowerCase()));
     const foreign = new Set(tables.filter((t) => !own.has(t)));
     let rows = 0;
-    const reach = (statement: string): void => assertWithinErasureReach(plan.moduleId, statement, foreign);
-    const guarded = guardSpine(sql, input.statefulTables);
+    // `changes()` is the last WRITE's count, so a read run through `exec` would repeat the
+    // previous one; `total_changes()` moving at all is what says a statement wrote.
+    let total = changeCounts(sql).total;
     const hookSql: ScopedSql = {
       query: <T = Record<string, SqlValue>>(statement: string, params?: readonly SqlValue[]): T[] => {
-        reach(statement);
+        assertWithinErasureReach(plan.moduleId, statement, foreign);
         return guarded.query<T>(statement, params);
       },
       exec: (statement: string, params?: readonly SqlValue[]) => {
-        reach(statement);
+        assertWithinErasureReach(plan.moduleId, statement, foreign);
         // Any statement the hook runs may change any of its tables; secure their indexes first.
         for (const t of own) secure(t);
-        // `changes()` is the last WRITE's count, so a read run through `exec` would repeat the
-        // previous one; `total_changes()` moving at all is what says this statement wrote.
-        const before = totalChanges(sql);
         guarded.exec(statement, params);
-        const changes = totalChanges(sql) === before ? 0 : changedRows(sql);
+        const after = changeCounts(sql);
+        const changes = after.total === total ? 0 : after.changes;
+        total = after.total;
         rows += changes;
         return { changes };
       },

@@ -102,7 +102,7 @@ interface EmittedModel {
  * and refusing them all at once would be a flag day — but printed on every run, and as a GitHub
  * annotation in CI, so the gap is read before a deploy rather than first on an erasure receipt.
  */
-function warnUnreached(src: string, model: EmittedModel): number {
+function warnUnreached(src: string, model: EmittedModel): void {
   const unreached = Object.entries(model.entities)
     .filter(([, e]) => (e.erasable?.length ?? 0) > 0 && e.erasure === undefined)
     .map(([name]) => name);
@@ -112,7 +112,6 @@ function warnUnreached(src: string, model: EmittedModel): number {
       "`erasure: { subjects: [...] }`, or `{ mode: 'custom' }` with an onSubjectErased hook";
     console.warn(process.env.GITHUB_ACTIONS ? `::warning file=${src}::${message}` : `model-diff: warning: ${message}`);
   }
-  return unreached.length;
 }
 
 /**

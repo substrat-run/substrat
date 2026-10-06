@@ -27,13 +27,14 @@
  * erasure receipt, and as a warning from `lint:model`.
  */
 import { z } from 'zod';
+import { SQL_IDENTIFIER } from './introspection.js';
 
 /** How an erasure reaches one entity. `unreached` is derived, never declared. */
 export const subjectErasureMode = z.enum(['blank', 'delete', 'custom', 'unreached']);
 export type SubjectErasureMode = z.infer<typeof subjectErasureMode>;
 
 /** A plain SQL identifier — a table or a column the kernel interpolates into DDL-free DML. */
-const sqlName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+const sqlName = z.string().regex(SQL_IDENTIFIER);
 
 /**
  * One entity's erasure, as the manifest carries it. Derived by `subjectErasureOf` from the
@@ -83,7 +84,7 @@ export type SubjectErasureDeclaration = z.infer<typeof subjectErasureDeclaration
 export const erasedEntityCount = z.object({
   module: z.string().min(1),
   entityType: z.string().min(1),
-  mode: z.enum(['blank', 'delete']),
+  mode: subjectErasureMode.extract(['blank', 'delete']),
   /** Rows blanked or deleted by this call. Zero on a re-run — the first one did it. */
   rows: z.number().int().nonnegative(),
 });
