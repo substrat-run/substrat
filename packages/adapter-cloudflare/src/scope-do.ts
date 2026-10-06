@@ -1125,6 +1125,15 @@ class SystemDoorMovedError extends Error {}
 /** #1834: the brand only `assertSystemDoor` sets, so nothing else can make a `SystemDoorPass`. */
 const SYSTEM_DOOR_PASSED: unique symbol = Symbol('system door passed');
 
+/** Close a live socket whose session has ended (#938). */
+function closeSessionEnded(ws: WebSocket): void {
+  try {
+    ws.close(LIVE_CLOSE.revoked, 'the session that opened this subscription has ended');
+  } catch {
+    // Already gone.
+  }
+}
+
 /** #1834: proof that this call passed the system door's check, naming the module it acts as. */
 interface SystemDoorPass {
   readonly moduleId: string;
@@ -3060,11 +3069,7 @@ export function defineScopeDO(
         }
         if (!s) continue;
         if (s.expiresAt !== undefined && s.expiresAt <= now) {
-          try {
-            ws.close(LIVE_CLOSE.revoked, 'the session that opened this subscription has ended');
-          } catch {
-            // Already gone.
-          }
+          closeSessionEnded(ws);
           continue;
         }
         live.push(s);
@@ -3346,13 +3351,14 @@ export function defineScopeDO(
         if (subscription.tenantId !== tenantId || subscription.scopeId !== scopeId) continue;
         // The session that opened it has ended (#938): closed before anything is sent,
         // whatever the subscriber's grants still say. Checked on every pass, so it holds for
-        // every kind of subscription, not only the ones with a gate to ask.
-        if (subscription.expiresAt !== undefined && subscription.expiresAt <= now) {
-          try {
-            ws.close(LIVE_CLOSE.revoked, 'the session that opened this subscription has ended');
-          } catch {
-            // Already gone.
-          }
+        // every kind of subscription, not only the ones with a gate to ask — and asked
+        // again, against a fresh clock, immediately before every send below, because the
+        // walk and the checks between here and there await, and a session can end during
+        // them.
+        const { expiresAt } = subscription;
+        const sessionEnded = () => expiresAt !== undefined && expiresAt <= new Date().toISOString();
+        if (sessionEnded()) {
+          closeSessionEnded(ws);
           continue;
         }
         const { within } = subscription;
@@ -3434,6 +3440,13 @@ export function defineScopeDO(
               entityId: row.entity_id,
               at: row.occurred_at,
             };
+          }
+          // Every gate as close to the send as it can be: the clock is read again here,
+          // after every await above. The checked root's verdict is this pass's, asked just
+          // before its first send; a later pass asks again.
+          if (sessionEnded()) {
+            closeSessionEnded(ws);
+            break;
           }
           try {
             ws.send(JSON.stringify(frame));

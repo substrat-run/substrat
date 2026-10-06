@@ -598,7 +598,11 @@ describe('live reads: a root the principal is checked on (#938)', () => {
    * them throw. Every live-read context is built under the `live.subscribe` operation
    * name, so only those are wrapped: the writer's own invokes are untouched.
    */
-  async function instrumentRootChecks(opts: { throws: boolean }): Promise<{ calls(): Promise<number>; restore(): Promise<void> }> {
+  async function instrumentRootChecks(opts: {
+    throws: boolean;
+    /** Hold each check this long before answering — a pass whose clock moves under it. */
+    delayMs?: number;
+  }): Promise<{ calls(): Promise<number>; restore(): Promise<void> }> {
     await runInDurableObject(scopeDo(), (instance) => {
       const target = instance as unknown as {
         operationContext: (...args: unknown[]) => { check: (...a: unknown[]) => Promise<unknown> };
@@ -615,6 +619,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
           check: {
             value: async (...a: unknown[]) => {
               target.__liveChecks = (target.__liveChecks ?? 0) + 1;
+              if (opts.delayMs) await new Promise((resolve) => setTimeout(resolve, opts.delayMs));
               if (opts.throws) throw new Error('permission evaluator unavailable');
               return ctx.check(...a);
             },
@@ -881,17 +886,51 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     expect(extra.closedWith).toBe(LIVE_CLOSE.tooMany);
   });
 
-  it('closes an expired socket on an idle scope by its alarm, with no write and no new subscriber', async () => {
-    const ends = await watchChecked(reader, F1, soon(400));
+  it('closes expired sockets on an idle scope by its alarm, the second by the alarm it re-armed', async () => {
+    const first = await watchChecked(reader, F1, soon(400));
+    const second = await watchChecked(reader, F1, soon(1_400));
     const stays = await watchChecked(reader, F1, later());
     const armed = await runInDurableObject(scopeDo(), (_i, state) => state.storage.getAlarm());
     expect(armed).not.toBeNull();
-    await idle(1_500);
-    expect(ends.closedWith).toBe(1008);
+    await idle(900);
+    expect(first.closedWith).toBe(1008);
+    expect(second.closedWith).toBeNull();
+    // No write and no new subscriber since: only the re-armed alarm can close the second.
+    await idle(1_200);
+    expect(second.closedWith).toBe(1008);
     expect(stays.closedWith).toBeNull();
-    // Re-armed for the socket still open.
+    // And it re-armed again, for the socket still open.
     const next = await runInDurableObject(scopeDo(), (_i, state) => state.storage.getAlarm());
     expect(next).not.toBeNull();
+  });
+
+  it('sends nothing to a socket whose session ends while its pass is still deciding', { timeout: 20_000 }, async () => {
+    // One socket per pass, so the only await between the pass's first look at the clock
+    // and the send is this socket's own held root check — the window under test.
+    const passWithHeldCheck = async (expiresAt: string) => {
+      const watcher = await watchChecked(reader, F1, expiresAt);
+      // The alarm would close it at its expiry; take it away, so only the pass decides.
+      await runInDurableObject(scopeDo(), (_i, state) => state.storage.deleteAlarm());
+      const checks = await instrumentRootChecks({ throws: false, delayMs: 2_500 });
+      try {
+        // Without this the case would prove nothing: a pass that starts after the expiry
+        // is refused by the look at its start, not the one before the send.
+        expect(Date.now()).toBeLessThan(Date.parse(expiresAt) - 500);
+        await as('live/touch', { noteId: IN_F1 });
+        await settle();
+      } finally {
+        await checks.restore();
+      }
+      for (const w of open.splice(0)) w.close();
+      return watcher;
+    };
+    // The twin first: the same held check, a session still current when it answers.
+    const current = await passWithHeldCheck(later());
+    expect(current.frames).toHaveLength(1);
+    // Then a session that ends while the check is held: nothing sent, the socket closed.
+    const ends = await passWithHeldCheck(soon(1_500));
+    expect(ends.frames).toEqual([]);
+    expect(ends.closedWith).toBe(1008);
   });
 
   it(`holds a principal to ${LIVE_SOCKETS_PER_PRINCIPAL} sockets: the next is closed ${LIVE_CLOSE.tooMany} and sent nothing`, async () => {
