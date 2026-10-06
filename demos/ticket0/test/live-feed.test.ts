@@ -156,3 +156,27 @@ describe('the live feed ends with the session', () => {
     expect(feed.isOpen()).toBe(true);
   });
 });
+
+describe('the live feed hands on what a scope sends', () => {
+  const deliver = (data: unknown) => latest().onmessage?.({ data });
+
+  it('hands a change to every listener, and a nudge too (the portal’s feed sends only those)', () => {
+    const l = listener();
+    feed.listen(l);
+    latest().accept();
+    deliver(JSON.stringify({ kind: 'change', id: '1', type: 't', entityType: 'message', entityId: 'm', at: 'x' }));
+    deliver(JSON.stringify({ kind: 'nudge', id: '2', at: 'x' }));
+    expect(l.frame.mock.calls.map(([f]) => f.kind)).toEqual(['change', 'nudge']);
+  });
+
+  it('drops a pong, a frame it cannot parse, and a kind it does not know', () => {
+    const l = listener();
+    feed.listen(l);
+    latest().accept();
+    deliver('pong');
+    deliver('{not json');
+    deliver('null');
+    deliver(JSON.stringify({ kind: 'payload', body: 'never' }));
+    expect(l.frame).not.toHaveBeenCalled();
+  });
+});

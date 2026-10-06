@@ -15,7 +15,7 @@
  * The reasoning is on `ScopeHost.liveReads`, beside the `clock?: never` precedent.
  */
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   permissionKey,
   platformActorId,
@@ -23,7 +23,16 @@ import {
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
 } from '@substrat-run/contracts';
-import { ulid, vouchedWithin, webCryptoSecretBox, type LiveChange, type LiveFrame, type VouchedWithin } from '@substrat-run/kernel';
+import {
+  checkedWithin,
+  ulid,
+  vouchedWithin,
+  webCryptoSecretBox,
+  type CheckedWithin,
+  type LiveChange,
+  type LiveFrame,
+  type VouchedWithin,
+} from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { LIVE_MODE_HEADER, O2O_HEADER, readSubscription } from '../src/live-reads.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -514,6 +523,287 @@ describe('live reads: narrowed within an entity (#1853)', () => {
   });
 });
 
+describe('live reads: a root the principal is checked on (#938)', () => {
+  let host: CloudflareScopeHost;
+  const sc = scopeIdOf.parse(ulid());
+  /** Holds `live:read` on cabinet C1 — so on every folder shelved there — and on no note. */
+  const reader = principalId.parse(ulid());
+  /** Holds nothing. */
+  const stranger = principalId.parse(ulid());
+  const C1 = '01JLIVEC100000000000000001';
+  const C2 = '01JLIVEC200000000000000002';
+  const F1 = '01JLIVEG100000000000000001';
+  const F2 = '01JLIVEG200000000000000002';
+  const F3 = '01JLIVEG300000000000000003';
+  const F_OUT = '01JLIVEG400000000000000004';
+  const IN_F1 = '01JLIVEM100000000000000001';
+  const IN_F1B = '01JLIVEM100000000000000002';
+  const IN_F2 = '01JLIVEM200000000000000001';
+  const IN_F3 = '01JLIVEM300000000000000001';
+  const IN_OUT = '01JLIVEM400000000000000001';
+  const checked = (folderId: string) => checkedWithin({ entityType: 'folder', entityId: folderId }, 'live:read');
+  const open: { close(): void }[] = [];
+  const scopeDo = () => env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(sc));
+
+  interface CheckedWatcher {
+    readonly frames: LiveFrame[];
+    /** The close code the scope sent, once it has closed the socket. */
+    closedWith: number | null;
+  }
+
+  async function watchChecked(principal: typeof reader, folderId: string): Promise<CheckedWatcher> {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sc,
+      principal,
+      request: upgrade(),
+      within: checked(folderId),
+    });
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    const watcher: CheckedWatcher = { frames: [], closedWith: null };
+    ws.accept();
+    ws.addEventListener('message', (event) => {
+      const data = String((event as MessageEvent).data);
+      if (data !== 'pong') watcher.frames.push(JSON.parse(data) as LiveFrame);
+    });
+    ws.addEventListener('close', (event) => {
+      watcher.closedWith = (event as CloseEvent).code;
+    });
+    open.push({
+      close: () => {
+        try {
+          ws.close(1000, 'test over');
+        } catch {
+          // Already closed by the scope.
+        }
+      },
+    });
+    return watcher;
+  }
+
+  const as = async (op: string, input: Record<string, unknown>) =>
+    (await host.getScope(writer, t, sc)).invoke(op, input);
+
+  /**
+   * Count the root checks the fan-out makes, from inside the DO, and optionally make
+   * them throw. Every live-read context is built under the `live.subscribe` operation
+   * name, so only those are wrapped: the writer's own invokes are untouched.
+   */
+  async function instrumentRootChecks(opts: { throws: boolean }): Promise<{ calls(): Promise<number>; restore(): Promise<void> }> {
+    await runInDurableObject(scopeDo(), (instance) => {
+      const target = instance as unknown as {
+        operationContext: (...args: unknown[]) => { check: (...a: unknown[]) => Promise<unknown> };
+        __liveChecks?: number;
+        __liveOriginal?: unknown;
+      };
+      const original = target.operationContext;
+      target.__liveOriginal = original;
+      target.__liveChecks = 0;
+      target.operationContext = function (this: unknown, ...args: unknown[]) {
+        const ctx = original.apply(this, args);
+        if (args[8] !== 'live.subscribe') return ctx;
+        return Object.create(ctx, {
+          check: {
+            value: async (...a: unknown[]) => {
+              target.__liveChecks = (target.__liveChecks ?? 0) + 1;
+              if (opts.throws) throw new Error('permission evaluator unavailable');
+              return ctx.check(...a);
+            },
+          },
+        });
+      };
+    });
+    return {
+      calls: () =>
+        runInDurableObject(scopeDo(), (instance) => (instance as unknown as { __liveChecks: number }).__liveChecks),
+      restore: () =>
+        runInDurableObject(scopeDo(), (instance) => {
+          const target = instance as unknown as { operationContext: unknown; __liveOriginal: unknown };
+          target.operationContext = target.__liveOriginal;
+        }),
+    };
+  }
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.LIVE_SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    await host.provisionScope(staff, { tenantId: t, scopeId: sc, vertical: 'live-vertical' });
+    await host.admin.activateScope(staff, t, sc);
+    await host.admin.grant(staff, { principalId: writer, permission: WRITE, node: { tenantId: t, scopeId: sc }, grantedBy: writer });
+    // The writer holds the read on the cabinet too: `ctx.revoke` is delegating.
+    for (const principal of [writer, reader]) {
+      await host.admin.grant(staff, {
+        principalId: principal,
+        permission: READ,
+        node: { tenantId: t, scopeId: sc },
+        entity: { entityType: 'cabinet', entityId: C1 },
+        grantedBy: writer,
+      });
+    }
+    // F1, F2 and F3 are all in C1, so `reader` passes the gate on each: only the walk
+    // can tell what is beneath one root from what is beneath another. F_OUT is in C2.
+    for (const folderId of [F1, F2, F3]) await as('live/shelve', { folderId, cabinetId: C1 });
+    await as('live/shelve', { folderId: F_OUT, cabinetId: C2 });
+    await as('live/file', { noteId: IN_F1, folderId: F1 });
+    await as('live/file', { noteId: IN_F1B, folderId: F1 });
+    await as('live/file', { noteId: IN_F2, folderId: F2 });
+    await as('live/file', { noteId: IN_F3, folderId: F3 });
+    await as('live/file', { noteId: IN_OUT, folderId: F_OUT });
+  });
+
+  // Each case's sockets are closed after it, so a count of checks is about that case's
+  // socket alone: the gate is asked once per OPEN socket per pass.
+  afterEach(async () => {
+    for (const w of open.splice(0)) w.close();
+    await settle();
+  });
+
+  afterAll(async () => {
+    await host.close();
+  });
+
+  // -- the handshake ------------------------------------------------------------
+
+  it('refuses a subscriber who may not watch the root, before any socket exists', async () => {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sc,
+      principal: stranger,
+      request: upgrade(),
+      within: checked(F1),
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get(LIVE_MODE_HEADER)).toBe('forbidden');
+    expect(response.webSocket).toBeNull();
+  });
+
+  it('refuses a root outside the grant, though the same principal may watch its neighbour', async () => {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sc,
+      principal: reader,
+      request: upgrade(),
+      within: checked(F_OUT),
+    });
+    expect(response.status).toBe(403);
+    // The positive twin: the same principal, a root its grant reaches.
+    const ok = await watchChecked(reader, F1);
+    expect(ok.closedWith).toBeNull();
+  });
+
+  // -- what is sent -------------------------------------------------------------
+
+  it('nudges about a row beneath the root, naming no entity — though the subscriber may not read the row', async () => {
+    const seen = await watchChecked(reader, F1);
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(seen.frames).toHaveLength(1);
+    expect(Object.keys(seen.frames[0]!).sort()).toEqual(['at', 'id', 'kind']);
+    expect(seen.frames[0]!.kind).toBe('nudge');
+  });
+
+  it('sends nothing about a row outside the root, though the gate would pass on its folder too', async () => {
+    const seen = await watchChecked(reader, F1);
+    await as('live/touch', { noteId: IN_F2 });
+    await as('live/touch-ledger', { ledgerId: LEDGER });
+    await settle();
+    expect(seen.frames).toEqual([]);
+    expect(seen.closedWith).toBeNull();
+  });
+
+  // -- the gate on every pass -------------------------------------------------
+
+  it('asks the gate once per socket per pass, and not at all on a pass with nothing beneath the root', async () => {
+    const seen = await watchChecked(reader, F1);
+    const checks = await instrumentRootChecks({ throws: false });
+    try {
+      await as('live/touch', { noteId: IN_F2 });
+      await settle();
+      expect(await checks.calls()).toBe(0);
+      // Two rows beneath the root in one pass: two nudges, one check.
+      await as('live/touch-each', { noteIds: [IN_F1, IN_F1B] });
+      await settle();
+      expect(await checks.calls()).toBe(1);
+      expect(seen.frames).toHaveLength(2);
+    } finally {
+      await checks.restore();
+    }
+  });
+
+  it('closes the socket and sends nothing when the gate throws', async () => {
+    const seen = await watchChecked(reader, F1);
+    const checks = await instrumentRootChecks({ throws: true });
+    try {
+      await as('live/touch', { noteId: IN_F1 });
+      await settle();
+    } finally {
+      await checks.restore();
+    }
+    expect(await checks.calls()).toBe(1);
+    expect(seen.frames).toEqual([]);
+    expect(seen.closedWith).toBe(1008);
+  });
+
+  it('closes the socket and sends nothing once the grant behind the root is revoked', async () => {
+    const seen = await watchChecked(reader, F1);
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(seen.frames).toHaveLength(1);
+
+    await as('live/unshare', { principal: reader, noteId: C1, entityType: 'cabinet' });
+    try {
+      await as('live/touch', { noteId: IN_F1 });
+      await settle();
+      expect(seen.frames).toHaveLength(1); // still only the first
+      expect(seen.closedWith).toBe(1008);
+      // And the client's reconnect meets the handshake's refusal.
+      const again = await host.liveReads.subscribe({ tenantId: t, scopeId: sc, principal: reader, request: upgrade(), within: checked(F1) });
+      expect(again.status).toBe(403);
+    } finally {
+      await host.admin.grant(staff, {
+        principalId: reader,
+        permission: READ,
+        node: { tenantId: t, scopeId: sc },
+        entity: { entityType: 'cabinet', entityId: C1 },
+        grantedBy: writer,
+      });
+    }
+  });
+
+  it('closes the socket and sends nothing once the root itself moves out of the grant’s reach', async () => {
+    const stays = await watchChecked(reader, F1);
+    const moves = await watchChecked(reader, F3);
+    await as('live/reshelve', { folderId: F3, from: C1, to: C2 });
+    await as('live/touch-each', { noteIds: [IN_F3, IN_F1] });
+    await settle();
+    expect(moves.frames).toEqual([]);
+    expect(moves.closedWith).toBe(1008);
+    // The twin on the same pass: a root that stayed in reach still hears its row.
+    expect(stays.frames).toHaveLength(1);
+    expect(stays.closedWith).toBeNull();
+  });
+
+  it.each([
+    ['a look-alike object', { entity: { entityType: 'folder', entityId: F1 }, permission: 'live:read' }],
+    ['a spread copy of a checked value', { ...checkedWithin({ entityType: 'folder', entityId: F1 }, 'live:read') }],
+    ['a plain ref carrying a checked key', { entityType: 'folder', entityId: F1, checked: 'live:read' }],
+  ])('refuses %s — the checked mode is reachable by checkedWithin alone', async (_label, within) => {
+    await expect(
+      host.liveReads.subscribe({
+        tenantId: t,
+        scopeId: sc,
+        principal: reader,
+        request: upgrade(),
+        within: within as unknown as CheckedWithin,
+      }),
+    ).rejects.toThrow(/checkedWithin/);
+  });
+});
+
 describe('live reads: a socket whose narrowing cannot be read fails closed (#1853)', () => {
   const base = { principal: ulid(), tenantId: ulid(), scopeId: ulid(), since: new Date().toISOString() };
 
@@ -522,7 +812,7 @@ describe('live reads: a socket whose narrowing cannot be read fails closed (#185
     expect(readSubscription(base)).not.toHaveProperty('within');
   });
 
-  it('keeps a readable narrowing, vouched or not', () => {
+  it('keeps a readable narrowing, vouched, checked or neither', () => {
     expect(readSubscription({ ...base, within: { entityType: 'folder', entityId: 'f' } })?.within).toEqual({
       entityType: 'folder',
       entityId: 'f',
@@ -532,6 +822,11 @@ describe('live reads: a socket whose narrowing cannot be read fails closed (#185
       entityId: 'f',
       vouched: 'why',
     });
+    expect(readSubscription({ ...base, within: { entityType: 'folder', entityId: 'f', checked: 'live:read' } })?.within).toEqual({
+      entityType: 'folder',
+      entityId: 'f',
+      checked: 'live:read',
+    });
   });
 
   it.each([
@@ -540,6 +835,8 @@ describe('live reads: a socket whose narrowing cannot be read fails closed (#185
     ['an empty id', { entityType: 'folder', entityId: '' }],
     ['an empty reason', { entityType: 'folder', entityId: 'f', vouched: ' ' }],
     ['a non-string reason', { entityType: 'folder', entityId: 'f', vouched: true }],
+    ['a checked key that is not a permission key', { entityType: 'folder', entityId: 'f', checked: 'not a key' }],
+    ['both a reason and a checked key', { entityType: 'folder', entityId: 'f', vouched: 'why', checked: 'live:read' }],
   ])('drops a socket whose narrowing has %s, rather than widening it', (_label, within) => {
     expect(readSubscription({ ...base, within })).toBeNull();
   });

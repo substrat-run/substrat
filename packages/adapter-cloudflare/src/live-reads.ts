@@ -9,8 +9,15 @@
  *
  * Nothing in this module reaches the network or the database. It is names and shapes.
  */
-import { substratError, type EntityRef, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
-import { isVouchedWithin, type VouchedWithin } from '@substrat-run/kernel';
+import {
+  permissionKey,
+  substratError,
+  type EntityRef,
+  type PrincipalId,
+  type ScopeId,
+  type TenantId,
+} from '@substrat-run/contracts';
+import { isCheckedWithin, isVouchedWithin, type CheckedWithin, type VouchedWithin } from '@substrat-run/kernel';
 
 /**
  * The path the coordinator fetches on the scope stub to open a subscription.
@@ -37,7 +44,7 @@ export const LIVE_SCOPE_HEADER = 'x-substrat-live-scope';
 
 /**
  * The `within` root a subscription is narrowed to (#1853), and whether the vertical
- * vouched for it — `encodeLiveWithin`'s output, asserted by the coordinator exactly as
+ * vouched for it or the principal is checked on it (#938) — `encodeLiveWithin`'s output, asserted by the coordinator exactly as
  * the principal is. Absent means an unnarrowed feed.
  */
 export const LIVE_WITHIN_HEADER = 'x-substrat-live-within';
@@ -51,6 +58,12 @@ export interface LiveWithin {
    * the principal's own check is then NOT applied. Absent: the check is ANDed with the walk.
    */
   readonly vouched?: string;
+  /**
+   * Set for a `checkedWithin` root (#938): the key the principal must pass ON THE ROOT, at
+   * the handshake and on every pass with a row beneath it. The per-row check is then NOT
+   * applied. Never set together with `vouched`.
+   */
+  readonly checked?: string;
 }
 
 /** Header-safe: a reason may carry any character, and a header value may not. */
@@ -69,31 +82,39 @@ export function readLiveWithin(value: unknown): LiveWithin | undefined {
   if (typeof w.entityType !== 'string' || w.entityType === '') return undefined;
   if (typeof w.entityId !== 'string' || w.entityId === '') return undefined;
   if (w.vouched !== undefined && (typeof w.vouched !== 'string' || w.vouched.trim() === '')) return undefined;
+  if (w.checked !== undefined && !permissionKey.safeParse(w.checked).success) return undefined;
+  // Both would mean two different filters, and neither reading is the one that was asked for.
+  if (w.vouched !== undefined && w.checked !== undefined) return undefined;
   return {
     entityType: w.entityType,
     entityId: w.entityId,
     ...(w.vouched !== undefined ? { vouched: w.vouched } : {}),
+    ...(w.checked !== undefined ? { checked: w.checked as string } : {}),
   };
 }
 
 /**
  * What `subscribe`'s `within` argument asks for, as the narrowing the scope keeps.
  *
- * Only two shapes are accepted: a value `vouchedWithin` built, and a plain `EntityRef`.
- * Anything else throws — in particular an object that LOOKS vouched (`{ entity, because }`)
- * but was not built by `vouchedWithin`: read as a plain ref it has no type or id, and the
- * only other reading would drop the principal's check on the caller's say-so.
+ * Only three shapes are accepted: a value `vouchedWithin` built, one `checkedWithin` built,
+ * and a plain `EntityRef`. Anything else throws — in particular an object that LOOKS
+ * built (`{ entity, because }`, `{ entity, permission }`) but was not: read as a plain ref
+ * it has no type or id, and the only other reading would replace the principal's per-row
+ * check on the caller's say-so.
  */
-export function liveWithinOf(within: EntityRef | VouchedWithin | undefined): LiveWithin | undefined {
+export function liveWithinOf(within: EntityRef | VouchedWithin | CheckedWithin | undefined): LiveWithin | undefined {
   if (within === undefined) return undefined;
   if (isVouchedWithin(within)) {
     return { entityType: within.entity.entityType, entityId: within.entity.entityId, vouched: within.because };
   }
+  if (isCheckedWithin(within)) {
+    return { entityType: within.entity.entityType, entityId: within.entity.entityId, checked: within.permission };
+  }
   const plain = readLiveWithin(within);
-  if (!plain || 'vouched' in (within as object)) {
+  if (!plain || 'vouched' in (within as object) || 'checked' in (within as object)) {
     throw substratError(
       'validation_failed',
-      'live reads: `within` must be an EntityRef, or a value built by vouchedWithin()',
+      'live reads: `within` must be an EntityRef, or a value built by vouchedWithin() or checkedWithin()',
     );
   }
   return { entityType: plain.entityType, entityId: plain.entityId };

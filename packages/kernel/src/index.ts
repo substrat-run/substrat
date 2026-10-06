@@ -126,6 +126,9 @@ export {
   isVouchedWithin,
   vouchedWithin,
   type VouchedWithin,
+  checkedWithin,
+  isCheckedWithin,
+  type CheckedWithin,
 } from './scope-host.js';
 export {
   /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */

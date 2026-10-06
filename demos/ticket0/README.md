@@ -110,7 +110,18 @@ chat sends nothing at all, and a session moving to a follow-up moves one edge, n
 message. What does arrive is a bare nudge, and the
 widget re-reads its thread. Polling stays underneath: 1.5s while an answer is outstanding and
 10s idle when there is no socket, a 60s floor when there is one, and nothing in a hidden tab.
-On the dev server both live routes answer 501, since the node host has no live reads, and
+
+The portal's conversation view has one too (`GET /api/conversations/:id/live`, #938,
+`harness/portal-live.ts`). It subscribes the signed-in customer with `checkedWithin`, rooted at
+the conversation's public thread and checked on their own `conversation:read-own`. So it hears
+exactly the public messages `my-messages` shows them, nothing about a note, and nothing once
+the grant is withdrawn: the scope re-checks it on every pass and closes the socket. A
+customer CC'd on someone else's conversation is refused the feed and polls. The view polls
+every 10s with no socket and every 60s with one; it used to load once. The portal's list of
+conversations still loads once. A feed rooted at the contact would also reach their internal
+notes, and say when each was written.
+
+On the dev server all three live routes answer 501, since the node host has no live reads, and
 every screen polls as before.
 
 The script is served by the dev server from `src/server.ts` with

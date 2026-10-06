@@ -296,15 +296,31 @@ that entity and what hangs beneath it through declared parent edges (what `ctx.l
 runs on every frame, so `within` can only take frames away. A screen watching one record
 passes it to stop hearing the rest of the scope.
 
-A subscriber with no principal of its own, such as a visitor holding a session token, can be
-given a feed the **vertical vouches for**: `within: vouchedWithin(entity, { because })`, from
-`@substrat-run/kernel`. The principal's check is then not applied. The walk from each changed
-row to `entity` is the whole filter, and each frame is a bare nudge (`{ kind: 'nudge', id, at }`)
-that names no event type and no entity. Call it only after your own code has proven the
-caller may watch `entity`, and root it at an entity whose subtree holds only what that caller
-may see. A plain object of the same shape is refused: `vouchedWithin` is the only way in.
-ticket0's widget does this (`harness/widget-surface.ts`), rooted at the visitor's session,
-under which the desk links exactly the public messages the visitor can read.
+Two built roots go further. Each replaces the per-frame check with a check on the **root**,
+and each frame is then a bare nudge (`{ kind: 'nudge', id, at }`) that names no event type and
+no entity, because the subscriber may not be able to read each row beneath it. Both come from
+`@substrat-run/kernel`, and a plain object of the same shape is refused: the builder is the
+only way in.
+
+- **`within: checkedWithin(entity, permission)`**: for a signed-in principal whose grant
+  reaches the root but not each row the way a `liveTargets` key would. The principal must
+  pass `permission` on `entity` at the handshake, or the route answers `403` with
+  `x-substrat-live: forbidden`. The check runs again, once per socket, on every pass that has
+  a row beneath the root to announce. If it refuses or throws, the scope closes the socket
+  (`1008`) before sending anything, and the client's reconnect meets the `403`. A withdrawn
+  grant, or a root moved out of the grant's reach, therefore ends the feed. ticket0's portal
+  does this (`harness/portal-live.ts`): rooted at a conversation's public thread, checked on
+  the customer's own `conversation:read-own`.
+- **`within: vouchedWithin(entity, { because })`**: for a subscriber with no principal of its
+  own, such as a visitor holding a session token. Your code proves access once, before
+  subscribing, and nothing re-checks it, so a token revoked while the socket is open keeps
+  receiving nudges until the socket closes. That is accepted for ticket0's widget
+  (`harness/widget-surface.ts`), rooted at the visitor's session, because the nudge names
+  nothing and every re-read it causes is checked again.
+
+Prefer `checkedWithin` whenever there is a grant to check: authority then leaves with the
+grant. For either one, root the feed at an entity whose subtree holds only what the caller may
+see, because the walk is the row filter.
 
 ## `requestConnectUrl(request)`
 

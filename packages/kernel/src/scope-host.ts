@@ -168,7 +168,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
-import { substratError, type EntityStateName } from '@substrat-run/contracts';
+import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { SealedSecret } from './secret-box.js';
@@ -5673,10 +5673,12 @@ export interface ScopeHost {
  * changed at 14:02 is information about that row, so "the body was empty" is not a
  * defence: the filter runs whether or not there is a payload to withhold.
  *
- * A subscription may be narrowed `within` one entity (#1853), which only removes frames;
- * the one exception to the per-principal check is a `within` the vertical built with
- * `vouchedWithin`, whose subscriber is sent bare `LiveNudge` frames and nothing that
- * names an entity.
+ * A subscription may be narrowed `within` one entity (#1853), which only removes frames.
+ * Two built roots replace the per-row check with one about the ROOT, and their subscribers
+ * are sent bare `LiveNudge` frames that name no entity: `checkedWithin`, whose principal must
+ * pass a stated key on the root at the handshake and again on every pass that has something
+ * to send (#938), and `vouchedWithin`, which the vertical asserts once and nothing re-checks
+ * (#1853). Which to use is on `checkedWithin`.
  *
  * **Generic over the runtime's request and response, because the kernel names
  * neither.** This package has one dependency and no DOM or workers lib
@@ -5729,8 +5731,13 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
      *   the same trust it already extends in naming `principal`, and the scope's walk is
      *   the whole filter. Such a subscriber receives `LiveNudge` frames only, which name
      *   no event type and no entity.
+     * - **A `checkedWithin(…)` value replaces the per-row check with one on the root**
+     *   (#938). The principal must pass the stated key on the root, at the handshake (a
+     *   `403` otherwise) and again on every pass that has a row beneath it to announce,
+     *   so a grant withdrawn, or a root moved out from under it, closes the socket
+     *   instead of nudging it. `LiveNudge` frames only, as for a vouched root.
      */
-    within?: EntityRef | VouchedWithin;
+    within?: EntityRef | VouchedWithin | CheckedWithin;
   }): Promise<Res>;
 }
 
@@ -5778,6 +5785,66 @@ export function vouchedWithin(entity: EntityRef, opts: { because: string }): Vou
 /** Was this value built by `vouchedWithin`? A host asks before it drops the principal's check. */
 export function isVouchedWithin(value: unknown): value is VouchedWithin {
   return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[VOUCHED] === true;
+}
+
+/** The brand only `checkedWithin` can apply. */
+declare const checkedBrand: unique symbol;
+const CHECKED = Symbol('substrat.live.checked-within');
+
+/**
+ * A `within` root the PRINCIPAL must be allowed `permission` on, re-checked for as long
+ * as the socket is open (#938). Built only by `checkedWithin`.
+ */
+export interface CheckedWithin {
+  readonly [checkedBrand]: true;
+  readonly entity: EntityRef;
+  readonly permission: PermissionKey;
+}
+
+/**
+ * Watch `entity` and everything beneath it, for as long as the subscriber may
+ * `permission` on `entity` itself.
+ *
+ * For a subscriber whose grant reaches the ROOT but not each row under it the way a
+ * `liveTargets` key would: ticket0's portal customer holds `conversation:read-own` on
+ * their contact, which reaches the conversation's public thread, while the per-row key
+ * on a message is the staff read. Rooted at an entity whose subtree is exactly what that
+ * key's read returns, the walk is the row filter and the key is the gate.
+ *
+ * The gate is asked at the handshake (`403` if it refuses) and again, once per socket,
+ * on every post-commit pass that has a row beneath the root to announce. A refusal or a
+ * check that throws closes the socket (`1008`) and sends nothing on that pass, so a
+ * revoked grant, a principal who is gone, or a root relinked out of the grant's reach
+ * ends the subscription instead of nudging it, and the client's reconnect meets the
+ * handshake's `403`. A pass with nothing beneath the root asks nothing, so an idle
+ * subscription costs no checks.
+ *
+ * **`checkedWithin` or `vouchedWithin`?** Use `checkedWithin` whenever the subscriber is
+ * a principal with a grant that reaches the root: authority leaves with the grant. Use
+ * `vouchedWithin` only when there is no such grant to ask, as for ticket0's widget
+ * visitor, who holds a session token rather than a principal of their own. A vouched
+ * socket is asserted once, so a token revoked mid-socket keeps receiving content-free
+ * nudges until the socket closes. That is known and accepted for the widget: the nudge
+ * names nothing, and every re-read it causes is checked again.
+ *
+ * Both send `LiveNudge` frames only: the subscriber may not read each row, so it is
+ * never told which one changed. Only rows of a type some module declared in
+ * `liveTargets` are announced, as for every other subscriber.
+ */
+export function checkedWithin(entity: EntityRef, permission: string): CheckedWithin {
+  if (!entity?.entityType || !entity?.entityId) {
+    throw substratError('validation_failed', 'checkedWithin needs an entity with a type and an id');
+  }
+  const key = permissionKey.safeParse(permission);
+  if (!key.success) throw substratError('validation_failed', 'checkedWithin needs a permission key');
+  const value = { entity: { entityType: entity.entityType, entityId: entity.entityId }, permission: key.data };
+  Object.defineProperty(value, CHECKED, { value: true, enumerable: false });
+  return Object.freeze(value) as unknown as CheckedWithin;
+}
+
+/** Was this value built by `checkedWithin`? */
+export function isCheckedWithin(value: unknown): value is CheckedWithin {
+  return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[CHECKED] === true;
 }
 
 /**
@@ -5850,12 +5917,13 @@ export interface LiveChange {
 }
 
 /**
- * What a vouched subscriber is told (#1853): something beneath its root changed, and
- * nothing else.
+ * What a vouched or checked subscriber is told (#1853, #938): something beneath its root
+ * changed, and nothing else.
  *
- * No event type and no entity, deliberately. A vouched subscriber holds no read on the
- * entities its frames are about — the vertical vouched for the ROOT, and the scope
- * cannot know which rows under it the vertical's own read would show. Naming the type
+ * No event type and no entity, deliberately. Such a subscriber holds no read on the
+ * entities its frames are about — the vertical vouched for the ROOT, or the principal was
+ * checked on the root alone, and the scope cannot know which rows under it the vertical's
+ * own read would show. Naming the type
  * or the id would tell it what it never asked to read. The client re-reads, as it does
  * on a `LiveChange`.
  */

@@ -17,6 +17,17 @@ export interface LiveChange {
   entityId: string;
 }
 
+/**
+ * What a root-scoped feed is sent (the kernel's `LiveNudge`): something under the root
+ * changed, naming nothing. The portal's feed carries only these (`harness/portal-live.ts`).
+ */
+export interface LiveNudge {
+  kind: 'nudge';
+}
+
+/** Any frame a feed hands its listeners. */
+export type LiveFrame = LiveChange | LiveNudge;
+
 /** What the feed needs of a WebSocket. The browser's satisfies it. */
 export interface SocketLike {
   onopen: (() => void) | null;
@@ -39,7 +50,7 @@ export interface FeedDeps {
 }
 
 export interface FeedListener {
-  frame(change: LiveChange): void;
+  frame(frame: LiveFrame): void;
   /** The feed opened or closed. */
   state(open: boolean): void;
 }
@@ -160,14 +171,14 @@ export function createFeed(deps: FeedDeps): Feed {
     };
     ws.onmessage = (event) => {
       if (event.data === 'pong') return;
-      let change: LiveChange;
+      let frame: LiveFrame;
       try {
-        change = JSON.parse(String(event.data)) as LiveChange;
+        frame = JSON.parse(String(event.data)) as LiveFrame;
       } catch {
         return;
       }
-      if (change.kind !== 'change') return;
-      for (const l of listeners) l.frame(change);
+      if (frame?.kind !== 'change' && frame?.kind !== 'nudge') return;
+      for (const l of listeners) l.frame(frame);
     };
     ws.onclose = () => {
       const held = openedAt !== null && deps.now() - openedAt >= FEED_TIMING.stableMs;

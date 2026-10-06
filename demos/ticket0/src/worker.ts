@@ -108,6 +108,7 @@ import { senderFor, sweepOutbound } from '../harness/relay.js';
 import { inboundConfigFor, receiveInbound } from '../harness/inbound.js';
 import { mountInvites, recordStaffProfile } from '../harness/invites.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
+import { mountPortalLive } from '../harness/portal-live.js';
 import {
   confirmationEmail,
   mountSignupSurface,
@@ -1119,14 +1120,15 @@ app.post('/api/email/inbound', async (c) => {
 // registered before `mountApi` so the declared table never sees the path. The caller
 // is resolved exactly as `stub` resolves one. What they are then told is the scope's
 // decision, frame by frame, not this route's.
-mountLiveReads(app, {
-  live: (c) => hostFor(c.env).liveReads,
-  subscriber: async (c) => {
-    const node = nodeFor(c.req.raw, c.env);
-    const principal = await principalFor(c.env, c.req.raw);
-    return principal ? { ...node, principal } : null;
-  },
-});
+const liveCaller = async (c: Context<{ Bindings: Env }>) => {
+  const node = nodeFor(c.req.raw, c.env);
+  const principal = await principalFor(c.env, c.req.raw);
+  return principal ? { ...node, principal } : null;
+};
+mountLiveReads(app, { live: (c) => hostFor(c.env).liveReads, subscriber: liveCaller });
+// The portal's one-conversation feed, rooted at the conversation's public thread and
+// gated by the customer's own grant (`harness/portal-live.ts`).
+mountPortalLive(app, { live: (c) => hostFor(c.env).liveReads, caller: liveCaller });
 
 // ── The declared API, the spec, and the platform contract ────────────────────
 

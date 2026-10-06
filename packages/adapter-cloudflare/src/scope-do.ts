@@ -266,6 +266,7 @@ import {
   decodeLiveWithin,
   type LiveRefusal,
   type LiveSubscription,
+  type LiveWithin,
 } from './live-reads.js';
 import { replyOf, type DoReply } from './do-reply.js';
 import { OperationQueue } from './serialization.js';
@@ -2972,6 +2973,26 @@ export function defineScopeDO(
       // about events against a schema it cannot read back through. Same gate every
       // other entry point takes, for the same reason.
       await this.ensureMigrations();
+      // `.parse`, not a cast: these three arrived as header strings, and the branded
+      // ids are what every check downstream is keyed on. A malformed one would
+      // otherwise be carried all the way to a `ctx.check` that quietly matches nothing —
+      // which reads as "this subscriber may see nothing" and is indistinguishable from
+      // a correct denial. Refused here instead, where it is still one subscriber's
+      // problem. Throwing is right: the coordinator built this request.
+      const subscriber = {
+        principal: principalId.parse(principal),
+        tenantId: tenantIdOf.parse(tenantId),
+        scopeId: scopeIdOf.parse(scopeId),
+      };
+      // A checked root (#938) is gated here as well as on every pass: a subscriber who may
+      // not watch it gets no socket at all, so its client meets a refusal rather than a
+      // feed that would close on the first thing it had to say.
+      if (within?.checked !== undefined && !(await this.mayWatchRoot(subscriber, within))) {
+        return new Response('live reads: the subscriber may not watch this root', {
+          status: 403,
+          headers: { [LIVE_MODE_HEADER]: 'forbidden' satisfies LiveRefusal },
+        });
+      }
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
@@ -2982,20 +3003,46 @@ export function defineScopeDO(
       // eviction, so the socket would stay open and silently stop receiving, which is
       // indistinguishable from a quiet scope.
       this.ctx.acceptWebSocket(server);
-      // `.parse`, not a cast: these three arrived as header strings, and the branded
-      // ids are what every check downstream is keyed on. A malformed one would
-      // otherwise be carried all the way to a `ctx.check` that quietly matches nothing —
-      // which reads as "this subscriber may see nothing" and is indistinguishable from
-      // a correct denial. Refused here instead, where it is still one subscriber's
-      // problem. Throwing is right: the coordinator built this request.
       server.serializeAttachment({
-        principal: principalId.parse(principal),
-        tenantId: tenantIdOf.parse(tenantId),
-        scopeId: scopeIdOf.parse(scopeId),
+        ...subscriber,
         since: new Date().toISOString(),
         ...(within ? { within } : {}),
       } satisfies LiveSubscription);
       return new Response(null, { status: 101, webSocket: client });
+    }
+
+    /**
+     * May this subscriber watch its `checkedWithin` root (#938)? Its own `ctx.check` of the
+     * stated key on the root, the same walk a read of the root would make. A check that
+     * throws is a refusal: an outage in the permission path must not become a feed.
+     */
+    private async mayWatchRoot(
+      subscriber: { principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId },
+      within: LiveWithin,
+      context?: () => OperationContext,
+    ): Promise<boolean> {
+      try {
+        const ctx =
+          context?.() ??
+          this.operationContext(
+            subscriber.principal,
+            subscriber.tenantId,
+            subscriber.scopeId,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            'live.subscribe',
+          );
+        const decision = await ctx.check(within.checked as PermissionKey, {
+          entityType: within.entityType,
+          entityId: within.entityId,
+        });
+        return decision.allowed;
+      } catch {
+        return false;
+      }
     }
 
     /**
@@ -3231,14 +3278,34 @@ export function defineScopeDO(
             undefined,
             'live.subscribe',
           ));
+        /**
+         * A checked root's gate (#938), asked at most once per socket per pass and only once
+         * a row beneath the root is about to be announced, so an idle subscription costs no
+         * check. A refusal, or a check that throws, closes the socket before anything is
+         * sent: the grant is gone, the principal is, or the root moved out of the grant's
+         * reach. Closed rather than skipped, so the subscription does not sit there asking
+         * on every pass, and the client's reconnect meets the handshake's 403.
+         */
+        let rootAllowed: boolean | undefined;
         for (const row of announceable) {
           // Narrowing first: it is memoised across sockets, and a row outside the root
           // is out whatever the principal holds.
           if (within && !(await reaches(row, within))) continue;
+          if (within?.checked !== undefined) {
+            rootAllowed ??= await this.mayWatchRoot(subscription, within, context);
+            if (!rootAllowed) {
+              try {
+                ws.close(1008, 'the subscriber may no longer watch this root');
+              } catch {
+                // Already gone.
+              }
+              break;
+            }
+          }
           let frame: LiveChange | LiveNudge;
-          if (within?.vouched !== undefined) {
-            // The vertical vouched for the root, so the walk above was the whole filter
-            // — and the subscriber holds no read on this row, so it is told only that
+          if (within?.vouched !== undefined || within?.checked !== undefined) {
+            // The root was vouched for or checked, so the walk above was the row filter —
+            // and the subscriber holds no read on this row, so it is told only that
             // something beneath its root changed. Never which row, never how.
             frame = { kind: 'nudge', id: row.id, at: row.occurred_at };
           } else {
