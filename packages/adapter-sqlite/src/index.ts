@@ -5119,6 +5119,16 @@ export class SqliteScopeHost implements ScopeHost {
             // and rolls back exactly like a handler throw — fail closed.
             await this.runGuards(operation, ctx, parsed as I | undefined);
             result = await (handler as OperationHandler<I | undefined, O>)(ctx, parsed as I | undefined);
+            // #119: the purge gate's AUTHORITATIVE read. Lifecycle, primacy and tenant live in the
+            // directory, which this transaction does not cover and whose writers (a suspend, a
+            // tenant status, a reclassification) do not take the scope's actor — so a hold could
+            // commit while the handler above was awaiting. From here to `COMMIT` nothing awaits:
+            // better-sqlite3 is synchronous and this host is one process owning both files, so no
+            // directory write can land between this read and the commit of the delete.
+            if (purging) {
+              const held = purgeHeldBy(this.purgeGateFacts(rt, subject.id, tenantId, scopeId));
+              if (held !== null) throw substratError('conflict', `${operation}: ${held}`, { reason: 'purge_held' });
+            }
             if (ref && invokeOptions?.ifMatch !== undefined) {
               assertIfMatch(ref, invokeOptions.ifMatch, seen ?? null);
             }

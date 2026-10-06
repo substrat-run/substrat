@@ -22,7 +22,7 @@ export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { entityStateContractSuite } from './entity-state-suite.js';
 export { stateMod } from './entity-state-module.js';
-export { trashMod, TRASH_MODULE_ID } from './entity-trash-module.js';
+export { trashMod, TRASH_MODULE_ID, TBOX_PURGE_DAYS } from './entity-trash-module.js';
 export { entityTrashContractSuite } from './entity-trash-suite.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
