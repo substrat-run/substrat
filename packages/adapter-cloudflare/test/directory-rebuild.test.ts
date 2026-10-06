@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { ulid } from '@substrat-run/kernel';
+import { ADMIN_LOG_INDEX_DDL, SETTLE_OUTCOME_SQL, auditedOperationsSql, ulid } from '@substrat-run/kernel';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -245,5 +245,33 @@ describe.each(CASES)('#1573: ControlPlaneDO rebuilds $table atomically', (c) => 
     expect(error).toBeNull();
     expect(snap.rows).toEqual(c.expected);
     expect(snap.scratch).toEqual([]);
+  });
+});
+
+describe('#2064: the hosted admin-log rebuild keeps every index the kernel lists', () => {
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+  });
+  const names = ADMIN_LOG_INDEX_DDL.map((ddl) => /CREATE INDEX IF NOT EXISTS (\S+)/.exec(ddl)![1]!);
+  const legacy = CASES.find((c) => c.table === '_substrat_admin_log')!;
+
+  it('a legacy directory DO comes out of the rebuild with every admin-log index, and the operation reads use theirs', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`rebuild-index-${ulid()}`));
+    await runInDurableObject(stub, () => undefined);
+    const seen = await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('DROP TABLE _substrat_admin_log');
+      state.storage.sql.exec(legacy.legacyDdl);
+      new ControlPlaneDO(state, env);
+      const sql = (state.storage.sql.exec("SELECT sql FROM sqlite_master WHERE name = '_substrat_admin_log'").toArray()[0] as { sql: string }).sql;
+      const present = (state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = '_substrat_admin_log'").toArray() as { name: string }[])
+        .map((r) => r.name);
+      const plan = (query: string, ...params: unknown[]) =>
+        (state.storage.sql.exec(`EXPLAIN QUERY PLAN ${query}`, ...params).toArray() as { detail: string }[]).map((r) => r.detail).join(' | ');
+      return { sql, present, batched: plan(auditedOperationsSql(2), 'a', 'b'), settle: plan(SETTLE_OUTCOME_SQL, 'a', 'transferOwner') };
+    });
+    expect(seen.sql).not.toContain(legacy.legacyMarker);
+    expect(seen.present).toEqual(expect.arrayContaining(names));
+    expect(seen.batched).toMatch(/USING INDEX _substrat_admin_log_operation/);
+    expect(seen.settle).toMatch(/USING INDEX _substrat_admin_log_operation/);
   });
 });

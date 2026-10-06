@@ -620,7 +620,7 @@ import {
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
 import {
-  AUDITED_OPERATION_INDEX_DDL,
+  ADMIN_LOG_INDEXES_SQL,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
   readAuditedOperations,
@@ -2200,16 +2200,9 @@ export class SqliteScopeHost implements ScopeHost {
         on_behalf_of TEXT,
         at TEXT NOT NULL
       );
-      -- Read-path indexes for the console (control-plane.md §4.5). The admin log
-      -- is append-only and only grows, so every filter it offers needs one; the
-      -- trailing id column makes each a covering index for the ORDER BY.
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_tenant ON _substrat_admin_log (tenant_id, id);
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_scope ON _substrat_admin_log (scope_id, id);
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_actor ON _substrat_admin_log (actor, id);
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_action ON _substrat_admin_log (action, id);
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_at ON _substrat_admin_log (at);
-      -- #2064: an audited change's rows, found by operation id rather than by scanning the log.
-      ${AUDITED_OPERATION_INDEX_DDL};
+      -- Every admin-log index, from the kernel's one list (#2064), which the legacy
+      -- rebuild below runs again after its rename.
+      ${ADMIN_LOG_INDEXES_SQL}
       -- Operational failures (#559): what the platform could NOT do. Unlike the
       -- never-swept admin log above, this is retention-bounded telemetry, pruned
       -- on write (OPS_FAILURE_RETENTION_DAYS). reference carries the upstream
@@ -11073,7 +11066,8 @@ export class SqliteScopeHost implements ScopeHost {
    * constraint in place, so this is the same create-copy-drop-rename the identity key
    * uses, detected the same way — from `sqlite_master.sql`, which works on DO SQLite
    * too. Rows are copied verbatim: the log stays append-only in content, this only
-   * widens what a future row may say.
+   * widens what a future row may say. The DROP takes every index on the table with it, so
+   * the same transaction rebuilds them from the kernel's list (#2064).
    */
   private ensureAdminLogTenantNullable(): void {
     const row = this.directory
@@ -11099,6 +11093,7 @@ export class SqliteScopeHost implements ScopeHost {
         FROM _substrat_admin_log;
       DROP TABLE _substrat_admin_log;
       ALTER TABLE _substrat_admin_log_new RENAME TO _substrat_admin_log;
+      ${ADMIN_LOG_INDEXES_SQL}
     `);
   }
 

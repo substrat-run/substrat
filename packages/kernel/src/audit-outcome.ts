@@ -36,14 +36,11 @@ export const SETTLE_INTENT_SQL =
   'SELECT id, action, tenant_id, scope_id, vertical, after FROM _substrat_admin_log WHERE id = ?';
 
 /**
- * The admin log indexed by operation id (#2064): the one lookup the settle and every reader of
- * an audited change make. Partial, so rows that pair nothing cost nothing. Both adapters build
- * it from this string, and `lint:spine-ddl` holds them to it.
+ * Both statements below write `+action`, so the action column cannot drive an index choice: an
+ * operation's few rows are reached through `_substrat_admin_log_operation` (the kernel's
+ * admin-log index list), never by walking every row of an action. A planner left to choose takes
+ * `(action, id)`, which reads the whole history of the action.
  */
-export const AUDITED_OPERATION_INDEX_DDL = `CREATE INDEX IF NOT EXISTS _substrat_admin_log_operation
-    ON _substrat_admin_log (json_extract(after, '$.operationId'))
-    WHERE json_extract(after, '$.operationId') IS NOT NULL`;
-
 /**
  * Whether the operation already has an outcome. Found by operation id, never by row order: the
  * intent, a real outcome and a settle's `unknown` are stamped by different writers whose ULIDs
@@ -52,7 +49,7 @@ export const AUDITED_OPERATION_INDEX_DDL = `CREATE INDEX IF NOT EXISTS _substrat
 export const SETTLE_OUTCOME_SQL = `SELECT 1 AS present FROM _substrat_admin_log
   WHERE json_extract(after, '$.operationId') = ?
     AND json_extract(after, '$.operationId') IS NOT NULL
-    AND action = ?
+    AND +action = ?
     AND json_extract(after, '$.phase') <> 'intent'
   LIMIT 1`;
 
@@ -70,7 +67,7 @@ export function auditedOperationsSql(count: number): string {
     FROM _substrat_admin_log
     WHERE json_extract(after, '$.operationId') IN (${Array.from({ length: count }, () => '?').join(', ')})
       AND json_extract(after, '$.operationId') IS NOT NULL
-      AND action IN (${AUDITED_CHANGE_ACTIONS.map((a) => `'${a}'`).join(', ')})`;
+      AND +action IN (${AUDITED_CHANGE_ACTIONS.map((a) => `'${a}'`).join(', ')})`;
 }
 
 /** One row as `auditedOperationsSql` reads it. */

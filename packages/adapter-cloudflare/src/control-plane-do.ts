@@ -88,7 +88,8 @@ import {
   SETTLE_OUTCOME_SQL,
   unknownOutcomeOf,
   type SettleIntentRow,
-  AUDITED_OPERATION_INDEX_DDL,
+  ADMIN_LOG_INDEX_DDL,
+  ADMIN_LOG_INDEXES_SQL,
   readAuditedOperations,
   type AuditedOperationRef,
   type AuditedOperationRow,
@@ -1082,18 +1083,12 @@ const DIRECTORY_DDL = `
     on_behalf_of TEXT,
     at TEXT NOT NULL
   );
-  -- Read-path indexes for the console (control-plane.md §4.5). The admin log is
-  -- append-only and only grows, so every filter it offers needs one.
+  -- Every admin-log index, from the kernel's one list (#2064), which the legacy
+  -- rebuild runs again after its rename.
   -- NOTE: keep every comment in this DDL free of semicolons. The constructor
   -- splits this string on the statement separator, and a semicolon inside a
   -- comment strands a comment-only fragment that execs as "no statement".
-  CREATE INDEX IF NOT EXISTS _substrat_admin_log_tenant ON _substrat_admin_log (tenant_id, id);
-  CREATE INDEX IF NOT EXISTS _substrat_admin_log_scope ON _substrat_admin_log (scope_id, id);
-  CREATE INDEX IF NOT EXISTS _substrat_admin_log_actor ON _substrat_admin_log (actor, id);
-  CREATE INDEX IF NOT EXISTS _substrat_admin_log_action ON _substrat_admin_log (action, id);
-  CREATE INDEX IF NOT EXISTS _substrat_admin_log_at ON _substrat_admin_log (at);
-  -- #2064 - an audited change's rows, found by operation id rather than by scanning the log.
-  ${AUDITED_OPERATION_INDEX_DDL};
+  ${ADMIN_LOG_INDEXES_SQL}
   -- Operational failures (#559) - what the platform could NOT do, and why. NOT the
   -- admin log (that is the never-swept compliance witness of successful mutations)
   -- but retention-bounded telemetry, pruned on write after OPS_FAILURE_RETENTION_DAYS.
@@ -1586,6 +1581,8 @@ export class ControlPlaneDO extends DurableObject {
          FROM _substrat_admin_log`,
       'DROP TABLE _substrat_admin_log',
       'ALTER TABLE _substrat_admin_log_new RENAME TO _substrat_admin_log',
+      // The DROP took every index on the table: rebuild them from the kernel's list (#2064).
+      ...ADMIN_LOG_INDEX_DDL,
     ]);
   }
 

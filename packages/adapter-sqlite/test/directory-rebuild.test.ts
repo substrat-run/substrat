@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ADMIN_LOG_INDEX_DDL, SETTLE_OUTCOME_SQL, auditedOperationsSql } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
@@ -247,6 +248,39 @@ describe('#1573: the admin log accepts a tenant-less row once rebuilt', () => {
         expect(
           after.prepare("SELECT tenant_id FROM _substrat_admin_log WHERE id = 'platform-1'").get(),
         ).toEqual({ tenant_id: null });
+      } finally {
+        after.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('#2064: the admin-log rebuild keeps every index the kernel lists', () => {
+  const names = ADMIN_LOG_INDEX_DDL.map((ddl) => /CREATE INDEX IF NOT EXISTS (\S+)/.exec(ddl)![1]!);
+
+  it('a legacy directory comes out of the rebuild with every admin-log index, and the operation reads use theirs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-directory-rebuild-index-'));
+    try {
+      const db = new Database(join(dir, '_directory.sqlite'));
+      db.exec(CASES[1]!.legacyDdl);
+      db.close();
+
+      await new SqliteScopeHost({ dir }).close();
+
+      const after = new Database(join(dir, '_directory.sqlite'), { readonly: true });
+      try {
+        // The rebuild ran: the stored table no longer says NOT NULL.
+        expect((after.prepare("SELECT sql FROM sqlite_master WHERE name = '_substrat_admin_log'").get() as { sql: string }).sql)
+          .not.toContain(CASES[1]!.legacyMarker);
+        const present = (after.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = '_substrat_admin_log'").all() as { name: string }[])
+          .map((r) => r.name);
+        expect(present).toEqual(expect.arrayContaining(names));
+        const plan = (sql: string, params: unknown[]) =>
+          (after.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[]).map((r) => r.detail).join(' | ');
+        expect(plan(auditedOperationsSql(2), ['a', 'b'])).toMatch(/USING INDEX _substrat_admin_log_operation/);
+        expect(plan(SETTLE_OUTCOME_SQL, ['a', 'transferOwner'])).toMatch(/USING INDEX _substrat_admin_log_operation/);
       } finally {
         after.close();
       }

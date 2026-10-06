@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
+import { ADMIN_LOG_INDEXES_SQL } from '../src/admin-log-ddl.js';
 import {
-  AUDITED_OPERATION_INDEX_DDL,
   AUDITED_OPERATIONS_BATCH,
   auditedKeyOf,
   auditedOperationsSql,
@@ -62,7 +62,7 @@ describe('the operation-id reads', () => {
     d.exec(`CREATE TABLE _substrat_admin_log (
       id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL, tenant_id TEXT, scope_id TEXT,
       vertical TEXT, before TEXT, after TEXT, caused_by TEXT, on_behalf_of TEXT, at TEXT NOT NULL)`);
-    d.exec(AUDITED_OPERATION_INDEX_DDL);
+    d.exec(ADMIN_LOG_INDEXES_SQL);
     return d;
   };
   let n = 0;

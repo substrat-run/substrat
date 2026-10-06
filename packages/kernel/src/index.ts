@@ -532,9 +532,9 @@ export type {
   SystemSwitchRecordFilter,
   SystemSwitchRecordRow,
 } from './system-switch-record.js';
+export { ADMIN_LOG_INDEX_DDL, ADMIN_LOG_INDEXES_SQL } from './admin-log-ddl.js';
 export {
   AUDITED_CHANGE_ACTIONS,
-  AUDITED_OPERATION_INDEX_DDL,
   AUDITED_OPERATIONS_BATCH,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
