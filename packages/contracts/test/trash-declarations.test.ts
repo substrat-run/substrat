@@ -155,10 +155,11 @@ describe('purges', () => {
   });
 
   it('takes a STRICT object — a passthrough one keeps an extra id through the parse, a default one drops it silently', () => {
-    const purge = (input: z.ZodObject) =>
+    // Typed as the strict input: the load-time rule is for an object built around the types.
+    const purge = (input: typeof purgeInput) =>
       define({ 'x/del': { summary: 's', permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' }, trashed: 'purges', input, output: ok } });
     for (const input of [z.looseObject({ boxId: z.string() }), z.object({ boxId: z.string() }).passthrough(), z.object({ boxId: z.string() })]) {
-      expect(() => purge(input)).toThrow(/strict/);
+      expect(() => purge(input as unknown as typeof purgeInput)).toThrow(/strict/);
     }
     // Twin: strict, by either spelling.
     purge(z.strictObject({ boxId: z.string() }));
