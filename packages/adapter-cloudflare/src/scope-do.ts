@@ -60,6 +60,7 @@ import {
 import {
   ulid,
   LIVE_CLOSE,
+  LIVE_SOCKETS_PER_PRINCIPAL,
   DO_SQL_LIMITS,
   unknownRoleError,
   createUlid,
@@ -3010,6 +3011,27 @@ export function defineScopeDO(
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+      /**
+       * At most `LIVE_SOCKETS_PER_PRINCIPAL` sockets per principal on this scope (#938):
+       * each is work on every post-commit pass. The extra one is accepted and closed at
+       * once with `4429`, rather than refused with a status, because a browser never sees
+       * a failed handshake's status — only a close code, which the client reads as "poll
+       * and stop asking". Not hibernated, so it never joins the roster the fan-out walks.
+       */
+      const held = this.ctx.getWebSockets().filter((ws) => {
+        let s: LiveSubscription | null = null;
+        try {
+          s = readSubscription(ws.deserializeAttachment());
+        } catch {
+          s = null;
+        }
+        return s?.principal === subscriber.principal;
+      }).length;
+      if (held >= LIVE_SOCKETS_PER_PRINCIPAL) {
+        server.accept();
+        server.close(LIVE_CLOSE.tooMany, 'too many live subscriptions for this principal; poll instead');
+        return new Response(null, { status: 101, webSocket: client });
+      }
       // HIBERNATABLE, not `server.accept()`. A scope with a watcher open would
       // otherwise be pinned in memory for as long as somebody has a tab open, which is
       // the cost model inverted: a support desk being WATCHED is the normal state.
@@ -3235,7 +3257,11 @@ export function defineScopeDO(
        */
       const parents = scopeTupleReader(this.sql);
       const now = new Date().toISOString();
-
+      /**
+       * A checked root's gate, asked once per (principal, key, root) per pass (#938): a
+       * principal holding that root in several tabs is one check, fanned out to each socket.
+       */
+      const rootChecks = new Map<string, Promise<boolean>>();
       const ancestors = new Map<string, Promise<Set<string>>>();
       const reaches = async (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
         let up = ancestors.get(row.id);
@@ -3294,9 +3320,9 @@ export function defineScopeDO(
         const subscriber = subscription;
         const context = () => (ctx ??= this.liveContext(subscriber));
         /**
-         * A checked root's gate (#938), asked at most once per socket per pass and only once
-         * a row beneath the root is about to be announced, so an idle subscription costs no
-         * check. A refusal, or a check that throws, closes the socket before anything is
+         * A checked root's gate (#938), asked at most once per (principal, key, root) per
+         * pass (`rootChecks`) and only once a row beneath the root is about to be announced,
+         * so an idle subscription costs no check. A refusal, or a check that throws, closes the socket before anything is
          * sent: the grant is gone, the principal is, or the root moved out of the grant's
          * reach. Closed rather than skipped, so the subscription does not sit there asking
          * on every pass, and the client's reconnect meets the handshake's 403.
@@ -3307,7 +3333,12 @@ export function defineScopeDO(
           // is out whatever the principal holds.
           if (within && !(await reaches(row, within))) continue;
           if (within?.checked !== undefined) {
-            rootAllowed ??= await this.mayWatchRoot(context, within);
+            if (rootAllowed === undefined) {
+              const key = `${subscriber.principal}\n${within.checked}\n${within.entityType}:${within.entityId}`;
+              let check = rootChecks.get(key);
+              if (!check) rootChecks.set(key, (check = this.mayWatchRoot(context, within)));
+              rootAllowed = await check;
+            }
             if (!rootAllowed) {
               try {
                 ws.close(LIVE_CLOSE.revoked, 'the subscriber may no longer watch this root');

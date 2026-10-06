@@ -25,6 +25,8 @@ import {
 } from '@substrat-run/contracts';
 import {
   checkedWithin,
+  LIVE_CLOSE,
+  LIVE_SOCKETS_PER_PRINCIPAL,
   ulid,
   vouchedWithin,
   webCryptoSecretBox,
@@ -835,6 +837,39 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     // The twin, from the same write: a session still current stays open, and hears it.
     expect(stays.closedWith).toBeNull();
     if (folderId !== null) expect(stays.frames).toHaveLength(heard + 1);
+  });
+
+  // -- many sockets from one principal (#938, Codex round 1) ------------------
+
+  it("asks one principal's gate once per pass however many sockets it holds on the root", async () => {
+    const tabs = [await watchChecked(reader, F1), await watchChecked(reader, F1), await watchChecked(reader, F1)];
+    const checks = await instrumentRootChecks({ throws: false });
+    try {
+      await as('live/touch', { noteId: IN_F1 });
+      await settle();
+      expect(await checks.calls()).toBe(1);
+    } finally {
+      await checks.restore();
+    }
+    for (const tab of tabs) expect(tab.frames).toHaveLength(1);
+  });
+
+  it(`holds a principal to ${LIVE_SOCKETS_PER_PRINCIPAL} sockets: the next is closed ${LIVE_CLOSE.tooMany} and sent nothing`, async () => {
+    const tabs: CheckedWatcher[] = [];
+    for (let i = 0; i < LIVE_SOCKETS_PER_PRINCIPAL; i++) tabs.push(await watchChecked(reader, F1));
+    const extra = await watchChecked(reader, F1);
+    // Another principal is not held to this one's count.
+    const other = await watchChecked(writer, F1);
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(extra.closedWith).toBe(LIVE_CLOSE.tooMany);
+    expect(extra.frames).toEqual([]);
+    for (const tab of tabs) {
+      expect(tab.closedWith).toBeNull();
+      expect(tab.frames).toHaveLength(1);
+    }
+    expect(other.closedWith).toBeNull();
+    expect(other.frames).toHaveLength(1);
   });
 
   it.each([

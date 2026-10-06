@@ -330,6 +330,14 @@ bearer's `exp`. A handshake at or past it is refused, and the scope closes the s
 on its first pass at or past it, before sending anything, whatever the caller's grants still
 say. Without it, a socket lives until one end closes it.
 
+### How many sockets
+
+One principal may hold `LIVE_SOCKETS_PER_PRINCIPAL` (8) live sockets on a scope. The next is
+accepted and closed at once with `LIVE_CLOSE.tooMany` (`4429`), because a browser never sees a
+failed handshake's status, only a close code. A client should read `4429` as "poll and stop
+asking", not as a reason to reconnect. `checkedWithin` gates are asked once per
+(principal, key, root) per pass, however many of those sockets share a root.
+
 ## `requestConnectUrl(request)`
 
 How a vertical starts a provider consent round **itself** (#1310), for the case the

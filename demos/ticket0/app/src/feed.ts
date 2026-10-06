@@ -56,6 +56,13 @@ export interface FeedListener {
   state(open: boolean): void;
 }
 
+/**
+ * The close code a scope sends when this principal already holds as many live sockets as
+ * it may (the kernel's `LIVE_CLOSE.tooMany`, restated because the browser bundle does not
+ * depend on the kernel). Not a reason to retry: the feed stops trying and the screen polls.
+ */
+export const CLOSE_TOO_MANY = 4429;
+
 export const FEED_TIMING = {
   /** Connections in a row that did not hold before the feed stops trying for a while. */
   giveUpAfter: 3,
@@ -209,9 +216,15 @@ export function createFeed(deps: FeedDeps): Feed {
       if (frame?.kind !== 'change' && frame?.kind !== 'nudge') return;
       for (const l of listeners) l.frame(frame);
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       const held = openedAt !== null && deps.now() - openedAt >= FEED_TIMING.stableMs;
       teardown();
+      // Too many sockets for this principal: the scope said poll. Asking again would only
+      // be told the same, so this feed stops for the life of the page.
+      if (event?.code === CLOSE_TOO_MANY) {
+        ended = true;
+        return;
+      }
       failures = held ? 0 : failures + 1;
       scheduleRetry();
     };

@@ -22,7 +22,8 @@ import { Hono } from 'hono';
 import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { LIVE_PATH, mountLiveReads } from '@substrat-run/vertical-host';
-import { isCheckedWithin } from '@substrat-run/kernel';
+import { LIVE_CLOSE, isCheckedWithin } from '@substrat-run/kernel';
+import { CLOSE_TOO_MANY } from '../app/src/feed.js';
 import { buildHost } from '../src/seed.js';
 import { mountPortalLive, portalThreadWithin } from '../harness/portal-live.js';
 
@@ -104,5 +105,11 @@ describe("the portal's live route on the node host (#938)", () => {
       permission: 'conversation:read-own',
     });
     expect(portalThreadWithin(conversation)).toMatchObject(within as object);
+  });
+});
+
+describe('the close code the app reads as "poll" (#938)', () => {
+  it("is the kernel's, restated because the browser bundle does not depend on the kernel", () => {
+    expect(CLOSE_TOO_MANY).toBe(LIVE_CLOSE.tooMany);
   });
 });

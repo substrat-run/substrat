@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CLOSE_TOO_MANY,
   FEED_TIMING,
   createFeed,
   endingOnUnauthorized,
@@ -181,6 +182,29 @@ describe('the live feed ends with the session', () => {
     }
     expect(latest().closed).toBe(false);
     expect(feed.isOpen()).toBe(true);
+  });
+});
+
+describe('the live feed told it holds too many sockets (#938)', () => {
+  it(`stops asking after a ${CLOSE_TOO_MANY} close, and the screen keeps polling`, () => {
+    const l = listener();
+    feed.listen(l);
+    latest().accept();
+    latest().drop(CLOSE_TOO_MANY);
+    expect(l.state).toHaveBeenLastCalledWith(false);
+    const after = sockets.length;
+    feed.wake();
+    vi.advanceTimersByTime(FEED_TIMING.restMs * 2);
+    expect(sockets.length).toBe(after);
+  });
+
+  it('reconnects after any other close — the twin', () => {
+    feed.listen(listener());
+    latest().accept();
+    latest().drop(1008);
+    const after = sockets.length;
+    vi.advanceTimersByTime(FEED_TIMING.maxBackoffMs);
+    expect(sockets.length).toBe(after + 1);
   });
 });
 

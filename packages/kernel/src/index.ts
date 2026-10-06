@@ -130,6 +130,7 @@ export {
   isCheckedWithin,
   type CheckedWithin,
   LIVE_CLOSE,
+  LIVE_SOCKETS_PER_PRINCIPAL,
 } from './scope-host.js';
 export {
   /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */

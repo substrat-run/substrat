@@ -5750,11 +5750,23 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
 }
 
 /**
- * The close code a live socket ends with when the subscriber may no longer watch what it
- * subscribed to — a `checkedWithin` gate refused, or the session that opened it ended
- * (`1008`, policy). A reconnect meets the handshake's own refusal.
+ * The close codes a live socket ends with, so a client can tell "try again" from "poll".
+ *
+ * - `1008` (policy): the subscriber may no longer watch what it subscribed to — a
+ *   `checkedWithin` gate refused, or the session that opened it ended. A reconnect meets
+ *   the handshake's own refusal.
+ * - `4429`: this principal already holds `LIVE_SOCKETS_PER_PRINCIPAL` sockets on the scope.
+ *   Not a reason to retry: the client should poll, which it does anyway, and stop asking.
  */
-export const LIVE_CLOSE = { revoked: 1008 } as const;
+export const LIVE_CLOSE = { revoked: 1008, tooMany: 4429 } as const;
+
+/**
+ * How many live sockets one principal may hold on one scope (#938). A tab holds one per
+ * feed (the desk's, and one per open conversation in ticket0's portal), and each socket is
+ * work on every post-commit pass, so a principal opening more is a cost on everybody else
+ * writing to the scope. Eight covers several tabs; past it a socket is closed `4429`.
+ */
+export const LIVE_SOCKETS_PER_PRINCIPAL = 8;
 
 /** The brand only `vouchedWithin` can apply — a literal cannot type-check as one. */
 declare const vouchedBrand: unique symbol;
