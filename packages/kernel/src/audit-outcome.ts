@@ -45,8 +45,9 @@ export const SETTLE_INTENT_SQL =
  * Whether the operation already has an outcome: a non-intent row of the SAME operation, its whole
  * identity compared column by column. The operation id reaches `_substrat_admin_log_operation`.
  * The action, tenant and scope are compared with `IS`, so a null tenant or scope matches only
- * null and never acts as a wildcard, and written `+column` so that none of them can drive an index
- * choice away from the operation id (`(tenant_id, id)` would read the tenant's whole log). No
+ * null and never acts as a wildcard, and written `+column` so that the operation id is the only
+ * index the statement can use: left to choose, the planner took `(action, id)` once, and
+ * `(tenant_id, id)` or `(scope_id, id)` would read as much. No
  * value is serialized to compare, so nothing depends on two encoders agreeing. Never by row
  * order: the intent, a real outcome and a settle's `unknown` are stamped by different writers
  * whose ids and clocks need not agree.
