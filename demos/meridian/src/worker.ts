@@ -34,6 +34,8 @@ import {
   readRoutedNode,
   RouterAssertionError,
   invocationLog,
+  externalInput,
+  externalResult,
 } from '@substrat-run/vertical-host';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
@@ -466,9 +468,10 @@ async function grantEmployeeSelf(env: Env, node: CompanyNode, result: unknown): 
 // undocumented in the OpenAPI document (one path with a union body reads as nothing).
 app.post('/api/invoke', async (c) => {
   const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
-  const result = (await (await stub(c)).invoke(op, input)) ?? null;
+  // #2073: through the platform's one door, in and out — this route is an external transport too.
+  const result = (await (await stub(c)).invoke(op, externalInput(input))) ?? null;
   if (op === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
-  return c.json(result);
+  return c.json(externalResult(result));
 });
 
 // The DOCUMENTED invoke surface (design/api-surface.md §2.2): one URL per operation —
@@ -479,9 +482,9 @@ app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
   if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
   const body = await c.req.text();
-  const result = (await (await stub(c)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null;
+  const result = (await (await stub(c)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;
   if (name === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
-  return c.json(result);
+  return c.json(externalResult(result));
 });
 
 // The OpenAPI 3.1 document, built from the operation catalog — the same schemas the

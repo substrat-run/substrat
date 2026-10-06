@@ -6,7 +6,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
-import { problemResponse } from '@substrat-run/vertical-host';
+import { externalResult, problemResponse } from '@substrat-run/vertical-host';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { buildShopHost, seedShop, shopProvider, linkDevPersonas, type ShopWorld } from './index.js';
@@ -120,7 +120,9 @@ app.onError((err, c) => problemResponse(c, err));
  * `packages/vertical-host` does exactly this for a hosted vertical's generated
  * routes; shop hand-writes its own, so it applies the same projection here.
  */
-function jsonPage(c: Context, result: unknown) {
+function jsonPage(c: Context, answered: unknown) {
+  // #2073: the platform's one door on the way out, as the generated routes use.
+  const result = externalResult(answered);
   if (!isPage(result)) return c.json(result as never);
   const link = nextPageLink(c.req.url, result.nextCursor);
   if (link) c.header(PAGE_LINK_HEADER, link);

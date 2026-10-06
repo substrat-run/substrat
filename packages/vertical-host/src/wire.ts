@@ -6,6 +6,8 @@
  * (`/internal/connector-invoke`) — hands what the caller sent through `externalInput` before
  * invoking, and what the operation answered through `externalResult` before serialising. A
  * transport added later takes the same two calls; `wire.test.ts` enumerates the ones that exist.
+ * Both are exported, so a vertical that mounts its own generic route (meridian's `/api/invoke`,
+ * shop's page projection) goes through the same door.
  *
  * What they guard is `Page.rowCursors`: each row's own cursor, which `pageVisible` asks a read for
  * so that it can stop partway through a page. It is an internal channel, and these are the only

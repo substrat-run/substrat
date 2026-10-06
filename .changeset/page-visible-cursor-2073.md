@@ -4,7 +4,7 @@
 '@substrat-run/adapter-sqlite': patch
 '@substrat-run/adapter-cloudflare': patch
 '@substrat-run/contract-tests': minor
-'@substrat-run/vertical-host': patch
+'@substrat-run/vertical-host': minor
 '@substrat-run/create-substrat': patch
 ---
 
@@ -14,7 +14,7 @@ It now walks on past refused rows until it has `limit` visible ones or reaches t
 
 `pageVisible` reads in batches of `max(limit, VISIBLE_BATCH)` (64), so a sparse walk costs about `budget / 64` reads rather than one per refused row. A page may now carry each row's own cursor as `rowCursors`, aligned with `entries`, when the read is asked for it with `rowCursors: true`: `pageOf`, `countedPageOf`, `mapPage` (by index, so rows that map to equal values keep their own) and `ctx.page` on both adapters. `pageVisible` asks for them. When its page fills partway through a batch, it reads that visible row's cursor off the same response, so it survives an RPC and no concurrent write can change it. A fetch that returns no `rowCursors` ends the walk at that row with a null cursor, as a short page does. It is never read a second time. Pass the walk's params on (`{ ...input, ...p }`) and that never happens. An ordinary page is unchanged.
 
-`pageVisible` never returns `rowCursors`. A handler that filtered `entries` after its read would leave them naming the rows it dropped, so `@substrat-run/vertical-host` strips them from every wire projection: the HTTP body, a vertical's `respond`, and an MCP tool result. It does this with the new `withoutRowCursors` from contracts.
+`pageVisible` never returns `rowCursors`, and no external caller ever sees or sets them. `@substrat-run/vertical-host` adds one door, `externalInput` and `externalResult`, and every external transport goes through it: the HTTP mount (paged and whole), MCP, a peer vertical's call, the connector write-back and the exported-events read. `externalInput` drops a caller's `rowCursors` flag. `externalResult` removes `rowCursors` from every page in a result, however nested, using contracts' `withoutRowCursors`, which is now deep. Both are exported for a vertical that mounts its own generic route. A vertical's own `respond` envelope is handed the result untouched, as before. `rowCursors` travel only inside a scope and over the host↔scope `invoke`.
 
 `pageVisible` grows two optional parts. The test may be `{ batch }`, one verdict per row for a whole batch, for a proof cheaper asked of a set. A fourth `options` argument takes `scanBudget`. `fetch` may now be async.
 

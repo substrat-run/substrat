@@ -2199,6 +2199,7 @@ export * from './operations-routes.js';
 export { requestConnectUrl, ConnectUrlRequestError } from './connect-url.js';
 export type { ConnectUrlRequest } from './connect-url.js';
 export * from './mcp.js';
+export { externalInput, externalResult } from './wire.js';
 export * from './public-surface.js';
 // #1672: the link-share exchange — a capability's secret traded for an HttpOnly session.
 export * from './capability-exchange.js';

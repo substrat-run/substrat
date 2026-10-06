@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { globalFetch, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
-import { problemResponse } from '@substrat-run/vertical-host';
+import { externalInput, externalResult, problemResponse } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
@@ -226,7 +226,9 @@ async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
  * `isPage` is checked rather than assumed, so an operation that has not adopted
  * `pageOf` reaches the client unchanged instead of being emptied.
  */
-function jsonPage(c: Context, result: unknown) {
+function jsonPage(c: Context, answered: unknown) {
+  // #2073: the platform's one door on the way out — this harness is an external transport too.
+  const result = externalResult(answered);
   if (!isPage(result)) return c.json(result as never);
   const link = nextPageLink(c.req.url, result.nextCursor);
   if (link) c.header(PAGE_LINK_HEADER, link);
@@ -238,7 +240,7 @@ function jsonPage(c: Context, result: unknown) {
 app.post('/api/invoke', async (c) => {
   const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
   const p = await persona(c);
-  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(op, input)) ?? null;
+  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(op, externalInput(input))) ?? null;
   if (op === 'hr/create-employee') await grantEmployeeSelf(p, result);
   return jsonPage(c, result);
 });
@@ -252,7 +254,7 @@ app.post('/api/op/*', async (c) => {
   if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
   const body = await c.req.text();
   const p = await persona(c);
-  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null;
+  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;
   if (name === 'hr/create-employee') await grantEmployeeSelf(p, result);
   return jsonPage(c, result);
 });
