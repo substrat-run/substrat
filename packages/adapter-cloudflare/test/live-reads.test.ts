@@ -602,7 +602,13 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     throws: boolean;
     /** Hold each check this long before answering — a pass whose clock moves under it. */
     delayMs?: number;
+    /**
+     * Run once, inside the DO, after a held check has ANSWERED and before it returns: a write
+     * landing between a decision and the send it was taken for.
+     */
+    whileHeld?: (instance: unknown) => void;
   }): Promise<{ calls(): Promise<number>; restore(): Promise<void> }> {
+    let whileHeld = opts.whileHeld;
     await runInDurableObject(scopeDo(), (instance) => {
       const target = instance as unknown as {
         operationContext: (...args: unknown[]) => { check: (...a: unknown[]) => Promise<unknown> };
@@ -619,6 +625,14 @@ describe('live reads: a root the principal is checked on (#938)', () => {
           check: {
             value: async (...a: unknown[]) => {
               target.__liveChecks = (target.__liveChecks ?? 0) + 1;
+              if (whileHeld) {
+                const write = whileHeld;
+                whileHeld = undefined;
+                const answer = await ctx.check(...a);
+                if (opts.delayMs) await new Promise((resolve) => setTimeout(resolve, opts.delayMs));
+                write(target);
+                return answer;
+              }
               if (opts.delayMs) await new Promise((resolve) => setTimeout(resolve, opts.delayMs));
               if (opts.throws) throw new Error('permission evaluator unavailable');
               return ctx.check(...a);
@@ -931,6 +945,59 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     const ends = await passWithHeldCheck(soon(1_500));
     expect(ends.frames).toEqual([]);
     expect(ends.closedWith).toBe(1008);
+  });
+
+  // -- a write that lands between a decision and its send (#938, Codex #2077 r4) -------
+
+  it('decides again once the store has written, and sends nothing past a revoke that landed after the allow', { timeout: 20_000 }, async () => {
+    /** `reader`'s grant on the cabinet, tombstoned or restored through the scope's own handle. */
+    const setReaderRevoked = (instance: unknown, revokedAt: string | null) =>
+      (instance as { sql: SqlStorage }).sql.exec(
+        `UPDATE _substrat_tuples SET revoked_at = ? WHERE subject = ? AND object = ?`,
+        revokedAt,
+        `principal:${reader}`,
+        `cabinet:${C1}`,
+      );
+    // Two sockets from one principal, so one coalesced check decides both. When `revoke` is
+    // set, that check answers ALLOW and is then held, and the revoke lands during the hold —
+    // through the scope's own handle and outside its queue, the door this guards against — so
+    // the remembered verdict is an allow the store no longer gives.
+    const pass = async (revoke: boolean) => {
+      const tabs = [await watchChecked(reader, F1), await watchChecked(reader, F1)];
+      const checks = await instrumentRootChecks({
+        throws: false,
+        delayMs: 300,
+        ...(revoke ? { whileHeld: (instance: unknown) => setReaderRevoked(instance, new Date().toISOString()) } : {}),
+      });
+      try {
+        await as('live/touch', { noteId: IN_F1 });
+        await settle();
+        // Read before `finally` closes every socket from this end.
+        return { tabs: tabs.map((w) => ({ frames: [...w.frames], closedWith: w.closedWith })), calls: await checks.calls() };
+      } finally {
+        await checks.restore();
+        await runInDurableObject(scopeDo(), (instance) => setReaderRevoked(instance, null));
+        for (const w of open.splice(0)) w.close();
+        await settle();
+      }
+    };
+
+    // The twin first: nothing written mid-pass, so both sockets hear the row from one
+    // check — the remembered verdict survives a store that has not moved.
+    const quiet = await pass(false);
+    for (const tab of quiet.tabs) {
+      expect(tab.frames).toHaveLength(1);
+      expect(tab.closedWith).toBeNull();
+    }
+    expect(quiet.calls).toBe(1);
+
+    // The revoke lands after the allow: decided again, refused, closed — neither socket hears it.
+    const revoked = await pass(true);
+    for (const tab of revoked.tabs) {
+      expect(tab.frames).toEqual([]);
+      expect(tab.closedWith).toBe(1008);
+    }
+    expect(revoked.calls).toBe(2);
   });
 
   it(`holds a principal to ${LIVE_SOCKETS_PER_PRINCIPAL} sockets: the next is closed ${LIVE_CLOSE.tooMany} and sent nothing`, async () => {
