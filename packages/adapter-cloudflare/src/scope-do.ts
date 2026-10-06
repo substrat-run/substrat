@@ -59,6 +59,8 @@ import {
 } from '@substrat-run/contracts';
 import {
   ulid,
+  LIVE_CLOSE,
+  LIVE_SOCKETS_PER_PRINCIPAL,
   DO_SQL_LIMITS,
   unknownRoleError,
   createUlid,
@@ -256,6 +258,7 @@ import type {
 import {
   isUpgradeRequest,
   readSubscription,
+  LIVE_DECIDE_ATTEMPTS,
   LIVE_FANOUT_LIMIT,
   LIVE_MODE_HEADER,
   LIVE_PRINCIPAL_HEADER,
@@ -263,9 +266,12 @@ import {
   LIVE_SUBSCRIBE_PATH,
   LIVE_TENANT_HEADER,
   LIVE_WITHIN_HEADER,
+  LIVE_EXPIRES_HEADER,
   decodeLiveWithin,
+  liveInstant,
   type LiveRefusal,
   type LiveSubscription,
+  type LiveWithin,
 } from './live-reads.js';
 import { replyOf, type DoReply } from './do-reply.js';
 import { OperationQueue } from './serialization.js';
@@ -846,6 +852,17 @@ class WriteRevision {
   private keeping = false;
   /** A statement's text is almost always a constant, so its answer is remembered (bounded). */
   private readonly writes = new Map<string, boolean>();
+  /**
+   * Every write statement run through this handle since the object woke, in memory (#938, Codex
+   * #2077 r4) — counted per STATEMENT, bookkeeping and suspended ones included, where the durable
+   * revision above is bumped once per run. A live fan-out pass decides who may hear a frame across
+   * awaits; it reads this immediately before deciding and again immediately before sending, with
+   * no await between that second read and the send, and decides again when it moved. Per statement
+   * because a decision taken between a transaction's first write (its bump) and a later one (the
+   * revoke itself) must not read as current. Over-counting (a rolled-back write, a write no check
+   * reads) only costs a pass a re-check.
+   */
+  private written = 0;
   readonly sql: SqlStorage;
 
   constructor(
@@ -856,7 +873,9 @@ class WriteRevision {
     private readonly refusal: () => string | null,
   ) {
     const exec = (query: string, ...bindings: unknown[]) => {
-      if (this.keeping && this.isWrite(query)) {
+      const write = this.isWrite(query);
+      if (write) this.written++;
+      if (this.keeping && write) {
         // Bookkeeping takes the copy-marker insert and the lifecycle delivery (#1713) and nothing
         // else: any other write here would be one the revision never saw, which is the hole this
         // class exists to close.
@@ -865,7 +884,7 @@ class WriteRevision {
         }
         return raw.exec(query, ...bindings);
       }
-      if (!this.suspended() && this.isWrite(query)) {
+      if (write && !this.suspended()) {
         const refused = this.refusal();
         if (refused) throw substratError('conflict', refused);
         if (!this.covered) this.bump();
@@ -931,6 +950,11 @@ class WriteRevision {
     queueMicrotask(() => {
       this.covered = false;
     });
+  }
+
+  /** How many write statements this handle has run (see `written`). */
+  get statementsWritten(): number {
+    return this.written;
   }
 
   private isWrite(query: string): boolean {
@@ -1119,6 +1143,15 @@ class SystemDoorMovedError extends Error {}
 
 /** #1834: the brand only `assertSystemDoor` sets, so nothing else can make a `SystemDoorPass`. */
 const SYSTEM_DOOR_PASSED: unique symbol = Symbol('system door passed');
+
+/** Close a live socket whose session has ended (#938). */
+function closeSessionEnded(ws: WebSocket): void {
+  try {
+    ws.close(LIVE_CLOSE.revoked, 'the session that opened this subscription has ended');
+  } catch {
+    // Already gone.
+  }
+}
 
 /** #1834: proof that this call passed the system door's check, naming the module it acts as. */
 interface SystemDoorPass {
@@ -2968,13 +3001,60 @@ export function defineScopeDO(
       if (withinHeader !== null && !within) {
         return new Response('live reads: unreadable within narrowing', { status: 500 });
       }
+      // The same for an expiry: dropping it would keep the socket open past its session.
+      const expiresHeader = request.headers.get(LIVE_EXPIRES_HEADER);
+      const expiresAt = expiresHeader === null ? undefined : liveInstant(expiresHeader);
+      if (expiresHeader !== null && !expiresAt) {
+        return new Response('live reads: unreadable expiry', { status: 500 });
+      }
       // A subscriber arriving before the scope's migrations have run would be told
       // about events against a schema it cannot read back through. Same gate every
       // other entry point takes, for the same reason.
       await this.ensureMigrations();
+      // `.parse`, not a cast: these three arrived as header strings, and the branded
+      // ids are what every check downstream is keyed on. A malformed one would
+      // otherwise be carried all the way to a `ctx.check` that quietly matches nothing —
+      // which reads as "this subscriber may see nothing" and is indistinguishable from
+      // a correct denial. Refused here instead, where it is still one subscriber's
+      // problem. Throwing is right: the coordinator built this request.
+      const subscriber = {
+        principal: principalId.parse(principal),
+        tenantId: tenantIdOf.parse(tenantId),
+        scopeId: scopeIdOf.parse(scopeId),
+      };
+      // A checked root (#938) is gated here as well as on every pass: a subscriber who may
+      // not watch it gets no socket at all, so its client meets a refusal rather than a
+      // feed that would close on the first thing it had to say. A session already over is
+      // refused the same way.
+      const expired = expiresAt !== undefined && expiresAt <= new Date().toISOString();
+      if (
+        expired ||
+        (within?.checked !== undefined && !(await this.mayWatchRoot(() => this.liveContext(subscriber), within)))
+      ) {
+        return new Response('live reads: the subscriber may not watch this root', {
+          status: 403,
+          headers: { [LIVE_MODE_HEADER]: 'forbidden' satisfies LiveRefusal },
+        });
+      }
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+      /**
+       * At most `LIVE_SOCKETS_PER_PRINCIPAL` sockets per principal on this scope (#938):
+       * each is work on every post-commit pass. The extra one is accepted and closed at
+       * once with `4429`, rather than refused with a status, because a browser never sees
+       * a failed handshake's status — only a close code, which the client reads as "poll
+       * and stop asking". Not hibernated, so it never joins the roster the fan-out walks.
+       *
+       * Counted over the sockets still live: one whose session has ended is closed here
+       * first, so sockets that expired on an idle scope never hold a fresh session out.
+       */
+      const held = this.reapExpiredLive().filter((s) => s.principal === subscriber.principal).length;
+      if (held >= LIVE_SOCKETS_PER_PRINCIPAL) {
+        server.accept();
+        server.close(LIVE_CLOSE.tooMany, 'too many live subscriptions for this principal; poll instead');
+        return new Response(null, { status: 101, webSocket: client });
+      }
       // HIBERNATABLE, not `server.accept()`. A scope with a watcher open would
       // otherwise be pinned in memory for as long as somebody has a tab open, which is
       // the cost model inverted: a support desk being WATCHED is the normal state.
@@ -2982,20 +3062,101 @@ export function defineScopeDO(
       // eviction, so the socket would stay open and silently stop receiving, which is
       // indistinguishable from a quiet scope.
       this.ctx.acceptWebSocket(server);
-      // `.parse`, not a cast: these three arrived as header strings, and the branded
-      // ids are what every check downstream is keyed on. A malformed one would
-      // otherwise be carried all the way to a `ctx.check` that quietly matches nothing —
-      // which reads as "this subscriber may see nothing" and is indistinguishable from
-      // a correct denial. Refused here instead, where it is still one subscriber's
-      // problem. Throwing is right: the coordinator built this request.
       server.serializeAttachment({
-        principal: principalId.parse(principal),
-        tenantId: tenantIdOf.parse(tenantId),
-        scopeId: scopeIdOf.parse(scopeId),
+        ...subscriber,
         since: new Date().toISOString(),
         ...(within ? { within } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
       } satisfies LiveSubscription);
+      if (expiresAt) await this.armLiveExpiry();
       return new Response(null, { status: 101, webSocket: client });
+    }
+
+    /**
+     * Close every live socket whose session has ended (`1008`), and return the
+     * subscriptions still open (#938). Reads only the sockets' own attachments, never the
+     * database, so it is as cheap on a scope nobody writes to as on a busy one.
+     */
+    private reapExpiredLive(now = new Date().toISOString()): LiveSubscription[] {
+      const live: LiveSubscription[] = [];
+      for (const ws of this.ctx.getWebSockets()) {
+        let s: LiveSubscription | null = null;
+        try {
+          s = readSubscription(ws.deserializeAttachment());
+        } catch {
+          s = null;
+        }
+        if (!s) continue;
+        if (s.expiresAt !== undefined && s.expiresAt <= now) {
+          closeSessionEnded(ws);
+          continue;
+        }
+        live.push(s);
+      }
+      return live;
+    }
+
+    /**
+     * Arm the scope's alarm for the earliest session end among its live sockets (#938), so
+     * an expired socket is closed on a scope nobody writes to — the fan-out closes them
+     * too, but only on a pass, and an idle scope has none.
+     *
+     * Only ever moved EARLIER: an alarm already set before that instant is kept, and the
+     * handler re-arms for whatever is next. Re-arming on a close is not needed: an alarm
+     * that finds the socket already gone simply arms for the next one, or for nothing.
+     *
+     * The live reaper is this DO's only alarm use. A second one must share `alarm()` and
+     * this "earliest wins" rule, not call `setAlarm` on its own. The alarm makes workerd
+     * keep a `_cf_METADATA` table in the scope's SQLite; every table walk here skips
+     * `_cf_*` for that reason (`exportDump`, `importDump`, `introspectTables`).
+     */
+    private async armLiveExpiry(): Promise<void> {
+      let earliest: string | undefined;
+      for (const s of this.reapExpiredLive()) {
+        if (s.expiresAt !== undefined && (earliest === undefined || s.expiresAt < earliest)) earliest = s.expiresAt;
+      }
+      if (earliest === undefined) return;
+      const at = Date.parse(earliest);
+      const current = await this.ctx.storage.getAlarm();
+      if (current === null || current > at) await this.ctx.storage.setAlarm(at);
+    }
+
+    /** The live reaper's alarm (#938): close what has expired, then arm for what is next. */
+    async alarm(): Promise<void> {
+      await this.armLiveExpiry();
+    }
+
+    /** The context a live subscriber's checks run in: its own principal, under `live.subscribe`. */
+    private liveContext(subscriber: { principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId }): OperationContext {
+      return this.operationContext(
+        subscriber.principal,
+        subscriber.tenantId,
+        subscriber.scopeId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'live.subscribe',
+      );
+    }
+
+    /**
+     * May this subscriber watch its `checkedWithin` root (#938)? Its own `ctx.check` of the
+     * stated key on the root, the same walk a read of the root would make. A check that
+     * throws is a refusal: an outage in the permission path must not become a feed.
+     */
+    private async mayWatchRoot(context: () => OperationContext, within: LiveWithin): Promise<boolean> {
+      try {
+        // Built inside the try: a context that cannot be built is a refusal too.
+        const decision = await context().check(within.checked as PermissionKey, {
+          entityType: within.entityType,
+          entityId: within.entityId,
+        });
+        return decision.allowed;
+      } catch {
+        return false;
+      }
     }
 
     /**
@@ -3017,6 +3178,9 @@ export function defineScopeDO(
      */
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
       this.webSocketMessagesHandled++;
+      // Ungated, and safe to be: the reply is the constant `'pong'` and carries no event, no
+      // entity and no time, so it tells the socket nothing it did not already know. Every
+      // frame that is about the scope's data goes out through `fanOutLive`'s gates instead.
       if (message === 'ping') ws.send('pong');
     }
 
@@ -3173,12 +3337,65 @@ export function defineScopeDO(
        * operation has already moved the edge the walk follows.
        */
       const parents = scopeTupleReader(this.sql);
-      const now = new Date().toISOString();
+      /**
+       * A checked root's gate, asked once per (principal, key, root) per pass (#938): a
+       * principal holding that root in several tabs is one check, fanned out to each socket.
+       */
+      const rootChecks = new Map<string, Promise<boolean>>();
       const ancestors = new Map<string, Promise<Set<string>>>();
-      const reaches = async (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
+      /**
+       * How long the memos above may be trusted (#938, Codex #2077 r4, r5). They are decisions
+       * about authorization (a grant, a parent edge), and a later socket or row awaits after
+       * they are taken, so each carries the conditions it stays true under rather than the
+       * pass chasing every way it could go stale. Opened at a decision's instant; the memos
+       * are forgotten once any condition fails, and a decision is taken again when one fails
+       * between it and its send (read against the clock right before the send):
+       *
+       * - `writes`: the store's write count. Any write at all, not only a grant: coarser than
+       *   tracking the tables a check reads, so no write door added later can slip past it.
+       * - `until`: the earliest `expires_at` after the instant it was opened, across every
+       *   local store a check or the walk reads. Nothing that authorized a decision can lapse
+       *   before it, and a lapse is no write. Scope-wide rather than the rows one decision
+       *   relied on, because the checker does not report those: an over-short bound only costs
+       *   a re-check.
+       * - `remote`: the scope reads its tenant tuples, roles and org membership from the
+       *   directory over RPC (`permission_source` not yet `local`), whose changes write
+       *   nothing here and carry no bound this object can see. Then a root's gate is never
+       *   remembered at all: asked for every socket and row, right before its send. What
+       *   remains is the window the live-read freshness contract accepts — a revoke that
+       *   lands during one evaluation can let that one nudge through, and the next does not.
+       */
+      interface Epoch {
+        readonly writes: number;
+        readonly until: string | null;
+        readonly remote: boolean;
+      }
+      const openEpoch = (now: string): Epoch => ({
+        writes: this.revision.statementsWritten,
+        until: this.authorityLapsesAfter(now),
+        remote: this.permissionSourceIsRemote(),
+      });
+      const holds = (e: Epoch, now: string) =>
+        e.writes === this.revision.statementsWritten && (e.until === null || now < e.until);
+      let epoch = openEpoch(new Date().toISOString());
+      /** The epoch current at `now`, opening a new one (and forgetting every memo) if not. */
+      const epochAt = (now: string): Epoch => {
+        if (!holds(epoch, now)) {
+          epoch = openEpoch(now);
+          rootChecks.clear();
+          ancestors.clear();
+        }
+        return epoch;
+      };
+      const reaches = async (
+        row: (typeof announceable)[number],
+        root: { entityType: string; entityId: string },
+        now: string,
+      ) => {
         let up = ancestors.get(row.id);
         if (!up) {
           // A walk that cannot answer is a frame not sent — the same fail-closed rule as the check.
+          // Walked at the decision's own instant; remembered only while its epoch holds.
           up = ancestorsWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, now).catch(
             () => new Set<string>(),
           );
@@ -3202,6 +3419,18 @@ export function defineScopeDO(
         // the frames are filtered against an explicit precondition rather than an
         // assumption about how the subscription was created.
         if (subscription.tenantId !== tenantId || subscription.scopeId !== scopeId) continue;
+        // The session that opened it has ended (#938): closed before anything is sent,
+        // whatever the subscriber's grants still say. Checked on every pass, so it holds for
+        // every kind of subscription, not only the ones with a gate to ask — and asked
+        // again, against a fresh clock, immediately before every send below, because the
+        // walk and the checks between here and there await, and a session can end during
+        // them.
+        const { expiresAt } = subscription;
+        const sessionEnded = () => expiresAt !== undefined && expiresAt <= new Date().toISOString();
+        if (sessionEnded()) {
+          closeSessionEnded(ws);
+          continue;
+        }
         const { within } = subscription;
 
         // One context per subscriber, not per event: `ctx.check` is the expensive part
@@ -3218,63 +3447,109 @@ export function defineScopeDO(
         // The operation name is carried anyway, for the events a fan-out cannot emit
         // but a future reader of this context might.
         let ctx: OperationContext | undefined;
-        const { principal } = subscription;
-        const context = () =>
-          (ctx ??= this.operationContext(
-            principal,
-            tenantId,
-            scopeId,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            'live.subscribe',
-          ));
-        for (const row of announceable) {
+        const subscriber = subscription;
+        const context = () => (ctx ??= this.liveContext(subscriber));
+        /**
+         * A checked root's gate (#938), asked at most once per (principal, key, root) per
+         * pass (`rootChecks`) and only once a row beneath the root is about to be announced,
+         * so an idle subscription costs no check. A refusal, or a check that throws, closes the socket before anything is
+         * sent: the grant is gone, the principal is, or the root moved out of the grant's
+         * reach. Closed rather than skipped, so the subscription does not sit there asking
+         * on every pass, and the client's reconnect meets the handshake's 403. Held with the
+         * write count it was decided under, and asked again once that has moved.
+         */
+        let rootVerdict: { epoch: Epoch; allowed: boolean } | undefined;
+        /** What this subscriber is owed for one row, decided at `now` under epoch `e`. */
+        const decide = async (
+          row: (typeof announceable)[number],
+          e: Epoch,
+          now: string,
+        ): Promise<LiveChange | LiveNudge | 'skip' | 'revoked'> => {
+          // A remote authority's verdict is never reused: see `Epoch`.
+          if (rootVerdict?.epoch !== e || e.remote) rootVerdict = undefined;
           // Narrowing first: it is memoised across sockets, and a row outside the root
           // is out whatever the principal holds.
-          if (within && !(await reaches(row, within))) continue;
-          let frame: LiveChange | LiveNudge;
-          if (within?.vouched !== undefined) {
-            // The vertical vouched for the root, so the walk above was the whole filter
-            // — and the subscriber holds no read on this row, so it is told only that
-            // something beneath its root changed. Never which row, never how.
-            frame = { kind: 'nudge', id: row.id, at: row.occurred_at };
-          } else {
-            // Non-null: `announceable` is exactly the rows whose type is in the map.
-            const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
-            let allowed = false;
-            try {
-              const decision = await context().check(permission, {
-                entityType: row.entity_type,
-                entityId: row.entity_id,
-              });
-              allowed = decision.allowed;
-            } catch {
-              // A check that cannot answer is a check that refuses. The alternative —
-              // treating an evaluator failure as an allow — turns an outage in the
-              // permission path into a disclosure, which is the one failure mode this
-              // surface must not have.
-              allowed = false;
+          if (within && !(await reaches(row, within, now))) return 'skip';
+          if (within?.checked !== undefined) {
+            if (rootVerdict === undefined) {
+              let check: Promise<boolean> | undefined;
+              if (e.remote) {
+                check = this.mayWatchRoot(context, within);
+              } else {
+                const key = `${subscriber.principal}\n${within.checked}\n${within.entityType}:${within.entityId}`;
+                check = rootChecks.get(key);
+                if (!check) rootChecks.set(key, (check = this.mayWatchRoot(context, within)));
+              }
+              rootVerdict = { epoch: e, allowed: await check };
             }
-            if (!allowed) continue;
-            frame = {
-              kind: 'change',
-              id: row.id,
-              type: row.type,
+            if (!rootVerdict.allowed) return 'revoked';
+          }
+          if (within?.vouched !== undefined || within?.checked !== undefined) {
+            // The root was vouched for or checked, so the walk above was the row filter —
+            // and the subscriber holds no read on this row, so it is told only that
+            // something beneath its root changed. Never which row, never how.
+            return { kind: 'nudge', id: row.id, at: row.occurred_at };
+          }
+          // Non-null: `announceable` is exactly the rows whose type is in the map.
+          const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
+          try {
+            const decision = await context().check(permission, {
               entityType: row.entity_type,
               entityId: row.entity_id,
-              at: row.occurred_at,
-            };
-          }
-          try {
-            ws.send(JSON.stringify(frame));
+            });
+            if (!decision.allowed) return 'skip';
           } catch {
-            // The socket went away between `getWebSockets()` and here. Stop writing to
-            // this one and move on; the runtime will deliver `webSocketClose`.
-            break;
+            // A check that cannot answer is a check that refuses. The alternative —
+            // treating an evaluator failure as an allow — turns an outage in the
+            // permission path into a disclosure, which is the one failure mode this
+            // surface must not have.
+            return 'skip';
           }
+          return {
+            kind: 'change',
+            id: row.id,
+            type: row.type,
+            entityType: row.entity_type,
+            entityId: row.entity_id,
+            at: row.occurred_at,
+          };
+        };
+
+        rows: for (const row of announceable) {
+          for (let attempt = 0; attempt < LIVE_DECIDE_ATTEMPTS; attempt++) {
+            const decidedAt = new Date().toISOString();
+            const e = epochAt(decidedAt);
+            const verdict = await decide(row, e, decidedAt);
+            // Every gate as close to the send as it can be, with no await between these
+            // reads and the send below — so nothing can land after them and before it.
+            // The store wrote, or something the decision relied on lapsed, while it was being
+            // taken (Codex #2077 r4, r5): decide again, from nothing remembered.
+            if (!holds(e, new Date().toISOString())) continue;
+            if (verdict === 'skip') continue rows;
+            if (verdict === 'revoked') {
+              try {
+                ws.close(LIVE_CLOSE.revoked, 'the subscriber may no longer watch this root');
+              } catch {
+                // Already gone.
+              }
+              break rows;
+            }
+            // The clock is read again here too, after every await above.
+            if (sessionEnded()) {
+              closeSessionEnded(ws);
+              break rows;
+            }
+            try {
+              ws.send(JSON.stringify(verdict));
+            } catch {
+              // The socket went away between `getWebSockets()` and here. Stop writing to
+              // this one and move on; the runtime will deliver `webSocketClose`.
+              break rows;
+            }
+            continue rows;
+          }
+          // Still moving after every attempt: this row is not announced, and the client's
+          // poll — the floor under every push — picks it up.
         }
       }
     }
@@ -5433,7 +5708,7 @@ export function defineScopeDO(
     introspectTables(): ScopeTable[] {
       const names = (
         this.sql
-          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
+          .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB '_cf_*' ORDER BY name`)
           .toArray() as unknown as { name: string }[]
       ).map((r) => r.name);
       return names.map((name) => ({
@@ -5464,7 +5739,7 @@ export function defineScopeDO(
       const known = new Set(
         (
           this.sql
-            .exec(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB '_cf_*'`)
             .toArray() as unknown as { name: string }[]
         ).map((r) => r.name),
       );
@@ -5596,7 +5871,7 @@ export function defineScopeDO(
         this.sql
           .exec(
             `SELECT name, sql FROM sqlite_master
-              WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND sql IS NOT NULL
+              WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND sql IS NOT NULL
               ORDER BY name`,
           )
           .toArray() as unknown as { name: string; sql: string }[]
@@ -5908,7 +6183,9 @@ export function defineScopeDO(
           this.sql.exec('PRAGMA defer_foreign_keys = ON');
           // Real tables only; `sqlite_*` internals are auto-managed and un-droppable.
           const existing = this.sql
-            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
+            // Nor workerd's own `_cf_*` (the live reaper's alarm keeps `_cf_METADATA`), which
+            // it refuses to drop.
+            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'`)
             .toArray() as unknown as { name: string }[];
           // Search index tables are left alone here and rebuilt below (#827): dropping a
           // shadow table directly is an error, and `sqlite_master` order would reach one
@@ -7104,6 +7381,36 @@ export function defineScopeDO(
         .exec(`SELECT value FROM _substrat_meta WHERE key = 'permission_source'`)
         .toArray()[0] as { value: string } | undefined;
       return row?.value === 'local' ? 'local' : 'control-plane';
+    }
+
+    /**
+     * Whether a check here reads the directory over RPC (#938, Codex #2077 r5): the same
+     * choice `controlPlaneReader` makes per call, asked each time a live fan-out pass opens an epoch.
+     */
+    private permissionSourceIsRemote(): boolean {
+      return this.permissionSource() !== 'local' && Boolean(this.env.CONTROL_PLANE);
+    }
+
+    /**
+     * The earliest `expires_at` after `now` in any local store a check or the parent walk
+     * reads (#938, Codex #2077 r5), or null when nothing here lapses. Until then, no grant,
+     * tenant tuple, parent edge or entitlement this scope holds can stop authorizing without
+     * a write. Revoked rows are not excluded: an earlier bound only costs a re-check.
+     */
+    private authorityLapsesAfter(now: string): string | null {
+      const row = this.sql
+        .exec(
+          `SELECT MIN(e) AS until FROM (
+             SELECT MIN(expires_at) AS e FROM _substrat_tuples WHERE expires_at > ?
+             UNION ALL SELECT MIN(expires_at) FROM _substrat_tenant_tuples WHERE expires_at > ?
+             UNION ALL SELECT MIN(expires_at) FROM _substrat_entitlements WHERE expires_at > ?
+           )`,
+          now,
+          now,
+          now,
+        )
+        .toArray()[0] as { until: string | null } | undefined;
+      return row?.until ?? null;
     }
 
     /**

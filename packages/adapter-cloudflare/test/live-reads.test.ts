@@ -15,15 +15,27 @@
  * The reasoning is on `ScopeHost.liveReads`, beside the `clock?: never` precedent.
  */
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  instant,
   permissionKey,
   platformActorId,
   principalId,
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
 } from '@substrat-run/contracts';
-import { ulid, vouchedWithin, webCryptoSecretBox, type LiveChange, type LiveFrame, type VouchedWithin } from '@substrat-run/kernel';
+import {
+  checkedWithin,
+  LIVE_CLOSE,
+  LIVE_SOCKETS_PER_PRINCIPAL,
+  ulid,
+  vouchedWithin,
+  webCryptoSecretBox,
+  type CheckedWithin,
+  type LiveChange,
+  type LiveFrame,
+  type VouchedWithin,
+} from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { LIVE_MODE_HEADER, O2O_HEADER, readSubscription } from '../src/live-reads.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -514,6 +526,734 @@ describe('live reads: narrowed within an entity (#1853)', () => {
   });
 });
 
+describe('live reads: a root the principal is checked on (#938)', () => {
+  let host: CloudflareScopeHost;
+  const sc = scopeIdOf.parse(ulid());
+  /** Holds `live:read` on cabinet C1 — so on every folder shelved there — and on no note. */
+  const reader = principalId.parse(ulid());
+  /** Holds nothing. */
+  const stranger = principalId.parse(ulid());
+  const C1 = '01JLIVEC100000000000000001';
+  const C2 = '01JLIVEC200000000000000002';
+  const F1 = '01JLIVEG100000000000000001';
+  const F2 = '01JLIVEG200000000000000002';
+  const F3 = '01JLIVEG300000000000000003';
+  const F_OUT = '01JLIVEG400000000000000004';
+  const IN_F1 = '01JLIVEM100000000000000001';
+  const IN_F1B = '01JLIVEM100000000000000002';
+  const IN_F2 = '01JLIVEM200000000000000001';
+  const IN_F3 = '01JLIVEM300000000000000001';
+  const IN_OUT = '01JLIVEM400000000000000001';
+  const checked = (folderId: string) => checkedWithin({ entityType: 'folder', entityId: folderId }, 'live:read');
+  const open: { close(): void }[] = [];
+  const scopeDo = () => env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(sc));
+
+  interface CheckedWatcher {
+    readonly frames: LiveFrame[];
+    /** The close code the scope sent, once it has closed the socket. */
+    closedWith: number | null;
+  }
+
+  /** `folderId` null: an unnarrowed feed. `expiresAt`: the session's end, as a vertical passes it. */
+  async function watchChecked(
+    principal: typeof reader,
+    folderId: string | null,
+    expiresAt?: string,
+  ): Promise<CheckedWatcher> {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sc,
+      principal,
+      request: upgrade(),
+      ...(folderId === null ? {} : { within: checked(folderId) }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+    });
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    const watcher: CheckedWatcher = { frames: [], closedWith: null };
+    ws.accept();
+    ws.addEventListener('message', (event) => {
+      const data = String((event as MessageEvent).data);
+      if (data !== 'pong') watcher.frames.push(JSON.parse(data) as LiveFrame);
+    });
+    ws.addEventListener('close', (event) => {
+      watcher.closedWith = (event as CloseEvent).code;
+    });
+    open.push({
+      close: () => {
+        try {
+          ws.close(1000, 'test over');
+        } catch {
+          // Already closed by the scope.
+        }
+      },
+    });
+    return watcher;
+  }
+
+  const as = async (op: string, input: Record<string, unknown>) =>
+    (await host.getScope(writer, t, sc)).invoke(op, input);
+
+  /**
+   * Count the root checks the fan-out makes, from inside the DO, and optionally make
+   * them throw. Every live-read context is built under the `live.subscribe` operation
+   * name, so only those are wrapped: the writer's own invokes are untouched.
+   */
+  async function instrumentRootChecks(opts: {
+    throws: boolean;
+    /** Hold each check this long before answering — a pass whose clock moves under it. */
+    delayMs?: number;
+    /**
+     * Run once, inside the DO, after a held check has ANSWERED and before it returns: a write
+     * landing between a decision and the send it was taken for.
+     */
+    whileHeld?: (instance: unknown) => void | Promise<void>;
+  }): Promise<{ calls(): Promise<number>; restore(): Promise<void> }> {
+    let whileHeld = opts.whileHeld;
+    await runInDurableObject(scopeDo(), (instance) => {
+      const target = instance as unknown as {
+        operationContext: (...args: unknown[]) => { check: (...a: unknown[]) => Promise<unknown> };
+        __liveChecks?: number;
+        __liveOriginal?: unknown;
+      };
+      const original = target.operationContext;
+      target.__liveOriginal = original;
+      target.__liveChecks = 0;
+      target.operationContext = function (this: unknown, ...args: unknown[]) {
+        const ctx = original.apply(this, args);
+        if (args[8] !== 'live.subscribe') return ctx;
+        return Object.create(ctx, {
+          check: {
+            value: async (...a: unknown[]) => {
+              target.__liveChecks = (target.__liveChecks ?? 0) + 1;
+              if (whileHeld) {
+                const write = whileHeld;
+                whileHeld = undefined;
+                const answer = await ctx.check(...a);
+                if (opts.delayMs) await new Promise((resolve) => setTimeout(resolve, opts.delayMs));
+                await write(target);
+                return answer;
+              }
+              if (opts.delayMs) await new Promise((resolve) => setTimeout(resolve, opts.delayMs));
+              if (opts.throws) throw new Error('permission evaluator unavailable');
+              return ctx.check(...a);
+            },
+          },
+        });
+      };
+    });
+    return {
+      calls: () =>
+        runInDurableObject(scopeDo(), (instance) => (instance as unknown as { __liveChecks: number }).__liveChecks),
+      restore: () =>
+        runInDurableObject(scopeDo(), (instance) => {
+          const target = instance as unknown as { operationContext: unknown; __liveOriginal: unknown };
+          target.operationContext = target.__liveOriginal;
+        }),
+    };
+  }
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.LIVE_SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      // Projected: tenant tuples, roles and grants read from the scope's own storage, so a
+      // root's gate may be remembered across sockets (#938, Codex #2077 r5). The directory-
+      // sourced case, where it never is, has its own describe below.
+      scopeLocalPermissions: true,
+    });
+    await host.provisionScope(staff, { tenantId: t, scopeId: sc, vertical: 'live-vertical' });
+    await host.admin.activateScope(staff, t, sc);
+    await host.admin.grant(staff, { principalId: writer, permission: WRITE, node: { tenantId: t, scopeId: sc }, grantedBy: writer });
+    // The writer holds the read on the cabinet too: `ctx.revoke` is delegating.
+    for (const principal of [writer, reader]) {
+      await host.admin.grant(staff, {
+        principalId: principal,
+        permission: READ,
+        node: { tenantId: t, scopeId: sc },
+        entity: { entityType: 'cabinet', entityId: C1 },
+        grantedBy: writer,
+      });
+    }
+    // F1, F2 and F3 are all in C1, so `reader` passes the gate on each: only the walk
+    // can tell what is beneath one root from what is beneath another. F_OUT is in C2.
+    for (const folderId of [F1, F2, F3]) await as('live/shelve', { folderId, cabinetId: C1 });
+    await as('live/shelve', { folderId: F_OUT, cabinetId: C2 });
+    await as('live/file', { noteId: IN_F1, folderId: F1 });
+    await as('live/file', { noteId: IN_F1B, folderId: F1 });
+    await as('live/file', { noteId: IN_F2, folderId: F2 });
+    await as('live/file', { noteId: IN_F3, folderId: F3 });
+    await as('live/file', { noteId: IN_OUT, folderId: F_OUT });
+  });
+
+  // Each case's sockets are closed after it, so a count of checks is about that case's
+  // socket alone: the gate is asked once per OPEN socket per pass.
+  afterEach(async () => {
+    for (const w of open.splice(0)) w.close();
+    await settle();
+  });
+
+  afterAll(async () => {
+    await host.close();
+  });
+
+  // -- the handshake ------------------------------------------------------------
+
+  it('refuses a subscriber who may not watch the root, before any socket exists', async () => {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sc,
+      principal: stranger,
+      request: upgrade(),
+      within: checked(F1),
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get(LIVE_MODE_HEADER)).toBe('forbidden');
+    expect(response.webSocket).toBeNull();
+  });
+
+  it('refuses a root outside the grant, though the same principal may watch its neighbour', async () => {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sc,
+      principal: reader,
+      request: upgrade(),
+      within: checked(F_OUT),
+    });
+    expect(response.status).toBe(403);
+    // The positive twin: the same principal, a root its grant reaches.
+    const ok = await watchChecked(reader, F1);
+    expect(ok.closedWith).toBeNull();
+  });
+
+  // -- what is sent -------------------------------------------------------------
+
+  it('nudges about a row beneath the root, naming no entity — though the subscriber may not read the row', async () => {
+    const seen = await watchChecked(reader, F1);
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(seen.frames).toHaveLength(1);
+    expect(Object.keys(seen.frames[0]!).sort()).toEqual(['at', 'id', 'kind']);
+    expect(seen.frames[0]!.kind).toBe('nudge');
+  });
+
+  it('sends nothing about a row outside the root, though the gate would pass on its folder too', async () => {
+    const seen = await watchChecked(reader, F1);
+    await as('live/touch', { noteId: IN_F2 });
+    await as('live/touch-ledger', { ledgerId: LEDGER });
+    await settle();
+    expect(seen.frames).toEqual([]);
+    expect(seen.closedWith).toBeNull();
+  });
+
+  // -- the gate on every pass -------------------------------------------------
+
+  it('asks the gate once per socket per pass, and not at all on a pass with nothing beneath the root', async () => {
+    const seen = await watchChecked(reader, F1);
+    const checks = await instrumentRootChecks({ throws: false });
+    try {
+      await as('live/touch', { noteId: IN_F2 });
+      await settle();
+      expect(await checks.calls()).toBe(0);
+      // Two rows beneath the root in one pass: two nudges, one check.
+      await as('live/touch-each', { noteIds: [IN_F1, IN_F1B] });
+      await settle();
+      expect(await checks.calls()).toBe(1);
+      expect(seen.frames).toHaveLength(2);
+    } finally {
+      await checks.restore();
+    }
+  });
+
+  it('closes the socket and sends nothing when the gate throws', async () => {
+    const seen = await watchChecked(reader, F1);
+    const checks = await instrumentRootChecks({ throws: true });
+    try {
+      await as('live/touch', { noteId: IN_F1 });
+      await settle();
+    } finally {
+      await checks.restore();
+    }
+    expect(await checks.calls()).toBe(1);
+    expect(seen.frames).toEqual([]);
+    expect(seen.closedWith).toBe(1008);
+  });
+
+  it('closes the socket and sends nothing once the grant behind the root is revoked', async () => {
+    const seen = await watchChecked(reader, F1);
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(seen.frames).toHaveLength(1);
+
+    await as('live/unshare', { principal: reader, noteId: C1, entityType: 'cabinet' });
+    try {
+      await as('live/touch', { noteId: IN_F1 });
+      await settle();
+      expect(seen.frames).toHaveLength(1); // still only the first
+      expect(seen.closedWith).toBe(1008);
+      // And the client's reconnect meets the handshake's refusal.
+      const again = await host.liveReads.subscribe({ tenantId: t, scopeId: sc, principal: reader, request: upgrade(), within: checked(F1) });
+      expect(again.status).toBe(403);
+    } finally {
+      await host.admin.grant(staff, {
+        principalId: reader,
+        permission: READ,
+        node: { tenantId: t, scopeId: sc },
+        entity: { entityType: 'cabinet', entityId: C1 },
+        grantedBy: writer,
+      });
+    }
+  });
+
+  it('closes the socket and sends nothing once the root itself moves out of the grant’s reach', async () => {
+    const stays = await watchChecked(reader, F1);
+    const moves = await watchChecked(reader, F3);
+    await as('live/reshelve', { folderId: F3, from: C1, to: C2 });
+    await as('live/touch-each', { noteIds: [IN_F3, IN_F1] });
+    await settle();
+    expect(moves.frames).toEqual([]);
+    expect(moves.closedWith).toBe(1008);
+    // The twin on the same pass: a root that stayed in reach still hears its row.
+    expect(stays.frames).toHaveLength(1);
+    expect(stays.closedWith).toBeNull();
+  });
+
+  // -- the session's end (#938, Codex round 1) ---------------------------------
+
+  it('refuses a handshake whose session has already ended, though the grant still holds', async () => {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sc,
+      principal: reader,
+      request: upgrade(),
+      within: checked(F1),
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get(LIVE_MODE_HEADER)).toBe('forbidden');
+  });
+
+  it('refuses an expiry that is not an instant, rather than reading it as none', async () => {
+    await expect(
+      host.liveReads.subscribe({ tenantId: t, scopeId: sc, principal: reader, request: upgrade(), expiresAt: 'soon' }),
+    ).rejects.toThrow(/expiresAt/);
+  });
+
+  it.each([
+    ['a checked root', F1],
+    ['an unnarrowed feed', null],
+  ])('closes %s, unsent to, once the session that opened it has ended', async (_label, folderId) => {
+    const ends = await watchChecked(reader, folderId, new Date(Date.now() + 400).toISOString());
+    const stays = await watchChecked(reader, folderId, new Date(Date.now() + 60_000).toISOString());
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    // Unnarrowed, `reader` hears a note only if it may read it, and it holds no note: so
+    // that feed's evidence is the close alone, beside the twin that stays open.
+    const heard = ends.frames.length;
+    expect(stays.frames).toHaveLength(heard);
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(ends.frames).toHaveLength(heard);
+    expect(ends.closedWith).toBe(1008);
+    // The twin, from the same write: a session still current stays open, and hears it.
+    expect(stays.closedWith).toBeNull();
+    if (folderId !== null) expect(stays.frames).toHaveLength(heard + 1);
+  });
+
+  // -- many sockets from one principal (#938, Codex round 1) ------------------
+
+  it("asks one principal's gate once per pass however many sockets it holds on the root", async () => {
+    const tabs = [await watchChecked(reader, F1), await watchChecked(reader, F1), await watchChecked(reader, F1)];
+    const checks = await instrumentRootChecks({ throws: false });
+    try {
+      await as('live/touch', { noteId: IN_F1 });
+      await settle();
+      expect(await checks.calls()).toBe(1);
+    } finally {
+      await checks.restore();
+    }
+    for (const tab of tabs) expect(tab.frames).toHaveLength(1);
+  });
+
+  // -- sockets that expire on a scope nobody writes to (#938, Codex round 2) -----
+
+  const soon = (ms: number) => new Date(Date.now() + ms).toISOString();
+  const later = () => soon(60_000);
+  const idle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('admits a fresh session in place of sockets that expired with no write in between', async () => {
+    const expiring: CheckedWatcher[] = [];
+    for (let i = 0; i < LIVE_SOCKETS_PER_PRINCIPAL; i++) expiring.push(await watchChecked(reader, F1, soon(300)));
+    await idle(500);
+    // No write since: only admission can have noticed that the eight ended.
+    const fresh = await watchChecked(reader, F1, later());
+    await settle();
+    expect(fresh.closedWith).toBeNull();
+    for (const old of expiring) expect(old.closedWith).toBe(1008);
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(fresh.frames).toHaveLength(1);
+  });
+
+  it('still holds the cap against sockets whose sessions are current — the twin', async () => {
+    for (let i = 0; i < LIVE_SOCKETS_PER_PRINCIPAL; i++) await watchChecked(reader, F1, later());
+    const extra = await watchChecked(reader, F1, later());
+    await settle();
+    expect(extra.closedWith).toBe(LIVE_CLOSE.tooMany);
+  });
+
+  it('closes expired sockets on an idle scope by its alarm, the second by the alarm it re-armed', async () => {
+    const first = await watchChecked(reader, F1, soon(400));
+    const second = await watchChecked(reader, F1, soon(1_400));
+    const stays = await watchChecked(reader, F1, later());
+    const armed = await runInDurableObject(scopeDo(), (_i, state) => state.storage.getAlarm());
+    expect(armed).not.toBeNull();
+    await idle(900);
+    expect(first.closedWith).toBe(1008);
+    expect(second.closedWith).toBeNull();
+    // No write and no new subscriber since: only the re-armed alarm can close the second.
+    await idle(1_200);
+    expect(second.closedWith).toBe(1008);
+    expect(stays.closedWith).toBeNull();
+    // And it re-armed again, for the socket still open.
+    const next = await runInDurableObject(scopeDo(), (_i, state) => state.storage.getAlarm());
+    expect(next).not.toBeNull();
+  });
+
+  it('sends nothing to a socket whose session ends while its pass is still deciding', { timeout: 20_000 }, async () => {
+    // One socket per pass, so the only await between the pass's first look at the clock
+    // and the send is this socket's own held root check — the window under test.
+    const passWithHeldCheck = async (expiresAt: string) => {
+      const watcher = await watchChecked(reader, F1, expiresAt);
+      // The alarm would close it at its expiry; take it away, so only the pass decides.
+      await runInDurableObject(scopeDo(), (_i, state) => state.storage.deleteAlarm());
+      const checks = await instrumentRootChecks({ throws: false, delayMs: 2_500 });
+      try {
+        // Without this the case would prove nothing: a pass that starts after the expiry
+        // is refused by the look at its start, not the one before the send.
+        expect(Date.now()).toBeLessThan(Date.parse(expiresAt) - 500);
+        await as('live/touch', { noteId: IN_F1 });
+        await settle();
+      } finally {
+        await checks.restore();
+      }
+      for (const w of open.splice(0)) w.close();
+      return watcher;
+    };
+    // The twin first: the same held check, a session still current when it answers.
+    const current = await passWithHeldCheck(later());
+    expect(current.frames).toHaveLength(1);
+    // Then a session that ends while the check is held: nothing sent, the socket closed.
+    const ends = await passWithHeldCheck(soon(1_500));
+    expect(ends.frames).toEqual([]);
+    expect(ends.closedWith).toBe(1008);
+  });
+
+  // -- a write that lands between a decision and its send (#938, Codex #2077 r4) -------
+
+  it('decides again once the store has written, and sends nothing past a revoke that landed after the allow', { timeout: 20_000 }, async () => {
+    /** `reader`'s grant on the cabinet, tombstoned or restored through the scope's own handle. */
+    const setReaderRevoked = (instance: unknown, revokedAt: string | null) =>
+      (instance as { sql: SqlStorage }).sql.exec(
+        `UPDATE _substrat_tuples SET revoked_at = ? WHERE subject = ? AND object = ?`,
+        revokedAt,
+        `principal:${reader}`,
+        `cabinet:${C1}`,
+      );
+    // Two sockets from one principal, so one coalesced check decides both. When `revoke` is
+    // set, that check answers ALLOW and is then held, and the revoke lands during the hold —
+    // through the scope's own handle and outside its queue, the door this guards against — so
+    // the remembered verdict is an allow the store no longer gives.
+    const pass = async (revoke: boolean) => {
+      const tabs = [await watchChecked(reader, F1), await watchChecked(reader, F1)];
+      const checks = await instrumentRootChecks({
+        throws: false,
+        delayMs: 300,
+        ...(revoke ? { whileHeld: (instance: unknown) => void setReaderRevoked(instance, new Date().toISOString()) } : {}),
+      });
+      try {
+        await as('live/touch', { noteId: IN_F1 });
+        await settle();
+        // Read before `finally` closes every socket from this end.
+        return { tabs: tabs.map((w) => ({ frames: [...w.frames], closedWith: w.closedWith })), calls: await checks.calls() };
+      } finally {
+        await checks.restore();
+        await runInDurableObject(scopeDo(), (instance) => setReaderRevoked(instance, null));
+        for (const w of open.splice(0)) w.close();
+        await settle();
+      }
+    };
+
+    // The twin first: nothing written mid-pass, so both sockets hear the row from one
+    // check — the remembered verdict survives a store that has not moved.
+    const quiet = await pass(false);
+    for (const tab of quiet.tabs) {
+      expect(tab.frames).toHaveLength(1);
+      expect(tab.closedWith).toBeNull();
+    }
+    expect(quiet.calls).toBe(1);
+
+    // The revoke lands after the allow: decided again, refused, closed — neither socket hears it.
+    const revoked = await pass(true);
+    for (const tab of revoked.tabs) {
+      expect(tab.frames).toEqual([]);
+      expect(tab.closedWith).toBe(1008);
+    }
+    expect(revoked.calls).toBe(2);
+  });
+
+  it('decides again once a grant it relied on lapses mid-pass, though the socket is current', { timeout: 30_000 }, async () => {
+    /** `stranger`'s grant on the cabinet, ending at `expiresAt`; tombstoned after the case. */
+    const pass = async (expiresAt: string) => {
+      await host.admin.grant(staff, {
+        principalId: stranger,
+        permission: READ,
+        node: { tenantId: t, scopeId: sc },
+        entity: { entityType: 'cabinet', entityId: C1 },
+        grantedBy: writer,
+        expiresAt: instant.parse(expiresAt),
+      });
+      const tabs = [await watchChecked(stranger, F1, later()), await watchChecked(stranger, F1, later())];
+      // The one remembered check answers while the grant holds, and is held past its end.
+      const checks = await instrumentRootChecks({ throws: false, delayMs: 2_500, whileHeld: () => undefined });
+      try {
+        expect(Date.now()).toBeLessThan(Date.parse(expiresAt) - 500);
+        await as('live/touch', { noteId: IN_F1 });
+        await settle();
+        return { tabs: tabs.map((w) => ({ frames: [...w.frames], closedWith: w.closedWith })), calls: await checks.calls() };
+      } finally {
+        await checks.restore();
+        await runInDurableObject(scopeDo(), (instance) =>
+          (instance as unknown as { sql: SqlStorage }).sql.exec(
+            `UPDATE _substrat_tuples SET revoked_at = ? WHERE subject = ? AND object = ? AND revoked_at IS NULL`,
+            new Date().toISOString(),
+            `principal:${stranger}`,
+            `cabinet:${C1}`,
+          ),
+        );
+        for (const w of open.splice(0)) w.close();
+        await settle();
+      }
+    };
+
+    // The twin first: a grant that outlives the pass. Both sockets hear the row from one
+    // check — an expiry the pass will not reach does not cost the coalescing.
+    const lasting = await pass(later());
+    for (const tab of lasting.tabs) {
+      expect(tab.frames).toHaveLength(1);
+      expect(tab.closedWith).toBeNull();
+    }
+    expect(lasting.calls).toBe(1);
+
+    // A grant that ends while the check is held: no write, yet decided again, refused, closed.
+    const lapsing = await pass(soon(1_500));
+    for (const tab of lapsing.tabs) {
+      expect(tab.frames).toEqual([]);
+      expect(tab.closedWith).toBe(1008);
+    }
+  });
+
+  it(`holds a principal to ${LIVE_SOCKETS_PER_PRINCIPAL} sockets: the next is closed ${LIVE_CLOSE.tooMany} and sent nothing`, async () => {
+    const tabs: CheckedWatcher[] = [];
+    for (let i = 0; i < LIVE_SOCKETS_PER_PRINCIPAL; i++) tabs.push(await watchChecked(reader, F1));
+    const extra = await watchChecked(reader, F1);
+    // Another principal is not held to this one's count.
+    const other = await watchChecked(writer, F1);
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(extra.closedWith).toBe(LIVE_CLOSE.tooMany);
+    expect(extra.frames).toEqual([]);
+    for (const tab of tabs) {
+      expect(tab.closedWith).toBeNull();
+      expect(tab.frames).toHaveLength(1);
+    }
+    expect(other.closedWith).toBeNull();
+    expect(other.frames).toHaveLength(1);
+  });
+
+  it.each([
+    ['a look-alike object', { entity: { entityType: 'folder', entityId: F1 }, permission: 'live:read' }],
+    ['a spread copy of a checked value', { ...checkedWithin({ entityType: 'folder', entityId: F1 }, 'live:read') }],
+    ['a plain ref carrying a checked key', { entityType: 'folder', entityId: F1, checked: 'live:read' }],
+  ])('refuses %s — the checked mode is reachable by checkedWithin alone', async (_label, within) => {
+    await expect(
+      host.liveReads.subscribe({
+        tenantId: t,
+        scopeId: sc,
+        principal: reader,
+        request: upgrade(),
+        within: within as unknown as CheckedWithin,
+      }),
+    ).rejects.toThrow(/checkedWithin/);
+  });
+});
+
+describe('live reads: a root checked against the directory (#938, Codex #2077 r5)', () => {
+  // Not projected: this scope reads tenant tuples, roles and org membership from the
+  // directory over RPC, whose changes write nothing in the scope — so a root's gate is
+  // never remembered, and is asked again for every socket.
+  let host: CloudflareScopeHost;
+  const sr = scopeIdOf.parse(ulid());
+  /** Holds `live:read` across the tenant through a tenant-level role, in the directory and nowhere else. */
+  const member = principalId.parse(ulid());
+  const C = '01JLIVEC900000000000000001';
+  const F = '01JLIVEG900000000000000001';
+  const IN_F = '01JLIVEM900000000000000001';
+  const ROLE = 'live-directory-reader';
+  const open: { close(): void }[] = [];
+  const scopeDo = () => env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(sr));
+  const directory = () => env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+    revokeTenantTuple(tenantId: string, subject: string, relation: string, object: string, at: string): Promise<boolean>;
+  };
+
+  async function watch(): Promise<{ frames: LiveFrame[]; closedWith: number | null }> {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sr,
+      principal: member,
+      request: upgrade(),
+      within: checkedWithin({ entityType: 'folder', entityId: F }, 'live:read'),
+    });
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    const watcher = { frames: [] as LiveFrame[], closedWith: null as number | null };
+    ws.accept();
+    ws.addEventListener('message', (event) => {
+      const data = String((event as MessageEvent).data);
+      if (data !== 'pong') watcher.frames.push(JSON.parse(data) as LiveFrame);
+    });
+    ws.addEventListener('close', (event) => {
+      watcher.closedWith = (event as CloseEvent).code;
+    });
+    open.push({
+      close: () => {
+        try {
+          ws.close(1000, 'test over');
+        } catch {
+          // Already closed by the scope.
+        }
+      },
+    });
+    return watcher;
+  }
+
+  /** Count the root checks; the FIRST answers, is held, then runs `whileHeld`. */
+  async function instrument(whileHeld?: () => Promise<void>): Promise<{ calls(): Promise<number>; restore(): Promise<void> }> {
+    let pending = whileHeld;
+    await runInDurableObject(scopeDo(), (instance) => {
+      const target = instance as unknown as {
+        operationContext: (...args: unknown[]) => { check: (...a: unknown[]) => Promise<unknown> };
+        __liveChecks?: number;
+        __liveOriginal?: unknown;
+      };
+      const original = target.operationContext;
+      target.__liveOriginal = original;
+      target.__liveChecks = 0;
+      target.operationContext = function (this: unknown, ...args: unknown[]) {
+        const ctx = original.apply(this, args);
+        if (args[8] !== 'live.subscribe') return ctx;
+        return Object.create(ctx, {
+          check: {
+            value: async (...a: unknown[]) => {
+              target.__liveChecks = (target.__liveChecks ?? 0) + 1;
+              const answer = await ctx.check(...a);
+              if (pending) {
+                const run = pending;
+                pending = undefined;
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                await run();
+              }
+              return answer;
+            },
+          },
+        });
+      };
+    });
+    return {
+      calls: () =>
+        runInDurableObject(scopeDo(), (instance) => (instance as unknown as { __liveChecks: number }).__liveChecks),
+      restore: () =>
+        runInDurableObject(scopeDo(), (instance) => {
+          const target = instance as unknown as { operationContext: unknown; __liveOriginal: unknown };
+          target.operationContext = target.__liveOriginal;
+        }),
+    };
+  }
+
+  const as = async (op: string, input: Record<string, unknown>) =>
+    (await host.getScope(writer, t, sr)).invoke(op, input);
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.LIVE_SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    await host.provisionScope(staff, { tenantId: t, scopeId: sr, vertical: 'live-vertical' });
+    await host.admin.activateScope(staff, t, sr);
+    await host.admin.grant(staff, { principalId: writer, permission: WRITE, node: { tenantId: t, scopeId: sr }, grantedBy: writer });
+    await as('live/shelve', { folderId: F, cabinetId: C });
+    await as('live/file', { noteId: IN_F, folderId: F });
+    await host.admin.defineRole(staff, t, { key: ROLE, permissions: [READ], source: 'vertical' });
+    const source = await runInDurableObject(scopeDo(), (_i, state) =>
+      state.storage.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'permission_source'`).toArray(),
+    );
+    // The premise: nothing projected, so the checker reads the directory.
+    expect(source).toEqual([]);
+  });
+
+  afterAll(async () => {
+    await host.close();
+  });
+
+  const pass = async (revoke: boolean) => {
+    await host.admin.assignRole(staff, { principalId: member, roleKey: ROLE, node: { tenantId: t, scopeId: null } });
+    const tabs = [await watch(), await watch()];
+    const checks = await instrument(
+      revoke
+        ? async () => {
+            await directory().revokeTenantTuple(t, `principal:${member}`, `role:${ROLE}`, `tenant:${t}`, new Date().toISOString());
+          }
+        : undefined,
+    );
+    try {
+      await as('live/touch', { noteId: IN_F });
+      await settle();
+      return { tabs: tabs.map((w) => ({ frames: [...w.frames], closedWith: w.closedWith })), calls: await checks.calls() };
+    } finally {
+      await checks.restore();
+      await directory().revokeTenantTuple(t, `principal:${member}`, `role:${ROLE}`, `tenant:${t}`, new Date().toISOString());
+      for (const w of open.splice(0)) w.close();
+      await settle();
+    }
+  };
+
+  it('asks the directory again for every socket, and a revoke there after the first allow reaches the next', { timeout: 20_000 }, async () => {
+    // The twin: nothing changes in the directory, both sockets hear the row — each from
+    // its own check, because a remote authority's verdict is never remembered.
+    const quiet = await pass(false);
+    for (const tab of quiet.tabs) {
+      expect(tab.frames).toHaveLength(1);
+      expect(tab.closedWith).toBeNull();
+    }
+    expect(quiet.calls).toBe(2);
+
+    // The directory revokes after the first socket's check allowed. That socket's nudge is
+    // the window the freshness contract accepts (it raced an evaluation in flight); the other
+    // socket is asked afresh, refused, and closed — not sent to on the first one's answer.
+    const revoked = await pass(true);
+    const heard = revoked.tabs.filter((tab) => tab.frames.length > 0);
+    const closed = revoked.tabs.filter((tab) => tab.closedWith === 1008);
+    expect(heard).toHaveLength(1);
+    expect(heard[0]!.frames).toHaveLength(1);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.frames).toEqual([]);
+  });
+});
+
 describe('live reads: a socket whose narrowing cannot be read fails closed (#1853)', () => {
   const base = { principal: ulid(), tenantId: ulid(), scopeId: ulid(), since: new Date().toISOString() };
 
@@ -522,7 +1262,7 @@ describe('live reads: a socket whose narrowing cannot be read fails closed (#185
     expect(readSubscription(base)).not.toHaveProperty('within');
   });
 
-  it('keeps a readable narrowing, vouched or not', () => {
+  it('keeps a readable narrowing, vouched, checked or neither', () => {
     expect(readSubscription({ ...base, within: { entityType: 'folder', entityId: 'f' } })?.within).toEqual({
       entityType: 'folder',
       entityId: 'f',
@@ -532,6 +1272,11 @@ describe('live reads: a socket whose narrowing cannot be read fails closed (#185
       entityId: 'f',
       vouched: 'why',
     });
+    expect(readSubscription({ ...base, within: { entityType: 'folder', entityId: 'f', checked: 'live:read' } })?.within).toEqual({
+      entityType: 'folder',
+      entityId: 'f',
+      checked: 'live:read',
+    });
   });
 
   it.each([
@@ -540,8 +1285,16 @@ describe('live reads: a socket whose narrowing cannot be read fails closed (#185
     ['an empty id', { entityType: 'folder', entityId: '' }],
     ['an empty reason', { entityType: 'folder', entityId: 'f', vouched: ' ' }],
     ['a non-string reason', { entityType: 'folder', entityId: 'f', vouched: true }],
+    ['a checked key that is not a permission key', { entityType: 'folder', entityId: 'f', checked: 'not a key' }],
+    ['both a reason and a checked key', { entityType: 'folder', entityId: 'f', vouched: 'why', checked: 'live:read' }],
   ])('drops a socket whose narrowing has %s, rather than widening it', (_label, within) => {
     expect(readSubscription({ ...base, within })).toBeNull();
+  });
+
+  it('keeps a readable expiry, and drops a socket whose expiry cannot be read rather than keeping it open (#938)', () => {
+    expect(readSubscription({ ...base, expiresAt: '2030-01-01T00:00:00.000Z' })?.expiresAt).toBe('2030-01-01T00:00:00.000Z');
+    expect(readSubscription({ ...base, expiresAt: 'never' })).toBeNull();
+    expect(readSubscription({ ...base, expiresAt: 0 })).toBeNull();
   });
 });
 
@@ -690,5 +1443,43 @@ describe('live reads: the ping keep-alive (#1860)', () => {
     await settle();
     expect(await handledCount()).toBe(before + 1);
     ws.close(1000, 'test over');
+  });
+});
+
+describe("live reads: the reaper's alarm and a scope's dump (#938)", () => {
+  it('leaves workerd’s own _cf_* tables out of an export, and a wipe-and-load past them', async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.LIVE_SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    const sx = scopeIdOf.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: sx, vertical: 'live-vertical' });
+    await host.admin.activateScope(staff, t, sx);
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sx,
+      principal: writer,
+      request: upgrade(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(response.status).toBe(101);
+    response.webSocket!.accept();
+    const stub = env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(sx));
+    // The alarm is armed, and workerd keeps its table for it in the scope's SQLite.
+    const cf = await runInDurableObject(stub, (_i, state) =>
+      state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE name GLOB '_cf_*'`).toArray(),
+    );
+    expect(cf.length).toBeGreaterThan(0);
+
+    const scope = stub as unknown as {
+      exportDump(): Promise<{ name: string }[]>;
+      importDump(tables: unknown[], dest?: string): Promise<unknown>;
+    };
+    const dump = await scope.exportDump();
+    expect(dump.map((d) => d.name).filter((n) => n.startsWith('_cf_'))).toEqual([]);
+    await expect(scope.importDump(dump, sx)).resolves.not.toThrow();
+    response.webSocket!.close(1000, 'test over');
+    await host.close();
   });
 });

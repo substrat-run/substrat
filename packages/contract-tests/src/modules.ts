@@ -2990,7 +2990,12 @@ export const liveModManifest = moduleManifest.parse({
   liveTargets: [{ entityType: 'note', readPermission: 'live:read' }],
   // #1853: a note can sit in a folder — sometimes in two — and move between them, which
   // is what a feed narrowed `within` a folder walks.
-  entityRelations: [{ entityType: 'note', parentType: 'folder' }],
+  // #938: a folder sits in a cabinet, so a `checkedWithin(folder)` subscriber's grant on
+  // the cabinet reaches its root, and moving the folder takes the root out of that reach.
+  entityRelations: [
+    { entityType: 'note', parentType: 'folder' },
+    { entityType: 'folder', parentType: 'cabinet' },
+  ],
   entitlementKey: 'live',
 });
 
@@ -3036,12 +3041,12 @@ const liveTouchLedgerOp: OperationHandler<{ ledgerId: string }, { ledgerId: stri
  * and un-narrowing are things an app does on a person's behalf, not things a platform
  * actor reaches in.
  */
-const liveUnshareOp: OperationHandler<{ principal: string; noteId: string }, void> = async (
-  ctx,
-  input,
-) => {
+const liveUnshareOp: OperationHandler<
+  { principal: string; noteId: string; entityType?: 'note' | 'cabinet' },
+  void
+> = async (ctx, input) => {
   await ctx.revoke(principalId.parse(input.principal), permissionKey.parse('live:read'), {
-    entityType: 'note',
+    entityType: input.entityType ?? 'note',
     entityId: input.noteId,
   });
 };
@@ -3062,6 +3067,36 @@ const liveMoveOp: OperationHandler<{ noteId: string; from: string; to: string },
   );
 };
 
+/** Touch several notes in one operation (#938): one pass, several rows. */
+const liveTouchEachOp: OperationHandler<{ noteIds: string[] }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  for (const noteId of input.noteIds) {
+    ctx.emit({
+      type: 'live.note-touched',
+      schemaVersion: 1,
+      entity: { entityType: 'note', entityId: noteId },
+      piiClass: 'none',
+      payload: {},
+    });
+  }
+};
+
+/** Put a folder in a cabinet (#938). */
+const liveShelveOp: OperationHandler<{ folderId: string; cabinetId: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  ctx.link({ entityType: 'folder', entityId: input.folderId }, { entityType: 'cabinet', entityId: input.cabinetId });
+};
+
+/** Move a folder to another cabinet (#938): a `checkedWithin(folder)` root moving out of a grant's reach. */
+const liveReshelveOp: OperationHandler<{ folderId: string; from: string; to: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  ctx.relink(
+    { entityType: 'folder', entityId: input.folderId },
+    { entityType: 'cabinet', entityId: input.from },
+    { entityType: 'cabinet', entityId: input.to },
+  );
+};
+
 export const liveMod: ModuleRegistration = {
   manifest: liveModManifest,
   migrations: [],
@@ -3071,6 +3106,9 @@ export const liveMod: ModuleRegistration = {
     'live/unshare': liveUnshareOp as OperationHandler<never, unknown>,
     'live/file': liveFileOp as OperationHandler<never, unknown>,
     'live/move': liveMoveOp as OperationHandler<never, unknown>,
+    'live/touch-each': liveTouchEachOp as OperationHandler<never, unknown>,
+    'live/shelve': liveShelveOp as OperationHandler<never, unknown>,
+    'live/reshelve': liveReshelveOp as OperationHandler<never, unknown>,
   },
 };
 

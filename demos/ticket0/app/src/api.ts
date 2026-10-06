@@ -9,7 +9,7 @@
  */
 import { ApiError, createClient } from './api.generated.js';
 import { endingOnUnauthorized } from './feed.js';
-import { liveFeed } from './live.js';
+import { feeds } from './live.js';
 
 export { ApiError };
 export type {
@@ -156,11 +156,11 @@ export const auth = {
 };
 
 export const api = createClient({
-  // A 401 on any read ends the live feed (#938): its socket was opened for the session
-  // that just ended, and must not outlive it.
+  // A 401 on any read ends every live feed the page opened (#938): each socket was opened
+  // for the session that just ended, and must not outlive it.
   fetch: endingOnUnauthorized(
     (input: RequestInfo | URL, init?: RequestInit) => fetch(input, { credentials: 'same-origin', ...init }),
-    liveFeed,
+    feeds,
   ),
   errorMessage: problemDetail,
 });

@@ -37,6 +37,7 @@ import {
   recordAssistantFailure,
 } from '../harness/assistant.js';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
+import { mountPortalLive } from '../harness/portal-live.js';
 import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
 import { senderFor, sweepOutbound, type OutboundSender } from '../harness/relay.js';
 import { buildHost, linkDevPersonas, seed, type Desk, type World } from './seed.js';
@@ -119,13 +120,12 @@ async function boot() {
   // The same live route the worker mounts (#938), on a host that has no live reads: it
   // answers 501, and the screens go on polling exactly as they did before it existed.
   // Registered before `mountApi`, as the worker registers it.
-  mountLiveReads(app, {
-    live: () => host.liveReads,
-    subscriber: async (c) => {
-      const caller = await login.caller(c.req.raw.headers);
-      return caller ? { tenantId: caller.tenantId, scopeId: caller.scopeId, principal: caller.principal } : null;
-    },
-  });
+  const liveCaller = async (c: Context) => {
+    const caller = await login.caller(c.req.raw.headers);
+    return caller ? { tenantId: caller.tenantId, scopeId: caller.scopeId, principal: caller.principal } : null;
+  };
+  mountLiveReads(app, { live: () => host.liveReads, subscriber: liveCaller });
+  mountPortalLive(app, { live: () => host.liveReads, caller: liveCaller });
   // The MCP endpoint's RFC 9728 document, naming the issuer this desk actually verifies
   // against. The WORKER has always passed this (`authorizationServersOf`); the dev server
   // did not, so the local MCP surface answered a 401 that pointed nowhere while the hosted

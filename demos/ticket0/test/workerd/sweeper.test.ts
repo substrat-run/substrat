@@ -722,22 +722,22 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
       .replace(/=+$/, '');
   const encodeJson = (value: unknown): string => b64url(new TextEncoder().encode(JSON.stringify(value)));
 
-  /** A bearer the issuer signed for `sub`. */
-  async function bearerFor(sub: string): Promise<string> {
+  /** A bearer the issuer signed for `sub`, valid for `ttlSec`. */
+  async function bearerFor(sub: string, ttlSec = 300): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
     const head = `${encodeJson({ alg: 'RS256', kid: 'live-1', typ: 'JWT' })}.${encodeJson({
       iss: ISSUER,
       sub,
       iat: now,
-      exp: now + 300,
+      exp: now + ttlSec,
     })}`;
     const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', signingKey, new TextEncoder().encode(head));
     return `${head}.${b64url(signature)}`;
   }
 
   /** The handshake, as the router forwards a browser's. */
-  function handshake(headers: Record<string, string>): Promise<Response> {
-    return SELF.fetch(`${ORIGIN}/api/live`, {
+  function handshake(headers: Record<string, string>, path = '/api/live'): Promise<Response> {
+    return SELF.fetch(`${ORIGIN}${path}`, {
       headers: {
         upgrade: 'websocket',
         connection: 'Upgrade',
@@ -1067,6 +1067,169 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     const anonymous = await handshake({ origin: ORIGIN });
     expect(anonymous.status).toBe(401);
     expect(anonymous.webSocket).toBeNull();
+  });
+
+  // -- the portal's feed: one conversation, as its customer may see it (#938) --------
+
+  const portalHandshake = async (sub: string, conversationId: string, ttlSec?: number) =>
+    handshake(
+      { origin: ORIGIN, authorization: `Bearer ${await bearerFor(sub, ttlSec)}` },
+      `/api/conversations/${conversationId}/live`,
+    );
+
+  /** A customer's socket on one conversation's portal feed, its frames, and how the scope closed it. */
+  async function subscribePortal(
+    sub: string,
+    conversationId: string,
+    ttlSec?: number,
+  ): Promise<{ frames: LiveFrame[]; closedWith: number | null }> {
+    const response = await portalHandshake(sub, conversationId, ttlSec);
+    expect(response.status).toBe(101);
+    const ws = response.webSocket!;
+    ws.accept();
+    open.push(ws);
+    const feed = { frames: [] as LiveFrame[], closedWith: null as number | null };
+    ws.addEventListener('message', (event) => {
+      const data = String((event as MessageEvent).data);
+      if (data !== 'pong') feed.frames.push(JSON.parse(data) as LiveFrame);
+    });
+    ws.addEventListener('close', (event) => {
+      feed.closedWith = (event as CloseEvent).code;
+    });
+    return feed;
+  }
+
+  const reply = async (conversationId: string, body: string) =>
+    (await host().getScope(deskOwner, tenant, desk)).invoke<{ id: string }>('ticket0/post-public-reply', {
+      conversationId,
+      body,
+    });
+
+  it("nudges a portal customer about a public reply on their thread, and about nothing else on it", async () => {
+    const customer = await member('sub-portal', 'customer');
+    const theirs = await arrival('portal@live.example');
+    await grant(customer, 'conversation:read-own', 'contact', theirs.contact);
+    const feed = await subscribePortal('sub-portal', theirs.conversation);
+
+    await note(theirs.conversation, 'Internal: check their plan first.');
+    await settle();
+    // The negative first: a note on their own thread sends nothing at all.
+    expect(feed.frames).toEqual([]);
+
+    const answered = await reply(theirs.conversation, 'We are on it.');
+    await settle();
+    expect(feed.frames.length).toBeGreaterThan(0);
+    // A nudge names nothing: the customer re-reads `my-messages`, which is what shows it.
+    for (const frame of feed.frames) expect(Object.keys(frame).sort()).toEqual(['at', 'id', 'kind']);
+    expect(feed.frames.every((f) => f.kind === 'nudge')).toBe(true);
+    const polled = await (await host().getScope(customer, tenant, desk)).invoke<Page<{ id: string }>>(
+      'ticket0/my-messages',
+      { conversationId: theirs.conversation },
+    );
+    expect(polled.entries.map((m) => m.id)).toContain(answered.id);
+    expect(feed.closedWith).toBeNull();
+  });
+
+  it("refuses a customer the feed of another contact's conversation, and an agent the portal's", async () => {
+    const customer = await member('sub-portal-other', 'customer');
+    await member('sub-portal-agent', 'agent');
+    const theirs = await arrival('portal-mine@live.example');
+    const notTheirs = await arrival('portal-someone@live.example');
+    await grant(customer, 'conversation:read-own', 'contact', theirs.contact);
+
+    const refused = await portalHandshake('sub-portal-other', notTheirs.conversation);
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get('x-substrat-live')).toBe('forbidden');
+    expect(refused.webSocket).toBeNull();
+    // Staff read the desk on `/api/live`; the portal's gate is the customer's own key.
+    expect((await portalHandshake('sub-portal-agent', theirs.conversation)).status).toBe(403);
+    // The positive twin: the same customer, their own conversation.
+    const own = await subscribePortal('sub-portal-other', theirs.conversation);
+    expect(own.closedWith).toBeNull();
+  });
+
+  it('closes a portal socket, unnudged, once the customer’s grant is withdrawn', async () => {
+    const customer = await member('sub-portal-revoked', 'customer');
+    const theirs = await arrival('portal-revoked@live.example');
+    await grant(customer, 'conversation:read-own', 'contact', theirs.contact);
+    const feed = await subscribePortal('sub-portal-revoked', theirs.conversation);
+    await reply(theirs.conversation, 'First answer.');
+    await settle();
+    const heard = feed.frames.length;
+    expect(heard).toBeGreaterThan(0);
+
+    // Withdrawn the way a portal grant is: the tuple revoked, while the socket stays open.
+    const scopeDo = env.SCOPE.get(env.SCOPE.idFromName(desk)) as unknown as {
+      revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+    };
+    await scopeDo.revokeTuple(
+      `principal:${customer}`,
+      'granted:conversation:read-own',
+      `contact:${theirs.contact}`,
+      new Date().toISOString(),
+    );
+    await reply(theirs.conversation, 'Second answer.');
+    await settle();
+    expect(feed.frames).toHaveLength(heard);
+    expect(feed.closedWith).toBe(1008);
+    // And the client's reconnect is refused at the handshake.
+    expect((await portalHandshake('sub-portal-revoked', theirs.conversation)).status).toBe(403);
+  });
+
+  it('closes a portal socket, unnudged, once the session that opened it has expired, though the grant holds', async () => {
+    const customer = await member('sub-portal-expiring', 'customer');
+    const theirs = await arrival('portal-expiring@live.example');
+    await grant(customer, 'conversation:read-own', 'contact', theirs.contact);
+    // A bearer good for two seconds, and its twin good for five minutes, on one thread.
+    const expiring = await subscribePortal('sub-portal-expiring', theirs.conversation, 2);
+    const current = await subscribePortal('sub-portal-expiring', theirs.conversation);
+    await reply(theirs.conversation, 'Before the session ends.');
+    await settle();
+    const heard = expiring.frames.length;
+    expect(heard).toBeGreaterThan(0);
+
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    await reply(theirs.conversation, 'After it ended.');
+    await settle();
+    expect(expiring.frames).toHaveLength(heard);
+    expect(expiring.closedWith).toBe(1008);
+    // The twin from the same write: the grant still holds, and a current session hears it.
+    expect(current.closedWith).toBeNull();
+    expect(current.frames.length).toBeGreaterThan(heard);
+  });
+
+  it('does not nudge a socket on the losing thread once a merge has moved its messages (#2044)', async () => {
+    // A merge joins one contact's conversations (it refuses two contacts'), so one
+    // customer watches both: the thread that loses its messages and the one that gains them.
+    const customer = await member('sub-portal-merge', 'customer');
+    const loser = await arrival('portal-merge@live.example');
+    const survivor = await arrival('portal-merge@live.example');
+    await grant(customer, 'conversation:read-own', 'contact', loser.contact);
+    const admin = await host().getScope(deskOwner, tenant, desk);
+    const moved = (
+      await admin.invoke<Page<{ id: string }>>('ticket0/list-messages', { conversationId: loser.conversation })
+    ).entries[0]!.id;
+    const onLoser = await subscribePortal('sub-portal-merge', loser.conversation);
+    const onSurvivor = await subscribePortal('sub-portal-merge', survivor.conversation);
+
+    await admin.invoke('ticket0/merge', {
+      conversationId: loser.conversation,
+      intoConversationId: survivor.conversation,
+    });
+    await settle();
+    const loserHeard = onLoser.frames.length;
+    const survivorHeard = onSurvivor.frames.length;
+
+    await reply(survivor.conversation, 'Answered on the survivor.');
+    // A write to a message that moved: it now reaches the survivor's thread, not the loser's.
+    await (await host().getScope((await services()).relay, tenant, desk)).invoke('ticket0/record-delivery', {
+      messageId: moved,
+      emailMessageId: '<portal-merged@mail.example>',
+    });
+    await settle();
+    expect(onLoser.frames).toHaveLength(loserHeard);
+    // The twin, from the same writes: the thread the messages joined hears them.
+    expect(onSurvivor.frames.length).toBeGreaterThan(survivorHeard);
   });
 });
 

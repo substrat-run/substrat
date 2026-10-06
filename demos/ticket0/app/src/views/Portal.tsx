@@ -5,10 +5,13 @@
  * rendering path in this file at all, and that is deliberate: the surface that must
  * never show one is the surface that should not know how.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { View } from '../App.js';
 import { Brand } from '../App.js';
 import { api, type Conversation, type Session } from '../api.js';
+import { portalFeed, useLiveReload } from '../live.js';
+import { PACE } from '../pace.js';
+import { latestOnly } from '../sequence.js';
 import { Avatar, Empty, EventDivider, StateBadge, ago, clock } from '../ui.js';
 
 /** What the portal reads — the customer-facing shape, with no author principal. */
@@ -137,24 +140,34 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
   /** In flight. Without it, an impatient second click submits a second rating. */
   const [rating, setRating] = useState(false);
 
+  // A poll and a push can both be reading; only the latest may write (`sequence.ts`).
+  const reads = useRef(latestOnly()).current;
   const load = useCallback(async () => {
+    const isLatest = reads();
     try {
       const [c, m] = await Promise.all([
         api.getConversation({ conversationId: id }).catch(() => null),
         api.myMessages({ conversationId: id }),
       ]);
+      if (!isLatest()) return;
       if (c) setConv(c);
       setMessages(m.entries as PublicMessage[]);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (isLatest()) setError(e instanceof Error ? e.message : String(e));
     }
-  }, [id]);
+  }, [id, reads]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  if (error) return <Empty title="Could not open this conversation" note={error} />;
+  // Kept current (#938): this conversation's own feed nudges when a public message on it
+  // changes (`harness/portal-live.ts`), and the poll is the floor under it. Not ended on
+  // unmount: the feed closes its socket once nobody has listened for a few seconds.
+  useLiveReload(() => void load(), PACE.portal, { feed: portalFeed(id) });
+
+  // Only before anything is shown: a poll that fails later must not replace the thread.
+  if (error && !conv) return <Empty title="Could not open this conversation" note={error} />;
 
   return (
     <div className="frame" style={{ background: 'var(--surface)' }}>
