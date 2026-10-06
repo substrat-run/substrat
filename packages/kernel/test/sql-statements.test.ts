@@ -31,4 +31,11 @@ describe('splitSqlStatements (#2068)', () => {
     expect(exec).toHaveLength(text.length);
     expect(text[0]).toContain('/*c*/');
   });
+
+  it('reads identifiers spelled like Object.prototype members as ordinary words', () => {
+    expect(splitSqlStatements('CREATE TABLE constructor(toString); INSERT INTO constructor VALUES(1);')).toEqual([
+      'CREATE TABLE constructor(toString)',
+      'INSERT INTO constructor VALUES(1)',
+    ]);
+  });
 });

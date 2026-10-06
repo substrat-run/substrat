@@ -67,14 +67,15 @@ const START = 1;
 /** SQLite's `IdChar`: ASCII letters, digits, `_`, `$`, and every byte at or above 0x80. */
 const isIdChar = (c: string): boolean => /[A-Za-z0-9_$]/.test(c) || c.charCodeAt(0) >= 0x80;
 
-const KEYWORDS: Readonly<Record<string, number>> = {
-  create: TK_CREATE,
-  temp: TK_TEMP,
-  temporary: TK_TEMP,
-  trigger: TK_TRIGGER,
-  end: TK_END,
-  explain: TK_EXPLAIN,
-};
+/** A Map, not an object literal: an identifier spelled `constructor` must not find Object.prototype. */
+const KEYWORDS: ReadonlyMap<string, number> = new Map([
+  ['create', TK_CREATE],
+  ['temp', TK_TEMP],
+  ['temporary', TK_TEMP],
+  ['trigger', TK_TRIGGER],
+  ['end', TK_END],
+  ['explain', TK_EXPLAIN],
+]);
 
 /** One statement's place in the source: its span, and the comment spans inside it. */
 interface ScannedStatement {
@@ -126,7 +127,7 @@ function scanSqlStatements(sql: string): ScannedStatement[] {
       token = TK_OTHER;
     } else if (isIdChar(c)) {
       while (next < n && isIdChar(sql[next]!)) next += 1;
-      token = KEYWORDS[sql.slice(i, next).toLowerCase()] ?? TK_OTHER;
+      token = KEYWORDS.get(sql.slice(i, next).toLowerCase()) ?? TK_OTHER;
     } else {
       token = TK_OTHER;
     }
