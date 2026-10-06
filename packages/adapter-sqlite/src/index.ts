@@ -494,8 +494,12 @@ import {
   listQuery,
   cursorOf,
   moduleMigrations,
-  migrationDigests,
   migrationDivergence,
+  migrationFailedError,
+  migrationSteps,
+  planMigrations,
+  type MigrationPlan,
+  type MigrationStep,
   type ListIndexPlan,
   type PageParams,
   isSearchIndexTable,
@@ -758,10 +762,8 @@ interface AttachmentRow {
 interface RegisteredModule {
   id: string;
   migrations: SqlMigration[];
-  /** The versions the module authored — the ones held to their digest (#2066). */
-  authored: ReadonlySet<string>;
-  /** Every migration's SQL digest by version, computed once. */
-  digests: Promise<ReadonlyMap<string, string>>;
+  /** `migrations` with their digests, and which are held to them (#2066). */
+  steps: Promise<readonly MigrationStep[]>;
   consumers: { eventType: string; handler: ConsumerHandler }[];
   /** The module's declared recurring schedules (#383), empty if it declares none. */
   schedules: ScheduleSpec[];
@@ -769,14 +771,6 @@ interface RegisteredModule {
   freshness: FreshnessSpec[];
   /** The module's declared peers (#1706), empty if it declares none. */
   peers: PeerSpec[];
-}
-
-/** One migration a pass will run, with its digest and whether it is held to it (#2066). */
-interface PendingMigration {
-  moduleId: string;
-  migration: SqlMigration;
-  digest: string;
-  authored: boolean;
 }
 
 /** A manifest guard, bound to the module whose manifest declared it (K-17). */
@@ -2641,14 +2635,12 @@ export class SqliteScopeHost implements ScopeHost {
     }
     // #1705: validated whole and kept only if it passes, so a refused module leaves nothing.
     this.crossVertical.register(manifest, registration.imports);
-    // The order the kernel writes once (#1677): authored, then search, then list indexes.
-    // The two derived sets are still computed above, for the duplicate-version refusals.
-    const ordered = moduleMigrations(registration);
     this.modules.set(manifest.id, {
       id: manifest.id,
-      migrations: ordered,
-      authored: new Set(migrations.map((m) => m.version)),
-      digests: migrationDigests(ordered),
+      // The order the kernel writes once (#1677): authored, then search, then list indexes.
+      // The two derived sets are still computed above, for the duplicate-version refusals.
+      migrations: moduleMigrations(registration),
+      steps: migrationSteps(registration),
       consumers,
       schedules: manifest.schedules ?? [],
       freshness: manifest.freshness ?? [],
@@ -5776,10 +5768,10 @@ export class SqliteScopeHost implements ScopeHost {
     // host that does not run the scope's modules must never clear (or overwrite)
     // a failure recorded by the deployment that does.
     // A scope that applied different SQL (#2066) is not a noop: the pass below fails it.
-    const { pending, diverged } = await this.migrationWork(rt);
-    if (pending.length === 0 && !diverged) return { status: 'noop' };
+    const plan = await planMigrations(this.modules.values(), rt.appliedMigrations);
+    if (plan.pending.length === 0 && !plan.diverged) return { status: 'noop' };
     try {
-      await this.applyPendingMigrations(rt);
+      await this.applyPendingMigrations(rt, plan);
       return { status: 'migrated', schemaVersion: String(rt.appliedMigrations.size) };
     } catch {
       // `applyPendingMigrations` already projected the failure (finally-path);
@@ -11793,45 +11785,19 @@ export class SqliteScopeHost implements ScopeHost {
     return ctxRef;
   }
 
-  /**
-   * What a migration pass has to do on this scope: the registered migrations it has not
-   * applied, and the first one it applied from different SQL (#2066), which fails it closed
-   * before anything else runs.
-   */
-  private async migrationWork(rt: ScopeRuntime): Promise<{
-    pending: PendingMigration[];
-    diverged: { version: string; error: string } | undefined;
-  }> {
-    const pending: PendingMigration[] = [];
-    let diverged: { version: string; error: string } | undefined;
-    for (const mod of this.modules.values()) {
-      const digests = await mod.digests;
-      for (const migration of mod.migrations) {
-        const key = `${mod.id}@${migration.version}`;
-        const step = { moduleId: mod.id, migration, digest: digests.get(migration.version)!, authored: mod.authored.has(migration.version) };
-        if (!rt.appliedMigrations.has(key)) {
-          pending.push(step);
-          continue;
-        }
-        const error = migrationDivergence(rt.appliedMigrations.get(key), step.digest, step.authored);
-        if (error && !diverged) diverged = { version: key, error };
-      }
+  private async applyPendingMigrations(rt: ScopeRuntime, plan?: MigrationPlan): Promise<void> {
+    const { pending, diverged } = plan ?? (await planMigrations(this.modules.values(), rt.appliedMigrations));
+    if (diverged) {
+      this.recordMigrationState(rt, diverged);
+      throw migrationFailedError(diverged.version, diverged.error);
     }
-    return { pending, diverged };
-  }
-
-  private async applyPendingMigrations(rt: ScopeRuntime): Promise<void> {
-    const { pending, diverged } = await this.migrationWork(rt);
     // Nothing pending → nothing to record. A scope provisioned before any module
     // registers legitimately sits at schema_version '0'.
-    if (pending.length === 0 && !diverged) return;
+    if (pending.length === 0) return;
     // The failing `module@version` and its cause, captured structurally rather than
     // re-parsed out of the thrown message — the directory record has to name both.
-    let failure: { version: string; error: string } | undefined = diverged;
+    let failure: { version: string; error: string } | undefined;
     try {
-      if (diverged) {
-        throw new Error(`migration failed for ${diverged.version} — scope fails closed: ${diverged.error}`);
-      }
       await rt.actor.enqueue(() => {
         for (const { moduleId, migration, digest, authored } of pending) {
           const key = `${moduleId}@${migration.version}`;
@@ -11873,9 +11839,7 @@ export class SqliteScopeHost implements ScopeHost {
           } catch (err) {
             rt.db.exec('ROLLBACK');
             failure = { version: key, error: (err as Error).message };
-            throw new Error(
-              `migration failed for ${key} — scope fails closed: ${(err as Error).message}`,
-            );
+            throw migrationFailedError(key, (err as Error).message);
           }
           rt.appliedMigrations.set(key, recorded);
         }

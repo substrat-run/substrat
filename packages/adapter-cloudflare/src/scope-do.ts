@@ -146,8 +146,11 @@ import {
   listIndexDdl,
   listIndexPlans,
   moduleMigrations,
-  migrationDigests,
   migrationDivergence,
+  migrationFailedError,
+  migrationSteps,
+  planMigrations,
+  type MigrationStep,
   listQuery,
   cursorOf,
   type ListIndexPlan,
@@ -383,19 +386,9 @@ export interface ScopeDoEnv {
 interface RegisteredModule {
   id: string;
   migrations: SqlMigration[];
-  /** The versions the module authored — the ones held to their digest (#2066). */
-  authored: ReadonlySet<string>;
-  /** Every migration's SQL digest by version, computed once. */
-  digests: Promise<ReadonlyMap<string, string>>;
+  /** `migrations` with their digests, and which are held to them (#2066). */
+  steps: Promise<readonly MigrationStep[]>;
   consumers: { eventType: string; handler: ConsumerHandler }[];
-}
-
-/** One migration a pass will run, with its digest and whether it is held to it (#2066). */
-interface PendingMigration {
-  moduleId: string;
-  migration: SqlMigration;
-  digest: string;
-  authored: boolean;
 }
 
 /** A scope's migration journal: `module@version` → the SQL digest it recorded (#2066). */
@@ -1331,13 +1324,11 @@ export function defineScopeDO(
       }
       // #1705: the same registry, the same refusals, as the coordinator and the pure host.
       this.crossVertical.register(manifest, registration.imports);
-      // The order the kernel writes once (#1677): authored, then search, then list indexes.
-      const migrations = moduleMigrations(registration);
       this.modules.set(manifest.id, {
         id: manifest.id,
-        migrations,
-        authored: new Set((registration.migrations ?? []).map((m) => m.version)),
-        digests: migrationDigests(migrations),
+        // The order the kernel writes once (#1677): authored, then search, then list indexes.
+        migrations: moduleMigrations(registration),
+        steps: migrationSteps(registration),
         consumers: Object.entries(registration.consumers ?? {}).map(([eventType, handler]) => ({
           eventType,
           handler,
@@ -4917,40 +4908,13 @@ export function defineScopeDO(
       return this.migrationPromise;
     }
 
-    /**
-     * What a migration pass has to do on this scope: the registered migrations it has not
-     * applied, and the first one it applied from different SQL (#2066), which fails it closed
-     * before anything else runs.
-     */
-    private async migrationWork(): Promise<{
-      pending: PendingMigration[];
-      diverged: { version: string; error: string } | undefined;
-    }> {
-      const pending: PendingMigration[] = [];
-      let diverged: { version: string; error: string } | undefined;
-      for (const mod of this.modules.values()) {
-        const digests = await mod.digests;
-        for (const migration of mod.migrations) {
-          const key = `${mod.id}@${migration.version}`;
-          const step = { moduleId: mod.id, migration, digest: digests.get(migration.version)!, authored: mod.authored.has(migration.version) };
-          if (!this.applied.has(key)) {
-            pending.push(step);
-            continue;
-          }
-          const error = migrationDivergence(this.applied.get(key), step.digest, step.authored);
-          if (error && !diverged) diverged = { version: key, error };
-        }
-      }
-      return { pending, diverged };
-    }
-
     /** Resolves true if this call applied at least one migration. */
     private async applyPendingMigrations(): Promise<boolean> {
-      const { pending, diverged } = await this.migrationWork();
+      const { pending, diverged } = await planMigrations(this.modules.values(), this.applied);
       if (diverged) {
         // Recorded as a failed migration is, so the coordinator projects it the same way.
         this.lastFailure = diverged;
-        throw new Error(`migration failed for ${diverged.version} — scope fails closed: ${diverged.error}`);
+        throw migrationFailedError(diverged.version, diverged.error);
       }
       if (pending.length === 0) return false;
       this.migrationRuns += 1;
@@ -5037,9 +5001,7 @@ export function defineScopeDO(
             // It is not an unhandled rejection: every caller awaits the memoised promise, and
             // the coordinator records the failure it receives (#1898 review).
             this.lastFailure = { version: key, error: (err as Error).message };
-            throw new Error(
-              `migration failed for ${key} — scope fails closed: ${(err as Error).message}`,
-            );
+            throw migrationFailedError(key, (err as Error).message);
           }
           this.applied.set(key, recorded);
         }

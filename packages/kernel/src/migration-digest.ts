@@ -1,3 +1,4 @@
+import { moduleMigrations } from './module-migrations.js';
 import { attachmentSha256, type SqlMigration } from './scope-host.js';
 
 // Declared locally so the kernel needs no platform type packages (§5.8), as `capability.ts` does.
@@ -33,9 +34,75 @@ export function migrationDigest(sql: string): Promise<string> {
   return attachmentSha256(new TextEncoder().encode(sql));
 }
 
-/** Every migration's digest by version — computed once per registered module. */
-export async function migrationDigests(migrations: readonly SqlMigration[]): Promise<ReadonlyMap<string, string>> {
-  return new Map(await Promise.all(migrations.map(async (m) => [m.version, await migrationDigest(m.sql)] as const)));
+/** One migration a host applies, with its digest and whether it is held to it. */
+export interface MigrationStep {
+  migration: SqlMigration;
+  digest: string;
+  /** Authored by the module, so held to its digest; false for kernel-derived DDL. */
+  authored: boolean;
+}
+
+type Registration = Parameters<typeof moduleMigrations>[0];
+const stepsOf = new WeakMap<Registration, Promise<readonly MigrationStep[]>>();
+
+/**
+ * A module's migrations in the order the host applies them (`moduleMigrations`), each with its
+ * digest and whether it is authored. Memoised per registration, so a Durable Object that wakes
+ * with the same code-time modules hashes nothing again.
+ */
+export function migrationSteps(registration: Registration): Promise<readonly MigrationStep[]> {
+  let steps = stepsOf.get(registration);
+  if (!steps) {
+    const authored = new Set((registration.migrations ?? []).map((m) => m.version));
+    steps = Promise.all(
+      moduleMigrations(registration).map(async (migration) => ({
+        migration,
+        digest: await migrationDigest(migration.sql),
+        authored: authored.has(migration.version),
+      })),
+    );
+    stepsOf.set(registration, steps);
+  }
+  return steps;
+}
+
+/** A step a migration pass still has to run, with the module it belongs to. */
+export interface PendingMigration extends MigrationStep {
+  moduleId: string;
+}
+
+/** What a migration pass has to do, or the divergence that fails the scope closed instead. */
+export type MigrationPlan =
+  | { pending: PendingMigration[]; diverged?: undefined }
+  | { pending: []; diverged: { version: string; error: string } };
+
+/**
+ * Plan a scope's migration pass against its journal (`module@version` → recorded digest): the
+ * registered steps it has not applied, or the first applied one whose SQL differs, which fails
+ * the scope closed before anything else runs. Both adapters plan through this.
+ */
+export async function planMigrations(
+  modules: Iterable<{ readonly id: string; readonly steps: Promise<readonly MigrationStep[]> }>,
+  applied: ReadonlyMap<string, string | null>,
+): Promise<MigrationPlan> {
+  const pending: PendingMigration[] = [];
+  for (const mod of modules) {
+    for (const step of await mod.steps) {
+      const key = `${mod.id}@${step.migration.version}`;
+      if (!applied.has(key)) {
+        pending.push({ moduleId: mod.id, ...step });
+        continue;
+      }
+      const error = migrationDivergence(applied.get(key), step.digest, step.authored);
+      if (error) return { pending: [], diverged: { version: key, error } };
+    }
+  }
+  return { pending };
+}
+
+/** The error a scope fails closed with when `module@version` cannot be applied or trusted. */
+export function migrationFailedError(key: string, cause: string): Error {
+  return new Error(`migration failed for ${key} — scope fails closed: ${cause}`);
 }
 
 /**

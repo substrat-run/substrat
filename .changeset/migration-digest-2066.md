@@ -11,4 +11,4 @@ When a module's authored migration is already applied with a different digest, t
 
 A journal row written before the column has no digest. It is accepted and stays NULL, with no backfill. Kernel-derived DDL (search, list and archive/trash migrations) is versioned by its declaration and is not held to its digest, so a kernel release that changes how it writes the same declaration does not fail scopes closed.
 
-The kernel exports `migrationDigest`, `migrationDigests` and `migrationDivergence`. `@substrat-run/contract-tests` adds `migrationDigestContractSuite`.
+The kernel exports `migrationDigest`, `migrationSteps`, `planMigrations`, `migrationDivergence` and `migrationFailedError`, which both adapters plan their migration pass through. `@substrat-run/contract-tests` adds `migrationDigestContractSuite`.

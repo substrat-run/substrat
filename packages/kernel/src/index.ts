@@ -346,7 +346,16 @@ export type {
   ListQueryParams,
 } from './list-index.js';
 export { moduleMigrations } from './module-migrations.js';
-export { migrationDigest, migrationDigests, migrationDivergence } from './migration-digest.js';
+export {
+  migrationDigest,
+  migrationDivergence,
+  migrationFailedError,
+  migrationSteps,
+  planMigrations,
+  type MigrationPlan,
+  type MigrationStep,
+  type PendingMigration,
+} from './migration-digest.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';
