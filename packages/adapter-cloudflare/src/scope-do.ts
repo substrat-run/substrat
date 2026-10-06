@@ -97,6 +97,11 @@ import {
   seatScopeTuple,
   delegatedGrantSql,
   delegatedRevokeSql,
+  kernelOutboxInsertSql,
+  shapeGrantSql,
+  shapeTopUpEvent,
+  topUpEntityGrantShapes,
+  type EntityGrantShapeInput,
   applyScopeRoleChange,
   changeScopeRole,
   revokeScopeRoles,
@@ -2263,6 +2268,47 @@ export function defineScopeDO(
             this.sql.exec(seat.sql, ...seat.params);
           }
           return switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
+        }),
+      );
+    }
+
+    /**
+     * A declared entity-grant shape's grant to one person on one entity (#2071): the marker and
+     * every key, as ONE unit, each an explicit write (`shapeGrantSql`).
+     */
+    async grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void> {
+      const statements = shapeGrantSql(principal, entity, permissions);
+      await this.queue.enqueue(() =>
+        this.revision.transactionSync(() => {
+          for (const st of statements) this.sql.exec(st.sql, ...st.params);
+        }),
+      );
+    }
+
+    /**
+     * One bounded pass of a declared shape's reconcile (#2071), with each top-up's
+     * `entity.grants-topped-up` event, in ONE transaction. Returns how many (person, entity)
+     * it topped up; fewer than `limit` means the scope is done. The host repeats it.
+     */
+    async topUpEntityGrantShapes(
+      tenantId: string,
+      scopeId: string,
+      shapes: readonly EntityGrantShapeInput[],
+      limit: number,
+    ): Promise<number> {
+      return this.queue.enqueue(() =>
+        this.revision.transactionSync(() => {
+          const at = new Date().toISOString();
+          const done = topUpEntityGrantShapes(this.switchSql(), { scopeId, shapes, now: at, limit });
+          for (const topUp of done) {
+            const event = shapeTopUpEvent(
+              { tenantId, scopeId, occurredAt: at, id: this.mintEventId(Date.parse(at)) },
+              topUp,
+            );
+            const st = kernelOutboxInsertSql(event, this.env.SUBSTRAT_VERSION_ID ?? null);
+            this.sql.exec(st.sql, ...st.params);
+          }
+          return done.length;
         }),
       );
     }

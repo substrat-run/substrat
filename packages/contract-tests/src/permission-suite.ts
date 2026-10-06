@@ -478,6 +478,112 @@ export function permissionContractSuite(
       });
     });
 
+    /**
+     * #2071: a vertical's declared entity-grant SHAPE reaches the people who already held it
+     * when it grows. The kernel's own edges are in `kernel/test/entity-grant-shape.test.ts`;
+     * this is the same reconcile end to end on each adapter, through the admin verbs a
+     * vertical calls, with the checker as the judge.
+     */
+    describe('a declared entity-grant shape reaches existing holders when it grows (#2071)', () => {
+      const s4 = scopeId.parse(ulid());
+      const OLD = [PERM_READ];
+      const GROWN = [PERM_READ, PERM_USE];
+      const node = { tenantId: t1, scopeId: s4 };
+      const desk = (id: string): EntityRef => ({ entityType: 'desk', entityId: id });
+      const hana = principalId.parse(ulid());
+      const ivo = principalId.parse(ulid());
+      const jon = principalId.parse(ulid());
+      const kim = principalId.parse(ulid());
+      const shapeTo = (who: PrincipalId, id: string, permissions = OLD) =>
+        host.admin.grantEntityShape(staff, { principalId: who, node, entity: desk(id), permissions, grantedBy: alice });
+      const reconcile = (permissions: PermissionKey[] = GROWN, batch?: number) =>
+        host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'desk', permissions }], batch ? { batch } : undefined);
+      const can = async (who: PrincipalId, permission: PermissionKey, id: string) =>
+        (await probe(who, s4, permission, desk(id))).allowed;
+      const toppedUp = async (id: string) =>
+        (await host.getScope(alice, t1, s4)).invoke<{ payload: { principal: string; added: string[] }; actor: unknown; operation: string | null; authorization: string | null }[]>(
+          'perm/topped-up',
+          desk(id),
+        );
+
+      beforeAll(async () => {
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s4, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, s4);
+      });
+
+      it('the shape grant gives every key of the shape, and is audited', async () => {
+        await shapeTo(hana, 'd1');
+        expect(await can(hana, PERM_READ, 'd1')).toBe(true);
+        expect(await can(hana, PERM_USE, 'd1')).toBe(false);
+        const log = await host.admin.auditLog(staff, { tenantId: t1 });
+        expect(log.some((e) => e.action === 'grantEntityShape')).toBe(true);
+      });
+
+      it('a principal granted before a key was added holds it after the reconcile', async () => {
+        expect(await reconcile()).toEqual({ toppedUp: 1 });
+        expect(await can(hana, PERM_USE, 'd1')).toBe(true);
+        // ...on that entity only: the shape is entity-narrowed, and so is the top-up.
+        expect(await can(hana, PERM_USE, 'd2')).toBe(false);
+      });
+
+      it('the top-up is an event on the entity, written by the kernel, and the reconcile is audited', async () => {
+        const [event, ...rest] = await toppedUp('d1');
+        expect(rest).toEqual([]);
+        expect(event).toEqual({
+          payload: { entity: desk('d1'), principal: hana, added: [PERM_USE] },
+          actor: { system: '@substrat-run/kernel' },
+          // No operation ran and no check passed: both say so rather than inventing one.
+          operation: null,
+          authorization: null,
+        });
+        const log = await host.admin.auditLog(staff, { tenantId: t1 });
+        expect(log.filter((e) => e.action === 'reconcileEntityGrantShapes')).toHaveLength(1);
+      });
+
+      it('a re-run is a no-op: nobody topped up, no event, no audit row', async () => {
+        expect(await reconcile()).toEqual({ toppedUp: 0 });
+        expect(await toppedUp('d1')).toHaveLength(1);
+        const log = await host.admin.auditLog(staff, { tenantId: t1 });
+        expect(log.filter((e) => e.action === 'reconcileEntityGrantShapes')).toHaveLength(1);
+      });
+
+      it('a key revoked from the holder (ctx.revoke) is not re-granted by the next top-up', async () => {
+        await shapeTo(ivo, 'd3');
+        await reconcile();
+        await (await host.getScope(alice, t1, s4)).invoke('perm/unshare', { principal: ivo, permission: PERM_USE, entity: desk('d3') });
+        expect(await can(ivo, PERM_USE, 'd3')).toBe(false);
+        expect(await reconcile([...GROWN, PERM_ADMIN])).toMatchObject({ toppedUp: expect.any(Number) });
+        expect(await can(ivo, PERM_USE, 'd3')).toBe(false);
+        // The positive twin: the key the shape gained this time DID arrive for the same person.
+        expect(await can(ivo, PERM_ADMIN, 'd3')).toBe(true);
+      });
+
+      it('someone ctx.granted one key of the shape is not a holder, and is not escalated to all of it', async () => {
+        await (await host.getScope(alice, t1, s4)).invoke('perm/share', { principal: jon, permission: PERM_READ, entity: desk('d1') });
+        await reconcile([...GROWN, PERM_ADMIN]);
+        expect(await can(jon, PERM_READ, 'd1')).toBe(true);
+        expect(await can(jon, PERM_USE, 'd1')).toBe(false);
+      });
+
+      it('passes are bounded: a small batch still reaches every holder, each exactly once', async () => {
+        const people = [0, 1, 2, 3, 4].map(() => principalId.parse(ulid()));
+        for (const [i, p] of people.entries()) await shapeTo(p, `b${i}`, OLD);
+        expect(await reconcile([...GROWN, PERM_ADMIN], 2)).toEqual({ toppedUp: 5 });
+        for (const [i, p] of people.entries()) {
+          expect(await can(p, PERM_ADMIN, `b${i}`)).toBe(true);
+          expect(await toppedUp(`b${i}`)).toHaveLength(1);
+        }
+      });
+
+      it('the shape grant brings back a key a revoke tombstoned — it is the explicit grant', async () => {
+        await shapeTo(kim, 'd9', GROWN);
+        await (await host.getScope(alice, t1, s4)).invoke('perm/unshare', { principal: kim, permission: PERM_USE, entity: desk('d9') });
+        expect(await can(kim, PERM_USE, 'd9')).toBe(false);
+        await shapeTo(kim, 'd9', GROWN);
+        expect(await can(kim, PERM_USE, 'd9')).toBe(true);
+      });
+    });
+
     it('denies by default with the checked permission and node', async () => {
       const d = await probe(principalId.parse(ulid()), s1, PERM_READ);
       expect(d.allowed).toBe(false);

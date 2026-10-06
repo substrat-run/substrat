@@ -442,6 +442,8 @@ import {
   type FindingChange,
   type FindingPruneReport,
   memberAddedAudit,
+  SHAPE_TOP_UP_BATCH,
+  type EntityGrantShapeInput,
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
 import {
@@ -1389,6 +1391,15 @@ interface ScopeStubRpc {
   listConnectionGrants(
     now: string,
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
+  /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
+  grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
+  /** One bounded pass of the shape reconcile with its events (#2071); returns how many it topped up. */
+  topUpEntityGrantShapes(
+    tenantId: string,
+    scopeId: string,
+    shapes: readonly EntityGrantShapeInput[],
+    limit: number,
+  ): Promise<number>;
   /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
   writeTuple(
     subject: string,
@@ -6283,6 +6294,17 @@ export class CloudflareScopeHost implements ScopeHost {
         // grants write scope tuples (already local), so they need no fan-out.
         if (!grant.node.scopeId) await this.fanOut(grant.node.tenantId);
       },
+      grantEntityShape: async (actor, grant) => {
+        await this.scopeStub(grant.node.scopeId).grantEntityShape(grant.principalId, grant.entity, grant.permissions);
+        await this.recordAdmin(actor, 'grantEntityShape', grant.node, null, grant);
+      },
+      reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
+        const toppedUp = await this.topUpEntityGrantShapesLocal(node.tenantId, node.scopeId, shapes, opts?.batch);
+        if (toppedUp > 0) {
+          await this.recordAdmin(actor, 'reconcileEntityGrantShapes', node, null, { shapes, toppedUp });
+        }
+        return { toppedUp };
+      },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);
         const conn = await this.cp.readConnection(grant.connectionId);
@@ -9865,6 +9887,12 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantHeldPeers?: readonly string[];
     /** #2045: each recorded-off subject's fence, by tuple subject. */
     switchFences?: Readonly<Record<string, string>>;
+    /** #2071: the vertical's declared entity-grant shapes it gives with `grantEntityShapeLocal`
+     *  (never a sharing shape reached through `ctx.grant` — see `HostAdmin.reconcileEntityGrantShapes`).
+     *  Each holder is topped up to the shape as it is now, after the seat, in bounded passes: a
+     *  key the shape gained reaches the people who already held it. Never a revoked key, never a
+     *  removal. Absent ⇒ no reconcile. */
+    entityGrants?: readonly EntityGrantShapeInput[];
   }): Promise<{ switchedOff?: SwitchedOff[] }> {
     const carry = recordedOffFromWire(input);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
@@ -9966,6 +9994,7 @@ export class CloudflareScopeHost implements ScopeHost {
       carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
       services?.map((id) => `principal:${id}`),
     ));
+    if (input.entityGrants) await this.topUpEntityGrantShapesLocal(input.tenantId, input.scopeId, input.entityGrants);
     return carry ? { switchedOff } : {};
   }
 
@@ -10075,6 +10104,45 @@ export class CloudflareScopeHost implements ScopeHost {
       entityObjectRef(entity, 'grantEntityLocal'), // #1856
       null,
     );
+  }
+
+  /**
+   * Give a person a declared entity-grant SHAPE on one entity in a CP-less vertical (#2071) —
+   * `grantEntityLocal` for every key of the shape, plus the marker that makes them a holder of
+   * it, in one unit. What a vertical calls where it used to loop `grantEntityLocal` over its
+   * `ENTITY_GRANTS` keys: a key the shape gains later then reaches this person at the next
+   * provision or reconcile (`provisionScopeLocal`'s `entityGrants`). Idempotent, and explicit
+   * like `grantEntityLocal`: it brings back a key or a marker a revoke tombstoned.
+   */
+  async grantEntityShapeLocal(
+    scopeId: ScopeId,
+    principal: PrincipalId,
+    entity: EntityRef,
+    permissions: readonly PermissionKey[],
+  ): Promise<void> {
+    await this.scopeStub(scopeId).grantEntityShape(principal, entity, permissions);
+  }
+
+  /**
+   * Top every holder of each declared shape up to the shape as it is now (#2071), in bounded
+   * passes — `batch` holders per scope transaction (default `SHAPE_TOP_UP_BATCH`), repeated until
+   * a pass finds fewer. Never re-grants a revoked key, never removes one. Returns how many
+   * (person, entity) it topped up.
+   */
+  async topUpEntityGrantShapesLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    shapes: readonly EntityGrantShapeInput[],
+    batch: number = SHAPE_TOP_UP_BATCH,
+  ): Promise<number> {
+    if (shapes.length === 0) return 0;
+    const stub = this.scopeStub(scopeId);
+    let toppedUp = 0;
+    for (;;) {
+      const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, batch);
+      toppedUp += pass;
+      if (pass < batch) return toppedUp;
+    }
   }
 
   // -- the connector write-back's far end (#574) -----------------------------

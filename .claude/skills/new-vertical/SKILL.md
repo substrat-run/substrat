@@ -165,7 +165,10 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
 - `src/provision.ts`: `definePermissions({ modules, roles, entityGrants, keys })`, with
   `keys` the **same** array `spec/model.ts` handed `defineOperations` — it throws at load
   if the two disagree. `ENTITY_GRANTS` declares the shapes of the grants made outside the
-  role table. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
+  role table. A shape a person is GIVEN on their own record is granted with
+  `host.admin.grantEntityShape` (`grantEntityShapeLocal` in a worker), never key by key, and
+  passed to `mountPlatformSurface` as `entityGrants`, so a key added to it later reaches the
+  people who already hold it (#2071). A sharing shape reached through `ctx.grant` is not passed. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
   `--check`ed in CI.
 - `src/personas.ts`: the dev cast, one per role the scenario needs, including one who
   lives in the *other* tenant.

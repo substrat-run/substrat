@@ -165,6 +165,7 @@ import type {
   FindingStatusInput,
   DeclaredMigration,
   CheckSubject,
+  EntityGrantShape,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
@@ -1879,6 +1880,47 @@ export interface HostAdmin {
    */
   unassignRole(actor: PlatformActorId, assignment: RoleAssignment): Promise<void>;
   grant(actor: PlatformActorId, grant: CapabilityGrant): Promise<void>;
+  /**
+   * Give a person a vertical's declared entity-grant SHAPE on one entity (#2071): every key in
+   * `permissions`, plus the marker that makes them a holder of the shape, so a key the shape
+   * gains later reaches them at the next {@link reconcileEntityGrantShapes}. What a vertical
+   * calls where it used to `grant` its `ENTITY_GRANTS` keys one at a time. Each write is
+   * explicit, as `grant` is: it brings back a key or marker a revoke tombstoned. Audited as
+   * `grantEntityShape`.
+   */
+  grantEntityShape(
+    actor: PlatformActorId,
+    grant: {
+      principalId: PrincipalId;
+      node: { tenantId: TenantId; scopeId: ScopeId };
+      entity: EntityRef;
+      permissions: readonly PermissionKey[];
+      grantedBy: PrincipalId;
+    },
+  ): Promise<void>;
+  /**
+   * Top every holder of each declared shape up to the shape as it is now (#2071): a key the
+   * shape gained is granted to each person holding the shape's marker on an entity of that
+   * type. Never a key revoked from that person there (its K-21 tombstone stays), and never a
+   * removal: a key dropped from the shape is left in place. The first run for an entity type
+   * on a scope also marks the people who already hold every key of the current shape.
+   *
+   * Pass only the shapes the vertical gives with {@link grantEntityShape} — a person's own
+   * record. Never a SHARING shape, reached through `ctx.grant` (todo's `list`): its first run
+   * would mark every person something was fully shared with as a holder, and a key the shape
+   * gained later would then reach them without anyone sharing it.
+   *
+   * Bounded: `batch` holders (default 500) per scope transaction, repeated until a pass finds
+   * nobody, so it is safe on a large scope and finishes on a re-run if interrupted. Each
+   * (person, entity) topped up is an `entity.grants-topped-up` event on the entity. Audited
+   * as `reconcileEntityGrantShapes` when it changed anything. Returns how many it topped up.
+   */
+  reconcileEntityGrantShapes(
+    actor: PlatformActorId,
+    node: { tenantId: TenantId; scopeId: ScopeId },
+    shapes: readonly EntityGrantShape[],
+    opts?: { batch?: number },
+  ): Promise<{ toppedUp: number }>;
   /** Grant to an organization (portal customers); members reach it via membership tuples. */
   /**
    * Grant a permission to a CONNECTION (#97) — how a connector is allowed to

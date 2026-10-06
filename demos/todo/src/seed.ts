@@ -21,7 +21,7 @@ import {
   type RoleDefinition,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { OWNER_GRANTS, TODO_PERM, todoManifest } from './manifest.js';
+import { OWNER_GRANTS, OWNER_SHAPE, TODO_PERM, todoManifest } from './manifest.js';
 import { todoModule } from './module.js';
 
 export const MODULES = [todoModule];
@@ -103,9 +103,9 @@ export async function seed(host: ScopeHost): Promise<World> {
  * The bootstrap grant: rights over your OWN entity, which your lists then hang off. Nobody
  * holds these scope-wide, which is what keeps one member's lists unreachable to another.
  *
- * The keys are `OWNER_GRANTS` — the same list `PERMISSIONS.md` shows a reviewer — so a key
- * added there reaches every person seeded afterwards. A world seeded before a key was added
- * does not have it: delete the demo's `.data` to reseed.
+ * Granted as the declared SHAPE (#2071) — `OWNER_GRANTS`, the same list `PERMISSIONS.md` shows a
+ * reviewer — so the person is marked as holding it, and a key added to it later reaches them
+ * at the next {@link reconcileOwnerGrants}, which the dev server runs on every boot.
  */
 export async function grantOwner(
   host: ScopeHost,
@@ -113,14 +113,26 @@ export async function grantOwner(
   node: { tenantId: ReturnType<typeof tenantId.parse>; scopeId: ReturnType<typeof scopeId.parse> },
   principal: ReturnType<typeof principalId.parse>,
 ): Promise<void> {
-  for (const permission of OWNER_GRANTS) {
-    await host.admin.grant(staff, {
-      principalId: principal,
-      permission,
-      node,
-      entity: { entityType: 'owner', entityId: principal },
-      grantedBy: principal,
-    });
+  await host.admin.grantEntityShape(staff, {
+    principalId: principal,
+    node,
+    entity: { entityType: 'owner', entityId: principal },
+    permissions: OWNER_GRANTS,
+    grantedBy: principal,
+  });
+}
+
+/**
+ * Top every owner up to `OWNER_SHAPE` as it is now (#2071), in both seeded scopes: a world
+ * seeded before a key was added to the shape receives it, exactly as a deployed install's
+ * reconcile does. Idempotent, so running it on every boot costs a no-op.
+ */
+export async function reconcileOwnerGrants(host: ScopeHost, world: World): Promise<void> {
+  for (const [tenantId, scopeId] of [
+    [world.tenant, world.scope],
+    [world.otherTenant, world.otherScope],
+  ] as const) {
+    await host.admin.reconcileEntityGrantShapes(world.staff, { tenantId, scopeId }, [OWNER_SHAPE]);
   }
 }
 

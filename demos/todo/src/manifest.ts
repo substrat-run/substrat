@@ -44,6 +44,14 @@ export const OWNER_GRANTS = [
   TODO_PERM.listTrash,
 ] as const;
 
+/**
+ * The owner grant as a declared SHAPE (#2071): what `grantOwner` gives, what every boot tops
+ * owners up to, and the `owner` row of `ENTITY_GRANTS`. Only this shape is reconciled. The
+ * `list` row of `ENTITY_GRANTS` is SHARING, reached through `ctx.grant`, so a person holding it
+ * is a sharee, never a holder to top up.
+ */
+export const OWNER_SHAPE = { entityType: 'owner', permissions: [...OWNER_GRANTS] };
+
 export const todoManifest = moduleManifest.parse({
   id: '@substrat-run/demo-todo',
   version: '0.1.0',

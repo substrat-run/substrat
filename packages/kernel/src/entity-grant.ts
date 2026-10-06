@@ -21,14 +21,22 @@ const refs = (principal: string, permission: string, object: string): Params => 
   object,
 ];
 
-/** Insert the grant, or bring a tombstoned one back with no expiry. A live row is untouched. */
-export function delegatedGrantSql(principal: string, permission: string, object: string): { sql: string; params: Params } {
+/**
+ * The explicit tuple write: insert it, or bring a tombstoned one back with no expiry. A live
+ * row is untouched. `ctx.grant` and a declared shape's grant (`entity-grant-shape.ts`) share it.
+ */
+export function explicitTupleSql(subject: string, relation: string, object: string): { sql: string; params: Params } {
   return {
     sql: `INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)
           ON CONFLICT (subject, relation, object) DO UPDATE SET revoked_at = NULL, expires_at = NULL
           WHERE _substrat_tuples.revoked_at IS NOT NULL`,
-    params: refs(principal, permission, object),
+    params: [subject, relation, object],
   };
+}
+
+/** `ctx.grant`'s write — {@link explicitTupleSql} on a `granted:` relation. */
+export function delegatedGrantSql(principal: string, permission: string, object: string): { sql: string; params: Params } {
+  return explicitTupleSql(...refs(principal, permission, object));
 }
 
 /** Tombstone a live grant. A repeat revoke, or a revoke of a grant never made, changes nothing. */

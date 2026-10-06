@@ -191,7 +191,7 @@ app.get('/api/me', async (c) => {
 /**
  * Mirror of the worker's `grantEmployeeSelf` (see worker.ts) on the SQLite dev host: when an
  * employee is created with a login attached, issue that principal the self-service grants
- * narrowed to their own record via the audited `host.admin.grant`. Keeps `pnpm … dev` behaving
+ * narrowed to their own record via the audited `host.admin.grantEntityShape` (#2071). Keeps `pnpm … dev` behaving
  * like the deployed worker — an employee you register can actually report time.
  */
 async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
@@ -200,16 +200,13 @@ async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
   // Only a real principal is a grantable subject, so skip anything else rather than throw.
   const subject = principalId.safeParse(row.principal_ref);
   if (!subject.success) return;
-  const staff = platformActorId.parse(ulid());
-  for (const permission of EMPLOYEE_SELF) {
-    await host.admin.grant(staff, {
-      principalId: subject.data,
-      permission,
-      node: { tenantId: p.tenantId, scopeId: p.scopeId },
-      entity: { entityType: 'employee', entityId: row.id },
-      grantedBy: p.principal,
-    });
-  }
+  await host.admin.grantEntityShape(platformActorId.parse(ulid()), {
+    principalId: subject.data,
+    node: { tenantId: p.tenantId, scopeId: p.scopeId },
+    entity: { entityType: 'employee', entityId: row.id },
+    permissions: EMPLOYEE_SELF,
+    grantedBy: p.principal,
+  });
 }
 
 /**

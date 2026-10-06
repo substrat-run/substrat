@@ -158,6 +158,7 @@ import {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
+  type EntityGrantShape,
 } from '@substrat-run/contracts';
 
 /**
@@ -193,6 +194,9 @@ export interface VerticalScopeHost {
     tenantHeldPeers?: string[];
     /** #2045: each recorded-off subject's fence, by tuple subject. A host built before it ignores it. */
     switchFences?: Record<string, string>;
+    /** #2071: the declared entity-grant shapes, each holder topped up to the shape as it is now.
+     *  A host built before it ignores the field, and the next host that reads it catches up. */
+    entityGrants?: readonly EntityGrantShape[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
@@ -862,6 +866,15 @@ export interface PlatformSurfaceDeps<Env> {
   roles: RoleDefinition[];
   /** The role the installing owner is granted, at scope level (`hr-admin`, `admin`, …). */
   ownerRoleKey: string;
+  /**
+   * The vertical's declared entity-grant shapes (`ENTITY_GRANTS`, #2071) — the same list its
+   * `PERMISSIONS.md` renders. Every provision and reconcile tops each holder up to the shape as
+   * it is now, so a key a release adds reaches the people who already held the shape. Holders
+   * are the people given it with `grantEntityShapeLocal`. Only those shapes: a SHARING shape,
+   * reached through `ctx.grant`, must not be listed, or everyone fully shared something would
+   * be marked a holder and receive what the shape gains. Optional: a vertical with none omits it.
+   */
+  entityGrants?: readonly EntityGrantShape[];
 
   /**
    * Vertical-specific provision side effect — the pending-owner TOFU claim, and for a
@@ -1733,6 +1746,7 @@ export function mountPlatformSurface<Env extends object>(
       switchedOffPeers: body.switchedOffPeers,
       tenantHeldPeers: body.tenantHeldPeers,
       switchFences: body.switchFences,
+      entityGrants: deps.entityGrants,
     });
     await deps.onProvision?.(c.env, body);
     // #1902: onto the platform-supplied sweeper's roster, so the scope's schedules run. Last, so
@@ -1784,6 +1798,7 @@ export function mountPlatformSurface<Env extends object>(
       switchedOffPeers: body.switchedOffPeers,
       tenantHeldPeers: body.tenantHeldPeers,
       switchFences: body.switchFences,
+      entityGrants: deps.entityGrants,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this
