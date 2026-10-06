@@ -3138,6 +3138,28 @@ export const spineParentMod: ModuleRegistration = {
   operations: {},
 };
 
+/**
+ * #2066: migrations that reach for the migration journal — one drops its digest fence, one writes
+ * the journal itself. Each would make the digest check say whatever it wrote, so both must be
+ * refused before any of their SQL runs, on every adapter. Hosted apart, like `brokenMod`, and each
+ * migration's first statement is harmless so a refusal that let part of it run leaves `jt` behind.
+ */
+export const journalFenceDropMod: ModuleRegistration = {
+  manifest: foreignKeyModManifest('@test/journal-fence-drop'),
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE jt (id TEXT PRIMARY KEY);\nDROP TRIGGER "_Substrat_Migrations_Digest_Required";' },
+  ],
+  operations: {},
+};
+
+export const journalWriteMod: ModuleRegistration = {
+  manifest: foreignKeyModManifest('@test/journal-write'),
+  migrations: [
+    { version: '0001-init', sql: "CREATE TABLE jt (id TEXT PRIMARY KEY);\nDELETE FROM main._substrat_migrations WHERE module_id = 'x';" },
+  ],
+  operations: {},
+};
+
 export const ownParentMod: ModuleRegistration = {
   manifest: foreignKeyModManifest('@test/own-parent'),
   migrations: [

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
+import { journalFenceDropMod, journalWriteMod } from '@substrat-run/contract-tests';
 import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { migrationDigest, ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler, type SqlMigration } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
@@ -212,4 +213,36 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
     }
   });
 
+  for (const [what, mod, version] of [
+    ['drops the digest fence', journalFenceDropMod, '@test/journal-fence-drop@0001-init'],
+    ['writes the journal', journalWriteMod, '@test/journal-write@0001-init'],
+  ] as const) {
+    it(`refuses a migration that ${what}, before any of it runs`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'substrat-digest-'));
+      dirs.push(dir);
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+      try {
+        host.registerModule(mod);
+        await host.admin.createTenant(staff, { id: t, slug: `j-${ulid().toLowerCase()}`, name: 'J' });
+        await host.admin.grantEntitlement(staff, t, 'notes');
+        await expect(host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu' })).rejects.toThrow(
+          `migration failed for ${version} — scope fails closed: migration ${version} cannot name the migration journal`,
+        );
+      } finally {
+        await host.close();
+      }
+      const db = new Database(join(dir, `${t}__${s}.sqlite`), { readonly: true });
+      try {
+        const objects = (db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')").all() as { name: string }[]).map(
+          (r) => r.name,
+        );
+        expect(objects).not.toContain('jt');
+        expect(objects).toEqual(expect.arrayContaining(['_substrat_migrations_digest_required', '_substrat_migrations_digest_kept']));
+      } finally {
+        db.close();
+      }
+    });
+  }
 });

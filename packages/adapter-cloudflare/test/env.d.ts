@@ -48,5 +48,8 @@ declare module 'cloudflare:test' {
     /** #1898: a migration with a foreign key to the spine, and its twin — spine-references.test.ts. */
     SPINE_PARENT_SCOPE: DurableObjectNamespace;
     OWN_PARENT_SCOPE: DurableObjectNamespace;
+    /** #2066: migrations that reach for the journal — migration-digest-upgrade.test.ts. */
+    JOURNAL_FENCE_DROP_SCOPE: DurableObjectNamespace;
+    JOURNAL_WRITE_SCOPE: DurableObjectNamespace;
   }
 }

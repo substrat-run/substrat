@@ -496,6 +496,7 @@ import {
   moduleMigrations,
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_MARK_LEGACY,
+  assertNoJournalSql,
   migrationDivergence,
   migrationFailedError,
   migrationSteps,
@@ -11830,6 +11831,7 @@ export class SqliteScopeHost implements ScopeHost {
               // #1898: a migration runs on the scope's own handle, not `ctx.sql`, so the
               // spine guard's REFERENCES rule is applied here.
               assertNoSpineReference(migration.sql, `migration ${key}`);
+              assertNoJournalSql(migration.sql, `migration ${key}`);
               rt.db.exec(migration.sql);
               assertTablesWithinColumnLimit(rt.db);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;

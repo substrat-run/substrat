@@ -1,3 +1,4 @@
+import { substratError, tokenizeSql } from '@substrat-run/contracts';
 import { moduleMigrations } from './module-migrations.js';
 import { attachmentSha256, type SqlMigration } from './scope-host.js';
 
@@ -63,6 +64,7 @@ export const MIGRATION_DIGEST_MARK_LEGACY = "UPDATE _substrat_migrations SET sql
  * rows under the fence too, so a dump that carries a NULL is refused (`spineRowsInsert` gives a
  * dump from before the column the legacy mark instead).
  *
+ * Migration SQL cannot drop it: `assertNoJournalSql` refuses any migration naming the journal.
  * Literal text, no interpolation: `lint:spine-ddl` inlines a kernel fragment one level deep.
  */
 export const MIGRATION_DIGEST_FENCE_DDL = `
@@ -77,6 +79,28 @@ export const MIGRATION_DIGEST_FENCE_DDL = `
     SELECT RAISE(ABORT, 'a migration journal row must carry its sql_digest (#2066)');
   END;
 `;
+
+/**
+ * Refuse migration SQL that names the migration journal (`_substrat_migration…`: the table, its
+ * fence, the DO's bookmarks), in any spelling the grammar allows — quoted, any case, schema-
+ * qualified — before any of it runs.
+ *
+ * A migration runs on the kernel's own handle, not `ctx.sql`, so the spine write guard never
+ * sees it, and an authored migration that repairs `_substrat_tuples` is a reviewed, linted path
+ * (`boundary-lint-allow R4 migration`). The journal is different: a migration that drops the
+ * fence, or writes its own journal rows, makes the digest check say whatever it wrote. Nothing
+ * legitimate in a module's migration names it, reads included.
+ */
+export function assertNoJournalSql(sql: string, what: string): void {
+  for (const token of tokenizeSql(sql)) {
+    if (!token.text.split('.').some((part) => part.toLowerCase().startsWith('_substrat_migration'))) continue;
+    throw substratError(
+      'forbidden',
+      `${what} cannot name the migration journal ('${token.text}'): the journal and its digest fence are the kernel's (#2066)`,
+      { reason: 'spine_write' },
+    );
+  }
+}
 
 /** One migration a host applies, with its digest and whether it is held to it. */
 export interface MigrationStep {

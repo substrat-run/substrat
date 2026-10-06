@@ -96,6 +96,8 @@ export {
   parseMod,
   parseModManifest,
   spineParentMod,
+  journalFenceDropMod,
+  journalWriteMod,
   ownParentMod,
   PRE_GUARD_REFUSALS_DDL,
 } from './modules.js';

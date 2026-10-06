@@ -148,6 +148,7 @@ import {
   moduleMigrations,
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_MARK_LEGACY,
+  assertNoJournalSql,
   migrationDivergence,
   migrationFailedError,
   migrationSteps,
@@ -4973,6 +4974,7 @@ export function defineScopeDO(
                 // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
                 // spine guard's REFERENCES rule is applied here.
                 assertNoSpineReference(migration.sql, `migration ${key}`);
+                assertNoJournalSql(migration.sql, `migration ${key}`);
                 // #1722: not counted per statement, so `total_changes()` measures the migration
                 // alone. The journal row below is a write, and advances the revision once.
                 this.revisionSuspended = true;

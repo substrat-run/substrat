@@ -350,6 +350,7 @@ export {
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_LEGACY,
   MIGRATION_DIGEST_MARK_LEGACY,
+  assertNoJournalSql,
   migrationDigest,
   migrationDivergence,
   migrationFailedError,
