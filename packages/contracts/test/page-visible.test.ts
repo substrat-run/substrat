@@ -103,13 +103,14 @@ describe('pageVisible (#2073)', () => {
     });
   });
 
-  it('stops checking at the page\'s last visible row', async () => {
+  it("stops checking at the page's last visible row", async () => {
+    // At limit 2 the page fills on r0004, the first row of its batch: r0005 is read, never asked.
     const asked: string[] = [];
-    await pageVisible(fetch, { limit: 1 }, (r) => {
+    await pageVisible(fetch, { limit: 2 }, (r) => {
       asked.push(r.id);
       return visible.has(r.id);
     });
-    expect(asked).toEqual(['r0000', 'r0001']);
+    expect(asked).toEqual(['r0000', 'r0001', 'r0002', 'r0003', 'r0004']);
   });
 
   it('reads a mid-batch cursor back with one more fetch, or mints it with cursorOf', async () => {
