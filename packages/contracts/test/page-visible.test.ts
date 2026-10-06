@@ -6,14 +6,19 @@
  * the check refused. That is the oracle: not the page shape, but whose position the cursor is.
  */
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import { defineEntities } from '../src/model.js';
+import { defineOperations } from '../src/operations.js';
 import {
   mapPage,
   pageOf,
   pageVisible,
+  serializeWithoutRowCursors,
   VISIBLE_BATCH,
   VISIBLE_SCAN_BUDGET,
   type Page,
   type VisibleTest,
+  withoutRowCursors,
 } from '../src/pagination.js';
 
 interface Row {
@@ -253,4 +258,53 @@ describe("a page's own row cursors (#2073)", () => {
       expect(second.nextCursor).toBeNull();
     });
   }
+});
+
+describe('rowCursors never leave the process (#2073)', () => {
+  const leaky = () => ({ entries: [{ id: 'a' }], nextCursor: 'a', rowCursors: ['a', 'HIDDEN'] });
+  class PageInstance {
+    entries = [{ id: 'a' }];
+    nextCursor = 'a';
+    rowCursors = ['HIDDEN'];
+  }
+  const page = leaky();
+  for (const [shape, value] of Object.entries({
+    'a page': leaky(),
+    'one page referenced twice': { first: page, again: page },
+    'an array of the same page': [page, page],
+    'a class instance': new PageInstance(),
+    'a toJSON that returns a page': { toJSON: () => ({ nested: leaky() }) },
+  })) {
+    it(`serialised: ${shape}`, () => {
+      const json = serializeWithoutRowCursors(value)!;
+      expect(json).not.toContain('rowCursors');
+      expect(json).not.toContain('HIDDEN');
+      expect(JSON.stringify(withoutRowCursors(value))).toBe(json);
+    });
+  }
+
+  it('leaves undefined as JSON leaves it', () => {
+    expect(serializeWithoutRowCursors(undefined)).toBeUndefined();
+    expect(withoutRowCursors(undefined)).toBeUndefined();
+  });
+});
+
+describe('rowCursors is a reserved name in a model (#2073)', () => {
+  it('defineEntities refuses an entity field of that name, and takes any other', () => {
+    expect(() =>
+      defineEntities({ note: { table: 'notes', fields: z.object({ id: z.string(), rowCursors: z.string() }) } }),
+    ).toThrow(/reserves/);
+    expect(() =>
+      defineEntities({ note: { table: 'notes', fields: z.object({ id: z.string(), cursors: z.string() }) } }),
+    ).not.toThrow();
+  });
+
+  it('defineOperations refuses it in a declared input or output, and takes any other', () => {
+    const define = defineOperations({}, ['x:read'] as const);
+    expect(() => define({ 'x/read': { input: z.object({ rowCursors: z.boolean() }) } } as never)).toThrow(/reserves/);
+    expect(() => define({ 'x/read': { output: z.object({ rowCursors: z.array(z.string()) }) } } as never)).toThrow(
+      /reserves/,
+    );
+    expect(() => define({ 'x/read': { output: z.object({ cursors: z.array(z.string()) }) } } as never)).not.toThrow();
+  });
 });

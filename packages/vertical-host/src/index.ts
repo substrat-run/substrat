@@ -26,7 +26,7 @@ import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf } from './errors.js';
-import { externalInput, externalResult } from './wire.js';
+import { externalInput, externalJson } from './wire.js';
 import {
   type CarriedAway,
   type KeptCopy,
@@ -1469,7 +1469,7 @@ export function mountPlatformSurface<Env extends object>(
       .connectorInvokeLocal(body.connectionId, body.tenantId, body.scopeId, body.operation, externalInput(body.input));
     // Enveloped: an operation may legitimately return undefined, which bare JSON can't say.
     // #2073: through the egress every transport shares (`wire.ts`).
-    return c.json({ result: externalResult(result ?? null) });
+    return externalJson(c, { result: result ?? null });
   });
 
   // The bytes leg (#574): multipart, because provider artifacts (a sealed signed PDF)
@@ -1633,7 +1633,7 @@ export function mountPlatformSurface<Env extends object>(
       body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : undefined,
     );
     // #2073: through the egress every transport shares (`wire.ts`).
-    return c.json({ result: externalResult(result ?? null) });
+    return externalJson(c, { result: result ?? null });
   });
 
   // The peer kill switch's far end (#1706), for a scope served HERE — the mirror of
@@ -1664,7 +1664,7 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.exportedEventsLocal) {
       return c.json({ error: 'this deployment cannot export events to other verticals (#1705) — redeploy it' }, 501);
     }
-    return c.json(externalResult(await host.exportedEventsLocal(body.tenantId, body.scopeId, body.input)));
+    return externalJson(c, await host.exportedEventsLocal(body.tenantId, body.scopeId, body.input));
   });
   app.get('/internal/import-state', async (c) => {
     const tenantId = tenantIdOf.parse(c.req.query('tenantId'));
@@ -2199,7 +2199,7 @@ export * from './operations-routes.js';
 export { requestConnectUrl, ConnectUrlRequestError } from './connect-url.js';
 export type { ConnectUrlRequest } from './connect-url.js';
 export * from './mcp.js';
-export { externalInput, externalResult } from './wire.js';
+export { externalInput, externalJson, externalResult } from './wire.js';
 export * from './public-surface.js';
 // #1672: the link-share exchange — a capability's secret traded for an HttpOnly session.
 export * from './capability-exchange.js';

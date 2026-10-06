@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { globalFetch, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
-import { externalInput, externalResult, problemResponse } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, problemResponse } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
@@ -226,13 +226,12 @@ async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
  * `isPage` is checked rather than assumed, so an operation that has not adopted
  * `pageOf` reaches the client unchanged instead of being emptied.
  */
-function jsonPage(c: Context, answered: unknown) {
-  // #2073: the platform's one door on the way out — this harness is an external transport too.
-  const result = externalResult(answered);
-  if (!isPage(result)) return c.json(result as never);
+function jsonPage(c: Context, result: unknown) {
+  // #2073: serialised through the platform's one door, as the generated routes are.
+  if (!isPage(result)) return externalJson(c, result);
   const link = nextPageLink(c.req.url, result.nextCursor);
   if (link) c.header(PAGE_LINK_HEADER, link);
-  return c.json(result.entries as never);
+  return externalJson(c, result.entries);
 }
 
 // Generic invoke: the kernel checks permissions inside every operation, so a

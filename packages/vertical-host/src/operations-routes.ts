@@ -39,7 +39,7 @@ import {
   PAGE_TOTAL_HEADER,
   errorCodeOf,
 } from '@substrat-run/contracts';
-import { externalInput, externalResult } from './wire.js';
+import { externalInput, externalJson } from './wire.js';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError } from './errors.js';
@@ -565,11 +565,11 @@ export function mountOperations(
         if (link) c.header(PAGE_LINK_HEADER, link);
         const total = (result as { total?: unknown }).total;
         if (typeof total === 'number') c.header(PAGE_TOTAL_HEADER, String(total));
-        return c.json(externalResult(result.entries));
+        return externalJson(c, result.entries);
       }
       // #2073: the egress every transport shares (`wire.ts`). A vertical's own `respond`
       // (above) is handed the result untouched: that envelope is its statement (#1331).
-      return c.json(externalResult(result));
+      return externalJson(c, result);
     };
 
     const handler = async (c: Context) => {

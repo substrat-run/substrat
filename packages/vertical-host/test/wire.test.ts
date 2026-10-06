@@ -23,11 +23,33 @@ const ENV = { PLATFORM_SECRET: SECRET };
 
 /** A page whose handler dropped a row from `entries` but not from `rowCursors`. */
 const leaky = () => ({ entries: [{ id: 'a' }], nextCursor: 'a', rowCursors: ['a', 'HIDDEN'] });
-const SHAPES = {
+/** A page that is a class instance, not a plain object. */
+class PageInstance {
+  entries = [{ id: 'a' }];
+  nextCursor = 'a';
+  rowCursors = ['a', 'HIDDEN'];
+}
+/** A class envelope with a page in a field. */
+class Envelope {
+  constructor(readonly page: unknown) {}
+}
+const SHAPES: Record<string, () => unknown> = {
   'a page': () => leaky(),
   'a page nested in the result': () => ({ summary: { lists: leaky() }, pages: [leaky()] }),
   'a page nested in an entry': () => ({ entries: [{ id: 'a', children: leaky() }], nextCursor: null }),
-} as const;
+  // Codex r4 on #2078: shapes an object-graph walk got wrong — what reaches the wire is the oracle.
+  'one page referenced twice': () => {
+    const page = leaky();
+    return { first: page, again: page };
+  },
+  'an array of the same page': () => {
+    const page = leaky();
+    return [page, page, page];
+  },
+  'a class envelope holding a page': () => new Envelope(leaky()),
+  'a page that is a class instance': () => new PageInstance(),
+  'a toJSON that returns a page': () => ({ toJSON: () => ({ nested: leaky() }) }),
+};
 
 interface Transport {
   name: string;

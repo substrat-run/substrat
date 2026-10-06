@@ -35,7 +35,7 @@ import {
   RouterAssertionError,
   invocationLog,
   externalInput,
-  externalResult,
+  externalJson,
 } from '@substrat-run/vertical-host';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
@@ -471,7 +471,7 @@ app.post('/api/invoke', async (c) => {
   // #2073: through the platform's one door, in and out — this route is an external transport too.
   const result = (await (await stub(c)).invoke(op, externalInput(input))) ?? null;
   if (op === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
-  return c.json(externalResult(result));
+  return externalJson(c, result);
 });
 
 // The DOCUMENTED invoke surface (design/api-surface.md §2.2): one URL per operation —
@@ -484,7 +484,7 @@ app.post('/api/op/*', async (c) => {
   const body = await c.req.text();
   const result = (await (await stub(c)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;
   if (name === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
-  return c.json(externalResult(result));
+  return externalJson(c, result);
 });
 
 // The OpenAPI 3.1 document, built from the operation catalog — the same schemas the
