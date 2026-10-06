@@ -3337,7 +3337,6 @@ export function defineScopeDO(
        * operation has already moved the edge the walk follows.
        */
       const parents = scopeTupleReader(this.sql);
-      const now = new Date().toISOString();
       /**
        * A checked root's gate, asked once per (principal, key, root) per pass (#938): a
        * principal holding that root in several tabs is one check, fanned out to each socket.
@@ -3345,24 +3344,58 @@ export function defineScopeDO(
       const rootChecks = new Map<string, Promise<boolean>>();
       const ancestors = new Map<string, Promise<Set<string>>>();
       /**
-       * The write count every memo above was decided under (#938, Codex #2077 r4). The memos
-       * are decisions about authorization state — a grant, a parent edge — and a later socket
-       * or row awaits after they are taken, so a write that lands in between (a revoke, a
-       * relink) would otherwise be sent past on the old answer. Any write at all forgets them:
-       * coarser than tracking which tables a check reads, and that is the point, because no
-       * write door can be added that forgets to say it touched authorization.
+       * How long the memos above may be trusted (#938, Codex #2077 r4, r5). They are decisions
+       * about authorization (a grant, a parent edge), and a later socket or row awaits after
+       * they are taken, so each carries the conditions it stays true under rather than the
+       * pass chasing every way it could go stale. Opened at a decision's instant; the memos
+       * are forgotten once any condition fails, and a decision is taken again when one fails
+       * between it and its send (read against the clock right before the send):
+       *
+       * - `writes`: the store's write count. Any write at all, not only a grant: coarser than
+       *   tracking the tables a check reads, so no write door added later can slip past it.
+       * - `until`: the earliest `expires_at` after the instant it was opened, across every
+       *   local store a check or the walk reads. Nothing that authorized a decision can lapse
+       *   before it, and a lapse is no write. Scope-wide rather than the rows one decision
+       *   relied on, because the checker does not report those: an over-short bound only costs
+       *   a re-check.
+       * - `remote`: the scope reads its tenant tuples, roles and org membership from the
+       *   directory over RPC (`permission_source` not yet `local`), whose changes write
+       *   nothing here and carry no bound this object can see. Then a root's gate is never
+       *   remembered at all: asked for every socket and row, right before its send. What
+       *   remains is the window the live-read freshness contract accepts — a revoke that
+       *   lands during one evaluation can let that one nudge through, and the next does not.
        */
-      let memosAt = this.revision.statementsWritten;
-      const memosCurrentAt = (at: number) => {
-        if (memosAt === at) return;
-        memosAt = at;
-        rootChecks.clear();
-        ancestors.clear();
+      interface Epoch {
+        readonly writes: number;
+        readonly until: string | null;
+        readonly remote: boolean;
+      }
+      const openEpoch = (now: string): Epoch => ({
+        writes: this.revision.statementsWritten,
+        until: this.authorityLapsesAfter(now),
+        remote: this.permissionSourceIsRemote(),
+      });
+      const holds = (e: Epoch, now: string) =>
+        e.writes === this.revision.statementsWritten && (e.until === null || now < e.until);
+      let epoch = openEpoch(new Date().toISOString());
+      /** The epoch current at `now`, opening a new one (and forgetting every memo) if not. */
+      const epochAt = (now: string): Epoch => {
+        if (!holds(epoch, now)) {
+          epoch = openEpoch(now);
+          rootChecks.clear();
+          ancestors.clear();
+        }
+        return epoch;
       };
-      const reaches = async (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
+      const reaches = async (
+        row: (typeof announceable)[number],
+        root: { entityType: string; entityId: string },
+        now: string,
+      ) => {
         let up = ancestors.get(row.id);
         if (!up) {
           // A walk that cannot answer is a frame not sent — the same fail-closed rule as the check.
+          // Walked at the decision's own instant; remembered only while its epoch holds.
           up = ancestorsWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, now).catch(
             () => new Set<string>(),
           );
@@ -3425,23 +3458,29 @@ export function defineScopeDO(
          * on every pass, and the client's reconnect meets the handshake's 403. Held with the
          * write count it was decided under, and asked again once that has moved.
          */
-        let rootVerdict: { at: number; allowed: boolean } | undefined;
-        /** What this subscriber is owed for one row, decided under write count `at`. */
+        let rootVerdict: { epoch: Epoch; allowed: boolean } | undefined;
+        /** What this subscriber is owed for one row, decided at `now` under epoch `e`. */
         const decide = async (
           row: (typeof announceable)[number],
-          at: number,
+          e: Epoch,
+          now: string,
         ): Promise<LiveChange | LiveNudge | 'skip' | 'revoked'> => {
-          memosCurrentAt(at);
-          if (rootVerdict?.at !== at) rootVerdict = undefined;
+          // A remote authority's verdict is never reused: see `Epoch`.
+          if (rootVerdict?.epoch !== e || e.remote) rootVerdict = undefined;
           // Narrowing first: it is memoised across sockets, and a row outside the root
           // is out whatever the principal holds.
-          if (within && !(await reaches(row, within))) return 'skip';
+          if (within && !(await reaches(row, within, now))) return 'skip';
           if (within?.checked !== undefined) {
             if (rootVerdict === undefined) {
-              const key = `${subscriber.principal}\n${within.checked}\n${within.entityType}:${within.entityId}`;
-              let check = rootChecks.get(key);
-              if (!check) rootChecks.set(key, (check = this.mayWatchRoot(context, within)));
-              rootVerdict = { at, allowed: await check };
+              let check: Promise<boolean> | undefined;
+              if (e.remote) {
+                check = this.mayWatchRoot(context, within);
+              } else {
+                const key = `${subscriber.principal}\n${within.checked}\n${within.entityType}:${within.entityId}`;
+                check = rootChecks.get(key);
+                if (!check) rootChecks.set(key, (check = this.mayWatchRoot(context, within)));
+              }
+              rootVerdict = { epoch: e, allowed: await check };
             }
             if (!rootVerdict.allowed) return 'revoked';
           }
@@ -3478,14 +3517,14 @@ export function defineScopeDO(
 
         rows: for (const row of announceable) {
           for (let attempt = 0; attempt < LIVE_DECIDE_ATTEMPTS; attempt++) {
-            const at = this.revision.statementsWritten;
-            const verdict = await decide(row, at);
+            const decidedAt = new Date().toISOString();
+            const e = epochAt(decidedAt);
+            const verdict = await decide(row, e, decidedAt);
             // Every gate as close to the send as it can be, with no await between these
             // reads and the send below — so nothing can land after them and before it.
-            // The store wrote while this was being decided (Codex #2077 r4): a grant may
-            // have been revoked or an edge moved under a memo, so decide again, from
-            // nothing remembered.
-            if (this.revision.statementsWritten !== at) continue;
+            // The store wrote, or something the decision relied on lapsed, while it was being
+            // taken (Codex #2077 r4, r5): decide again, from nothing remembered.
+            if (!holds(e, new Date().toISOString())) continue;
             if (verdict === 'skip') continue rows;
             if (verdict === 'revoked') {
               try {
@@ -7342,6 +7381,36 @@ export function defineScopeDO(
         .exec(`SELECT value FROM _substrat_meta WHERE key = 'permission_source'`)
         .toArray()[0] as { value: string } | undefined;
       return row?.value === 'local' ? 'local' : 'control-plane';
+    }
+
+    /**
+     * Whether a check here reads the directory over RPC (#938, Codex #2077 r5): the same
+     * choice `controlPlaneReader` makes per call, asked once by a live fan-out pass.
+     */
+    private permissionSourceIsRemote(): boolean {
+      return this.permissionSource() !== 'local' && Boolean(this.env.CONTROL_PLANE);
+    }
+
+    /**
+     * The earliest `expires_at` after `now` in any local store a check or the parent walk
+     * reads (#938, Codex #2077 r5), or null when nothing here lapses. Until then, no grant,
+     * tenant tuple, parent edge or entitlement this scope holds can stop authorizing without
+     * a write. Revoked rows are not excluded: an earlier bound only costs a re-check.
+     */
+    private authorityLapsesAfter(now: string): string | null {
+      const row = this.sql
+        .exec(
+          `SELECT MIN(e) AS until FROM (
+             SELECT MIN(expires_at) AS e FROM _substrat_tuples WHERE expires_at > ?
+             UNION ALL SELECT MIN(expires_at) FROM _substrat_tenant_tuples WHERE expires_at > ?
+             UNION ALL SELECT MIN(expires_at) FROM _substrat_entitlements WHERE expires_at > ?
+           )`,
+          now,
+          now,
+          now,
+        )
+        .toArray()[0] as { until: string | null } | undefined;
+      return row?.until ?? null;
     }
 
     /**
