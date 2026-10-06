@@ -83,6 +83,9 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
+  eraseSubjectFromModules,
+  moduleErasurePlan,
+  type ModuleErasurePlan,
   redactSubjectScopeText,
   assertRowLimit,
   assertRowOffset,
@@ -306,6 +309,14 @@ import {
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   SWITCH_FENCES_DDL,
+  TABLE_OWNERS_DDL,
+  assertMigrationLeavesLedgerAlone,
+  recordOwnershipSteps,
+  runMigrationStatements,
+  splitSqlStatements,
+  executableSqlStatements,
+  blankSqlComments,
+  type TableStep,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
@@ -659,6 +670,7 @@ const KERNEL_DDL = `
     pending TEXT NOT NULL
   );
   ${SWITCH_FENCES_DDL}
+  ${TABLE_OWNERS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -1092,8 +1104,6 @@ function cellToJson(v: unknown): unknown {
  * trigger: it passed on better-sqlite3 (whose `exec` takes the whole blob) and
  * failed every scope on the DO host.
  */
-const IS_CREATE_TRIGGER = /^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
-const ENDS_WITH_END = /\bEND\s*$/i;
 
 /**
  * The kernel's two-method SQL handle (`SwitchSql`) over a Durable Object's storage — what the
@@ -1109,63 +1119,8 @@ export function switchSqlOver(sql: SqlStorage): SwitchSql {
   };
 }
 
-export function splitSqlStatements(sql: string): string[] {
-  const out: string[] = [];
-  let cur = '';
-  const n = sql.length;
-  let i = 0;
-  while (i < n) {
-    const c = sql[i];
-    const c2 = sql[i + 1];
-    if (c === '-' && c2 === '-') {
-      while (i < n && sql[i] !== '\n') i += 1; // line comment → end of line
-      continue;
-    }
-    if (c === '/' && c2 === '*') {
-      i += 2;
-      while (i < n && !(sql[i] === '*' && sql[i + 1] === '/')) i += 1;
-      i += 2; // block comment → past the closing */
-      continue;
-    }
-    if (c === "'") {
-      cur += c;
-      i += 1;
-      while (i < n) {
-        cur += sql[i];
-        if (sql[i] === "'") {
-          if (sql[i + 1] === "'") {
-            cur += sql[i + 1]; // '' is an escaped quote, still inside the string
-            i += 2;
-            continue;
-          }
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
-      continue;
-    }
-    if (c === ';') {
-      // Inside a trigger body, a `;` ends an inner statement, not the CREATE.
-      // `END` is matched as a bare word at the end of what has accumulated —
-      // a string literal ending in END reads as `…END'`, so the quote keeps it
-      // from matching, and the string scanner above has already copied it whole.
-      if (IS_CREATE_TRIGGER.test(cur) && !ENDS_WITH_END.test(cur)) {
-        cur += c;
-        i += 1;
-        continue;
-      }
-      if (cur.trim()) out.push(cur.trim());
-      cur = '';
-      i += 1;
-      continue;
-    }
-    cur += c;
-    i += 1;
-  }
-  if (cur.trim()) out.push(cur.trim());
-  return out;
-}
+/** The splitter both adapters run migrations through — the kernel's, re-exported for this package's callers. */
+export { splitSqlStatements };
 
 /**
  * #1834: the pin missed. Thrown only by `assertSystemDoor`, and module-private, so no operation can
@@ -1233,6 +1188,8 @@ export function defineScopeDO(
     private readonly listPlans = new Map<string, ListIndexPlan>();
     /** #119: entity type → its archive/trash plan, from every registered module. */
     private readonly statePlans = new Map<string, EntityStatePlan>();
+    /** #2068: each registered module's erasure, in registration order — what `redactSubject` runs. */
+    private readonly erasurePlans: ModuleErasurePlan[] = [];
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     /**
@@ -1306,7 +1263,7 @@ export function defineScopeDO(
         () => (this.carriedAwayCopy ? CARRIED_AWAY_WRITE_REFUSAL : null),
       );
       this.sql = this.revision.sql;
-      for (const stmt of splitSqlStatements(KERNEL_DDL)) {
+      for (const stmt of executableSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
       }
       this.applySpineColumnAdditions();
@@ -1340,6 +1297,8 @@ export function defineScopeDO(
 
     private registerModule(registration: ModuleRegistration): void {
       const manifest = registration.manifest;
+      // #2068: refused before anything is recorded, as on the pure host.
+      const erasure = moduleErasurePlan(registration);
       if (manifest.peers?.length) this.peerSources.push({ peers: manifest.peers });
       // #827: the FTS indexes `searchables` declares, appended after the module's
       // own migrations so the content table exists when the trigger references it.
@@ -1380,6 +1339,7 @@ export function defineScopeDO(
           handler,
         })),
       });
+      if (erasure) this.erasurePlans.push(erasure);
       for (const [name, handler] of Object.entries(registration.predicates ?? {})) {
         this.predicates.set(name, { module: manifest.id, handler });
       }
@@ -5289,17 +5249,24 @@ export function defineScopeDO(
                 // #1898, #2066: a migration runs on this DO's own handle, not `ctx.sql`, so the
                 // spine rules a migration is held to are applied here.
                 assertMigrationSql(migration.sql, { key, digest, authored });
+                // #2068: the ownership ledger is the kernel's — no migration may name it, not even to
+                // read it (the spine rules above allow reads).
+                assertMigrationLeavesLedgerAlone(migration.sql, `migration ${key}`);
                 // #1722: not counted per statement, so `total_changes()` measures the migration
                 // alone. The journal row below is a write, and advances the revision once.
+                // #2068: run one statement at a time, keeping the table set either side of each.
+                let steps: TableStep[];
                 this.revisionSuspended = true;
                 try {
-                  for (const stmt of splitSqlStatements(migration.sql)) {
+                  steps = runMigrationStatements(doSpineSql(this.sql), migration.sql, (stmt) => {
                     this.sql.exec(stmt);
-                  }
+                  });
                 } finally {
                   this.revisionSuspended = false;
                 }
                 const after = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
+                // After the count: `rows_changed` is the migration's own, never the kernel's bookkeeping.
+                recordOwnershipSteps(doSpineSql(this.sql), moduleId, steps, new Date().toISOString());
                 this.sql.exec(
                   'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed, sql_digest) VALUES (?, ?, ?, ?, ?, ?)',
                   moduleId,
@@ -6133,7 +6100,7 @@ export function defineScopeDO(
       // synchronous, which is the one case the sync API is for (it commits at the
       // first await, and there is none). It also has to be sync because the caller is.
       this.revision.transactionSync(() => {
-        for (const stmt of splitSqlStatements(script)) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(script)) this.sql.exec(stmt);
       });
     }
 
@@ -6269,7 +6236,10 @@ export function defineScopeDO(
           // decide how this DO's permission checks match. Every `_substrat_*` table is built
           // from KERNEL_DDL instead, and the dump contributes only rows, by column name
           // (`spineRowsInsert`), a missing column taking the kernel's default.
-          for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(t.ddl);
+          // Comment-blanked (#2068): a dump records `sqlite_master.sql` verbatim, comments included,
+          // and replaying it raw would store them again — and a later DROP COLUMN of the last
+          // column fails on workerd. The validated statement is otherwise executed exactly as is.
+          for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(blankSqlComments(t.ddl));
           // KERNEL_DDL also builds what the dump did not carry (#321). A dump captured from a
           // WORLD that stores some `_substrat_*` tables ELSEWHERE carries only a subset — an
           // `@substrat-run/adapter-sqlite` scope file keeps `_substrat_roles` /
@@ -6279,7 +6249,7 @@ export function defineScopeDO(
           // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
           // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
           // leaves to it.
-          for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+          for (const stmt of executableSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
           this.applySpineColumnAdditions();
           const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
           assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
@@ -6358,20 +6328,20 @@ export function defineScopeDO(
       );
       for (const plan of this.searchPlans.values()) {
         if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
       }
       // #119: the never-born-archived trigger went with the dropped table. Put back AFTER the
       // rows, which may legitimately arrive archived or trashed.
       for (const plan of this.statePlans.values()) {
         if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
       }
       // #811 / #119: the derived list indexes went with the dropped table too, and a load never
       // put them back — an archivable entity's partial indexes are part of what the kernel
       // checks after DDL.
       for (const plan of this.listPlans.values()) {
         if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(listIndexDdl(plan))) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(listIndexDdl(plan))) this.sql.exec(stmt);
       }
       // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
       // as on a wake. A copy's own events then sort above every copied one, which is what
@@ -6676,10 +6646,43 @@ export function defineScopeDO(
      * to yield to — the alternative is telling a data subject that the spine's convenience
      * outranks their Article 17 right.
      */
-    async redactSubject(subjectId: string): Promise<SubjectRedactionCounts> {
+    async redactSubject(subjectId: string): Promise<SubjectRedactionCounts | { failure: WireFailure }> {
+      // #2068: the module half reaches the scope's own tables, so they have to exist.
+      await this.ensureMigrations();
       // One instant for the whole erasure — the intent tombstones must not disagree with
       // each other about when a person was erased.
       const at = new Date().toISOString();
+      // ONE transaction (#2068): a module's `onSubjectErased` hook that throws rolls the
+      // whole redaction back, the spine half with it, and the coordinator — which destroys
+      // the key only after this returns — never reaches the key.
+      //
+      // Its refusal is answered as DATA (`toWireFailure`, #113): workerd delivers a throw across
+      // this boundary as its message alone, and a hook's `forbidden` (it reached past its own
+      // tables) is a different answer from an `internal`. In this method's own reply rather than
+      // a `…Reply` sibling, so every coordinator — old ones too — keeps calling one verb: an old
+      // one reads a failure as a reply missing its counts and refuses before the key, which is
+      // the safe reading.
+      try {
+        return this.revision.transactionSync(() => this.redactSubjectInTransaction(subjectId, at));
+      } catch (err) {
+        return { failure: toWireFailure(err) };
+      }
+    }
+
+    /** The body of `redactSubject`, inside its transaction. */
+    private redactSubjectInTransaction(subjectId: string, at: string): SubjectRedactionCounts {
+      // The module half first (#2068): the declared entities, then each hook, with the search
+      // indexes over them under FTS5 secure-delete. The spine half follows in the same transaction.
+      const vertical = eraseSubjectFromModules({
+        sql: doSpineSql(this.sql),
+        plans: this.erasurePlans,
+        searchPlans: this.searchPlans.values(),
+        statefulTables: statefulTablesOf(this.statePlans),
+        subjectId,
+        at,
+        migrationSqlOf: (moduleId, version) =>
+          this.modules.get(moduleId)?.migrations.find((m) => m.version === version)?.sql,
+      });
       const doomed = (
         this.sql
           .exec(
@@ -6705,6 +6708,7 @@ export function defineScopeDO(
         // The free-text copies (#1632), and the tombstoned intents the coordinator hands to
         // the directory half. Last, so those ids include every intent tombstoned above.
         ...redactSubjectScopeText(sql, subjectId, at),
+        vertical,
       };
     }
 

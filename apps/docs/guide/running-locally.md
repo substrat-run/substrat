@@ -114,6 +114,16 @@ Debugging is opening a file:
 sqlite3 demos/callout/.data/_directory.sqlite 'SELECT slug, status FROM scopes;'
 ```
 
+**Use a `sqlite3` of 3.42 or later on a scope file a subject erasure has run on.** An
+erasure removes the erased words from a search index's stored data with FTS5's
+`secure-delete`, and FTS5 then records that index in a format older SQLite cannot read. The
+rest of the file still opens on an older `sqlite3`, but a query that touches that index fails.
+Debian 12 ships 3.40.1, for example. Run `sqlite3 --version` to check, and get a newer one from
+your package manager's backports, Homebrew (`brew install sqlite`), or the prebuilt binaries at
+[sqlite.org/download](https://sqlite.org/download.html). Node 22's `node:sqlite` (3.51) reads it
+as well. Exports and backups are not affected: they never carry a search index, and the index
+is rebuilt when one is loaded.
+
 Delete the `.data` directory to reset the world; it re-seeds on the next boot.
 
 ## Letting an agent run it

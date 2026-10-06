@@ -399,7 +399,7 @@ export type DirectoryBackup = z.infer<typeof directoryBackup>;
  * holds is a plain word, so a name that is not one is corruption or an attack, and
  * neither is worth loading.
  */
-const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * Throw naming the offending identifier, or return it.
