@@ -533,6 +533,13 @@ export type {
   SystemSwitchRecordRow,
 } from './system-switch-record.js';
 export {
+  AUDITED_CHANGE_ACTIONS,
+  SETTLE_INTENT_SQL,
+  SETTLE_OUTCOME_SQL,
+  unknownOutcomeOf,
+} from './audit-outcome.js';
+export type { AuditedChangeAction, SettleIntentRow, UnknownOutcome } from './audit-outcome.js';
+export {
   VERSION_MIGRATIONS_DDL,
   splitManifestMigrations,
   splitVersionMigrationsBatch,

@@ -84,6 +84,10 @@ import {
   ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
   issueExemplarOwner,
   type SubjectTextTarget,
+  SETTLE_INTENT_SQL,
+  SETTLE_OUTCOME_SQL,
+  unknownOutcomeOf,
+  type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
@@ -4616,79 +4620,126 @@ export class ControlPlaneDO extends DurableObject {
   recordOpsFailure(row: OpsFailureRow): void {
     // #1748: the evidence, its issue and its finding in ONE unit — a detector that throws takes
     // the evidence with it, so the caller's retry observes it rather than losing the observation.
-    this.ctx.storage.transactionSync(() => {
+    this.ctx.storage.transactionSync(() => this.insertOpsFailure(row));
+  }
+
+  /**
+   * #2064: settle an audited-change intent with no outcome — read it, and only if no outcome row
+   * exists for its operation, write the `unknown` row and its ops-failure row. One unit, so two
+   * racing passes settle once and the digest row cannot be lost. See the kernel's `audit-outcome.ts`.
+   */
+  settleUnrecordedOutcome(input: { actor: string; intentId: string; error: string }): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.sql.exec(SETTLE_INTENT_SQL, input.intentId).toArray()[0] as unknown as SettleIntentRow | undefined;
+      const outcome = unknownOutcomeOf(row, input.intentId, input.error);
+      if (this.sql.exec(SETTLE_OUTCOME_SQL, outcome.action, input.intentId, outcome.operationId).toArray().length > 0) {
+        return false;
+      }
+      const at = new Date().toISOString();
+      this.recordAdmin({
+        id: ulid(),
+        actor: input.actor,
+        action: outcome.action,
+        ...outcome.target,
+        before: null,
+        after: outcome.after,
+        at,
+      });
+      const failure = { ...outcome.failure, actor: input.actor };
+      this.insertOpsFailure({
+        id: ulid(),
+        actor: input.actor,
+        operation: failure.operation,
+        stage: failure.stage ?? null,
+        tenant_id: failure.tenantId ?? null,
+        scope_id: failure.scopeId ?? null,
+        vertical: failure.vertical ?? null,
+        version: null,
+        status: null,
+        message: failure.message.slice(0, 2000),
+        reference: null,
+        origin: null,
+        code: null,
+        fingerprint: opsFailureFingerprint(failure),
+        at,
+      });
+      return true;
+    });
+  }
+
+  /** The body of `recordOpsFailure`, for a caller already inside a transaction. */
+  private insertOpsFailure(row: OpsFailureRow): void {
+    this.sql.exec(
+      `INSERT INTO _substrat_ops_failures
+         (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      row.id,
+      row.actor,
+      row.operation,
+      row.stage,
+      row.tenant_id,
+      row.scope_id,
+      row.vertical,
+      row.version,
+      row.status,
+      row.message,
+      row.reference,
+      row.origin,
+      row.code,
+      row.fingerprint,
+      row.at,
+    );
+    // Prune-on-write (#559): the retention lives HERE, not in a cron — every insert
+    // pays for its own housekeeping, so the table stays bounded even on a deployment
+    // whose scheduled pass is broken (the exact circumstance this table records).
+    const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
+    this.sql.exec('DELETE FROM _substrat_ops_failures WHERE at < ?', horizon);
+    // The issues materialization (#1233): the group's counters live on their own
+    // row, bumped in the same call, because the evidence self-prunes above and a
+    // count must survive its own exemplars. A fresh arrival regresses a resolved
+    // issue; an ignored one stays ignored — that is what ignoring means.
+    if (row.fingerprint !== null) {
       this.sql.exec(
-        `INSERT INTO _substrat_ops_failures
-           (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        row.id,
-        row.actor,
+        `INSERT INTO _substrat_issues
+           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
+         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+         ON CONFLICT (fingerprint) DO UPDATE SET
+           seen_count = seen_count + 1,
+           last_seen = excluded.last_seen,
+           last_message = excluded.last_message,
+           last_tenant_id = excluded.last_tenant_id,
+           last_owner_kind = excluded.last_owner_kind,
+           last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+           last_version = COALESCE(excluded.last_version, last_version),
+           origin = COALESCE(excluded.origin, origin),
+           status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
+        row.fingerprint,
         row.operation,
         row.stage,
-        row.tenant_id,
-        row.scope_id,
-        row.vertical,
-        row.version,
-        row.status,
-        row.message,
-        row.reference,
         row.origin,
         row.code,
-        row.fingerprint,
         row.at,
+        row.at,
+        row.message,
+        row.tenant_id,
+        issueExemplarOwner(row.tenant_id),
+        row.vertical,
+        row.version,
       );
-      // Prune-on-write (#559): the retention lives HERE, not in a cron — every insert
-      // pays for its own housekeeping, so the table stays bounded even on a deployment
-      // whose scheduled pass is broken (the exact circumstance this table records).
-      const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
-      this.sql.exec('DELETE FROM _substrat_ops_failures WHERE at < ?', horizon);
-      // The issues materialization (#1233): the group's counters live on their own
-      // row, bumped in the same call, because the evidence self-prunes above and a
-      // count must survive its own exemplars. A fresh arrival regresses a resolved
-      // issue; an ignored one stays ignored — that is what ignoring means.
-      if (row.fingerprint !== null) {
-        this.sql.exec(
-          `INSERT INTO _substrat_issues
-             (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
-           VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-           ON CONFLICT (fingerprint) DO UPDATE SET
-             seen_count = seen_count + 1,
-             last_seen = excluded.last_seen,
-             last_message = excluded.last_message,
-             last_tenant_id = excluded.last_tenant_id,
-             last_owner_kind = excluded.last_owner_kind,
-             last_vertical = COALESCE(excluded.last_vertical, last_vertical),
-             last_version = COALESCE(excluded.last_version, last_version),
-             origin = COALESCE(excluded.origin, origin),
-             status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
-          row.fingerprint,
-          row.operation,
-          row.stage,
-          row.origin,
-          row.code,
-          row.at,
-          row.at,
-          row.message,
-          row.tenant_id,
-          issueExemplarOwner(row.tenant_id),
-          row.vertical,
-          row.version,
-        );
-        const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
-        this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
-        // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
-        const finding = findingOfOpsFailure({
-          tenantId: row.tenant_id,
-          scopeId: row.scope_id,
-          operation: row.operation,
-          stage: row.stage,
-          code: row.code as Parameters<typeof findingOfOpsFailure>[0]['code'],
-          vertical: row.vertical,
-          version: row.version,
-        });
-        if (finding) observeFinding(doRedactionSql(this.sql), finding, row.at);
-      }
-    });
+      const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
+      this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
+      // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
+      const finding = findingOfOpsFailure({
+        tenantId: row.tenant_id,
+        scopeId: row.scope_id,
+        operation: row.operation,
+        stage: row.stage,
+        code: row.code as Parameters<typeof findingOfOpsFailure>[0]['code'],
+        vertical: row.vertical,
+        version: row.version,
+      });
+      if (finding) observeFinding(doRedactionSql(this.sql), finding, row.at);
+    }
   }
 
   /**

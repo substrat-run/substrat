@@ -4006,6 +4006,16 @@ export interface HostAdmin {
   recordMemberChange(actor: PlatformActorId, entry: MemberChangeAudit): Promise<void>;
 
   /**
+   * Close one audited change whose intent has no outcome (#2064): in ONE transaction, read the
+   * intent `intentId` names, and if no outcome row exists for its operation, write an `unknown`
+   * outcome carrying `error` and an ops-failure row (`audit.<action>`, stage `outcome-unknown`)
+   * for the staff digest. Answers `true` when it wrote them, `false` when an outcome was already
+   * there, so concurrent callers settle an operation once. Throws `not_found` for an id that is
+   * not an audited-change intent. See `audit-outcome.ts` for why a later real outcome still wins.
+   */
+  settleUnrecordedOutcome(actor: PlatformActorId, input: { intentId: string; error: string }): Promise<boolean>;
+
+  /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including
    * `upToId`, marking them shipped to Tier 2. Returns how many rows moved.
    *

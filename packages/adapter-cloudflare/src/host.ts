@@ -970,6 +970,7 @@ interface ControlPlaneStub {
   recordAdmin(entry: AdminEntry): Promise<void>;
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
   recordOpsFailure(row: OpsFailureRow): Promise<void>;
+  settleUnrecordedOutcome(input: { actor: string; intentId: string; error: string }): Promise<boolean>;
   /** #1632: subject erasure's directory half — `redactSubjectDirectoryText`. */
   redactSubjectText(target: SubjectTextTarget): Promise<void>;
   listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
@@ -8451,6 +8452,9 @@ export class CloudflareScopeHost implements ScopeHost {
         const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
         await this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
+      /** #2064: settle an intent with no outcome — one unit in the directory DO. */
+      settleUnrecordedOutcome: (actor, input) =>
+        this.cp.settleUnrecordedOutcome({ actor, intentId: input.intentId, error: input.error }),
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {
         const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);

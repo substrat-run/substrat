@@ -619,6 +619,7 @@ import {
   type ConsumerDelivery,
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
+import { SETTLE_INTENT_SQL, SETTLE_OUTCOME_SQL, unknownOutcomeOf, type SettleIntentRow } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -6349,6 +6350,89 @@ export class SqliteScopeHost implements ScopeHost {
     )();
   }
 
+  /**
+   * #559: one ops-failure row with its issue and finding, in one transaction (a savepoint when
+   * the caller holds one: #2064's settle writes it beside the `unknown` row it reports).
+   */
+  private writeOpsFailure(entry: OpsFailureInput): void {
+    const at = new Date().toISOString();
+    const fingerprint = opsFailureFingerprint(entry);
+    // #1748: the evidence, its issue and its finding in ONE transaction — a detector that
+    // throws takes the evidence with it, so the caller's retry observes it rather than finding
+    // the row already there and the observation lost.
+    this.directory.transaction(() => {
+      this.directory
+        .prepare(
+          `INSERT INTO _substrat_ops_failures
+             (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          ulid(),
+          entry.actor,
+          entry.operation,
+          entry.stage ?? null,
+          entry.tenantId ?? null,
+          entry.scopeId ?? null,
+          entry.vertical ?? null,
+          entry.version ?? null,
+          entry.status ?? null,
+          // Bounded here, not trusted from the catch site: one runaway upstream
+          // body must not become a runaway directory row (#559).
+          entry.message.slice(0, 2000),
+          entry.reference ?? null,
+          entry.origin ?? null,
+          entry.code ?? null,
+          fingerprint,
+          at,
+        );
+      // Prune-on-write (#559): retention lives here, not in a cron — every insert
+      // pays for its own housekeeping, so the table stays bounded even where no
+      // scheduled pass runs (this adapter has none).
+      const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
+      this.directory.prepare('DELETE FROM _substrat_ops_failures WHERE at < ?').run(horizon);
+      // The issues materialization (#1233): the group's counters live on their
+      // own row, bumped in the same call, because the evidence self-prunes above
+      // and a count must survive its own exemplars. A fresh arrival regresses a
+      // resolved issue; an ignored one stays ignored — that is what ignoring means.
+      this.directory
+        .prepare(
+          `INSERT INTO _substrat_issues
+             (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
+           VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+           ON CONFLICT (fingerprint) DO UPDATE SET
+             seen_count = seen_count + 1,
+             last_seen = excluded.last_seen,
+             last_message = excluded.last_message,
+             last_tenant_id = excluded.last_tenant_id,
+             last_owner_kind = excluded.last_owner_kind,
+             last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+             last_version = COALESCE(excluded.last_version, last_version),
+             origin = COALESCE(excluded.origin, origin),
+             status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
+        )
+        .run(
+          fingerprint,
+          entry.operation,
+          entry.stage ?? null,
+          entry.origin ?? null,
+          entry.code ?? null,
+          at,
+          at,
+          entry.message.slice(0, 2000),
+          entry.tenantId ?? null,
+          issueExemplarOwner(entry.tenantId ?? null),
+          entry.vertical ?? null,
+          entry.version ?? null,
+        );
+      const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
+      this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
+      // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
+      const finding = findingOfOpsFailure(entry);
+      if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
+    })();
+  }
+
   private recordAdmin(
     actor: PlatformActorId,
     action: AdminAction,
@@ -10479,83 +10563,18 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
-        const at = new Date().toISOString();
-        const fingerprint = opsFailureFingerprint(entry);
-        // #1748: the evidence, its issue and its finding in ONE transaction — a detector that
-        // throws takes the evidence with it, so the caller's retry observes it rather than finding
-        // the row already there and the observation lost.
-        this.directory.transaction(() => {
-          this.directory
-            .prepare(
-              `INSERT INTO _substrat_ops_failures
-                 (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            )
-            .run(
-              ulid(),
-              entry.actor,
-              entry.operation,
-              entry.stage ?? null,
-              entry.tenantId ?? null,
-              entry.scopeId ?? null,
-              entry.vertical ?? null,
-              entry.version ?? null,
-              entry.status ?? null,
-              // Bounded here, not trusted from the catch site: one runaway upstream
-              // body must not become a runaway directory row (#559).
-              entry.message.slice(0, 2000),
-              entry.reference ?? null,
-              entry.origin ?? null,
-              entry.code ?? null,
-              fingerprint,
-              at,
-            );
-          // Prune-on-write (#559): retention lives here, not in a cron — every insert
-          // pays for its own housekeeping, so the table stays bounded even where no
-          // scheduled pass runs (this adapter has none).
-          const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
-          this.directory.prepare('DELETE FROM _substrat_ops_failures WHERE at < ?').run(horizon);
-          // The issues materialization (#1233): the group's counters live on their
-          // own row, bumped in the same call, because the evidence self-prunes above
-          // and a count must survive its own exemplars. A fresh arrival regresses a
-          // resolved issue; an ignored one stays ignored — that is what ignoring means.
-          this.directory
-            .prepare(
-              `INSERT INTO _substrat_issues
-                 (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
-               VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-               ON CONFLICT (fingerprint) DO UPDATE SET
-                 seen_count = seen_count + 1,
-                 last_seen = excluded.last_seen,
-                 last_message = excluded.last_message,
-                 last_tenant_id = excluded.last_tenant_id,
-                 last_owner_kind = excluded.last_owner_kind,
-                 last_vertical = COALESCE(excluded.last_vertical, last_vertical),
-                 last_version = COALESCE(excluded.last_version, last_version),
-                 origin = COALESCE(excluded.origin, origin),
-                 status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
-            )
-            .run(
-              fingerprint,
-              entry.operation,
-              entry.stage ?? null,
-              entry.origin ?? null,
-              entry.code ?? null,
-              at,
-              at,
-              entry.message.slice(0, 2000),
-              entry.tenantId ?? null,
-              issueExemplarOwner(entry.tenantId ?? null),
-              entry.vertical ?? null,
-              entry.version ?? null,
-            );
-          const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
-          this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
-          // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
-          const finding = findingOfOpsFailure(entry);
-          if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
-        })();
+        this.writeOpsFailure(entry);
       },
+      /** #2064: settle an intent with no outcome, in one transaction — see `audit-outcome.ts`. */
+      settleUnrecordedOutcome: async (actor, input) =>
+        this.directory.transaction(() => {
+          const row = this.directory.prepare(SETTLE_INTENT_SQL).get(input.intentId) as SettleIntentRow | undefined;
+          const outcome = unknownOutcomeOf(row, input.intentId, input.error);
+          if (this.directory.prepare(SETTLE_OUTCOME_SQL).get(outcome.action, input.intentId, outcome.operationId)) return false;
+          this.recordAdmin(actor, outcome.action, outcome.target as never, null, outcome.after);
+          this.writeOpsFailure({ ...outcome.failure, actor });
+          return true;
+        })(),
       listOpsFailures: async (actor, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]> => {
         const where: string[] = [];
         const params: (string | number)[] = [];
