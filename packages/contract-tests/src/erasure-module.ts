@@ -143,6 +143,13 @@ const onSubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
       break;
     case 'async':
       return Promise.resolve() as unknown as void;
+    case 'generator':
+      // A generator hook: calling it returns an iterator and runs none of its body.
+      return (function* () {
+        ctx.sql.exec("UPDATE er_loose SET memo = 'never runs' WHERE id = ?", [subjectId]);
+      })() as unknown as void;
+    case 'value':
+      return 1 as unknown as void;
     case 'async-write':
       // Refused for returning a promise; its continuation then tries to write anyway.
       return (async () => {

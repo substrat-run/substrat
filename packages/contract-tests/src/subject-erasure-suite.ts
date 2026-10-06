@@ -339,12 +339,19 @@ export function subjectErasureContractSuite(
         expect(await one('SELECT memo FROM er_loose WHERE id = ?', [who])).toEqual({ memo: 'untouched' });
       });
 
-      it('refuses a hook that returns a promise — it must run inside the one transaction', async () => {
-        const { who, sealed } = await armed('async');
-        const err = await errOf(host.admin.shredSubject(staff, t1, s1, who));
-        expect(errorCodeOf(err)).toBe('precondition_failed');
-        await intact(who, sealed);
-      });
+      for (const [kind, what] of [
+        ['async', 'a promise (an async hook)'],
+        ['generator', 'an iterator (a generator hook, whose body never ran)'],
+        ['value', 'a value'],
+      ] as const) {
+        it(`refuses a hook that returns ${what} — it must return nothing — and erases nothing`, async () => {
+          const { who, sealed } = await armed(kind);
+          const err = await errOf(host.admin.shredSubject(staff, t1, s1, who));
+          expect(errorCodeOf(err)).toBe('precondition_failed');
+          await intact(who, sealed);
+          expect(await one('SELECT memo FROM er_loose WHERE id = ?', [who])).toEqual({ memo: 'untouched' });
+        });
+      }
     });
   });
 }

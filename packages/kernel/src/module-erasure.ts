@@ -63,7 +63,8 @@ export interface SubjectErasureContext {
 }
 
 /**
- * A module's own erasure step (#2068). Synchronous — a returned promise is refused — and
+ * A module's own erasure step (#2068). Synchronous and returning nothing — a promise, an
+ * iterator or any other returned value refuses the whole erasure — and
  * idempotent: an erasure is re-run after any failure, so a second call for the same subject
  * must find nothing left to do.
  */
@@ -476,14 +477,20 @@ export function eraseSubjectFromModules(input: {
     } finally {
       live = false;
     }
-    if (returned !== undefined && typeof (returned as { then?: unknown }).then === 'function') {
-      // Its rejection, if any, is the module's — swallowed so it does not surface unhandled
-      // after the erasure it belonged to has already been refused and rolled back. Its
-      // continuation can do nothing: `ctx` is revoked above.
-      (returned as Promise<unknown>).then(undefined, () => undefined);
+    if (returned !== undefined) {
+      // Anything but `undefined` is a hook that did not finish in its synchronous run: a promise
+      // (an async hook), an iterator (a generator hook, whose body has not even started), or a
+      // value it meant as a result. Each refuses the whole erasure, before the key. A promise's
+      // rejection is the module's — swallowed so it does not surface unhandled after the erasure
+      // it belonged to has been refused and rolled back; its continuation can do nothing, `ctx`
+      // being revoked above.
+      if (returned !== null && typeof (returned as { then?: unknown }).then === 'function') {
+        (returned as Promise<unknown>).then(undefined, () => undefined);
+      }
       throw substratError(
         'precondition_failed',
-        `${plan.moduleId}: onSubjectErased returned a promise — it must be synchronous, so it runs inside the erasure's one transaction`,
+        `${plan.moduleId}: onSubjectErased returned a value — it must run to completion synchronously and ` +
+          "return nothing (no async, no generator), so it runs inside the erasure's one transaction",
       );
     }
     out.hookRows.push({ module: plan.moduleId, rows });

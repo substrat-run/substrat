@@ -204,6 +204,28 @@ describe('the hook capability and the temp schema (#2068)', () => {
     expect(writes).toEqual([]);
   });
 
+  it('refuses any returned value — a generator hook is refused with its body never run', () => {
+    let ran = false;
+    for (const hook of [
+      () => (function* () { ran = true; })(),
+      () => Promise.resolve(),
+      () => 0,
+      () => null,
+    ]) {
+      const plan = moduleErasurePlan(registration(erasure('custom'), hook as unknown as ModuleRegistration['onSubjectErased']))!;
+      const err = (() => {
+        try {
+          erase({ sql: bare().sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' });
+        } catch (e) {
+          return e;
+        }
+        return undefined;
+      })();
+      expect(errorCodeOf(err), String(err)).toBe('precondition_failed');
+    }
+    expect(ran).toBe(false);
+  });
+
   it('revokes it when the hook throws, too', () => {
     let kept: ScopedSql | undefined;
     const plan = moduleErasurePlan(registration(erasure('custom'), (ctx) => {
