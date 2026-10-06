@@ -135,8 +135,8 @@ unset limit meaning *unbounded* for an internal caller), `listPageQuery` /
 (`PAGE_LINK_HEADER`, `PAGE_TOTAL_HEADER`, `PAGE_EXPOSED_HEADERS`, `nextPageLink`),
 `LIST_SORT_PARAM`, `pageVisible` — the walk a per-row-filtered read owns, whose cursor is
 only ever a visible row's, bounded by `VISIBLE_SCAN_BUDGET` and read in `VISIBLE_BATCH`-row
-batches; `pageCursorOf(page)`, the cursor a page from `pageOf`, `mapPage` or `ctx.page` mints for
-any of its own rows — and
+batches; `Page.rowCursors`, each row's own cursor, which `pageOf`, `mapPage` and `ctx.page` return
+when asked (`rowCursors: true`) and `withoutRowCursors` strips at the wire — and
 `pageOverFold`, which cuts a page off a list the handler **already folded in memory** (the
 `paged: { sortKey }` half of #811, as a function).
 
