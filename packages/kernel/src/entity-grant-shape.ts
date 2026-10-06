@@ -7,10 +7,12 @@ import {
   eventId,
   moduleId,
   type DomainEvent,
+  type EntityGrantShape,
   type EntityRef,
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { explicitTupleSql } from './entity-grant.js';
+import { liveTupleSql } from './permission-eval.js';
 import type { SwitchSql } from './system-switch.js';
 
 /**
@@ -24,11 +26,12 @@ import type { SwitchSql } from './system-switch.js';
  *
  * Three pieces, each one statement shared by both adapters:
  *
- * - {@link shapeGrantSql}: the grant. The shape's keys plus a MARKER tuple
+ * - {@link grantEntityShapeIn}: the grant. The shape's keys plus a MARKER tuple
  *   (`ENTITY_SHAPE_MARKER_RELATION`) on the same entity. The marker is what makes a person a
  *   holder of the shape, which no set of keys can: someone `ctx.grant`ed one of those keys
  *   holds part of the shape and must never be topped up to all of it.
- * - {@link topUpEntityGrantShapes}: one bounded pass of the reconcile. Each live marker whose
+ * - {@link topUpEntityGrantShapes}: one bounded pass of the reconcile, writing each top-up's
+ *   `entity.grants-topped-up` event beside it. Each live marker whose
  *   entity lacks a key of the CURRENT shape gets that key. A key with any row at all is
  *   skipped, and that includes a tombstone (K-21): a key someone took back from that person
  *   stays taken back. Top-up only. A key dropped from the shape is left where it is, because
@@ -56,60 +59,66 @@ const KERNEL_ACTOR = { system: moduleId.parse('@substrat-run/kernel') };
 
 const PRINCIPAL = 'principal:';
 
-/** One declared shape: the keys a holder is given on an entity of `entityType`. */
-export interface EntityGrantShapeInput {
-  entityType: string;
-  permissions: readonly string[];
-}
-
 /** One (person, entity) a pass topped up, and the keys it added. */
-export interface ShapeTopUp {
+interface ShapeTopUp {
   principal: PrincipalId;
   entity: EntityRef;
   added: string[];
 }
 
-type Stmt = { sql: string; params: (string | number | null)[] };
-
 const keysOf = (permissions: readonly string[]): string[] => [...new Set(permissions)].sort();
 
 /**
  * The shape's grant to one person on one entity: the marker and every key, each an explicit
- * write, so a re-grant brings back what a revoke tombstoned — as `ctx.grant` and
- * `HostAdmin.grant` do. `entityObjectRef` refuses a ref the walk could not read back (#1856).
+ * write, so a re-grant brings back what a revoke tombstoned — as `ctx.grant` does.
+ * `entityObjectRef` refuses a ref the walk could not read back (#1856). Run it in ONE
+ * transaction, so the marker and its keys land together or not at all.
  */
-export function shapeGrantSql(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Stmt[] {
+export function grantEntityShapeIn(db: SwitchSql, principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): void {
   const object = entityObjectRef(entity, 'grantEntityShape');
   const subject = `${PRINCIPAL}${principal}`;
-  return [
+  for (const st of [
     explicitTupleSql(subject, ENTITY_SHAPE_MARKER_RELATION, object),
     ...keysOf(permissions).map((p) => explicitTupleSql(subject, `granted:${p}`, object)),
-  ];
+  ]) {
+    db.run(st.sql, ...st.params);
+  }
+}
+
+/** Where a pass runs and how its events are stamped — the facts only the adapter holds. */
+export interface ShapePass {
+  tenantId: string;
+  scopeId: string;
+  shapes: readonly EntityGrantShape[];
+  /** The pass's one instant: marker liveness and every event's `occurredAt`. */
+  now: string;
+  /** Holders topped up at most. */
+  limit: number;
+  /** The adapter's monotonic event-id mint, given the instant in ms. */
+  mintEventId: (ms: number) => string;
+  /** The deploy writing the events, for the outbox `version` column. */
+  version: string | null;
 }
 
 /**
  * One pass of the reconcile over one scope: the backfill for any shape not yet backfilled
- * here, then at most `limit` holders topped up across all `shapes`. Returns what it added;
- * fewer than `limit` means the scope is done. Run it inside ONE transaction, and emit
- * {@link shapeTopUpEvent} for each result in the same one. Re-running a finished scope
- * writes nothing.
+ * here, then at most `limit` holders topped up across all `shapes`, each with its
+ * `entity.grants-topped-up` event. Returns how many it topped up; fewer than `limit` means the
+ * scope is done. Run it inside ONE transaction, so the keys and their events commit together.
+ * Re-running a finished scope writes nothing.
  */
-export function topUpEntityGrantShapes(
-  db: SwitchSql,
-  input: { scopeId: string; shapes: readonly EntityGrantShapeInput[]; now: string; limit?: number },
-): ShapeTopUp[] {
-  let budget = input.limit ?? SHAPE_TOP_UP_BATCH;
-  const out: ShapeTopUp[] = [];
-  for (const shape of input.shapes) {
+export function topUpEntityGrantShapes(db: SwitchSql, pass: ShapePass): number {
+  let budget = pass.limit;
+  for (const shape of pass.shapes) {
     const keys = keysOf(shape.permissions);
     if (keys.length === 0) continue;
     const prefix = `${shape.entityType}:`;
     const json = JSON.stringify(keys);
-    backfillOnce(db, input.scopeId, shape.entityType, prefix, json, keys.length);
+    backfillOnce(db, pass.scopeId, shape.entityType, prefix, json, keys.length);
     if (budget === 0) break;
     const holders = db.all(
       `SELECT m.subject, m.object FROM _substrat_tuples m
-        WHERE m.relation = ? AND m.revoked_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
+        WHERE m.relation = ? AND ${liveTupleSql('m')}
           AND substr(m.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}'
           AND substr(m.object, 1, ?) = ?
           AND EXISTS (SELECT 1 FROM json_each(?) k
@@ -119,23 +128,25 @@ export function topUpEntityGrantShapes(
         ORDER BY m.subject, m.object
         LIMIT ?`,
       ENTITY_SHAPE_MARKER_RELATION,
-      input.now,
+      pass.now,
       prefix.length,
       prefix,
       json,
       budget,
     ) as { subject: string; object: string }[];
     for (const h of holders) {
-      const missing = db.all(
-        `SELECT k.value AS key FROM json_each(?) k
-          WHERE NOT EXISTS (SELECT 1 FROM _substrat_tuples t
-                             WHERE t.subject = ? AND t.object = ? AND t.relation = 'granted:' || k.value)
-          ORDER BY k.value`,
-        json,
-        h.subject,
-        h.object,
-      ) as { key: string }[];
-      for (const { key } of missing) {
+      const added = (
+        db.all(
+          `SELECT k.value AS key FROM json_each(?) k
+            WHERE NOT EXISTS (SELECT 1 FROM _substrat_tuples t
+                               WHERE t.subject = ? AND t.object = ? AND t.relation = 'granted:' || k.value)
+            ORDER BY k.value`,
+          json,
+          h.subject,
+          h.object,
+        ) as { key: string }[]
+      ).map((m) => m.key);
+      for (const key of added) {
         db.run(
           `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)`,
           h.subject,
@@ -143,15 +154,19 @@ export function topUpEntityGrantShapes(
           h.object,
         );
       }
-      out.push({
-        principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
-        entity: { entityType: shape.entityType, entityId: h.object.slice(prefix.length) },
-        added: missing.map((m) => m.key),
-      });
+      const st = outboxInsertSql(
+        shapeTopUpEvent(pass, {
+          principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
+          entity: { entityType: shape.entityType, entityId: h.object.slice(prefix.length) },
+          added,
+        }),
+        pass.version,
+      );
+      db.run(st.sql, ...st.params);
     }
     budget -= holders.length;
   }
-  return out;
+  return pass.limit - budget;
 }
 
 /** The backfill, recorded so it runs once per (scope, entity type) — see the module comment. */
@@ -182,17 +197,14 @@ function backfillOnce(db: SwitchSql, scopeId: string, entityType: string, prefix
 }
 
 /** The kernel's event for one top-up — the audit record, on the entity's own history. */
-export function shapeTopUpEvent(
-  at: { tenantId: string; scopeId: string; occurredAt: string; id: string },
-  topUp: ShapeTopUp,
-): DomainEvent {
+function shapeTopUpEvent(pass: ShapePass, topUp: ShapeTopUp): DomainEvent {
   return domainEvent.parse({
-    id: eventId.parse(at.id),
+    id: eventId.parse(pass.mintEventId(Date.parse(pass.now))),
     type: ENTITY_GRANTS_TOPPED_UP,
     schemaVersion: 1,
-    occurredAt: at.occurredAt,
-    tenantId: at.tenantId,
-    scopeId: at.scopeId,
+    occurredAt: pass.now,
+    tenantId: pass.tenantId,
+    scopeId: pass.scopeId,
     actor: KERNEL_ACTOR,
     entity: topUp.entity,
     piiClass: 'none',
@@ -201,18 +213,18 @@ export function shapeTopUpEvent(
 }
 
 /**
- * The outbox write for an event the kernel records OUTSIDE an operation — a reconcile has no
- * operation, no caller and no checks passed, so `authorization`, `impersonation`, `operation`
- * and `caused_by` are null, which is what each of them says about such an event. `version`
- * is the deploy that wrote it.
+ * The outbox write for an event the kernel records OUTSIDE an operation. A reconcile has no
+ * operation, no caller and no delivery, so `operation`, `caused_by` and `invocation_id` are null,
+ * which is what each says about such an event; the envelope's own fields are written as given.
+ * `version` is the deploy that wrote it.
  */
-export function kernelOutboxInsertSql(e: DomainEvent, version: string | null): Stmt {
+function outboxInsertSql(e: DomainEvent, version: string | null): { sql: string; params: (string | number | null)[] } {
   return {
     sql: `INSERT INTO _substrat_outbox
             (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
              entity_type, entity_id, pii_class, subject_id, authorization,
              impersonation, operation, version, caused_by, invocation_id, payload)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, ?)`,
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?)`,
     params: [
       e.id,
       e.type,
@@ -224,6 +236,9 @@ export function kernelOutboxInsertSql(e: DomainEvent, version: string | null): S
       e.entity.entityType,
       e.entity.entityId,
       e.piiClass,
+      e.subjectId ?? null,
+      e.authorization ? JSON.stringify(e.authorization) : null,
+      e.impersonation ? JSON.stringify(e.impersonation) : null,
       version,
       JSON.stringify(e.payload),
     ],

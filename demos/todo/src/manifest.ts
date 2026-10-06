@@ -17,6 +17,7 @@ import {
   manifestOperations,
   moduleManifest,
   permissionKey,
+  type EntityGrantShape,
 } from '@substrat-run/contracts';
 import { todoEntities, todoOperations } from '../spec/model.js';
 
@@ -50,7 +51,7 @@ export const OWNER_GRANTS = [
  * `list` row of `ENTITY_GRANTS` is SHARING, reached through `ctx.grant`, so a person holding it
  * is a sharee, never a holder to top up.
  */
-export const OWNER_SHAPE = { entityType: 'owner', permissions: [...OWNER_GRANTS] };
+export const OWNER_SHAPE: EntityGrantShape = { entityType: 'owner', permissions: [...OWNER_GRANTS] };
 
 export const todoManifest = moduleManifest.parse({
   id: '@substrat-run/demo-todo',

@@ -1884,9 +1884,9 @@ export interface HostAdmin {
    * Give a person a vertical's declared entity-grant SHAPE on one entity (#2071): every key in
    * `permissions`, plus the marker that makes them a holder of the shape, so a key the shape
    * gains later reaches them at the next {@link reconcileEntityGrantShapes}. What a vertical
-   * calls where it used to `grant` its `ENTITY_GRANTS` keys one at a time. Each write is
-   * explicit, as `grant` is: it brings back a key or marker a revoke tombstoned. Audited as
-   * `grantEntityShape`.
+   * calls where it used to `grant` its `ENTITY_GRANTS` keys one at a time. It brings back a key
+   * or marker a revoke tombstoned, as `grant` does, and leaves a live row as it is, expiry
+   * included, as `ctx.grant` does. Audited as `grantEntityShape`.
    */
   grantEntityShape(
     actor: PlatformActorId,

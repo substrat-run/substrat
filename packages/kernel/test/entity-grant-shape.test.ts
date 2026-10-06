@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
-import { shapeGrantSql, topUpEntityGrantShapes, ulid, type SwitchSql } from '../src/index.js';
+import { grantEntityShapeIn, topUpEntityGrantShapes, ulid, type SwitchSql } from '../src/index.js';
 
 /**
  * The declared shape's reconcile (#2071), over a bare `_substrat_tuples`. The edges the
@@ -9,7 +9,8 @@ import { shapeGrantSql, topUpEntityGrantShapes, ulid, type SwitchSql } from '../
  * holder, what a tombstone keeps, the run-once backfill, and the batch bound.
  */
 describe('a declared entity-grant shape, topped up (#2071)', () => {
-  const S = 'scope-1';
+  const T = ulid();
+  const S = ulid();
   const NOW = '2026-10-06T00:00:00.000Z';
   const OLD = ['emp:read', 'emp:report'];
   const GROWN = [...OLD, 'emp:cancel'];
@@ -19,6 +20,12 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
     db.exec(`CREATE TABLE _substrat_tuples (
       subject TEXT NOT NULL, relation TEXT NOT NULL, object TEXT NOT NULL,
       expires_at TEXT, revoked_at TEXT, PRIMARY KEY (subject, relation, object)
+    )`);
+    db.exec(`CREATE TABLE _substrat_outbox (
+      id TEXT PRIMARY KEY, type TEXT, schema_version INTEGER, occurred_at TEXT, tenant_id TEXT,
+      scope_id TEXT, actor TEXT, entity_type TEXT, entity_id TEXT, pii_class TEXT, subject_id TEXT,
+      authorization TEXT, impersonation TEXT, operation TEXT, version TEXT, caused_by TEXT,
+      invocation_id TEXT, payload TEXT
     )`);
     const sql: SwitchSql = {
       all: (q, ...p) => db.prepare(q).all(...p) as Record<string, unknown>[],
@@ -36,15 +43,31 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
           .all(`principal:${who}`, `employee:${id}`) as { relation: string }[]
       ).map((r) => r.relation.slice('granted:'.length));
     const shape = (who: PrincipalId, id: string, keys = OLD) => {
-      for (const st of shapeGrantSql(who, { entityType: 'employee', entityId: id }, keys)) db.prepare(st.sql).run(...st.params);
+      grantEntityShapeIn(sql, who, { entityType: 'employee', entityId: id }, keys);
     };
     const tuple = (who: PrincipalId, relation: string, id: string, revokedAt: string | null = null) =>
       db
         .prepare('INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, revoked_at) VALUES (?, ?, ?, ?)')
         .run(`principal:${who}`, relation, `employee:${id}`, revokedAt);
-    const topUp = (permissions = GROWN, limit?: number) =>
-      topUpEntityGrantShapes(sql, { scopeId: S, shapes: [{ entityType: 'employee', permissions }], now: NOW, limit });
-    return { db, keysOf, shape, tuple, topUp };
+    // A pass, answered by the events it wrote: each top-up is one, so they are what it did.
+    const events = () => (db.prepare('SELECT count(*) AS n FROM _substrat_outbox').get() as { n: number }).n;
+    const pass = (shapes: { entityType: string; permissions: string[] }[], limit = 500) => {
+      const before = events();
+      const n = topUpEntityGrantShapes(sql, {
+        tenantId: T,
+        scopeId: S,
+        shapes: shapes as never,
+        now: NOW,
+        limit,
+        mintEventId: () => ulid(),
+        version: 'v-test',
+      });
+      const rows = db.prepare('SELECT payload FROM _substrat_outbox ORDER BY rowid LIMIT -1 OFFSET ?').all(before) as { payload: string }[];
+      expect(rows).toHaveLength(n);
+      return rows.map((r) => JSON.parse(r.payload) as { principal: string; entity: unknown; added: string[] });
+    };
+    const topUp = (permissions = GROWN, limit?: number) => pass([{ entityType: 'employee', permissions }], limit);
+    return { db, keysOf, shape, tuple, topUp, pass };
   };
   const who = () => principalId.parse(ulid());
 
@@ -54,6 +77,23 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
     t.shape(anna, 'e1');
     expect(t.topUp()).toEqual([{ principal: anna, entity: { entityType: 'employee', entityId: 'e1' }, added: ['emp:cancel'] }]);
     expect(t.keysOf(anna, 'e1')).toEqual(['emp:cancel', 'emp:read', 'emp:report']);
+  });
+
+  it('each top-up is one kernel event on the entity, stamped with the deploy and no operation', () => {
+    const t = fresh();
+    t.shape(who(), 'e1');
+    t.topUp();
+    expect(t.db.prepare('SELECT type, entity_type, entity_id, actor, operation, authorization, version FROM _substrat_outbox').all()).toEqual([
+      {
+        type: 'entity.grants-topped-up',
+        entity_type: 'employee',
+        entity_id: 'e1',
+        actor: JSON.stringify({ system: '@substrat-run/kernel' }),
+        operation: null,
+        authorization: null,
+        version: 'v-test',
+      },
+    ]);
   });
 
   it('a second run tops up nobody', () => {
@@ -105,10 +145,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
     const t = fresh();
     const anna = who();
     t.shape(anna, 'e1');
-    expect(topUpEntityGrantShapes(
-      { all: (q, ...p) => t.db.prepare(q).all(...p) as Record<string, unknown>[], run: (q, ...p) => void t.db.prepare(q).run(...p) },
-      { scopeId: S, shapes: [{ entityType: 'emp', permissions: GROWN }], now: NOW },
-    )).toEqual([]);
+    expect(t.pass([{ entityType: 'emp', permissions: GROWN }])).toEqual([]);
   });
 
   describe('the backfill: people granted before markers existed', () => {

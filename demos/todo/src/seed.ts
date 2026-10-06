@@ -21,7 +21,7 @@ import {
   type RoleDefinition,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { OWNER_GRANTS, OWNER_SHAPE, TODO_PERM, todoManifest } from './manifest.js';
+import { OWNER_SHAPE, TODO_PERM, todoManifest } from './manifest.js';
 import { todoModule } from './module.js';
 
 export const MODULES = [todoModule];
@@ -103,7 +103,7 @@ export async function seed(host: ScopeHost): Promise<World> {
  * The bootstrap grant: rights over your OWN entity, which your lists then hang off. Nobody
  * holds these scope-wide, which is what keeps one member's lists unreachable to another.
  *
- * Granted as the declared SHAPE (#2071) — `OWNER_GRANTS`, the same list `PERMISSIONS.md` shows a
+ * Granted as the declared SHAPE (#2071) — `OWNER_SHAPE`, the same list `PERMISSIONS.md` shows a
  * reviewer — so the person is marked as holding it, and a key added to it later reaches them
  * at the next {@link reconcileOwnerGrants}, which the dev server runs on every boot.
  */
@@ -117,7 +117,7 @@ export async function grantOwner(
     principalId: principal,
     node,
     entity: { entityType: 'owner', entityId: principal },
-    permissions: OWNER_GRANTS,
+    permissions: OWNER_SHAPE.permissions,
     grantedBy: principal,
   });
 }

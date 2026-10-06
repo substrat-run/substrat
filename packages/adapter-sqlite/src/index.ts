@@ -622,10 +622,8 @@ import {
   attributedView,
   delegatedGrantSql,
   delegatedRevokeSql,
-  kernelOutboxInsertSql,
+  grantEntityShapeIn,
   SHAPE_TOP_UP_BATCH,
-  shapeGrantSql,
-  shapeTopUpEvent,
   topUpEntityGrantShapes,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
@@ -7225,13 +7223,10 @@ export class SqliteScopeHost implements ScopeHost {
       grantEntityShape: async (actor, grant) => {
         const { tenantId, scopeId } = grant.node;
         this.assertScope(tenantId, scopeId);
-        const statements = shapeGrantSql(grant.principalId, grant.entity, grant.permissions);
         const rt = this.runtime(tenantId, scopeId);
         // One unit on the scope actor (#1678): the marker and its keys land together or not at all.
         await rt.actor.turn(() =>
-          rt.db.transaction(() => {
-            for (const st of statements) rt.db.prepare(st.sql).run(...st.params);
-          })(),
+          rt.db.transaction(() => grantEntityShapeIn(switchSqlOf(rt.db), grant.principalId, grant.entity, grant.permissions))(),
         );
         this.recordAdmin(actor, 'grantEntityShape', { tenantId, scopeId }, null, grant);
       },
@@ -7241,27 +7236,23 @@ export class SqliteScopeHost implements ScopeHost {
         const rt = this.runtime(tenantId, scopeId);
         const limit = opts?.batch ?? SHAPE_TOP_UP_BATCH;
         let toppedUp = 0;
-        // #2071: one bounded transaction per pass, so a large scope never holds one long; the
-        // top-ups and their events commit together. A pass that topped up fewer than `limit`
-        // found everyone.
-        for (;;) {
-          const pass = await rt.actor.turn(() =>
-            rt.db.transaction(() => {
-              const at = new Date().toISOString();
-              const done = topUpEntityGrantShapes(switchSqlOf(rt.db), { scopeId, shapes, now: at, limit });
-              for (const topUp of done) {
-                const event = shapeTopUpEvent(
-                  { tenantId, scopeId, occurredAt: at, id: rt.mintEventId(Date.parse(at)) },
-                  topUp,
-                );
-                const st = kernelOutboxInsertSql(event, this.versionId);
-                rt.db.prepare(st.sql).run(...st.params);
-              }
-              return done.length;
-            })(),
+        // #2071: one bounded transaction per pass, so a large scope never holds one long. A pass
+        // that topped up fewer than `limit` found everyone.
+        for (let pass = limit; pass === limit; ) {
+          pass = await rt.actor.turn(() =>
+            rt.db.transaction(() =>
+              topUpEntityGrantShapes(switchSqlOf(rt.db), {
+                tenantId,
+                scopeId,
+                shapes,
+                now: new Date().toISOString(),
+                limit,
+                mintEventId: (ms) => rt.mintEventId(ms),
+                version: this.versionId,
+              }),
+            )(),
           );
           toppedUp += pass;
-          if (pass < limit) break;
         }
         if (toppedUp > 0) {
           this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, toppedUp });

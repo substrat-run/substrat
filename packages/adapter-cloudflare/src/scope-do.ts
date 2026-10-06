@@ -1,3 +1,4 @@
+import type { EntityGrantShape } from '@substrat-run/contracts';
 import { REWIND_REFUSED } from './rewind-refusal.js';
 import { SYSTEM_DOOR_MOVED, type SystemDoorMoved } from './system-door.js';
 import { DurableObject } from 'cloudflare:workers';
@@ -97,11 +98,8 @@ import {
   seatScopeTuple,
   delegatedGrantSql,
   delegatedRevokeSql,
-  kernelOutboxInsertSql,
-  shapeGrantSql,
-  shapeTopUpEvent,
+  grantEntityShapeIn,
   topUpEntityGrantShapes,
-  type EntityGrantShapeInput,
   applyScopeRoleChange,
   changeScopeRole,
   revokeScopeRoles,
@@ -2272,44 +2270,35 @@ export function defineScopeDO(
       );
     }
 
-    /**
-     * A declared entity-grant shape's grant to one person on one entity (#2071): the marker and
-     * every key, as ONE unit, each an explicit write (`shapeGrantSql`).
-     */
+    /** A declared entity-grant shape's grant to one person on one entity (#2071), as ONE unit. */
     async grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void> {
-      const statements = shapeGrantSql(principal, entity, permissions);
       await this.queue.enqueue(() =>
-        this.revision.transactionSync(() => {
-          for (const st of statements) this.sql.exec(st.sql, ...st.params);
-        }),
+        this.revision.transactionSync(() => grantEntityShapeIn(this.switchSql(), principal, entity, permissions)),
       );
     }
 
     /**
-     * One bounded pass of a declared shape's reconcile (#2071), with each top-up's
-     * `entity.grants-topped-up` event, in ONE transaction. Returns how many (person, entity)
-     * it topped up; fewer than `limit` means the scope is done. The host repeats it.
+     * One bounded pass of a declared shape's reconcile (#2071), with its events, in ONE
+     * transaction. Returns how many it topped up; fewer than `limit` means the scope is done.
      */
     async topUpEntityGrantShapes(
       tenantId: string,
       scopeId: string,
-      shapes: readonly EntityGrantShapeInput[],
+      shapes: readonly EntityGrantShape[],
       limit: number,
     ): Promise<number> {
       return this.queue.enqueue(() =>
-        this.revision.transactionSync(() => {
-          const at = new Date().toISOString();
-          const done = topUpEntityGrantShapes(this.switchSql(), { scopeId, shapes, now: at, limit });
-          for (const topUp of done) {
-            const event = shapeTopUpEvent(
-              { tenantId, scopeId, occurredAt: at, id: this.mintEventId(Date.parse(at)) },
-              topUp,
-            );
-            const st = kernelOutboxInsertSql(event, this.env.SUBSTRAT_VERSION_ID ?? null);
-            this.sql.exec(st.sql, ...st.params);
-          }
-          return done.length;
-        }),
+        this.revision.transactionSync(() =>
+          topUpEntityGrantShapes(this.switchSql(), {
+            tenantId,
+            scopeId,
+            shapes,
+            now: new Date().toISOString(),
+            limit,
+            mintEventId: (ms) => this.mintEventId(ms),
+            version: this.env.SUBSTRAT_VERSION_ID ?? null,
+          }),
+        ),
       );
     }
 

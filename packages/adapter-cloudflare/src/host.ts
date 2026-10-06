@@ -1,3 +1,4 @@
+import type { EntityGrantShape } from '@substrat-run/contracts';
 import type { TenantVerdict } from './scope-do.js';
 import { env as ambientEnv } from 'cloudflare:workers';
 import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
@@ -443,7 +444,6 @@ import {
   type FindingPruneReport,
   memberAddedAudit,
   SHAPE_TOP_UP_BATCH,
-  type EntityGrantShapeInput,
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
 import {
@@ -1397,7 +1397,7 @@ interface ScopeStubRpc {
   topUpEntityGrantShapes(
     tenantId: string,
     scopeId: string,
-    shapes: readonly EntityGrantShapeInput[],
+    shapes: readonly EntityGrantShape[],
     limit: number,
   ): Promise<number>;
   /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
@@ -6295,7 +6295,7 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!grant.node.scopeId) await this.fanOut(grant.node.tenantId);
       },
       grantEntityShape: async (actor, grant) => {
-        await this.scopeStub(grant.node.scopeId).grantEntityShape(grant.principalId, grant.entity, grant.permissions);
+        await this.grantEntityShapeLocal(grant.node.scopeId, grant.principalId, grant.entity, grant.permissions);
         await this.recordAdmin(actor, 'grantEntityShape', grant.node, null, grant);
       },
       reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
@@ -9892,7 +9892,7 @@ export class CloudflareScopeHost implements ScopeHost {
      *  Each holder is topped up to the shape as it is now, after the seat, in bounded passes: a
      *  key the shape gained reaches the people who already held it. Never a revoked key, never a
      *  removal. Absent ⇒ no reconcile. */
-    entityGrants?: readonly EntityGrantShapeInput[];
+    entityGrants?: readonly EntityGrantShape[];
   }): Promise<{ switchedOff?: SwitchedOff[] }> {
     const carry = recordedOffFromWire(input);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
@@ -10132,17 +10132,17 @@ export class CloudflareScopeHost implements ScopeHost {
   async topUpEntityGrantShapesLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
-    shapes: readonly EntityGrantShapeInput[],
+    shapes: readonly EntityGrantShape[],
     batch: number = SHAPE_TOP_UP_BATCH,
   ): Promise<number> {
     if (shapes.length === 0) return 0;
     const stub = this.scopeStub(scopeId);
     let toppedUp = 0;
-    for (;;) {
-      const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, batch);
+    for (let pass = batch; pass === batch; ) {
+      pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, batch);
       toppedUp += pass;
-      if (pass < batch) return toppedUp;
     }
+    return toppedUp;
   }
 
   // -- the connector write-back's far end (#574) -----------------------------
