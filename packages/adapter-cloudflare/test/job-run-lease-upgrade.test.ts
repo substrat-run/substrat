@@ -33,6 +33,13 @@ it('adds the lease columns on wake to a scope DO built before them, and drives i
     // The drop commits in a call of its own: an abort in the same call breaks the output gate, and
     // the write it would have flushed is lost with it.
     await runInDurableObject(stub(), (_instance, state) => {
+      // A pad column first, so `admission_misses` is not the last column when it is dropped. The
+      // DO now stores the kernel's DDL as written, comments included (#2068, the shared splitter
+      // keeps each statement's original text), exactly as the SQLite host always has — and
+      // SQLite's own DROP COLUMN rewrite of that text fails with "incomplete input" when the
+      // dropped LAST column is preceded by line comments, on both hosts alike. The pad is a
+      // nullable column the lease upgrade never reads.
+      state.storage.sql.exec('ALTER TABLE _substrat_job_runs ADD COLUMN pre_lease_pad TEXT');
       state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_owner');
       state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN lease_began_at');
       state.storage.sql.exec('ALTER TABLE _substrat_job_runs DROP COLUMN admission_misses');
