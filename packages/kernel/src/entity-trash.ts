@@ -64,28 +64,34 @@ export interface TrashRefusalDeps {
  * per-handler check gave. An active entity is never checked here; the handler does it, as
  * always, so a pass is never recorded twice.
  *
- * `purgeCutoff` is the purge sweep's (`InvokeOptions.purgeCutoff`): the entity must still be
- * trashed, at or before the cutoff, or the purge is `conflict` (`purge_not_due`) — a restore
- * that landed between the sweep's selection and this turn wins.
+ * `purge` is set only by the host's own purge sweep (`InvokeOptions` carries no such field, and an
+ * adapter refuses a call that tries to supply one). The CUTOFF is computed here, from `now` — the
+ * host's clock — and the entity's declared horizon, never taken from a caller: the entity must
+ * still be trashed at or before it, or the purge is `conflict` (`purge_not_due`). So a restore
+ * that landed between the sweep's selection and this turn wins, and nothing can purge early.
  */
 export async function refuseTrashedTarget(
   deps: TrashRefusalDeps,
   operation: string,
   target: OperationTarget | undefined,
   input: unknown,
-  purgeCutoff: string | undefined,
+  purge?: { readonly now: string },
 ): Promise<void> {
-  if (purgeCutoff !== undefined && !isPurgeInvoke(target, purgeCutoff)) {
-    throw substratError('internal', `${operation} is not a purge — only a \`trashed: 'purges'\` operation runs under a purge cutoff`);
+  if (purge && target?.trashed !== 'purges') {
+    throw substratError('internal', `${operation} is not a purge — only a \`trashed: 'purges'\` operation is run by the purge sweep`);
   }
   // An operation that opted in reaches the bin as it is; only a purge re-checks its cutoff.
-  if (!target || (target.trashed && purgeCutoff === undefined)) return;
+  if (!target || (target.trashed && !purge)) return;
   const plan = deps.plans.get(target.entity);
   if (!plan?.trashPermission) return;
   const id = (input as Record<string, unknown> | undefined)?.[target.idFrom];
   if (typeof id !== 'string') return;
   const row = readStateRow(deps.sql, plan, id);
-  if (purgeCutoff !== undefined) {
+  if (purge) {
+    if (plan.purgeAfterDays === undefined) {
+      throw substratError('internal', `${operation}: '${target.entity}' declares no purge horizon`);
+    }
+    const purgeCutoff = purgeCutoffOf(purge.now, plan.purgeAfterDays);
     if (!row) throw substratError('not_found', `${target.entity} not found: ${id}`);
     if (row.trashed_at === null || row.trashed_at > purgeCutoff) {
       throw substratError('conflict', `${operation}: ${target.entity}:${id} is no longer due for purge`, {
@@ -99,21 +105,30 @@ export async function refuseTrashedTarget(
   throw substratError('not_found', `${target.entity} not found: ${id}`);
 }
 
-/** Is this call the purge sweep's own invoke of an entity's `trashed: 'purges'` operation? */
-const isPurgeInvoke = (target: OperationTarget | undefined, purgeCutoff: string | undefined): boolean =>
-  purgeCutoff !== undefined && target?.trashed === 'purges';
-
 /**
  * The keys a system principal's checks refuse on this call (#119): its module's purge-only keys,
- * unless the call is the purge sweep's own invoke of the purge operation. `undefined` — nothing
- * withheld — for any other subject, and for a module with no purge-only key.
+ * unless the call is the host's own purge sweep invoking the purge operation. `undefined` —
+ * nothing withheld — for any other subject, and for a module with no purge-only key.
  */
 export function withheldKeysFor(
   purgeOnlyKeys: ReadonlySet<string> | undefined,
   target: OperationTarget | undefined,
-  purgeCutoff: string | undefined,
+  purging: boolean,
 ): ReadonlySet<string> | undefined {
-  return purgeOnlyKeys && !isPurgeInvoke(target, purgeCutoff) ? purgeOnlyKeys : undefined;
+  return purgeOnlyKeys && !(purging && target?.trashed === 'purges') ? purgeOnlyKeys : undefined;
+}
+
+/**
+ * Refuse an invoke that tries to supply a purge from outside (#119). Purge authority comes only from
+ * the host's own sweep, through a path no caller can construct; an options object carrying the
+ * field is somebody trying, and is told so rather than silently ignored.
+ */
+export function assertNoCallerPurge(options: object | undefined): void {
+  if (options && 'purgeCutoff' in options) {
+    throw substratError('validation_failed', 'purgeCutoff is not an invoke option — only the platform\'s purge sweep purges', {
+      errors: [{ path: 'purgeCutoff', message: 'not an invoke option' }],
+    });
+  }
 }
 
 /** The latest trash instant still due for purge at `now` — `now` minus the horizon. */

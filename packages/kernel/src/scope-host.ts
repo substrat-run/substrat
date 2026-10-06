@@ -168,7 +168,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
-import { substratError, type EntityStateName, type OperationTarget } from '@substrat-run/contracts';
+import { substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { SealedSecret } from './secret-box.js';
@@ -863,19 +863,6 @@ export interface InvokeOptions {
    * idempotent replay. Absent from a host that predates it — read that as "not reported".
    */
   readonly onExecutorOutcomes?: (outcomes: readonly ExecutorOutcome[]) => void;
-  /**
-   * PLATFORM-INTERNAL (#119): this call is a purge horizon's sweep running the entity's
-   * `trashed: 'purges'` operation, and this is the cutoff — the latest `_substrat_trashed_at`
-   * still due. The host re-reads the entity inside the operation's transaction and refuses
-   * (`conflict`, reason `purge_not_due`) unless it is still trashed at or before it, so an
-   * entity restored between the sweep's selection and its turn is never purged.
-   *
-   * It only ever narrows what a call may do. It is also the one condition under which the
-   * module's system principal may use a key it holds ONLY for its purge schedules: anywhere
-   * else that key is withheld from the system principal's checks, so the grant seated for the
-   * purge cannot run any other operation.
-   */
-  readonly purgeCutoff?: string;
 }
 
 /** How many of an invocation's own events `onEmitted` names (#1746). `total` is uncapped. */

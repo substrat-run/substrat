@@ -2438,6 +2438,8 @@ export function defineScopeDO(
        * instance may be rewound storage the gate never saw. The reply carries `systemDoor.honoured`.
        */
       systemDoorInstance?: string,
+      /** #119: the host's own purge sweep — a coordinator-only parameter, never an `InvokeOptions` field. */
+      purge?: boolean,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -2479,6 +2481,7 @@ export function defineScopeDO(
             capabilitySession,
             verticalCaller,
             systemDoorInstance,
+            purge,
           );
         } catch (err) {
           if (err instanceof SystemDoorMovedError) return { result: undefined, platformRequests: 0, ...SYSTEM_DOOR_MOVED };
@@ -2500,6 +2503,7 @@ export function defineScopeDO(
           capabilitySession,
           verticalCaller,
           systemDoorInstance,
+          purge,
         );
       } catch (err) {
         // #1834: the pin missed — an answer, never a failure an operation could have produced.
@@ -2530,6 +2534,8 @@ export function defineScopeDO(
       verticalCaller?: VerticalCaller,
       /** #1834: the instance the system door's gate read. See `invoke` above. */
       systemDoorInstance?: string,
+      /** #119: the host's own purge sweep — a coordinator-only parameter, never an `InvokeOptions` field. */
+      purge?: boolean,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -2607,6 +2613,8 @@ export function defineScopeDO(
       // declaration. Outside the queue and outside the transaction: a malformed
       // call takes no turn and opens nothing. Guards read the parsed input too,
       // so a K-17 pre-condition sees what the handler will.
+      // #119: purge authority is never an option a caller supplies.
+      assertNoCallerPurge(invokeOptions);
       const declaredInput = this.operationInput.get(operation);
       const parsed = declaredInput ? declaredInput.parse(input) : input;
       // #129. Refused rather than ignored, for the reason the coordinator refuses an
@@ -2745,8 +2753,10 @@ export function defineScopeDO(
           // #119: a module's purge-only keys are withheld from its system principal on every
           // call but the purge sweep's own invoke of the purge operation.
           const target = this.operationTarget.get(operation);
+          // #119: purge authority is the system door's, through the sweep's own parameter only.
+          const purging = purge === true && systemDoor !== undefined;
           const withheld = systemDoor
-            ? withheldKeysFor(this.purgeOnlyKeys.get(systemDoor.moduleId), target, invokeOptions?.purgeCutoff)
+            ? withheldKeysFor(this.purgeOnlyKeys.get(systemDoor.moduleId), target, purging)
             : undefined;
           await this.revision.transaction(async () => {
             const ctx = this.operationContext(
@@ -2801,7 +2811,7 @@ export function defineScopeDO(
               operation,
               target,
               parsed,
-              invokeOptions?.purgeCutoff,
+              purging ? { now: new Date().toISOString() } : undefined,
             );
             await this.runGuards(operation, ctx, parsed);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);

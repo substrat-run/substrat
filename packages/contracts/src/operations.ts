@@ -703,7 +703,8 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * - `'admits'` — the operation works on a trashed entity too: the restore, a read of the bin.
    * - `'purges'` — the operation is the entity's PERMANENT delete. It admits a trashed entity,
    *   and it is the one a declared `trash.purgeAfterDays` horizon runs (`purgeSchedulesOf`).
-   *   One per entity.
+   *   One per entity, and its input is the id and NOTHING else — not even an optional field, so a
+   *   purge can only ever reach the entity it was invoked for.
    *
    * Only legal where the host can see the entity: a leading `permission: { entity, idFrom }`
    * naming an entity that declares `trash`. Anywhere else it is a compile error, because there

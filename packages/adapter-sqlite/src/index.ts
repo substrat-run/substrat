@@ -1578,6 +1578,12 @@ const admitByDelivery = (
 /** One grant tuple as `connectionGrantsInScope` reads it — either tuple store, same shape. */
 type TupleReadRow = { subject: string; relation: string; expires_at: string | null };
 
+/**
+ * #119: the mark this host's own purge sweep puts on its invokes. Module-private and unregistered,
+ * so nothing outside this file can construct it: purge authority is never a caller's option.
+ */
+const PURGE_SWEEP = Symbol('purge-sweep');
+
 export class SqliteScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
   /**
@@ -4789,7 +4795,7 @@ export class SqliteScopeHost implements ScopeHost {
       purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, nowIso),
     );
     return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
-      await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid(), purgeCutoff: due.cutoff });
+      await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid(), [PURGE_SWEEP]: true } as InvokeOptions);
     });
   }
 
@@ -4833,6 +4839,14 @@ export class SqliteScopeHost implements ScopeHost {
         invokeOptions?: InvokeOptions,
       ): Promise<O> => {
         const handler = operations.get(operation);
+        // #119: purge authority comes only from this host's own sweep (`PURGE_SWEEP`), a key no
+        // caller can construct; an options object naming a cutoff is refused outright.
+        try {
+          assertNoCallerPurge(invokeOptions);
+        } catch (err) {
+          return Promise.reject(err);
+        }
+        const purge = (invokeOptions as { [PURGE_SWEEP]?: true } | undefined)?.[PURGE_SWEEP] === true;
         // `not_found`, not a bare throw (#113) — the same code `adapter-cloudflare`
         // gives it, so a demo and a hosted vertical answer 404 for the same reason.
         if (!handler)
@@ -4962,9 +4976,11 @@ export class SqliteScopeHost implements ScopeHost {
           // #119: the keys the module's system principal holds only for its purge schedules are
           // withheld from every call but the purge sweep's own invoke of the purge operation.
           const target = this.operationTarget.get(operation);
+          // Through the system door only: the sweep's mark on any other subject's call means nothing.
+          const purging = purge && subject.kind === 'system';
           const withheld =
             subject.kind === 'system'
-              ? withheldKeysFor(this.modules.get(subject.id)?.purgeOnlyKeys, target, invokeOptions?.purgeCutoff)
+              ? withheldKeysFor(this.modules.get(subject.id)?.purgeOnlyKeys, target, purging)
               : undefined;
           const ctx = this.operationContext(
             rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld,
@@ -5046,7 +5062,7 @@ export class SqliteScopeHost implements ScopeHost {
               operation,
               target,
               parsed,
-              invokeOptions?.purgeCutoff,
+              purging ? { now: this.clock() } : undefined,
             );
             // Manifest guards (K-17): pre-conditions, inside the operation's own
             // transaction, before the handler. A throw here blocks the operation

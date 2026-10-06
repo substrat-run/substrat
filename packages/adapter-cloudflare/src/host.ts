@@ -438,6 +438,7 @@ import {
   asyncInvocationId,
   asyncLinePass,
   PURGE_BATCH,
+  assertNoCallerPurge,
   purgeReportOf,
   registerTrashTargets,
   runPurgePass,
@@ -1162,6 +1163,8 @@ interface ScopeStubRpc {
      * instance (`SYSTEM_DOOR_MOVED`), and acknowledges with `systemDoor`.
      */
     systemDoorInstance?: string,
+    /** #119: the coordinator's own purge sweep — never an `InvokeOptions` field (see the DO). */
+    purge?: boolean,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -2380,6 +2383,12 @@ export interface SwitchHoldClaim {
   doomed: string | null;
   heldAt: string;
 }
+
+/**
+ * #119: the mark this host's own purge sweep puts on its invokes. Module-private and unregistered,
+ * so nothing outside this file can construct it: purge authority is never a caller's option.
+ */
+const PURGE_SWEEP = Symbol('purge-sweep');
 
 export class CloudflareScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
@@ -5126,7 +5135,7 @@ export class CloudflareScopeHost implements ScopeHost {
           // call and transaction, under the cutoff the scope re-checks inside it.
           const due = await stub.purgeDue(schedule.operation, schedule.purge.entityType, new Date(now).toISOString(), PURGE_BATCH);
           const pass = await runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
-            await scope.invoke(schedule.operation, { [due.idFrom]: entityId }, { invocationId: ulid(), purgeCutoff: due.cutoff });
+            await scope.invoke(schedule.operation, { [due.idFrom]: entityId }, { invocationId: ulid(), [PURGE_SWEEP]: true } as InvokeOptions);
           });
           stillDue = pass.full;
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
@@ -5248,6 +5257,10 @@ export class CloudflareScopeHost implements ScopeHost {
         input?: I,
         invokeOptions?: InvokeOptions,
       ): Promise<O> => {
+        // #119: purge authority comes only from this host's own sweep (`PURGE_SWEEP`, below), a
+        // key no caller can construct; an options object naming a cutoff is refused outright.
+        assertNoCallerPurge(invokeOptions);
+        const purge = (invokeOptions as { [PURGE_SWEEP]?: true } | undefined)?.[PURGE_SWEEP] === true;
         // Entitlement gate (§4.3): a module loads for a tenant only if the tenant holds its
         // SKU flag. The COORDINATOR gates the console-managed path against the shared CP
         // (`cp.tenantHoldsEntitlement`); for a hosted/CP-less scope that call is a trusting
@@ -5301,6 +5314,7 @@ export class CloudflareScopeHost implements ScopeHost {
             capabilitySession,
             verticalCaller,
             systemDoorInstance,
+            purge,
           );
         // #1834: through the door (a module's, or #2029 a peer's), pinned to the instance its gate
         // read. A missed pin comes back as an answer, which `through` re-gates on.

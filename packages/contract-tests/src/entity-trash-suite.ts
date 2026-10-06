@@ -71,7 +71,6 @@ export function entityTrashContractSuite(
         },
         (e: unknown) => e,
       );
-    const reasonOf = (e: unknown) => (e as { extensions?: { reason?: unknown } }).extensions?.reason;
 
     /** A new primary scope — the schedule's cadence row starts empty, and the system grant is seated. */
     const freshScope = async (extra: Record<string, unknown> = {}): Promise<ScopeId> => {
@@ -210,7 +209,6 @@ export function entityTrashContractSuite(
         const thingId = ulid();
         const e = await errOf(as.alice.invoke('trash/link-thing', { boxId, thingId }));
         expect(errorCodeOf(e)).toBe('not_found');
-        expect((e as Error).message).toContain('trash');
         await as.alice.invoke('trash/restore-box', { boxId });
         expect(((await as.alice.invoke('trash/box-exists', { boxId })) as { things: number }).things).toBe(0);
       });
@@ -290,33 +288,33 @@ export function entityTrashContractSuite(
         expect(await (await stub(alice, s)).invoke('trash/peek-box', { boxId: boom })).toEqual({ state: 'trashed' });
       });
 
-      it('re-checks inside the transaction: a restored or not-yet-due entity is `purge_not_due`, a gone one `not_found`', async () => {
+      it('a restored entity is not purged, and the next pass leaves it alone', async () => {
         const s = await freshScope();
-        const system = await host.getSystemScope(MODULE, t, s);
-        const cutoff = new Date(Date.now() - TBOX_PURGE_DAYS * DAY).toISOString();
         const restored = await dueBox(s);
         await (await stub(alice, s)).invoke('trash/restore-box', { boxId: restored });
-        const notYet = await binnedBox(s);
-        for (const boxId of [restored, notYet]) {
-          const e = await errOf(system.invoke('trash/delete-box', { boxId }, { purgeCutoff: cutoff }));
-          expect([errorCodeOf(e), reasonOf(e)]).toEqual(['conflict', 'purge_not_due']);
-          expect(await exists(s, boxId)).toBe(true);
-        }
-        expect(errorCodeOf(await errOf(system.invoke('trash/delete-box', { boxId: ulid() }, { purgeCutoff: cutoff })))).toBe(
-          'not_found',
-        );
-        // Twin: a due one is purged through the very same call.
-        const due = await dueBox(s);
-        await system.invoke('trash/delete-box', { boxId: due }, { purgeCutoff: cutoff });
-        expect(await exists(s, due)).toBe(false);
+        await sweep(s);
+        expect(await exists(s, restored)).toBe(true);
+        expect(await (await stub(alice, s)).invoke('trash/peek-box', { boxId: restored })).toEqual({ state: 'active' });
       });
 
-      it('a purge cutoff on any operation but the purge is refused', async () => {
+      it('purge authority is never a caller\'s option: an invoke naming a cutoff is refused on every door', async () => {
         const s = await freshScope();
         const system = await host.getSystemScope(MODULE, t, s);
-        const id = await dueBox(s);
-        const e = await errOf(system.invoke('trash/other-delete', { boxId: id }, { purgeCutoff: new Date().toISOString() }));
-        expect(errorCodeOf(e)).toBe('internal');
+        // A box binned a moment ago: a cutoff in the future would make it "due" if one were honoured.
+        const recent = await binnedBox(s);
+        const future = new Date(Date.now() + 365 * DAY).toISOString();
+        for (const [who, call] of [
+          ['the system principal', system.invoke('trash/delete-box', { boxId: recent }, { purgeCutoff: future } as never)],
+          ['a person holding the key', (await stub(alice, s)).invoke('trash/other-delete', { boxId: recent }, { purgeCutoff: future } as never)],
+        ] as const) {
+          expect(errorCodeOf(await errOf(call)), who).toBe('validation_failed');
+        }
+        // Outside the sweep the system principal holds no purge authority at all, cutoff or not.
+        expect(errorCodeOf(await errOf(system.invoke('trash/delete-box', { boxId: recent })))).toBe('permission_denied');
+        expect(await exists(s, recent)).toBe(true);
+        // Twin: the sweep — the one path that may purge — leaves it too, because it is not due.
+        await sweep(s);
+        expect(await exists(s, recent)).toBe(true);
       });
 
       it('the purge grant runs ONLY the purge: the system principal cannot use its key anywhere else', async () => {
