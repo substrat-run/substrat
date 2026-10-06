@@ -447,11 +447,11 @@ export {
   moduleTableNames,
   recordOwnershipSteps,
   runMigrationStatements,
-  splitSqlStatements,
   tableChangesOf,
   tableStatements,
 } from './table-ownership.js';
 export type { OwnerStore, TableChange, TableStatement, TableStep } from './table-ownership.js';
+export { splitSqlStatements } from './sql-statements.js';
 export type {
   ModuleErasureCounts,
   ModuleErasurePlan,

@@ -29,6 +29,7 @@
  */
 import { namesSpineTable, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
 import type { ScopedSql } from './scope-host.js';
+import { splitSqlStatements } from './sql-statements.js';
 
 /** The ledger's name — also what an authored migration may never name. */
 export const TABLE_OWNERS = '_substrat_table_owners';
@@ -91,11 +92,8 @@ export type TableStatement =
 /** The table DDL in one migration's text, in statement order. TEMP tables are nobody's and are left out. */
 export function tableStatements(sqlText: string): TableStatement[] {
   const out: TableStatement[] = [];
-  const statements: SqlToken[][] = [[]];
-  for (const token of tokenizeSql(sqlText, { punctuation: true })) {
-    if (token.punct && token.text === ';') statements.push([]);
-    else if (!token.punct) statements[statements.length - 1]!.push(token);
-  }
+  // The same statement boundaries the adapters execute on, so the replay reads what ran.
+  const statements = splitSqlStatements(sqlText).map((text) => tokenizeSql(text).filter((t) => !t.punct));
   for (const st of statements) {
     const w = (i: number): string => (st[i] && !st[i]!.quoted ? st[i]!.text.toLowerCase() : '');
     if (w(0) === 'create') {
@@ -336,67 +334,4 @@ export function assertTablesOwned(
         'created by its migrations — an erasure touches only the tables a module owns. Nothing was erased.',
     );
   }
-}
-
-/**
- * Split SQL into top-level statements on `;`, keeping a `CREATE TRIGGER … END;` body whole and
- * skipping comments and string literals. Both adapters run an authored migration through this
- * one statement at a time — the Durable Object because its `exec` takes one statement, and both
- * because the ownership record diffs the schema around each statement.
- */
-const IS_CREATE_TRIGGER = /^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
-const ENDS_WITH_END = /\bEND\s*$/i;
-
-export function splitSqlStatements(sql: string): string[] {
-  const out: string[] = [];
-  let cur = '';
-  const n = sql.length;
-  let i = 0;
-  while (i < n) {
-    const c = sql[i];
-    const c2 = sql[i + 1];
-    if (c === '-' && c2 === '-') {
-      while (i < n && sql[i] !== '\n') i += 1;
-      continue;
-    }
-    if (c === '/' && c2 === '*') {
-      i += 2;
-      while (i < n && !(sql[i] === '*' && sql[i + 1] === '/')) i += 1;
-      i += 2;
-      continue;
-    }
-    if (c === "'") {
-      cur += c;
-      i += 1;
-      while (i < n) {
-        cur += sql[i];
-        if (sql[i] === "'") {
-          if (sql[i + 1] === "'") {
-            cur += sql[i + 1];
-            i += 2;
-            continue;
-          }
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
-      continue;
-    }
-    if (c === ';') {
-      if (IS_CREATE_TRIGGER.test(cur) && !ENDS_WITH_END.test(cur)) {
-        cur += c;
-        i += 1;
-        continue;
-      }
-      if (cur.trim()) out.push(cur.trim());
-      cur = '';
-      i += 1;
-      continue;
-    }
-    cur += c;
-    i += 1;
-  }
-  if (cur.trim()) out.push(cur.trim());
-  return out;
 }
