@@ -58,8 +58,8 @@ import {
   mcpEndpointPath,
   mcpResourceOf,
   errorCodeOf,
-  withoutRowCursors,
 } from '@substrat-run/contracts';
+import { externalInput, externalResult } from './wire.js';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
@@ -380,8 +380,8 @@ const rpcError = (id: Id, code: number, message: string, data?: unknown) => ({
  * asks for; both carry the same value.
  */
 function toolResult(result: unknown) {
-  // #2073: a page's `rowCursors` are an in-process answer, never a model's to read.
-  const value = withoutRowCursors(result);
+  // #2073: the egress every transport shares (`wire.ts`).
+  const value = externalResult(result);
   const structured = value !== null && typeof value === 'object' && !Array.isArray(value);
   return {
     content: [{ type: 'text', text: JSON.stringify(value ?? null, null, 2) }],
@@ -540,7 +540,7 @@ export function mountMcp(
       delete record.outputFields;
     }
     try {
-      const result = await stub.invoke(tool.operation, payloadOf(tool, args), {
+      const result = await stub.invoke(tool.operation, externalInput(payloadOf(tool, args)), {
         // #1237: the same stamp the HTTP mount gives an operation's events.
         ...(invocationId === undefined ? {} : { invocationId }),
         ...(record

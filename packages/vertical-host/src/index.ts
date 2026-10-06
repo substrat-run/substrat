@@ -26,6 +26,7 @@ import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf } from './errors.js';
+import { externalInput, externalResult } from './wire.js';
 import {
   type CarriedAway,
   type KeptCopy,
@@ -1465,9 +1466,10 @@ export function mountPlatformSurface<Env extends object>(
     const body = connectorInvokeBody.parse(await c.req.json());
     const result = await deps
       .hostFor(c.env)
-      .connectorInvokeLocal(body.connectionId, body.tenantId, body.scopeId, body.operation, body.input);
+      .connectorInvokeLocal(body.connectionId, body.tenantId, body.scopeId, body.operation, externalInput(body.input));
     // Enveloped: an operation may legitimately return undefined, which bare JSON can't say.
-    return c.json({ result: result ?? null });
+    // #2073: through the egress every transport shares (`wire.ts`).
+    return c.json({ result: externalResult(result ?? null) });
   });
 
   // The bytes leg (#574): multipart, because provider artifacts (a sealed signed PDF)
@@ -1627,10 +1629,11 @@ export function mountPlatformSurface<Env extends object>(
       body.tenantId,
       body.scopeId,
       body.operation,
-      body.input,
+      externalInput(body.input),
       body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : undefined,
     );
-    return c.json({ result: result ?? null });
+    // #2073: through the egress every transport shares (`wire.ts`).
+    return c.json({ result: externalResult(result ?? null) });
   });
 
   // The peer kill switch's far end (#1706), for a scope served HERE — the mirror of
@@ -1661,7 +1664,7 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.exportedEventsLocal) {
       return c.json({ error: 'this deployment cannot export events to other verticals (#1705) — redeploy it' }, 501);
     }
-    return c.json(await host.exportedEventsLocal(body.tenantId, body.scopeId, body.input));
+    return c.json(externalResult(await host.exportedEventsLocal(body.tenantId, body.scopeId, body.input)));
   });
   app.get('/internal/import-state', async (c) => {
     const tenantId = tenantIdOf.parse(c.req.query('tenantId'));
