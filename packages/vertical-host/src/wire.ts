@@ -23,6 +23,7 @@
  * platform does not read a result it was not asked to.
  */
 import type { Context } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { serializeWithoutRowCursors, withoutRowCursors } from '@substrat-run/contracts';
 
 /** What an external caller sent, without the one parameter only an internal walk may set. */
@@ -40,8 +41,8 @@ export function externalInput<I>(input: I): I {
  * `serializeWithoutRowCursors`: scrubbed at serialisation, so whatever shape reaches the wire is
  * the shape scrubbed).
  */
-export function externalJson(c: Context, value: unknown, status?: Parameters<Context['json']>[1]): Response {
-  return c.body((serializeWithoutRowCursors(value) ?? null) as string, status as never, {
+export function externalJson(c: Context, value: unknown, status?: ContentfulStatusCode): Response {
+  return c.body((serializeWithoutRowCursors(value) ?? null) as string, status, {
     'Content-Type': 'application/json',
   });
 }
