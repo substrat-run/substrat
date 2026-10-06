@@ -518,7 +518,10 @@ the control plane's `openTenantStore` uses the D1 HTTP API (out-of-band migratio
   Re-numbering is not a recovery — the scope would still hold the other SQL under the old
   version. Two exceptions, both deliberate: a row from before the column has no digest and
   is **accepted and left NULL**, never backfilled (a backfill would write a value nobody
-  measured, and bless the one divergent row this exists to catch); and the kernel-derived
+  measured, and bless the one divergent row this exists to catch). That NULL is provably
+  legacy: a spine trigger refuses any new journal row without a digest, so an older writer
+  mid-rollout fails its migration loudly instead of recording one, and only a restore, which
+  loads a legacy dump's rows verbatim, lifts it around its row load. The kernel-derived
   DDL (`search/…`, `state/…`, `list/…`) is held to its *declaration*, which is its version,
   not to its digest — the kernel may respell the same declaration between releases, and
   holding those rows to a digest would fail every scope closed on that upgrade. Their
