@@ -5,6 +5,7 @@ import {
   eraseSubjectFromModules,
   moduleErasurePlan,
   SECURE_DELETE_MIN_SQLITE,
+  tablesCreatedBy,
   type ModuleRegistration,
   type ScopedSql,
 } from '../src/index.js';
@@ -22,7 +23,13 @@ const erasure = (mode: 'blank' | 'custom'): SubjectErasureDeclaration => ({
       : { entityType: 'rating', table: 'ratings', mode, fields: [{ name: 'comment', blank: null }] },
   ],
 });
-const registration = (declared?: SubjectErasureDeclaration, hook?: ModuleRegistration['onSubjectErased']): ModuleRegistration => ({
+/** The module's own DDL: it creates both tables its erasure names. */
+const OWN_DDL = 'CREATE TABLE notes (id TEXT PRIMARY KEY, author TEXT, body TEXT NOT NULL); CREATE TABLE ratings (note_id TEXT, comment TEXT);';
+const registration = (
+  declared?: SubjectErasureDeclaration,
+  hook?: ModuleRegistration['onSubjectErased'],
+  ddl = OWN_DDL,
+): ModuleRegistration => ({
   manifest: moduleManifest.parse({
     id: '@test/m',
     version: '1.0.0',
@@ -34,6 +41,7 @@ const registration = (declared?: SubjectErasureDeclaration, hook?: ModuleRegistr
     entitlementKey: 'm',
     ...(declared ? { erasure: declared } : {}),
   }),
+  migrations: [{ version: '0001', sql: ddl }],
   ...(hook ? { onSubjectErased: hook } : {}),
 });
 
@@ -53,6 +61,35 @@ describe('moduleErasurePlan (#2068)', () => {
 
   it('accepts a declared erasure with no hook', () => {
     expect(moduleErasurePlan(registration(erasure('blank')))?.declaration.entities[0]?.mode).toBe('blank');
+  });
+
+  it("refuses an erasure on a table its own migrations do not create — another module's", () => {
+    // `notes` is created by somebody else; this module's migration makes only `ratings`.
+    const ddl = 'CREATE TABLE ratings (note_id TEXT, comment TEXT);';
+    expect(() => moduleErasurePlan(registration(erasure('blank'), undefined, ddl))).toThrow(
+      /'notes', which its own migrations do not create/,
+    );
+    // A hook's whole reach is held to it too, not only the entities it claims.
+    expect(() => moduleErasurePlan(registration(erasure('custom'), () => undefined, ddl))).toThrow(/'notes'/);
+  });
+
+  it('does not hold an unreached entity to ownership — it writes nothing', () => {
+    const unreached: SubjectErasureDeclaration = {
+      tables: ['elsewhere'],
+      entities: [{ entityType: 'x', table: 'elsewhere', mode: 'unreached', fields: [{ name: 'memo', blank: null }] }],
+    };
+    expect(moduleErasurePlan(registration(unreached, undefined, ''))?.ownTables.size).toBe(0);
+  });
+});
+
+describe('tablesCreatedBy (#2068)', () => {
+  it('follows CREATE, RENAME and DROP across migrations, in order, and ignores TEMP and views', () => {
+    const owned = tablesCreatedBy([
+      { sql: 'CREATE TABLE IF NOT EXISTS "Notes" (id TEXT); CREATE TABLE main.ratings (x TEXT); CREATE TEMP TABLE scratch (x TEXT);' },
+      { sql: "CREATE VIEW v AS SELECT 1; CREATE VIRTUAL TABLE idx USING fts5(body); ALTER TABLE ratings RENAME TO scores;" },
+      { sql: 'ALTER TABLE notes RENAME COLUMN id TO note_id; DROP TABLE IF EXISTS idx; CREATE TABLE gone (x TEXT); DROP TABLE gone;' },
+    ]);
+    expect([...owned].sort()).toEqual(['notes', 'scores']);
   });
 });
 

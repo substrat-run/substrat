@@ -175,3 +175,32 @@ export const erasureOtherMod: ModuleRegistration = {
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE er_other (id TEXT PRIMARY KEY, secret TEXT);' }],
 };
+
+/**
+ * A module whose model claims a table its migrations never create — `er_other`, which belongs
+ * to `@test/erasure-other`. Registering it must be refused: its declared blank would otherwise
+ * run against another module's rows through the kernel's own handle.
+ */
+export const erasureMisdeclaredMod: ModuleRegistration = {
+  manifest: moduleManifest.parse({
+    id: '@test/erasure-misdeclared',
+    version: '1.0.0',
+    kernelContract: '^0.0.1',
+    permissions: [],
+    events: { emits: [], consumes: [] },
+    migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+    entitlementKey: 'erasure-misdeclared',
+    ...manifestEntities(
+      defineEntities({
+        stolen: {
+          table: 'er_other',
+          fields: z.object({ id: z.string(), secret: z.string().nullable() }),
+          erasable: ['secret'],
+          erasure: { subjects: ['id'] },
+        },
+      }),
+      {},
+    ),
+  }),
+  migrations: [{ version: '0001-init', sql: 'CREATE TABLE er_misdeclared_own (id TEXT PRIMARY KEY);' }],
+};

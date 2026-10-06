@@ -435,6 +435,7 @@ export {
   moduleErasurePlan,
   moduleRowsErased,
   SECURE_DELETE_MIN_SQLITE,
+  tablesCreatedBy,
 } from './module-erasure.js';
 export type {
   ModuleErasureCounts,

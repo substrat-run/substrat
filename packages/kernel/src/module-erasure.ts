@@ -37,6 +37,7 @@ import {
   substratError,
   subjectErasureDeclaration,
   tokenizeSql,
+  type SqlToken,
   type ErasedEntityCount,
   type ErasureHookCount,
   type SubjectErasureDeclaration,
@@ -71,6 +72,11 @@ export interface ModuleErasurePlan {
   readonly moduleId: string;
   readonly declaration: SubjectErasureDeclaration;
   readonly hook?: OnSubjectErased;
+  /**
+   * The tables this module's erasure may touch, lowercased: the declaration's, each one VERIFIED
+   * at registration to be created by the module's own migrations. The hook's whole reach.
+   */
+  readonly ownTables: ReadonlySet<string>;
 }
 
 /** What the module half of one erasure did — the receipt's three new lines. */
@@ -81,12 +87,74 @@ export interface ModuleErasureCounts {
 }
 
 /**
+ * The tables a module's own migrations create, lowercased — the ownership an erasure is held
+ * to (#2068). Read from the DDL the kernel itself applies for the module, so it is a fact about
+ * the module rather than a claim in its manifest: `CREATE [VIRTUAL] TABLE` adds a name,
+ * `ALTER TABLE … RENAME TO` moves it, `DROP TABLE` removes it, in migration order. A TEMP table
+ * is nobody's. Two modules cannot both create one table — the second migration would fail — so
+ * a name in this set belongs to this module and no other.
+ */
+export function tablesCreatedBy(migrations: readonly { readonly sql: string }[]): Set<string> {
+  const owned = new Set<string>();
+  const nameOf = (text: string): string | undefined => {
+    const parts = text.toLowerCase().split('.');
+    if (parts.length === 1) return parts[0];
+    return parts.length === 2 && parts[0] === 'main' ? parts[1] : undefined;
+  };
+  for (const migration of migrations) {
+    let words: SqlToken[] = [];
+    const statements: SqlToken[][] = [];
+    for (const token of tokenizeSql(migration.sql, { punctuation: true })) {
+      if (token.punct && token.text === ';') {
+        statements.push(words);
+        words = [];
+      } else if (!token.punct) {
+        words.push(token);
+      }
+    }
+    statements.push(words);
+    for (const st of statements) {
+      const w = (i: number): string => (st[i] && !st[i]!.quoted ? st[i]!.text.toLowerCase() : '');
+      let k = 1;
+      if (w(0) === 'create') {
+        const temp = w(k) === 'temp' || w(k) === 'temporary';
+        if (temp) k += 1;
+        if (w(k) === 'virtual') k += 1;
+        if (w(k) !== 'table') continue;
+        k += 1;
+        if (w(k) === 'if' && w(k + 1) === 'not' && w(k + 2) === 'exists') k += 3;
+        const name = st[k] && nameOf(st[k]!.text);
+        if (name && !temp) owned.add(name);
+      } else if (w(0) === 'alter' && w(1) === 'table') {
+        const from = st[2] && nameOf(st[2].text);
+        const rename = st.findIndex((t, i) => i > 2 && !t.quoted && t.text.toLowerCase() === 'rename');
+        if (from && rename > 0 && w(rename + 1) === 'to') {
+          const to = st[rename + 2] && nameOf(st[rename + 2]!.text);
+          if (owned.delete(from) && to) owned.add(to);
+        }
+      } else if (w(0) === 'drop' && w(1) === 'table') {
+        k = w(2) === 'if' && w(3) === 'exists' ? 4 : 2;
+        const name = st[k] && nameOf(st[k]!.text);
+        if (name) owned.delete(name);
+      }
+    }
+  }
+  return owned;
+}
+
+/**
  * The erasure plan for one registration, or undefined when it has nothing to erase. Throws,
- * at registration, for the two ways a module can claim an erasure it cannot deliver:
+ * at registration, for every way a module can claim an erasure it cannot deliver, or one that
+ * would reach past itself:
  *
  * - a hook with no `manifest.erasure` — the hook's reach IS that block's `tables`, and a hook
  *   with no reach declared is refused rather than handed the whole scope;
- * - an entity declared `custom` with no hook to reach it.
+ * - an entity declared `custom` with no hook to reach it;
+ * - an entity the erasure would write (`blank`, `delete`, `custom`) on a table the module's own
+ *   migrations do not create, and — when there is a hook — any table in its reach that they do
+ *   not create. The declaration is a claim; the migrations are what the kernel ran. A misdeclared
+ *   entity naming another module's table would otherwise have that table erased through the
+ *   kernel's own handle. An `unreached` entity writes nothing and is not held to it.
  */
 export function moduleErasurePlan(registration: ModuleRegistration): ModuleErasurePlan | undefined {
   const { manifest, onSubjectErased: hook } = registration;
@@ -110,7 +178,25 @@ export function moduleErasurePlan(registration: ModuleRegistration): ModuleErasu
         "`erasure: { mode: 'custom' }` but the module registers no onSubjectErased hook to reach them",
     );
   }
-  return { moduleId: manifest.id, declaration, ...(hook ? { hook } : {}) };
+  const created = tablesCreatedBy(registration.migrations ?? []);
+  const claimed = [
+    ...declaration.entities.filter((e) => e.mode !== 'unreached').map((e) => e.table),
+    ...(hook ? declaration.tables : []),
+  ];
+  const foreign = [...new Set(claimed.filter((t) => !created.has(t.toLowerCase())))];
+  if (foreign.length) {
+    throw new Error(
+      `${manifest.id}: its erasure names ${foreign.map((t) => `'${t}'`).join(', ')}, which its own migrations ` +
+        'do not create — an erasure reaches only the tables a module owns. Create the table in this ' +
+        "module's migrations, or leave the entity without an `erasure`",
+    );
+  }
+  return {
+    moduleId: manifest.id,
+    declaration,
+    ...(hook ? { hook } : {}),
+    ownTables: new Set(claimed.map((t) => t.toLowerCase())),
+  };
 }
 
 /** The statements a hook may run. Everything else — DDL, PRAGMA, ATTACH, VACUUM — is refused. */
@@ -301,7 +387,7 @@ export function eraseSubjectFromModules(input: {
   for (const plan of plans) {
     if (!plan.hook) continue;
     tables ??= scopeTables(sql);
-    const own = new Set(plan.declaration.tables.map((t) => t.toLowerCase()));
+    const own = plan.ownTables;
     const foreign = new Set(tables.filter((t) => !own.has(t)));
     let rows = 0;
     // `changes()` is the last WRITE's count, so a read run through `exec` would repeat the
@@ -331,7 +417,7 @@ export function eraseSubjectFromModules(input: {
       (returned as Promise<unknown>).then(undefined, () => undefined);
       throw substratError(
         'precondition_failed',
-        `${plan.moduleId}: onSubjectErased returned a promise — it must be synchronous, so it runs inside the erasure's one transaction`
+        `${plan.moduleId}: onSubjectErased returned a promise — it must be synchronous, so it runs inside the erasure's one transaction`,
       );
     }
     out.hookRows.push({ module: plan.moduleId, rows });

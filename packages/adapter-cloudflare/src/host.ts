@@ -443,7 +443,7 @@ import {
   type FindingPruneReport,
   memberAddedAudit,
 } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleRowsErased } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -3576,6 +3576,9 @@ export class CloudflareScopeHost implements ScopeHost {
     if (this.moduleIds.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    // #2068: the same refusal the ScopeDO applies at code time, here at registration, so a
+    // misdeclared erasure fails where it is registered on both hosts.
+    moduleErasurePlan(registration);
     const migrations = registration.migrations ?? [];
     const seen = new Set<string>();
     for (const m of migrations) {

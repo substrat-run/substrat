@@ -23,7 +23,7 @@ import {
 } from '@substrat-run/contracts';
 import { SECURE_DELETE_MIN_SQLITE, searchIndexPlans, ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { erasureMod, erasureModManifest, erasureOtherMod } from './erasure-module.js';
+import { erasureMisdeclaredMod, erasureMod, erasureModManifest, erasureOtherMod } from './erasure-module.js';
 
 /** Raw SQL on one scope's own database, past `ctx.sql` — reads the FTS shadow tables. */
 export type RawScopeQuery = (tenant: TenantId, scope: ScopeId, sql: string, params?: readonly unknown[]) => Promise<unknown[]>;
@@ -95,6 +95,12 @@ export function subjectErasureContractSuite(
 
     afterAll(async () => {
       await fixture.cleanup();
+    });
+
+    it("refuses, at registration, an erasure declared on a table the module's migrations do not create", () => {
+      // `er_other` is `@test/erasure-other`'s. Its declared blank would have run against that
+      // module's rows through the kernel's handle; the module is refused before it is recorded.
+      expect(() => host.registerModule(erasureMisdeclaredMod)).toThrow(/'er_other', which its own migrations do not create/);
     });
 
     it('blanks every declared erasable column on every row a subject column names, and only those', async () => {
