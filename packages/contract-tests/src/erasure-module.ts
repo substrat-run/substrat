@@ -90,7 +90,9 @@ const ERASURE_DDL = `
   CREATE TABLE er_ratings (note_id TEXT PRIMARY KEY, comment TEXT);
   CREATE TABLE er_loose (id TEXT PRIMARY KEY, memo TEXT);
   CREATE TABLE er_bombs (subject TEXT PRIMARY KEY, kind TEXT NOT NULL);
-  CREATE VIEW er_view AS SELECT id, memo FROM er_loose;
+  -- IF NOT EXISTS: the kit's wipe and restore paths replay this migration onto a store whose
+  -- tables were dropped and replayed, and a view is not a table they touch.
+  CREATE VIEW IF NOT EXISTS er_view AS SELECT id, memo FROM er_loose;
 `;
 
 /**
