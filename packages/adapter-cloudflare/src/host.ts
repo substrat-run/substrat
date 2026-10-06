@@ -449,7 +449,7 @@ import {
   memberAddedAudit,
   shapeTopUpBatch,
 } from '@substrat-run/kernel';
-import { attributedView } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -1669,7 +1669,7 @@ interface ScopeStubRpc {
    */
   redactSubject(
     subjectId: string,
-  ): Promise<SubjectRedactionCounts | LegacySubjectRedactionCounts | number>;
+  ): Promise<SubjectRedactionCounts | LegacySubjectRedactionCounts | number | { failure: WireFailure }>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrations(limit?: number): Promise<AppliedMigration[]>;
@@ -3603,6 +3603,9 @@ export class CloudflareScopeHost implements ScopeHost {
     if (this.moduleIds.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    // #2068: the same refusal the ScopeDO applies at code time, here at registration, so a
+    // misdeclared erasure fails where it is registered on both hosts.
+    moduleErasurePlan(registration);
     const migrations = registration.migrations ?? [];
     const seen = new Set<string>();
     for (const m of migrations) {
@@ -7941,6 +7944,12 @@ export class CloudflareScopeHost implements ScopeHost {
         // Both spine copies (#1600): the outbox row AND any platform intent this event was
         // routed into. One RPC, so a crash cannot land half of it.
         const redacted = await this.scopeStub(scopeId).redactSubject(subjectId);
+        // A refusal answered as data (#2068) — a module's `onSubjectErased` hook threw or reached
+        // past its own tables, and the DO rolled the whole redaction back. Rethrown with its code,
+        // before the key.
+        if (typeof redacted === 'object' && 'failure' in redacted && redacted.failure) {
+          throw fromWireFailure(redacted.failure);
+        }
         // An OLD ScopeDO answers with a bare number — it redacted the outbox and never
         // looked at the intent journal. Refused here, BEFORE the key is destroyed, and
         // that order is the whole point: the key is the irreversible half, so proceeding
@@ -7984,12 +7993,25 @@ export class CloudflareScopeHost implements ScopeHost {
               `leaving their data in those rows. Redeploy the vertical and re-run.`,
           );
         }
+        // A DO from before the module half (#2068): it redacted the spine and never ran a
+        // module's declared erasure or its `onSubjectErased` hook. Refused before the key, for
+        // the reason above — its reply read as "no module rows" would receipt an erasure that
+        // left the person in the vertical's own tables, with the key already gone.
+        if (!('vertical' in redacted) || !isModuleErasureCounts(redacted.vertical)) {
+          throw substratError(
+            'unavailable',
+            `scope ${scopeId} runs a ScopeDO from before #2068, whose redaction does not reach a module's ` +
+              `own tables — erasing now would destroy the subject key while leaving their data in the ` +
+              `vertical's rows. Redeploy the vertical and re-run.`,
+          );
+        }
         const {
           events: eventsRedacted,
           intents: intentsRedacted,
           jobRuns: jobRunsRedacted,
           idempotencyResults,
           intentIds,
+          vertical,
         } = redacted;
         // The directory's failure text (#1632) — a drain failure quoting one of those intents,
         // an issue's exemplar, a sweep record's error. Still before the key.
@@ -8001,6 +8023,7 @@ export class CloudflareScopeHost implements ScopeHost {
           eventsRedacted,
           intentsRedacted,
           jobRunsRedacted,
+          ...vertical,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -8015,7 +8038,7 @@ export class CloudflareScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          eventsRedacted + intentsRedacted + jobRunsRedacted + idempotencyResults,
+          eventsRedacted + intentsRedacted + jobRunsRedacted + idempotencyResults + moduleRowsErased(vertical),
         );
         return receipt;
       },

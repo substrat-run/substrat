@@ -173,6 +173,7 @@ import { permissionKey, substratError, type EntityStateName } from '@substrat-ru
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { SealedSecret } from './secret-box.js';
+import type { OnSubjectErased } from './module-erasure.js';
 import type {
   SystemSwitchReassert,
   SystemSwitchReassertOptions,
@@ -1842,6 +1843,15 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * contribute the same name.
    */
   predicates?: Record<string, GuardPredicate>;
+  /**
+   * This module's own step in a subject erasure (#2068), for the rows its declared
+   * `erasure: { subjects }` cannot reach — a link the row does not hold itself. Run by
+   * `shredSubject` inside the erasure's one transaction, after the declared entities and
+   * before the key is destroyed; a throw refuses the whole erasure and rolls it back.
+   * Synchronous, idempotent, and handed a `sql` that reaches the module's own tables only
+   * (`module-erasure.ts`). Requires `manifest.erasure`, whose `tables` is that reach.
+   */
+  onSubjectErased?: OnSubjectErased;
 }
 
 /**

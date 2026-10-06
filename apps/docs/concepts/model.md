@@ -116,6 +116,50 @@ to disagree.
 kernel accumulates permitted parent types into a set, so an entity legitimately has more
 than one.
 
+### Erasure: whose rows these are {#erasure}
+
+`erasable` names the fields an erasure must reach, and keeps them off every event. `erasure`
+says whose rows they are, which is what lets a staff-run subject erasure reach the table at
+all:
+
+```ts
+customer: {
+  table: 'acme_customers',
+  fields: z.object({ id: z.string(), email: z.string().nullable(), name: z.string() }),
+  erasable: ['email', 'name'],
+  erasure: { subjects: ['id'] },               // blank the erasable fields, keep the row
+},
+signup: {
+  table: 'acme_signups',
+  fields: z.object({ id: z.string(), kind: z.string(), email: z.string() }),
+  key: ['kind', 'email'],
+  erasable: ['email'],
+  erasure: { subjects: ['id'], mode: 'delete' }, // the row IS the person's data
+},
+rating: {
+  table: 'acme_ratings',
+  fields: z.object({ order_id: z.string(), comment: z.string().nullable() }),
+  primaryKey: ['order_id'],
+  erasable: ['comment'],
+  erasure: { mode: 'custom' },                  // reached by the module's own hook
+},
+```
+
+`subjects` names the columns whose value is a data subject's id: a customer's, or a staff
+member's principal. A row is theirs when any of those columns equals the id being erased. A
+blank writes NULL into a field that admits it and `''` into one that only admits that, and the
+model refuses a blank that could not be written, or that would collide on a `key`. Declare
+`mode: 'delete'` for those.
+
+`mode: 'custom'` is for a link the row does not hold. The module registers
+`onSubjectErased(ctx, { subjectId })` beside its operations. It is synchronous, it runs in
+the same transaction as the rest of the erasure, and its `ctx.sql` reaches only the module's
+own tables. If it throws, nothing is erased and the erasure can simply be run again, so it must
+be safe to run twice.
+
+An entity with `erasable` fields and no `erasure` is not reached by an erasure. `pnpm lint:model`
+warns on it, and every erasure receipt names it.
+
 ## Operations
 
 ```ts
@@ -357,7 +401,7 @@ behind a declared filter is the part contracts could not have built.
 
 Every one of these is a compile error, not a lint:
 
-- `parents`, `primaryKey`, `key`, `erasable` and `outsideText` name fields and entities that exist
+- `parents`, `primaryKey`, `key`, `erasable`, `outsideText` and `erasure.subjects` name fields and entities that exist
 - entity-pointing positions name a **pointable** entity — one identified by a single column
 - `permission` names a **declared** key — a typo becomes a *"Did you mean"* suggestion
 - an operation carries `permission` **or** `narrows: { reason }` — never both, never neither

@@ -4,6 +4,7 @@ import { eventType } from './events.js';
 import { peerSpec } from './peer.js';
 import { isKernelNamespace } from './object-ref.js';
 import { entityStateDeclaration } from './entity-state.js';
+import { subjectErasureDeclaration } from './subject-erasure.js';
 
 // The manifest is what makes a module self-describing — to agents now, to
 // strangers buying it later (§5.6 of the plan, §7.1 of the design doc).
@@ -484,6 +485,11 @@ export const moduleManifest = z.object({
   // declared key. Same authoring rule as `searchables`: `table`/`idColumn` come from the entity
   // registry via `manifestEntities()`. Optional + additive (D-28).
   entityStates: z.array(entityStateDeclaration.extend({ entityType: declaredEntityType })).optional(),
+  // #2068: how a subject erasure reaches this module's own tables, derived from each entity's
+  // `erasable` + `erasure` by `manifestEntities()`. The kernel blanks or deletes the declared
+  // rows inside `shredSubject`, runs the module's `onSubjectErased` hook within `tables`, and
+  // names every `unreached` entity on the receipt. Optional + additive (D-28).
+  erasure: subjectErasureDeclaration.optional(),
   // UI contributions, composed into the vertical's app at BUILD time by the
   // shell (design doc §7.4, K-15). Component values are module-relative import
   // paths. All contributions are permission-keyed; the shell renders them

@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-106 decisions · 61 plan · 45 kernel
+107 decisions · 61 plan · 46 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -94,7 +94,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-36](decisions/K-036-kv-s-disqualifier-is-missing-data-residency-not-a-regional-s.md) | 2026-07-31 | kernel | KV's disqualifier is missing data-residency, not a Regional-Services binding ban — and… |  |
 | [D-44](decisions/D-044-native-static-assets-are-an-additive-allow-to-the-hosted-ver.md) | 2026-08-06 | plan | Native static assets are an additive allow to the hosted-vertical sandbox — the bytes are… | #340, #286 |
 | [D-45](decisions/D-045-subject-erasure-is-scoped-to-the-stores-that-exist-the-spine.md) | 2026-08-08 | plan | Subject erasure is scoped to the stores that exist: the spine is redacted,… <br>*restated as K-37* | #37, #493, #40, #36 |
-| [K-37](decisions/K-037-subject-erasure-splits-by-store-tier-1-is-redacted-platform-.md) | 2026-08-08 | kernel | Subject erasure splits by store: Tier 1 is redacted, platform-retained copies are… <br>*restated as D-45* | #37, #493, #542, #543, #545 |
+| [K-37](decisions/K-037-subject-erasure-splits-by-store-tier-1-is-redacted-platform-.md) | 2026-08-08 | kernel | Subject erasure splits by store: Tier 1 is redacted, platform-retained copies are… <br>*restated as D-45* <br>*amended by K-46* | #37, #493, #542, #543, #545 |
 | [D-46](decisions/D-046-a-hosted-vertical-s-outbound-egress-is-a-declared-per-versio.md) | 2026-08-11 | plan | A hosted vertical's outbound egress is a declared per-version allowlist, enforced at the… <br>*amended by D-58* | #303, #442 |
 | [D-48](decisions/D-048-the-builder-studio-is-built-as-an-unlisted-internal-tool-fir.md) | 2026-08-15 | plan | The builder studio is built as an unlisted internal tool first |  |
 | [D-49](decisions/D-049-the-studio-s-local-and-hosted-modes-are-one-product-behind-a.md) | 2026-08-15 | plan | The studio's local and hosted modes are one product behind a `Workspace` interface |  |
@@ -118,3 +118,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-43](decisions/K-043-the-kernel-indexes-attachment-text-it-does-not-parse-file-fo.md) | 2026-10-02 | kernel | The kernel indexes attachment text; it does not parse file formats | #1575, #1976 |
 | [K-44](decisions/K-044-a-paged-read-is-served-in-its-declared-order-and-its-cursor.md) | 2026-10-04 | kernel | A paged read is served in its declared order, and its cursor names the walk that minted it <br>*awaiting ratification* <br>*amends K-41* | #2001 |
 | [K-45](decisions/K-045-archive-and-trash-are-two-kernel-gated-states-on-the-entity.md) | 2026-10-05 | kernel | Archive and trash are two kernel-gated states on the entity's own row, distinct from erasure and tenant deletion <br>*awaiting ratification* <br>*amends K-41* | #119 |
+| [K-46](decisions/K-046-subject-erasure-reaches-a-module-s-own-tables-by-declaration-or.md) | 2026-10-06 | kernel | Subject erasure reaches a module's own tables by declaration or by a narrow synchronous hook, in the spine's transaction <br>*awaiting ratification* <br>*amends K-37* | #2068, #37 |

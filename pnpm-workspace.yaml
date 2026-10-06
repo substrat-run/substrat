@@ -121,6 +121,12 @@ overrides:
   # 2.x unchanged. Drop this line with the vitest 4 migration (the catalog note
   # above) — vitest 4 no longer depends on tinypool.
   tinypool: 2.2.0
+  # The latest concurrently releases pin shell-quote EXACTLY (9.2.4 and 10.0.5,
+  # the newest of each line, both pin 1.9.0), and 1.8.4–1.10.x are inside
+  # GHSA-pqg4-j6r4-53mv (critical, command injection through `quote()`); the first
+  # fix is 1.11.0. Drop this line once concurrently ships a pin >= 1.11.0 and
+  # every member's range reaches it.
+  concurrently>shell-quote: 1.12.0
 
 # On why `strictPeerDependencies` is NOT set here, which is a measured decision
 # rather than an omission.

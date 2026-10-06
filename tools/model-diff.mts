@@ -94,8 +94,27 @@ interface EmittedModel {
    * it gates a changed table. Verticals declare none and emit none.
    */
   version?: string;
-  entities: Record<string, { table: string; fields: unknown }>;
+  entities: Record<string, { table: string; fields: unknown; erasable?: string[]; erasure?: unknown }>;
   lifecycles?: Record<string, unknown>;
+}
+
+/**
+ * An entity with `erasable` fields that no subject erasure reaches (#2068): no `erasure` naming
+ * its subject columns, and no `{ mode: 'custom' }` claiming the module's hook reaches it. A
+ * WARNING rather than a refusal — every model written before the hook existed is in this state,
+ * and refusing them all at once would be a flag day — but printed on every run, and as a GitHub
+ * annotation in CI, so the gap is read before a deploy rather than first on an erasure receipt.
+ */
+function warnUnreached(src: string, model: EmittedModel): void {
+  const unreached = Object.entries(model.entities)
+    .filter(([, e]) => (e.erasable?.length ?? 0) > 0 && e.erasure === undefined)
+    .map(([name]) => name);
+  for (const name of unreached) {
+    const message =
+      `${src}: ${name} has erasable fields that no subject erasure reaches (#2068) — declare ` +
+      "`erasure: { subjects: [...] }`, or `{ mode: 'custom' }` with an onSubjectErased hook";
+    console.warn(process.env.GITHUB_ACTIONS ? `::warning file=${src}::${message}` : `model-diff: warning: ${message}`);
+  }
 }
 
 /**
@@ -160,6 +179,7 @@ async function emitArtifact(
   }
   const model = models[0]!;
   warnTrashGaps(src, mod, model);
+  warnUnreached(src, model);
   const lifecycles = Object.keys(model.lifecycles ?? {}).length;
   const rendered = `${JSON.stringify(model, null, 2)}\n`;
   const current = existsSync(target) ? readFileSync(target, 'utf8') : null;

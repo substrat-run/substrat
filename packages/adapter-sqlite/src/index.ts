@@ -348,6 +348,10 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
+  eraseSubjectFromModules,
+  moduleRowsErased,
+  moduleErasurePlan,
+  type ModuleErasurePlan,
   redactSubjectScopeText,
   redactSubjectDirectoryText,
   ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
@@ -386,6 +390,12 @@ import {
   PEER_SWITCHES_DDL,
   SWITCH_OWED_DDL,
   SWITCH_FENCES_DDL,
+  TABLE_OWNERS_DDL,
+  assertMigrationLeavesLedgerAlone,
+  recordOwnershipSteps,
+  runMigrationStatements,
+  executableSqlStatements,
+  blankSqlComments,
   recordWriteSuperseded,
   switchFencesOf,
   switchSupersededMessage,
@@ -1073,6 +1083,7 @@ const KERNEL_DDL = `
   -- #2066: no new journal row without its digest (the kernel's comment says why).
   ${MIGRATION_DIGEST_FENCE_DDL}
   ${SWITCH_FENCES_DDL}
+  ${TABLE_OWNERS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -1736,6 +1747,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly listPlans = new Map<string, ListIndexPlan>();
   /** #119: entity type → its archive/trash plan, from every registered module. */
   private readonly statePlans = new Map<string, EntityStatePlan>();
+  /** #2068: each registered module's erasure, in registration order — what `shredSubject` runs. */
+  private readonly erasurePlans: ModuleErasurePlan[] = [];
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
   /** operation name → who binds it: the owning module, its entitlementKey and its declared
@@ -1883,7 +1896,7 @@ export class SqliteScopeHost implements ScopeHost {
    * recorded answer to #969; `docs/architecture/kernel-design.md` §8 says why.
    */
   private applyDirectorySchema(): void {
-    this.directory.exec(`
+    execSqlStatements(this.directory, `
       -- The tenant registry (control-plane.md §4.1). Before this a tenant was an
       -- FK string on scope rows; now it is a real record with a lifecycle status.
       CREATE TABLE IF NOT EXISTS tenants (
@@ -2672,6 +2685,9 @@ export class SqliteScopeHost implements ScopeHost {
       manifest.entityStates,
       manifest.schedules,
     );
+    // #2068: refused here, before anything is recorded, when the module claims an erasure it
+    // cannot deliver (a hook with no reach declared, a `custom` entity with no hook).
+    const erasure = moduleErasurePlan(registration);
     const migrations = registration.migrations ?? [];
     const seen = new Set<string>();
     for (const m of migrations) {
@@ -2781,6 +2797,7 @@ export class SqliteScopeHost implements ScopeHost {
       peers: manifest.peers ?? [],
       purgeOnlyKeys: purgeOnlyKeysOf(manifest.schedules ?? []),
     });
+    if (erasure) this.erasurePlans.push(erasure);
     for (const rel of manifest.entityRelations ?? []) {
       const parents = this.relations.get(rel.entityType) ?? new Set<string>();
       parents.add(rel.parentType);
@@ -3695,8 +3712,10 @@ export class SqliteScopeHost implements ScopeHost {
       // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
       // not keep at all; they are skipped by name, and any other unknown spine table is refused.
       const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));
-      for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
-      db.exec(KERNEL_DDL);
+      // Comment-blanked (#2068), as the Durable Object replays it: the dump's DDL is
+      // `sqlite_master.sql` verbatim, and `prepare` still compiles exactly one statement.
+      for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(blankSqlComments(t.ddl)).run();
+      execSqlStatements(db, KERNEL_DDL);
       this.ensureSpineColumns(db);
       const columnsOf = (name: string) => builtColumnsOf(db, name);
       assertSpineTablesBuilt(loadable.map((t) => t.name), columnsOf);
@@ -3725,20 +3744,20 @@ export class SqliteScopeHost implements ScopeHost {
         ).map((r) => r.name),
       );
       for (const plan of this.searchPlans.values()) {
-        if (present.has(plan.table)) db.exec(searchIndexDdl(plan));
+        if (present.has(plan.table)) execSqlStatements(db, searchIndexDdl(plan));
       }
       // #119: the guard triggers went with the dropped table. Put back AFTER the rows, which
       // may legitimately arrive archived or trashed.
       for (const plan of this.statePlans.values()) {
         if (!present.has(plan.table)) continue;
-        db.exec(entityStateTriggerDdl(plan));
+        execSqlStatements(db, entityStateTriggerDdl(plan));
         // And the purge sweep's index, which went with it (#119 PR 2).
         if (plan.purgeAfterDays !== undefined) db.exec(purgeIndexDdl(plan));
       }
       // #811 / #119: the derived list indexes went with it too, and a load never put them back —
       // an archivable entity's partial indexes are part of what the kernel checks after DDL.
       for (const plan of this.listPlans.values()) {
-        if (present.has(plan.table)) db.exec(listIndexDdl(plan));
+        if (present.has(plan.table)) execSqlStatements(db, listIndexDdl(plan));
       }
       // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
       // text of attachments the dump did not bring back, and queue extraction for those
@@ -9749,6 +9768,10 @@ export class SqliteScopeHost implements ScopeHost {
         // and transaction facts remain". A consumer's timeline still shows that something
         // happened, to what, and when; it no longer shows who or what was said.
         const db = this.scopeDbFor(tenantId, scopeId);
+        // #2068: the module half reaches the scope's own tables, so they have to exist — the
+        // same migrations an invoke would apply first.
+        const rt = this.runtime(tenantId, scopeId);
+        await this.applyPendingMigrations(rt);
         // One instant for the whole erasure, read before the first write: the intent
         // tombstones below and the key's own tombstone should not disagree about when a
         // person was erased.
@@ -9756,8 +9779,25 @@ export class SqliteScopeHost implements ScopeHost {
         // Both scope-side redactions in ONE turn on the scope actor (#1678): issued while an
         // invoke held its transaction open, they joined it, and its rollback put the
         // person's PII back after this verb had destroyed the key and receipted the erasure.
+        //
+        // And in ONE transaction (#2068): a module's `onSubjectErased` hook that throws rolls
+        // the whole scope side back, the spine redaction with it, and the erasure throws
+        // before the key below is touched — nothing receipts an erasure that did not happen.
         const scopeSql = redactionSqlOf(db);
-        const { redacted, intentsRedacted, jobRunsRedacted, text } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
+        const { redacted, intentsRedacted, jobRunsRedacted, text, vertical } = await rt.actor.turn(() => db.transaction(() => ({
+          // The module half first (#2068): the declared entities, then each hook, with the
+          // search indexes over them under FTS5 secure-delete. The spine half follows in the same
+          // transaction, so the order between them decides nothing but the reading order.
+          vertical: eraseSubjectFromModules({
+            sql: spineSql(db),
+            plans: this.erasurePlans,
+            searchPlans: this.searchPlans.values(),
+            statefulTables: statefulTablesOf(this.statePlans),
+            subjectId,
+            at,
+            migrationSqlOf: (moduleId, version) =>
+              this.modules.get(moduleId)?.migrations.find((m) => m.version === version)?.sql,
+          }),
           redacted: db
             .prepare(
               `UPDATE _substrat_outbox SET payload = NULL
@@ -9782,7 +9822,7 @@ export class SqliteScopeHost implements ScopeHost {
           // The free-text copies (#1632), and the tombstoned intents the directory half
           // follows. Last, so those ids include every intent tombstoned above.
           text: redactSubjectScopeText(scopeSql, subjectId, at),
-        }));
+        }))());
         const { idempotencyResults, intentIds } = text;
         // The directory's failure text (#1632) — a drain failure quoting one of those
         // intents, an issue's exemplar, a sweep record's error. Before the key, for the
@@ -9794,6 +9834,7 @@ export class SqliteScopeHost implements ScopeHost {
           eventsRedacted: redacted.changes,
           intentsRedacted,
           jobRunsRedacted,
+          ...vertical,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -9808,7 +9849,7 @@ export class SqliteScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults,
+          redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults + moduleRowsErased(vertical),
         );
         return receipt;
       },
@@ -11287,7 +11328,7 @@ export class SqliteScopeHost implements ScopeHost {
     // behind an empty table `CREATE TABLE IF NOT EXISTS` put back. `db.transaction`
     // nests as a SAVEPOINT, which is what makes this safe on the `loadDump` path too,
     // where the whole replay is already inside one.
-    db.transaction(() => db.exec(script))();
+    db.transaction(() => execSqlStatements(db, script))();
   }
 
   /**
@@ -11308,7 +11349,7 @@ export class SqliteScopeHost implements ScopeHost {
    * capture one.
    */
   private rebuildAtomically(script: string): void {
-    this.directory.transaction(() => this.directory.exec(script))();
+    this.directory.transaction(() => execSqlStatements(this.directory, script))();
   }
 
   /**
@@ -12132,9 +12173,16 @@ export class SqliteScopeHost implements ScopeHost {
               // #1898, #2066: a migration runs on the scope's own handle, not `ctx.sql`, so the
               // spine rules a migration is held to are applied here.
               assertMigrationSql(migration.sql, { key, digest, authored });
-              rt.db.exec(migration.sql);
+              // #2068: the ownership ledger is the kernel's — no migration may name it, not even to
+              // read it (the spine rules above allow reads).
+              assertMigrationLeavesLedgerAlone(migration.sql, `migration ${key}`);
+              // #2068: one statement at a time, keeping the table set either side of each — the
+              // same splitter the Durable Object runs, so both hosts execute identical statements.
+              const steps = runMigrationStatements(spineSql(rt.db), migration.sql, (stmt) => rt.db.exec(stmt));
               assertTablesWithinColumnLimit(rt.db);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+              // After the count: `rows_changed` is the migration's own, never the kernel's bookkeeping.
+              recordOwnershipSteps(spineSql(rt.db), moduleId, steps, this.clock());
               rt.db
                 .prepare(
                   'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed, sql_digest) VALUES (?, ?, ?, ?, ?, ?)',
@@ -12439,7 +12487,7 @@ export class SqliteScopeHost implements ScopeHost {
     // WAL is also what the read connection rests on (#1624): a reader sees the last
     // committed snapshot and never blocks, or is blocked by, the writer.
     db.pragma('journal_mode = WAL');
-    db.exec(KERNEL_DDL);
+    execSqlStatements(db, KERNEL_DDL);
     this.ensureSpineColumns(db);
     const appliedMigrations = readAppliedMigrations(db);
     // #1335: the floor this scope's ids have to clear is the highest id already in
@@ -12507,6 +12555,15 @@ function redactionSqlOf(db: Database.Database): RedactionSql {
  * `_substrat_*`" a mechanism rather than a lint rule (#954) — the kernel's own
  * spine writes use `rt.db` directly and never pass through here.
  */
+/**
+ * Run a multi-statement DDL blob one statement at a time, as its comment-blanked text (#2068) —
+ * the same statements and the same text the Durable Object executes, so both hosts store the
+ * same DDL in `sqlite_master` and a later `ALTER TABLE … DROP COLUMN` rewrites the same thing.
+ */
+function execSqlStatements(db: Database.Database, sql: string): void {
+  for (const statement of executableSqlStatements(sql)) db.exec(statement);
+}
+
 /**
  * The kernel's OWN spine access (#1672) — the same seam as `scopedSql` without `guardSpine`,
  * because these are the kernel's writes to `_substrat_capabilities`, which module code may

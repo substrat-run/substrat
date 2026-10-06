@@ -1,4 +1,6 @@
+import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
+import { SPLIT_CASES } from '@substrat-run/contract-tests';
 import { splitSqlStatements } from '../src/scope-do.js';
 
 /**
@@ -14,14 +16,15 @@ describe('splitSqlStatements', () => {
     ]);
   });
 
+  // #2068: a statement is its ORIGINAL text, so a comment in front of it stays with it.
   it('does not split on a semicolon inside a line comment', () => {
     const out = splitSqlStatements('CREATE TABLE a (x TEXT); -- items; keyed by id\nCREATE TABLE b (y TEXT);');
-    expect(out).toEqual(['CREATE TABLE a (x TEXT)', 'CREATE TABLE b (y TEXT)']);
+    expect(out).toEqual(['CREATE TABLE a (x TEXT)', '-- items; keyed by id\nCREATE TABLE b (y TEXT)']);
   });
 
   it('does not split on a semicolon inside a block comment', () => {
     const out = splitSqlStatements('CREATE TABLE a (x TEXT);/* a; b; c */CREATE TABLE b (y TEXT);');
-    expect(out).toEqual(['CREATE TABLE a (x TEXT)', 'CREATE TABLE b (y TEXT)']);
+    expect(out).toEqual(['CREATE TABLE a (x TEXT)', '/* a; b; c */CREATE TABLE b (y TEXT)']);
   });
 
   it('does not split on a semicolon inside a string literal', () => {
@@ -61,7 +64,7 @@ describe('splitSqlStatements', () => {
     ]);
   });
 
-  it('drops comments and never emits a comment-only statement', () => {
+  it('never emits a comment-only statement', () => {
     // A trailing comment after the last statement must not become its own exec
     // (a comment-only input is "incomplete input" to SQLite).
     const out = splitSqlStatements('CREATE TABLE a (x TEXT);\n-- trailing note; nothing after\n');
@@ -77,5 +80,45 @@ describe('splitSqlStatements', () => {
       'CREATE TABLE a (x TEXT)',
       'CREATE TABLE b (y TEXT)',
     ]);
+  });
+});
+
+/**
+ * #2068, Codex #2084 r4: every boundary case, executed statement by statement in a Durable
+ * Object's own SQLite — the host that cannot run a blob and so depends on the split. The same
+ * cases are held differentially against better-sqlite3 in adapter-sqlite; here the proof is that
+ * each piece executes in workerd, and that the three reproductions leave what the whole blob would.
+ */
+describe('splitSqlStatements, executed in workerd (#2068)', () => {
+  const run = (name: string, sql: string) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(`split-${name}-${Date.now()}`)), (_, state) => {
+      for (const piece of splitSqlStatements(sql)) state.storage.sql.exec(piece);
+      return (q: string) => state.storage.sql.exec(q).toArray();
+    });
+  const query = (name: string, sql: string, q: string) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(`split-${name}`)), (_, state) => {
+      for (const piece of splitSqlStatements(sql)) state.storage.sql.exec(piece);
+      return state.storage.sql.exec(q).toArray();
+    });
+
+  for (const c of SPLIT_CASES) {
+    // A Durable Object refuses TEMP objects outright; that case is held on better-sqlite3 alone.
+    if (/\bTEMP\b/i.test(c.sql)) continue;
+    it(`${c.name}: every statement executes`, async () => {
+      expect(splitSqlStatements(c.sql)).toHaveLength(c.statements);
+      await run(c.name.replace(/\W+/g, '-'), c.sql);
+    });
+  }
+
+  it('CASE … END inside a trigger body runs the whole body', async () => {
+    const c = SPLIT_CASES.find((x) => x.name === 'CASE … END inside a trigger body')!;
+    expect(await query('case-end', c.sql, 'SELECT a, b FROM t')).toEqual([{ a: 5, b: 11 }]);
+  });
+
+  it('a semicolon in a quoted identifier, and a comment between keywords, both land', async () => {
+    const quoted = SPLIT_CASES.find((x) => x.name === 'a semicolon in a "quoted" identifier')!;
+    expect(await query('quoted', quoted.sql, 'SELECT a FROM "x;y"')).toEqual([{ a: 1 }]);
+    const glued = SPLIT_CASES.find((x) => x.name === 'a comment between keywords')!;
+    expect(await query('glued', glued.sql, 'SELECT a FROM t2')).toEqual([{ a: 1 }]);
   });
 });

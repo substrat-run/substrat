@@ -467,6 +467,36 @@ export type {
   IssueExemplarOwner,
 } from './subject-redaction.js';
 export {
+  assertWithinErasureReach,
+  eraseSubjectFromModules,
+  isModuleErasureCounts,
+  moduleErasurePlan,
+  moduleRowsErased,
+  SECURE_DELETE_MIN_SQLITE,
+  tablesCreatedBy,
+} from './module-erasure.js';
+export {
+  TABLE_OWNERS,
+  TABLE_OWNERS_DDL,
+  applyTableChange,
+  assertMigrationLeavesLedgerAlone,
+  assertTablesOwned,
+  backfillOwnershipFromJournal,
+  moduleTableNames,
+  recordOwnershipSteps,
+  runMigrationStatements,
+  tableChangesOf,
+  tableStatements,
+} from './table-ownership.js';
+export type { OwnerStore, TableChange, TableStatement, TableStep } from './table-ownership.js';
+export { blankSqlComments, executableSqlStatements, splitSqlStatements } from './sql-statements.js';
+export type {
+  ModuleErasureCounts,
+  ModuleErasurePlan,
+  OnSubjectErased,
+  SubjectErasureContext,
+} from './module-erasure.js';
+export {
   FINDINGS_DDL,
   FINDING_RETENTION_DAYS,
   createFindingRule,
