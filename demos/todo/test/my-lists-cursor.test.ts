@@ -34,13 +34,14 @@ async function walk(who: ScopeStub, limit: number, view?: 'archived') {
   const ids: string[] = [];
   const cursors: string[] = [];
   let cursor: string | undefined;
-  for (;;) {
+  for (let i = 0; i < 100; i++) {
     const page = await who.invoke<Page<List>>('todo/my-lists', { limit, ...(cursor ? { cursor } : {}), ...(view ? { view } : {}) });
     ids.push(...page.entries.map((l) => l.id));
     if (page.nextCursor === null) return { ids, cursors };
     cursors.push(page.nextCursor);
     cursor = page.nextCursor;
   }
+  throw new Error('the walk did not end');
 }
 
 beforeAll(async () => {

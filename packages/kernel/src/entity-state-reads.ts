@@ -6,6 +6,7 @@
  * need the view predicate from there — one direction of import, not a cycle.
  */
 import {
+  pageOf,
   pageVisible,
   substratError,
   VISIBLE_SCAN_BUDGET,
@@ -66,11 +67,7 @@ export interface TrashedReadDeps {
   scanBudget?: number;
 }
 
-/**
- * How many binned rows one `ctx.pageTrashed` call reads, at most, looking for rows the caller
- * may see. Each costs a permission check, and a Durable Object has a CPU budget per request, so
- * a bin full of other people's rows cannot be walked without bound inside one call.
- */
+/** How many binned rows one `ctx.pageTrashed` call reads, at most — `VISIBLE_SCAN_BUDGET`. */
 export const TRASH_SCAN_BUDGET = VISIBLE_SCAN_BUDGET;
 
 export type TrashedReads = Pick<OperationContext, 'pageTrashed' | 'searchTrashed'>;
@@ -118,9 +115,6 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
           'ctx.pageTrashed: a trashed page carries no total — a count over rows the caller may not see would disclose them',
         );
       }
-      let walk: { sortColumn: string; order: 'asc' | 'desc' } = { sortColumn: '', order: 'asc' };
-      const mint = (row: Record<string, unknown>) =>
-        cursorOf(row, walk.sortColumn, plan.idColumn, walk.order, 'trashed');
       return pageVisible(
         ({ limit, cursor }) => {
           const q = listQuery(plan, {
@@ -131,13 +125,13 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
             filters: params.filters,
             view: 'trashed',
           });
-          walk = q;
-          const rows = deps.query(q.sql, q.params);
-          return { entries: rows, nextCursor: rows.length >= limit ? mint(rows[rows.length - 1]!) : null };
+          return pageOf(deps.query(q.sql, q.params), limit, (row) =>
+            cursorOf(row, q.sortColumn, plan.idColumn, q.order, 'trashed'),
+          );
         },
         params,
         async (row) => (await deps.check(key, { entityType, entityId: String(row[plan.idColumn]) })).allowed,
-        { cursorOf: mint, scanBudget: deps.scanBudget ?? TRASH_SCAN_BUDGET },
+        { scanBudget: deps.scanBudget ?? TRASH_SCAN_BUDGET },
       ) as Promise<Page<never>>;
     },
 

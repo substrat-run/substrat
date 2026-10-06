@@ -471,9 +471,9 @@ interface StockRow {
  *
  * Used for the two reads the kernel cannot walk: the stock overview joins
  * products, variants and live reservations, and the portal list filters per ROW.
- * A per-row filtered read cannot use `ctx.page` at all — a page of 20 filtered
- * down to 3 is not a page — so the honest shape is the over-fetch these already
- * do, paged after the walk.
+ * Both fold the whole set first and page after it, so every cursor is a row the
+ * caller sees. A per-row filter over a `ctx.page` walk is `pageVisible` instead,
+ * which bounds the scan as well (#2073).
  *
  * `order` matters: a descending walk's cursor is exclusive the other way round.
  * The cursor field must be UNIQUE among the rows, which each call site's

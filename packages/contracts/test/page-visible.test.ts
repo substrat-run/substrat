@@ -38,9 +38,7 @@ async function walk(
   const cursors: string[] = [];
   let cursor: string | undefined;
   for (let i = 0; i < 1000; i++) {
-    const page = await pageVisible(fetch, { limit, cursor }, allow, {
-      ...(scanBudget === undefined ? {} : { scanBudget }),
-    });
+    const page = await pageVisible(fetch, { limit, cursor }, allow, { scanBudget });
     entries.push(...page.entries.map((r) => r.id));
     if (page.nextCursor === null) return { entries, cursors };
     cursors.push(page.nextCursor);
@@ -104,7 +102,7 @@ describe('pageVisible (#2073)', () => {
   });
 
   it("stops checking at the page's last visible row", async () => {
-    // At limit 2 the page fills on r0004, the first row of its batch: r0005 is read, never asked.
+    // At limit 2 the page fills on r0004; r0005 is never asked about.
     const asked: string[] = [];
     await pageVisible(fetch, { limit: 2 }, (r) => {
       asked.push(r.id);
@@ -113,17 +111,12 @@ describe('pageVisible (#2073)', () => {
     expect(asked).toEqual(['r0000', 'r0001', 'r0002', 'r0003', 'r0004']);
   });
 
-  it('reads a mid-batch cursor back with one more fetch, or mints it with cursorOf', async () => {
-    // Visible r0000 and r0002 at limit 2: the page fills on r0002, mid-batch (r0003 was read too).
-    const visibleAt = (r: Row) => r.id === 'r0000' || r.id === 'r0002';
-    const readBack = table(10);
-    const viaFetch = await pageVisible(readBack.fetch, { limit: 2 }, visibleAt);
-    expect(decode(viaFetch.nextCursor!)).toBe('r0002');
-    expect(readBack.fetches.at(-1)).toEqual({ limit: 1, cursor: readBack.fetches.at(-2)!.cursor });
-
-    const minted = table(10);
-    expect(await pageVisible(minted.fetch, { limit: 2 }, visibleAt, { cursorOf: encode })).toEqual(viaFetch);
-    expect(minted.fetches).toHaveLength(readBack.fetches.length - 1);
+  it('asks each batch only for the rows the page still lacks', async () => {
+    // Visible r0000 and r0002 at limit 2: two rows, then only the one the page still lacks.
+    const t = table(10);
+    const page = await pageVisible(t.fetch, { limit: 2 }, (r) => r.id === 'r0000' || r.id === 'r0002');
+    expect(decode(page.nextCursor!)).toBe('r0002');
+    expect(t.fetches.map((f) => f.limit)).toEqual([2, 1]);
   });
 
   it('takes a batch test, one verdict per row in order', async () => {
