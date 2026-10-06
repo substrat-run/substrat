@@ -176,7 +176,13 @@ describe('admin reads see only committed state, from a read-only connection (#16
       committedEvent,
       at,
     );
-    plant(s, `INSERT INTO _substrat_migrations (module_id, version, applied_at) VALUES ('@test/planted', '1', ?)`, at);
+    // With a digest, as the kernel writes every journal row since #2066 (the journal refuses one without).
+    plant(
+      s,
+      `INSERT INTO _substrat_migrations (module_id, version, applied_at, sql_digest) VALUES ('@test/planted', '1', ?, ?)`,
+      at,
+      'f'.repeat(64),
+    );
     plant(
       s,
       `INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, 'granted:reader:tick', ?)`,

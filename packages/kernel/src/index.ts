@@ -351,6 +351,22 @@ export type {
   ListQueryParams,
 } from './list-index.js';
 export { moduleMigrations } from './module-migrations.js';
+export {
+  MIGRATION_DIGEST_FENCE_DDL,
+  MIGRATION_DIGEST_LEGACY,
+  MIGRATION_DIGEST_MARK_LEGACY,
+  assertJournalDumpCoherent,
+  assertMigrationSql,
+  assertNoJournalSql,
+  migrationDigest,
+  migrationDivergence,
+  migrationFailedError,
+  migrationSteps,
+  planMigrations,
+  type MigrationPlan,
+  type MigrationStep,
+  type PendingMigration,
+} from './migration-digest.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';

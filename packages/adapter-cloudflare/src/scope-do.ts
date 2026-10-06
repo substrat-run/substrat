@@ -148,6 +148,15 @@ import {
   listIndexDdl,
   listIndexPlans,
   moduleMigrations,
+  MIGRATION_DIGEST_FENCE_DDL,
+  MIGRATION_DIGEST_MARK_LEGACY,
+  assertJournalDumpCoherent,
+  assertMigrationSql,
+  migrationDivergence,
+  migrationFailedError,
+  migrationSteps,
+  planMigrations,
+  type MigrationStep,
   listQuery,
   cursorOf,
   type ListIndexPlan,
@@ -349,7 +358,7 @@ import type {
   StoredScopeLifecycle,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -387,7 +396,19 @@ export interface ScopeDoEnv {
 interface RegisteredModule {
   id: string;
   migrations: SqlMigration[];
+  /** `migrations` with their digests, and which are held to them (#2066). */
+  steps: Promise<readonly MigrationStep[]>;
   consumers: { eventType: string; handler: ConsumerHandler }[];
+}
+
+/** A scope's migration journal: `module@version` → the SQL digest it recorded (#2066). */
+function readAppliedMigrations(sql: SqlStorage): Map<string, string | null> {
+  const rows = sql.exec('SELECT module_id, version, sql_digest FROM _substrat_migrations').toArray() as unknown as {
+    module_id: string;
+    version: string;
+    sql_digest: string | null;
+  }[];
+  return new Map(rows.map((r) => [`${r.module_id}@${r.version}`, r.sql_digest]));
 }
 
 interface DeclaredGuard {
@@ -613,8 +634,13 @@ const KERNEL_DDL = `
     applied_at TEXT NOT NULL,
     duration_ms INTEGER,
     rows_changed INTEGER,
+    -- #2066: SHA-256 of the SQL that ran (kernel migrationDigest). NULL on a row written
+    -- before the column: unrecorded, accepted, never backfilled.
+    sql_digest TEXT,
     PRIMARY KEY (module_id, version)
   );
+  -- #2066: no new journal row without its digest (the kernel's comment says why).
+  ${MIGRATION_DIGEST_FENCE_DDL}
   -- #286: the PITR bookmark taken immediately BEFORE a migration pass runs on a
   -- scope that already holds data -- the precise rewind point a backout restores
   -- to. Rows live in the same storage they describe, so a rewind erases the rows
@@ -1223,7 +1249,8 @@ export function defineScopeDO(
      * underneath rows it already stored.
      */
     private readonly mintEventId: UlidMint = createUlid();
-    private readonly applied = new Set<string>();
+    /** `module@version` → the SQL digest its journal row recorded, null for a row from before #2066. */
+    private applied = new Map<string, string | null>();
     private migrationPromise?: Promise<boolean>;
     /** Latch: the applied count is reported to the directory once per DO instance. */
     private schemaVersionReported = false;
@@ -1283,11 +1310,7 @@ export function defineScopeDO(
       for (const [name, handler] of Object.entries(bareOps)) this.defineOperation(name, handler);
 
       // Which migrations have already run (a warm DO wakes with rows here).
-      for (const row of this.sql
-        .exec('SELECT module_id, version FROM _substrat_migrations')
-        .toArray() as unknown as { module_id: string; version: string }[]) {
-        this.applied.add(`${row.module_id}@${row.version}`);
-      }
+      this.applied = readAppliedMigrations(this.sql);
 
       // #1335: and where this DO's event ids have to resume from. A revived DO would
       // otherwise start its floor at the wall clock, and a clock that has stepped back
@@ -1344,6 +1367,7 @@ export function defineScopeDO(
         id: manifest.id,
         // The order the kernel writes once (#1677): authored, then search, then list indexes.
         migrations: moduleMigrations(registration),
+        steps: migrationSteps(registration),
         consumers: Object.entries(registration.consumers ?? {}).map(([eventType, handler]) => ({
           eventType,
           handler,
@@ -5167,13 +5191,11 @@ export function defineScopeDO(
 
     /** Resolves true if this call applied at least one migration. */
     private async applyPendingMigrations(): Promise<boolean> {
-      const pending: { moduleId: string; migration: SqlMigration }[] = [];
-      for (const mod of this.modules.values()) {
-        for (const migration of mod.migrations) {
-          if (!this.applied.has(`${mod.id}@${migration.version}`)) {
-            pending.push({ moduleId: mod.id, migration });
-          }
-        }
+      const { pending, diverged } = await planMigrations(this.modules.values(), this.applied);
+      if (diverged) {
+        // Recorded as a failed migration is, so the coordinator projects it the same way.
+        this.lastFailure = diverged;
+        throw migrationFailedError(diverged.version, diverged.error);
       }
       if (pending.length === 0) return false;
       this.migrationRuns += 1;
@@ -5204,24 +5226,30 @@ export function defineScopeDO(
             // (#278) remains the fallback rewind point.
           }
         }
-        for (const { moduleId, migration } of pending) {
+        for (const { moduleId, migration, digest, authored } of pending) {
           const key = `${moduleId}@${migration.version}`;
           if (this.applied.has(key)) continue;
+          let recorded: string | null = digest;
           try {
             await this.revision.transaction(async () => {
               const already = this.sql
                 .exec(
-                  'SELECT 1 FROM _substrat_migrations WHERE module_id = ? AND version = ?',
+                  'SELECT sql_digest FROM _substrat_migrations WHERE module_id = ? AND version = ?',
                   moduleId,
                   migration.version,
                 )
-                .toArray()[0];
-              if (!already) {
+                .toArray()[0] as { sql_digest: string | null } | undefined;
+              if (already) {
+                // Applied since this pass read the journal: held to the same digest rule.
+                const error = migrationDivergence(already.sql_digest, digest, authored);
+                if (error) throw new Error(error);
+                recorded = already.sql_digest;
+              } else {
                 const started = performance.now();
                 const before = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
-                // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
-                // spine guard's REFERENCES rule is applied here.
-                assertNoSpineReference(migration.sql, `migration ${key}`);
+                // #1898, #2066: a migration runs on this DO's own handle, not `ctx.sql`, so the
+                // spine rules a migration is held to are applied here.
+                assertMigrationSql(migration.sql, { key, digest, authored });
                 // #1722: not counted per statement, so `total_changes()` measures the migration
                 // alone. The journal row below is a write, and advances the revision once.
                 this.revisionSuspended = true;
@@ -5234,12 +5262,13 @@ export function defineScopeDO(
                 }
                 const after = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
                 this.sql.exec(
-                  'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)',
+                  'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed, sql_digest) VALUES (?, ?, ?, ?, ?, ?)',
                   moduleId,
                   migration.version,
                   new Date().toISOString(),
                   Math.max(0, Math.round(performance.now() - started)),
                   after - before,
+                  digest,
                 );
               }
             });
@@ -5253,11 +5282,9 @@ export function defineScopeDO(
             // It is not an unhandled rejection: every caller awaits the memoised promise, and
             // the coordinator records the failure it receives (#1898 review).
             this.lastFailure = { version: key, error: (err as Error).message };
-            throw new Error(
-              `migration failed for ${key} — scope fails closed: ${(err as Error).message}`,
-            );
+            throw migrationFailedError(key, (err as Error).message);
           }
-          this.applied.add(key);
+          this.applied.set(key, recorded);
         }
       });
       return true;
@@ -5942,6 +5969,8 @@ export function defineScopeDO(
         // #1763: rows written before these fields keep NULL, meaning unrecorded.
         'ALTER TABLE _substrat_migrations ADD COLUMN duration_ms INTEGER',
         'ALTER TABLE _substrat_migrations ADD COLUMN rows_changed INTEGER',
+        // #2066: the rows already there get the legacy mark below, never a digest.
+        'ALTER TABLE _substrat_migrations ADD COLUMN sql_digest TEXT',
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
@@ -6021,6 +6050,8 @@ export function defineScopeDO(
       // boot. `lint:spine-ddl` compares KERNEL_DDL's indexes only, so this one is held to
       // both adapters by the query-plan test rather than by that gate.
       this.sql.exec('CREATE INDEX IF NOT EXISTS _substrat_outbox_invocation ON _substrat_outbox (invocation_id, id)');
+      // #2066: what they ran was never measured. KERNEL_DDL's fence keeps any other NULL out.
+      this.sql.exec(MIGRATION_DIGEST_MARK_LEGACY);
       this.ensureScheduleStateKind();
       this.ensureRefusalsAdmitGuards();
     }
@@ -6213,6 +6244,7 @@ export function defineScopeDO(
           this.applySpineColumnAdditions();
           const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
           assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
+          assertJournalDumpCoherent(replayable);
           // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
           // untyped column the checker never reads.
           for (const t of replayable) {
@@ -6315,12 +6347,7 @@ export function defineScopeDO(
       }
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
-      this.applied.clear();
-      for (const row of this.sql
-        .exec('SELECT module_id, version FROM _substrat_migrations')
-        .toArray() as unknown as { module_id: string; version: string }[]) {
-        this.applied.add(`${row.module_id}@${row.version}`);
-      }
+      this.applied = readAppliedMigrations(this.sql);
       // …and forget that this INSTANCE ever ran a migration pass (#1589). Refreshing
       // the set above is not enough on its own: `ensureMigrations` memoises its
       // promise, so a warm DO answers "already migrated" from the cache and never
