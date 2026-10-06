@@ -11,6 +11,7 @@ import {
   SETTLE_GRACE_MS,
   UNRECORDED_OUTCOME_LOG,
   VerticalClient,
+  MALFORMED_OPERATION_ID_LOG,
   OUTCOME_CONFLICT_LOG,
   auditedChange,
   settleUnrecordedOutcomes,
@@ -210,7 +211,7 @@ describe('settleUnrecordedOutcomes (#2064)', () => {
     });
     const pass = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) });
     late.mockRestore();
-    expect(pass).toEqual({ settled: [], errors: [] });
+    expect(pass).toEqual({ settled: [], errors: [], malformed: [] });
     expect((await rowsOf('transferOwner', op)).map((r) => r.phase)).toEqual(['intent', 'applied']);
   });
 
@@ -286,8 +287,8 @@ describe('the readers hold to the priority rule, whatever the ids and clocks say
     it(`the admin-log API and the digest both read applied: ${name}`, async () => {
       const operationId = ulid();
       for (const [id, phase, at] of rows) {
-        // Unique per operation, ordered within it by the last letter the case chose.
-        raw(`01J${operationId.slice(10, 22)}${id.slice(15)}`, phase, operationId, at, phase === 'unknown' ? { error: 'no outcome' } : phase === 'applied' ? { outcome: 'transferred', fromRevoked: true } : {});
+        // Unique per operation (a ULID minted in the same millisecond differs in its tail), ordered within it by the last letter the case chose.
+        raw(`01J${operationId.slice(14, 26)}${id.slice(15)}`, phase, operationId, at, phase === 'unknown' ? { error: 'no outcome' } : phase === 'applied' ? { outcome: 'transferred', fromRevoked: true } : {});
       }
       const annotated = await withAuditedOutcomes(host.admin, staff, await entriesOf(operationId));
       for (const row of annotated) {
@@ -363,6 +364,32 @@ describe('the readers hold to the priority rule, whatever the ids and clocks say
     raw(ulid(), 'applied', own, AT, { outcome: 'transferred', fromRevoked: true });
     const again = await settleUnrecordedOutcomes({ admin: host.admin, actor: staff, now: new Date(Date.parse(AT) + 2 * 3600_000) });
     expect(again.settled.filter((x) => x.operationId === own)).toEqual([]);
+  });
+
+  it('a legacy malformed operation id is passed over by the digest and the sweep: kept, counted, logged once, never thrown', async () => {
+    const twin = ulid();
+    for (const id of ['op\uD800', twin]) {
+      raw(ulid(), 'intent', id, AT);
+      raw(ulid(), 'unknown', id, AT, { error: 'no outcome' });
+      raw(ulid(), 'applied', id, AT, { outcome: 'transferred', fromRevoked: true });
+    }
+    const logged: unknown[][] = [];
+    const logError = (m: string, f: Record<string, unknown>) => logged.push([m, f]);
+    // The digest: the twin's failure row is resolved, the legacy one is KEPT for a person.
+    const legacyFailure = unknownFailure('op\uD800');
+    const twinFailure = unknownFailure(twin);
+    expect(await supersededUnknowns(host.admin, staff, [legacyFailure, twinFailure], logError)).toEqual(new Set([twinFailure.id]));
+    expect(logged).toEqual([[MALFORMED_OPERATION_ID_LOG, { reader: 'digest', count: 1, rows: [legacyFailure.id] }]]);
+
+    // The sweep: a legacy orphan intent is passed over, never handed to the settle that would refuse it.
+    logged.length = 0;
+    const orphan = 'orphan\uDC00';
+    raw(ulid(), 'intent', orphan, AT);
+    const pass = await settleUnrecordedOutcomes({ admin: host.admin, actor: staff, now: new Date(Date.parse(AT) + 2 * 3600_000), logError });
+    expect(pass.errors).toEqual([]);
+    expect(pass.settled.some((x) => x.operationId === orphan)).toBe(false);
+    expect(pass.malformed.length).toBeGreaterThanOrEqual(4);
+    expect(logged).toEqual([[MALFORMED_OPERATION_ID_LOG, { reader: 'settle', count: pass.malformed.length, rows: pass.malformed }]]);
   });
 
   it('resolves a page in ONE batched read, however much unrelated history the log holds', async () => {

@@ -22,7 +22,7 @@
  * switches audit the same way inside the adapters, which cannot import this package; they are
  * not covered here.)
  */
-import { AUDIT_ERROR_MAX, type AdminLogEntry, type OpsFailureEntry, type PlatformActorId } from '@substrat-run/contracts';
+import { AUDIT_ERROR_MAX, auditOperationId, type AdminLogEntry, type OpsFailureEntry, type PlatformActorId } from '@substrat-run/contracts';
 import {
   AUDITED_CHANGE_ACTIONS,
   operationKeyOf,
@@ -117,13 +117,44 @@ export interface SettleOptions {
    * never pruned.
    */
   lookbackMs?: number;
+  logError?: LogError;
 }
+
+/** The structured line a stored id the contract would refuse leaves, once per read (#2064). */
+export const MALFORMED_OPERATION_ID_LOG = 'audit-operation-id-malformed';
+
+/**
+ * The audited operation a STORED id names, or `malformed`, or null when it names none (another
+ * action, or no id). ONE predicate for every reader that turns a stored id into a resolved or
+ * enriched one: the admin-log annotation, the digest and the sweep's scan. It is the contract's
+ * own `auditOperationId`. A row written before the contract held ids to well-formed text may
+ * carry one it would now refuse. That row names no operation: it is returned raw, never
+ * enriched, settled or thrown on, and the reader counts it and logs it once.
+ */
+function storedOperationOf(
+  action: string,
+  operationId: unknown,
+  where: { tenantId: string | null; scopeId: string | null },
+): AuditedOperationRef | 'malformed' | null {
+  if (!(AUDITED_CHANGE_ACTIONS as readonly string[]).includes(action) || operationId === undefined || operationId === null) return null;
+  if (!auditOperationId.safeParse(operationId).success) return 'malformed';
+  return { action, operationId: operationId as string, tenantId: where.tenantId, scopeId: where.scopeId };
+}
+
+/** One log line for every stored row a reader passed over, by row id. */
+function reportMalformed(logError: LogError, reader: string, rows: string[]): void {
+  if (rows.length > 0) logError(MALFORMED_OPERATION_ID_LOG, { reader, count: rows.length, rows });
+}
+
+type LogError = NonNullable<AuditedChangeSpec<unknown>['logError']>;
 
 export interface SettleResult {
   /** Intents this pass closed with an `unknown` row. */
   settled: { action: string; operationId: string; tenantId: string | null; scopeId: string | null }[];
   /** Per-intent write failures: the intent stays open, and the next pass tries again. */
   errors: { operationId: string; error: string }[];
+  /** Rows whose stored operation id the contract refuses: passed over, by row id. */
+  malformed: string[];
 }
 
 /** An hour: sixty times the deadline on the call it waits out. */
@@ -155,14 +186,17 @@ export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<Set
 
   const intents = new Map<OperationKey, AdminLogEntry>();
   const closed = new Set<OperationKey>();
+  const malformed: string[] = [];
   for (let cursor: string | undefined; ; ) {
     const page = await admin.auditLog(actor, { action: [...AUDITED_CHANGE_ACTIONS], since, limit: PAGE, cursor });
     for (const row of page) {
       const after = row.after as { phase?: unknown; operationId?: unknown } | null;
-      if (typeof after?.operationId !== 'string') continue;
+      const operation = storedOperationOf(row.action, after?.operationId, row);
+      if (operation === 'malformed') malformed.push(row.id);
+      if (operation === null || operation === 'malformed') continue;
       // The operation's whole identity, as every reader keys it.
-      const key = operationKeyOf({ action: row.action, operationId: after.operationId, tenantId: row.tenantId, scopeId: row.scopeId });
-      if (after.phase === 'intent') {
+      const key = operationKeyOf(operation);
+      if (after?.phase === 'intent') {
         if (row.at < cutoff) intents.set(key, row);
       } else {
         closed.add(key);
@@ -172,7 +206,8 @@ export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<Set
     cursor = page[page.length - 1]!.id;
   }
 
-  const result: SettleResult = { settled: [], errors: [] };
+  reportMalformed(opts.logError ?? consoleError, 'settle', malformed);
+  const result: SettleResult = { settled: [], errors: [], malformed };
   const minutes = Math.round(graceMs / 60_000);
   for (const [key, intent] of intents) {
     if (closed.has(key)) continue;
@@ -189,10 +224,6 @@ export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<Set
   return result;
 }
 
-const operationIdOf = (row: AdminLogEntry): string | null => {
-  const id = (row.after as { operationId?: unknown } | null)?.operationId;
-  return (AUDITED_CHANGE_ACTIONS as readonly string[]).includes(row.action) && typeof id === 'string' ? id : null;
-};
 
 /** The structured line an operation with two real outcomes leaves: the audit's invariant broke. */
 export const OUTCOME_CONFLICT_LOG = 'audit-outcome-conflict';
@@ -228,21 +259,21 @@ export async function withAuditedOutcomes(
   entries: AdminLogEntry[],
   logError?: AuditedChangeSpec<unknown>['logError'],
 ): Promise<AdminLogEntry[]> {
-  const refs: AuditedOperationRef[] = [];
-  for (const row of entries) {
-    const operationId = operationIdOf(row);
-    if (operationId !== null) refs.push({ action: row.action, operationId, tenantId: row.tenantId, scopeId: row.scopeId });
-  }
+  const operations = entries.map((row) =>
+    storedOperationOf(row.action, (row.after as { operationId?: unknown } | null)?.operationId, row),
+  );
+  reportMalformed(logError ?? consoleError, 'admin-log', entries.filter((_, i) => operations[i] === 'malformed').map((row) => row.id));
+  const refs = operations.filter((o): o is AuditedOperationRef => o !== null && o !== 'malformed');
   if (refs.length === 0) return entries;
   const effective = await resolveOperations(admin, actor, refs, logError);
-  return entries.map((row) => {
-    const operationId = operationIdOf(row);
-    if (operationId === null) return row;
-    const outcome = effective.get(operationKeyOf({ action: row.action, operationId, tenantId: row.tenantId, scopeId: row.scopeId }));
+  return entries.map((row, i) => {
+    const operation = operations[i]!;
+    if (operation === null || operation === 'malformed') return row;
+    const outcome = effective.get(operationKeyOf(operation));
     const phase = (row.after as { phase?: string }).phase ?? null;
     return {
       ...row,
-      audited: { operationId, outcome: outcome?.outcome ?? 'pending', superseded: isSupersededOutcome(phase, outcome) },
+      audited: { operationId: operation.operationId, outcome: outcome?.outcome ?? 'pending', superseded: isSupersededOutcome(phase, outcome) },
     };
   });
 }
@@ -260,12 +291,15 @@ export async function supersededUnknowns(
   logError?: AuditedChangeSpec<unknown>['logError'],
 ): Promise<Set<string>> {
   const unknowns = new Map<string, AuditedOperationRef>();
+  const malformed: string[] = [];
   for (const f of failures) {
-    const action = f.operation.startsWith('audit.') ? f.operation.slice('audit.'.length) : null;
-    if (f.stage !== 'outcome-unknown' || !action || !f.reference) continue;
-    if (!(AUDITED_CHANGE_ACTIONS as readonly string[]).includes(action)) continue;
-    unknowns.set(f.id, { action, operationId: f.reference, tenantId: f.tenantId, scopeId: f.scopeId });
+    if (f.stage !== 'outcome-unknown' || !f.operation.startsWith('audit.')) continue;
+    const operation = storedOperationOf(f.operation.slice('audit.'.length), f.reference, f);
+    if (operation === 'malformed') malformed.push(f.id);
+    else if (operation !== null) unknowns.set(f.id, operation);
   }
+  // A failure row passed over is kept in the digest: it is reported, never dropped as resolved.
+  reportMalformed(logError ?? consoleError, 'digest', malformed);
   const effective = await resolveOperations(admin, actor, [...unknowns.values()], logError);
   const superseded = new Set<string>();
   for (const [id, ref] of unknowns) {

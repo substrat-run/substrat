@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { adminLogEntry, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   firstBuilderAuth,
@@ -22,6 +22,7 @@ import {
   settleUnrecordedOutcomes,
   UNRECORDED_OUTCOME_LOG,
   AUDITED_CALL_DEADLINE_MS,
+  MALFORMED_OPERATION_ID_LOG,
 } from '../src/index.js';
 
 /**
@@ -409,6 +410,38 @@ describe('the owner hand-over route (#1665)', () => {
     ]);
     // A page holding only the intent still resolves it, from rows outside the page.
     expect(await read('&limit=1&order=asc')).toEqual([['intent', { operationId, outcome: 'applied', superseded: false }]]);
+  });
+
+  it('a legacy row whose operation id the contract now refuses is returned raw, and the page still parses (#2064)', async () => {
+    const s = await newScope();
+    // Rows written before the contract held ids to well-formed text, seeded as they were stored.
+    const seed = (operationId: string, phase: string, extra: object = {}) =>
+      (host as unknown as { directory: { prepare(sql: string): { run(...a: unknown[]): void } } }).directory
+        .prepare('INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, vertical, before, after, at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)')
+        .run(ulid(), staff, 'transferOwner', t, s, JSON.stringify({ phase, operationId, from: A, to: B, ...extra }), new Date().toISOString());
+    const twin = ulid();
+    for (const id of ['op\uD800', twin]) {
+      seed(id, 'intent');
+      seed(id, 'applied', { outcome: 'transferred', fromRevoked: true });
+    }
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await app.request(`/admin-log?tenantId=${t}&scopeId=${s}&action=transferOwner`, { headers: asStaff });
+    const calls = logged.mock.calls.slice();
+    logged.mockRestore();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: unknown[] };
+    // Every entry parses against the schema the API exports — the legacy rows included.
+    const entries = body.entries.map((e) => adminLogEntry.parse(e));
+    const legacy = entries.filter((e) => (e.after as { operationId: string }).operationId === 'op\uD800');
+    expect(legacy).toHaveLength(2);
+    expect(legacy.every((e) => e.audited === undefined)).toBe(true);
+    // The twin is enriched as any well-formed operation is.
+    expect(entries.filter((e) => e.audited?.operationId === twin).map((e) => e.audited)).toEqual([
+      { operationId: twin, outcome: 'applied', superseded: false },
+      { operationId: twin, outcome: 'applied', superseded: false },
+    ]);
+    // Counted and logged once, by row id; nothing thrown.
+    expect(calls).toEqual([[MALFORMED_OPERATION_ID_LOG, { reader: 'admin-log', count: 2, rows: legacy.map((e) => e.id) }]]);
   });
 
   it('a scope no vertical serves has no owner seat to hand over — 501, and nothing is recorded', async () => {

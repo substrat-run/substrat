@@ -1,9 +1,10 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { MockEmailTransport } from '@substrat-run/adapter-email';
-import { instant, platformActorId, principalId, scopeId, tenantId, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
+import { adminLogEntry, instant, platformActorId, principalId, scopeId, tenantId, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
 import { ulid, type OpsFailureInput, type SweepRunInput } from '@substrat-run/kernel';
+import { MALFORMED_OPERATION_ID_LOG, supersededUnknowns, withAuditedOutcomes } from '@substrat-run/control-plane-api';
 import {
   SWEEP_INTERVAL_MS,
   failureDigestEmail,
@@ -323,6 +324,51 @@ describe('the digest and a settled `unknown` (#2064)', () => {
       // digest has nothing left to say about it.
       await host.admin.recordOwnerTransfer(ACTOR, { ...base, phase: 'applied', outcome: 'transferred', fromRevoked: true });
       expect(await digest()).not.toContain(operationId);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+describe('a legacy malformed operation id on the hosted directory (#2064)', () => {
+  it('is returned raw by the admin-log resolution and kept by the digest, while its well-formed twin is resolved', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    try {
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      const from = principalId.parse(ulid());
+      const to = principalId.parse(ulid());
+      const twin = ulid();
+      const at = new Date().toISOString();
+      // Rows written before the contract held ids to well-formed text, straight into the directory.
+      await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_instance, state) => {
+        for (const id of ['op\uD800', twin]) {
+          for (const [phase, extra] of [['intent', {}], ['applied', { outcome: 'transferred', fromRevoked: true }]] as const) {
+            state.storage.sql.exec(
+              'INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, vertical, before, after, at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)',
+              ulid(), ACTOR, 'transferOwner', t, s, JSON.stringify({ phase, operationId: id, from, to, ...extra }), at,
+            );
+          }
+        }
+      });
+      const logged: unknown[][] = [];
+      const logError = (m: string, f: Record<string, unknown>) => logged.push([m, f]);
+      const page = await host.admin.auditLog(ACTOR, { tenantId: t, action: 'transferOwner' });
+      const resolved = await withAuditedOutcomes(host.admin, ACTOR, page, logError);
+      // Through the wire, against the exported schema.
+      const entries = (JSON.parse(JSON.stringify(resolved)) as unknown[]).map((e) => adminLogEntry.parse(e));
+      const legacy = entries.filter((e) => (e.after as { operationId: string }).operationId === 'op\uD800');
+      expect(legacy).toHaveLength(2);
+      expect(legacy.every((e) => e.audited === undefined)).toBe(true);
+      expect(entries.filter((e) => e.audited?.operationId === twin).map((e) => e.audited?.outcome)).toEqual(['applied', 'applied']);
+      expect(logged).toEqual([[MALFORMED_OPERATION_ID_LOG, { reader: 'admin-log', count: 2, rows: legacy.map((e) => e.id) }]]);
+
+      logged.length = 0;
+      const unknownOf = (reference: string) =>
+        failure(at, `operation ${reference}`, { operation: 'audit.transferOwner', stage: 'outcome-unknown', tenantId: t, scopeId: s, reference });
+      const [legacyFailure, twinFailure] = [unknownOf('op\uD800'), unknownOf(twin)];
+      expect(await supersededUnknowns(host.admin, ACTOR, [legacyFailure!, twinFailure!], logError)).toEqual(new Set([twinFailure!.id]));
+      expect(logged).toEqual([[MALFORMED_OPERATION_ID_LOG, { reader: 'digest', count: 1, rows: [legacyFailure!.id] }]]);
     } finally {
       await host.close();
     }
