@@ -87,7 +87,7 @@ import {
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
-import { executableSqlStatements } from '@substrat-run/kernel';
+import { blankSqlComments, executableSqlStatements } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -1511,7 +1511,7 @@ export class ControlPlaneDO extends DurableObject {
    */
   private rebuildAtomically(statements: readonly string[]): void {
     this.ctx.storage.transactionSync(() => {
-      for (const stmt of statements) this.sql.exec(stmt);
+      for (const stmt of statements) this.sql.exec(blankSqlComments(stmt));
     });
   }
 

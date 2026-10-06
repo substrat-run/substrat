@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { executableSqlStatements, splitSqlStatements } from '../src/index.js';
+import { blankSqlComments, executableSqlStatements, splitSqlStatements } from '../src/index.js';
 
 /**
  * #2068, Codex #2084 r4 — the splitter's own contract: original substrings, nothing glued, and an
@@ -37,5 +37,15 @@ describe('splitSqlStatements (#2068)', () => {
       'CREATE TABLE constructor(toString)',
       'INSERT INTO constructor VALUES(1)',
     ]);
+  });
+
+  it('blankSqlComments: the whole text, same length, every comment blanked — a trailing one too — literals intact', () => {
+    const sql = "CREATE TABLE t( -- why\n a DEFAULT '-- kept', /* b */ \"c--d\" TEXT) -- after;\n/* only a comment */";
+    const out = blankSqlComments(sql);
+    expect(out).toHaveLength(sql.length);
+    expect(out).not.toMatch(/why|after|only a comment|\/\*/);
+    expect(out).toContain("'-- kept'");
+    expect(out).toContain('"c--d"');
+    expect(out.split('\n').length).toBe(sql.split('\n').length);
   });
 });

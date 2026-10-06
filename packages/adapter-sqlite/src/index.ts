@@ -379,6 +379,7 @@ import {
   recordOwnershipSteps,
   runMigrationStatements,
   executableSqlStatements,
+  blankSqlComments,
   recordWriteSuperseded,
   switchFencesOf,
   switchSupersededMessage,
@@ -3589,7 +3590,9 @@ export class SqliteScopeHost implements ScopeHost {
       // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
       // not keep at all; they are skipped by name, and any other unknown spine table is refused.
       const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));
-      for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
+      // Comment-blanked (#2068), as the Durable Object replays it: the dump's DDL is
+      // `sqlite_master.sql` verbatim, and `prepare` still compiles exactly one statement.
+      for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(blankSqlComments(t.ddl)).run();
       execSqlStatements(db, KERNEL_DDL);
       this.ensureSpineColumns(db);
       const columnsOf = (name: string) => builtColumnsOf(db, name);

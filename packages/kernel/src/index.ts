@@ -472,7 +472,7 @@ export {
   tableStatements,
 } from './table-ownership.js';
 export type { OwnerStore, TableChange, TableStatement, TableStep } from './table-ownership.js';
-export { executableSqlStatements, splitSqlStatements } from './sql-statements.js';
+export { blankSqlComments, executableSqlStatements, splitSqlStatements } from './sql-statements.js';
 export type {
   ModuleErasureCounts,
   ModuleErasurePlan,

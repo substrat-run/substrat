@@ -315,6 +315,7 @@ import {
   runMigrationStatements,
   splitSqlStatements,
   executableSqlStatements,
+  blankSqlComments,
   type TableStep,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
@@ -6235,7 +6236,10 @@ export function defineScopeDO(
           // decide how this DO's permission checks match. Every `_substrat_*` table is built
           // from KERNEL_DDL instead, and the dump contributes only rows, by column name
           // (`spineRowsInsert`), a missing column taking the kernel's default.
-          for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(t.ddl);
+          // Comment-blanked (#2068): a dump records `sqlite_master.sql` verbatim, comments included,
+          // and replaying it raw would store them again — and a later DROP COLUMN of the last
+          // column fails on workerd. The validated statement is otherwise executed exactly as is.
+          for (const t of replayable) if (!isSpineTable(t.name)) this.sql.exec(blankSqlComments(t.ddl));
           // KERNEL_DDL also builds what the dump did not carry (#321). A dump captured from a
           // WORLD that stores some `_substrat_*` tables ELSEWHERE carries only a subset — an
           // `@substrat-run/adapter-sqlite` scope file keeps `_substrat_roles` /

@@ -85,7 +85,7 @@ interface ScannedStatement {
 }
 
 /** The scanner both functions below share: complete.c's tokens and transitions, nothing else. */
-function scanSqlStatements(sql: string): ScannedStatement[] {
+function scanSqlStatements(sql: string, everyComment = false): ScannedStatement[] {
   const out: ScannedStatement[] = [];
   const n = sql.length;
   let state = 0;
@@ -95,7 +95,10 @@ function scanSqlStatements(sql: string): ScannedStatement[] {
   let substantive = false;
   let i = 0;
   const emit = (end: number): void => {
-    if (substantive && sql.slice(start, end).trim()) out.push({ start, end, comments });
+    // `everyComment`: a stretch that holds only comments still reports them, for the blanker.
+    if ((substantive && sql.slice(start, end).trim()) || (everyComment && comments.length > 0)) {
+      out.push({ start, end, comments });
+    }
   };
   while (i < n) {
     const c = sql[i]!;
@@ -168,13 +171,26 @@ export function splitSqlStatements(sql: string): string[] {
  * The one scanner decides what a comment is, so there is no second grammar to drift.
  */
 export function executableSqlStatements(sql: string): string[] {
-  return scanSqlStatements(sql).map((st) => {
-    let text = '';
-    let at = st.start;
+  const blanked = blankSqlComments(sql);
+  // Same length, so the original statement spans index the blanked text exactly.
+  return scanSqlStatements(sql).map((st) => blanked.slice(st.start, st.end).trim());
+}
+
+/**
+ * The whole of `sql` with every comment replaced by whitespace of the same length (a newline
+ * stays a newline), strings and quoted identifiers untouched — `executableSqlStatements` without
+ * the split. For a caller that executes one statement it was handed as text and must keep
+ * executing it exactly as it does — a dump restore replaying a table's recorded DDL, which
+ * `sqlite_master` holds verbatim, comments included — so the stored DDL it leaves carries none.
+ */
+export function blankSqlComments(sql: string): string {
+  let out = '';
+  let at = 0;
+  for (const st of scanSqlStatements(sql, true)) {
     for (const [from, to] of st.comments) {
-      text += sql.slice(at, from) + sql.slice(from, to).replace(/[^\n]/g, ' ');
+      out += sql.slice(at, from) + sql.slice(from, to).replace(/[^\n]/g, ' ');
       at = to;
     }
-    return (text + sql.slice(at, st.end)).trim();
-  });
+  }
+  return out + sql.slice(at);
 }
