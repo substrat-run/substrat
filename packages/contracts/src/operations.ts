@@ -1821,7 +1821,7 @@ const pagedInputFields = {
  */
 export function operationInputsOf<const Ops extends Record<string, object>>(
   operations: Ops,
-): Record<string, z.ZodType> {
+): Readonly<Record<string, z.ZodType>> {
   const inputs: Record<string, z.ZodType> = {};
   for (const [name, op] of Object.entries(operations)) {
     const decl = op as {
@@ -1868,29 +1868,40 @@ export function operationInputsOf<const Ops extends Record<string, object>>(
   }
   // #119: the declared surface travels with the schemas, so the host DERIVES each operation's
   // target from the same declaration it parses with — a module cannot hand it a partial map.
-  Object.defineProperty(inputs, DECLARED_SURFACE, {
-    value: { operations: Object.keys(operations), targets: operationTargetsOf(operations) } satisfies DeclaredOperationSurface,
-    enumerable: false,
-  });
-  return inputs;
+  // Both are frozen, and the pair is recorded where only this module can write
+  // (`declaredSurfaceOf`), so neither can be edited or imitated after the fact.
+  const targets = operationTargetsOf(operations);
+  for (const target of Object.values(targets)) Object.freeze(target);
+  DECLARED_SURFACES.set(
+    inputs,
+    Object.freeze({ operations: Object.freeze(Object.keys(operations)), targets: Object.freeze(targets) }),
+  );
+  return Object.freeze(inputs);
 }
 
 /**
- * Where `operationInputsOf` puts the declared surface it was built from (#119): every declared
- * operation's name and the entity each addresses by id. Non-enumerable, so the map still reads
- * as name → schema; a registered symbol, so two copies of this package agree on it.
+ * What `operationInputsOf` records for each map it builds (#119): every declared operation's name
+ * and the entity each addresses by id. Deep-frozen.
  */
-export const DECLARED_SURFACE = Symbol.for('substrat.declaredOperationSurface');
-
-/** What `operationInputsOf` records under `DECLARED_SURFACE`. */
 export interface DeclaredOperationSurface {
   readonly operations: readonly string[];
-  readonly targets: Readonly<Record<string, OperationTarget>>;
+  readonly targets: Readonly<Record<string, Readonly<OperationTarget>>>;
 }
 
-/** The declared surface an `operationInputs` map was derived from, or `undefined` for a hand-built one. */
+/**
+ * Every map `operationInputsOf` built, and the surface it was built from (#119). Module-private
+ * and keyed by the map's identity: no property on the map carries the surface, so a copy, a spread
+ * or a hand-built map has none, and nothing outside this module can add one.
+ */
+const DECLARED_SURFACES = new WeakMap<object, DeclaredOperationSurface>();
+
+/**
+ * The declared surface an `operationInputs` map was derived from — `undefined` for any map
+ * `operationInputsOf` did not itself return (a hand-built one, a copy, or one built by a second
+ * copy of this package, whose record this one cannot read).
+ */
 export function declaredSurfaceOf(operationInputs: object | undefined): DeclaredOperationSurface | undefined {
-  return (operationInputs as { [DECLARED_SURFACE]?: DeclaredOperationSurface } | undefined)?.[DECLARED_SURFACE];
+  return operationInputs === undefined ? undefined : DECLARED_SURFACES.get(operationInputs);
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  declaredSurfaceOf,
   errorCodeOf,
   moduleId,
   permissionKey,
@@ -474,6 +475,18 @@ export function entityTrashContractSuite(
             },
           })),
         ).toThrow(/purge schedule/);
+      });
+
+      it('refuses a declared surface that was edited or forged — only the map operationInputsOf returned carries one', () => {
+        // The pre-r2 carrier, a registered symbol, attached to a copy with every target dropped.
+        const forged = Object.defineProperty({ ...trashMod.operationInputs }, Symbol.for('substrat.declaredOperationSurface'), {
+          value: { operations: Object.keys(trashMod.operations!), targets: {} },
+        });
+        expect(variant((m) => ({ ...m, operationInputs: forged }))).toThrow(/operationInputsOf/);
+        // The genuine surface cannot be emptied in place.
+        expect(() => {
+          (declaredSurfaceOf(trashMod.operationInputs) as { targets: unknown }).targets = {};
+        }).toThrow(TypeError);
       });
 
       it('refuses a horizon with no purge schedule', () => {

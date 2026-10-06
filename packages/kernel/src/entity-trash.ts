@@ -279,8 +279,9 @@ export function registerTrashTargets(
     const where = `${moduleId} declares trashable entities (${[...trashable.keys()].sort().join(', ')})`;
     if (!surface) {
       throw new Error(
-        `${where} but its \`operationInputs\` were not built by \`operationInputsOf\` — the host could not see which ` +
-          'operations address a binned one.\n  Remedy: `operationInputs: operationInputsOf(ops)`.',
+        `${where} but its \`operationInputs\` is not a map \`operationInputsOf\` returned — the host could not see which ` +
+          'operations address a binned one. A copy, a spread or an edited map is not one, and nor is a map built by a ' +
+          'second copy of @substrat-run/contracts.\n  Remedy: `operationInputs: operationInputsOf(ops)`, as returned.',
       );
     }
     const undeclared = [...ownOps].filter((name) => !surface.operations.includes(name)).sort();
@@ -295,8 +296,8 @@ export function registerTrashTargets(
   for (const [name, target] of Object.entries(surface?.targets ?? {})) {
     if (!ownOps.has(name)) continue; // declared and not bound here: nothing to refuse
     if (target.trashed === 'purges') {
-      const shape = (operationInputs?.[name] as { shape?: Record<string, unknown> } | undefined)?.shape;
-      const fields = Object.keys(shape ?? {});
+      const schema = operationInputs?.[name];
+      const fields = Object.keys((schema as { shape?: Record<string, unknown> } | undefined)?.shape ?? {});
       if (fields.length !== 1 || fields[0] !== target.idFrom) {
         throw new Error(
           `${moduleId}: '${name}' purges '${target.entity}', and its parsed input takes ${fields.map((f) => `'${f}'`).join(', ') || 'nothing'} — ` +

@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
+  declaredSurfaceOf,
   errorCodeOf,
   operationInputsOf,
   permissionKey,
@@ -70,6 +71,43 @@ describe('registerTrashTargets', () => {
       'b/delete': { ...declared['b/delete'], input: z.object({ boxId: z.string(), otherBoxId: z.string().optional() }) },
     });
     expect(() => registerTrashTargets('m', own, wider, [decl], [])).toThrow(/nothing else/);
+  });
+
+  it('reads a surface nothing can edit: the record, its targets and the map are frozen', () => {
+    const surface = operationInputsOf(declared);
+    const record = declaredSurfaceOf(surface)!;
+    expect(() => {
+      (record as { targets: unknown }).targets = {};
+    }).toThrow(TypeError);
+    expect(() => {
+      delete (record.targets as Record<string, unknown>)['b/delete'];
+    }).toThrow(TypeError);
+    expect(() => {
+      (record.targets['b/delete'] as { trashed?: string }).trashed = 'admits';
+    }).toThrow(TypeError);
+    expect(() => {
+      (record.operations as string[]).push('b/sneak');
+    }).toThrow(TypeError);
+    // Nor can the map's schemas be swapped for a looser purge input after the fact.
+    expect(() => {
+      (surface as Record<string, unknown>)['b/delete'] = z.looseObject({ boxId: z.string() });
+    }).toThrow(TypeError);
+    // So registration still derives every target, the purge included.
+    expect(registerTrashTargets('m', own, surface, [decl], []).get('b/delete')).toEqual(purgeTarget);
+  });
+
+  it('reads a surface nothing can forge: only a map operationInputsOf itself returned has one', () => {
+    const forged = { targets: {}, operations: ['b/delete', 'b/rename'] };
+    // The old carrier — a registered symbol on the map — attached to a hand-built map, and to a copy.
+    for (const map of [{ 'b/delete': declared['b/delete'].input }, { ...inputs }]) {
+      Object.defineProperty(map, Symbol.for('substrat.declaredOperationSurface'), { value: forged });
+      expect(declaredSurfaceOf(map)).toBeUndefined();
+      expect(() => registerTrashTargets('m', own, map, [decl], [])).toThrow(/operationInputsOf/);
+    }
+    // A genuine surface is not transferable either: it belongs to the map it was built with.
+    expect(declaredSurfaceOf({ ...inputs })).toBeUndefined();
+    // Twin: the map as returned.
+    expect(declaredSurfaceOf(inputs)?.targets['b/delete']).toEqual(purgeTarget);
   });
 
   it('ties a horizon to exactly one purge schedule running the purging operation', () => {
