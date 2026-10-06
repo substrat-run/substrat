@@ -1294,7 +1294,7 @@ export function defineScopeDO(
       const trashTargets = registerTrashTargets(
         manifest.id,
         new Set(Object.keys(registration.operations ?? {})),
-        registration.operationTargets,
+        registration.operationInputs,
         manifest.entityStates,
         manifest.schedules,
       );

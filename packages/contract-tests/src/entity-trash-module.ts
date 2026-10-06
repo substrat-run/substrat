@@ -1,7 +1,7 @@
 /**
  * The fixture behind `entityTrashContractSuite` (#119 PR 2): the host's trash refusal, the
  * link refusal and the purge horizon, declared the way a vertical declares them — through
- * `defineEntities`, `defineOperations`, `operationTargetsOf` and `purgeSchedulesOf` — so the
+ * `defineEntities`, `defineOperations`, `operationInputsOf` and `purgeSchedulesOf` — so the
  * suite is held against the producers a vertical actually calls, not a hand-written copy.
  *
  * - `tbox` — archivable and trashable, purged after `TBOX_PURGE_DAYS` by `trash/delete-box`.
@@ -20,7 +20,6 @@ import {
   manifestOperations,
   moduleManifest,
   operationInputsOf,
-  operationTargetsOf,
   purgeSchedulesOf,
   type EntityRef,
 } from '@substrat-run/contracts';
@@ -191,8 +190,8 @@ export const trashMod: ModuleRegistration = {
             CREATE TABLE trash_keeps (id TEXT PRIMARY KEY);`,
     },
   ],
+  // The host derives each operation's target from these — the same declarations it parses with.
   operationInputs: operationInputsOf(trashOperations),
-  operationTargets: operationTargetsOf(trashOperations),
   // Every handler checks its declared key first, as a vertical's does — the host's refusal has
   // to agree with that order, which is what the suite asserts.
   operations: {

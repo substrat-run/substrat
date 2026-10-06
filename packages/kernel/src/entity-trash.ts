@@ -22,6 +22,7 @@
  */
 import {
   TRASHED_AT_COLUMN,
+  declaredSurfaceOf,
   errorCodeOf,
   substratError,
   type EntityRef,
@@ -268,7 +269,7 @@ export function purgeReportOf(
 export function registerTrashTargets(
   moduleId: string,
   ownOps: ReadonlySet<string>,
-  targets: Readonly<Record<string, OperationTarget>> | undefined,
+  operationInputs: Readonly<Record<string, unknown>> | undefined,
   entityStates: readonly EntityStateDeclaration[] | undefined,
   schedules: readonly ScheduleSpec[] | undefined,
 ): Map<string, OperationTarget> {

@@ -1,7 +1,16 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { permissionKey, substratError, type OperationTarget, type ScheduleSpec } from '@substrat-run/contracts';
 import {
+  errorCodeOf,
+  operationInputsOf,
+  permissionKey,
+  substratError,
+  z,
+  type OperationTarget,
+  type ScheduleSpec,
+} from '@substrat-run/contracts';
+import {
+  refuseTrashedTarget,
   entityStateMigrations,
   entityStatePlans,
   purgeCandidates,
@@ -27,12 +36,20 @@ const purgeSchedule: ScheduleSpec = {
   purge: { entityType: 'box' },
 };
 const own = new Set(['b/delete', 'b/rename']);
+/** Declarations as a module's operation surface carries them; the host reads targets off these. */
+const declared = {
+  'b/delete': { permission: { key: 'box:delete', entity: 'box', idFrom: 'boxId' }, trashed: 'purges', input: z.object({ boxId: z.string() }) },
+  'b/rename': { permission: { key: 'box:read', entity: 'box', idFrom: 'boxId' }, input: z.object({ boxId: z.string(), name: z.string() }) },
+};
+const inputs = operationInputsOf(declared);
 
 describe('registerTrashTargets', () => {
-  it('requires operationTargets from a module with a trashable entity', () => {
-    expect(() => registerTrashTargets('m', own, undefined, [decl], [])).toThrow(/operationTargets/);
-    // Twin: an empty map is a statement, and a module with nothing trashable needs none.
-    expect(registerTrashTargets('m', own, {}, [decl], []).size).toBe(0);
+  it('derives the targets from the declared surface, and requires one from a module with a trashable entity', () => {
+    expect(registerTrashTargets('m', own, inputs, [decl], []).get('b/delete')).toEqual(purgeTarget);
+    expect(() => registerTrashTargets('m', own, undefined, [decl], [])).toThrow(/operationInputsOf/);
+    // A hand-built map carries no surface: nothing to derive the targets from.
+    expect(() => registerTrashTargets('m', own, { ...inputs }, [decl], [])).toThrow(/operationInputsOf/);
+    // Twin: a module with nothing trashable needs none.
     expect(registerTrashTargets('m', own, undefined, [], undefined).size).toBe(0);
   });
 

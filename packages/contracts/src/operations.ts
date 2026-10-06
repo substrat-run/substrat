@@ -1866,7 +1866,31 @@ export function operationInputsOf<const Ops extends Record<string, object>>(
     if (!decl.input) continue;
     inputs[name] = decl.inputOptional ? decl.input.optional() : decl.input;
   }
+  // #119: the declared surface travels with the schemas, so the host DERIVES each operation's
+  // target from the same declaration it parses with — a module cannot hand it a partial map.
+  Object.defineProperty(inputs, DECLARED_SURFACE, {
+    value: { operations: Object.keys(operations), targets: operationTargetsOf(operations) } satisfies DeclaredOperationSurface,
+    enumerable: false,
+  });
   return inputs;
+}
+
+/**
+ * Where `operationInputsOf` puts the declared surface it was built from (#119): every declared
+ * operation's name and the entity each addresses by id. Non-enumerable, so the map still reads
+ * as name → schema; a registered symbol, so two copies of this package agree on it.
+ */
+export const DECLARED_SURFACE = Symbol.for('substrat.declaredOperationSurface');
+
+/** What `operationInputsOf` records under `DECLARED_SURFACE`. */
+export interface DeclaredOperationSurface {
+  readonly operations: readonly string[];
+  readonly targets: Readonly<Record<string, OperationTarget>>;
+}
+
+/** The declared surface an `operationInputs` map was derived from, or `undefined` for a hand-built one. */
+export function declaredSurfaceOf(operationInputs: object | undefined): DeclaredOperationSurface | undefined {
+  return (operationInputs as { [DECLARED_SURFACE]?: DeclaredOperationSurface } | undefined)?.[DECLARED_SURFACE];
 }
 
 // ---------------------------------------------------------------------------

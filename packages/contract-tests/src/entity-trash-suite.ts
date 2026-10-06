@@ -420,8 +420,16 @@ export function entityTrashContractSuite(
         return () => host.registerModule(copy);
       };
 
-      it('refuses a module with a trashable entity and no operationTargets', () => {
-        expect(variant(({ operationTargets: _, ...m }) => m)).toThrow(/operationTargets/);
+      it('refuses a module with a trashable entity whose operations are not a declared surface', () => {
+        expect(variant(({ operationInputs: _, ...m }) => m)).toThrow(/operationInputsOf/);
+        // A hand-built map is not one either: there is nothing to derive the targets from.
+        expect(variant((m) => ({ ...m, operationInputs: { ...m.operationInputs } }))).toThrow(/operationInputsOf/);
+      });
+
+      it('refuses a bound operation its declarations do not name — an omitted target cannot pass', () => {
+        expect(
+          variant((m) => ({ ...m, operations: { ...m.operations, 'trash/sneak-rename': m.operations!['trash/rename-box']! } })),
+        ).toThrow(/trash\/sneak-rename/);
       });
 
       it('refuses a purge schedule that runs anything but the purging operation', () => {

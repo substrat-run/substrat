@@ -2555,7 +2555,7 @@ export class SqliteScopeHost implements ScopeHost {
     const trashTargets = registerTrashTargets(
       manifest.id,
       new Set(Object.keys(registration.operations ?? {})),
-      registration.operationTargets,
+      registration.operationInputs,
       manifest.entityStates,
       manifest.schedules,
     );

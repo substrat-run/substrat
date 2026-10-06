@@ -1795,28 +1795,6 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    */
   operationConcurrency?: Record<string, { entity: string; idFrom: string }>;
   /**
-   * name → the entity each operation addresses by id, its declared key, and whether it
-   * reaches a TRASHED entity (#119).
-   *
-   * Derived from the declared operation surface — `operationTargetsOf(ops)` — like the two
-   * above:
-   *
-   * ```ts
-   * operationTargets: operationTargetsOf(todoOperations),
-   * ```
-   *
-   * **The host refuses, not the handler.** An operation addressing an entity that declares
-   * `trash` is refused on a trashed one, inside its transaction and before the guards and the
-   * handler, unless it declares `trashed: 'admits'` or `'purges'`: `not_found` to a caller who
-   * holds its key on the entity, and the same `forbidden` an active entity would have given to
-   * one who does not. A handler forgetting `ctx.entityState` is the bug this replaces.
-   *
-   * **Required from a module that declares a trashable entity** — registration refuses one
-   * that leaves it out, so the refusal cannot be lost by forgetting the line. A name here that
-   * no operation binds is an error, as on `operationConcurrency`.
-   */
-  operationTargets?: Record<string, OperationTarget>;
-  /**
    * The operations that declared `idempotency: false` (#116) — the ones whose
    * response must not be recorded, and which therefore refuse an
    * `Idempotency-Key` instead of honouring it.

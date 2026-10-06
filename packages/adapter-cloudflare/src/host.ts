@@ -3629,7 +3629,7 @@ export class CloudflareScopeHost implements ScopeHost {
     registerTrashTargets(
       manifest.id,
       new Set(Object.keys(registration.operations ?? {})),
-      registration.operationTargets,
+      registration.operationInputs,
       manifest.entityStates,
       manifest.schedules,
     );

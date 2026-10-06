@@ -17,7 +17,6 @@ import {
   dataSubjectId,
   LIST_PAGE_DEFAULT,
   operationInputsOf,
-  operationTargetsOf,
   substratError,
   type HandlerInput,
   type HandlerOutput,
@@ -481,10 +480,8 @@ export const todoModule: ModuleRegistration = {
   migrations: todoMigrations,
   // The host parses every invocation against the same declaration the routes and
   // the document come from, so "parse, don't trust" holds on every path in — HTTP,
-  // test, seed — rather than in the handlers that remembered (#953).
+  // test, seed — rather than in the handlers that remembered (#953). It also derives
+  // from it which list each operation addresses, so it refuses a binned one itself (#119).
   operationInputs: operationInputsOf(todoOperations),
-  // #119: which list each operation addresses, so the HOST refuses a binned one — not each
-  // handler remembering to ask.
-  operationTargets: operationTargetsOf(todoOperations),
   operations: operations as ModuleRegistration['operations'],
 };
