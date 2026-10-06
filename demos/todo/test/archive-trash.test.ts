@@ -12,9 +12,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { errorCodeOf, principalId, type Page } from '@substrat-run/contracts';
-import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
-import { buildHost, grantOwner, seed, type World } from '../src/seed.js';
+import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { errorCodeOf, moduleId, principalId, type Page } from '@substrat-run/contracts';
+import { manualClock, ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import { buildHost, grantOwner, MODULES, seed, type World } from '../src/seed.js';
+import { todoManifest } from '../src/manifest.js';
 
 let dir: string;
 let host: ScopeHost;
@@ -167,5 +169,44 @@ describe('the denials that prove it', () => {
     expect(await dana.invoke('todo/delete-list', { listId: holiday })).toEqual({ id: holiday, deleted: true });
     expect(await bin()).toEqual([]);
     expect(await codeOf(dana.invoke('todo/restore-list', { listId: holiday }))).toBe('not_found');
+  });
+});
+
+describe('a list left in the bin for 30 days is deleted for good', () => {
+  it('the sweep runs delete-list on it — items and shares with it — and leaves every younger list alone', async () => {
+    const DAY = 86_400_000;
+    const clock = manualClock(new Date().toISOString());
+    const purgeDir = mkdtempSync(join(tmpdir(), 'todo-purge-'));
+    const h = new SqliteScopeHost({ dir: purgeDir, clock: clock.read });
+    for (const m of MODULES) h.registerModule(m);
+    try {
+      const w = await seed(h);
+      const ada = await h.getScope(w.ada.principal, w.tenant, w.scope);
+      const sweep = () => h.runDueSchedules(moduleId.parse(todoManifest.id), w.tenant, w.scope);
+
+      const shed = (await ada.invoke<List>('todo/create-list', { name: 'Shed' })).id;
+      await ada.invoke('todo/add-item', { listId: shed, text: 'rake' });
+      await ada.invoke('todo/share-list', { listId: shed, email: w.bjorn.email });
+      await ada.invoke('todo/trash-list', { listId: shed });
+      clock.advance(29 * DAY);
+      const attic = (await ada.invoke<List>('todo/create-list', { name: 'Attic' })).id;
+      await ada.invoke('todo/trash-list', { listId: attic });
+
+      // Day 29: nothing is due yet.
+      expect(await sweep()).toMatchObject({ failed: 0, errors: [] });
+      expect(await bin(ada)).toEqual(expect.arrayContaining(['Shed', 'Attic']));
+
+      // Day 31 for "Shed", day 2 for "Attic".
+      clock.advance(2 * DAY);
+      expect(await sweep()).toMatchObject({ fired: 1, failed: 0, errors: [] });
+      expect(await bin(ada)).toEqual(['Attic']);
+      // Gone, not binned: there is nothing left to restore, and the delete took its share with it.
+      expect(await codeOf(ada.invoke('todo/restore-list', { listId: shed }))).toBe('not_found');
+      const bjorn = await h.getScope(w.bjorn.principal, w.tenant, w.scope);
+      expect(await codeOf(bjorn.invoke('todo/list-items', { listId: shed }))).not.toBe('answered');
+    } finally {
+      await h.close();
+      rmSync(purgeDir, { recursive: true, force: true });
+    }
   });
 });

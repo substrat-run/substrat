@@ -130,8 +130,16 @@ export interface EntityDef<Names extends string = string> {
    * `ctx.restore` and the trashed readers, and is distinct from `archive`'s on purpose:
    * putting something in the bin and seeing what is in it are not the same authority as
    * filing it away. Gives the table `_substrat_trashed_at`.
+   *
+   * `purgeAfterDays` adds a PURGE HORIZON (#119): an entity in the bin longer than that is
+   * permanently deleted by the platform's sweep, which runs the vertical's own operation that
+   * declares `trashed: 'purges'` for this entity — so what a delete cascades to stays the
+   * vertical's rule. The operation is run as the module's system principal, one entity per
+   * transaction. Absent, nothing is ever purged: the bin keeps what it holds until a person
+   * empties it. A purge removes the row the way that operation always has; the events about the
+   * entity stay, which is what separates it from erasure (#37).
    */
-  readonly trash?: { readonly permission: string };
+  readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number };
 }
 
 /**
@@ -296,8 +304,8 @@ export interface EmittedEntity {
   readonly outsideText?: readonly string[];
   /** The permission key that archives it (#119), when it can be archived. */
   readonly archive?: { readonly permission: string };
-  /** The permission key that trashes it (#119), when it can be trashed. */
-  readonly trash?: { readonly permission: string };
+  /** The permission key that trashes it (#119), when it can be trashed, and its purge horizon. */
+  readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number };
 }
 
 export interface EmittedModel {
@@ -371,7 +379,7 @@ export const emittedEntity = z.object({
   erasable: z.array(z.string()).optional(),
   outsideText: z.array(z.string()).optional(),
   archive: z.object({ permission: z.string().min(1) }).optional(),
-  trash: z.object({ permission: z.string().min(1) }).optional(),
+  trash: z.object({ permission: z.string().min(1), purgeAfterDays: z.number().int().positive().optional() }).optional(),
 });
 
 export const emittedExport = z.object({
@@ -436,7 +444,14 @@ export function emitModel<T extends Record<string, EntityDef>>(
       ...(e.erasable ? { erasable: [...e.erasable].sort() } : {}),
       ...(e.outsideText ? { outsideText: [...e.outsideText].sort() } : {}),
       ...(e.archive ? { archive: { permission: e.archive.permission } } : {}),
-      ...(e.trash ? { trash: { permission: e.trash.permission } } : {}),
+      ...(e.trash
+        ? {
+            trash: {
+              permission: e.trash.permission,
+              ...(e.trash.purgeAfterDays !== undefined ? { purgeAfterDays: e.trash.purgeAfterDays } : {}),
+            },
+          }
+        : {}),
     };
   }
   // Refused at emit too, so `lint:model --check` goes red where `manifestEntities` would.
@@ -712,10 +727,15 @@ export function entityStatesOf(entities: Record<string, EntityDef>): EntityState
           'ctx.archive and ctx.trash take one id, and a composite key has none to give',
       );
     }
+    const days = entity.trash?.purgeAfterDays;
+    if (days !== undefined && !(Number.isInteger(days) && days > 0)) {
+      throw new Error(`model: '${name}' declares trash.purgeAfterDays ${String(days)} — a horizon is a whole number of days, at least 1`);
+    }
     out.push({
       entityType: name,
       ...(entity.archive ? { archivePermission: permissionKey.parse(entity.archive.permission) } : {}),
       ...(entity.trash ? { trashPermission: permissionKey.parse(entity.trash.permission) } : {}),
+      ...(entity.trash?.purgeAfterDays !== undefined ? { purgeAfterDays: entity.trash.purgeAfterDays } : {}),
       table: entity.table,
       idColumn: key[0] as string,
     });

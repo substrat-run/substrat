@@ -350,16 +350,18 @@ describe('runtime DDL on a stateful table (#119, Codex r3)', () => {
 });
 
 describe('assertEntityStateIntact', () => {
+  // With a purge horizon, so the purge sweep's index (#119 PR 2) is one of the things checked.
+  const purged = { ...both, purgeAfterDays: 3 };
   const build = () => {
     const db = new DatabaseSync(':memory:');
     db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
     for (const m of moduleMigrations({
-      manifest: { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [both] },
+      manifest: { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [purged] },
     }))
       db.exec(m.sql);
     const sql = { query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[], exec: () => ({ changes: 0 }) };
     const plans = new Map();
-    addStatePlans(plans, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+    addStatePlans(plans, '@m', [purged], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
     const indexes = stateListIndexNames(listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]));
     return { db, check: () => assertEntityStateIntact(sql as never, plans, indexes) };
   };
@@ -368,6 +370,7 @@ describe('assertEntityStateIntact', () => {
     ['born trigger', 'DROP TRIGGER _substrat_state_docs_born'],
     ['moved trigger', 'DROP TRIGGER _substrat_state_docs_moved'],
     ['list index', 'DROP INDEX _substrat_list_m_doc_title_archived'],
+    ['purge index', 'DROP INDEX _substrat_purge_docs'],
     ['column', 'ALTER TABLE docs DROP COLUMN _substrat_trashed_at'],
   ] as const) {
     it(`fails closed without its ${what}`, () => {

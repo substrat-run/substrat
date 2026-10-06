@@ -168,7 +168,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
-import { substratError, type EntityStateName } from '@substrat-run/contracts';
+import { substratError, type EntityStateName, type OperationTarget } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { SealedSecret } from './secret-box.js';
@@ -514,6 +514,11 @@ export interface OperationContext {
    * revives it and records that as one `entity.linked` spine event, since access resumes.
    *
    * Checks no permission: the operation does, in its own vocabulary.
+   *
+   * A parent in the TRASH (#119) is refused `not_found`: nothing new hangs off a binned
+   * entity, since it is gone from everyone's view until restored. An ARCHIVED parent is
+   * allowed — archived is filed away and still readable, and whether one may still be added
+   * to is the vertical's rule, not the kernel's.
    */
   link(child: EntityRef, parent: EntityRef): void;
   /**
@@ -526,6 +531,8 @@ export interface OperationContext {
    *   move would make the child its own ancestor.
    * - `from` must be a live parent edge of `child`; `conflict` otherwise. Every other
    *   parent a multi-parent entity has is left alone.
+   * - A `to` in the TRASH is refused `not_found`, as `link` refuses one (#119). `from` is
+   *   not: moving a child out from under a binned parent is how it is rescued.
    * - `from` equal to `to` is a no-op: nothing written, nothing emitted.
    * - A `to` that is ALREADY a live parent of `child` is the way to detach one parent of a
    *   multi-parent child (#2044): the `from` edge is tombstoned, the live `to` edge stays
@@ -856,6 +863,19 @@ export interface InvokeOptions {
    * idempotent replay. Absent from a host that predates it — read that as "not reported".
    */
   readonly onExecutorOutcomes?: (outcomes: readonly ExecutorOutcome[]) => void;
+  /**
+   * PLATFORM-INTERNAL (#119): this call is a purge horizon's sweep running the entity's
+   * `trashed: 'purges'` operation, and this is the cutoff — the latest `_substrat_trashed_at`
+   * still due. The host re-reads the entity inside the operation's transaction and refuses
+   * (`conflict`, reason `purge_not_due`) unless it is still trashed at or before it, so an
+   * entity restored between the sweep's selection and its turn is never purged.
+   *
+   * It only ever narrows what a call may do. It is also the one condition under which the
+   * module's system principal may use a key it holds ONLY for its purge schedules: anywhere
+   * else that key is withheld from the system principal's checks, so the grant seated for the
+   * purge cannot run any other operation.
+   */
+  readonly purgeCutoff?: string;
 }
 
 /** How many of an invocation's own events `onEmitted` names (#1746). `total` is uncapped. */
@@ -1780,6 +1800,28 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * `operationInputs`: it reads as coverage while enforcing nothing.
    */
   operationConcurrency?: Record<string, { entity: string; idFrom: string }>;
+  /**
+   * name → the entity each operation addresses by id, its declared key, and whether it
+   * reaches a TRASHED entity (#119).
+   *
+   * Derived from the declared operation surface — `operationTargetsOf(ops)` — like the two
+   * above:
+   *
+   * ```ts
+   * operationTargets: operationTargetsOf(todoOperations),
+   * ```
+   *
+   * **The host refuses, not the handler.** An operation addressing an entity that declares
+   * `trash` is refused on a trashed one, inside its transaction and before the guards and the
+   * handler, unless it declares `trashed: 'admits'` or `'purges'`: `not_found` to a caller who
+   * holds its key on the entity, and the same `forbidden` an active entity would have given to
+   * one who does not. A handler forgetting `ctx.entityState` is the bug this replaces.
+   *
+   * **Required from a module that declares a trashable entity** — registration refuses one
+   * that leaves it out, so the refusal cannot be lost by forgetting the line. A name here that
+   * no operation binds is an error, as on `operationConcurrency`.
+   */
+  operationTargets?: Record<string, OperationTarget>;
   /**
    * The operations that declared `idempotency: false` (#116) — the ones whose
    * response must not be recorded, and which therefore refuse an

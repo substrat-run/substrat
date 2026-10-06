@@ -67,6 +67,8 @@ export interface EntityStatePlan {
   readonly archivePermission?: PermissionKey;
   /** Present when the entity can be trashed. */
   readonly trashPermission?: PermissionKey;
+  /** Present when a trashed entity is purged after this many days (`entity-trash.ts`). */
+  readonly purgeAfterDays?: number;
 }
 
 /** The operation's own check — a pass is recorded as one of its authorizations (K-34). */
@@ -97,6 +99,9 @@ export function entityStatePlans(
     if (!decl.archivePermission && !decl.trashPermission) {
       throw new Error(`entity state: ${where} declares neither an archive nor a trash permission`);
     }
+    if (decl.purgeAfterDays !== undefined && !decl.trashPermission) {
+      throw new Error(`entity state: ${where} declares a purge horizon and no trash — only a trashed entity is purged`);
+    }
     plans.push({
       moduleId,
       entityType: decl.entityType,
@@ -104,6 +109,7 @@ export function entityStatePlans(
       idColumn: assertSqlIdentifier('entity state', 'an id column', decl.idColumn ?? 'id', where),
       ...(decl.archivePermission ? { archivePermission: decl.archivePermission } : {}),
       ...(decl.trashPermission ? { trashPermission: decl.trashPermission } : {}),
+      ...(decl.purgeAfterDays !== undefined ? { purgeAfterDays: decl.purgeAfterDays } : {}),
     });
   }
   return plans;
@@ -142,8 +148,29 @@ export function entityStateMigrations(
     // After the columns they name. Versioned by which columns they guard, so declaring a trash
     // on an archivable entity rebuilds them to guard both.
     out.push({ version: `state/${plan.entityType}:guard:${columnNamesOf(plan).join('+')}`, sql: entityStateTriggerDdl(plan) });
+    // The purge sweep's walk (#119): the oldest trashed rows first, without reading the rest of
+    // the bin. Its own version, so declaring a horizon later adds it and re-runs nothing.
+    if (plan.purgeAfterDays !== undefined) out.push({ version: `state/${plan.entityType}:purge`, sql: purgeIndexDdl(plan) });
   }
   return out;
+}
+
+/** The prefix of the purge sweep's index on a table (#119) — kernel-owned, so the reserved one. */
+export const PURGE_INDEX_PREFIX = '_substrat_purge_';
+
+/** The purge index's name on a plan's table. */
+export const purgeIndexName = (plan: EntityStatePlan): string => `${PURGE_INDEX_PREFIX}${plan.table}`;
+
+/**
+ * The partial index the purge sweep walks: trashed rows only, oldest trash first, so a sweep
+ * reads the due rows and nothing else. `IF NOT EXISTS` because a dump load runs it again after
+ * the rows are in.
+ */
+export function purgeIndexDdl(plan: EntityStatePlan): string {
+  return (
+    `CREATE INDEX IF NOT EXISTS ${purgeIndexName(plan)} ON ${plan.table} (${TRASHED_AT_COLUMN}, ${plan.idColumn}) ` +
+    `WHERE ${TRASHED_AT_COLUMN} IS NOT NULL;`
+  );
 }
 
 const columnNamesOf = (plan: EntityStatePlan): string[] => [
@@ -501,6 +528,9 @@ export function assertEntityStateIntact(
     }
     for (const index of indexes.get(plan.table) ?? []) {
       if (objects.get(index.toLowerCase()) !== 'index') fail(`its list index ${index}`);
+    }
+    if (plan.purgeAfterDays !== undefined && objects.get(purgeIndexName(plan).toLowerCase()) !== 'index') {
+      fail(`its purge index ${purgeIndexName(plan)}`);
     }
   }
 }

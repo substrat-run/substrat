@@ -45,7 +45,21 @@ no role in §3 but listed here is deliberate, not a gap.
 | `list` | `list:contribute` |
 | `owner` | `list:archive`, `list:contribute`, `list:manage`, `list:trash` |
 
-## 5. Not covered by this artifact
+## 5. Scheduled work — the system principal's grants
+
+Each runs on the platform sweep, under `system:<module>`, on the cadence shown.
+The permissions are what that system principal is granted at provisioning — a
+schedule can do exactly this and no more.
+
+| Operation | Cadence | System principal | Permissions |
+| --- | --- | --- | --- |
+| `todo/delete-list` — purges a trashed `list` after 30 days | every 60 min | `system:@substrat-run/demo-todo` | `list:manage` |
+
+A purge horizon's grant is scope-wide, and narrower than it reads: a key the system
+principal holds only for a purge is refused to it everywhere except the purge sweep's own
+call of that operation, one entity at a time, on an entity still in the bin past its horizon.
+
+## 6. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

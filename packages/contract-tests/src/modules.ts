@@ -28,6 +28,7 @@ import {
 } from '@substrat-run/contracts';
 import { membershipFixtureMod } from './membership-module.js';
 import { stateMod } from './entity-state-module.js';
+import { trashMod } from './entity-trash-module.js';
 import {
   assertAllowed,
   readAttachmentText,
@@ -2921,6 +2922,7 @@ export const contractTestModules: ModuleRegistration[] = [
   // #119: the archive/trash suite's module. Inert for every other suite — nothing else reads
   // its tables or invokes a `state/*` operation.
   stateMod,
+  trashMod,
   parseMod,
   concurrencyMod,
   idempotencyMod,

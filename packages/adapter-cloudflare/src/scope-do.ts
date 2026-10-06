@@ -251,6 +251,7 @@ import type {
   Instant,
   MintedCapability,
   ModuleId,
+  OperationTarget,
   PlatformActorId,
 } from '@substrat-run/contracts';
 import {
@@ -294,6 +295,13 @@ import {
   uncheckedView,
   addStatePlans,
   entityStateTriggerDdl,
+  isTrashed,
+  purgeCandidates,
+  purgeCutoffOf,
+  purgeIndexDdl,
+  purgeOnlyKeysOf,
+  refuseTrashedTarget,
+  registerTrashTargets,
   statefulTablesOf,
   assertEntityStateIntact,
   stateListIndexNames,
@@ -1142,6 +1150,10 @@ export function defineScopeDO(
     private readonly operationInput = new Map<string, { parse(value: unknown): unknown }>();
     /** #129: name → the entity whose version an `If-Match` is compared against. */
     private readonly operationConcurrency = new Map<string, { entity: string; idFrom: string }>();
+    /** #119: name → the entity it addresses by id — the host's trash refusal reads it. */
+    private readonly operationTarget = new Map<string, OperationTarget>();
+    /** #119: module id → the keys its system principal holds only for its purge schedules. */
+    private readonly purgeOnlyKeys = new Map<string, ReadonlySet<string>>();
     /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
     private readonly operationIdempotencyOptOut = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
@@ -1277,6 +1289,15 @@ export function defineScopeDO(
 
     private registerModule(registration: ModuleRegistration): void {
       const manifest = registration.manifest;
+      // #119: refused before anything is recorded, as in the pure adapter.
+      const trashTargets = registerTrashTargets(
+        manifest.id,
+        new Set(Object.keys(registration.operations ?? {})),
+        registration.operationTargets,
+        manifest.entityStates,
+        manifest.schedules,
+      );
+      this.purgeOnlyKeys.set(manifest.id, purgeOnlyKeysOf(manifest.schedules ?? []));
       if (manifest.peers?.length) this.peerSources.push({ peers: manifest.peers });
       // #827: the FTS indexes `searchables` declares, appended after the module's
       // own migrations so the content table exists when the trigger references it.
@@ -1410,6 +1431,8 @@ export function defineScopeDO(
         if (declaredOptOuts.includes(name) && this.operations.has(name)) {
           this.operationIdempotencyOptOut.add(name);
         }
+        const target = trashTargets.get(name);
+        if (target && this.operations.has(name)) this.operationTarget.set(name, target);
       }
     }
 
@@ -2719,6 +2742,11 @@ export function defineScopeDO(
         // commit together, or a throw (from either) rolls domain writes AND
         // emitted events back as one — verified across `await` in workerd.
         try {
+          // #119: a module's purge-only keys are withheld from its system principal on every
+          // call but the purge sweep's own invoke of the purge operation.
+          const purging =
+            invokeOptions?.purgeCutoff !== undefined && this.operationTarget.get(operation)?.trashed === 'purges';
+          const withheld = systemDoor && !purging ? this.purgeOnlyKeys.get(systemDoor.moduleId) : undefined;
           await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal,
@@ -2734,6 +2762,8 @@ export function defineScopeDO(
               minted,
               undefined,
               peerSubject,
+              undefined,
+              withheld,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -2763,6 +2793,15 @@ export function defineScopeDO(
               guardedRef && invokeOptions?.ifMatch !== undefined
                 ? this.versionAt(guardedRef)
                 : undefined;
+            // #119: the host's trash refusal, before the guards and the handler — the pure
+            // adapter's, through the same kernel function.
+            await refuseTrashedTarget(
+              { sql: doSpineSql(this.sql), plans: this.statePlans, check: ctx.check },
+              operation,
+              this.operationTarget.get(operation),
+              parsed,
+              invokeOptions?.purgeCutoff,
+            );
             await this.runGuards(operation, ctx, parsed);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
             if (guardedRef && invokeOptions?.ifMatch !== undefined) {
@@ -4458,6 +4497,28 @@ export function defineScopeDO(
      * the EVALUATOR's last recorded time for that event type — a cadence gate
      * driven by a verdict nothing ran.
      */
+    /**
+     * One purge horizon's due work on this scope (#119): the cutoff, the input field carrying
+     * the id, and the oldest due ids — what the coordinator then invokes the purge operation
+     * with, one entity per call, under that cutoff. Registration tied the schedule to a declared
+     * horizon and the entity's purge operation, so a mismatch here is a wiring fault.
+     */
+    async purgeDue(
+      operation: string,
+      entityType: string,
+      now: string,
+      limit: number,
+    ): Promise<{ cutoff: string; idFrom: string; ids: string[] }> {
+      await this.ensureMigrations();
+      const plan = this.statePlans.get(entityType);
+      const target = this.operationTarget.get(operation);
+      if (plan?.purgeAfterDays === undefined || !target) {
+        throw new Error(`purge: '${operation}' is not the purge operation of a horizon on '${entityType}'`);
+      }
+      const cutoff = purgeCutoffOf(now, plan.purgeAfterDays);
+      return { cutoff, idFrom: target.idFrom, ids: purgeCandidates(doSpineSql(this.sql), plan, cutoff, limit) };
+    }
+
     async scheduleLastRun(operation: string): Promise<string | null> {
       const row = this.sql
         .exec(
@@ -6017,6 +6078,8 @@ export function defineScopeDO(
       for (const plan of this.statePlans.values()) {
         if (!present.has(plan.table)) continue;
         for (const stmt of splitSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
+        // And the purge sweep's index, which went with it (#119 PR 2).
+        if (plan.purgeAfterDays !== undefined) this.sql.exec(purgeIndexDdl(plan));
       }
       // #811 / #119: the derived list indexes went with the dropped table too, and a load never
       // put them back — an archivable entity's partial indexes are part of what the kernel
@@ -6670,6 +6733,8 @@ export function defineScopeDO(
       peerSubject?: CheckSubject,
       /** #2055: the delivery a consumer's or an import's context runs for; absent otherwise. */
       delivery?: ConsumerDelivery,
+      /** #119: keys this context's checks refuse whatever the subject holds (`purgeOnlyKeysOf`). */
+      withheld?: ReadonlySet<string>,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -6733,6 +6798,9 @@ export function defineScopeDO(
         // #1642: parsed before the system actor's early return, which never reaches
         // the checker — a cast key would otherwise become that path's proof relation.
         const permission = assertPermissionKey(unparsed);
+        if (withheld?.has(permission)) {
+          return { allowed: false as const, checked: permission, node: { tenantId, scopeId } };
+        }
         if (systemActor) {
           return {
             allowed: true as const,
@@ -7037,6 +7105,7 @@ export function defineScopeDO(
           now: at,
           emit: (event) => writeEvent(event, 'kernel'),
           assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+          isTrashed: (entity) => isTrashed(doSpineSql(sql), statePlans, entity),
         }),
         // #119: archive and trash — the pure adapter's wiring, over the raw spine seam.
         ...createEntityStateVerbs({

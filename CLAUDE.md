@@ -320,9 +320,17 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   `_substrat_trashed_at` to its table, leaves archived and binned rows out of `ctx.page` and
   `ctx.search`, and moves them only through `ctx.archive`/`ctx.trash`/`ctx.restore`, which
   check the declared key and emit the event. `ctx.sql` refuses a write naming any
-  `_substrat_*` **column**, as it does a `_substrat_*` table. The kernel filters only the
-  reads it composes: a hand-written get-by-id asks `ctx.entityState(ref)`. Not erasure (#37)
-  and not tenant deletion (#36) — nothing is removed. `demos/todo` is the reference.
+  `_substrat_*` **column**, as it does a `_substrat_*` table. The **host** refuses an operation
+  addressed by `permission: { entity, idFrom }` on a trashed entity (`not_found`, after the
+  declared key, so a caller without it cannot probe the bin) unless it declares
+  `trashed: 'admits'` or `'purges'`; a module with a trashable entity must pass
+  `operationTargets: operationTargetsOf(ops)` or it does not register. An operation whose check
+  is `resolved` still asks `ctx.entityState(ref)` itself, and `lint:model` warns about each.
+  `ctx.link` refuses a trashed parent. `trash: { permission, purgeAfterDays }` derives a purge
+  schedule (`schedules: purgeSchedulesOf(ops, entities)`) running the entity's
+  `trashed: 'purges'` operation as the system principal, whose key is withheld from every other
+  call. Not erasure (#37) and not tenant deletion (#36) — the events stay. `demos/todo` is the
+  reference.
 - Every operation's first line: `assertAllowed(await ctx.check(PERM))`; per-entity
   checks (`ctx.check(perm, entityRef)`) for portal-style walks.
 - Every mutation emits a **fat** event (consumer must never need a cross-module read);

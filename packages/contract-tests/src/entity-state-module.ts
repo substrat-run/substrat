@@ -66,6 +66,10 @@ export const stateMod: ModuleRegistration = {
             CREATE TABLE state_plain (id TEXT PRIMARY KEY, title TEXT NOT NULL);`,
     },
   ],
+  // #119 PR 2: none. These operations reach the entity through a raw `id`, deliberately, so the
+  // verbs' and readers' own refusals are what this suite sees — the host's refusal is held by
+  // `entityTrashContractSuite`. A trashable module must still say so rather than leave it out.
+  operationTargets: {},
   operations: {
     'state/add': (async (ctx, input) => {
       const i = input as { entityType?: string; id: string; title: string; owner?: string };

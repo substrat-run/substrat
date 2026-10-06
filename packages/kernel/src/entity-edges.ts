@@ -41,6 +41,12 @@ export interface EntityEdgeDeps {
   emit: (event: DomainEventInput) => void;
   /** K-42's read-only refusal, for the effecting verbs. */
   assertWrites: (verb: string) => void;
+  /**
+   * Is this entity in the trash (#119)? `false` for an entity whose type declares no trash,
+   * and for one that does not exist. A trashed parent is refused by `link` and as `relink`'s
+   * `to`.
+   */
+  isTrashed: (entity: EntityRef) => boolean;
 }
 
 export type EntityEdgeVerbs = Pick<OperationContext, 'link' | 'relink'>;
@@ -53,6 +59,17 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
         `${verb}: undeclared entity relation: ${child.entityType} → ${parent.entityType} ` +
           `(declare it in a module manifest's entityRelations)`,
       );
+    }
+  };
+
+  /**
+   * A binned entity is gone from everyone's view until it is restored (#119), so nothing new
+   * hangs off it — `not_found`, the answer every other operation on it gets. An ARCHIVED parent
+   * passes: archived is filed away and still readable.
+   */
+  const assertParentNotTrashed = (verb: string, parent: EntityRef) => {
+    if (deps.isTrashed(parent)) {
+      throw substratError('not_found', `${verb}: ${parent.entityType}:${parent.entityId} is in the trash`);
     }
   };
 
@@ -125,6 +142,7 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       const c = entityObjectRef(child, 'ctx.link'); // #1856: an edge the walk can read back
       const p = entityObjectRef(parent, 'ctx.link');
       assertDeclared('ctx.link', child, parent);
+      assertParentNotTrashed('ctx.link', parent);
       // Refuse a parent that is the child itself or already beneath it (#1875) — same question
       // `relink` asks of `to`, same walk.
       assertNoCycle('ctx.link', 'link', c, p);
@@ -151,6 +169,7 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       // whether or not its relation is still declared, so an edge that grants must stay
       // movable. What `from` must be is an edge that exists.
       assertDeclared('ctx.relink', child, to);
+      assertParentNotTrashed('ctx.relink', to);
       // The walk's own `live` predicate, so "is a parent" means what a check means by it.
       const live = deps.sql.query(
         `SELECT 1 AS live FROM _substrat_tuples

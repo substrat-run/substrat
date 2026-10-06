@@ -69,6 +69,10 @@ export const todoEntities = defineEntities({
    * putting one in the bin are different acts, and an owner may be given one without the
    * other. The kernel adds the two columns and leaves archived and binned lists out of
    * `my-lists` unless they are asked for.
+   *
+   * A list left in the bin for 30 days is deleted for good, by `delete-list` — the same
+   * delete a person empties the bin with, so its items and shares go with it exactly as they
+   * would by hand.
    */
   list: {
     table: 'todo_lists',
@@ -80,7 +84,7 @@ export const todoEntities = defineEntities({
     }),
     parents: ['owner'],
     archive: { permission: 'list:archive' },
-    trash: { permission: 'list:trash' },
+    trash: { permission: 'list:trash', purgeAfterDays: 30 },
   },
 
   /**
@@ -268,6 +272,9 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   'todo/restore-list': {
     summary: 'Restore a list from the trash',
     permission: { key: 'list:trash', entity: 'list', idFrom: 'listId' },
+    // The one operation besides the delete that reaches a binned list; every other is refused
+    // `not_found` by the host before it runs.
+    trashed: 'admits',
     input: z.object({ listId: z.string() }),
     output: listState,
     http: { method: 'POST', path: '/lists/{listId}/restore' },
@@ -291,6 +298,8 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   'todo/delete-list': {
     summary: 'Delete a list and everything on it',
     permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
+    // The permanent delete: it empties the bin, and it is what the 30-day horizon runs.
+    trashed: 'purges',
     input: z.object({ listId: z.string() }),
     output: z.object({ id: z.string(), deleted: z.boolean() }),
     http: { method: 'DELETE', path: '/lists/{listId}' },

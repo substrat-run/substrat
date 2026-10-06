@@ -71,7 +71,8 @@
         "permission": "list:archive"
       },
       "trash": {
-        "permission": "list:trash"
+        "permission": "list:trash",
+        "purgeAfterDays": 30
       }
     },
     "owner": {

@@ -270,6 +270,18 @@ type PermissionRefCheck<O, PermKey extends string> = {
   readonly resolved?: never;
 };
 
+/**
+ * What `trashed` may say on this operation: `'admits' | 'purges'` where the leading check is
+ * `{ entity: E, idFrom }` and `E` declares `trash`, and nothing anywhere else.
+ */
+type TrashedShape<O, Entities> = O extends { permission: { entity: infer E; idFrom: string } }
+  ? E extends keyof Entities
+    ? Entities[E] extends { trash: object }
+      ? 'admits' | 'purges'
+      : never
+    : never
+  : never;
+
 type OpAuthority<O, Entities, Engines, PermKey extends string> = O extends { narrows: unknown }
   ? {
       readonly narrows: {
@@ -681,6 +693,25 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * node-level: state the exception, never the rule.
    */
   readonly idempotency?: false;
+  /**
+   * This operation reaches an entity IN THE TRASH (#119). Absent — the default, and the right
+   * answer for nearly every operation — the HOST refuses it on a trashed entity before the
+   * guards and the handler run: `not_found` to a caller who holds the operation's key on the
+   * entity, and the same `forbidden` as on an active one to a caller who does not. So a binned
+   * entity is gone from everyone's point of view without each handler remembering to ask.
+   *
+   * - `'admits'` — the operation works on a trashed entity too: the restore, a read of the bin.
+   * - `'purges'` — the operation is the entity's PERMANENT delete. It admits a trashed entity,
+   *   and it is the one a declared `trash.purgeAfterDays` horizon runs (`purgeSchedulesOf`).
+   *   One per entity.
+   *
+   * Only legal where the host can see the entity: a leading `permission: { entity, idFrom }`
+   * naming an entity that declares `trash`. Anywhere else it is a compile error, because there
+   * would be nothing for it to opt out of. An operation that narrows `resolved`, by `refFrom`
+   * or through `narrows` is not refused by the host at all, and keeps its own check
+   * (`trashRefusalGapsOf` names them).
+   */
+  readonly trashed?: TrashedShape<O, Entities>;
   readonly emits?: {
     /**
      * The entity the event is about — one of THIS module's entities, or one of a
@@ -790,6 +821,7 @@ export function defineOperations<
     assertListsArePaged(operations);
     assertConcurrencyMovesVersion(operations);
     assertFieldBagsDeclareConcurrency(operations, entities, engines ?? []);
+    assertTrashedDeclarations(operations, entities);
     return operations;
   };
 }
@@ -1035,6 +1067,158 @@ export function operationConcurrencyOf(
     out[name] = { entity: decl.over, idFrom: decl.idFrom };
   }
   return out;
+}
+
+/**
+ * The entity an operation addresses by id, as the host reads it (#119).
+ *
+ * `key` is the operation's DECLARED leading check, which the host evaluates itself before it
+ * refuses a trashed entity — so a caller without the key meets the same `forbidden` there that
+ * the handler would have given on an active one, and learns nothing about the bin.
+ */
+export interface OperationTarget {
+  readonly entity: string;
+  readonly idFrom: string;
+  readonly key: string;
+  readonly trashed?: 'admits' | 'purges';
+}
+
+/**
+ * name → the entity each operation addresses by id, for the host (#119).
+ *
+ * Every operation whose leading check is `{ entity, idFrom }`, whether or not its entity
+ * declares `trash` — the host keeps the ones whose entity does. Handed over beside
+ * `operationInputs`, and required by the host from any module with a trashable entity, so a
+ * module cannot leave its binned entities reachable by forgetting the line.
+ */
+export function operationTargetsOf(
+  operations: Readonly<Record<string, object>>,
+): Record<string, OperationTarget> {
+  const out: Record<string, OperationTarget> = {};
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as { permission?: { key?: unknown; entity?: unknown; idFrom?: unknown }; trashed?: unknown };
+    const p = decl.permission;
+    if (typeof p !== 'object' || p === null) continue;
+    if (typeof p.key !== 'string' || typeof p.entity !== 'string' || typeof p.idFrom !== 'string') continue;
+    out[name] = {
+      entity: p.entity,
+      idFrom: p.idFrom,
+      key: p.key,
+      ...(decl.trashed === 'admits' || decl.trashed === 'purges' ? { trashed: decl.trashed } : {}),
+    };
+  }
+  return out;
+}
+
+/** How often a purge horizon's schedule runs (#119). The horizon is in days; hourly is plenty. */
+export const PURGE_CADENCE_MINUTES = 60;
+
+/**
+ * The schedules a module's purge horizons run as (#119), derived — spread into the manifest's
+ * `schedules` beside any the module writes:
+ *
+ * ```ts
+ * schedules: purgeSchedulesOf(todoOperations, todoEntities),
+ * ```
+ *
+ * One per entity declaring `trash.purgeAfterDays`, running the operation that declares
+ * `trashed: 'purges'` for it, holding exactly that operation's key. Being a schedule is what
+ * gives the purge everything a schedule already has: the module's system principal and its
+ * seated grant (rendered in `PERMISSIONS.md`), the kill switch, the lifecycle hold, the
+ * exclusion of preview copies, and a sweeper on a pushed deploy.
+ *
+ * Refuses a horizon with no purging operation, and a purging operation whose input needs
+ * more than the id — the sweep has nothing else to pass it.
+ */
+export function purgeSchedulesOf(
+  operations: Readonly<Record<string, object>>,
+  entities: Readonly<Record<string, EntityDef>>,
+): { operation: string; cadence: { everyMinutes: number }; permissions: string[]; purge: { entityType: string } }[] {
+  const targets = operationTargetsOf(operations);
+  const out = [];
+  for (const entityType of Object.keys(entities).sort()) {
+    const days = entities[entityType]?.trash?.purgeAfterDays;
+    if (days === undefined) continue;
+    const purging = Object.entries(targets).filter(([, t]) => t.entity === entityType && t.trashed === 'purges');
+    if (purging.length !== 1) {
+      throw new Error(
+        `model: '${entityType}' declares trash.purgeAfterDays but ` +
+          (purging.length === 0
+            ? "no operation declares `trashed: 'purges'` for it — the horizon has nothing to run.\n" +
+              "  Remedy: mark the entity's permanent delete `trashed: 'purges'`."
+            : `${purging.map(([n]) => `'${n}'`).join(', ')} all declare \`trashed: 'purges'\` for it — one permanent delete per entity.`),
+      );
+    }
+    const [operation, target] = purging[0]!;
+    out.push({
+      operation,
+      cadence: { everyMinutes: PURGE_CADENCE_MINUTES },
+      permissions: [target.key],
+      purge: { entityType },
+    });
+  }
+  return out;
+}
+
+/**
+ * The operations on a trashable entity the HOST cannot refuse on a trashed one (#119), because
+ * their check names the entity but not the input field carrying its id — it is `resolved` in the
+ * handler. Each keeps its own `ctx.entityState` check. `lint:model` prints them as warnings, so
+ * the gap is seen when a vertical is built rather than found in review.
+ *
+ * What it cannot name, and K-45 states: an operation that reaches a trashable entity with no
+ * entity in its check at all — a `narrows` walk, a `refFrom` check, a node-level key.
+ */
+export function trashRefusalGapsOf(
+  operations: Readonly<Record<string, object>>,
+  entities: Readonly<Record<string, EntityDef>>,
+): { operation: string; entity: string }[] {
+  const targets = operationTargetsOf(operations);
+  const out: { operation: string; entity: string }[] = [];
+  for (const [name, op] of Object.entries(operations).sort(([a], [b]) => a.localeCompare(b))) {
+    const checked = (op as { permission?: { entity?: unknown } }).permission?.entity;
+    if (typeof checked !== 'string' || !entities[checked]?.trash || targets[name]) continue;
+    out.push({ operation: name, entity: checked });
+  }
+  return out;
+}
+
+/**
+ * `trashed`'s compile-time rule, held at load time too (#119) — an operations object built
+ * around the types (a cast, a generated map) must not opt out of a refusal the host cannot
+ * then see.
+ */
+function assertTrashedDeclarations(
+  operations: Record<string, unknown>,
+  entities: Record<string, EntityDef>,
+): void {
+  const purges = new Map<string, string>();
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as { trashed?: unknown; permission?: unknown; input?: z.ZodObject<z.ZodRawShape> };
+    if (decl.trashed === undefined) continue;
+    const target = operationTargetsOf({ [name]: op as object })[name];
+    if ((decl.trashed !== 'admits' && decl.trashed !== 'purges') || !target || !entities[target.entity]?.trash) {
+      throw new Error(
+        `model: '${name}' declares \`trashed: ${JSON.stringify(decl.trashed)}\` — it is 'admits' or 'purges', ` +
+          'and only on an operation whose check is `{ entity, idFrom }` over an entity that declares `trash`',
+      );
+    }
+    if (decl.trashed !== 'purges') continue;
+    const other = purges.get(target.entity);
+    if (other) {
+      throw new Error(`model: '${other}' and '${name}' both declare \`trashed: 'purges'\` for '${target.entity}' — one permanent delete per entity`);
+    }
+    purges.set(target.entity, name);
+    const required = Object.entries(decl.input?.shape ?? {})
+      .filter(([, schema]) => !isOptionalSchema(schema))
+      .map(([field]) => field);
+    if (required.some((field) => field !== target.idFrom)) {
+      throw new Error(
+        `model: '${name}' declares \`trashed: 'purges'\` but its input requires ${required.map((f) => `\`${f}\``).join(', ')} — ` +
+          `a purge horizon passes the id (\`${target.idFrom}\`) and nothing else`,
+      );
+    }
+  }
 }
 
 /**

@@ -61,6 +61,7 @@ import {
   idempotencyContractSuite,
   listContractSuite,
   entityStateContractSuite,
+  entityTrashContractSuite,
   permMod,
   inputParseContractSuite,
   spineGuardContractSuite,
@@ -5284,6 +5285,25 @@ entityStateContractSuite(
     return { host, cleanup: async () => host.close() };
   },
   // The scope DO's own storage, past `ctx.sql` — the trigger proven in workerd's SQLite.
+  async (_tenant, scope, sql, params = []) => {
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
+      state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
+    });
+  },
+);
+
+// #119 PR 2: the host's trash refusal, the link refusal and the purge horizon, in workerd. The
+// DEFAULT tuple checker, for the pure suite's reason. `trashMod` is in `contractTestModules`.
+entityTrashContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    return { host, cleanup: async () => host.close() };
+  },
   async (_tenant, scope, sql, params = []) => {
     await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
       state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));

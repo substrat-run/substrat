@@ -437,6 +437,9 @@ import {
   isPrimaryScopeRow,
   asyncInvocationId,
   asyncLinePass,
+  PURGE_BATCH,
+  registerTrashTargets,
+  runPurgePass,
   type AsyncLinePass,
   type EmittedReport,
   type FindingChange,
@@ -1309,6 +1312,13 @@ interface ScopeStubRpc {
   writeSystemGrant(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean>;
   /** The last time a schedule's operation ran on this scope (#383), or null if never. */
   scheduleLastRun(operation: string): Promise<string | null>;
+  /** #119: one purge horizon's due ids on this scope, the cutoff and the id field — see the DO. */
+  purgeDue(
+    operation: string,
+    entityType: string,
+    now: string,
+    limit: number,
+  ): Promise<{ cutoff: string; idFrom: string; ids: string[] }>;
   /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
   freshnessProbe(
     types: string[],
@@ -3604,6 +3614,15 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       this.predicateNames.set(name, manifest.id);
     }
+    // #119: the trash rules, refused here too so a bad module fails at construction, not at its
+    // scope's first wake. The scope holds the targets; the coordinator only needs the verdict.
+    registerTrashTargets(
+      manifest.id,
+      new Set(Object.keys(registration.operations ?? {})),
+      registration.operationTargets,
+      manifest.entityStates,
+      manifest.schedules,
+    );
     // #1705: after the checks above, so a refused module leaves nothing registered here.
     this.crossVertical.register(manifest, registration.imports);
     this.moduleIds.add(manifest.id);
@@ -5094,21 +5113,41 @@ export class CloudflareScopeHost implements ScopeHost {
       const startedAt = Date.now();
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
+      // #119: a purge horizon's batch was full — the schedule stays due, so the next pass continues.
+      let stillDue = false;
       try {
         // The gate above already answered for this pass; a fire that meets a restarted scope
         // is gated again by the door (#1834).
         door ??= await this.openSystemDoor(moduleId, tenantId, scopeId, gate);
         const scope = this.buildStub(tenantId, scopeId, undefined, undefined, door);
-        await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
+        if (schedule.purge) {
+          // #119: a purge horizon's schedule runs its operation once per due entity, each its own
+          // call and transaction, under the cutoff the scope re-checks inside it.
+          const due = await stub.purgeDue(schedule.operation, schedule.purge.entityType, new Date(now).toISOString(), PURGE_BATCH);
+          const pass = await runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
+            await scope.invoke(schedule.operation, { [due.idFrom]: entityId }, { invocationId: ulid(), purgeCutoff: due.cutoff });
+          });
+          stillDue = pass.full;
+          if (pass.errors.length > 0) {
+            for (const e of pass.errors) {
+              report.errors.push({ operation: `${schedule.operation} (${schedule.purge.entityType}:${e.entityId})`, error: e.error });
+            }
+            throw new Error(`${pass.errors.length} purge(s) of ${schedule.purge.entityType} failed; they stay in the bin and are retried`);
+          }
+        } else {
+          await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
+        }
         report.fired += 1;
       } catch (err) {
         status = 'failed';
         failure = { error: err };
         report.failed += 1;
-        report.errors.push({
-          operation: schedule.operation,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        if (!schedule.purge) {
+          report.errors.push({
+            operation: schedule.operation,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       lines.write({
         kind: 'schedule',
@@ -5123,6 +5162,8 @@ export class CloudflareScopeHost implements ScopeHost {
         latenessMs: lastRun === null ? null : now - dueAt,
         ...(emitted ? { emitted } : {}),
       });
+      report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
+      if (stillDue) continue;
       // #1288: 'schedule', whatever this operation happens to be called — including
       // `freshness:<something>`, which is exactly the row the evaluator no longer eats.
       await stub.recordScheduleRun(
@@ -5132,7 +5173,6 @@ export class CloudflareScopeHost implements ScopeHost {
         'schedule',
         invocationId,
       );
-      report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
     lines.end();
     return report;

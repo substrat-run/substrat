@@ -48,6 +48,8 @@ const manifestOf = (withStates: boolean) =>
 const modOf = (withStates: boolean): ModuleRegistration => ({
   manifest: manifestOf(withStates),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE up_notes (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);' }],
+  // A trashable module states which operations address it by id (#119 PR 2); none of these do.
+  operationTargets: {},
   operations: {
     'up/add': (async (ctx, input) => {
       const id = (input as { id: string }).id;

@@ -39,6 +39,7 @@ import {
   listContractSuite,
   inputParseContractSuite,
   entityStateContractSuite,
+  entityTrashContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
@@ -483,6 +484,31 @@ entityStateContractSuite(
   // The scope's own connection, past `ctx.sql`.
   async (tenant, scope, sql, params = []) => {
     const internals = stateHost as unknown as {
+      runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
+    };
+    internals.runtime(tenant, scope).db.prepare(sql).run(...params);
+  },
+);
+
+// #119 PR 2: the host's trash refusal, the link refusal and the purge horizon. The DEFAULT
+// checker, for the suite above's reason: the refusal's ORDER is a permission property.
+let trashHost: SqliteScopeHost | undefined;
+entityTrashContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-trash-'));
+    const host = new SqliteScopeHost({ dir });
+    trashHost = host;
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (tenant, scope, sql, params = []) => {
+    const internals = trashHost as unknown as {
       runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
     };
     internals.runtime(tenant, scope).db.prepare(sql).run(...params);
